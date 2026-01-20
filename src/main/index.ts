@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join, basename } from 'path'
 import { readFile } from 'fs/promises'
+import * as mm from 'music-metadata'
+import * as library from './services/library'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -53,6 +55,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // Initialize library database
+  library.initDatabase()
+
   createWindow()
 
   app.on('activate', () => {
@@ -66,6 +71,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  library.closeDatabase()
 })
 
 // ============================================
@@ -118,7 +127,7 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
   if (!mainWindow) return null
 
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open Music Folder',
+    title: 'Add Music Folder',
     properties: ['openDirectory']
   })
 
@@ -126,12 +135,101 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
     return null
   }
 
-  return result.filePaths
+  return result.filePaths[0]
 })
 
 // Load a specific audio file
 ipcMain.handle('audio:loadFile', async (_event, filePath: string) => {
   return loadAudioFile(filePath)
+})
+
+// ============================================
+// Library IPC handlers
+// ============================================
+
+// Get all tracks
+ipcMain.handle('library:getTracks', () => {
+  return library.getAllTracks()
+})
+
+// Get tracks by artist
+ipcMain.handle('library:getTracksByArtist', (_event, artist: string) => {
+  return library.getTracksByArtist(artist)
+})
+
+// Get tracks by album
+ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string) => {
+  return library.getTracksByAlbum(album, artist)
+})
+
+// Get all artists
+ipcMain.handle('library:getArtists', () => {
+  return library.getArtists()
+})
+
+// Get all albums
+ipcMain.handle('library:getAlbums', () => {
+  return library.getAlbums()
+})
+
+// Search tracks
+ipcMain.handle('library:search', (_event, query: string) => {
+  return library.searchTracks(query)
+})
+
+// Get library folders
+ipcMain.handle('library:getFolders', () => {
+  return library.getLibraryFolders()
+})
+
+// Add library folder and scan
+ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
+  const folder = library.addLibraryFolder(folderPath)
+  if (!folder) {
+    return { success: false, error: 'Folder already in library' }
+  }
+
+  // Scan folder
+  const result = await library.scanFolder(folderPath, (current, total, file) => {
+    mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+  })
+
+  return { success: true, folder, ...result }
+})
+
+// Remove library folder
+ipcMain.handle('library:removeFolder', (_event, folderPath: string) => {
+  library.removeLibraryFolder(folderPath)
+  return { success: true }
+})
+
+// Rescan all folders
+ipcMain.handle('library:rescan', async () => {
+  const folders = library.getLibraryFolders()
+  let totalAdded = 0
+  let totalUpdated = 0
+  let totalErrors = 0
+
+  for (const folder of folders) {
+    const result = await library.scanFolder(folder.path, (current, total, file) => {
+      mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+    })
+    totalAdded += result.added
+    totalUpdated += result.updated
+    totalErrors += result.errors
+  }
+
+  return { added: totalAdded, updated: totalUpdated, errors: totalErrors }
+})
+
+// Get track count
+ipcMain.handle('library:getTrackCount', () => {
+  return library.getTrackCount()
+})
+
+// Get artwork path
+ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
+  return library.getArtworkPath(hash)
 })
 
 // ============================================
@@ -144,22 +242,51 @@ async function loadAudioFile(filePath: string) {
     const buffer = await readFile(filePath)
     const name = basename(filePath)
 
-    // Extract format from extension
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+    // Extract metadata using music-metadata
+    let metadata: {
+      title: string
+      artist: string
+      album: string
+      duration?: number
+      format: string
+      artwork?: string
+    }
 
-    // Basic metadata from filename (will be enhanced with music-metadata in Phase 3)
-    const titleFromName = name.replace(/\.[^.]+$/, '')  // Remove extension
+    try {
+      const mm_metadata = await mm.parseFile(filePath)
+      const common = mm_metadata.common
+
+      // Convert artwork to base64 data URL
+      let artworkDataUrl: string | undefined
+      if (common.picture && common.picture.length > 0) {
+        const pic = common.picture[0]
+        const base64 = pic.data.toString('base64')
+        artworkDataUrl = `data:${pic.format};base64,${base64}`
+      }
+
+      metadata = {
+        title: common.title || name.replace(/\.[^.]+$/, ''),
+        artist: common.artist || 'Unknown Artist',
+        album: common.album || 'Unknown Album',
+        duration: mm_metadata.format.duration,
+        format: filePath.split('.').pop()?.toLowerCase() ?? 'unknown',
+        artwork: artworkDataUrl
+      }
+    } catch {
+      // Fallback to basic metadata
+      metadata = {
+        title: name.replace(/\.[^.]+$/, ''),
+        artist: 'Unknown Artist',
+        album: 'Unknown Album',
+        format: filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+      }
+    }
 
     return {
       path: filePath,
       name: name,
       data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
-      metadata: {
-        title: titleFromName,
-        artist: 'Unknown Artist',
-        album: 'Unknown Album',
-        format: ext
-      }
+      metadata
     }
   } catch (error) {
     console.error('Failed to load audio file:', error)

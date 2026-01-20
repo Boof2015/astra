@@ -13,15 +13,24 @@
     "type": "git",
     "url": "https://github.com/Boof2015/astra"
   },
-  "keywords": ["music", "player", "audio", "visualizer", "electron"],
+  "keywords": [
+    "music",
+    "player",
+    "audio",
+    "visualizer",
+    "electron"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "music-metadata": "^11.10.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",

@@ -1,5 +1,8 @@
+import { useEffect } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useLibraryStore } from '../../stores/libraryStore'
 import { Track } from '../../types/audio'
+import TrackList from '../library/TrackList'
 
 export default function MainContent() {
   const {
@@ -16,6 +19,29 @@ export default function MainContent() {
     toggleMute
   } = usePlayerStore()
 
+  const {
+    tracks,
+    albums,
+    artists,
+    viewMode,
+    selectedAlbum,
+    selectedArtist,
+    isLoading,
+    isScanning,
+    scanProgress,
+    loadLibrary,
+    addFolder,
+    setViewMode,
+    selectAlbum,
+    selectArtist,
+    clearSelection
+  } = useLibraryStore()
+
+  // Load library on mount
+  useEffect(() => {
+    loadLibrary()
+  }, [loadLibrary])
+
   // Format time as M:SS
   const formatTime = (seconds: number): string => {
     if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
@@ -24,7 +50,7 @@ export default function MainContent() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  // Handle open file
+  // Handle open file (single file, not library)
   const handleOpenFile = async () => {
     const result = await window.electronAPI.openAudioFile()
     if (result) {
@@ -38,7 +64,6 @@ export default function MainContent() {
         format: result.metadata?.format ?? 'unknown',
         artworkData: result.metadata?.artwork
       }
-
       await loadTrack(track, result.data)
     }
   }
@@ -59,8 +84,188 @@ export default function MainContent() {
   }
 
   const isPlaying = playbackState === 'playing'
-  const isLoading = playbackState === 'loading'
+  const isLoadingTrack = playbackState === 'loading'
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+
+  // Render library header
+  const renderLibraryHeader = () => {
+    let title = 'Library'
+    let showViewTabs = true
+    let itemCount = tracks.length
+    let itemLabel = tracks.length === 1 ? 'track' : 'tracks'
+
+    if (selectedAlbum) {
+      title = selectedAlbum.album
+      showViewTabs = false
+    } else if (selectedArtist) {
+      title = selectedArtist
+      showViewTabs = false
+    } else if (viewMode === 'albums') {
+      itemCount = albums.length
+      itemLabel = albums.length === 1 ? 'album' : 'albums'
+    } else if (viewMode === 'artists') {
+      itemCount = artists.length
+      itemLabel = artists.length === 1 ? 'artist' : 'artists'
+    }
+
+    return (
+      <div className="library-header">
+        <div className="library-header-left">
+          {(selectedAlbum || selectedArtist) && (
+            <button className="back-btn" onClick={clearSelection} title="Back">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+              </svg>
+            </button>
+          )}
+          <h2>{title}</h2>
+          {showViewTabs && (
+            <div className="view-tabs">
+              <button
+                className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
+                onClick={() => setViewMode('tracks')}
+              >
+                Tracks
+              </button>
+              <button
+                className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
+                onClick={() => setViewMode('albums')}
+              >
+                Albums
+              </button>
+              <button
+                className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
+                onClick={() => setViewMode('artists')}
+              >
+                Artists
+              </button>
+            </div>
+          )}
+          <span className="track-count">
+            {itemCount} {itemLabel}
+          </span>
+        </div>
+        <div className="library-header-right">
+          <button className="icon-btn" onClick={handleOpenFile} title="Open File">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+            </svg>
+          </button>
+          <button className="add-folder-btn" onClick={addFolder}>
+            <span>+</span> Add Folder
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Render scanning progress
+  const renderScanProgress = () => {
+    if (!isScanning || !scanProgress) return null
+    const percent = scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : 0
+    const fileName = scanProgress.file ? scanProgress.file.split('/').pop() || scanProgress.file.split('\\').pop() : ''
+    return (
+      <div className="scan-overlay">
+        <div className="scan-progress">
+          <div className="loading-spinner" />
+          <div className="scan-title">Scanning Library</div>
+          <div className="scan-count">{scanProgress.current} / {scanProgress.total} files</div>
+          <div className="scan-bar">
+            <div className="scan-bar-fill" style={{ width: `${percent}%` }} />
+          </div>
+          {fileName && <div className="scan-file">{fileName}</div>}
+        </div>
+      </div>
+    )
+  }
+
+  // Render library content
+  const renderLibraryContent = () => {
+    if (isLoading) {
+      return (
+        <div className="library-loading">
+          <div className="loading-spinner" />
+          <p>Loading library...</p>
+        </div>
+      )
+    }
+
+    // Show empty state only when no content at all
+    const hasContent = tracks.length > 0 || albums.length > 0 || artists.length > 0
+    if (!hasContent && !selectedAlbum && !selectedArtist) {
+      return (
+        <div className="library-empty">
+          <div className="empty-icon">♫</div>
+          <p>Your library is empty</p>
+          <p className="empty-hint">Click "Add Folder" to scan your music</p>
+        </div>
+      )
+    }
+
+    // Show album grid
+    if (viewMode === 'albums' && !selectedAlbum && !selectedArtist) {
+      if (albums.length === 0) {
+        return (
+          <div className="library-empty">
+            <p>No albums found</p>
+          </div>
+        )
+      }
+      return (
+        <div className="album-grid">
+          {albums.map((album) => (
+            <div
+              key={`${album.album}-${album.artist}`}
+              className="album-card"
+              onClick={() => selectAlbum(album.album, album.artist)}
+            >
+              <div className="album-artwork">
+                <div className="album-artwork-placeholder">♫</div>
+              </div>
+              <div className="album-info">
+                <div className="album-title">{album.album}</div>
+                <div className="album-artist">{album.artist}</div>
+                <div className="album-meta">{album.track_count} tracks{album.year ? ` • ${album.year}` : ''}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    // Show artist list
+    if (viewMode === 'artists' && !selectedAlbum && !selectedArtist) {
+      if (artists.length === 0) {
+        return (
+          <div className="library-empty">
+            <p>No artists found</p>
+          </div>
+        )
+      }
+      return (
+        <div className="artist-list">
+          {artists.map((artist) => (
+            <div
+              key={artist.artist}
+              className="artist-item"
+              onClick={() => selectArtist(artist.artist)}
+            >
+              <div className="artist-avatar">
+                {artist.artist.charAt(0).toUpperCase()}
+              </div>
+              <div className="artist-info">
+                <div className="artist-name">{artist.artist}</div>
+                <div className="artist-track-count">{artist.track_count} tracks</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    // Show tracks
+    return <TrackList tracks={tracks} showArtist={!selectedArtist} showAlbum={!selectedAlbum} />
+  }
 
   return (
     <main className="main-content">
@@ -78,31 +283,13 @@ export default function MainContent() {
         </div>
       </div>
 
-      {/* Library/Content area */}
+      {/* Library Panel */}
       <div className="library-panel glass-panel">
-        <div className="library-header">
-          <h2>Library</h2>
-          <button className="add-folder-btn" onClick={handleOpenFile}>
-            <span>+</span> Open File
-          </button>
+        {renderLibraryHeader()}
+        {renderScanProgress()}
+        <div className="library-content">
+          {renderLibraryContent()}
         </div>
-
-        {currentTrack ? (
-          <div className="library-track-info">
-            <div className="track-details">
-              <h3>{currentTrack.title}</h3>
-              <p>{currentTrack.artist}</p>
-              <p className="track-album">{currentTrack.album}</p>
-              <p className="track-format">{currentTrack.format.toUpperCase()}</p>
-            </div>
-          </div>
-        ) : (
-          <div className="library-empty">
-            <div className="empty-icon">♫</div>
-            <p>No track loaded</p>
-            <p className="empty-hint">Click "Open File" to load an audio file</p>
-          </div>
-        )}
       </div>
 
       {/* Now Playing Bar */}
@@ -134,10 +321,10 @@ export default function MainContent() {
           <button
             className="control-btn control-btn-play"
             onClick={togglePlay}
-            disabled={!currentTrack || isLoading}
+            disabled={!currentTrack || isLoadingTrack}
             aria-label={isPlaying ? 'Pause' : 'Play'}
           >
-            {isLoading ? (
+            {isLoadingTrack ? (
               <div className="loading-spinner" />
             ) : isPlaying ? (
               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
