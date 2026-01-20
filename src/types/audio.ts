@@ -1,0 +1,64 @@
+// Track metadata
+export interface Track {
+  id: string
+  path: string
+  title: string
+  artist: string
+  album: string
+  albumArtist?: string
+  duration: number
+  trackNumber?: number
+  discNumber?: number
+  year?: number
+  genre?: string
+  artworkData?: string  // Base64 data URL
+  format: string
+  sampleRate?: number
+  bitDepth?: number
+}
+
+// Playback state
+export type PlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+
+// Player store state
+export interface PlayerState {
+  currentTrack: Track | null
+  playbackState: PlaybackState
+  currentTime: number
+  duration: number
+  volume: number
+  isMuted: boolean
+}
+
+// Audio engine events
+export interface AudioEngineEvents {
+  stateChange: (state: PlaybackState) => void
+  timeUpdate: (currentTime: number) => void
+  durationChange: (duration: number) => void
+  ended: () => void
+  error: (error: Error) => void
+}
+
+// EQ Band
+export interface EQBand {
+  type: 'lowshelf' | 'peaking' | 'highshelf'
+  frequency: number
+  gain: number
+  Q: number
+}
+
+// EQ Preset
+export interface EQPreset {
+  id: string
+  name: string
+  bands: EQBand[]
+  preamp: number
+}
+
+// Visualizer config
+export interface VisualizerConfig {
+  type: 'oscilloscope' | 'spectrum' | 'spectrogram' | 'vu' | 'loudness' | 'stereo'
+  fftSize: 1024 | 2048 | 4096 | 8192 | 16384
+  pitchLock?: boolean
+  scale?: 'linear' | 'log' | 'mel'
+}
