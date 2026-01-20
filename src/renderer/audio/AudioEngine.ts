@@ -190,21 +190,37 @@ export class AudioEngine {
 
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
-    if (!this.audioBuffer) return
+    if (!this.audioBuffer || !this.context || !this.analyserNode) return
 
     const wasPlaying = this._playbackState === 'playing'
     const clampedTime = Math.max(0, Math.min(time, this.audioBuffer.duration))
 
-    if (wasPlaying) {
-      this.stopSource()
-    }
-
+    // Stop current playback
+    this.stopSource()
     this.pauseTime = clampedTime
-    this.emit('timeUpdate', clampedTime)
 
     if (wasPlaying) {
-      await this.play()
+      // Directly create new source and start (bypass play() state check)
+      this.sourceNode = this.context.createBufferSource()
+      this.sourceNode.buffer = this.audioBuffer
+      this.sourceNode.connect(this.analyserNode)
+
+      this.sourceNode.onended = () => {
+        if (this._playbackState === 'playing') {
+          this._playbackState = 'stopped'
+          this.pauseTime = 0
+          this.emit('stateChange', this._playbackState)
+          this.emit('ended')
+          this.stopTimeUpdate()
+        }
+      }
+
+      this.startTime = this.context.currentTime - clampedTime
+      this.sourceNode.start(0, clampedTime)
+      // State remains 'playing', no need to emit
     }
+
+    this.emit('timeUpdate', clampedTime)
   }
 
   // Set volume (0-1)
