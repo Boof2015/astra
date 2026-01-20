@@ -7,8 +7,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit",
-    "postinstall": "electron-builder install-app-deps"
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
