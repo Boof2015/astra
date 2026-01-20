@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join, basename } from 'path'
 import { readFile } from 'fs/promises'
-import { is } from 'electron-vite/utils'
+
+// Check if running in development
+const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -43,7 +45,7 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
