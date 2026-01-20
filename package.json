@@ -1,0 +1,37 @@
+{
+  "name": "astra",
+  "version": "0.1.0",
+  "description": "Audiophile music player with advanced visualization",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Boof2015/astra"
+  },
+  "keywords": ["music", "player", "audio", "visualizer", "electron"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "zustand": "^5.0.10"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.9",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.23",
+    "electron": "^40.0.0",
+    "electron-vite": "^5.0.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

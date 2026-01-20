@@ -1,0 +1,542 @@
+/* ============================================
+   ASTRA - Glassmorphic Music Player Styles
+   ============================================ */
+
+/* CSS Variables for theming */
+:root {
+  /* Colors */
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a25;
+
+  /* Glass effect colors */
+  --glass-bg: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.05);
+
+  /* Text colors */
+  --text-primary: rgba(255, 255, 255, 0.95);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --text-tertiary: rgba(255, 255, 255, 0.4);
+
+  /* Accent color */
+  --accent: #8b5cf6;
+  --accent-hover: #a78bfa;
+  --accent-glow: rgba(139, 92, 246, 0.3);
+
+  /* Spacing */
+  --titlebar-height: 40px;
+  --sidebar-width: 220px;
+  --now-playing-height: 90px;
+
+  /* Borders & Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+}
+
+/* Reset & Base */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Disable text selection on UI elements */
+button, .titlebar, .sidebar-item {
+  user-select: none;
+}
+
+/* ============================================
+   Glass Panel Component
+   ============================================ */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.glass-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    var(--glass-highlight) 0%,
+    transparent 50%
+  );
+  pointer-events: none;
+}
+
+/* ============================================
+   App Layout
+   ============================================ */
+.app {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  padding: 0 12px 12px 12px;
+  gap: 12px;
+}
+
+/* ============================================
+   Title Bar
+   ============================================ */
+.titlebar {
+  height: var(--titlebar-height);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  position: relative;
+  background: transparent;
+}
+
+.titlebar-drag-region {
+  position: absolute;
+  inset: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar-macos-spacer {
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.titlebar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-logo {
+  color: var(--accent);
+  font-size: 16px;
+}
+
+.titlebar-spacer {
+  flex: 1;
+}
+
+.titlebar-controls {
+  display: flex;
+  gap: 8px;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-button {
+  width: 32px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.titlebar-button:hover {
+  background: var(--glass-bg);
+  color: var(--text-primary);
+}
+
+.titlebar-button-close:hover {
+  background: #e81123;
+  color: white;
+}
+
+/* ============================================
+   Sidebar
+   ============================================ */
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  margin-bottom: 20px;
+}
+
+.sidebar-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  padding: 0 8px;
+  margin-bottom: 8px;
+}
+
+.sidebar-list {
+  list-style: none;
+}
+
+.sidebar-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+}
+
+.sidebar-item:hover {
+  background: var(--glass-highlight);
+  color: var(--text-primary);
+}
+
+.sidebar-item.active {
+  background: var(--accent-glow);
+  color: var(--accent-hover);
+}
+
+.sidebar-icon {
+  width: 18px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+/* ============================================
+   Main Content Area
+   ============================================ */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Visualizer Panel */
+.visualizer-panel {
+  height: 200px;
+  position: relative;
+  overflow: hidden;
+}
+
+.visualizer-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.visualizer-label {
+  padding: 12px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.visualizer-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+/* Library Panel */
+.library-panel {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.library-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.add-folder-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.add-folder-btn:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.library-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+}
+
+.empty-icon {
+  font-size: 48px;
+  opacity: 0.3;
+  margin-bottom: 8px;
+}
+
+.empty-hint {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+/* ============================================
+   Now Playing Bar
+   ============================================ */
+.now-playing {
+  height: var(--now-playing-height);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 20px;
+  position: relative;
+}
+
+.now-playing-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 200px;
+}
+
+.now-playing-artwork {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.artwork-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: var(--text-tertiary);
+}
+
+.now-playing-text {
+  min-width: 0;
+}
+
+.now-playing-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.now-playing-artist {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Playback Controls */
+.now-playing-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.control-btn:hover {
+  color: var(--text-primary);
+  background: var(--glass-highlight);
+}
+
+.control-btn-play {
+  width: 44px;
+  height: 44px;
+  background: var(--accent);
+  color: white;
+}
+
+.control-btn-play:hover {
+  background: var(--accent-hover);
+  color: white;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+/* Progress Bar */
+.now-playing-progress {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 600px;
+}
+
+.progress-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+
+.progress-bar:hover .progress-fill {
+  background: var(--accent-hover);
+}
+
+/* Volume Control */
+.now-playing-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.volume-slider {
+  width: 80px;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.volume-fill {
+  height: 100%;
+  background: var(--text-secondary);
+  border-radius: 2px;
+}
+
+.volume-slider:hover .volume-fill {
+  background: var(--text-primary);
+}
+
+/* ============================================
+   Scrollbar Styling
+   ============================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
