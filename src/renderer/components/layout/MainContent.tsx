@@ -12,11 +12,16 @@ export default function MainContent() {
     duration,
     volume,
     isMuted,
+    queue,
+    queueIndex,
     loadTrack,
     togglePlay,
     seek,
     setVolume,
-    toggleMute
+    toggleMute,
+    playNext,
+    playPrevious,
+    setQueue
   } = usePlayerStore()
 
   const {
@@ -313,7 +318,12 @@ export default function MainContent() {
         </div>
 
         <div className="now-playing-controls">
-          <button className="control-btn" aria-label="Previous" disabled>
+          <button
+            className="control-btn"
+            aria-label="Previous"
+            onClick={playPrevious}
+            disabled={queue.length === 0}
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
             </svg>
@@ -336,7 +346,12 @@ export default function MainContent() {
               </svg>
             )}
           </button>
-          <button className="control-btn" aria-label="Next" disabled>
+          <button
+            className="control-btn"
+            aria-label="Next"
+            onClick={playNext}
+            disabled={queue.length === 0}
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
             </svg>

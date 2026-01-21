@@ -19,8 +19,21 @@ interface TrackListProps {
   showAlbum?: boolean
 }
 
+// Convert DbTrack to Track
+function dbTrackToTrack(dbTrack: DbTrack): Track {
+  return {
+    id: dbTrack.path,
+    path: dbTrack.path,
+    title: dbTrack.title,
+    artist: dbTrack.artist,
+    album: dbTrack.album,
+    duration: dbTrack.duration,
+    format: dbTrack.format
+  }
+}
+
 export default function TrackList({ tracks, showArtist = true, showAlbum = true }: TrackListProps) {
-  const { currentTrack, playbackState, loadTrack } = usePlayerStore()
+  const { currentTrack, playbackState, loadTrack, setQueue } = usePlayerStore()
 
   const formatDuration = (seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
@@ -29,7 +42,11 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const handleTrackClick = async (dbTrack: DbTrack) => {
+  const handleTrackClick = async (dbTrack: DbTrack, index: number) => {
+    // Convert all tracks to Track format and set queue
+    const queueTracks = tracks.map(dbTrackToTrack)
+    setQueue(queueTracks, index)
+
     // Load the audio file
     const result = await window.electronAPI.loadAudioFile(dbTrack.path)
     if (result) {
@@ -72,8 +89,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
           <div
             key={track.id}
             className={`track-row ${isCurrentTrack(track) ? 'track-row-active' : ''}`}
-            onClick={() => handleTrackClick(track)}
-            onDoubleClick={() => handleTrackClick(track)}
+            onClick={() => handleTrackClick(track, index)}
           >
             <div className="track-col track-col-num">
               {isCurrentTrack(track) && isPlaying ? (
