@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
+import QueuePanel from '../queue/QueuePanel'
 
 export default function MainContent() {
   const {
@@ -41,6 +42,9 @@ export default function MainContent() {
     selectArtist,
     clearSelection
   } = useLibraryStore()
+
+  // Queue panel visibility
+  const [showQueue, setShowQueue] = useState(false)
 
   // Load library on mount
   useEffect(() => {
@@ -274,26 +278,35 @@ export default function MainContent() {
 
   return (
     <main className="main-content">
-      {/* Visualizer Panel (placeholder) */}
-      <div className="visualizer-panel glass-panel">
-        <div className="visualizer-placeholder">
-          <div className="visualizer-label">Oscilloscope</div>
-          <div className="visualizer-empty">
-            {isPlaying ? (
-              <span className="visualizer-active">Visualizer coming in Phase 5</span>
-            ) : (
-              <span>No audio playing</span>
-            )}
+      <div className="main-content-wrapper">
+        <div className="main-content-area">
+          {/* Visualizer Panel (placeholder) */}
+          <div className="visualizer-panel glass-panel">
+            <div className="visualizer-placeholder">
+              <div className="visualizer-label">Oscilloscope</div>
+              <div className="visualizer-empty">
+                {isPlaying ? (
+                  <span className="visualizer-active">Visualizer coming in Phase 5</span>
+                ) : (
+                  <span>No audio playing</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Library Panel */}
+          <div className="library-panel glass-panel">
+            {renderLibraryHeader()}
+            {renderScanProgress()}
+            <div className="library-content">
+              {renderLibraryContent()}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Library Panel */}
-      <div className="library-panel glass-panel">
-        {renderLibraryHeader()}
-        {renderScanProgress()}
-        <div className="library-content">
-          {renderLibraryContent()}
+        {/* Queue Sidebar */}
+        <div className={`queue-sidebar ${showQueue ? '' : 'hidden'}`}>
+          <QueuePanel />
         </div>
       </div>
 
@@ -406,6 +419,15 @@ export default function MainContent() {
               style={{ width: `${isMuted ? 0 : volume * 100}%` }}
             />
           </div>
+          <button
+            className={`queue-toggle-btn ${showQueue ? 'active' : ''}`}
+            onClick={() => setShowQueue(!showQueue)}
+            title="Toggle queue"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+            </svg>
+          </button>
         </div>
       </div>
     </main>

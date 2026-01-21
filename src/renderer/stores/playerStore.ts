@@ -30,6 +30,9 @@ interface PlayerStore {
   // Queue actions
   setQueue: (tracks: Track[], startIndex?: number) => void
   addToQueue: (track: Track) => void
+  addToQueueNext: (track: Track) => void
+  removeFromQueue: (index: number) => void
+  moveInQueue: (fromIndex: number, toIndex: number) => void
   clearQueue: () => void
   playNext: () => Promise<void>
   playPrevious: () => Promise<void>
@@ -119,6 +122,63 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     addToQueue: (track: Track) => {
       set((state) => ({ queue: [...state.queue, track] }))
+    },
+
+    addToQueueNext: (track: Track) => {
+      set((state) => {
+        const newQueue = [...state.queue]
+        // Insert after current track
+        newQueue.splice(state.queueIndex + 1, 0, track)
+        return { queue: newQueue }
+      })
+    },
+
+    removeFromQueue: (index: number) => {
+      set((state) => {
+        if (index < 0 || index >= state.queue.length) return state
+        const newQueue = state.queue.filter((_, i) => i !== index)
+        let newIndex = state.queueIndex
+
+        // Adjust index if we removed a track before current
+        if (index < state.queueIndex) {
+          newIndex = state.queueIndex - 1
+        } else if (index === state.queueIndex) {
+          // If we removed the current track, keep index (will point to next track)
+          // But make sure we don't go out of bounds
+          if (newIndex >= newQueue.length) {
+            newIndex = newQueue.length - 1
+          }
+        }
+
+        return { queue: newQueue, queueIndex: newIndex }
+      })
+    },
+
+    moveInQueue: (fromIndex: number, toIndex: number) => {
+      set((state) => {
+        if (fromIndex === toIndex) return state
+        if (fromIndex < 0 || fromIndex >= state.queue.length) return state
+        if (toIndex < 0 || toIndex >= state.queue.length) return state
+
+        const newQueue = [...state.queue]
+        const [removed] = newQueue.splice(fromIndex, 1)
+        newQueue.splice(toIndex, 0, removed)
+
+        // Adjust queueIndex if affected
+        let newIndex = state.queueIndex
+        if (state.queueIndex === fromIndex) {
+          // Moving current track
+          newIndex = toIndex
+        } else if (fromIndex < state.queueIndex && toIndex >= state.queueIndex) {
+          // Moving a track from before to after current
+          newIndex = state.queueIndex - 1
+        } else if (fromIndex > state.queueIndex && toIndex <= state.queueIndex) {
+          // Moving a track from after to before current
+          newIndex = state.queueIndex + 1
+        }
+
+        return { queue: newQueue, queueIndex: newIndex }
+      })
     },
 
     clearQueue: () => {
