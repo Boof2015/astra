@@ -54,9 +54,9 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Initialize library database
-  library.initDatabase()
+  await library.initDatabase()
 
   createWindow()
 
@@ -184,7 +184,7 @@ ipcMain.handle('library:getFolders', () => {
 
 // Add library folder and scan
 ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
-  const folder = library.addLibraryFolder(folderPath)
+  const folder = await library.addLibraryFolder(folderPath)
   if (!folder) {
     return { success: false, error: 'Folder already in library' }
   }
@@ -198,8 +198,8 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
 })
 
 // Remove library folder
-ipcMain.handle('library:removeFolder', (_event, folderPath: string) => {
-  library.removeLibraryFolder(folderPath)
+ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
+  await library.removeLibraryFolder(folderPath)
   return { success: true }
 })
 

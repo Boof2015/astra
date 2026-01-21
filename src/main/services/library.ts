@@ -1,8 +1,8 @@
-import Database from 'better-sqlite3'
+import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
 import { join, extname, basename } from 'path'
-import { readdir, stat, mkdir, writeFile } from 'fs/promises'
+import { readdir, stat, mkdir, writeFile, readFile } from 'fs/promises'
 import { createHash } from 'crypto'
 
 // Supported audio extensions
@@ -38,25 +38,52 @@ export interface LibraryFolder {
   added_at: number
 }
 
-let db: Database.Database | null = null
+let db: Database | null = null
+let dbPath: string = ''
 let artworkDir: string = ''
 
+// Save database to file
+async function saveDatabase(): Promise<void> {
+  if (!db || !dbPath) return
+  const data = db.export()
+  const buffer = Buffer.from(data)
+  await writeFile(dbPath, buffer)
+}
+
+// Helper to convert sql.js result to objects
+function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
+  return values.map(row => {
+    const obj: Record<string, unknown> = {}
+    columns.forEach((col, i) => {
+      obj[col] = row[i]
+    })
+    return obj as T
+  })
+}
+
 // Initialize database
-export function initDatabase(): void {
+export async function initDatabase(): Promise<void> {
   const userDataPath = app.getPath('userData')
-  const dbPath = join(userDataPath, 'library.db')
+  dbPath = join(userDataPath, 'library.db')
   artworkDir = join(userDataPath, 'artwork')
 
   // Create artwork directory
-  mkdir(artworkDir, { recursive: true }).catch(() => {})
+  await mkdir(artworkDir, { recursive: true }).catch(() => {})
 
-  db = new Database(dbPath)
+  // Initialize sql.js
+  const SQL = await initSqlJs()
 
-  // Enable WAL mode for better performance
-  db.pragma('journal_mode = WAL')
+  // Try to load existing database
+  try {
+    const fileBuffer = await readFile(dbPath)
+    db = new SQL.Database(fileBuffer)
+  } catch {
+    // Create new database
+    db = new SQL.Database()
+  }
 
   // Create tables
-  db.exec(`
+  db.run(`
     CREATE TABLE IF NOT EXISTS tracks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       path TEXT UNIQUE NOT NULL,
@@ -76,18 +103,22 @@ export function initDatabase(): void {
       bitrate INTEGER,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
-    );
+    )
+  `)
 
+  db.run(`
     CREATE TABLE IF NOT EXISTS folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       path TEXT UNIQUE NOT NULL,
       added_at INTEGER NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
-    CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);
-    CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
+    )
   `)
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
+
+  await saveDatabase()
 }
 
 // Close database
@@ -101,40 +132,62 @@ export function closeDatabase(): void {
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
   if (!db) return []
-  return db.prepare('SELECT * FROM tracks ORDER BY artist, album, disc_number, track_number').all() as DbTrack[]
+  const result = db.exec('SELECT * FROM tracks ORDER BY artist, album, disc_number, track_number')
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
 
 // Get tracks by artist
 export function getTracksByArtist(artist: string): DbTrack[] {
   if (!db) return []
-  return db.prepare('SELECT * FROM tracks WHERE artist = ? ORDER BY album, disc_number, track_number').all(artist) as DbTrack[]
+  const stmt = db.prepare('SELECT * FROM tracks WHERE artist = ? ORDER BY album, disc_number, track_number')
+  stmt.bind([artist])
+  const tracks: DbTrack[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as DbTrack
+    tracks.push(row)
+  }
+  stmt.free()
+  return tracks
 }
 
 // Get tracks by album
 export function getTracksByAlbum(album: string, artist?: string): DbTrack[] {
   if (!db) return []
+  let stmt
   if (artist) {
-    return db.prepare('SELECT * FROM tracks WHERE album = ? AND (artist = ? OR album_artist = ?) ORDER BY disc_number, track_number')
-      .all(album, artist, artist) as DbTrack[]
+    stmt = db.prepare('SELECT * FROM tracks WHERE album = ? AND (artist = ? OR album_artist = ?) ORDER BY disc_number, track_number')
+    stmt.bind([album, artist, artist])
+  } else {
+    stmt = db.prepare('SELECT * FROM tracks WHERE album = ? ORDER BY disc_number, track_number')
+    stmt.bind([album])
   }
-  return db.prepare('SELECT * FROM tracks WHERE album = ? ORDER BY disc_number, track_number').all(album) as DbTrack[]
+  const tracks: DbTrack[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as DbTrack
+    tracks.push(row)
+  }
+  stmt.free()
+  return tracks
 }
 
 // Get unique artists
 export function getArtists(): { artist: string; track_count: number }[] {
   if (!db) return []
-  return db.prepare(`
+  const result = db.exec(`
     SELECT artist, COUNT(*) as track_count
     FROM tracks
     GROUP BY artist
     ORDER BY artist
-  `).all() as { artist: string; track_count: number }[]
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<{ artist: string; track_count: number }>(result[0].columns, result[0].values)
 }
 
 // Get unique albums
 export function getAlbums(): { album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }[] {
   if (!db) return []
-  return db.prepare(`
+  const result = db.exec(`
     SELECT
       album,
       COALESCE(album_artist, artist) as artist,
@@ -144,45 +197,60 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
     FROM tracks
     GROUP BY album, COALESCE(album_artist, artist)
     ORDER BY artist, album
-  `).all() as { album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }[]
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
 }
 
 // Search tracks
 export function searchTracks(query: string): DbTrack[] {
   if (!db) return []
   const pattern = `%${query}%`
-  return db.prepare(`
+  const stmt = db.prepare(`
     SELECT * FROM tracks
     WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
     ORDER BY artist, album, track_number
     LIMIT 100
-  `).all(pattern, pattern, pattern) as DbTrack[]
+  `)
+  stmt.bind([pattern, pattern, pattern])
+  const tracks: DbTrack[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as DbTrack
+    tracks.push(row)
+  }
+  stmt.free()
+  return tracks
 }
 
 // Get library folders
 export function getLibraryFolders(): LibraryFolder[] {
   if (!db) return []
-  return db.prepare('SELECT * FROM folders ORDER BY path').all() as LibraryFolder[]
+  const result = db.exec('SELECT * FROM folders ORDER BY path')
+  if (result.length === 0) return []
+  return rowsToObjects<LibraryFolder>(result[0].columns, result[0].values)
 }
 
 // Add library folder
-export function addLibraryFolder(folderPath: string): LibraryFolder | null {
+export async function addLibraryFolder(folderPath: string): Promise<LibraryFolder | null> {
   if (!db) return null
   const now = Date.now()
   try {
-    const result = db.prepare('INSERT INTO folders (path, added_at) VALUES (?, ?)').run(folderPath, now)
-    return { id: result.lastInsertRowid as number, path: folderPath, added_at: now }
+    db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
+    const result = db.exec('SELECT last_insert_rowid() as id')
+    const id = result[0].values[0][0] as number
+    await saveDatabase()
+    return { id, path: folderPath, added_at: now }
   } catch {
     return null // Folder already exists
   }
 }
 
 // Remove library folder
-export function removeLibraryFolder(folderPath: string): void {
+export async function removeLibraryFolder(folderPath: string): Promise<void> {
   if (!db) return
-  db.prepare('DELETE FROM folders WHERE path = ?').run(folderPath)
-  // Also remove tracks from this folder
-  db.prepare('DELETE FROM tracks WHERE path LIKE ?').run(`${folderPath}%`)
+  db.run('DELETE FROM folders WHERE path = ?', [folderPath])
+  db.run('DELETE FROM tracks WHERE path LIKE ?', [`${folderPath}%`])
+  await saveDatabase()
 }
 
 // Scan a folder for audio files
@@ -197,25 +265,21 @@ export async function scanFolder(
   let updated = 0
   let errors = 0
 
-  const insertStmt = db.prepare(`
-    INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, added_at, modified_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-
-  const updateStmt = db.prepare(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, modified_at=?
-    WHERE path=?
-  `)
-
-  const checkStmt = db.prepare('SELECT id, modified_at FROM tracks WHERE path = ?')
-
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i]
     onProgress?.(i + 1, files.length, filePath)
 
     try {
       const fileStat = await stat(filePath)
-      const existing = checkStmt.get(filePath) as { id: number; modified_at: number } | undefined
+
+      // Check if track exists
+      const checkStmt = db.prepare('SELECT id, modified_at FROM tracks WHERE path = ?')
+      checkStmt.bind([filePath])
+      let existing: { id: number; modified_at: number } | undefined
+      if (checkStmt.step()) {
+        existing = checkStmt.getAsObject() as { id: number; modified_at: number }
+      }
+      checkStmt.free()
 
       // Skip if file hasn't changed
       if (existing && existing.modified_at >= fileStat.mtimeMs) {
@@ -226,20 +290,26 @@ export async function scanFolder(
       const now = Date.now()
 
       if (existing) {
-        updateStmt.run(
+        db.run(`
+          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, modified_at=?
+          WHERE path=?
+        `, [
           metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, now, filePath
-        )
+        ])
         updated++
       } else {
-        insertStmt.run(
+        db.run(`
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, now, now
-        )
+        ])
         added++
       }
     } catch (err) {
@@ -248,6 +318,7 @@ export async function scanFolder(
     }
   }
 
+  await saveDatabase()
   return { added, updated, errors }
 }
 
@@ -340,24 +411,32 @@ export function getArtworkPath(hash: string): string {
 // Get track count
 export function getTrackCount(): number {
   if (!db) return 0
-  const result = db.prepare('SELECT COUNT(*) as count FROM tracks').get() as { count: number }
-  return result.count
+  const result = db.exec('SELECT COUNT(*) as count FROM tracks')
+  if (result.length === 0) return 0
+  return result[0].values[0][0] as number
 }
 
 // Remove tracks that no longer exist on disk
 export async function cleanupMissingTracks(): Promise<number> {
   if (!db) return 0
 
-  const tracks = db.prepare('SELECT id, path FROM tracks').all() as { id: number; path: string }[]
+  const result = db.exec('SELECT id, path FROM tracks')
+  if (result.length === 0) return 0
+
+  const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)
   let removed = 0
 
   for (const track of tracks) {
     try {
       await stat(track.path)
     } catch {
-      db.prepare('DELETE FROM tracks WHERE id = ?').run(track.id)
+      db.run('DELETE FROM tracks WHERE id = ?', [track.id])
       removed++
     }
+  }
+
+  if (removed > 0) {
+    await saveDatabase()
   }
 
   return removed

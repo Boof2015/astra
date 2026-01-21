@@ -23,10 +23,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
     "music-metadata": "^11.10.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "sql.js": "^1.13.0",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
