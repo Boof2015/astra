@@ -4,6 +4,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
 import QueuePanel from '../queue/QueuePanel'
+import AlbumArtwork from '../library/AlbumArtwork'
 
 export default function MainContent() {
   const {
@@ -229,7 +230,7 @@ export default function MainContent() {
               onClick={() => selectAlbum(album.album, album.artist)}
             >
               <div className="album-artwork">
-                <div className="album-artwork-placeholder">♫</div>
+                <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
               </div>
               <div className="album-info">
                 <div className="album-title">{album.album}</div>

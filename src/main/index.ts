@@ -238,6 +238,20 @@ ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
   return library.getArtworkPath(hash)
 })
 
+// Get artwork as data URL
+ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
+  if (!hash) return null
+  try {
+    const artworkPath = library.getArtworkPath(hash)
+    const data = await readFile(artworkPath)
+    const base64 = data.toString('base64')
+    // Determine mime type (we save as .jpg but it could be other formats)
+    return `data:image/jpeg;base64,${base64}`
+  } catch {
+    return null
+  }
+})
+
 // ============================================
 // Helper functions
 // ============================================

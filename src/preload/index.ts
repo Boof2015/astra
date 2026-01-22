@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     rescan: () => ipcRenderer.invoke('library:rescan'),
     getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
+    getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
     onScanProgress: (callback: (progress: ScanProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
@@ -135,6 +136,7 @@ declare global {
         rescan: () => Promise<{ added: number; updated: number; errors: number }>
         getTrackCount: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
+        getArtworkDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
       }
     }

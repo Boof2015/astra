@@ -57,6 +57,7 @@ interface LibraryStore {
   isLoading: boolean
   isScanning: boolean
   scanProgress: { current: number; total: number; file: string } | null
+  artworkCache: Map<string, string>
 
   // Actions
   loadLibrary: () => Promise<void>
@@ -73,7 +74,11 @@ interface LibraryStore {
   clearSelection: () => void
   search: (query: string) => Promise<void>
   clearSearch: () => void
+  getArtwork: (hash: string | null) => Promise<string | null>
 }
+
+// Artwork cache stored outside of zustand to avoid re-renders
+const artworkCache = new Map<string, string>()
 
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
@@ -89,6 +94,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   isLoading: false,
   isScanning: false,
   scanProgress: null,
+  artworkCache,
 
   // Load entire library
   loadLibrary: async () => {
@@ -210,5 +216,22 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Clear search
   clearSearch: () => {
     set({ searchQuery: '', searchResults: [] })
+  },
+
+  // Get artwork data URL (with caching)
+  getArtwork: async (hash: string | null) => {
+    if (!hash) return null
+
+    // Check cache first
+    if (artworkCache.has(hash)) {
+      return artworkCache.get(hash)!
+    }
+
+    // Load from disk
+    const dataUrl = await window.electronAPI.library.getArtworkDataUrl(hash)
+    if (dataUrl) {
+      artworkCache.set(hash, dataUrl)
+    }
+    return dataUrl
   }
 }))
