@@ -372,8 +372,10 @@ async function extractMetadata(filePath: string): Promise<{
   let artworkHash: string | null = null
   if (common.picture && common.picture.length > 0) {
     const picture = common.picture[0]
-    artworkHash = createHash('md5').update(picture.data).digest('hex')
-    const artworkPath = join(artworkDir, `${artworkHash}.jpg`)
+    // Include format in hash to differentiate same image in different formats
+    const formatExt = getImageExtension(picture.format)
+    artworkHash = createHash('md5').update(picture.data).digest('hex') + formatExt
+    const artworkPath = join(artworkDir, artworkHash)
 
     // Save artwork if not already cached
     try {
@@ -403,8 +405,34 @@ async function extractMetadata(filePath: string): Promise<{
   }
 }
 
+// Get image extension from mime type
+function getImageExtension(mimeType: string): string {
+  const type = mimeType.toLowerCase()
+  if (type.includes('png')) return '.png'
+  if (type.includes('gif')) return '.gif'
+  if (type.includes('webp')) return '.webp'
+  if (type.includes('bmp')) return '.bmp'
+  return '.jpg' // Default to jpg for jpeg and unknown types
+}
+
+// Get mime type from file extension
+function getMimeTypeFromExtension(filename: string): string {
+  const ext = filename.toLowerCase()
+  if (ext.endsWith('.png')) return 'image/png'
+  if (ext.endsWith('.gif')) return 'image/gif'
+  if (ext.endsWith('.webp')) return 'image/webp'
+  if (ext.endsWith('.bmp')) return 'image/bmp'
+  return 'image/jpeg' // Default
+}
+
 // Get artwork path by hash
 export function getArtworkPath(hash: string): string {
+  // New format: hash includes extension (e.g., "abc123.png")
+  // Old format: hash is just the md5, file saved as .jpg
+  if (hash.includes('.')) {
+    return join(artworkDir, hash)
+  }
+  // Backward compatibility: old artwork saved with .jpg extension
   return join(artworkDir, `${hash}.jpg`)
 }
 

@@ -245,8 +245,24 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
     const artworkPath = library.getArtworkPath(hash)
     const data = await readFile(artworkPath)
     const base64 = data.toString('base64')
-    // Determine mime type (we save as .jpg but it could be other formats)
-    return `data:image/jpeg;base64,${base64}`
+    // Determine mime type from file extension in hash, or detect from magic bytes
+    let mimeType = 'image/jpeg'
+    if (hash.endsWith('.png')) mimeType = 'image/png'
+    else if (hash.endsWith('.gif')) mimeType = 'image/gif'
+    else if (hash.endsWith('.webp')) mimeType = 'image/webp'
+    else if (hash.endsWith('.bmp')) mimeType = 'image/bmp'
+    else {
+      // Backward compatibility: detect from magic bytes for old .jpg files
+      if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) {
+        mimeType = 'image/png'
+      } else if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) {
+        mimeType = 'image/gif'
+      } else if (data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46) {
+        mimeType = 'image/webp'
+      }
+      // Otherwise default to jpeg
+    }
+    return `data:${mimeType};base64,${base64}`
   } catch {
     return null
   }
