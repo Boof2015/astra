@@ -5,6 +5,8 @@ type EventCallback = (...args: unknown[]) => void
 /**
  * AudioEngine - Core Web Audio API wrapper for audio playback and analysis
  *
+ * Supports gapless playback through pre-buffering and sample-accurate scheduling.
+ *
  * Audio Graph:
  * Source -> AnalyserNode (pre) -> GainNode (volume) -> Destination
  */
@@ -20,6 +22,12 @@ export class AudioEngine {
   private _playbackState: PlaybackState = 'stopped'
   private _volume: number = 0.7
   private _isMuted: boolean = false
+
+  // Gapless playback support
+  private nextBuffer: AudioBuffer | null = null
+  private nextSourceNode: AudioBufferSourceNode | null = null
+  private scheduledEndTime: number = 0
+  private isGaplessTransition: boolean = false
 
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
@@ -89,6 +97,10 @@ export class AudioEngine {
     return this.analyserNode
   }
 
+  get hasNextBuffered(): boolean {
+    return this.nextBuffer !== null
+  }
+
   // Load audio from ArrayBuffer
   async loadAudioData(arrayBuffer: ArrayBuffer): Promise<void> {
     this.initContext()
@@ -100,6 +112,7 @@ export class AudioEngine {
     try {
       // Stop any current playback
       this.stopSource()
+      this.clearNextBuffer()
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
@@ -114,6 +127,125 @@ export class AudioEngine {
       this.emit('error', err instanceof Error ? err : new Error('Failed to decode audio'))
       throw err
     }
+  }
+
+  // Pre-buffer the next track for gapless playback
+  async preBufferNext(arrayBuffer: ArrayBuffer): Promise<void> {
+    this.initContext()
+    if (!this.context) throw new Error('AudioContext not initialized')
+
+    try {
+      // Clone the ArrayBuffer since decodeAudioData detaches it
+      const clonedBuffer = arrayBuffer.slice(0)
+      this.nextBuffer = await this.context.decodeAudioData(clonedBuffer)
+
+      // If currently playing, schedule the gapless transition
+      if (this._playbackState === 'playing' && this.audioBuffer) {
+        this.scheduleGaplessTransition()
+      }
+    } catch (err) {
+      console.error('Failed to pre-buffer next track:', err)
+      this.nextBuffer = null
+    }
+  }
+
+  // Schedule the next track to start exactly when current ends
+  private scheduleGaplessTransition(): void {
+    if (!this.context || !this.nextBuffer || !this.analyserNode || !this.audioBuffer) return
+    if (this._playbackState !== 'playing') return
+
+    // Cancel any existing scheduled next source
+    this.cancelScheduledNext()
+
+    // Calculate when current track will end
+    const currentPosition = this.currentTime
+    const remaining = this.audioBuffer.duration - currentPosition
+    this.scheduledEndTime = this.context.currentTime + remaining
+
+    // Create and schedule the next source
+    this.nextSourceNode = this.context.createBufferSource()
+    this.nextSourceNode.buffer = this.nextBuffer
+    this.nextSourceNode.connect(this.analyserNode)
+
+    // Schedule to start exactly when current track ends
+    this.nextSourceNode.start(this.scheduledEndTime)
+
+    // Set up ended handler for the NEXT track (not current)
+    this.nextSourceNode.onended = () => {
+      // This fires when the next track ends (or is stopped)
+      if (this._playbackState === 'playing' && !this.isGaplessTransition) {
+        this._playbackState = 'stopped'
+        this.pauseTime = 0
+        this.emit('stateChange', this._playbackState)
+        this.emit('ended')
+        this.stopTimeUpdate()
+      }
+    }
+  }
+
+  // Transition to the next track (called when current track actually ends)
+  private performGaplessTransition(): void {
+    if (!this.nextBuffer || !this.nextSourceNode) {
+      // No next track buffered, emit ended normally
+      this._playbackState = 'stopped'
+      this.pauseTime = 0
+      this.emit('stateChange', this._playbackState)
+      this.emit('ended')
+      this.stopTimeUpdate()
+      return
+    }
+
+    this.isGaplessTransition = true
+
+    // Swap buffers
+    this.audioBuffer = this.nextBuffer
+    this.nextBuffer = null
+
+    // Swap source nodes
+    if (this.sourceNode) {
+      this.sourceNode.onended = null
+      try {
+        this.sourceNode.disconnect()
+      } catch { /* ignore */ }
+    }
+    this.sourceNode = this.nextSourceNode
+    this.nextSourceNode = null
+
+    // Update timing
+    this.startTime = this.scheduledEndTime
+    this.pauseTime = 0
+
+    // Set up ended handler for the new current track
+    this.sourceNode.onended = () => {
+      if (this._playbackState === 'playing') {
+        this.performGaplessTransition()
+      }
+    }
+
+    this.isGaplessTransition = false
+
+    // Emit events for the track change
+    this.emit('durationChange', this.audioBuffer.duration)
+    this.emit('gaplessTransition')
+  }
+
+  // Clear pre-buffered next track
+  clearNextBuffer(): void {
+    this.cancelScheduledNext()
+    this.nextBuffer = null
+  }
+
+  // Cancel scheduled next track
+  private cancelScheduledNext(): void {
+    if (this.nextSourceNode) {
+      try {
+        this.nextSourceNode.onended = null
+        this.nextSourceNode.stop()
+        this.nextSourceNode.disconnect()
+      } catch { /* ignore */ }
+      this.nextSourceNode = null
+    }
+    this.scheduledEndTime = 0
   }
 
   // Play
@@ -139,11 +271,7 @@ export class AudioEngine {
     // Handle track end
     this.sourceNode.onended = () => {
       if (this._playbackState === 'playing') {
-        this._playbackState = 'stopped'
-        this.pauseTime = 0
-        this.emit('stateChange', this._playbackState)
-        this.emit('ended')
-        this.stopTimeUpdate()
+        this.performGaplessTransition()
       }
     }
 
@@ -155,6 +283,11 @@ export class AudioEngine {
     this._playbackState = 'playing'
     this.emit('stateChange', this._playbackState)
     this.startTimeUpdate()
+
+    // If we have a next buffer, schedule the gapless transition
+    if (this.nextBuffer) {
+      this.scheduleGaplessTransition()
+    }
   }
 
   // Pause
@@ -163,6 +296,7 @@ export class AudioEngine {
 
     this.pauseTime = this.context.currentTime - this.startTime
     this.stopSource()
+    this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
     this.emit('stateChange', this._playbackState)
@@ -181,6 +315,7 @@ export class AudioEngine {
   // Stop
   stop(): void {
     this.stopSource()
+    this.cancelScheduledNext()
     this.pauseTime = 0
     this._playbackState = 'stopped'
     this.emit('stateChange', this._playbackState)
@@ -197,6 +332,7 @@ export class AudioEngine {
 
     // Stop current playback
     this.stopSource()
+    this.cancelScheduledNext() // Cancel and reschedule after seek
     this.pauseTime = clampedTime
 
     if (wasPlaying) {
@@ -207,17 +343,17 @@ export class AudioEngine {
 
       this.sourceNode.onended = () => {
         if (this._playbackState === 'playing') {
-          this._playbackState = 'stopped'
-          this.pauseTime = 0
-          this.emit('stateChange', this._playbackState)
-          this.emit('ended')
-          this.stopTimeUpdate()
+          this.performGaplessTransition()
         }
       }
 
       this.startTime = this.context.currentTime - clampedTime
       this.sourceNode.start(0, clampedTime)
-      // State remains 'playing', no need to emit
+
+      // Reschedule gapless transition with new timing
+      if (this.nextBuffer) {
+        this.scheduleGaplessTransition()
+      }
     }
 
     this.emit('timeUpdate', clampedTime)
@@ -313,6 +449,7 @@ export class AudioEngine {
   // Cleanup
   dispose(): void {
     this.stop()
+    this.clearNextBuffer()
     this.stopTimeUpdate()
 
     if (this.context) {
