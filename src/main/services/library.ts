@@ -68,7 +68,11 @@ export async function initDatabase(): Promise<void> {
   artworkDir = join(userDataPath, 'artwork')
 
   // Create artwork directory
-  await mkdir(artworkDir, { recursive: true }).catch(() => {})
+  try {
+    await mkdir(artworkDir, { recursive: true })
+  } catch (err) {
+    console.error('Failed to create artwork directory:', artworkDir, err)
+  }
 
   // Initialize sql.js
   const SQL = await initSqlJs()
@@ -312,7 +316,12 @@ export async function scanFolder(
         ])
         added++
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      // If file doesn't exist (deleted between scan and processing), skip silently
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+        // File was deleted, will be cleaned up by cleanupMissingTracks
+        continue
+      }
       console.error(`Error processing ${filePath}:`, err)
       errors++
     }
@@ -374,14 +383,27 @@ async function extractMetadata(filePath: string): Promise<{
     const picture = common.picture[0]
     // Include format in hash to differentiate same image in different formats
     const formatExt = getImageExtension(picture.format)
-    artworkHash = createHash('md5').update(picture.data).digest('hex') + formatExt
-    const artworkPath = join(artworkDir, artworkHash)
+    const hash = createHash('md5').update(picture.data).digest('hex') + formatExt
+    const artworkPath = join(artworkDir, hash)
 
     // Save artwork if not already cached
     try {
       await writeFile(artworkPath, picture.data, { flag: 'wx' })
-    } catch {
-      // File already exists, ignore
+      artworkHash = hash // Only set hash if write succeeded
+    } catch (err: unknown) {
+      // Check if file already exists (EEXIST error) - that's fine, use the hash
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'EEXIST') {
+        artworkHash = hash
+      } else {
+        // Verify file exists anyway (might have been written by another track)
+        try {
+          await stat(artworkPath)
+          artworkHash = hash
+        } catch {
+          console.error(`Failed to save artwork for ${filePath}:`, err)
+          // artworkHash remains null
+        }
+      }
     }
   }
 

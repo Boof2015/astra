@@ -225,7 +225,10 @@ ipcMain.handle('library:rescan', async () => {
     totalErrors += result.errors
   }
 
-  return { added: totalAdded, updated: totalUpdated, errors: totalErrors }
+  // Clean up tracks that no longer exist on disk
+  const removed = await library.cleanupMissingTracks()
+
+  return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed }
 })
 
 // Get track count
