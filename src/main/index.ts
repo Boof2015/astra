@@ -58,6 +58,12 @@ app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
 
+  // Clean up tracks that no longer exist on disk
+  const removedCount = await library.cleanupMissingTracks()
+  if (removedCount > 0) {
+    console.log(`Removed ${removedCount} missing tracks from library`)
+  }
+
   createWindow()
 
   app.on('activate', () => {
