@@ -1709,9 +1709,64 @@ button, .titlebar, .sidebar-item {
   border-color: var(--accent);
 }
 
-.visualizer-canvas {
+.visualizer-select {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+
+.visualizer-select:hover,
+.visualizer-select:focus {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.visualizer-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.visualizer-option-btn {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.visualizer-option-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.visualizer-option-btn.active {
+  color: var(--accent);
+  background: rgba(139, 92, 246, 0.15);
+  border-color: var(--accent);
+}
+
+.visualizer-canvas-container {
   flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.visualizer-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
+  height: 100%;
   display: block;
   background: transparent;
 }
