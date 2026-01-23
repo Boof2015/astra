@@ -91,8 +91,15 @@ export class Oscilloscope {
         this.lastPeriod = this.lastPeriod * 0.7 + period * 0.3 // Smooth period changes
       }
 
-      // Show ~2.5 periods
-      samplesToShow = Math.min(Math.floor(this.lastPeriod * 2.5), Math.floor(bufferLength * 0.6))
+      // Dynamic cycle count based on frequency
+      // Lower frequencies (longer periods) = fewer cycles, higher frequencies = more cycles
+      // Aim for a visually pleasing number of cycles (4-8 typically)
+      const minCycles = 4
+      const maxCycles = 10
+      // Scale cycles based on period - shorter periods (higher freq) get more cycles
+      const cycleCount = Math.max(minCycles, Math.min(maxCycles, Math.floor(800 / this.lastPeriod)))
+
+      samplesToShow = Math.min(Math.floor(this.lastPeriod * cycleCount), Math.floor(bufferLength * 0.7))
 
       // Find trigger: rising zero crossing AFTER the first positive peak
       // This ensures consistent phase alignment
