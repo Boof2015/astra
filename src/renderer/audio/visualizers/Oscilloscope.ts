@@ -143,6 +143,7 @@ export class Oscilloscope {
 
   /**
    * Detect pitch using FFT peak finding with parabolic interpolation
+   * Note: getFloatFrequencyData returns dB values (negative numbers)
    */
   private detectPitchFromFFT(): void {
     const freqData = audioEngine.getFloatFrequencyData()
@@ -153,37 +154,45 @@ export class Oscilloscope {
     const binWidth = sampleRate / fftSize
 
     // Find the peak bin (skip DC and very low frequencies)
-    const minBin = Math.floor(40 / binWidth)  // Start at ~40Hz
-    const maxBin = Math.floor(2000 / binWidth) // Up to 2000Hz
+    // Values are in dB, so higher (less negative) = louder
+    const minBin = Math.max(1, Math.floor(40 / binWidth))  // Start at ~40Hz
+    const maxBin = Math.min(freqData.length - 1, Math.floor(2000 / binWidth)) // Up to 2000Hz
 
     let peakBin = minBin
-    let peakMag = -Infinity
+    let peakMag = -200 // Very low dB as starting point
 
-    for (let i = minBin; i < maxBin && i < freqData.length; i++) {
-      if (freqData[i] > peakMag) {
-        peakMag = freqData[i]
+    for (let i = minBin; i <= maxBin; i++) {
+      const mag = freqData[i]
+      if (mag > peakMag) {
+        peakMag = mag
         peakBin = i
       }
     }
 
+    // Only process if we have a reasonably strong signal
+    if (peakMag < -80) return
+
     // Parabolic interpolation for sub-bin accuracy
     let interpBin = peakBin
-    if (peakBin > 0 && peakBin < freqData.length - 1) {
+    if (peakBin > minBin && peakBin < maxBin) {
       const y0 = freqData[peakBin - 1]
       const y1 = freqData[peakBin]
       const y2 = freqData[peakBin + 1]
-      const delta = 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2 + 1e-10)
-      interpBin = peakBin + Math.max(-1, Math.min(1, delta))
+      const denom = y0 - 2 * y1 + y2
+      if (Math.abs(denom) > 0.0001) {
+        const delta = 0.5 * (y0 - y2) / denom
+        interpBin = peakBin + Math.max(-1, Math.min(1, delta))
+      }
     }
 
     const newPitch = interpBin * binWidth
 
     // Smooth pitch detection to avoid jitter
     if (newPitch > 30 && newPitch < 3000) {
-      this.detectedPitch = this.detectedPitch * 0.8 + newPitch * 0.2
+      this.detectedPitch = this.detectedPitch * 0.85 + newPitch * 0.15
       this.detectedPeriod = Math.round(sampleRate / this.detectedPitch)
 
-      // Update bandpass filter when pitch changes significantly
+      // Update bandpass filter
       this.updateBandpassCoefficients(this.detectedPitch)
     }
   }
@@ -202,15 +211,36 @@ export class Oscilloscope {
     const searchRange = Math.min(this.detectedPeriod * 2, Math.floor(data.length / 3))
 
     // Find rising zero-crossing on bandpassed signal
+    let foundTrigger = -1
     for (let i = 1; i < searchRange; i++) {
       if (filtered[i - 1] <= 0 && filtered[i] > 0) {
-        // Found zero-crossing - smooth it slightly to avoid jitter
-        const newTrigger = i
-        this.lastTriggerIndex = Math.round(
-          this.lastTriggerIndex * 0.7 + newTrigger * 0.3
-        )
-        return this.lastTriggerIndex
+        foundTrigger = i
+        break
       }
+    }
+
+    // Fallback: try finding zero-crossing on raw signal if bandpass didn't work
+    if (foundTrigger < 0) {
+      for (let i = 1; i < searchRange; i++) {
+        if (data[i - 1] <= 0 && data[i] > 0) {
+          foundTrigger = i
+          break
+        }
+      }
+    }
+
+    // Still nothing? Use last known good position
+    if (foundTrigger < 0) {
+      return this.lastTriggerIndex
+    }
+
+    // Smooth the trigger to avoid jitter
+    if (this.lastTriggerIndex === 0) {
+      this.lastTriggerIndex = foundTrigger
+    } else {
+      this.lastTriggerIndex = Math.round(
+        this.lastTriggerIndex * 0.7 + foundTrigger * 0.3
+      )
     }
 
     return this.lastTriggerIndex
