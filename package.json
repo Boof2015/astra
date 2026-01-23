@@ -7,7 +7,10 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:native": "cd native && node-gyp rebuild",
+    "rebuild:native": "cd native && node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=x64 --dist-url=https://electronjs.org/headers",
+    "postinstall": "npm run build:native || echo 'Native build failed, will use JS fallback'"
   },
   "repository": {
     "type": "git",
@@ -24,12 +27,14 @@
   "license": "MIT",
   "dependencies": {
     "music-metadata": "^11.10.6",
+    "node-addon-api": "^8.3.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "sql.js": "^1.13.0",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
@@ -37,6 +42,7 @@
     "autoprefixer": "^10.4.23",
     "electron": "^40.0.0",
     "electron-vite": "^5.0.0",
+    "node-gyp": "^10.3.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
