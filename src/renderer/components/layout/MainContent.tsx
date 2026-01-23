@@ -329,10 +329,10 @@ export default function MainContent() {
       <div className="now-playing glass-panel">
         <div className="now-playing-info">
           <div className="now-playing-artwork">
-            {currentTrack?.artworkData ? (
-              <img src={currentTrack.artworkData} alt="Album art" />
-            ) : currentTrack?.artworkHash ? (
+            {currentTrack?.artworkHash ? (
               <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+            ) : currentTrack?.artworkData ? (
+              <img src={currentTrack.artworkData} alt="Album art" />
             ) : (
               <div className="artwork-placeholder">♫</div>
             )}
