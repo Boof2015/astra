@@ -25,7 +25,8 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private displaySamples: number = 2048
-  private detectedPeriod: number = 512 // Smoothed period for stability
+  private detectedPeriod: number = 512
+  private filteredBuffer: Float32Array = new Float32Array(0)
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -155,24 +156,50 @@ export class Oscilloscope {
   }
 
   /**
-   * Detect the fundamental period using autocorrelation
+   * Apply a simple lowpass filter to extract the fundamental frequency
+   * This removes high-frequency harmonics that cause false triggers
    */
-  private detectPeriod(data: Float32Array): number {
+  private applyLowpassFilter(data: Float32Array): Float32Array {
     const len = data.length
-    // Search for periods between ~20Hz and ~2000Hz (assuming 44100 sample rate)
+    if (this.filteredBuffer.length !== len) {
+      this.filteredBuffer = new Float32Array(len)
+    }
+
+    // Simple IIR lowpass filter: y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
+    // Lower alpha = more smoothing (lower cutoff frequency)
+    // alpha ~0.1 gives roughly 200-300Hz cutoff at 44100Hz sample rate
+    const alpha = 0.08
+
+    this.filteredBuffer[0] = data[0]
+    for (let i = 1; i < len; i++) {
+      this.filteredBuffer[i] = alpha * data[i] + (1 - alpha) * this.filteredBuffer[i - 1]
+    }
+
+    // Run filter backwards too for zero phase delay (linear phase)
+    for (let i = len - 2; i >= 0; i--) {
+      this.filteredBuffer[i] = alpha * this.filteredBuffer[i] + (1 - alpha) * this.filteredBuffer[i + 1]
+    }
+
+    return this.filteredBuffer
+  }
+
+  /**
+   * Detect the fundamental period using autocorrelation on filtered signal
+   */
+  private detectPeriod(filtered: Float32Array): number {
+    const len = filtered.length
     const minPeriod = 22 // ~2000Hz
     const maxPeriod = Math.min(2205, Math.floor(len / 4)) // ~20Hz
 
     let bestPeriod = this.detectedPeriod
     let bestCorrelation = -Infinity
 
-    // Autocorrelation to find the dominant period
     for (let period = minPeriod; period < maxPeriod; period++) {
       let correlation = 0
       const samples = Math.min(len - period, 1024)
 
       for (let i = 0; i < samples; i++) {
-        correlation += data[i] * data[i + period]
+        correlation += filtered[i] * filtered[i + period]
       }
 
       if (correlation > bestCorrelation) {
@@ -181,23 +208,27 @@ export class Oscilloscope {
       }
     }
 
-    // Smooth the period to avoid jitter (80% previous, 20% new)
-    this.detectedPeriod = Math.round(this.detectedPeriod * 0.8 + bestPeriod * 0.2)
+    // Smooth period detection
+    this.detectedPeriod = Math.round(this.detectedPeriod * 0.85 + bestPeriod * 0.15)
 
     return this.detectedPeriod
   }
 
   /**
-   * Find trigger point - rising zero-crossing aligned with the fundamental frequency
+   * Find trigger point using lowpass-filtered signal for stable zero-crossing
    */
   private findTriggerPoint(data: Float32Array): number {
-    const period = this.detectPeriod(data)
+    // Apply lowpass filter to get clean fundamental for triggering
+    const filtered = this.applyLowpassFilter(data)
+
+    // Detect period on filtered signal
+    const period = this.detectPeriod(filtered)
     const searchEnd = Math.min(period * 2, Math.floor(data.length / 3))
 
-    // Find a rising zero-crossing within one period
-    // This ensures we trigger at the same phase of the fundamental
+    // Find rising zero-crossing on the FILTERED signal
+    // But we'll use this index to start drawing the ORIGINAL signal
     for (let i = 1; i < searchEnd; i++) {
-      if (data[i - 1] <= 0 && data[i] > 0) {
+      if (filtered[i - 1] <= 0 && filtered[i] > 0) {
         return i
       }
     }
@@ -208,5 +239,6 @@ export class Oscilloscope {
   dispose(): void {
     this.stop()
     this.detectedPeriod = 512
+    this.filteredBuffer = new Float32Array(0)
   }
 }
