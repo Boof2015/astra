@@ -331,6 +331,8 @@ export default function MainContent() {
           <div className="now-playing-artwork">
             {currentTrack?.artworkData ? (
               <img src={currentTrack.artworkData} alt="Album art" />
+            ) : currentTrack?.artworkHash ? (
+              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
             ) : (
               <div className="artwork-placeholder">♫</div>
             )}

@@ -28,7 +28,8 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     artist: dbTrack.artist,
     album: dbTrack.album,
     duration: dbTrack.duration,
-    format: dbTrack.format
+    format: dbTrack.format,
+    artworkHash: dbTrack.artwork_hash ?? undefined
   }
 }
 
@@ -58,7 +59,8 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
         album: result.metadata?.album ?? dbTrack.album,
         duration: result.metadata?.duration ?? dbTrack.duration,
         format: dbTrack.format,
-        artworkData: result.metadata?.artwork
+        artworkData: result.metadata?.artwork,
+        artworkHash: dbTrack.artwork_hash ?? undefined
       }
       await loadTrack(track, result.data)
     }
