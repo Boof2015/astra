@@ -6,6 +6,7 @@ import TrackList from '../library/TrackList'
 import QueuePanel from '../queue/QueuePanel'
 import AlbumArtwork from '../library/AlbumArtwork'
 import FolderSettings from '../settings/FolderSettings'
+import VisualizerPanel from '../visualizers/VisualizerPanel'
 
 export default function MainContent() {
   const {
@@ -295,18 +296,9 @@ export default function MainContent() {
     <main className="main-content">
       <div className="main-content-wrapper">
         <div className="main-content-area">
-          {/* Visualizer Panel (placeholder) */}
-          <div className="visualizer-panel glass-panel">
-            <div className="visualizer-placeholder">
-              <div className="visualizer-label">Oscilloscope</div>
-              <div className="visualizer-empty">
-                {isPlaying ? (
-                  <span className="visualizer-active">Visualizer coming in Phase 5</span>
-                ) : (
-                  <span>No audio playing</span>
-                )}
-              </div>
-            </div>
+          {/* Visualizer Panel */}
+          <div className="visualizer-container glass-panel">
+            <VisualizerPanel />
           </div>
 
           {/* Library Panel */}

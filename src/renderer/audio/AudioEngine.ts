@@ -9,12 +9,19 @@ type EventCallback = (...args: unknown[]) => void
  *
  * Audio Graph:
  * Source -> AnalyserNode (pre) -> GainNode (volume) -> Destination
+ *                |
+ *                +-> ChannelSplitter -> AnalyserL / AnalyserR (for stereo visualization)
  */
 export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
   private analyserNode: AnalyserNode | null = null
+
+  // Stereo analysis nodes
+  private channelSplitter: ChannelSplitterNode | null = null
+  private analyserLeft: AnalyserNode | null = null
+  private analyserRight: AnalyserNode | null = null
 
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
@@ -48,9 +55,23 @@ export class AudioEngine {
       this.analyserNode.fftSize = 2048
       this.analyserNode.smoothingTimeConstant = 0.8
 
+      // Create stereo channel splitter and analysers for vectorscope
+      this.channelSplitter = this.context.createChannelSplitter(2)
+      this.analyserLeft = this.context.createAnalyser()
+      this.analyserRight = this.context.createAnalyser()
+      this.analyserLeft.fftSize = 2048
+      this.analyserRight.fftSize = 2048
+      this.analyserLeft.smoothingTimeConstant = 0
+      this.analyserRight.smoothingTimeConstant = 0
+
       // Connect: analyser -> gain -> destination
       this.analyserNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
+
+      // Connect stereo splitter (from main analyser output)
+      this.analyserNode.connect(this.channelSplitter)
+      this.channelSplitter.connect(this.analyserLeft, 0)
+      this.channelSplitter.connect(this.analyserRight, 1)
     }
   }
 
@@ -95,6 +116,14 @@ export class AudioEngine {
 
   get analyser(): AnalyserNode | null {
     return this.analyserNode
+  }
+
+  get analyserL(): AnalyserNode | null {
+    return this.analyserLeft
+  }
+
+  get analyserR(): AnalyserNode | null {
+    return this.analyserRight
   }
 
   get hasNextBuffered(): boolean {
@@ -407,6 +436,26 @@ export class AudioEngine {
     return data
   }
 
+  // Get stereo float time domain data for vectorscope
+  getStereoTimeDomainData(): { left: Float32Array; right: Float32Array } {
+    if (!this.analyserLeft || !this.analyserRight) {
+      return { left: new Float32Array(0), right: new Float32Array(0) }
+    }
+    const left = new Float32Array(this.analyserLeft.fftSize)
+    const right = new Float32Array(this.analyserRight.fftSize)
+    this.analyserLeft.getFloatTimeDomainData(left)
+    this.analyserRight.getFloatTimeDomainData(right)
+    return { left, right }
+  }
+
+  // Get float frequency data (higher precision, in dB)
+  getFloatFrequencyData(): Float32Array {
+    if (!this.analyserNode) return new Float32Array(0)
+    const data = new Float32Array(this.analyserNode.frequencyBinCount)
+    this.analyserNode.getFloatFrequencyData(data)
+    return data
+  }
+
   // Set FFT size for analyser
   setFFTSize(size: 1024 | 2048 | 4096 | 8192 | 16384): void {
     if (this.analyserNode) {
@@ -459,6 +508,9 @@ export class AudioEngine {
 
     this.gainNode = null
     this.analyserNode = null
+    this.channelSplitter = null
+    this.analyserLeft = null
+    this.analyserRight = null
     this.audioBuffer = null
     this.eventListeners.clear()
   }
