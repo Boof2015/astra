@@ -203,10 +203,7 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
     ORDER BY artist, album
   `)
   if (result.length === 0) return []
-  const albums = rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
-  // Debug: log albums with their artwork_hash
-  console.log('[Library] Albums with artwork:', albums.map(a => ({ album: a.album, artwork_hash: a.artwork_hash })))
-  return albums
+  return rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
 }
 
 // Search tracks
@@ -390,32 +387,24 @@ async function extractMetadata(filePath: string): Promise<{
     const hash = createHash('md5').update(picture.data).digest('hex') + formatExt
     const artworkPath = join(artworkDir, hash)
 
-    console.log(`[Artwork] File: ${basename(filePath)}, MIME: ${mimeType}, Hash: ${hash}, Size: ${picture.data.length} bytes`)
-
     // Save artwork if not already cached
     try {
       await writeFile(artworkPath, picture.data, { flag: 'wx' })
-      artworkHash = hash // Only set hash if write succeeded
-      console.log(`[Artwork] Saved: ${artworkPath}`)
+      artworkHash = hash
     } catch (err: unknown) {
-      // Check if file already exists (EEXIST error) - that's fine, use the hash
+      // File already exists - that's fine, use the hash
       if (err && typeof err === 'object' && 'code' in err && err.code === 'EEXIST') {
         artworkHash = hash
-        console.log(`[Artwork] Already cached: ${artworkPath}`)
       } else {
         // Verify file exists anyway (might have been written by another track)
         try {
           await stat(artworkPath)
           artworkHash = hash
-          console.log(`[Artwork] File exists: ${artworkPath}`)
         } catch {
-          console.error(`[Artwork] Failed to save for ${filePath}:`, err)
           // artworkHash remains null
         }
       }
     }
-  } else {
-    console.log(`[Artwork] No cover art found in: ${basename(filePath)}`)
   }
 
   const fileName = basename(filePath, extname(filePath))

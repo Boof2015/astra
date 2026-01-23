@@ -14,19 +14,15 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
 
   useEffect(() => {
     if (!hash) {
-      console.log('[AlbumArtwork] No hash provided')
       setArtworkUrl(null)
       return
     }
 
-    console.log(`[AlbumArtwork] Loading artwork for hash: ${hash}`)
     setLoading(true)
     getArtwork(hash).then((url) => {
-      console.log(`[AlbumArtwork] Got URL for ${hash}:`, url ? `${url.substring(0, 50)}...` : 'null')
       setArtworkUrl(url)
       setLoading(false)
-    }).catch((err) => {
-      console.error(`[AlbumArtwork] Error loading ${hash}:`, err)
+    }).catch(() => {
       setLoading(false)
     })
   }, [hash, getArtwork])
