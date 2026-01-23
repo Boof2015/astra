@@ -243,9 +243,13 @@ ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
 
 // Get artwork as data URL
 ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
-  if (!hash) return null
+  if (!hash) {
+    console.log('[Artwork Load] No hash provided')
+    return null
+  }
   try {
     const artworkPath = library.getArtworkPath(hash)
+    console.log(`[Artwork Load] Loading: ${artworkPath}`)
     const data = await readFile(artworkPath)
     const base64 = data.toString('base64')
     // Determine mime type from file extension in hash, or detect from magic bytes
@@ -265,8 +269,10 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
       }
       // Otherwise default to jpeg
     }
+    console.log(`[Artwork Load] Success: ${hash}, MIME: ${mimeType}, Size: ${data.length} bytes`)
     return `data:${mimeType};base64,${base64}`
-  } catch {
+  } catch (err) {
+    console.error(`[Artwork Load] Failed to load ${hash}:`, err)
     return null
   }
 })

@@ -203,7 +203,10 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
     ORDER BY artist, album
   `)
   if (result.length === 0) return []
-  return rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
+  const albums = rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
+  // Debug: log albums with their artwork_hash
+  console.log('[Library] Albums with artwork:', albums.map(a => ({ album: a.album, artwork_hash: a.artwork_hash })))
+  return albums
 }
 
 // Search tracks
@@ -377,34 +380,42 @@ async function extractMetadata(filePath: string): Promise<{
   const common = metadata.common
   const format = metadata.format
 
-  // Extract and save artwork
+  // Extract and save artwork using selectCover for best image selection
   let artworkHash: string | null = null
-  if (common.picture && common.picture.length > 0) {
-    const picture = common.picture[0]
-    // Include format in hash to differentiate same image in different formats
-    const formatExt = getImageExtension(picture.format)
+  const picture = mm.selectCover(common.picture)
+  if (picture && picture.data && picture.data.length > 0) {
+    // Get MIME type - picture.format should be like "image/jpeg" or "image/png"
+    const mimeType = picture.format || 'image/jpeg'
+    const formatExt = getImageExtension(mimeType)
     const hash = createHash('md5').update(picture.data).digest('hex') + formatExt
     const artworkPath = join(artworkDir, hash)
+
+    console.log(`[Artwork] File: ${basename(filePath)}, MIME: ${mimeType}, Hash: ${hash}, Size: ${picture.data.length} bytes`)
 
     // Save artwork if not already cached
     try {
       await writeFile(artworkPath, picture.data, { flag: 'wx' })
       artworkHash = hash // Only set hash if write succeeded
+      console.log(`[Artwork] Saved: ${artworkPath}`)
     } catch (err: unknown) {
       // Check if file already exists (EEXIST error) - that's fine, use the hash
       if (err && typeof err === 'object' && 'code' in err && err.code === 'EEXIST') {
         artworkHash = hash
+        console.log(`[Artwork] Already cached: ${artworkPath}`)
       } else {
         // Verify file exists anyway (might have been written by another track)
         try {
           await stat(artworkPath)
           artworkHash = hash
+          console.log(`[Artwork] File exists: ${artworkPath}`)
         } catch {
-          console.error(`Failed to save artwork for ${filePath}:`, err)
+          console.error(`[Artwork] Failed to save for ${filePath}:`, err)
           // artworkHash remains null
         }
       }
     }
+  } else {
+    console.log(`[Artwork] No cover art found in: ${basename(filePath)}`)
   }
 
   const fileName = basename(filePath, extname(filePath))
