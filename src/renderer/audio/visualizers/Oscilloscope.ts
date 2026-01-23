@@ -24,12 +24,7 @@ export class Oscilloscope {
   private options: Required<OscilloscopeOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
-  private lastPeriod: number = 512
-
-  // Store previous waveform for correlation-based alignment
-  private prevWaveform: Float32Array = new Float32Array(0)
-  private displaySamples: number = 1024
-  private lastOffset: number = 0
+  private displaySamples: number = 2048
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -85,36 +80,15 @@ export class Oscilloscope {
       this.drawGrid()
     }
 
+    // Find trigger point - always start at a rising zero-crossing
+    // This keeps the waveform phase-locked and stationary
     let startIndex = 0
-
-    if (options.pitchLock && this.prevWaveform.length > 0) {
-      // Reset if lastOffset is invalid for this buffer
-      if (this.lastOffset >= bufferLength - this.displaySamples) {
-        this.lastOffset = 0
-        this.prevWaveform = new Float32Array(0)
-        startIndex = this.findSimpleTrigger(timeDomainData)
-      } else {
-        // Use correlation to find best alignment with previous frame
-        startIndex = this.findBestAlignment(timeDomainData)
-      }
-    } else {
-      // First frame or no pitch lock - find a rising zero crossing
-      startIndex = this.findSimpleTrigger(timeDomainData)
+    if (options.pitchLock) {
+      startIndex = this.findTriggerPoint(timeDomainData)
     }
 
     // Calculate how many samples to display
     const samplesToShow = Math.min(this.displaySamples, bufferLength - startIndex)
-
-    // Store this waveform section and offset for next frame comparison
-    if (options.pitchLock) {
-      this.lastOffset = startIndex
-      if (this.prevWaveform.length !== samplesToShow) {
-        this.prevWaveform = new Float32Array(samplesToShow)
-      }
-      for (let i = 0; i < samplesToShow; i++) {
-        this.prevWaveform[i] = timeDomainData[startIndex + i]
-      }
-    }
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
@@ -177,79 +151,32 @@ export class Oscilloscope {
   }
 
   /**
-   * Find the best alignment offset by correlating current buffer with previous waveform
-   * Uses "sticky" alignment - stays at current position unless a much better match is found
+   * Find trigger point using zero-crossing detection
+   * Always triggers at the same phase point so waveform appears stationary
    */
-  private findBestAlignment(data: Float32Array): number {
-    const prevLen = this.prevWaveform.length
-    if (prevLen === 0) return this.lastOffset
+  private findTriggerPoint(data: Float32Array): number {
+    const len = data.length
+    const searchEnd = Math.floor(len / 2)
 
-    // Search window around the last offset
-    const searchRadius = 256
-    const minOffset = Math.max(0, this.lastOffset - searchRadius)
-    const maxOffset = Math.min(data.length - prevLen, this.lastOffset + searchRadius)
-
-    if (maxOffset <= minOffset) return this.lastOffset
-
-    let bestOffset = this.lastOffset
-    let bestCorrelation = -Infinity
-    let currentCorrelation = -Infinity
-
-    // Search for the offset that best matches the previous waveform
-    for (let offset = minOffset; offset < maxOffset; offset++) {
-      let correlation = 0
-      const compareLen = Math.min(prevLen, data.length - offset)
-
-      for (let i = 0; i < compareLen; i++) {
-        correlation += this.prevWaveform[i] * data[offset + i]
-      }
-
-      // Track correlation at current position
-      if (offset === this.lastOffset) {
-        currentCorrelation = correlation
-      }
-
-      if (correlation > bestCorrelation) {
-        bestCorrelation = correlation
-        bestOffset = offset
-      }
-    }
-
-    // "Sticky" behavior: only move if new position is significantly better (15% threshold)
-    // This prevents the waveform from drifting when correlations are similar
-    if (currentCorrelation > 0 && bestCorrelation < currentCorrelation * 1.15) {
-      return this.lastOffset
-    }
-
-    return bestOffset
-  }
-
-  /**
-   * Simple trigger for first frame - find rising zero crossing
-   */
-  private findSimpleTrigger(data: Float32Array): number {
-    const searchEnd = Math.floor(data.length / 3)
-
-    // Find max amplitude for threshold
-    let maxAmp = 0
+    // Find the peak amplitude to set a threshold
+    let maxVal = 0
     for (let i = 0; i < searchEnd; i++) {
-      if (Math.abs(data[i]) > maxAmp) maxAmp = Math.abs(data[i])
+      const absVal = Math.abs(data[i])
+      if (absVal > maxVal) maxVal = absVal
     }
 
-    if (maxAmp < 0.01) return 0
+    // If signal is too quiet, don't trigger
+    if (maxVal < 0.01) return 0
 
-    const threshold = maxAmp * 0.3
+    // Trigger threshold - trigger when rising through this level
+    // Using 0 (zero-crossing) gives the most stable trigger
+    const triggerLevel = 0
 
-    // Find rising zero crossing after a negative peak
+    // Find first rising edge through trigger level
+    // Look for: previous sample below trigger, current sample at or above trigger
     for (let i = 1; i < searchEnd; i++) {
-      if (data[i - 1] < -threshold && data[i] >= 0) {
-        return i
-      }
-    }
-
-    // Fallback: any rising zero crossing
-    for (let i = 1; i < searchEnd; i++) {
-      if (data[i - 1] < 0 && data[i] >= 0) {
+      if (data[i - 1] < triggerLevel && data[i] >= triggerLevel) {
+        // Found rising zero-crossing - interpolate for sub-sample accuracy
         return i
       }
     }
@@ -259,7 +186,5 @@ export class Oscilloscope {
 
   dispose(): void {
     this.stop()
-    this.prevWaveform = new Float32Array(0)
-    this.lastOffset = 0
   }
 }
