@@ -7,20 +7,14 @@ let nativeModule: VisualizerDSP | null = null
 let loadError: Error | null = null
 
 // Try to load the native module
-try {
-  // In Electron, we need to use the main process to load native modules
-  // and expose them via IPC, or use electron-rebuild
-  if (typeof window !== 'undefined' && window.require) {
-    // Try to load from the native directory
-    const path = window.require('path')
-    const modulePath = path.join(__dirname, '..', '..', '..', '..', 'native', 'build', 'Release', 'visualizer_dsp.node')
-    nativeModule = window.require(modulePath) as VisualizerDSP
-    console.log('Native visualizer DSP module loaded successfully')
-  }
-} catch (err) {
-  loadError = err as Error
-  console.warn('Failed to load native visualizer DSP module:', err)
+// Try to load the native module from the exposed API
+if (typeof window !== 'undefined' && window.visualizerAPI) {
+  nativeModule = window.visualizerAPI
+  console.log('Native visualizer DSP module loaded via preload')
+} else {
+  console.warn('Native visualizer DSP module not available (not found in window.visualizerAPI)')
   console.warn('Falling back to JavaScript implementation')
+  loadError = new Error('Native module not found in window.visualizerAPI')
 }
 
 // Check if native module is available

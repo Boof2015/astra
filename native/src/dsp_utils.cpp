@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 #include "dsp_utils.h"
 #include <cstring>
 

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { join } from 'path'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -65,6 +66,67 @@ export interface ScanProgress {
   file: string
 }
 
+// Native Visualizer Types
+export interface OscilloscopeResult {
+  triggerIndex: number
+  samplesToShow: number
+  detectedPitch: number
+}
+
+export interface VectorscopeResult {
+  x: Float32Array
+  y: Float32Array
+}
+
+export interface VisualizerDSP {
+  oscilloscope: {
+    setSampleRate(sampleRate: number): void
+    setPitchLock(enabled: boolean): void
+    setDisplaySamples(samples: number): void
+    setFilterFrequency(frequency: number): void
+    process(audioData: Float32Array): OscilloscopeResult
+    reset(): void
+  }
+  spectrum: {
+    setFFTSize(size: number): void
+    getFFTSize(): number
+    setSampleRate(sampleRate: number): void
+    setSmoothing(smoothing: number): void
+    process(audioData: Float32Array): Float32Array
+    binToFrequency(bin: number): number
+    reset(): void
+  }
+  vectorscope: {
+    setBufferSize(size: number): void
+    getBufferSize(): number
+    process(leftChannel: Float32Array, rightChannel: Float32Array): VectorscopeResult
+    reset(): void
+  }
+}
+
+// Load Native Module
+let visualizerDSP: VisualizerDSP | null = null
+try {
+  // Determine path based on environment
+  const isDev = process.env.NODE_ENV === 'development'
+  let modulePath: string
+
+  if (isDev) {
+    // In dev: .../astra/native/build/Release/visualizer_dsp.node
+    // __dirname is .../out/preload
+    modulePath = join(__dirname, '../../native/build/Release/visualizer_dsp.node')
+  } else {
+    // In prod: .../resources/native/visualizer_dsp.node
+    modulePath = join(process.resourcesPath, 'native/visualizer_dsp.node')
+  }
+
+  // Try to load
+  visualizerDSP = require(modulePath)
+  console.log('Native visualizer DSP module loaded successfully', modulePath)
+} catch (error) {
+  console.warn('Failed to load native visualizer DSP module:', error)
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -104,6 +166,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }
 })
 
+// Expose Visualizer API
+contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
+
 // Type declarations for renderer
 declare global {
   interface Window {
@@ -140,5 +205,8 @@ declare global {
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
       }
     }
+
+    // Native Visualizer API - exposed as visualizerAPI global
+    visualizerAPI: VisualizerDSP | null
   }
 }
