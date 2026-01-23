@@ -29,6 +29,7 @@ export class Oscilloscope {
   // Store previous waveform for correlation-based alignment
   private prevWaveform: Float32Array = new Float32Array(0)
   private displaySamples: number = 1024
+  private lastOffset: number = 0
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -87,8 +88,15 @@ export class Oscilloscope {
     let startIndex = 0
 
     if (options.pitchLock && this.prevWaveform.length > 0) {
-      // Use correlation to find best alignment with previous frame
-      startIndex = this.findBestAlignment(timeDomainData)
+      // Reset if lastOffset is invalid for this buffer
+      if (this.lastOffset >= bufferLength - this.displaySamples) {
+        this.lastOffset = 0
+        this.prevWaveform = new Float32Array(0)
+        startIndex = this.findSimpleTrigger(timeDomainData)
+      } else {
+        // Use correlation to find best alignment with previous frame
+        startIndex = this.findBestAlignment(timeDomainData)
+      }
     } else {
       // First frame or no pitch lock - find a rising zero crossing
       startIndex = this.findSimpleTrigger(timeDomainData)
@@ -97,8 +105,9 @@ export class Oscilloscope {
     // Calculate how many samples to display
     const samplesToShow = Math.min(this.displaySamples, bufferLength - startIndex)
 
-    // Store this waveform section for next frame comparison
+    // Store this waveform section and offset for next frame comparison
     if (options.pitchLock) {
+      this.lastOffset = startIndex
       if (this.prevWaveform.length !== samplesToShow) {
         this.prevWaveform = new Float32Array(samplesToShow)
       }
@@ -169,18 +178,25 @@ export class Oscilloscope {
 
   /**
    * Find the best alignment offset by correlating current buffer with previous waveform
-   * This keeps the display stable by aligning similar waveform shapes
+   * Uses "sticky" alignment - stays at current position unless a much better match is found
    */
   private findBestAlignment(data: Float32Array): number {
     const prevLen = this.prevWaveform.length
-    if (prevLen === 0) return 0
+    if (prevLen === 0) return this.lastOffset
 
-    const searchRange = Math.min(512, Math.floor(data.length / 4))
-    let bestOffset = 0
+    // Search window around the last offset
+    const searchRadius = 256
+    const minOffset = Math.max(0, this.lastOffset - searchRadius)
+    const maxOffset = Math.min(data.length - prevLen, this.lastOffset + searchRadius)
+
+    if (maxOffset <= minOffset) return this.lastOffset
+
+    let bestOffset = this.lastOffset
     let bestCorrelation = -Infinity
+    let currentCorrelation = -Infinity
 
     // Search for the offset that best matches the previous waveform
-    for (let offset = 0; offset < searchRange; offset++) {
+    for (let offset = minOffset; offset < maxOffset; offset++) {
       let correlation = 0
       const compareLen = Math.min(prevLen, data.length - offset)
 
@@ -188,10 +204,21 @@ export class Oscilloscope {
         correlation += this.prevWaveform[i] * data[offset + i]
       }
 
+      // Track correlation at current position
+      if (offset === this.lastOffset) {
+        currentCorrelation = correlation
+      }
+
       if (correlation > bestCorrelation) {
         bestCorrelation = correlation
         bestOffset = offset
       }
+    }
+
+    // "Sticky" behavior: only move if new position is significantly better (15% threshold)
+    // This prevents the waveform from drifting when correlations are similar
+    if (currentCorrelation > 0 && bestCorrelation < currentCorrelation * 1.15) {
+      return this.lastOffset
     }
 
     return bestOffset
@@ -233,5 +260,6 @@ export class Oscilloscope {
   dispose(): void {
     this.stop()
     this.prevWaveform = new Float32Array(0)
+    this.lastOffset = 0
   }
 }
