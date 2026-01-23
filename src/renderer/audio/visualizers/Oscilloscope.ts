@@ -25,7 +25,7 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private timeDomainData: Float32Array = new Float32Array(0)
-  private lastTriggerIndex: number = 0
+  private lastPeriod: number = 512  // Default period estimate
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -53,9 +53,7 @@ export class Oscilloscope {
     }
   }
 
-  resize(): void {
-    // Canvas resize is handled externally
-  }
+  resize(): void {}
 
   private draw = (): void => {
     if (!this.isRunning) return
@@ -64,7 +62,6 @@ export class Oscilloscope {
     const width = canvas.width
     const height = canvas.height
 
-    // Get time domain data
     this.timeDomainData = audioEngine.getFloatTimeDomainData()
     const bufferLength = this.timeDomainData.length
 
@@ -73,31 +70,37 @@ export class Oscilloscope {
       return
     }
 
-    // Clear canvas
     ctx.clearRect(0, 0, width, height)
 
-    // Draw background if not transparent
     if (options.backgroundColor !== 'transparent') {
       ctx.fillStyle = options.backgroundColor
       ctx.fillRect(0, 0, width, height)
     }
 
-    // Draw grid
     if (options.showGrid) {
       this.drawGrid()
     }
 
-    // Find trigger point for pitch lock
     let startIndex = 0
+    let samplesToShow = Math.floor(bufferLength * 0.5)
+
     if (options.pitchLock) {
-      startIndex = this.findTriggerPoint()
-      this.lastTriggerIndex = startIndex
+      // Detect period and find stable trigger point
+      const period = this.detectPeriodAutocorr()
+      if (period > 0) {
+        this.lastPeriod = this.lastPeriod * 0.7 + period * 0.3 // Smooth period changes
+      }
+
+      // Show ~2.5 periods
+      samplesToShow = Math.min(Math.floor(this.lastPeriod * 2.5), Math.floor(bufferLength * 0.6))
+
+      // Find trigger: rising zero crossing AFTER the first positive peak
+      // This ensures consistent phase alignment
+      startIndex = this.findStableTrigger()
     }
 
-    // Calculate how many samples to display (show about 2-4 cycles worth)
-    const samplesToShow = Math.min(bufferLength - startIndex, Math.floor(bufferLength * 0.5))
+    samplesToShow = Math.min(samplesToShow, bufferLength - startIndex)
 
-    // Draw waveform
     ctx.lineWidth = options.lineWidth
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
@@ -105,26 +108,23 @@ export class Oscilloscope {
     ctx.beginPath()
 
     const sliceWidth = width / samplesToShow
-    let x = 0
 
     for (let i = 0; i < samplesToShow; i++) {
       const dataIndex = startIndex + i
       if (dataIndex >= bufferLength) break
 
       const sample = this.timeDomainData[dataIndex]
-      // Map -1 to 1 range to canvas height
       const y = ((1 - sample) / 2) * height
+      const x = i * sliceWidth
 
       if (i === 0) {
         ctx.moveTo(x, y)
       } else {
         ctx.lineTo(x, y)
       }
-      x += sliceWidth
     }
 
     ctx.stroke()
-
     this.animationId = requestAnimationFrame(this.draw)
   }
 
@@ -136,22 +136,19 @@ export class Oscilloscope {
     ctx.strokeStyle = options.gridColor
     ctx.lineWidth = 1
 
-    // Horizontal center line
     ctx.beginPath()
     ctx.moveTo(0, height / 2)
     ctx.lineTo(width, height / 2)
     ctx.stroke()
 
-    // Vertical center line
     ctx.beginPath()
     ctx.moveTo(width / 2, 0)
     ctx.lineTo(width / 2, height)
     ctx.stroke()
 
-    // Quarter lines
     ctx.strokeStyle = options.gridColor.replace('0.1', '0.05')
     for (let i = 1; i < 4; i++) {
-      if (i === 2) continue // Skip center
+      if (i === 2) continue
       ctx.beginPath()
       ctx.moveTo(0, (height / 4) * i)
       ctx.lineTo(width, (height / 4) * i)
@@ -163,47 +160,110 @@ export class Oscilloscope {
     }
   }
 
-  private findTriggerPoint(): number {
+  /**
+   * Simple autocorrelation-based period detection
+   */
+  private detectPeriodAutocorr(): number {
     const data = this.timeDomainData
     const len = data.length
 
-    // Find the peak amplitude to set a meaningful trigger threshold
-    let maxAmp = 0
+    // Check signal level
+    let maxVal = 0
     for (let i = 0; i < len; i++) {
-      const amp = Math.abs(data[i])
-      if (amp > maxAmp) maxAmp = amp
+      if (Math.abs(data[i]) > maxVal) maxVal = Math.abs(data[i])
     }
+    if (maxVal < 0.01) return 0
 
-    // If signal is too quiet, don't try to trigger
-    if (maxAmp < 0.01) return 0
+    // Search range: ~30Hz to ~2000Hz at 48kHz sample rate
+    const minPeriod = 24
+    const maxPeriod = Math.min(1600, Math.floor(len / 4))
 
-    // Trigger threshold: look for zero crossings where there's actual signal
-    // We want to find a rising edge that comes after a significant negative value
-    const triggerThreshold = maxAmp * 0.1 // 10% of peak as minimum
+    let bestPeriod = 0
+    let bestCorr = -1
 
-    // Search in the first third of the buffer for a good trigger point
-    const searchEnd = Math.floor(len / 3)
+    // Simplified autocorrelation - compare chunks
+    for (let period = minPeriod; period < maxPeriod; period += 2) {
+      let corr = 0
+      const samples = Math.min(period * 2, len - period)
 
-    for (let i = 1; i < searchEnd; i++) {
-      const prev = data[i - 1]
-      const curr = data[i]
+      for (let i = 0; i < samples; i++) {
+        corr += data[i] * data[i + period]
+      }
+      corr /= samples
 
-      // Look for rising zero crossing with significant amplitude before
-      if (prev < 0 && curr >= 0 && Math.abs(prev) > triggerThreshold) {
-        return i
+      if (corr > bestCorr) {
+        bestCorr = corr
+        bestPeriod = period
       }
     }
 
-    // Fallback: any rising zero crossing
-    for (let i = 1; i < searchEnd; i++) {
+    // Refine around best period
+    const searchStart = Math.max(minPeriod, bestPeriod - 10)
+    const searchEnd = Math.min(maxPeriod, bestPeriod + 10)
+
+    for (let period = searchStart; period <= searchEnd; period++) {
+      let corr = 0
+      const samples = Math.min(period * 2, len - period)
+
+      for (let i = 0; i < samples; i++) {
+        corr += data[i] * data[i + period]
+      }
+      corr /= samples
+
+      if (corr > bestCorr) {
+        bestCorr = corr
+        bestPeriod = period
+      }
+    }
+
+    return bestCorr > maxVal * maxVal * 0.3 ? bestPeriod : 0
+  }
+
+  /**
+   * Find a stable trigger point by:
+   * 1. Finding the first significant positive peak
+   * 2. Then finding the rising zero crossing just before it
+   * This ensures we always trigger at the same phase
+   */
+  private findStableTrigger(): number {
+    const data = this.timeDomainData
+    const len = data.length
+    const searchEnd = Math.floor(len / 3)
+
+    // Find max amplitude for threshold
+    let maxAmp = 0
+    for (let i = 0; i < searchEnd; i++) {
+      if (Math.abs(data[i]) > maxAmp) maxAmp = Math.abs(data[i])
+    }
+
+    if (maxAmp < 0.01) return 0
+
+    const peakThreshold = maxAmp * 0.7
+
+    // Find first significant positive peak
+    let peakIndex = -1
+    for (let i = 1; i < searchEnd - 1; i++) {
+      if (data[i] > peakThreshold && data[i] > data[i - 1] && data[i] >= data[i + 1]) {
+        peakIndex = i
+        break
+      }
+    }
+
+    if (peakIndex < 0) {
+      // Fallback: just find any rising zero crossing
+      for (let i = 1; i < searchEnd; i++) {
+        if (data[i - 1] < 0 && data[i] >= 0) {
+          return i
+        }
+      }
+      return 0
+    }
+
+    // Find the rising zero crossing just before this peak
+    for (let i = peakIndex; i > 0; i--) {
       if (data[i - 1] < 0 && data[i] >= 0) {
         return i
       }
-    }
-
-    // Last resort: return where we triggered last time (for stability)
-    if (this.lastTriggerIndex > 0 && this.lastTriggerIndex < searchEnd) {
-      return this.lastTriggerIndex
     }
 
     return 0
