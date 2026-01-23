@@ -16,6 +16,7 @@ export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
+  private normalizationGainNode: GainNode | null = null
   private analyserNode: AnalyserNode | null = null
 
   // Stereo analysis nodes
@@ -29,6 +30,8 @@ export class AudioEngine {
   private _playbackState: PlaybackState = 'stopped'
   private _volume: number = 0.7
   private _isMuted: boolean = false
+  private _normalizationEnabled: boolean = true
+  private _targetLufs: number = -14 // Target loudness in LUFS (Spotify uses -14)
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -51,6 +54,10 @@ export class AudioEngine {
       this.gainNode = this.context.createGain()
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
 
+      // Normalization gain node (applied before volume)
+      this.normalizationGainNode = this.context.createGain()
+      this.normalizationGainNode.gain.value = 1.0
+
       this.analyserNode = this.context.createAnalyser()
       this.analyserNode.fftSize = 2048
       this.analyserNode.smoothingTimeConstant = 0.8
@@ -64,14 +71,88 @@ export class AudioEngine {
       this.analyserLeft.smoothingTimeConstant = 0
       this.analyserRight.smoothingTimeConstant = 0
 
-      // Connect: analyser -> gain -> destination
-      this.analyserNode.connect(this.gainNode)
+      // Connect: analyser -> normalization -> gain -> destination
+      this.analyserNode.connect(this.normalizationGainNode)
+      this.normalizationGainNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
 
       // Connect stereo splitter (from main analyser output)
       this.analyserNode.connect(this.channelSplitter)
       this.channelSplitter.connect(this.analyserLeft, 0)
       this.channelSplitter.connect(this.analyserRight, 1)
+    }
+  }
+
+  /**
+   * Calculate approximate LUFS of an audio buffer
+   * Uses simplified ITU-R BS.1770 approach (RMS-based)
+   */
+  private calculateLufs(buffer: AudioBuffer): number {
+    const channels = buffer.numberOfChannels
+    const length = buffer.length
+    let sumSquares = 0
+
+    // Sum squares across all channels
+    for (let ch = 0; ch < channels; ch++) {
+      const data = buffer.getChannelData(ch)
+      for (let i = 0; i < length; i++) {
+        sumSquares += data[i] * data[i]
+      }
+    }
+
+    // Calculate RMS
+    const rms = Math.sqrt(sumSquares / (length * channels))
+
+    // Convert to LUFS (approximate: LUFS ≈ 20 * log10(RMS) - 0.691)
+    // The -0.691 factor is from the K-weighting in BS.1770
+    const lufs = 20 * Math.log10(rms + 1e-10) - 0.691
+
+    return lufs
+  }
+
+  /**
+   * Apply normalization gain based on buffer loudness
+   */
+  private applyNormalization(buffer: AudioBuffer): void {
+    if (!this.normalizationGainNode) return
+
+    const currentLufs = this.calculateLufs(buffer)
+    const gainDb = this._targetLufs - currentLufs
+
+    // Clamp gain to prevent extreme values
+    // Allow up to +12dB boost and -24dB cut
+    const clampedGainDb = Math.max(-24, Math.min(12, gainDb))
+
+    // Convert dB to linear gain
+    const linearGain = Math.pow(10, clampedGainDb / 20)
+
+    console.log(`Normalization: ${currentLufs.toFixed(1)} LUFS -> ${this._targetLufs} LUFS (gain: ${clampedGainDb.toFixed(1)} dB)`)
+
+    this.normalizationGainNode.gain.value = linearGain
+  }
+
+  // Normalization settings
+  get normalizationEnabled(): boolean {
+    return this._normalizationEnabled
+  }
+
+  set normalizationEnabled(enabled: boolean) {
+    this._normalizationEnabled = enabled
+    if (!enabled && this.normalizationGainNode) {
+      this.normalizationGainNode.gain.value = 1.0
+    } else if (enabled && this.audioBuffer) {
+      this.applyNormalization(this.audioBuffer)
+    }
+  }
+
+  get targetLufs(): number {
+    return this._targetLufs
+  }
+
+  set targetLufs(lufs: number) {
+    this._targetLufs = lufs
+    if (this._normalizationEnabled && this.audioBuffer) {
+      this.applyNormalization(this.audioBuffer)
     }
   }
 
@@ -145,6 +226,13 @@ export class AudioEngine {
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+
+      // Apply normalization if enabled
+      if (this._normalizationEnabled) {
+        this.applyNormalization(this.audioBuffer)
+      } else {
+        this.normalizationGainNode!.gain.value = 1.0
+      }
 
       this._playbackState = 'stopped'
       this.pauseTime = 0

@@ -146,8 +146,8 @@ export class Oscilloscope {
       startIndex = this.findTrigger(timeDomainData)
     }
 
-    // Show a fixed number of samples (half the buffer from trigger point)
-    const samplesToShow = Math.min(1024, bufferLength - startIndex)
+    // Show more samples for multi-cycle view (like MiniMeters "multi" mode)
+    const samplesToShow = Math.min(2048, bufferLength - startIndex)
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
