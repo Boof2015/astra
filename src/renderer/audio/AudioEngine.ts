@@ -31,7 +31,7 @@ export class AudioEngine {
   private _volume: number = 0.7
   private _isMuted: boolean = false
   private _normalizationEnabled: boolean = true
-  private _targetLufs: number = -7 // Target loudness in LUFS
+  private _targetLufs: number = -14 // Target loudness in dB RMS
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -84,10 +84,10 @@ export class AudioEngine {
   }
 
   /**
-   * Calculate approximate LUFS of an audio buffer
-   * Uses simplified ITU-R BS.1770 approach (RMS-based)
+   * Calculate approximate loudness of an audio buffer in dB
+   * Uses RMS (root mean square) measurement
    */
-  private calculateLufs(buffer: AudioBuffer): number {
+  private calculateLoudness(buffer: AudioBuffer): number {
     const channels = buffer.numberOfChannels
     const length = buffer.length
     let sumSquares = 0
@@ -100,14 +100,11 @@ export class AudioEngine {
       }
     }
 
-    // Calculate RMS
+    // Calculate RMS and convert to dB
     const rms = Math.sqrt(sumSquares / (length * channels))
+    const dB = 20 * Math.log10(rms + 1e-10)
 
-    // Convert to LUFS (approximate: LUFS ≈ 20 * log10(RMS) - 0.691)
-    // The -0.691 factor is from the K-weighting in BS.1770
-    const lufs = 20 * Math.log10(rms + 1e-10) - 0.691
-
-    return lufs
+    return dB
   }
 
   /**
@@ -116,17 +113,17 @@ export class AudioEngine {
   private applyNormalization(buffer: AudioBuffer): void {
     if (!this.normalizationGainNode) return
 
-    const currentLufs = this.calculateLufs(buffer)
-    const gainDb = this._targetLufs - currentLufs
+    const currentDb = this.calculateLoudness(buffer)
+    const gainDb = this._targetLufs - currentDb
 
     // Clamp gain to prevent extreme values
-    // Allow up to +12dB boost and -24dB cut
-    const clampedGainDb = Math.max(-24, Math.min(12, gainDb))
+    // Allow up to +6dB boost and -18dB cut
+    const clampedGainDb = Math.max(-18, Math.min(6, gainDb))
 
     // Convert dB to linear gain
     const linearGain = Math.pow(10, clampedGainDb / 20)
 
-    console.log(`Normalization: ${currentLufs.toFixed(1)} LUFS -> ${this._targetLufs} LUFS (gain: ${clampedGainDb.toFixed(1)} dB)`)
+    console.log(`Normalization: ${currentDb.toFixed(1)} dB -> ${this._targetLufs} dB (gain: ${clampedGainDb.toFixed(1)} dB)`)
 
     this.normalizationGainNode.gain.value = linearGain
   }

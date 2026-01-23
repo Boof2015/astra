@@ -85,31 +85,45 @@ export class Oscilloscope {
 
   /**
    * Find trigger point - rising zero-crossing on lowpass filtered signal
-   * with smoothing to reduce frame-to-frame jitter
+   * Uses heavy smoothing and searches near the expected position
    */
   private findTrigger(data: Float32Array): number {
     const filtered = this.lowpass(data)
     const searchEnd = Math.floor(data.length / 2)
 
-    // Find first rising zero-crossing
-    let newTrigger = 0
+    // Find ALL rising zero-crossings
+    const crossings: number[] = []
     for (let i = 1; i < searchEnd; i++) {
       if (filtered[i - 1] < 0 && filtered[i] >= 0) {
-        newTrigger = i
-        break
+        crossings.push(i)
       }
     }
 
-    // Smooth the trigger position to reduce jitter
-    // But allow it to snap if the difference is large (frequency changed)
-    const diff = Math.abs(newTrigger - this.lastTrigger)
-    if (diff > 100 || this.lastTrigger === 0) {
-      // Large change or first frame - snap immediately
-      this.lastTrigger = newTrigger
-    } else {
-      // Small change - smooth it
-      this.lastTrigger = Math.round(this.lastTrigger * 0.8 + newTrigger * 0.2)
+    if (crossings.length === 0) {
+      return this.lastTrigger
     }
+
+    // If this is the first frame, just use the first crossing
+    if (this.lastTrigger === 0) {
+      this.lastTrigger = crossings[0]
+      return this.lastTrigger
+    }
+
+    // Find the crossing closest to our last trigger position
+    // This keeps us locked to the same phase point
+    let bestCrossing = crossings[0]
+    let bestDist = Math.abs(crossings[0] - this.lastTrigger)
+
+    for (const crossing of crossings) {
+      const dist = Math.abs(crossing - this.lastTrigger)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestCrossing = crossing
+      }
+    }
+
+    // Very heavy smoothing (95/5) to keep it locked
+    this.lastTrigger = Math.round(this.lastTrigger * 0.95 + bestCrossing * 0.05)
 
     return this.lastTrigger
   }
