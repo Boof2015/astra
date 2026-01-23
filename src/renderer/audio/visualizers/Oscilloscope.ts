@@ -25,9 +25,24 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private displaySamples: number = 2048
-  private detectedPeriod: number = 512
+
+  // Pitch detection state
+  private detectedPitch: number = 200 // Hz
+  private detectedPeriod: number = 220 // samples at 44100Hz
+
+  // Bandpass filter state (biquad)
+  private bpX1: number = 0
+  private bpX2: number = 0
+  private bpY1: number = 0
+  private bpY2: number = 0
+  private bpB0: number = 0
+  private bpB1: number = 0
+  private bpB2: number = 0
+  private bpA1: number = 0
+  private bpA2: number = 0
+
   private filteredBuffer: Float32Array = new Float32Array(0)
-  private smoothedOffset: number = 0
+  private lastTriggerIndex: number = 0
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -35,6 +50,7 @@ export class Oscilloscope {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
+    this.updateBandpassCoefficients(200)
   }
 
   setOptions(options: Partial<OscilloscopeOptions>): void {
@@ -56,6 +72,149 @@ export class Oscilloscope {
   }
 
   resize(): void {}
+
+  /**
+   * Update biquad bandpass filter coefficients for a given center frequency
+   * Using peaking EQ style bandpass with Q = 2
+   */
+  private updateBandpassCoefficients(centerFreq: number): void {
+    const sampleRate = 44100
+    const Q = 2.0 // Resonance - higher = narrower band
+    const omega = (2 * Math.PI * centerFreq) / sampleRate
+    const sinOmega = Math.sin(omega)
+    const cosOmega = Math.cos(omega)
+    const alpha = sinOmega / (2 * Q)
+
+    // Bandpass filter coefficients (constant 0 dB peak gain)
+    const b0 = alpha
+    const b1 = 0
+    const b2 = -alpha
+    const a0 = 1 + alpha
+    const a1 = -2 * cosOmega
+    const a2 = 1 - alpha
+
+    // Normalize
+    this.bpB0 = b0 / a0
+    this.bpB1 = b1 / a0
+    this.bpB2 = b2 / a0
+    this.bpA1 = a1 / a0
+    this.bpA2 = a2 / a0
+  }
+
+  /**
+   * Apply bandpass filter to extract the fundamental frequency
+   */
+  private applyBandpassFilter(data: Float32Array): Float32Array {
+    const len = data.length
+    if (this.filteredBuffer.length !== len) {
+      this.filteredBuffer = new Float32Array(len)
+    }
+
+    // Reset filter state for consistent results
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0
+
+    // Forward pass
+    for (let i = 0; i < len; i++) {
+      const x0 = data[i]
+      const y0 = this.bpB0 * x0 + this.bpB1 * x1 + this.bpB2 * x2
+                 - this.bpA1 * y1 - this.bpA2 * y2
+      this.filteredBuffer[i] = y0
+      x2 = x1
+      x1 = x0
+      y2 = y1
+      y1 = y0
+    }
+
+    // Backward pass for zero phase delay (linear phase)
+    x1 = 0; x2 = 0; y1 = 0; y2 = 0
+    for (let i = len - 1; i >= 0; i--) {
+      const x0 = this.filteredBuffer[i]
+      const y0 = this.bpB0 * x0 + this.bpB1 * x1 + this.bpB2 * x2
+                 - this.bpA1 * y1 - this.bpA2 * y2
+      this.filteredBuffer[i] = y0
+      x2 = x1
+      x1 = x0
+      y2 = y1
+      y1 = y0
+    }
+
+    return this.filteredBuffer
+  }
+
+  /**
+   * Detect pitch using FFT peak finding with parabolic interpolation
+   */
+  private detectPitchFromFFT(): void {
+    const freqData = audioEngine.getFloatFrequencyData()
+    if (freqData.length === 0) return
+
+    const sampleRate = 44100
+    const fftSize = freqData.length * 2
+    const binWidth = sampleRate / fftSize
+
+    // Find the peak bin (skip DC and very low frequencies)
+    const minBin = Math.floor(40 / binWidth)  // Start at ~40Hz
+    const maxBin = Math.floor(2000 / binWidth) // Up to 2000Hz
+
+    let peakBin = minBin
+    let peakMag = -Infinity
+
+    for (let i = minBin; i < maxBin && i < freqData.length; i++) {
+      if (freqData[i] > peakMag) {
+        peakMag = freqData[i]
+        peakBin = i
+      }
+    }
+
+    // Parabolic interpolation for sub-bin accuracy
+    let interpBin = peakBin
+    if (peakBin > 0 && peakBin < freqData.length - 1) {
+      const y0 = freqData[peakBin - 1]
+      const y1 = freqData[peakBin]
+      const y2 = freqData[peakBin + 1]
+      const delta = 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2 + 1e-10)
+      interpBin = peakBin + Math.max(-1, Math.min(1, delta))
+    }
+
+    const newPitch = interpBin * binWidth
+
+    // Smooth pitch detection to avoid jitter
+    if (newPitch > 30 && newPitch < 3000) {
+      this.detectedPitch = this.detectedPitch * 0.8 + newPitch * 0.2
+      this.detectedPeriod = Math.round(sampleRate / this.detectedPitch)
+
+      // Update bandpass filter when pitch changes significantly
+      this.updateBandpassCoefficients(this.detectedPitch)
+    }
+  }
+
+  /**
+   * Find trigger point using bandpass-filtered signal
+   */
+  private findTriggerPoint(data: Float32Array): number {
+    // Detect pitch from FFT
+    this.detectPitchFromFFT()
+
+    // Apply bandpass filter centered on detected pitch
+    const filtered = this.applyBandpassFilter(data)
+
+    // Search range: about 2 periods of the detected pitch
+    const searchRange = Math.min(this.detectedPeriod * 2, Math.floor(data.length / 3))
+
+    // Find rising zero-crossing on bandpassed signal
+    for (let i = 1; i < searchRange; i++) {
+      if (filtered[i - 1] <= 0 && filtered[i] > 0) {
+        // Found zero-crossing - smooth it slightly to avoid jitter
+        const newTrigger = i
+        this.lastTriggerIndex = Math.round(
+          this.lastTriggerIndex * 0.7 + newTrigger * 0.3
+        )
+        return this.lastTriggerIndex
+      }
+    }
+
+    return this.lastTriggerIndex
+  }
 
   private draw = (): void => {
     if (!this.isRunning) return
@@ -89,12 +248,12 @@ export class Oscilloscope {
 
     if (options.pitchLock) {
       startIndex = this.findTriggerPoint(timeDomainData)
-      // Show 4-8 cycles of the detected period
+      // Show ~6 cycles of the detected period
       const cyclesToShow = 6
       samplesToShow = Math.min(this.detectedPeriod * cyclesToShow, bufferLength - startIndex)
     }
 
-    samplesToShow = Math.min(samplesToShow, bufferLength - startIndex)
+    samplesToShow = Math.max(100, Math.min(samplesToShow, bufferLength - startIndex))
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
@@ -156,117 +315,11 @@ export class Oscilloscope {
     }
   }
 
-  /**
-   * Apply a simple lowpass filter to extract the fundamental frequency
-   * This removes high-frequency harmonics that cause false triggers
-   */
-  private applyLowpassFilter(data: Float32Array): Float32Array {
-    const len = data.length
-    if (this.filteredBuffer.length !== len) {
-      this.filteredBuffer = new Float32Array(len)
-    }
-
-    // Simple IIR lowpass filter: y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
-    // Lower alpha = more smoothing (lower cutoff frequency)
-    // alpha ~0.1 gives roughly 200-300Hz cutoff at 44100Hz sample rate
-    const alpha = 0.08
-
-    this.filteredBuffer[0] = data[0]
-    for (let i = 1; i < len; i++) {
-      this.filteredBuffer[i] = alpha * data[i] + (1 - alpha) * this.filteredBuffer[i - 1]
-    }
-
-    // Run filter backwards too for zero phase delay (linear phase)
-    for (let i = len - 2; i >= 0; i--) {
-      this.filteredBuffer[i] = alpha * this.filteredBuffer[i] + (1 - alpha) * this.filteredBuffer[i + 1]
-    }
-
-    return this.filteredBuffer
-  }
-
-  /**
-   * Detect the fundamental period using autocorrelation on filtered signal
-   */
-  private detectPeriod(filtered: Float32Array): number {
-    const len = filtered.length
-    const minPeriod = 22 // ~2000Hz
-    const maxPeriod = Math.min(2205, Math.floor(len / 4)) // ~20Hz
-
-    let bestPeriod = this.detectedPeriod
-    let bestCorrelation = -Infinity
-
-    for (let period = minPeriod; period < maxPeriod; period++) {
-      let correlation = 0
-      const samples = Math.min(len - period, 1024)
-
-      for (let i = 0; i < samples; i++) {
-        correlation += filtered[i] * filtered[i + period]
-      }
-
-      if (correlation > bestCorrelation) {
-        bestCorrelation = correlation
-        bestPeriod = period
-      }
-    }
-
-    // Smooth period detection
-    this.detectedPeriod = Math.round(this.detectedPeriod * 0.85 + bestPeriod * 0.15)
-
-    return this.detectedPeriod
-  }
-
-  /**
-   * Find trigger point using lowpass-filtered signal for stable zero-crossing
-   * Smooths the offset over time to prevent chaotic jumping
-   */
-  private findTriggerPoint(data: Float32Array): number {
-    // Apply lowpass filter to get clean fundamental for triggering
-    const filtered = this.applyLowpassFilter(data)
-
-    // Detect period on filtered signal
-    const period = this.detectPeriod(filtered)
-    const searchEnd = Math.min(period * 2, Math.floor(data.length / 3))
-
-    // Find all rising zero-crossings on the filtered signal
-    const zeroCrossings: number[] = []
-    for (let i = 1; i < searchEnd; i++) {
-      if (filtered[i - 1] <= 0 && filtered[i] > 0) {
-        zeroCrossings.push(i)
-      }
-    }
-
-    if (zeroCrossings.length === 0) {
-      return Math.round(this.smoothedOffset)
-    }
-
-    // Find the zero-crossing closest to our current smoothed offset (modulo period)
-    // This keeps the display locked to a consistent phase
-    const targetPhase = this.smoothedOffset % period
-    let bestCrossing = zeroCrossings[0]
-    let bestDistance = Infinity
-
-    for (const crossing of zeroCrossings) {
-      const crossingPhase = crossing % period
-      // Calculate phase distance (wrapping around)
-      let distance = Math.abs(crossingPhase - targetPhase)
-      distance = Math.min(distance, period - distance)
-
-      if (distance < bestDistance) {
-        bestDistance = distance
-        bestCrossing = crossing
-      }
-    }
-
-    // Smooth the offset - heavy smoothing for stability
-    this.smoothedOffset = this.smoothedOffset * 0.9 + bestCrossing * 0.1
-
-    return Math.round(this.smoothedOffset)
-  }
-
   dispose(): void {
     this.stop()
-    this.detectedPeriod = 512
+    this.detectedPitch = 200
+    this.detectedPeriod = 220
     this.filteredBuffer = new Float32Array(0)
-    this.smoothedOffset = 0
+    this.lastTriggerIndex = 0
   }
 }
