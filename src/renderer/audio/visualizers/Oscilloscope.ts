@@ -27,6 +27,7 @@ export class Oscilloscope {
   private displaySamples: number = 2048
   private detectedPeriod: number = 512
   private filteredBuffer: Float32Array = new Float32Array(0)
+  private smoothedOffset: number = 0
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -216,6 +217,7 @@ export class Oscilloscope {
 
   /**
    * Find trigger point using lowpass-filtered signal for stable zero-crossing
+   * Smooths the offset over time to prevent chaotic jumping
    */
   private findTriggerPoint(data: Float32Array): number {
     // Apply lowpass filter to get clean fundamental for triggering
@@ -225,20 +227,46 @@ export class Oscilloscope {
     const period = this.detectPeriod(filtered)
     const searchEnd = Math.min(period * 2, Math.floor(data.length / 3))
 
-    // Find rising zero-crossing on the FILTERED signal
-    // But we'll use this index to start drawing the ORIGINAL signal
+    // Find all rising zero-crossings on the filtered signal
+    const zeroCrossings: number[] = []
     for (let i = 1; i < searchEnd; i++) {
       if (filtered[i - 1] <= 0 && filtered[i] > 0) {
-        return i
+        zeroCrossings.push(i)
       }
     }
 
-    return 0
+    if (zeroCrossings.length === 0) {
+      return Math.round(this.smoothedOffset)
+    }
+
+    // Find the zero-crossing closest to our current smoothed offset (modulo period)
+    // This keeps the display locked to a consistent phase
+    const targetPhase = this.smoothedOffset % period
+    let bestCrossing = zeroCrossings[0]
+    let bestDistance = Infinity
+
+    for (const crossing of zeroCrossings) {
+      const crossingPhase = crossing % period
+      // Calculate phase distance (wrapping around)
+      let distance = Math.abs(crossingPhase - targetPhase)
+      distance = Math.min(distance, period - distance)
+
+      if (distance < bestDistance) {
+        bestDistance = distance
+        bestCrossing = crossing
+      }
+    }
+
+    // Smooth the offset - heavy smoothing for stability
+    this.smoothedOffset = this.smoothedOffset * 0.9 + bestCrossing * 0.1
+
+    return Math.round(this.smoothedOffset)
   }
 
   dispose(): void {
     this.stop()
     this.detectedPeriod = 512
     this.filteredBuffer = new Float32Array(0)
+    this.smoothedOffset = 0
   }
 }
