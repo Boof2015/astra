@@ -269,8 +269,10 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
       }
       // Otherwise default to jpeg
     }
-    console.log(`[Artwork Load] Success: ${hash}, MIME: ${mimeType}, Size: ${data.length} bytes`)
-    return `data:${mimeType};base64,${base64}`
+    console.log(`[Artwork Load] Success: ${hash}, MIME: ${mimeType}, Size: ${data.length} bytes, Base64 length: ${base64.length}, First 50 chars: ${base64.substring(0, 50)}`)
+    const dataUrl = `data:${mimeType};base64,${base64}`
+    console.log(`[Artwork Load] Data URL length: ${dataUrl.length}`)
+    return dataUrl
   } catch (err) {
     console.error(`[Artwork Load] Failed to load ${hash}:`, err)
     return null
