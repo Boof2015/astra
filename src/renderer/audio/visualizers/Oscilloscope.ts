@@ -122,8 +122,8 @@ export class Oscilloscope {
       }
     }
 
-    // Very heavy smoothing (95/5) to keep it locked
-    this.lastTrigger = Math.round(this.lastTrigger * 0.95 + bestCrossing * 0.05)
+    // Moderate smoothing (70/30) - enough to reduce jitter but still track
+    this.lastTrigger = Math.round(this.lastTrigger * 0.7 + bestCrossing * 0.3)
 
     return this.lastTrigger
   }
