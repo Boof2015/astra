@@ -10,7 +10,11 @@
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
     "rebuild:native": "cd native && node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=x64 --dist-url=https://electronjs.org/headers",
-    "postinstall": "npm run build:native || echo 'Native build failed, will use JS fallback'"
+    "postinstall": "npm run build:native || echo 'Native build failed, will use JS fallback'",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
   },
   "repository": {
     "type": "git",
@@ -41,11 +45,57 @@
     "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.23",
     "electron": "^40.0.0",
+    "electron-builder": "^26.0.0",
     "electron-vite": "^5.0.0",
     "node-gyp": "^10.3.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
+  },
+  "build": {
+    "appId": "com.astra.musicplayer",
+    "productName": "Astra",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "native/build/Release/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "native/build/Release/",
+        "to": "native/",
+        "filter": ["*.node"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": "resources/icon.icns",
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "resources/icon.png",
+      "category": "Audio"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
