@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
 
 export interface SpectrumAnalyzerOptions {
   lineColor?: string
@@ -14,6 +15,7 @@ export interface SpectrumAnalyzerOptions {
   maxDecibels?: number
   minFrequency?: number
   maxFrequency?: number
+  fftSize?: number
 }
 
 const defaultOptions: Required<SpectrumAnalyzerOptions> = {
@@ -29,7 +31,8 @@ const defaultOptions: Required<SpectrumAnalyzerOptions> = {
   minDecibels: -90,
   maxDecibels: -10,
   minFrequency: 20,
-  maxFrequency: 20000
+  maxFrequency: 20000,
+  fftSize: 2048
 }
 
 export class SpectrumAnalyzer {
@@ -39,6 +42,8 @@ export class SpectrumAnalyzer {
   private animationId: number | null = null
   private isRunning: boolean = false
   private smoothedData: Float32Array = new Float32Array(0)
+  private nativeInitialized: boolean = false
+  private sampleRate: number = 48000
 
   constructor(canvas: HTMLCanvasElement, options: SpectrumAnalyzerOptions = {}) {
     this.canvas = canvas
@@ -46,10 +51,35 @@ export class SpectrumAnalyzer {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
+
+    // Initialize native module if available
+    this.initNative()
+  }
+
+  private initNative(): void {
+    if (isNativeAvailable() && !this.nativeInitialized) {
+      nativeSpectrum.setFFTSize(this.options.fftSize)
+      nativeSpectrum.setSampleRate(this.sampleRate)
+      nativeSpectrum.setSmoothing(this.options.smoothing)
+      this.nativeInitialized = true
+      console.log('SpectrumAnalyzer: Using native DSP')
+    } else if (!isNativeAvailable()) {
+      console.log('SpectrumAnalyzer: Using JavaScript fallback')
+    }
   }
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
     this.options = { ...this.options, ...options }
+
+    // Update native module settings
+    if (isNativeAvailable()) {
+      if (options.fftSize !== undefined) {
+        nativeSpectrum.setFFTSize(options.fftSize)
+      }
+      if (options.smoothing !== undefined) {
+        nativeSpectrum.setSmoothing(options.smoothing)
+      }
+    }
   }
 
   start(): void {
@@ -90,25 +120,50 @@ export class SpectrumAnalyzer {
     const width = canvas.width
     const height = canvas.height
 
-    // Get frequency data (in dB, -Infinity to 0)
-    const frequencyData = audioEngine.getFloatFrequencyData()
-    const bufferLength = frequencyData.length
+    // Get frequency data - native or Web Audio API
+    let frequencyData: Float32Array
+    let bufferLength: number
+
+    if (isNativeAvailable()) {
+      // Use native FFT processing - pass time domain data
+      const timeDomainData = audioEngine.getFloatTimeDomainData()
+      if (timeDomainData.length === 0) {
+        this.animationId = requestAnimationFrame(this.draw)
+        return
+      }
+      const nativeResult = nativeSpectrum.process(timeDomainData)
+      if (nativeResult) {
+        frequencyData = nativeResult
+        bufferLength = frequencyData.length
+      } else {
+        // Fallback if native returns null
+        frequencyData = audioEngine.getFloatFrequencyData()
+        bufferLength = frequencyData.length
+      }
+    } else {
+      // Use Web Audio API (JS fallback)
+      frequencyData = audioEngine.getFloatFrequencyData()
+      bufferLength = frequencyData.length
+    }
 
     if (bufferLength === 0) {
       this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
-    // Initialize smoothed data if needed
-    if (this.smoothedData.length !== bufferLength) {
-      this.smoothedData = new Float32Array(bufferLength)
-      this.smoothedData.fill(options.minDecibels)
-    }
+    // Initialize smoothed data if needed (only for JS fallback)
+    if (!isNativeAvailable()) {
+      if (this.smoothedData.length !== bufferLength) {
+        this.smoothedData = new Float32Array(bufferLength)
+        this.smoothedData.fill(options.minDecibels)
+      }
 
-    // Apply temporal smoothing
-    for (let i = 0; i < bufferLength; i++) {
-      this.smoothedData[i] = this.smoothedData[i] * options.smoothing +
-                             frequencyData[i] * (1 - options.smoothing)
+      // Apply temporal smoothing
+      for (let i = 0; i < bufferLength; i++) {
+        this.smoothedData[i] = this.smoothedData[i] * options.smoothing +
+                               frequencyData[i] * (1 - options.smoothing)
+      }
+      frequencyData = this.smoothedData
     }
 
     // Clear canvas
@@ -126,8 +181,7 @@ export class SpectrumAnalyzer {
     }
 
     // Calculate frequency mapping
-    const sampleRate = 48000 // Standard sample rate
-    const nyquist = sampleRate / 2
+    const nyquist = this.sampleRate / 2
     const binWidth = nyquist / bufferLength
 
     // Build smooth path using more points and interpolation
@@ -151,7 +205,7 @@ export class SpectrumAnalyzer {
       const binIndex = frequency / binWidth
 
       // Get interpolated dB value
-      const db = this.getInterpolatedValue(this.smoothedData, Math.min(binIndex, bufferLength - 1))
+      const db = this.getInterpolatedValue(frequencyData, Math.min(binIndex, bufferLength - 1))
 
       // Normalize to 0-1 range
       const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
@@ -266,5 +320,10 @@ export class SpectrumAnalyzer {
 
   dispose(): void {
     this.stop()
+
+    // Reset native module state
+    if (isNativeAvailable()) {
+      nativeSpectrum.reset()
+    }
   }
 }

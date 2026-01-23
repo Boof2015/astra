@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 out/
 dist/
+native/build/
 
 # Electron
 *.log

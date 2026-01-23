@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
 
 export interface VectorscopeOptions {
   lineColor?: string
@@ -6,6 +7,7 @@ export interface VectorscopeOptions {
   backgroundColor?: string
   showGrid?: boolean
   gridColor?: string
+  bufferSize?: number
 }
 
 const defaultOptions: Required<VectorscopeOptions> = {
@@ -13,7 +15,8 @@ const defaultOptions: Required<VectorscopeOptions> = {
   lineWidth: 1,
   backgroundColor: 'transparent',
   showGrid: true,
-  gridColor: 'rgba(255, 255, 255, 0.1)'
+  gridColor: 'rgba(255, 255, 255, 0.1)',
+  bufferSize: 1024
 }
 
 export class Vectorscope {
@@ -22,6 +25,7 @@ export class Vectorscope {
   private options: Required<VectorscopeOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
+  private nativeInitialized: boolean = false
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
     this.canvas = canvas
@@ -29,10 +33,28 @@ export class Vectorscope {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
+
+    // Initialize native module if available
+    this.initNative()
+  }
+
+  private initNative(): void {
+    if (isNativeAvailable() && !this.nativeInitialized) {
+      nativeVectorscope.setBufferSize(this.options.bufferSize)
+      this.nativeInitialized = true
+      console.log('Vectorscope: Using native DSP')
+    } else if (!isNativeAvailable()) {
+      console.log('Vectorscope: Using JavaScript fallback')
+    }
   }
 
   setOptions(options: Partial<VectorscopeOptions>): void {
     this.options = { ...this.options, ...options }
+
+    // Update native module settings
+    if (isNativeAvailable() && options.bufferSize !== undefined) {
+      nativeVectorscope.setBufferSize(options.bufferSize)
+    }
   }
 
   start(): void {
@@ -94,19 +116,39 @@ export class Vectorscope {
 
     let firstPoint = true
 
-    for (let i = 0; i < left.length; i++) {
-      const l = left[i]
-      const r = right[i]
+    if (isNativeAvailable()) {
+      // Use native vectorscope processing
+      const result = nativeVectorscope.process(left, right)
+      if (result && result.x && result.y) {
+        for (let i = 0; i < result.x.length; i++) {
+          // Native already provides X/Y in Lissajous coordinates
+          const x = centerX + result.x[i] * scale
+          const y = centerY - result.y[i] * scale
 
-      // Standard Lissajous: X = Right, Y = Left (inverted for canvas)
-      const x = centerX + r * scale
-      const y = centerY - l * scale
+          if (firstPoint) {
+            ctx.moveTo(x, y)
+            firstPoint = false
+          } else {
+            ctx.lineTo(x, y)
+          }
+        }
+      }
+    } else {
+      // JavaScript fallback
+      for (let i = 0; i < left.length; i++) {
+        const l = left[i]
+        const r = right[i]
 
-      if (firstPoint) {
-        ctx.moveTo(x, y)
-        firstPoint = false
-      } else {
-        ctx.lineTo(x, y)
+        // Standard Lissajous: X = Right, Y = Left (inverted for canvas)
+        const x = centerX + r * scale
+        const y = centerY - l * scale
+
+        if (firstPoint) {
+          ctx.moveTo(x, y)
+          firstPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
       }
     }
 
@@ -174,5 +216,10 @@ export class Vectorscope {
 
   dispose(): void {
     this.stop()
+
+    // Reset native module state
+    if (isNativeAvailable()) {
+      nativeVectorscope.reset()
+    }
   }
 }

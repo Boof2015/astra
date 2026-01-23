@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { oscilloscope as nativeOscilloscope, isNativeAvailable } from '../native'
 
 export interface OscilloscopeOptions {
   lineColor?: string
@@ -24,8 +25,9 @@ export class Oscilloscope {
   private options: Required<OscilloscopeOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
+  private nativeInitialized: boolean = false
 
-  // State for stable triggering
+  // Fallback JS state (used when native not available)
   private lastTrigger: number = 0
   private filteredBuffer: Float32Array = new Float32Array(0)
 
@@ -35,10 +37,31 @@ export class Oscilloscope {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
+
+    // Initialize native module if available
+    this.initNative()
+  }
+
+  private initNative(): void {
+    if (isNativeAvailable() && !this.nativeInitialized) {
+      nativeOscilloscope.setSampleRate(48000) // Standard sample rate
+      nativeOscilloscope.setPitchLock(this.options.pitchLock)
+      nativeOscilloscope.setDisplaySamples(4096)
+      nativeOscilloscope.setFilterFrequency(200) // Lowpass for trigger detection
+      this.nativeInitialized = true
+      console.log('Oscilloscope: Using native DSP')
+    } else if (!isNativeAvailable()) {
+      console.log('Oscilloscope: Using JavaScript fallback')
+    }
   }
 
   setOptions(options: Partial<OscilloscopeOptions>): void {
     this.options = { ...this.options, ...options }
+
+    // Update native module settings
+    if (isNativeAvailable() && options.pitchLock !== undefined) {
+      nativeOscilloscope.setPitchLock(options.pitchLock)
+    }
   }
 
   start(): void {
@@ -58,7 +81,7 @@ export class Oscilloscope {
   resize(): void {}
 
   /**
-   * Bidirectional IIR lowpass filter for zero phase delay
+   * Bidirectional IIR lowpass filter for zero phase delay (JS fallback)
    */
   private lowpass(data: Float32Array): Float32Array {
     const len = data.length
@@ -84,10 +107,9 @@ export class Oscilloscope {
   }
 
   /**
-   * Find trigger point - rising zero-crossing on lowpass filtered signal
-   * Uses heavy smoothing and searches near the expected position
+   * Find trigger point - rising zero-crossing on lowpass filtered signal (JS fallback)
    */
-  private findTrigger(data: Float32Array): number {
+  private findTriggerJS(data: Float32Array): number {
     const filtered = this.lowpass(data)
     const searchEnd = Math.floor(data.length / 2)
 
@@ -110,7 +132,6 @@ export class Oscilloscope {
     }
 
     // Find the crossing closest to our last trigger position
-    // This keeps us locked to the same phase point
     let bestCrossing = crossings[0]
     let bestDist = Math.abs(crossings[0] - this.lastTrigger)
 
@@ -122,7 +143,7 @@ export class Oscilloscope {
       }
     }
 
-    // Moderate smoothing (70/30) - enough to reduce jitter but still track
+    // Moderate smoothing (70/30)
     this.lastTrigger = Math.round(this.lastTrigger * 0.7 + bestCrossing * 0.3)
 
     return this.lastTrigger
@@ -154,14 +175,24 @@ export class Oscilloscope {
       this.drawGrid()
     }
 
-    // Find trigger point
+    // Find trigger point and samples to show
     let startIndex = 0
-    if (options.pitchLock) {
-      startIndex = this.findTrigger(timeDomainData)
-    }
+    let samplesToShow = Math.min(4096, bufferLength)
 
-    // Show more samples for multi-cycle view (like MiniMeters "multi" mode)
-    const samplesToShow = Math.min(4096, bufferLength - startIndex)
+    if (options.pitchLock) {
+      if (isNativeAvailable()) {
+        // Use native pitch-locked trigger detection
+        const result = nativeOscilloscope.process(timeDomainData)
+        if (result) {
+          startIndex = result.triggerIndex
+          samplesToShow = Math.min(result.samplesToShow, bufferLength - startIndex)
+        }
+      } else {
+        // Use JavaScript fallback
+        startIndex = this.findTriggerJS(timeDomainData)
+        samplesToShow = Math.min(4096, bufferLength - startIndex)
+      }
+    }
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
@@ -227,5 +258,10 @@ export class Oscilloscope {
     this.stop()
     this.lastTrigger = 0
     this.filteredBuffer = new Float32Array(0)
+
+    // Reset native module state
+    if (isNativeAvailable()) {
+      nativeOscilloscope.reset()
+    }
   }
 }
