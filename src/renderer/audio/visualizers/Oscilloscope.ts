@@ -147,7 +147,7 @@ export class Oscilloscope {
     }
 
     // Show more samples for multi-cycle view (like MiniMeters "multi" mode)
-    const samplesToShow = Math.min(2048, bufferLength - startIndex)
+    const samplesToShow = Math.min(4096, bufferLength - startIndex)
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth

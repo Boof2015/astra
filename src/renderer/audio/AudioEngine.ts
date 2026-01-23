@@ -31,7 +31,7 @@ export class AudioEngine {
   private _volume: number = 0.7
   private _isMuted: boolean = false
   private _normalizationEnabled: boolean = true
-  private _targetLufs: number = -14 // Target loudness in LUFS (Spotify uses -14)
+  private _targetLufs: number = -7 // Target loudness in LUFS
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
