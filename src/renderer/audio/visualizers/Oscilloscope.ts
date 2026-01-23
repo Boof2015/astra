@@ -25,6 +25,10 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
 
+  // State for stable triggering
+  private lastTrigger: number = 0
+  private filteredBuffer: Float32Array = new Float32Array(0)
+
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
@@ -54,40 +58,60 @@ export class Oscilloscope {
   resize(): void {}
 
   /**
-   * Simple lowpass filter - just average neighboring samples
+   * Bidirectional IIR lowpass filter for zero phase delay
    */
-  private lowpass(data: Float32Array, radius: number): Float32Array {
-    const result = new Float32Array(data.length)
-    for (let i = 0; i < data.length; i++) {
-      let sum = 0
-      let count = 0
-      for (let j = Math.max(0, i - radius); j <= Math.min(data.length - 1, i + radius); j++) {
-        sum += data[j]
-        count++
-      }
-      result[i] = sum / count
+  private lowpass(data: Float32Array): Float32Array {
+    const len = data.length
+    if (this.filteredBuffer.length !== len) {
+      this.filteredBuffer = new Float32Array(len)
     }
-    return result
+
+    // IIR lowpass: alpha ~0.05 gives good bass extraction
+    const alpha = 0.05
+
+    // Forward pass
+    this.filteredBuffer[0] = data[0]
+    for (let i = 1; i < len; i++) {
+      this.filteredBuffer[i] = alpha * data[i] + (1 - alpha) * this.filteredBuffer[i - 1]
+    }
+
+    // Backward pass for zero phase delay
+    for (let i = len - 2; i >= 0; i--) {
+      this.filteredBuffer[i] = alpha * this.filteredBuffer[i] + (1 - alpha) * this.filteredBuffer[i + 1]
+    }
+
+    return this.filteredBuffer
   }
 
   /**
-   * Find trigger point - simple rising zero-crossing on lowpass filtered signal
+   * Find trigger point - rising zero-crossing on lowpass filtered signal
+   * with smoothing to reduce frame-to-frame jitter
    */
   private findTrigger(data: Float32Array): number {
-    // Apply simple lowpass to smooth out high frequencies
-    // Radius of 20 samples at 44100Hz ≈ 1100Hz cutoff
-    const filtered = this.lowpass(data, 20)
-
+    const filtered = this.lowpass(data)
     const searchEnd = Math.floor(data.length / 2)
 
     // Find first rising zero-crossing
+    let newTrigger = 0
     for (let i = 1; i < searchEnd; i++) {
       if (filtered[i - 1] < 0 && filtered[i] >= 0) {
-        return i
+        newTrigger = i
+        break
       }
     }
 
-    return 0
+    // Smooth the trigger position to reduce jitter
+    // But allow it to snap if the difference is large (frequency changed)
+    const diff = Math.abs(newTrigger - this.lastTrigger)
+    if (diff > 100 || this.lastTrigger === 0) {
+      // Large change or first frame - snap immediately
+      this.lastTrigger = newTrigger
+    } else {
+      // Small change - smooth it
+      this.lastTrigger = Math.round(this.lastTrigger * 0.8 + newTrigger * 0.2)
+    }
+
+    return this.lastTrigger
   }
 
   private draw = (): void => {
@@ -187,5 +211,7 @@ export class Oscilloscope {
 
   dispose(): void {
     this.stop()
+    this.lastTrigger = 0
+    this.filteredBuffer = new Float32Array(0)
   }
 }
