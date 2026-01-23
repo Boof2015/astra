@@ -24,8 +24,11 @@ export class Oscilloscope {
   private options: Required<OscilloscopeOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
-  private timeDomainData: Float32Array = new Float32Array(0)
-  private lastPeriod: number = 512  // Default period estimate
+  private lastPeriod: number = 512
+
+  // Store previous waveform for correlation-based alignment
+  private prevWaveform: Float32Array = new Float32Array(0)
+  private displaySamples: number = 1024
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -62,8 +65,8 @@ export class Oscilloscope {
     const width = canvas.width
     const height = canvas.height
 
-    this.timeDomainData = audioEngine.getFloatTimeDomainData()
-    const bufferLength = this.timeDomainData.length
+    const timeDomainData = audioEngine.getFloatTimeDomainData()
+    const bufferLength = timeDomainData.length
 
     if (bufferLength === 0) {
       this.animationId = requestAnimationFrame(this.draw)
@@ -82,32 +85,29 @@ export class Oscilloscope {
     }
 
     let startIndex = 0
-    let samplesToShow = Math.floor(bufferLength * 0.5)
 
-    if (options.pitchLock) {
-      // Detect period and find stable trigger point
-      const period = this.detectPeriodAutocorr()
-      if (period > 0) {
-        this.lastPeriod = this.lastPeriod * 0.7 + period * 0.3 // Smooth period changes
-      }
-
-      // Dynamic cycle count based on frequency
-      // Lower frequencies (longer periods) = fewer cycles, higher frequencies = more cycles
-      // Aim for a visually pleasing number of cycles (4-8 typically)
-      const minCycles = 4
-      const maxCycles = 10
-      // Scale cycles based on period - shorter periods (higher freq) get more cycles
-      const cycleCount = Math.max(minCycles, Math.min(maxCycles, Math.floor(800 / this.lastPeriod)))
-
-      samplesToShow = Math.min(Math.floor(this.lastPeriod * cycleCount), Math.floor(bufferLength * 0.7))
-
-      // Find trigger: rising zero crossing AFTER the first positive peak
-      // This ensures consistent phase alignment
-      startIndex = this.findStableTrigger()
+    if (options.pitchLock && this.prevWaveform.length > 0) {
+      // Use correlation to find best alignment with previous frame
+      startIndex = this.findBestAlignment(timeDomainData)
+    } else {
+      // First frame or no pitch lock - find a rising zero crossing
+      startIndex = this.findSimpleTrigger(timeDomainData)
     }
 
-    samplesToShow = Math.min(samplesToShow, bufferLength - startIndex)
+    // Calculate how many samples to display
+    const samplesToShow = Math.min(this.displaySamples, bufferLength - startIndex)
 
+    // Store this waveform section for next frame comparison
+    if (options.pitchLock) {
+      if (this.prevWaveform.length !== samplesToShow) {
+        this.prevWaveform = new Float32Array(samplesToShow)
+      }
+      for (let i = 0; i < samplesToShow; i++) {
+        this.prevWaveform[i] = timeDomainData[startIndex + i]
+      }
+    }
+
+    // Draw waveform
     ctx.lineWidth = options.lineWidth
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
@@ -120,7 +120,7 @@ export class Oscilloscope {
       const dataIndex = startIndex + i
       if (dataIndex >= bufferLength) break
 
-      const sample = this.timeDomainData[dataIndex]
+      const sample = timeDomainData[dataIndex]
       const y = ((1 - sample) / 2) * height
       const x = i * sliceWidth
 
@@ -168,74 +168,40 @@ export class Oscilloscope {
   }
 
   /**
-   * Simple autocorrelation-based period detection
+   * Find the best alignment offset by correlating current buffer with previous waveform
+   * This keeps the display stable by aligning similar waveform shapes
    */
-  private detectPeriodAutocorr(): number {
-    const data = this.timeDomainData
-    const len = data.length
+  private findBestAlignment(data: Float32Array): number {
+    const prevLen = this.prevWaveform.length
+    if (prevLen === 0) return 0
 
-    // Check signal level
-    let maxVal = 0
-    for (let i = 0; i < len; i++) {
-      if (Math.abs(data[i]) > maxVal) maxVal = Math.abs(data[i])
-    }
-    if (maxVal < 0.01) return 0
+    const searchRange = Math.min(512, Math.floor(data.length / 4))
+    let bestOffset = 0
+    let bestCorrelation = -Infinity
 
-    // Search range: ~30Hz to ~2000Hz at 48kHz sample rate
-    const minPeriod = 24
-    const maxPeriod = Math.min(1600, Math.floor(len / 4))
+    // Search for the offset that best matches the previous waveform
+    for (let offset = 0; offset < searchRange; offset++) {
+      let correlation = 0
+      const compareLen = Math.min(prevLen, data.length - offset)
 
-    let bestPeriod = 0
-    let bestCorr = -1
-
-    // Simplified autocorrelation - compare chunks
-    for (let period = minPeriod; period < maxPeriod; period += 2) {
-      let corr = 0
-      const samples = Math.min(period * 2, len - period)
-
-      for (let i = 0; i < samples; i++) {
-        corr += data[i] * data[i + period]
+      for (let i = 0; i < compareLen; i++) {
+        correlation += this.prevWaveform[i] * data[offset + i]
       }
-      corr /= samples
 
-      if (corr > bestCorr) {
-        bestCorr = corr
-        bestPeriod = period
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation
+        bestOffset = offset
       }
     }
 
-    // Refine around best period
-    const searchStart = Math.max(minPeriod, bestPeriod - 10)
-    const searchEnd = Math.min(maxPeriod, bestPeriod + 10)
-
-    for (let period = searchStart; period <= searchEnd; period++) {
-      let corr = 0
-      const samples = Math.min(period * 2, len - period)
-
-      for (let i = 0; i < samples; i++) {
-        corr += data[i] * data[i + period]
-      }
-      corr /= samples
-
-      if (corr > bestCorr) {
-        bestCorr = corr
-        bestPeriod = period
-      }
-    }
-
-    return bestCorr > maxVal * maxVal * 0.3 ? bestPeriod : 0
+    return bestOffset
   }
 
   /**
-   * Find a stable trigger point by:
-   * 1. Finding the first significant positive peak
-   * 2. Then finding the rising zero crossing just before it
-   * This ensures we always trigger at the same phase
+   * Simple trigger for first frame - find rising zero crossing
    */
-  private findStableTrigger(): number {
-    const data = this.timeDomainData
-    const len = data.length
-    const searchEnd = Math.floor(len / 3)
+  private findSimpleTrigger(data: Float32Array): number {
+    const searchEnd = Math.floor(data.length / 3)
 
     // Find max amplitude for threshold
     let maxAmp = 0
@@ -245,29 +211,17 @@ export class Oscilloscope {
 
     if (maxAmp < 0.01) return 0
 
-    const peakThreshold = maxAmp * 0.7
+    const threshold = maxAmp * 0.3
 
-    // Find first significant positive peak
-    let peakIndex = -1
-    for (let i = 1; i < searchEnd - 1; i++) {
-      if (data[i] > peakThreshold && data[i] > data[i - 1] && data[i] >= data[i + 1]) {
-        peakIndex = i
-        break
+    // Find rising zero crossing after a negative peak
+    for (let i = 1; i < searchEnd; i++) {
+      if (data[i - 1] < -threshold && data[i] >= 0) {
+        return i
       }
     }
 
-    if (peakIndex < 0) {
-      // Fallback: just find any rising zero crossing
-      for (let i = 1; i < searchEnd; i++) {
-        if (data[i - 1] < 0 && data[i] >= 0) {
-          return i
-        }
-      }
-      return 0
-    }
-
-    // Find the rising zero crossing just before this peak
-    for (let i = peakIndex; i > 0; i--) {
+    // Fallback: any rising zero crossing
+    for (let i = 1; i < searchEnd; i++) {
       if (data[i - 1] < 0 && data[i] >= 0) {
         return i
       }
@@ -278,5 +232,6 @@ export class Oscilloscope {
 
   dispose(): void {
     this.stop()
+    this.prevWaveform = new Float32Array(0)
   }
 }
