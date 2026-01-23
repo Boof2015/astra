@@ -25,6 +25,7 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private timeDomainData: Float32Array = new Float32Array(0)
+  private lastTriggerIndex: number = 0
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -54,7 +55,6 @@ export class Oscilloscope {
 
   resize(): void {
     // Canvas resize is handled externally
-    // This method can be called to trigger a redraw
   }
 
   private draw = (): void => {
@@ -91,7 +91,11 @@ export class Oscilloscope {
     let startIndex = 0
     if (options.pitchLock) {
       startIndex = this.findTriggerPoint()
+      this.lastTriggerIndex = startIndex
     }
+
+    // Calculate how many samples to display (show about 2-4 cycles worth)
+    const samplesToShow = Math.min(bufferLength - startIndex, Math.floor(bufferLength * 0.5))
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
@@ -100,15 +104,18 @@ export class Oscilloscope {
     ctx.lineJoin = 'round'
     ctx.beginPath()
 
-    const sliceWidth = width / (bufferLength / 2) // Show half the buffer for better detail
+    const sliceWidth = width / samplesToShow
     let x = 0
 
-    for (let i = startIndex; i < startIndex + bufferLength / 2 && i < bufferLength; i++) {
-      const sample = this.timeDomainData[i]
+    for (let i = 0; i < samplesToShow; i++) {
+      const dataIndex = startIndex + i
+      if (dataIndex >= bufferLength) break
+
+      const sample = this.timeDomainData[dataIndex]
       // Map -1 to 1 range to canvas height
       const y = ((1 - sample) / 2) * height
 
-      if (i === startIndex) {
+      if (i === 0) {
         ctx.moveTo(x, y)
       } else {
         ctx.lineTo(x, y)
@@ -145,12 +152,10 @@ export class Oscilloscope {
     ctx.strokeStyle = options.gridColor.replace('0.1', '0.05')
     for (let i = 1; i < 4; i++) {
       if (i === 2) continue // Skip center
-      // Horizontal
       ctx.beginPath()
       ctx.moveTo(0, (height / 4) * i)
       ctx.lineTo(width, (height / 4) * i)
       ctx.stroke()
-      // Vertical
       ctx.beginPath()
       ctx.moveTo((width / 4) * i, 0)
       ctx.lineTo((width / 4) * i, height)
@@ -160,20 +165,45 @@ export class Oscilloscope {
 
   private findTriggerPoint(): number {
     const data = this.timeDomainData
-    const threshold = 0.0 // Trigger at zero crossing
+    const len = data.length
 
-    // Look for upward zero crossing in the first half of the buffer
-    for (let i = 1; i < data.length / 2; i++) {
-      if (data[i - 1] <= threshold && data[i] > threshold) {
+    // Find the peak amplitude to set a meaningful trigger threshold
+    let maxAmp = 0
+    for (let i = 0; i < len; i++) {
+      const amp = Math.abs(data[i])
+      if (amp > maxAmp) maxAmp = amp
+    }
+
+    // If signal is too quiet, don't try to trigger
+    if (maxAmp < 0.01) return 0
+
+    // Trigger threshold: look for zero crossings where there's actual signal
+    // We want to find a rising edge that comes after a significant negative value
+    const triggerThreshold = maxAmp * 0.1 // 10% of peak as minimum
+
+    // Search in the first third of the buffer for a good trigger point
+    const searchEnd = Math.floor(len / 3)
+
+    for (let i = 1; i < searchEnd; i++) {
+      const prev = data[i - 1]
+      const curr = data[i]
+
+      // Look for rising zero crossing with significant amplitude before
+      if (prev < 0 && curr >= 0 && Math.abs(prev) > triggerThreshold) {
         return i
       }
     }
 
-    // Fallback: look for any upward crossing
-    for (let i = 1; i < data.length / 2; i++) {
-      if (data[i - 1] < data[i] && data[i] > 0) {
+    // Fallback: any rising zero crossing
+    for (let i = 1; i < searchEnd; i++) {
+      if (data[i - 1] < 0 && data[i] >= 0) {
         return i
       }
+    }
+
+    // Last resort: return where we triggered last time (for stability)
+    if (this.lastTriggerIndex > 0 && this.lastTriggerIndex < searchEnd) {
+      return this.lastTriggerIndex
     }
 
     return 0

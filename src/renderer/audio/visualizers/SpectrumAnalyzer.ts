@@ -25,7 +25,7 @@ const defaultOptions: Required<SpectrumAnalyzerOptions> = {
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
   scaleType: 'log',
-  smoothing: 0.8,
+  smoothing: 0.85,
   minDecibels: -90,
   maxDecibels: -10,
   minFrequency: 20,
@@ -70,6 +70,19 @@ export class SpectrumAnalyzer {
     // Canvas resize is handled externally
   }
 
+  // Linear interpolation helper
+  private lerp(a: number, b: number, t: number): number {
+    return a + (b - a) * t
+  }
+
+  // Get interpolated value from frequency data
+  private getInterpolatedValue(data: Float32Array, index: number): number {
+    const i0 = Math.floor(index)
+    const i1 = Math.min(i0 + 1, data.length - 1)
+    const t = index - i0
+    return this.lerp(data[i0], data[i1], t)
+  }
+
   private draw = (): void => {
     if (!this.isRunning) return
 
@@ -92,7 +105,7 @@ export class SpectrumAnalyzer {
       this.smoothedData.fill(options.minDecibels)
     }
 
-    // Apply smoothing
+    // Apply temporal smoothing
     for (let i = 0; i < bufferLength; i++) {
       this.smoothedData[i] = this.smoothedData[i] * options.smoothing +
                              frequencyData[i] * (1 - options.smoothing)
@@ -112,51 +125,56 @@ export class SpectrumAnalyzer {
       this.drawGrid()
     }
 
-    // Calculate frequency bin info
-    const analyser = audioEngine.analyser
-    const sampleRate = analyser ? 48000 : 48000 // Fallback if not available
-    const binWidth = sampleRate / (bufferLength * 2)
+    // Calculate frequency mapping
+    const sampleRate = 48000 // Standard sample rate
+    const nyquist = sampleRate / 2
+    const binWidth = nyquist / bufferLength
 
-    // Build path for the spectrum line
-    ctx.beginPath()
-
+    // Build smooth path using more points and interpolation
     const points: { x: number; y: number }[] = []
-    const numPoints = Math.min(width, 512) // Limit points for performance
+    const numPoints = Math.max(width, 256) // At least 256 points for smoothness
 
     for (let i = 0; i < numPoints; i++) {
-      const x = i / (numPoints - 1) * width
+      const x = (i / (numPoints - 1)) * width
 
-      // Map x position to frequency
+      // Map x position to frequency (log or linear)
       let frequency: number
       if (options.scaleType === 'log') {
         const logMin = Math.log10(options.minFrequency)
         const logMax = Math.log10(options.maxFrequency)
-        frequency = Math.pow(10, logMin + (i / numPoints) * (logMax - logMin))
+        frequency = Math.pow(10, logMin + (i / (numPoints - 1)) * (logMax - logMin))
       } else {
-        frequency = options.minFrequency + (i / numPoints) * (options.maxFrequency - options.minFrequency)
+        frequency = options.minFrequency + (i / (numPoints - 1)) * (options.maxFrequency - options.minFrequency)
       }
 
-      // Convert frequency to bin index
-      const binIndex = Math.round(frequency / binWidth)
-      const clampedIndex = Math.max(0, Math.min(bufferLength - 1, binIndex))
+      // Convert frequency to bin index (floating point for interpolation)
+      const binIndex = frequency / binWidth
 
-      // Get dB value and normalize to 0-1
-      const db = this.smoothedData[clampedIndex]
+      // Get interpolated dB value
+      const db = this.getInterpolatedValue(this.smoothedData, Math.min(binIndex, bufferLength - 1))
+
+      // Normalize to 0-1 range
       const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
       const y = height - Math.max(0, Math.min(1, normalized)) * height
 
       points.push({ x, y })
-
-      if (i === 0) {
-        ctx.moveTo(x, y)
-      } else {
-        ctx.lineTo(x, y)
-      }
     }
 
-    // Draw fill gradient below the line
+    // Draw filled area with gradient
     if (options.fillGradient && points.length > 0) {
-      // Complete the path for filling
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+
+      // Use quadratic curves for smoother line
+      for (let i = 1; i < points.length - 1; i++) {
+        const xc = (points[i].x + points[i + 1].x) / 2
+        const yc = (points[i].y + points[i + 1].y) / 2
+        ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc)
+      }
+      // Connect to last point
+      ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y)
+
+      // Complete path for fill
       ctx.lineTo(width, height)
       ctx.lineTo(0, height)
       ctx.closePath()
@@ -170,19 +188,20 @@ export class SpectrumAnalyzer {
 
       ctx.fillStyle = gradient
       ctx.fill()
-
-      // Redraw the line on top
-      ctx.beginPath()
-      for (let i = 0; i < points.length; i++) {
-        if (i === 0) {
-          ctx.moveTo(points[i].x, points[i].y)
-        } else {
-          ctx.lineTo(points[i].x, points[i].y)
-        }
-      }
     }
 
-    // Stroke the line
+    // Draw the line on top
+    ctx.beginPath()
+    ctx.moveTo(points[0].x, points[0].y)
+
+    // Use quadratic curves for smoother line
+    for (let i = 1; i < points.length - 1; i++) {
+      const xc = (points[i].x + points[i + 1].x) / 2
+      const yc = (points[i].y + points[i + 1].y) / 2
+      ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc)
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y)
+
     ctx.lineWidth = options.lineWidth
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
@@ -215,7 +234,6 @@ export class SpectrumAnalyzer {
       ctx.lineTo(width, y)
       ctx.stroke()
 
-      // Label
       ctx.fillText(`${db}dB`, 4, y - 2)
     }
 
@@ -241,7 +259,6 @@ export class SpectrumAnalyzer {
       ctx.lineTo(x, height)
       ctx.stroke()
 
-      // Label
       const label = freq >= 1000 ? `${freq / 1000}k` : `${freq}`
       ctx.fillText(label, x, height - 4)
     }

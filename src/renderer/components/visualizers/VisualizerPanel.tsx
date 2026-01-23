@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { Oscilloscope, SpectrumAnalyzer, Vectorscope } from '../../audio/visualizers'
 import { audioEngine } from '../../audio/AudioEngine'
 
-type VisualizerType = 'oscilloscope' | 'spectrum' | 'vectorscope'
 type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 
 interface VisualizerPanelProps {
@@ -10,12 +9,20 @@ interface VisualizerPanelProps {
 }
 
 export default function VisualizerPanel({ className = '' }: VisualizerPanelProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const canvasContainerRef = useRef<HTMLDivElement>(null)
-  const visualizerRef = useRef<Oscilloscope | SpectrumAnalyzer | Vectorscope | null>(null)
+  // Refs for all three canvases
+  const scopeCanvasRef = useRef<HTMLCanvasElement>(null)
+  const spectrumCanvasRef = useRef<HTMLCanvasElement>(null)
+  const vectorCanvasRef = useRef<HTMLCanvasElement>(null)
 
-  const [activeType, setActiveType] = useState<VisualizerType>('oscilloscope')
+  const scopeContainerRef = useRef<HTMLDivElement>(null)
+  const spectrumContainerRef = useRef<HTMLDivElement>(null)
+  const vectorContainerRef = useRef<HTMLDivElement>(null)
+
+  // Visualizer instances
+  const scopeRef = useRef<Oscilloscope | null>(null)
+  const spectrumRef = useRef<SpectrumAnalyzer | null>(null)
+  const vectorRef = useRef<Vectorscope | null>(null)
+
   const [isRunning, setIsRunning] = useState(true)
 
   // Settings
@@ -23,154 +30,151 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
   const [fftSize, setFftSize] = useState<FFTSize>(2048)
   const [pitchLock, setPitchLock] = useState(true)
 
-  // Resize handler - measure the canvas container, not the whole panel
-  const handleResize = useCallback(() => {
-    const canvas = canvasRef.current
-    const container = canvasContainerRef.current
-    if (!canvas || !container) return
-
-    // Get container dimensions
+  // Resize a single canvas to fit its container
+  const resizeCanvas = useCallback((canvas: HTMLCanvasElement, container: HTMLDivElement) => {
     const rect = container.getBoundingClientRect()
-
-    // Set canvas to actual pixel dimensions (no DPR scaling for visualizers)
     canvas.width = Math.floor(rect.width)
     canvas.height = Math.floor(rect.height)
   }, [])
+
+  // Resize all canvases
+  const handleResize = useCallback(() => {
+    if (scopeCanvasRef.current && scopeContainerRef.current) {
+      resizeCanvas(scopeCanvasRef.current, scopeContainerRef.current)
+    }
+    if (spectrumCanvasRef.current && spectrumContainerRef.current) {
+      resizeCanvas(spectrumCanvasRef.current, spectrumContainerRef.current)
+    }
+    if (vectorCanvasRef.current && vectorContainerRef.current) {
+      resizeCanvas(vectorCanvasRef.current, vectorContainerRef.current)
+    }
+  }, [resizeCanvas])
 
   // Update FFT size on audio engine when changed
   useEffect(() => {
     audioEngine.setFFTSize(fftSize)
   }, [fftSize])
 
-  // Create/update visualizer when type or settings change
+  // Create visualizers
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    // Stop and dispose current visualizer
-    if (visualizerRef.current) {
-      visualizerRef.current.stop()
-      visualizerRef.current.dispose()
-      visualizerRef.current = null
-    }
-
-    // Ensure canvas is sized
+    // Ensure canvases are sized first
     handleResize()
 
-    // Create new visualizer based on type
-    switch (activeType) {
-      case 'oscilloscope':
-        visualizerRef.current = new Oscilloscope(canvas, {
-          lineColor,
-          lineWidth: 2,
-          pitchLock,
-          showGrid: true
-        })
-        break
-      case 'spectrum':
-        visualizerRef.current = new SpectrumAnalyzer(canvas, {
-          lineColor,
-          lineWidth: 2,
-          fillGradient: true,
-          gradientColors: [
-            'rgba(0, 255, 255, 0)',
-            `${lineColor}33`,
-            `${lineColor}66`
-          ],
-          scaleType: 'log',
-          showGrid: true
-        })
-        break
-      case 'vectorscope':
-        visualizerRef.current = new Vectorscope(canvas, {
-          lineColor,
-          lineWidth: 1.5,
-          fadeAmount: 0.12,
-          colorByIntensity: true,
-          intensityColors: ['#00ffff', '#ff00ff', '#ff0066'],
-          showGrid: true
-        })
-        break
+    // Create oscilloscope
+    if (scopeCanvasRef.current && !scopeRef.current) {
+      scopeRef.current = new Oscilloscope(scopeCanvasRef.current, {
+        lineColor,
+        lineWidth: 2,
+        pitchLock,
+        showGrid: true
+      })
     }
 
-    // Start if should be running
-    if (isRunning && visualizerRef.current) {
-      visualizerRef.current.start()
+    // Create spectrum analyzer
+    if (spectrumCanvasRef.current && !spectrumRef.current) {
+      spectrumRef.current = new SpectrumAnalyzer(spectrumCanvasRef.current, {
+        lineColor,
+        lineWidth: 2,
+        fillGradient: true,
+        gradientColors: [
+          'rgba(0, 255, 255, 0)',
+          `${lineColor}33`,
+          `${lineColor}66`
+        ],
+        scaleType: 'log',
+        showGrid: true
+      })
+    }
+
+    // Create vectorscope
+    if (vectorCanvasRef.current && !vectorRef.current) {
+      vectorRef.current = new Vectorscope(vectorCanvasRef.current, {
+        lineColor,
+        lineWidth: 1,
+        showGrid: true
+      })
+    }
+
+    // Start all if running
+    if (isRunning) {
+      scopeRef.current?.start()
+      spectrumRef.current?.start()
+      vectorRef.current?.start()
     }
 
     return () => {
-      if (visualizerRef.current) {
-        visualizerRef.current.stop()
-        visualizerRef.current.dispose()
-      }
+      scopeRef.current?.dispose()
+      spectrumRef.current?.dispose()
+      vectorRef.current?.dispose()
+      scopeRef.current = null
+      spectrumRef.current = null
+      vectorRef.current = null
     }
-  }, [activeType, lineColor, pitchLock, isRunning, handleResize])
+  }, []) // Only run once on mount
 
-  // Handle resize with ResizeObserver for more reliable sizing
+  // Update visualizer options when settings change
+  useEffect(() => {
+    scopeRef.current?.setOptions({ lineColor, pitchLock })
+    spectrumRef.current?.setOptions({
+      lineColor,
+      gradientColors: [
+        'rgba(0, 255, 255, 0)',
+        `${lineColor}33`,
+        `${lineColor}66`
+      ]
+    })
+    vectorRef.current?.setOptions({ lineColor })
+  }, [lineColor, pitchLock])
+
+  // Handle running state changes
+  useEffect(() => {
+    if (isRunning) {
+      scopeRef.current?.start()
+      spectrumRef.current?.start()
+      vectorRef.current?.start()
+    } else {
+      scopeRef.current?.stop()
+      spectrumRef.current?.stop()
+      vectorRef.current?.stop()
+    }
+  }, [isRunning])
+
+  // Handle resize with ResizeObserver
   useEffect(() => {
     handleResize()
 
-    const container = canvasContainerRef.current
-    if (!container) return
-
-    const resizeObserver = new ResizeObserver(() => {
+    const observer = new ResizeObserver(() => {
       handleResize()
     })
-    resizeObserver.observe(container)
+
+    if (scopeContainerRef.current) observer.observe(scopeContainerRef.current)
+    if (spectrumContainerRef.current) observer.observe(spectrumContainerRef.current)
+    if (vectorContainerRef.current) observer.observe(vectorContainerRef.current)
 
     window.addEventListener('resize', handleResize)
     return () => {
-      resizeObserver.disconnect()
+      observer.disconnect()
       window.removeEventListener('resize', handleResize)
     }
   }, [handleResize])
 
-  // Toggle running state
-  const toggleRunning = () => {
-    setIsRunning(prev => {
-      const next = !prev
-      if (visualizerRef.current) {
-        if (next) {
-          visualizerRef.current.start()
-        } else {
-          visualizerRef.current.stop()
-        }
-      }
-      return next
-    })
-  }
+  const toggleRunning = () => setIsRunning(prev => !prev)
 
   return (
-    <div className={`visualizer-panel ${className}`} ref={containerRef}>
+    <div className={`visualizer-panel ${className}`}>
       <div className="visualizer-controls">
-        <div className="visualizer-type-selector">
-          <button
-            className={`visualizer-type-btn ${activeType === 'oscilloscope' ? 'active' : ''}`}
-            onClick={() => setActiveType('oscilloscope')}
-          >
-            Scope
-          </button>
-          <button
-            className={`visualizer-type-btn ${activeType === 'spectrum' ? 'active' : ''}`}
-            onClick={() => setActiveType('spectrum')}
-          >
-            Spectrum
-          </button>
-          <button
-            className={`visualizer-type-btn ${activeType === 'vectorscope' ? 'active' : ''}`}
-            onClick={() => setActiveType('vectorscope')}
-          >
-            Vector
-          </button>
+        <div className="visualizer-labels">
+          <span className="visualizer-label">Scope</span>
+          <span className="visualizer-label">Spectrum</span>
+          <span className="visualizer-label">Vector</span>
         </div>
 
         <div className="visualizer-settings">
-          {/* FFT Size selector */}
           <select
             className="visualizer-select"
             value={fftSize}
             onChange={(e) => setFftSize(Number(e.target.value) as FFTSize)}
-            title="FFT Size (quality)"
+            title="FFT Size"
           >
             <option value={1024}>1024</option>
             <option value={2048}>2048</option>
@@ -179,16 +183,13 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
             <option value={16384}>16384</option>
           </select>
 
-          {/* Pitch lock toggle (only for oscilloscope) */}
-          {activeType === 'oscilloscope' && (
-            <button
-              className={`visualizer-option-btn ${pitchLock ? 'active' : ''}`}
-              onClick={() => setPitchLock(!pitchLock)}
-              title="Pitch Lock (stabilize waveform)"
-            >
-              PL
-            </button>
-          )}
+          <button
+            className={`visualizer-option-btn ${pitchLock ? 'active' : ''}`}
+            onClick={() => setPitchLock(!pitchLock)}
+            title="Pitch Lock"
+          >
+            PL
+          </button>
 
           <label className="color-picker-label">
             <input
@@ -208,8 +209,17 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
           </button>
         </div>
       </div>
-      <div className="visualizer-canvas-container" ref={canvasContainerRef}>
-        <canvas ref={canvasRef} className="visualizer-canvas" />
+
+      <div className="visualizer-grid">
+        <div className="visualizer-item" ref={scopeContainerRef}>
+          <canvas ref={scopeCanvasRef} className="visualizer-canvas" />
+        </div>
+        <div className="visualizer-item" ref={spectrumContainerRef}>
+          <canvas ref={spectrumCanvasRef} className="visualizer-canvas" />
+        </div>
+        <div className="visualizer-item visualizer-item-square" ref={vectorContainerRef}>
+          <canvas ref={vectorCanvasRef} className="visualizer-canvas" />
+        </div>
       </div>
     </div>
   )
