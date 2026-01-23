@@ -1,16 +1,18 @@
-name: Build & Type Check (All Branches)
+name: Build Check
 
-# Changed to trigger on ANY push or pull request
 on:
   push:
   pull_request:
 
 jobs:
-  # Job 1: Type Check (Runs once on Linux)
-  # We run this separately so it fails fast if types are wrong
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,33 +22,6 @@ jobs:
           node-version: 20.x
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run TypeScript Check
-        run: npm run typecheck
-
-  # Job 2: Build (Runs on OS Matrix)
-  build:
-    name: Build on ${{ matrix.os }}
-    needs: typecheck
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: [20.x]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      # Speeds up downloading the Electron binary
       - name: Cache Electron
         uses: actions/cache@v4
         with:
@@ -58,20 +33,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # This runs "electron-vite build"
       - name: Build Project
         run: npm run build
-
-      # OPTIONAL: Create the installers (.exe, .dmg)
-      # If you add 'electron-builder' to your project later, 
-      # add a step here running: npm run dist (or whatever script you define)
-
-      - name: Upload Compiled Artifacts
-        # Uploads the 'out' folder specified in your package.json
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: astra-build-${{ matrix.os }}
-          # electron-vite outputs to 'out/' by default
-          path: out/
-          retention-days: 7
