@@ -25,6 +25,7 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private displaySamples: number = 2048
+  private detectedPeriod: number = 512 // Smoothed period for stability
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
@@ -80,15 +81,18 @@ export class Oscilloscope {
       this.drawGrid()
     }
 
-    // Find trigger point - always start at a rising zero-crossing
-    // This keeps the waveform phase-locked and stationary
+    // Find trigger point and determine samples to show
     let startIndex = 0
+    let samplesToShow = this.displaySamples
+
     if (options.pitchLock) {
       startIndex = this.findTriggerPoint(timeDomainData)
+      // Show 4-8 cycles of the detected period
+      const cyclesToShow = 6
+      samplesToShow = Math.min(this.detectedPeriod * cyclesToShow, bufferLength - startIndex)
     }
 
-    // Calculate how many samples to display
-    const samplesToShow = Math.min(this.displaySamples, bufferLength - startIndex)
+    samplesToShow = Math.min(samplesToShow, bufferLength - startIndex)
 
     // Draw waveform
     ctx.lineWidth = options.lineWidth
@@ -151,32 +155,49 @@ export class Oscilloscope {
   }
 
   /**
-   * Find trigger point using zero-crossing detection
-   * Always triggers at the same phase point so waveform appears stationary
+   * Detect the fundamental period using autocorrelation
    */
-  private findTriggerPoint(data: Float32Array): number {
+  private detectPeriod(data: Float32Array): number {
     const len = data.length
-    const searchEnd = Math.floor(len / 2)
+    // Search for periods between ~20Hz and ~2000Hz (assuming 44100 sample rate)
+    const minPeriod = 22 // ~2000Hz
+    const maxPeriod = Math.min(2205, Math.floor(len / 4)) // ~20Hz
 
-    // Find the peak amplitude to set a threshold
-    let maxVal = 0
-    for (let i = 0; i < searchEnd; i++) {
-      const absVal = Math.abs(data[i])
-      if (absVal > maxVal) maxVal = absVal
+    let bestPeriod = this.detectedPeriod
+    let bestCorrelation = -Infinity
+
+    // Autocorrelation to find the dominant period
+    for (let period = minPeriod; period < maxPeriod; period++) {
+      let correlation = 0
+      const samples = Math.min(len - period, 1024)
+
+      for (let i = 0; i < samples; i++) {
+        correlation += data[i] * data[i + period]
+      }
+
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation
+        bestPeriod = period
+      }
     }
 
-    // If signal is too quiet, don't trigger
-    if (maxVal < 0.01) return 0
+    // Smooth the period to avoid jitter (80% previous, 20% new)
+    this.detectedPeriod = Math.round(this.detectedPeriod * 0.8 + bestPeriod * 0.2)
 
-    // Trigger threshold - trigger when rising through this level
-    // Using 0 (zero-crossing) gives the most stable trigger
-    const triggerLevel = 0
+    return this.detectedPeriod
+  }
 
-    // Find first rising edge through trigger level
-    // Look for: previous sample below trigger, current sample at or above trigger
+  /**
+   * Find trigger point - rising zero-crossing aligned with the fundamental frequency
+   */
+  private findTriggerPoint(data: Float32Array): number {
+    const period = this.detectPeriod(data)
+    const searchEnd = Math.min(period * 2, Math.floor(data.length / 3))
+
+    // Find a rising zero-crossing within one period
+    // This ensures we trigger at the same phase of the fundamental
     for (let i = 1; i < searchEnd; i++) {
-      if (data[i - 1] < triggerLevel && data[i] >= triggerLevel) {
-        // Found rising zero-crossing - interpolate for sub-sample accuracy
+      if (data[i - 1] <= 0 && data[i] > 0) {
         return i
       }
     }
@@ -186,5 +207,6 @@ export class Oscilloscope {
 
   dispose(): void {
     this.stop()
+    this.detectedPeriod = 512
   }
 }
