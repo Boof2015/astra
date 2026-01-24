@@ -68,9 +68,10 @@ export interface ScanProgress {
 
 // Native Visualizer Types
 export interface OscilloscopeResult {
-  triggerIndex: number // float
+  triggerIndex: number // float (position in circular buffer)
   samplesToShow: number
   detectedPitch: number
+  writePos: number // current write position in circular buffer
 }
 
 export interface VectorscopeResult {
@@ -84,7 +85,11 @@ export interface VisualizerDSP {
     setPitchLock(enabled: boolean): void
     setDisplaySamples(samples: number): void
     setFilterFrequency(frequency: number): void
-    process(audioData: Float32Array): OscilloscopeResult
+    pushSamples(samples: Float32Array): void // Push to circular buffer
+    processContinuous(): OscilloscopeResult // Process using circular buffer
+    process(audioData: Float32Array): OscilloscopeResult // Legacy snapshot
+    getWritePos(): number // Get current write position
+    getSamples(startPos: number, count: number): Float32Array // Get samples for rendering
     reset(): void
   }
   spectrum: {

@@ -1,9 +1,10 @@
 // Type definitions for visualizer_dsp native addon
 
 export interface OscilloscopeResult {
-  triggerIndex: number; // float for sub-sample precision
+  triggerIndex: number; // float for sub-sample precision (position in circular buffer)
   samplesToShow: number;
   detectedPitch: number;
+  writePos: number; // current write position in circular buffer
 }
 
 export interface VectorscopeResult {
@@ -11,12 +12,30 @@ export interface VectorscopeResult {
   y: Float32Array;
 }
 
+// Circular buffer size (must match native code)
+export const OSCILLOSCOPE_BUFFER_SIZE = 32768;
+
 export interface OscilloscopeModule {
   setSampleRate(sampleRate: number): void;
   setPitchLock(enabled: boolean): void;
   setDisplaySamples(samples: number): void;
   setFilterFrequency(frequency: number): void;
+
+  // Push samples to circular buffer (for continuous capture)
+  pushSamples(samples: Float32Array): void;
+
+  // Process using circular buffer (continuous mode)
+  processContinuous(): OscilloscopeResult;
+
+  // Legacy: process snapshot (pushes to buffer and processes)
   process(audioData: Float32Array): OscilloscopeResult;
+
+  // Get current write position in circular buffer
+  getWritePos(): number;
+
+  // Get samples from circular buffer for rendering
+  getSamples(startPos: number, count: number): Float32Array;
+
   reset(): void;
 }
 

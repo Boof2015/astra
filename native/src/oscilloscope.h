@@ -2,6 +2,7 @@
 
 #include "dsp_utils.h"
 #include <vector>
+#include <cstdint>
 
 namespace Visualizer {
 
@@ -10,6 +11,9 @@ struct OscilloscopeResult {
     int samplesToShow;
     float detectedPitch;
 };
+
+// Circular buffer size (same as pulse-visualizer)
+constexpr size_t OSCILLOSCOPE_BUFFER_SIZE = 32768;
 
 class Oscilloscope {
 public:
@@ -21,8 +25,20 @@ public:
     void setDisplaySamples(int samples);
     void setFilterFrequency(float freq);
 
-    // Process audio and find trigger point
-    OscilloscopeResult process(const float* audioData, size_t length);
+    // Push samples into circular buffer (continuous capture)
+    void pushSamples(const float* samples, size_t count);
+
+    // Process and find trigger point (uses circular buffer)
+    OscilloscopeResult process();
+
+    // Legacy: Process snapshot (for backwards compatibility)
+    OscilloscopeResult processSnapshot(const float* audioData, size_t length);
+
+    // Get current write position
+    size_t getWritePos() const { return writePos_; }
+
+    // Get samples from circular buffer (for rendering)
+    void getSamples(float* output, size_t startPos, size_t count) const;
 
     // Reset state
     void reset();
@@ -33,11 +49,20 @@ private:
     int displaySamples_;
     float filterFrequency_;
 
-    DSP::BiquadFilter lowpassFilter_;
+    // Circular buffer for continuous audio
+    std::vector<float> circularBuffer_;
     std::vector<float> filteredBuffer_;
+    size_t writePos_;
+
+    DSP::BiquadFilter lowpassFilter_;
 
     float lastTrigger_;
     float smoothedPitch_;
+    bool invertPhase_;  // True if we need to invert samples for display
+
+    // Internal helpers
+    void updateFiltered();
+    float findTriggerBackwards(size_t target, size_t range);
 };
 
 } // namespace Visualizer

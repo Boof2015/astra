@@ -188,45 +188,38 @@ float detectPitch(const float* data, size_t length, float sampleRate, float minF
 
 // Find zero-crossing trigger point (sub-sample precision)
 // searches in [searchStart, searchEnd)
-// Uses Hysteresis (Schmidt Trigger): Signal must dip below -threshold before re-arming.
+// Finds the STRONGEST (steepest slope) rising zero crossing for consistency
 float findTriggerPoint(const float* data, size_t length, int searchStart, int searchEnd) {
     searchStart = std::max(1, searchStart); // Need i-1
     searchEnd = std::min(static_cast<int>(length), searchEnd);
-    
+
     if (searchStart >= searchEnd) return -1.0f;
 
-    // Hysteresis threshold
-    const float threshold = 0.05f; // Must dip 5% below zero to arm
-    bool armed = false;
-
-    // Check pre-search history to see if we are already armed
-    // (If the sample before searchStart was low enough)
-    if (data[searchStart - 1] < -threshold) {
-        armed = true;
-    }
+    // Find the zero crossing with the steepest positive slope
+    float bestSlope = 0.0f;
+    int bestIdx = -1;
 
     for (int i = searchStart; i < searchEnd; i++) {
-        float val = data[i];
-        
-        // Arm the trigger if we swing low
-        if (val < -threshold) {
-            armed = true;
-        }
-        
-        // Fire if Armed + Rising Zero Crossing
-        if (armed && data[i - 1] < 0.0f && val >= 0.0f) {
-            // Found crossing between i-1 and i
-            float y0 = data[i - 1];
-            float y1 = val;
-            
-            // Linear interpolation
-            float t = -y0 / (y1 - y0);
-            
-            return static_cast<float>(i - 1) + t;
+        float prev = data[i - 1];
+        float curr = data[i];
+
+        // Rising zero crossing: prev < 0 and curr >= 0
+        if (prev < 0.0f && curr >= 0.0f) {
+            float slope = curr - prev; // Always positive for rising crossing
+            if (slope > bestSlope) {
+                bestSlope = slope;
+                bestIdx = i;
+            }
         }
     }
-    
-    return -1.0f; // No trigger found
+
+    if (bestIdx < 0) return -1.0f;
+
+    // Linear interpolation for sub-sample precision
+    float prev = data[bestIdx - 1];
+    float curr = data[bestIdx];
+    float t = -prev / (curr - prev);
+    return static_cast<float>(bestIdx - 1) + t;
 }
 
 // Calculate RMS

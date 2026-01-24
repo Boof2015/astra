@@ -26,6 +26,9 @@ export function getNativeLoadError(): Error | null {
   return loadError
 }
 
+// Circular buffer size (must match native code)
+export const OSCILLOSCOPE_BUFFER_SIZE = 32768
+
 // Export the native module functions with type safety
 export const oscilloscope = {
   setSampleRate: (sampleRate: number): void => {
@@ -44,9 +47,32 @@ export const oscilloscope = {
     nativeModule?.oscilloscope.setFilterFrequency(frequency)
   },
 
+  // Push samples to circular buffer (for continuous capture)
+  pushSamples: (samples: Float32Array): void => {
+    nativeModule?.oscilloscope.pushSamples(samples)
+  },
+
+  // Process using circular buffer (continuous mode)
+  processContinuous: (): OscilloscopeResult | null => {
+    if (!nativeModule) return null
+    return nativeModule.oscilloscope.processContinuous()
+  },
+
+  // Legacy: process snapshot (pushes to buffer and processes)
   process: (audioData: Float32Array): OscilloscopeResult | null => {
     if (!nativeModule) return null
     return nativeModule.oscilloscope.process(audioData)
+  },
+
+  // Get current write position
+  getWritePos: (): number => {
+    return nativeModule?.oscilloscope.getWritePos() ?? 0
+  },
+
+  // Get samples from circular buffer for rendering
+  getSamples: (startPos: number, count: number): Float32Array | null => {
+    if (!nativeModule) return null
+    return nativeModule.oscilloscope.getSamples(startPos, count)
   },
 
   reset: (): void => {

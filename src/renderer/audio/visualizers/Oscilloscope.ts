@@ -46,8 +46,8 @@ export class Oscilloscope {
     if (isNativeAvailable() && !this.nativeInitialized) {
       nativeOscilloscope.setSampleRate(48000) // Standard sample rate
       nativeOscilloscope.setPitchLock(this.options.pitchLock)
-      nativeOscilloscope.setDisplaySamples(4096)
-      nativeOscilloscope.setFilterFrequency(200) // Lowpass for trigger detection
+      nativeOscilloscope.setDisplaySamples(1024) // MiniMeters style: ~2-3 cycles for typical bass
+      nativeOscilloscope.setFilterFrequency(150) // Lowpass for trigger detection
       this.nativeInitialized = true
       console.log('Oscilloscope: Using native DSP')
     } else if (!isNativeAvailable()) {
@@ -156,7 +156,9 @@ export class Oscilloscope {
     const width = canvas.width
     const height = canvas.height
 
-    const timeDomainData = audioEngine.getFloatTimeDomainData()
+    // Use LEFT channel only to avoid stereo phase cancellation issues
+    const stereoData = audioEngine.getStereoTimeDomainData()
+    const timeDomainData = stereoData.left.length > 0 ? stereoData.left : audioEngine.getFloatTimeDomainData()
     const bufferLength = timeDomainData.length
 
     if (bufferLength === 0) {
@@ -176,21 +178,33 @@ export class Oscilloscope {
     }
 
     // Find trigger point and samples to show
-    let startIndex = 0
+    let triggerIndex = 0
     let samplesToShow = Math.min(4096, bufferLength)
+    let renderData: Float32Array = timeDomainData
 
     if (options.pitchLock) {
       if (isNativeAvailable()) {
-        // Use native pitch-locked trigger detection
-        const result = nativeOscilloscope.process(timeDomainData)
+        // Push samples to native circular buffer
+        nativeOscilloscope.pushSamples(timeDomainData)
+
+        // Process using circular buffer - searches backwards from writePos
+        const result = nativeOscilloscope.processContinuous()
         if (result) {
-          startIndex = result.triggerIndex
-          samplesToShow = Math.min(result.samplesToShow, bufferLength - startIndex)
+          triggerIndex = result.triggerIndex
+          samplesToShow = result.samplesToShow
+
+          // Get samples from circular buffer for rendering
+          // This pulls continuous data from the native buffer
+          const samples = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
+          if (samples) {
+            renderData = samples
+            triggerIndex = 0 // Data already starts at trigger point
+          }
         }
       } else {
         // Use JavaScript fallback
-        startIndex = this.findTriggerJS(timeDomainData)
-        samplesToShow = Math.min(4096, bufferLength - startIndex)
+        triggerIndex = this.findTriggerJS(timeDomainData)
+        samplesToShow = Math.min(4096, bufferLength - triggerIndex)
       }
     }
 
@@ -202,19 +216,19 @@ export class Oscilloscope {
     ctx.beginPath()
 
     const sliceWidth = width / samplesToShow
+    const dataLength = renderData.length
 
     for (let i = 0; i < samplesToShow; i++) {
       // Calculate precise index relative to trigger
-      // dataIndex can be fractional
-      const dataIndex = startIndex + i
+      const dataIndex = triggerIndex + i
 
-      if (dataIndex >= bufferLength - 1) break
+      if (dataIndex >= dataLength - 1) break
 
       // Linear Interpolation for sub-sample precision
       const idx = Math.floor(dataIndex)
       const frac = dataIndex - idx
-      const y0 = timeDomainData[idx]
-      const y1 = timeDomainData[idx + 1]
+      const y0 = renderData[idx]
+      const y1 = renderData[idx + 1]
       const sample = y0 + (y1 - y0) * frac
 
       const y = ((1 - sample) / 2) * height

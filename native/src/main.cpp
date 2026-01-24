@@ -50,6 +50,38 @@ Napi::Value OscilloscopeSetFilterFrequency(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// Push samples to circular buffer (for continuous capture)
+Napi::Value OscilloscopePushSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsTypedArray()) {
+        Napi::TypeError::New(env, "Expected Float32Array").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    Napi::Float32Array audioData = info[0].As<Napi::Float32Array>();
+    size_t length = audioData.ElementLength();
+
+    oscilloscope.pushSamples(audioData.Data(), length);
+    return env.Undefined();
+}
+
+// Process using circular buffer (continuous mode)
+Napi::Value OscilloscopeProcessContinuous(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    auto result = oscilloscope.process();
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("triggerIndex", Napi::Number::New(env, result.triggerIndex));
+    obj.Set("samplesToShow", Napi::Number::New(env, result.samplesToShow));
+    obj.Set("detectedPitch", Napi::Number::New(env, result.detectedPitch));
+    obj.Set("writePos", Napi::Number::New(env, static_cast<double>(oscilloscope.getWritePos())));
+
+    return obj;
+}
+
+// Legacy snapshot process (backwards compatible)
 Napi::Value OscilloscopeProcess(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -61,14 +93,39 @@ Napi::Value OscilloscopeProcess(const Napi::CallbackInfo& info) {
     Napi::Float32Array audioData = info[0].As<Napi::Float32Array>();
     size_t length = audioData.ElementLength();
 
-    auto result = oscilloscope.process(audioData.Data(), length);
+    auto result = oscilloscope.processSnapshot(audioData.Data(), length);
 
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("triggerIndex", Napi::Number::New(env, result.triggerIndex));
     obj.Set("samplesToShow", Napi::Number::New(env, result.samplesToShow));
     obj.Set("detectedPitch", Napi::Number::New(env, result.detectedPitch));
+    obj.Set("writePos", Napi::Number::New(env, static_cast<double>(oscilloscope.getWritePos())));
 
     return obj;
+}
+
+// Get current write position
+Napi::Value OscilloscopeGetWritePos(const Napi::CallbackInfo& info) {
+    return Napi::Number::New(info.Env(), static_cast<double>(oscilloscope.getWritePos()));
+}
+
+// Get samples from circular buffer for rendering
+Napi::Value OscilloscopeGetSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Expected startPos and count").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    size_t startPos = static_cast<size_t>(info[0].As<Napi::Number>().Uint32Value());
+    size_t count = static_cast<size_t>(info[1].As<Napi::Number>().Uint32Value());
+
+    // Create output array
+    Napi::Float32Array output = Napi::Float32Array::New(env, count);
+    oscilloscope.getSamples(output.Data(), startPos, count);
+
+    return output;
 }
 
 Napi::Value OscilloscopeReset(const Napi::CallbackInfo& info) {
@@ -208,6 +265,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     oscExports.Set("setDisplaySamples", Napi::Function::New(env, OscilloscopeSetDisplaySamples));
     oscExports.Set("setFilterFrequency", Napi::Function::New(env, OscilloscopeSetFilterFrequency));
     oscExports.Set("process", Napi::Function::New(env, OscilloscopeProcess));
+    oscExports.Set("pushSamples", Napi::Function::New(env, OscilloscopePushSamples));
+    oscExports.Set("processContinuous", Napi::Function::New(env, OscilloscopeProcessContinuous));
+    oscExports.Set("getWritePos", Napi::Function::New(env, OscilloscopeGetWritePos));
+    oscExports.Set("getSamples", Napi::Function::New(env, OscilloscopeGetSamples));
     oscExports.Set("reset", Napi::Function::New(env, OscilloscopeReset));
     exports.Set("oscilloscope", oscExports);
 
