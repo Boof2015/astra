@@ -1,5 +1,5 @@
 #pragma once
-
+#define _USE_MATH_DEFINES
 #include <cmath>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -22,7 +22,8 @@ public:
 private:
     size_t size_;
     std::vector<std::complex<float>> twiddles_;
-    std::vector<std::complex<float>> buffer_;
+    std::vector<std::complex<float>> buffer_; // Reuse buffer to avoid allocations
+    std::vector<std::complex<float>> scratch_; // Scratch buffer if needed
     void bitReverse(std::complex<float>* data);
 };
 
@@ -48,8 +49,8 @@ private:
 // Pitch detection using autocorrelation
 float detectPitch(const float* data, size_t length, float sampleRate, float minFreq = 40.0f, float maxFreq = 2000.0f);
 
-// Find zero-crossing trigger point
-int findTriggerPoint(const float* filtered, size_t length, int lastTrigger, int searchRange);
+// Find zero-crossing trigger point with hysteresis/hold-off (sub-sample precision)
+float findTriggerPoint(const float* data, size_t length, int searchStart, int searchEnd);
 
 // Calculate RMS
 float calculateRMS(const float* data, size_t length);

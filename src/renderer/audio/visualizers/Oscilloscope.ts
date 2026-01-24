@@ -78,7 +78,7 @@ export class Oscilloscope {
     }
   }
 
-  resize(): void {}
+  resize(): void { }
 
   /**
    * Bidirectional IIR lowpass filter for zero phase delay (JS fallback)
@@ -204,10 +204,19 @@ export class Oscilloscope {
     const sliceWidth = width / samplesToShow
 
     for (let i = 0; i < samplesToShow; i++) {
+      // Calculate precise index relative to trigger
+      // dataIndex can be fractional
       const dataIndex = startIndex + i
-      if (dataIndex >= bufferLength) break
 
-      const sample = timeDomainData[dataIndex]
+      if (dataIndex >= bufferLength - 1) break
+
+      // Linear Interpolation for sub-sample precision
+      const idx = Math.floor(dataIndex)
+      const frac = dataIndex - idx
+      const y0 = timeDomainData[idx]
+      const y1 = timeDomainData[idx + 1]
+      const sample = y0 + (y1 - y0) * frac
+
       const y = ((1 - sample) / 2) * height
       const x = i * sliceWidth
 

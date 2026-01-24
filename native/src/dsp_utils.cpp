@@ -1,6 +1,8 @@
 #define _USE_MATH_DEFINES
 #include "dsp_utils.h"
 #include <cstring>
+#include <cmath>
+#include <algorithm>
 
 namespace DSP {
 
@@ -13,6 +15,7 @@ FFT::FFT(size_t size) : size_(size) {
         twiddles_[i] = std::complex<float>(cosf(angle), sinf(angle));
     }
     buffer_.resize(size);
+    scratch_.resize(size);
 }
 
 void FFT::bitReverse(std::complex<float>* data) {
@@ -31,7 +34,7 @@ void FFT::bitReverse(std::complex<float>* data) {
 }
 
 void FFT::forward(const float* input, std::complex<float>* output) {
-    // Copy input to buffer
+    // Copy input to internal buffer
     for (size_t i = 0; i < size_; i++) {
         buffer_[i] = std::complex<float>(input[i], 0.0f);
     }
@@ -55,12 +58,14 @@ void FFT::forward(const float* input, std::complex<float>* output) {
 }
 
 void FFT::forward(const float* input, float* magnitudes) {
-    std::vector<std::complex<float>> output(size_);
-    forward(input, output.data());
+    // Use scratch buffer for complex output to avoid allocation
+    forward(input, scratch_.data());
 
     // Calculate magnitudes (only first half is useful)
+    // Scale by 2/N for correct magnitude
+    float scale = 2.0f / size_;
     for (size_t i = 0; i < size_ / 2; i++) {
-        magnitudes[i] = std::abs(output[i]) * 2.0f / size_;
+        magnitudes[i] = std::abs(scratch_[i]) * scale;
     }
 }
 
@@ -103,6 +108,11 @@ float BiquadFilter::process(float input) {
     x1_ = input;
     y2_ = y1_;
     y1_ = output;
+    
+    // Denormal protection
+    if (std::abs(y1_) < 1e-20f) y1_ = 0.0f;
+    if (std::abs(y2_) < 1e-20f) y2_ = 0.0f;
+    
     return output;
 }
 
@@ -133,16 +143,20 @@ float detectPitch(const float* data, size_t length, float sampleRate, float minF
     int maxPeriod = static_cast<int>(sampleRate / minFreq);
 
     maxPeriod = std::min(maxPeriod, static_cast<int>(length / 2));
+    if (maxPeriod <= minPeriod) return 0.0f;
 
     float bestCorrelation = -1.0f;
-    int bestPeriod = minPeriod;
+    int bestPeriod = 0;
 
+    // Use a simplified autocorrelation: only compute for lags in range
     for (int period = minPeriod; period < maxPeriod; period++) {
         float correlation = 0.0f;
         float energy1 = 0.0f;
         float energy2 = 0.0f;
 
-        int samples = std::min(static_cast<int>(length) - period, 1024);
+        // Use fewer samples for performance, but enough for accuracy
+        int samples = std::min(static_cast<int>(length) - period, 512); 
+        
         for (int i = 0; i < samples; i++) {
             correlation += data[i] * data[i + period];
             energy1 += data[i] * data[i];
@@ -150,59 +164,74 @@ float detectPitch(const float* data, size_t length, float sampleRate, float minF
         }
 
         // Normalized correlation
-        float norm = sqrtf(energy1 * energy2);
-        if (norm > 1e-10f) {
+        if (energy1 > 1e-9f && energy2 > 1e-9f) {
+            float norm = sqrtf(energy1 * energy2);
             correlation /= norm;
-        }
-
-        if (correlation > bestCorrelation) {
-            bestCorrelation = correlation;
-            bestPeriod = period;
+            
+            if (correlation > bestCorrelation) {
+                bestCorrelation = correlation;
+                bestPeriod = period;
+            }
         }
     }
+    
+    // Threshold for valid pitch
+    if (bestCorrelation < 0.5f || bestPeriod == 0) {
+        return 0.0f; // No confident pitch found
+    }
+
+    // Parabolic interpolation for sub-sample accuracy could be added here
+    // but basic integer period is often enough for visual stabilization
 
     return sampleRate / bestPeriod;
 }
 
-// Find trigger point - rising zero-crossing
-int findTriggerPoint(const float* filtered, size_t length, int lastTrigger, int searchRange) {
-    int searchEnd = std::min(searchRange, static_cast<int>(length) - 1);
+// Find zero-crossing trigger point (sub-sample precision)
+// searches in [searchStart, searchEnd)
+// Uses Hysteresis (Schmidt Trigger): Signal must dip below -threshold before re-arming.
+float findTriggerPoint(const float* data, size_t length, int searchStart, int searchEnd) {
+    searchStart = std::max(1, searchStart); // Need i-1
+    searchEnd = std::min(static_cast<int>(length), searchEnd);
+    
+    if (searchStart >= searchEnd) return -1.0f;
 
-    // Find all zero crossings
-    std::vector<int> crossings;
-    for (int i = 1; i < searchEnd; i++) {
-        if (filtered[i - 1] < 0.0f && filtered[i] >= 0.0f) {
-            crossings.push_back(i);
+    // Hysteresis threshold
+    const float threshold = 0.05f; // Must dip 5% below zero to arm
+    bool armed = false;
+
+    // Check pre-search history to see if we are already armed
+    // (If the sample before searchStart was low enough)
+    if (data[searchStart - 1] < -threshold) {
+        armed = true;
+    }
+
+    for (int i = searchStart; i < searchEnd; i++) {
+        float val = data[i];
+        
+        // Arm the trigger if we swing low
+        if (val < -threshold) {
+            armed = true;
+        }
+        
+        // Fire if Armed + Rising Zero Crossing
+        if (armed && data[i - 1] < 0.0f && val >= 0.0f) {
+            // Found crossing between i-1 and i
+            float y0 = data[i - 1];
+            float y1 = val;
+            
+            // Linear interpolation
+            float t = -y0 / (y1 - y0);
+            
+            return static_cast<float>(i - 1) + t;
         }
     }
-
-    if (crossings.empty()) {
-        return lastTrigger;
-    }
-
-    // First frame - use first crossing
-    if (lastTrigger == 0) {
-        return crossings[0];
-    }
-
-    // Find crossing closest to last trigger
-    int bestCrossing = crossings[0];
-    int bestDist = std::abs(crossings[0] - lastTrigger);
-
-    for (int crossing : crossings) {
-        int dist = std::abs(crossing - lastTrigger);
-        if (dist < bestDist) {
-            bestDist = dist;
-            bestCrossing = crossing;
-        }
-    }
-
-    // Smooth the trigger position (70/30 blend)
-    return static_cast<int>(lastTrigger * 0.7f + bestCrossing * 0.3f + 0.5f);
+    
+    return -1.0f; // No trigger found
 }
 
 // Calculate RMS
 float calculateRMS(const float* data, size_t length) {
+    if (length == 0) return 0.0f;
     float sum = 0.0f;
     for (size_t i = 0; i < length; i++) {
         sum += data[i] * data[i];

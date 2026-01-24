@@ -68,7 +68,7 @@ export interface ScanProgress {
 
 // Native Visualizer Types
 export interface OscilloscopeResult {
-  triggerIndex: number
+  triggerIndex: number // float
   samplesToShow: number
   detectedPitch: number
 }

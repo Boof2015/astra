@@ -1,7 +1,7 @@
 // Type definitions for visualizer_dsp native addon
 
 export interface OscilloscopeResult {
-  triggerIndex: number;
+  triggerIndex: number; // float for sub-sample precision
   samplesToShow: number;
   detectedPitch: number;
 }

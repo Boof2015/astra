@@ -6,7 +6,7 @@
 namespace Visualizer {
 
 struct OscilloscopeResult {
-    int triggerIndex;
+    float triggerIndex;
     int samplesToShow;
     float detectedPitch;
 };
@@ -36,7 +36,7 @@ private:
     DSP::BiquadFilter lowpassFilter_;
     std::vector<float> filteredBuffer_;
 
-    int lastTrigger_;
+    float lastTrigger_;
     float smoothedPitch_;
 };
 
