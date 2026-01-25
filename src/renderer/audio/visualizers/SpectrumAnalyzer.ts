@@ -52,7 +52,7 @@ export class SpectrumAnalyzer {
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
 
-    // Initialize native module if available
+    // Initialize native module
     this.initNative()
   }
 
@@ -64,7 +64,7 @@ export class SpectrumAnalyzer {
       this.nativeInitialized = true
       console.log('SpectrumAnalyzer: Using native DSP')
     } else if (!isNativeAvailable()) {
-      console.log('SpectrumAnalyzer: Using JavaScript fallback')
+      console.error('SpectrumAnalyzer: Native DSP not available!')
     }
   }
 
@@ -120,31 +120,28 @@ export class SpectrumAnalyzer {
     const width = canvas.width
     const height = canvas.height
 
-    // Get frequency data - native or Web Audio API
-    let frequencyData: Float32Array
-    let bufferLength: number
-
-    if (isNativeAvailable()) {
-      // Use native FFT processing - pass time domain data
-      const timeDomainData = audioEngine.getFloatTimeDomainData()
-      if (timeDomainData.length === 0) {
-        this.animationId = requestAnimationFrame(this.draw)
-        return
-      }
-      const nativeResult = nativeSpectrum.process(timeDomainData)
-      if (nativeResult) {
-        frequencyData = nativeResult
-        bufferLength = frequencyData.length
-      } else {
-        // Fallback if native returns null
-        frequencyData = audioEngine.getFloatFrequencyData()
-        bufferLength = frequencyData.length
-      }
-    } else {
-      // Use Web Audio API (JS fallback)
-      frequencyData = audioEngine.getFloatFrequencyData()
-      bufferLength = frequencyData.length
+    // Get frequency data from native FFT
+    if (!isNativeAvailable()) {
+      console.error('SpectrumAnalyzer: Native DSP required')
+      this.animationId = requestAnimationFrame(this.draw)
+      return
     }
+
+    // Use latest mono audio data from AudioEngine
+    const monoData = audioEngine.getLatestMonoChannel()
+    if (!monoData || monoData.length === 0) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    const nativeResult = nativeSpectrum.process(monoData)
+    if (!nativeResult) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    let frequencyData = nativeResult
+    const bufferLength = frequencyData.length
 
     if (bufferLength === 0) {
       this.animationId = requestAnimationFrame(this.draw)

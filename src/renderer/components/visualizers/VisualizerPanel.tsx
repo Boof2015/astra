@@ -50,10 +50,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
     }
   }, [resizeCanvas])
 
-  // Update FFT size on audio engine when changed
-  useEffect(() => {
-    audioEngine.setFFTSize(fftSize)
-  }, [fftSize])
+  // FFT size is now managed by individual visualizers (e.g., spectrum analyzer)
 
   // Create visualizers
   useEffect(() => {

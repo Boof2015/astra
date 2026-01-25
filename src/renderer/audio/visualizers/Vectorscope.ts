@@ -85,10 +85,11 @@ export class Vectorscope {
     const centerY = height / 2
     const scale = Math.min(centerX, centerY) * 0.9
 
-    // Get stereo time domain data
-    const { left, right } = audioEngine.getStereoTimeDomainData()
+    // Get stereo time domain data from AudioEngine
+    const left = audioEngine.getLatestLeftChannel()
+    const right = audioEngine.getLatestRightChannel()
 
-    if (left.length === 0 || right.length === 0) {
+    if (!left || !right || left.length === 0 || right.length === 0) {
       this.animationId = requestAnimationFrame(this.draw)
       return
     }

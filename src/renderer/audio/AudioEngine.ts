@@ -1,4 +1,5 @@
 import { PlaybackState } from '../types/audio'
+import workletUrl from './oscilloscope-worklet.ts?url'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -8,21 +9,22 @@ type EventCallback = (...args: unknown[]) => void
  * Supports gapless playback through pre-buffering and sample-accurate scheduling.
  *
  * Audio Graph:
- * Source -> AnalyserNode (pre) -> GainNode (volume) -> Destination
- *                |
- *                +-> ChannelSplitter -> AnalyserL / AnalyserR (for stereo visualization)
+ * Source -> NormalizationGain -> AudioWorklet (analysis tap) -> GainNode (volume) -> Destination
+ *                                      |
+ *                                      +-> Feeds native C++ visualizers continuously
  */
 export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
   private normalizationGainNode: GainNode | null = null
-  private analyserNode: AnalyserNode | null = null
+  private workletNode: AudioWorkletNode | null = null
+  private workletLoaded: boolean = false
 
-  // Stereo analysis nodes
-  private channelSplitter: ChannelSplitterNode | null = null
-  private analyserLeft: AnalyserNode | null = null
-  private analyserRight: AnalyserNode | null = null
+  // Latest audio data from worklet (for visualizers)
+  private latestLeftChannel: Float32Array = new Float32Array(0)
+  private latestRightChannel: Float32Array = new Float32Array(0)
+  private latestMonoChannel: Float32Array = new Float32Array(0)
 
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
@@ -46,7 +48,7 @@ export class AudioEngine {
     // Lazy init AudioContext on first user interaction
   }
 
-  private initContext(): void {
+  private async initContext(): Promise<void> {
     if (!this.context) {
       this.context = new AudioContext()
 
@@ -58,28 +60,45 @@ export class AudioEngine {
       this.normalizationGainNode = this.context.createGain()
       this.normalizationGainNode.gain.value = 1.0
 
-      this.analyserNode = this.context.createAnalyser()
-      this.analyserNode.fftSize = 2048
-      this.analyserNode.smoothingTimeConstant = 0.8
+      // Load and create AudioWorklet for real-time analysis
+      if (!this.workletLoaded) {
+        try {
+          await this.context.audioWorklet.addModule(workletUrl)
+          this.workletLoaded = true
+        } catch (err) {
+          console.error('Failed to load audio worklet:', err)
+        }
+      }
 
-      // Create stereo channel splitter and analysers for vectorscope
-      this.channelSplitter = this.context.createChannelSplitter(2)
-      this.analyserLeft = this.context.createAnalyser()
-      this.analyserRight = this.context.createAnalyser()
-      this.analyserLeft.fftSize = 2048
-      this.analyserRight.fftSize = 2048
-      this.analyserLeft.smoothingTimeConstant = 0
-      this.analyserRight.smoothingTimeConstant = 0
+      if (this.workletLoaded) {
+        this.workletNode = new AudioWorkletNode(this.context, 'oscilloscope-processor')
 
-      // Connect: analyser -> normalization -> gain -> destination
-      this.analyserNode.connect(this.normalizationGainNode)
-      this.normalizationGainNode.connect(this.gainNode)
+        // Set up worklet message handler
+        this.workletNode.port.onmessage = (event: MessageEvent) => {
+          const { left, right } = event.data
+          if (left && right && left.length > 0) {
+            this.latestLeftChannel = left
+            this.latestRightChannel = right
+
+            // Compute mono sum (L+R)/2
+            const mono = new Float32Array(left.length)
+            for (let i = 0; i < left.length; i++) {
+              mono[i] = (left[i] + right[i]) / 2
+            }
+            this.latestMonoChannel = mono
+          }
+        }
+      }
+
+      // Connect main signal path: normalization -> worklet -> gain -> destination
+      if (this.workletNode) {
+        this.normalizationGainNode.connect(this.workletNode)
+        this.workletNode.connect(this.gainNode)
+      } else {
+        // Fallback if worklet failed to load
+        this.normalizationGainNode.connect(this.gainNode)
+      }
       this.gainNode.connect(this.context.destination)
-
-      // Connect stereo splitter (from main analyser output)
-      this.analyserNode.connect(this.channelSplitter)
-      this.channelSplitter.connect(this.analyserLeft, 0)
-      this.channelSplitter.connect(this.analyserRight, 1)
     }
   }
 
@@ -192,16 +211,21 @@ export class AudioEngine {
     return this.audioBuffer?.duration ?? 0
   }
 
-  get analyser(): AnalyserNode | null {
-    return this.analyserNode
+  get worklet(): AudioWorkletNode | null {
+    return this.workletNode
   }
 
-  get analyserL(): AnalyserNode | null {
-    return this.analyserLeft
+  // Latest audio data from worklet (for visualizers)
+  getLatestLeftChannel(): Float32Array {
+    return this.latestLeftChannel
   }
 
-  get analyserR(): AnalyserNode | null {
-    return this.analyserRight
+  getLatestRightChannel(): Float32Array {
+    return this.latestRightChannel
+  }
+
+  getLatestMonoChannel(): Float32Array {
+    return this.latestMonoChannel
   }
 
   get hasNextBuffered(): boolean {
@@ -210,7 +234,7 @@ export class AudioEngine {
 
   // Load audio from ArrayBuffer
   async loadAudioData(arrayBuffer: ArrayBuffer): Promise<void> {
-    this.initContext()
+    await this.initContext()
     if (!this.context) throw new Error('AudioContext not initialized')
 
     this._playbackState = 'loading'
@@ -245,7 +269,7 @@ export class AudioEngine {
 
   // Pre-buffer the next track for gapless playback
   async preBufferNext(arrayBuffer: ArrayBuffer): Promise<void> {
-    this.initContext()
+    await this.initContext()
     if (!this.context) throw new Error('AudioContext not initialized')
 
     try {
@@ -265,7 +289,7 @@ export class AudioEngine {
 
   // Schedule the next track to start exactly when current ends
   private scheduleGaplessTransition(): void {
-    if (!this.context || !this.nextBuffer || !this.analyserNode || !this.audioBuffer) return
+    if (!this.context || !this.nextBuffer || !this.audioBuffer) return
     if (this._playbackState !== 'playing') return
 
     // Cancel any existing scheduled next source
@@ -279,7 +303,7 @@ export class AudioEngine {
     // Create and schedule the next source
     this.nextSourceNode = this.context.createBufferSource()
     this.nextSourceNode.buffer = this.nextBuffer
-    this.nextSourceNode.connect(this.analyserNode)
+    this.nextSourceNode.connect(this.normalizationGainNode)
 
     // Schedule to start exactly when current track ends
     this.nextSourceNode.start(this.scheduledEndTime)
@@ -364,7 +388,7 @@ export class AudioEngine {
 
   // Play
   async play(): Promise<void> {
-    if (!this.audioBuffer || !this.context || !this.analyserNode) return
+    if (!this.audioBuffer || !this.context) return
 
     // Resume context if suspended (autoplay policy)
     if (this.context.state === 'suspended') {
@@ -380,7 +404,7 @@ export class AudioEngine {
     // Create new source
     this.sourceNode = this.context.createBufferSource()
     this.sourceNode.buffer = this.audioBuffer
-    this.sourceNode.connect(this.analyserNode)
+    this.sourceNode.connect(this.normalizationGainNode)
 
     // Handle track end
     this.sourceNode.onended = () => {
@@ -439,7 +463,7 @@ export class AudioEngine {
 
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
-    if (!this.audioBuffer || !this.context || !this.analyserNode) return
+    if (!this.audioBuffer || !this.context) return
 
     const wasPlaying = this._playbackState === 'playing'
     const clampedTime = Math.max(0, Math.min(time, this.audioBuffer.duration))
@@ -453,7 +477,7 @@ export class AudioEngine {
       // Directly create new source and start (bypass play() state check)
       this.sourceNode = this.context.createBufferSource()
       this.sourceNode.buffer = this.audioBuffer
-      this.sourceNode.connect(this.analyserNode)
+      this.sourceNode.connect(this.normalizationGainNode)
 
       this.sourceNode.onended = () => {
         if (this._playbackState === 'playing') {
@@ -497,56 +521,8 @@ export class AudioEngine {
     }
   }
 
-  // Get frequency data for visualizers
-  getFrequencyData(): Uint8Array {
-    if (!this.analyserNode) return new Uint8Array(0)
-    const data = new Uint8Array(this.analyserNode.frequencyBinCount)
-    this.analyserNode.getByteFrequencyData(data)
-    return data
-  }
-
-  // Get time domain data for oscilloscope
-  getTimeDomainData(): Uint8Array {
-    if (!this.analyserNode) return new Uint8Array(0)
-    const data = new Uint8Array(this.analyserNode.fftSize)
-    this.analyserNode.getByteTimeDomainData(data)
-    return data
-  }
-
-  // Get float time domain data (higher precision)
-  getFloatTimeDomainData(): Float32Array {
-    if (!this.analyserNode) return new Float32Array(0)
-    const data = new Float32Array(this.analyserNode.fftSize)
-    this.analyserNode.getFloatTimeDomainData(data)
-    return data
-  }
-
-  // Get stereo float time domain data for vectorscope
-  getStereoTimeDomainData(): { left: Float32Array; right: Float32Array } {
-    if (!this.analyserLeft || !this.analyserRight) {
-      return { left: new Float32Array(0), right: new Float32Array(0) }
-    }
-    const left = new Float32Array(this.analyserLeft.fftSize)
-    const right = new Float32Array(this.analyserRight.fftSize)
-    this.analyserLeft.getFloatTimeDomainData(left)
-    this.analyserRight.getFloatTimeDomainData(right)
-    return { left, right }
-  }
-
-  // Get float frequency data (higher precision, in dB)
-  getFloatFrequencyData(): Float32Array {
-    if (!this.analyserNode) return new Float32Array(0)
-    const data = new Float32Array(this.analyserNode.frequencyBinCount)
-    this.analyserNode.getFloatFrequencyData(data)
-    return data
-  }
-
-  // Set FFT size for analyser
-  setFFTSize(size: 1024 | 2048 | 4096 | 8192 | 16384): void {
-    if (this.analyserNode) {
-      this.analyserNode.fftSize = size
-    }
-  }
+  // Audio analysis is now handled by AudioWorklet -> Native C++
+  // Visualizers should listen to worklet.port messages instead
 
   // Private helpers
   private stopSource(): void {
@@ -586,16 +562,18 @@ export class AudioEngine {
     this.clearNextBuffer()
     this.stopTimeUpdate()
 
+    if (this.workletNode) {
+      this.workletNode.disconnect()
+      this.workletNode = null
+    }
+
     if (this.context) {
       this.context.close()
       this.context = null
     }
 
     this.gainNode = null
-    this.analyserNode = null
-    this.channelSplitter = null
-    this.analyserLeft = null
-    this.analyserRight = null
+    this.normalizationGainNode = null
     this.audioBuffer = null
     this.eventListeners.clear()
   }

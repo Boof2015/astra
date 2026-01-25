@@ -11,8 +11,7 @@ Oscilloscope::Oscilloscope()
     , filterFrequency_(150.0f)
     , writePos_(0)
     , lastTrigger_(0)
-    , smoothedPitch_(200.0f)
-    , invertPhase_(false) {
+    , smoothedPitch_(200.0f) {
 
     // Initialize circular buffers
     circularBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
@@ -58,15 +57,9 @@ void Oscilloscope::updateFiltered() {
 }
 
 // Find trigger by searching BACKWARDS from target position (pulse-visualizer style)
-// Detects phase and sets invertPhase_ flag for consistent display
+// Only looks for RISING zero crossings for consistent phase
 float Oscilloscope::findTriggerBackwards(size_t target, size_t range) {
-    // Calculate quarter period to check peak after crossing
-    float periodSamples = sampleRate_ / smoothedPitch_;
-    size_t quarterPeriod = static_cast<size_t>(periodSamples / 4.0f);
-    if (quarterPeriod < 4) quarterPeriod = 4;
-    if (quarterPeriod > 256) quarterPeriod = 256;
-
-    // Search backwards from target to find ANY zero crossing
+    // Search backwards from target to find rising zero crossing
     for (size_t i = 0; i < range && i < OSCILLOSCOPE_BUFFER_SIZE; i++) {
         size_t pos = (target + OSCILLOSCOPE_BUFFER_SIZE - i) % OSCILLOSCOPE_BUFFER_SIZE;
         size_t prev = (pos + OSCILLOSCOPE_BUFFER_SIZE - 1) % OSCILLOSCOPE_BUFFER_SIZE;
@@ -74,47 +67,25 @@ float Oscilloscope::findTriggerBackwards(size_t target, size_t range) {
         float prevVal = filteredBuffer_[prev];
         float currVal = filteredBuffer_[pos];
 
-        // Check for any zero crossing (rising or falling)
-        bool risingCross = (prevVal < 0.0f && currVal >= 0.0f);
-        bool fallingCross = (prevVal >= 0.0f && currVal < 0.0f);
+        // Only look for rising zero crossings
+        if (prevVal < 0.0f && currVal >= 0.0f) {
+            // Check if signal is significant enough (look ahead ~1/4 period)
+            float periodSamples = sampleRate_ / smoothedPitch_;
+            size_t lookAhead = static_cast<size_t>(periodSamples / 4.0f);
+            if (lookAhead < 4) lookAhead = 4;
+            if (lookAhead > 256) lookAhead = 256;
 
-        if (risingCross || fallingCross) {
-            // Check the peak value in the next quarter period
-            float maxAfter = 0.0f;
-            float minAfter = 0.0f;
-            for (size_t j = 0; j < quarterPeriod; j++) {
+            float peakAfter = 0.0f;
+            for (size_t j = 0; j < lookAhead; j++) {
                 size_t checkPos = (pos + j) % OSCILLOSCOPE_BUFFER_SIZE;
-                float val = filteredBuffer_[checkPos];
-                if (val > maxAfter) maxAfter = val;
-                if (val < minAfter) minAfter = val;
+                float val = std::abs(filteredBuffer_[checkPos]);
+                if (val > peakAfter) peakAfter = val;
             }
 
-            // Determine if signal is significant enough
-            float peakMagnitude = std::max(maxAfter, -minAfter);
-            if (peakMagnitude > 0.01f) {
-                // Set phase inversion based on which direction the signal goes
-                // We want the waveform to go UP after the trigger
-                if (risingCross && maxAfter >= -minAfter) {
-                    // Rising cross, goes positive - normal phase
-                    invertPhase_ = false;
-                } else if (fallingCross && -minAfter > maxAfter) {
-                    // Falling cross, goes negative - invert to show positive
-                    invertPhase_ = true;
-                } else if (risingCross) {
-                    // Rising cross but goes more negative - invert
-                    invertPhase_ = true;
-                } else {
-                    // Falling cross but goes more positive - normal
-                    invertPhase_ = false;
-                }
-
+            // Only accept if signal has significant amplitude
+            if (peakAfter > 0.01f) {
                 // Linear interpolation for sub-sample precision
-                float t;
-                if (risingCross) {
-                    t = -prevVal / (currVal - prevVal);
-                } else {
-                    t = prevVal / (prevVal - currVal);
-                }
+                float t = -prevVal / (currVal - prevVal);
                 return static_cast<float>(prev) + t;
             }
         }
@@ -192,18 +163,10 @@ OscilloscopeResult Oscilloscope::processSnapshot(const float* audioData, size_t 
 }
 
 // Get samples from circular buffer starting at position
-// Automatically inverts samples if phase inversion was detected
 void Oscilloscope::getSamples(float* output, size_t startPos, size_t count) const {
-    if (invertPhase_) {
-        for (size_t i = 0; i < count; i++) {
-            size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
-            output[i] = -circularBuffer_[idx];  // Invert for consistent phase
-        }
-    } else {
-        for (size_t i = 0; i < count; i++) {
-            size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
-            output[i] = circularBuffer_[idx];
-        }
+    for (size_t i = 0; i < count; i++) {
+        size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
+        output[i] = circularBuffer_[idx];
     }
 }
 
@@ -211,7 +174,6 @@ void Oscilloscope::reset() {
     writePos_ = 0;
     lastTrigger_ = 0.0f;
     smoothedPitch_ = 200.0f;
-    invertPhase_ = false;
     lowpassFilter_.reset();
 
     // Clear buffers

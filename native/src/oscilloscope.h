@@ -58,7 +58,6 @@ private:
 
     float lastTrigger_;
     float smoothedPitch_;
-    bool invertPhase_;  // True if we need to invert samples for display
 
     // Internal helpers
     void updateFiltered();

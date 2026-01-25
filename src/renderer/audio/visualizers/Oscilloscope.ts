@@ -26,11 +26,6 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private nativeInitialized: boolean = false
-
-  // Fallback JS state (used when native not available)
-  private lastTrigger: number = 0
-  private filteredBuffer: Float32Array = new Float32Array(0)
-
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
@@ -38,7 +33,7 @@ export class Oscilloscope {
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
 
-    // Initialize native module if available
+    // Initialize native module
     this.initNative()
   }
 
@@ -49,9 +44,9 @@ export class Oscilloscope {
       nativeOscilloscope.setDisplaySamples(1024) // MiniMeters style: ~2-3 cycles for typical bass
       nativeOscilloscope.setFilterFrequency(150) // Lowpass for trigger detection
       this.nativeInitialized = true
-      console.log('Oscilloscope: Using native DSP')
+      console.log('Oscilloscope: Using native DSP with AudioWorklet')
     } else if (!isNativeAvailable()) {
-      console.log('Oscilloscope: Using JavaScript fallback')
+      console.error('Oscilloscope: Native DSP not available!')
     }
   }
 
@@ -80,91 +75,12 @@ export class Oscilloscope {
 
   resize(): void { }
 
-  /**
-   * Bidirectional IIR lowpass filter for zero phase delay (JS fallback)
-   */
-  private lowpass(data: Float32Array): Float32Array {
-    const len = data.length
-    if (this.filteredBuffer.length !== len) {
-      this.filteredBuffer = new Float32Array(len)
-    }
-
-    // IIR lowpass: alpha ~0.05 gives good bass extraction
-    const alpha = 0.05
-
-    // Forward pass
-    this.filteredBuffer[0] = data[0]
-    for (let i = 1; i < len; i++) {
-      this.filteredBuffer[i] = alpha * data[i] + (1 - alpha) * this.filteredBuffer[i - 1]
-    }
-
-    // Backward pass for zero phase delay
-    for (let i = len - 2; i >= 0; i--) {
-      this.filteredBuffer[i] = alpha * this.filteredBuffer[i] + (1 - alpha) * this.filteredBuffer[i + 1]
-    }
-
-    return this.filteredBuffer
-  }
-
-  /**
-   * Find trigger point - rising zero-crossing on lowpass filtered signal (JS fallback)
-   */
-  private findTriggerJS(data: Float32Array): number {
-    const filtered = this.lowpass(data)
-    const searchEnd = Math.floor(data.length / 2)
-
-    // Find ALL rising zero-crossings
-    const crossings: number[] = []
-    for (let i = 1; i < searchEnd; i++) {
-      if (filtered[i - 1] < 0 && filtered[i] >= 0) {
-        crossings.push(i)
-      }
-    }
-
-    if (crossings.length === 0) {
-      return this.lastTrigger
-    }
-
-    // If this is the first frame, just use the first crossing
-    if (this.lastTrigger === 0) {
-      this.lastTrigger = crossings[0]
-      return this.lastTrigger
-    }
-
-    // Find the crossing closest to our last trigger position
-    let bestCrossing = crossings[0]
-    let bestDist = Math.abs(crossings[0] - this.lastTrigger)
-
-    for (const crossing of crossings) {
-      const dist = Math.abs(crossing - this.lastTrigger)
-      if (dist < bestDist) {
-        bestDist = dist
-        bestCrossing = crossing
-      }
-    }
-
-    // Moderate smoothing (70/30)
-    this.lastTrigger = Math.round(this.lastTrigger * 0.7 + bestCrossing * 0.3)
-
-    return this.lastTrigger
-  }
-
   private draw = (): void => {
     if (!this.isRunning) return
 
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-
-    // Use LEFT channel only to avoid stereo phase cancellation issues
-    const stereoData = audioEngine.getStereoTimeDomainData()
-    const timeDomainData = stereoData.left.length > 0 ? stereoData.left : audioEngine.getFloatTimeDomainData()
-    const bufferLength = timeDomainData.length
-
-    if (bufferLength === 0) {
-      this.animationId = requestAnimationFrame(this.draw)
-      return
-    }
 
     ctx.clearRect(0, 0, width, height)
 
@@ -177,38 +93,37 @@ export class Oscilloscope {
       this.drawGrid()
     }
 
-    // Find trigger point and samples to show
-    let triggerIndex = 0
-    let samplesToShow = Math.min(4096, bufferLength)
-    let renderData: Float32Array = timeDomainData
-
-    if (options.pitchLock) {
-      if (isNativeAvailable()) {
-        // Push samples to native circular buffer
-        nativeOscilloscope.pushSamples(timeDomainData)
-
-        // Process using circular buffer - searches backwards from writePos
-        const result = nativeOscilloscope.processContinuous()
-        if (result) {
-          triggerIndex = result.triggerIndex
-          samplesToShow = result.samplesToShow
-
-          // Get samples from circular buffer for rendering
-          // This pulls continuous data from the native buffer
-          const samples = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
-          if (samples) {
-            renderData = samples
-            triggerIndex = 0 // Data already starts at trigger point
-          }
-        }
-      } else {
-        // Use JavaScript fallback
-        triggerIndex = this.findTriggerJS(timeDomainData)
-        samplesToShow = Math.min(4096, bufferLength - triggerIndex)
-      }
+    // Native C++ is being fed continuously by AudioWorklet via AudioEngine
+    if (!isNativeAvailable()) {
+      console.error('Oscilloscope: Native DSP required')
+      this.animationId = requestAnimationFrame(this.draw)
+      return
     }
 
-    // Draw waveform
+    // Feed latest left channel data to native C++
+    const leftChannel = audioEngine.getLatestLeftChannel()
+    if (leftChannel && leftChannel.length > 0) {
+      nativeOscilloscope.pushSamples(leftChannel)
+    }
+
+    // Process using circular buffer - searches backwards from writePos
+    const result = nativeOscilloscope.processContinuous()
+    if (!result) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    const triggerIndex = result.triggerIndex
+    const samplesToShow = result.samplesToShow
+
+    // Get samples from circular buffer for rendering
+    const renderData = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
+    if (!renderData || renderData.length === 0) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    // Draw waveform (data already starts at trigger point)
     ctx.lineWidth = options.lineWidth
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
@@ -216,21 +131,9 @@ export class Oscilloscope {
     ctx.beginPath()
 
     const sliceWidth = width / samplesToShow
-    const dataLength = renderData.length
 
-    for (let i = 0; i < samplesToShow; i++) {
-      // Calculate precise index relative to trigger
-      const dataIndex = triggerIndex + i
-
-      if (dataIndex >= dataLength - 1) break
-
-      // Linear Interpolation for sub-sample precision
-      const idx = Math.floor(dataIndex)
-      const frac = dataIndex - idx
-      const y0 = renderData[idx]
-      const y1 = renderData[idx + 1]
-      const sample = y0 + (y1 - y0) * frac
-
+    for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
+      const sample = renderData[i]
       const y = ((1 - sample) / 2) * height
       const x = i * sliceWidth
 
@@ -279,8 +182,6 @@ export class Oscilloscope {
 
   dispose(): void {
     this.stop()
-    this.lastTrigger = 0
-    this.filteredBuffer = new Float32Array(0)
 
     // Reset native module state
     if (isNativeAvailable()) {
