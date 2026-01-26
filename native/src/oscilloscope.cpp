@@ -163,10 +163,12 @@ OscilloscopeResult Oscilloscope::processSnapshot(const float* audioData, size_t 
 }
 
 // Get samples from circular buffer starting at position
+// Returns RAW samples for display (shows all frequencies)
+// Trigger uses filtered signal, display uses raw signal
 void Oscilloscope::getSamples(float* output, size_t startPos, size_t count) const {
     for (size_t i = 0; i < count; i++) {
         size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        output[i] = circularBuffer_[idx];
+        output[i] = circularBuffer_[idx];  // Raw signal for display
     }
 }
 

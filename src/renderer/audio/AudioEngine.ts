@@ -26,6 +26,10 @@ export class AudioEngine {
   private latestRightChannel: Float32Array = new Float32Array(0)
   private latestMonoChannel: Float32Array = new Float32Array(0)
 
+  // Queue for accumulating oscilloscope samples (prevents sample loss)
+  private pendingOscilloscopeSamples: Float32Array[] = []
+  private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
+
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
   private pauseTime: number = 0
@@ -79,6 +83,15 @@ export class AudioEngine {
           if (left && right && left.length > 0) {
             this.latestLeftChannel = left
             this.latestRightChannel = right
+
+            // Queue samples for oscilloscope (prevents sample loss)
+            // Memory safety: drop oldest chunks if queue gets too large
+            if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
+              this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
+                -AudioEngine.MAX_PENDING_CHUNKS / 2
+              )
+            }
+            this.pendingOscilloscopeSamples.push(new Float32Array(left))
 
             // Compute mono sum (L+R)/2
             const mono = new Float32Array(left.length)
@@ -226,6 +239,13 @@ export class AudioEngine {
 
   getLatestMonoChannel(): Float32Array {
     return this.latestMonoChannel
+  }
+
+  // Flush all pending oscilloscope samples (prevents sample loss from worklet timing)
+  flushPendingOscilloscopeSamples(): Float32Array[] {
+    const samples = this.pendingOscilloscopeSamples
+    this.pendingOscilloscopeSamples = []
+    return samples
   }
 
   get hasNextBuffered(): boolean {

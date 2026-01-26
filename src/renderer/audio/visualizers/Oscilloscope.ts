@@ -100,10 +100,10 @@ export class Oscilloscope {
       return
     }
 
-    // Feed latest left channel data to native C++
-    const leftChannel = audioEngine.getLatestLeftChannel()
-    if (leftChannel && leftChannel.length > 0) {
-      nativeOscilloscope.pushSamples(leftChannel)
+    // Flush ALL pending samples to native C++ (prevents sample loss)
+    const pendingSamples = audioEngine.flushPendingOscilloscopeSamples()
+    for (const chunk of pendingSamples) {
+      nativeOscilloscope.pushSamples(chunk)
     }
 
     // Process using circular buffer - searches backwards from writePos
