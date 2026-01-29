@@ -43,10 +43,6 @@ export const oscilloscope = {
     nativeModule?.oscilloscope.setDisplaySamples(samples)
   },
 
-  setFilterFrequency: (frequency: number): void => {
-    nativeModule?.oscilloscope.setFilterFrequency(frequency)
-  },
-
   // Push samples to circular buffer (for continuous capture)
   pushSamples: (samples: Float32Array): void => {
     nativeModule?.oscilloscope.pushSamples(samples)

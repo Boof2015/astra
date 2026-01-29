@@ -84,7 +84,6 @@ export interface VisualizerDSP {
     setSampleRate(sampleRate: number): void
     setPitchLock(enabled: boolean): void
     setDisplaySamples(samples: number): void
-    setFilterFrequency(frequency: number): void
     pushSamples(samples: Float32Array): void // Push to circular buffer
     processContinuous(): OscilloscopeResult // Process using circular buffer
     process(audioData: Float32Array): OscilloscopeResult // Legacy snapshot

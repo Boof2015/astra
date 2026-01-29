@@ -8,8 +8,8 @@ Oscilloscope::Oscilloscope()
     : sampleRate_(48000.0f)
     , pitchLock_(true)
     , displaySamples_(1024)
-    , filterFrequency_(150.0f)
     , writePos_(0)
+    , lastFilterPitch_(200.0f)
     , lastTrigger_(0)
     , smoothedPitch_(200.0f) {
 
@@ -17,12 +17,15 @@ Oscilloscope::Oscilloscope()
     circularBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
     filteredBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
 
-    lowpassFilter_.setLowpass(filterFrequency_, sampleRate_, 0.5f);
+    // Initialize FIR bandpass filter centered at 200Hz with 100Hz bandwidth
+    bandpassFilter_.designBandpass(200.0f, 100.0f, sampleRate_, 60.0f);
 }
 
 void Oscilloscope::setSampleRate(float sampleRate) {
     sampleRate_ = sampleRate;
-    lowpassFilter_.setLowpass(filterFrequency_, sampleRate_, 0.5f);
+    // Redesign filter with new sample rate
+    float bandwidth = lastFilterPitch_ * 0.5f;
+    bandpassFilter_.designBandpass(lastFilterPitch_, bandwidth, sampleRate_, 60.0f);
 }
 
 void Oscilloscope::setPitchLock(bool enabled) {
@@ -33,19 +36,15 @@ void Oscilloscope::setDisplaySamples(int samples) {
     displaySamples_ = samples;
 }
 
-void Oscilloscope::setFilterFrequency(float freq) {
-    filterFrequency_ = freq;
-    lowpassFilter_.setLowpass(filterFrequency_, sampleRate_, 0.5f);
-}
-
 // Push samples into circular buffer (called from AudioWorklet)
 void Oscilloscope::pushSamples(const float* samples, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // Store raw sample
         circularBuffer_[writePos_] = samples[i];
 
-        // Apply lowpass filter and store filtered sample
-        filteredBuffer_[writePos_] = lowpassFilter_.process(samples[i]);
+        // Apply FIR bandpass filter and store filtered sample
+        // Linear-phase filter provides consistent zero crossings
+        filteredBuffer_[writePos_] = bandpassFilter_.process(samples[i]);
 
         writePos_ = (writePos_ + 1) % OSCILLOSCOPE_BUFFER_SIZE;
     }
@@ -116,6 +115,14 @@ OscilloscopeResult Oscilloscope::process() {
     float newPitch = DSP::detectPitch(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
     if (newPitch > 0.0f) {
         smoothedPitch_ = smoothedPitch_ * 0.95f + newPitch * 0.05f;
+
+        // Redesign FIR bandpass filter if pitch changed significantly (>10%)
+        // This keeps the filter centered on the fundamental for stable trigger
+        if (std::abs(smoothedPitch_ - lastFilterPitch_) / lastFilterPitch_ > 0.1f) {
+            float bandwidth = smoothedPitch_ * 0.5f;  // 50% of center freq
+            bandpassFilter_.designBandpass(smoothedPitch_, bandwidth, sampleRate_, 60.0f);
+            lastFilterPitch_ = smoothedPitch_;
+        }
     }
     result.detectedPitch = smoothedPitch_;
 
@@ -134,10 +141,21 @@ OscilloscopeResult Oscilloscope::process() {
     float zeroCross = findTriggerBackwards(target, range);
 
     if (zeroCross >= 0.0f) {
-        // Calculate the offset from writePos to zeroCross
-        float offset = static_cast<float>((writePos_ + OSCILLOSCOPE_BUFFER_SIZE - static_cast<size_t>(zeroCross)) % OSCILLOSCOPE_BUFFER_SIZE);
-        result.triggerIndex = zeroCross;
+        // DETERMINISTIC phase offset calculation (no smoothing!)
+        // This is the pulse-visualizer approach that gives rock-solid trigger
+        size_t phaseOffset = (target + OSCILLOSCOPE_BUFFER_SIZE -
+                             static_cast<size_t>(zeroCross)) % OSCILLOSCOPE_BUFFER_SIZE;
+
+        // Apply FIR filter delay compensation
+        size_t firDelay = bandpassFilter_.getDelay();
+
+        // Calculate final trigger position (recalculated fresh every frame)
+        // No temporal smoothing = no lag = no flickering
+        result.triggerIndex = static_cast<float>(
+            (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - phaseOffset - firDelay - samples) % OSCILLOSCOPE_BUFFER_SIZE
+        );
     } else {
+        // No crossing found - use target as fallback
         result.triggerIndex = static_cast<float>(target);
     }
 
@@ -176,7 +194,8 @@ void Oscilloscope::reset() {
     writePos_ = 0;
     lastTrigger_ = 0.0f;
     smoothedPitch_ = 200.0f;
-    lowpassFilter_.reset();
+    lastFilterPitch_ = 200.0f;
+    bandpassFilter_.reset();
 
     // Clear buffers
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);

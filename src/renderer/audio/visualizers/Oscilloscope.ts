@@ -42,7 +42,7 @@ export class Oscilloscope {
       nativeOscilloscope.setSampleRate(48000) // Standard sample rate
       nativeOscilloscope.setPitchLock(this.options.pitchLock)
       nativeOscilloscope.setDisplaySamples(1024) // MiniMeters style: ~2-3 cycles for typical bass
-      nativeOscilloscope.setFilterFrequency(150) // Lowpass for trigger detection
+      // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
       this.nativeInitialized = true
       console.log('Oscilloscope: Using native DSP with AudioWorklet')
     } else if (!isNativeAvailable()) {

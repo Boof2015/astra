@@ -23,7 +23,6 @@ public:
     void setSampleRate(float sampleRate);
     void setPitchLock(bool enabled);
     void setDisplaySamples(int samples);
-    void setFilterFrequency(float freq);
 
     // Push samples into circular buffer (continuous capture)
     void pushSamples(const float* samples, size_t count);
@@ -47,14 +46,15 @@ private:
     float sampleRate_;
     bool pitchLock_;
     int displaySamples_;
-    float filterFrequency_;
 
     // Circular buffer for continuous audio
     std::vector<float> circularBuffer_;
     std::vector<float> filteredBuffer_;
     size_t writePos_;
 
-    DSP::BiquadFilter lowpassFilter_;
+    // Linear-phase FIR bandpass filter for stable trigger detection
+    DSP::FIRFilter bandpassFilter_;
+    float lastFilterPitch_;  // Track pitch for filter redesign
 
     float lastTrigger_;
     float smoothedPitch_;

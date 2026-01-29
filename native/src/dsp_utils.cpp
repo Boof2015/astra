@@ -137,6 +137,128 @@ void BiquadFilter::processBuffer(const float* input, float* output, size_t lengt
     }
 }
 
+// FIRFilter Implementation
+FIRFilter::FIRFilter() : idx_(0), order_(0) {}
+
+// Modified Bessel function of the first kind, order 0 (I0)
+// Approximation from Abramowitz and Stegun
+double FIRFilter::besselI0(double x) {
+    double ax = std::abs(x);
+    if (ax <= 3.75) {
+        double y = (x / 3.75);
+        y *= y;
+        return 1.0 + y * (3.5156229 + y * (3.0899424 + y * (1.2067492 +
+               y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))));
+    } else {
+        double y = 3.75 / ax;
+        return (std::exp(ax) / std::sqrt(ax)) * (0.39894228 +
+               y * (0.01328592 + y * (0.00225319 + y * (-0.00157565 +
+               y * (0.00916281 + y * (-0.02057706 + y * (0.02635537 +
+               y * (-0.01647633 + y * 0.00392377))))))));
+    }
+}
+
+std::vector<float> FIRFilter::kaiserWindow(size_t length, float beta) {
+    std::vector<float> window(length);
+    if (length == 0) return window;
+    const double denom = besselI0(static_cast<double>(beta));
+    const double M = static_cast<double>(length - 1);
+    for (size_t n = 0; n < length; ++n) {
+        double ratio = (M == 0.0) ? 0.0 : (2.0 * static_cast<double>(n) / M - 1.0);
+        double val = besselI0(static_cast<double>(beta) *
+                    std::sqrt(std::max(0.0, 1.0 - ratio * ratio))) / denom;
+        window[n] = static_cast<float>(val);
+    }
+    return window;
+}
+
+void FIRFilter::designBandpass(float centerFreq, float bandwidth, float sampleRate, float sidelobeAtten) {
+    // Kaiser beta from sidelobe attenuation
+    float beta = sidelobeAtten < 21.0f ? 0.0f
+               : sidelobeAtten < 50.0f ? 0.5842f * powf(sidelobeAtten - 21.0f, 0.4f) +
+                                         0.07886f * (sidelobeAtten - 21.0f)
+               : 0.1102f * (sidelobeAtten - 8.7f);
+
+    // Normalized frequencies
+    float wc1 = 2.0f * static_cast<float>(M_PI) * (centerFreq - bandwidth / 2.0f) / sampleRate;
+    float wc2 = 2.0f * static_cast<float>(M_PI) * (centerFreq + bandwidth / 2.0f) / sampleRate;
+    wc1 = std::max(wc1, 0.001f);
+    wc2 = std::min(wc2, static_cast<float>(M_PI) - 0.001f);
+
+    // Calculate filter order
+    float deltaF = (wc2 - wc1) / static_cast<float>(M_PI);
+    int order = static_cast<int>((sidelobeAtten - 8) / (2.285 * deltaF * M_PI));
+    order = std::clamp(order, 1, 512);
+    order_ = static_cast<size_t>(order);
+
+    size_t len = order + 1;
+    size_t centerTap = len / 2;
+
+    // Ideal bandpass impulse response
+    std::vector<float> ideal(len);
+    for (size_t i = 0; i < len; ++i) {
+        if (i == centerTap) {
+            ideal[i] = (wc2 - wc1) / static_cast<float>(M_PI);
+        } else {
+            float n = static_cast<float>(static_cast<int>(i) - static_cast<int>(centerTap));
+            ideal[i] = (sinf(wc2 * n) - sinf(wc1 * n)) / (static_cast<float>(M_PI) * n);
+        }
+    }
+
+    // Apply Kaiser window
+    std::vector<float> window = kaiserWindow(len, beta);
+    coeffs_.resize(len);
+    for (size_t i = 0; i < len; ++i) {
+        coeffs_[i] = ideal[i] * window[i];
+    }
+
+    // Normalize to unity gain at center frequency
+    float centerOmega = 2.0f * static_cast<float>(M_PI) * centerFreq / sampleRate;
+    float response = 0.0f;
+    for (size_t i = 0; i < len; ++i) {
+        response += coeffs_[i] * cosf(centerOmega *
+                   (static_cast<float>(i) - static_cast<float>(centerTap)));
+    }
+    if (std::abs(response) > 1e-6f) {
+        float scale = 1.0f / response;
+        for (float& coeff : coeffs_) {
+            coeff *= scale;
+        }
+    }
+
+    // Reset delay line
+    delay_.resize(len, 0.0f);
+    idx_ = 0;
+}
+
+float FIRFilter::process(float input) {
+    if (coeffs_.empty()) return input;
+
+    size_t nTaps = coeffs_.size();
+    idx_ %= nTaps;
+    delay_[idx_] = input;
+
+    float out = 0.0f;
+    size_t firstLen = nTaps - idx_;
+
+    // Process first segment [idx_ .. end]
+    for (size_t i = 0; i < firstLen; ++i) {
+        out += coeffs_[i] * delay_[idx_ + i];
+    }
+    // Process second segment [0 .. idx_-1]
+    for (size_t i = 0; i < idx_; ++i) {
+        out += coeffs_[firstLen + i] * delay_[i];
+    }
+
+    idx_ = (idx_ + 1) % nTaps;
+    return out;
+}
+
+void FIRFilter::reset() {
+    std::fill(delay_.begin(), delay_.end(), 0.0f);
+    idx_ = 0;
+}
+
 // Pitch detection using autocorrelation
 float detectPitch(const float* data, size_t length, float sampleRate, float minFreq, float maxFreq) {
     int minPeriod = static_cast<int>(sampleRate / maxFreq);

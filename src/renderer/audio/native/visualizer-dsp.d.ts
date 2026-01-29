@@ -19,7 +19,6 @@ export interface OscilloscopeModule {
   setSampleRate(sampleRate: number): void;
   setPitchLock(enabled: boolean): void;
   setDisplaySamples(samples: number): void;
-  setFilterFrequency(frequency: number): void;
 
   // Push samples to circular buffer (for continuous capture)
   pushSamples(samples: Float32Array): void;

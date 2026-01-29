@@ -46,6 +46,35 @@ private:
     float y1_, y2_;
 };
 
+// Linear-phase FIR filter for stable trigger detection
+// Uses Kaiser-windowed bandpass design for consistent zero crossings
+class FIRFilter {
+public:
+    FIRFilter();
+
+    // Design Kaiser-windowed bandpass filter centered on frequency
+    void designBandpass(float centerFreq, float bandwidth, float sampleRate, float sidelobeAtten = 60.0f);
+
+    // Process single sample
+    float process(float input);
+
+    // Get filter delay (for phase compensation)
+    size_t getDelay() const { return order_ / 2; }
+
+    // Reset filter state
+    void reset();
+
+private:
+    std::vector<float> coeffs_;
+    std::vector<float> delay_;
+    size_t idx_;
+    size_t order_;
+
+    // Kaiser window helpers
+    static std::vector<float> kaiserWindow(size_t length, float beta);
+    static double besselI0(double x);
+};
+
 // Pitch detection using autocorrelation
 float detectPitch(const float* data, size_t length, float sampleRate, float minFreq = 40.0f, float maxFreq = 2000.0f);
 

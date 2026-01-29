@@ -40,16 +40,6 @@ Napi::Value OscilloscopeSetDisplaySamples(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-Napi::Value OscilloscopeSetFilterFrequency(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Expected number").ThrowAsJavaScriptException();
-        return env.Null();
-    }
-    oscilloscope.setFilterFrequency(info[0].As<Napi::Number>().FloatValue());
-    return env.Undefined();
-}
-
 // Push samples to circular buffer (for continuous capture)
 Napi::Value OscilloscopePushSamples(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -263,7 +253,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     oscExports.Set("setSampleRate", Napi::Function::New(env, OscilloscopeSetSampleRate));
     oscExports.Set("setPitchLock", Napi::Function::New(env, OscilloscopeSetPitchLock));
     oscExports.Set("setDisplaySamples", Napi::Function::New(env, OscilloscopeSetDisplaySamples));
-    oscExports.Set("setFilterFrequency", Napi::Function::New(env, OscilloscopeSetFilterFrequency));
     oscExports.Set("process", Napi::Function::New(env, OscilloscopeProcess));
     oscExports.Set("pushSamples", Napi::Function::New(env, OscilloscopePushSamples));
     oscExports.Set("processContinuous", Napi::Function::New(env, OscilloscopeProcessContinuous));
