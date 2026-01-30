@@ -28,6 +28,7 @@ export class Oscilloscope {
   private nativeInitialized: boolean = false
   private samplesReceived: number = 0
   private lastSampleRate: number = 0
+  private unsubscribeTrackChange: (() => void) | null = null
   private static readonly WARMUP_SAMPLES = 4096 // Need ~4K samples before pitch detection is reliable
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
@@ -39,6 +40,11 @@ export class Oscilloscope {
 
     // Initialize native module
     this.initNative()
+
+    // Subscribe to track changes to reset state for fresh pitch detection
+    this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
+      this.reset()
+    })
   }
 
   private initNative(): void {
@@ -210,8 +216,25 @@ export class Oscilloscope {
     }
   }
 
+  // Reset state for new track (call on track change to re-enable fast pitch convergence)
+  reset(): void {
+    // Reset JS warmup state
+    this.samplesReceived = 0
+
+    // Reset native state (clears buffers, resets pitch tracking, re-enables fast smoothing)
+    if (isNativeAvailable()) {
+      nativeOscilloscope.reset()
+    }
+  }
+
   dispose(): void {
     this.stop()
+
+    // Unsubscribe from track change events
+    if (this.unsubscribeTrackChange) {
+      this.unsubscribeTrackChange()
+      this.unsubscribeTrackChange = null
+    }
 
     // Reset native module state
     if (isNativeAvailable()) {

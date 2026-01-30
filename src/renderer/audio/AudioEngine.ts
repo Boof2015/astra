@@ -48,8 +48,28 @@ export class AudioEngine {
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
 
+  // Track change callbacks (for visualizer reset)
+  private trackChangeCallbacks: (() => void)[] = []
+
   constructor() {
     // Lazy init AudioContext on first user interaction
+  }
+
+  // Register callback for track changes (for visualizer reset)
+  onTrackChange(callback: () => void): () => void {
+    this.trackChangeCallbacks.push(callback)
+    // Return unsubscribe function
+    return () => {
+      const index = this.trackChangeCallbacks.indexOf(callback)
+      if (index !== -1) {
+        this.trackChangeCallbacks.splice(index, 1)
+      }
+    }
+  }
+
+  // Notify all track change listeners
+  private notifyTrackChange(): void {
+    this.trackChangeCallbacks.forEach(cb => cb())
   }
 
   private async initContext(): Promise<void> {
@@ -277,6 +297,9 @@ export class AudioEngine {
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+
+      // Notify visualizers of track change (reset their state for fresh pitch detection)
+      this.notifyTrackChange()
 
       // Apply normalization if enabled
       if (this._normalizationEnabled) {
