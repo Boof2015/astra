@@ -415,6 +415,9 @@ export class AudioEngine {
 
     this.isGaplessTransition = false
 
+    // Notify visualizers of track change (reset their state for fresh pitch detection)
+    this.notifyTrackChange()
+
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)
     this.emit('gaplessTransition')
