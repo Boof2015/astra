@@ -7,7 +7,7 @@ namespace Visualizer {
 Oscilloscope::Oscilloscope()
     : sampleRate_(48000.0f)
     , pitchLock_(true)
-    , displaySamples_(1024)
+    , displaySamples_(2048)
     , writePos_(0)
     , lastFilterPitch_(200.0f)
     , lastTrigger_(0)
