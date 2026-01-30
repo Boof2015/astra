@@ -48,8 +48,30 @@ export class AudioEngine {
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
 
+  // Track change callbacks (for visualizer reset)
+  private trackChangeCallbacks: (() => void)[] = []
+
   constructor() {
     // Lazy init AudioContext on first user interaction
+  }
+
+  // Register callback for track changes (for visualizer reset)
+  onTrackChange(callback: () => void): () => void {
+    this.trackChangeCallbacks.push(callback)
+    // Return unsubscribe function
+    return () => {
+      const index = this.trackChangeCallbacks.indexOf(callback)
+      if (index !== -1) {
+        this.trackChangeCallbacks.splice(index, 1)
+      }
+    }
+  }
+
+  // Notify all track change listeners
+  private notifyTrackChange(): void {
+    // Clear pending samples from previous track to prevent buffer pollution
+    this.pendingOscilloscopeSamples = []
+    this.trackChangeCallbacks.forEach(cb => cb())
   }
 
   private async initContext(): Promise<void> {
@@ -224,6 +246,16 @@ export class AudioEngine {
     return this.audioBuffer?.duration ?? 0
   }
 
+  // Get actual sample rate from AudioContext (for native DSP sync)
+  getSampleRate(): number {
+    return this.context?.sampleRate ?? 48000
+  }
+
+  // Check if audio context is initialized and ready
+  isContextReady(): boolean {
+    return this.context !== null && this.workletLoaded
+  }
+
   get worklet(): AudioWorkletNode | null {
     return this.workletNode
   }
@@ -267,6 +299,9 @@ export class AudioEngine {
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+
+      // Notify visualizers of track change (reset their state for fresh pitch detection)
+      this.notifyTrackChange()
 
       // Apply normalization if enabled
       if (this._normalizationEnabled) {
@@ -381,6 +416,9 @@ export class AudioEngine {
     }
 
     this.isGaplessTransition = false
+
+    // Notify visualizers of track change (reset their state for fresh pitch detection)
+    this.notifyTrackChange()
 
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)

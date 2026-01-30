@@ -32,6 +32,10 @@
               "AdditionalOptions": ["/O2"]
             }
           }
+        }],
+        ["OS=='linux'", {
+          "cflags_cc": ["-std=c++17", "-O3", "-ffast-math", "-fPIC"],
+          "ldflags": ["-Wl,-z,now"]
         }]
       ]
     }

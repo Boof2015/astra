@@ -61,6 +61,7 @@ private:
 
     float lastTrigger_;
     float smoothedPitch_;
+    int pitchSamplesProcessed_;  // Track samples for adaptive smoothing
 
     // Internal helpers
     void updateFiltered();

@@ -11,7 +11,8 @@ Oscilloscope::Oscilloscope()
     , writePos_(0)
     , lastFilterPitch_(200.0f)
     , lastTrigger_(0)
-    , smoothedPitch_(200.0f) {
+    , smoothedPitch_(200.0f)
+    , pitchSamplesProcessed_(0) {
 
     // Initialize circular buffers
     circularBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
@@ -110,16 +111,24 @@ OscilloscopeResult Oscilloscope::process() {
     }
 
     // Detect pitch from recent samples in circular buffer
+    // Use RAW buffer for pitch detection (filtered buffer may attenuate the fundamental)
     // Use last 2048 samples for pitch detection
     std::vector<float> recentSamples(2048);
     for (size_t i = 0; i < 2048; i++) {
         size_t idx = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - 2048 + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        recentSamples[i] = filteredBuffer_[idx];
+        recentSamples[i] = circularBuffer_[idx];  // Use RAW samples, not filtered
     }
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
     if (newPitch > 0.0f) {
-        smoothedPitch_ = smoothedPitch_ * 0.95f + newPitch * 0.05f;
+        pitchSamplesProcessed_++;
+
+        // Adaptive smoothing: fast convergence initially, then conservative
+        // First ~20 frames: use 0.5/0.5 for quick lock-on
+        // After warmup: use 0.95/0.05 for stable tracking
+        float smoothingOld = (pitchSamplesProcessed_ < 20) ? 0.5f : 0.95f;
+        float smoothingNew = 1.0f - smoothingOld;
+        smoothedPitch_ = smoothedPitch_ * smoothingOld + newPitch * smoothingNew;
 
         // Redesign FIR bandpass filter if pitch changed significantly (>10%)
         // This keeps the filter centered on the fundamental for stable trigger
@@ -249,7 +258,10 @@ void Oscilloscope::reset() {
     lastTrigger_ = 0.0f;
     smoothedPitch_ = 200.0f;
     lastFilterPitch_ = 200.0f;
-    bandpassFilter_.reset();
+    pitchSamplesProcessed_ = 0;  // Reset warmup counter for fast convergence on next use
+
+    // Redesign filter to default 200Hz (reset() only clears delay line, not coefficients)
+    bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
 
     // Clear buffers
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);
