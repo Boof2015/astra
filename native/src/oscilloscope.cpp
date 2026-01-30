@@ -258,7 +258,9 @@ void Oscilloscope::reset() {
     smoothedPitch_ = 200.0f;
     lastFilterPitch_ = 200.0f;
     pitchSamplesProcessed_ = 0;  // Reset warmup counter for fast convergence on next use
-    bandpassFilter_.reset();
+
+    // Redesign filter to default 200Hz (reset() only clears delay line, not coefficients)
+    bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
 
     // Clear buffers
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);
