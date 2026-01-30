@@ -11,7 +11,8 @@ Oscilloscope::Oscilloscope()
     , writePos_(0)
     , lastFilterPitch_(200.0f)
     , lastTrigger_(0)
-    , smoothedPitch_(200.0f) {
+    , smoothedPitch_(200.0f)
+    , pitchSamplesProcessed_(0) {
 
     // Initialize circular buffers
     circularBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
@@ -119,7 +120,14 @@ OscilloscopeResult Oscilloscope::process() {
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
     if (newPitch > 0.0f) {
-        smoothedPitch_ = smoothedPitch_ * 0.95f + newPitch * 0.05f;
+        pitchSamplesProcessed_++;
+
+        // Adaptive smoothing: fast convergence initially, then conservative
+        // First ~20 frames: use 0.5/0.5 for quick lock-on
+        // After warmup: use 0.95/0.05 for stable tracking
+        float smoothingOld = (pitchSamplesProcessed_ < 20) ? 0.5f : 0.95f;
+        float smoothingNew = 1.0f - smoothingOld;
+        smoothedPitch_ = smoothedPitch_ * smoothingOld + newPitch * smoothingNew;
 
         // Redesign FIR bandpass filter if pitch changed significantly (>10%)
         // This keeps the filter centered on the fundamental for stable trigger
@@ -249,6 +257,7 @@ void Oscilloscope::reset() {
     lastTrigger_ = 0.0f;
     smoothedPitch_ = 200.0f;
     lastFilterPitch_ = 200.0f;
+    pitchSamplesProcessed_ = 0;  // Reset warmup counter for fast convergence on next use
     bandpassFilter_.reset();
 
     // Clear buffers

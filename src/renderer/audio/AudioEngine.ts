@@ -224,6 +224,16 @@ export class AudioEngine {
     return this.audioBuffer?.duration ?? 0
   }
 
+  // Get actual sample rate from AudioContext (for native DSP sync)
+  getSampleRate(): number {
+    return this.context?.sampleRate ?? 48000
+  }
+
+  // Check if audio context is initialized and ready
+  isContextReady(): boolean {
+    return this.context !== null && this.workletLoaded
+  }
+
   get worklet(): AudioWorkletNode | null {
     return this.workletNode
   }

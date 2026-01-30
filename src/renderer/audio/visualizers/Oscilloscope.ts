@@ -26,6 +26,10 @@ export class Oscilloscope {
   private animationId: number | null = null
   private isRunning: boolean = false
   private nativeInitialized: boolean = false
+  private samplesReceived: number = 0
+  private lastSampleRate: number = 0
+  private static readonly WARMUP_SAMPLES = 4096 // Need ~4K samples before pitch detection is reliable
+
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
@@ -39,14 +43,28 @@ export class Oscilloscope {
 
   private initNative(): void {
     if (isNativeAvailable() && !this.nativeInitialized) {
-      nativeOscilloscope.setSampleRate(48000) // Standard sample rate
+      // Get actual sample rate from AudioEngine (defaults to 48000 if context not ready)
+      const sampleRate = audioEngine.getSampleRate()
+      this.lastSampleRate = sampleRate
+      nativeOscilloscope.setSampleRate(sampleRate)
       nativeOscilloscope.setPitchLock(this.options.pitchLock)
       nativeOscilloscope.setDisplaySamples(1536) // ~3-4 cycles for typical bass (increased time window)
       // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
       this.nativeInitialized = true
-      console.log('Oscilloscope: Using native DSP with AudioWorklet')
+      console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
       console.error('Oscilloscope: Native DSP not available!')
+    }
+  }
+
+  // Update sample rate if AudioContext changes (called from draw loop)
+  private updateSampleRateIfNeeded(): void {
+    if (!isNativeAvailable()) return
+    const currentRate = audioEngine.getSampleRate()
+    if (currentRate !== this.lastSampleRate && currentRate > 0) {
+      this.lastSampleRate = currentRate
+      nativeOscilloscope.setSampleRate(currentRate)
+      console.log(`Oscilloscope: Sample rate updated to ${currentRate}Hz`)
     }
   }
 
@@ -100,10 +118,22 @@ export class Oscilloscope {
       return
     }
 
+    // Check if sample rate needs updating (AudioContext may have initialized after us)
+    this.updateSampleRateIfNeeded()
+
     // Flush ALL pending samples to native C++ (prevents sample loss)
     const pendingSamples = audioEngine.flushPendingOscilloscopeSamples()
     for (const chunk of pendingSamples) {
       nativeOscilloscope.pushSamples(chunk)
+      this.samplesReceived += chunk.length
+    }
+
+    // Skip pitch-locked processing during warmup period
+    // The circular buffer needs enough data for reliable pitch detection
+    if (this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
+      // During warmup, just show a static waveform or grid
+      this.animationId = requestAnimationFrame(this.draw)
+      return
     }
 
     // Process using circular buffer - searches backwards from writePos
@@ -187,5 +217,9 @@ export class Oscilloscope {
     if (isNativeAvailable()) {
       nativeOscilloscope.reset()
     }
+
+    // Reset warmup state
+    this.samplesReceived = 0
+    this.lastSampleRate = 0
   }
 }
