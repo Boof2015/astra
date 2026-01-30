@@ -111,11 +111,12 @@ OscilloscopeResult Oscilloscope::process() {
     }
 
     // Detect pitch from recent samples in circular buffer
+    // Use RAW buffer for pitch detection (filtered buffer may attenuate the fundamental)
     // Use last 2048 samples for pitch detection
     std::vector<float> recentSamples(2048);
     for (size_t i = 0; i < 2048; i++) {
         size_t idx = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - 2048 + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        recentSamples[i] = filteredBuffer_[idx];
+        recentSamples[i] = circularBuffer_[idx];  // Use RAW samples, not filtered
     }
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
