@@ -17,14 +17,15 @@ Oscilloscope::Oscilloscope()
     circularBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
     filteredBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
 
-    // Initialize FIR bandpass filter centered at 200Hz with 100Hz bandwidth
-    bandpassFilter_.designBandpass(200.0f, 100.0f, sampleRate_, 60.0f);
+    // Initialize FIR bandpass filter centered at 200Hz with 10% bandwidth (20Hz)
+    // Tight bandwidth removes harmonics, leaving only ONE rising zero crossing per period
+    bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
 }
 
 void Oscilloscope::setSampleRate(float sampleRate) {
     sampleRate_ = sampleRate;
-    // Redesign filter with new sample rate
-    float bandwidth = lastFilterPitch_ * 0.5f;
+    // Redesign filter with new sample rate (10% bandwidth)
+    float bandwidth = lastFilterPitch_ * 0.1f;
     bandpassFilter_.designBandpass(lastFilterPitch_, bandwidth, sampleRate_, 60.0f);
 }
 
@@ -55,10 +56,13 @@ void Oscilloscope::updateFiltered() {
     // This is called when using snapshot mode - filter is applied in pushSamples for continuous mode
 }
 
-// Find trigger by searching BACKWARDS from target position (pulse-visualizer style)
-// Only looks for RISING zero crossings for consistent phase
+// Find trigger by searching BACKWARDS from target position
+// With tight bandpass filter (10% bandwidth), there's only ONE rising zero crossing per period
+// So we simply take the FIRST valid crossing found - no phase tracking needed
 float Oscilloscope::findTriggerBackwards(size_t target, size_t range) {
-    // Search backwards from target to find rising zero crossing
+    float periodSamples = sampleRate_ / smoothedPitch_;
+
+    // Search backwards from target to find FIRST rising zero crossing
     for (size_t i = 0; i < range && i < OSCILLOSCOPE_BUFFER_SIZE; i++) {
         size_t pos = (target + OSCILLOSCOPE_BUFFER_SIZE - i) % OSCILLOSCOPE_BUFFER_SIZE;
         size_t prev = (pos + OSCILLOSCOPE_BUFFER_SIZE - 1) % OSCILLOSCOPE_BUFFER_SIZE;
@@ -66,13 +70,14 @@ float Oscilloscope::findTriggerBackwards(size_t target, size_t range) {
         float prevVal = filteredBuffer_[prev];
         float currVal = filteredBuffer_[pos];
 
-        // Only look for rising zero crossings
+        // Rising zero crossing
         if (prevVal < 0.0f && currVal >= 0.0f) {
-            // Check if signal is significant enough (look ahead ~1/4 period)
-            float periodSamples = sampleRate_ / smoothedPitch_;
-            size_t lookAhead = static_cast<size_t>(periodSamples / 4.0f);
-            if (lookAhead < 4) lookAhead = 4;
-            if (lookAhead > 256) lookAhead = 256;
+            // Check signal amplitude (look ahead ~1/4 period)
+            size_t lookAhead = std::clamp(
+                static_cast<size_t>(periodSamples / 4.0f),
+                static_cast<size_t>(4),
+                static_cast<size_t>(256)
+            );
 
             float peakAfter = 0.0f;
             for (size_t j = 0; j < lookAhead; j++) {
@@ -83,14 +88,14 @@ float Oscilloscope::findTriggerBackwards(size_t target, size_t range) {
 
             // Only accept if signal has significant amplitude
             if (peakAfter > 0.01f) {
-                // Linear interpolation for sub-sample precision
+                // Sub-sample interpolation for smooth rendering
                 float t = -prevVal / (currVal - prevVal);
                 return static_cast<float>(prev) + t;
             }
         }
     }
 
-    return -1.0f; // No crossing found
+    return -1.0f;  // No crossing found
 }
 
 // Process using circular buffer (continuous capture mode)
@@ -112,48 +117,52 @@ OscilloscopeResult Oscilloscope::process() {
         recentSamples[i] = filteredBuffer_[idx];
     }
 
-    float newPitch = DSP::detectPitch(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
+    float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
     if (newPitch > 0.0f) {
         smoothedPitch_ = smoothedPitch_ * 0.95f + newPitch * 0.05f;
 
         // Redesign FIR bandpass filter if pitch changed significantly (>10%)
         // This keeps the filter centered on the fundamental for stable trigger
         if (std::abs(smoothedPitch_ - lastFilterPitch_) / lastFilterPitch_ > 0.1f) {
-            float bandwidth = smoothedPitch_ * 0.5f;  // 50% of center freq
+            float bandwidth = smoothedPitch_ * 0.1f;  // 10% of center freq (tight = single zero crossing)
             bandpassFilter_.designBandpass(smoothedPitch_, bandwidth, sampleRate_, 60.0f);
             lastFilterPitch_ = smoothedPitch_;
         }
     }
     result.detectedPitch = smoothedPitch_;
 
-    // Calculate target position (pulse-visualizer style)
-    // Target = writePos - samples - some offset
+    // Calculate target position for trigger search
+    // We search backwards from (writePos - displaySamples - firDelay) to find a rising zero crossing
     float periodSamples = sampleRate_ / smoothedPitch_;
     size_t samples = static_cast<size_t>(displaySamples_);
+    size_t firDelay = bandpassFilter_.getDelay();
 
-    // Calculate target: look back from current write position
-    size_t target = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - samples) % OSCILLOSCOPE_BUFFER_SIZE;
+    // Target: look back from current write position by display window size AND FIR delay
+    // This ensures we're searching in the correct region where filtered data is valid
+    size_t target = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - samples - firDelay) % OSCILLOSCOPE_BUFFER_SIZE;
 
-    // Search range: 2 periods
-    size_t range = static_cast<size_t>(periodSamples * 2.0f);
+    // Search range: 4 periods for robust detection
+    size_t range = static_cast<size_t>(periodSamples * 4.0f);
 
     // Find zero crossing by searching backwards from target
     float zeroCross = findTriggerBackwards(target, range);
 
+    // LEFT-ANCHORED TRIGGER (MiniMeters style):
+    // The zero crossing IS the left edge of display
+    // Waveform starts at rising edge and extends rightward
     if (zeroCross >= 0.0f) {
-        // DETERMINISTIC phase offset calculation (no smoothing!)
-        // This is the pulse-visualizer approach that gives rock-solid trigger
-        size_t phaseOffset = (target + OSCILLOSCOPE_BUFFER_SIZE -
-                             static_cast<size_t>(zeroCross)) % OSCILLOSCOPE_BUFFER_SIZE;
-
         // Apply FIR filter delay compensation
+        // The filtered signal is delayed by order/2 samples relative to raw signal
         size_t firDelay = bandpassFilter_.getDelay();
 
-        // Calculate final trigger position (recalculated fresh every frame)
-        // No temporal smoothing = no lag = no flickering
-        result.triggerIndex = static_cast<float>(
-            (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - phaseOffset - firDelay - samples) % OSCILLOSCOPE_BUFFER_SIZE
-        );
+        // The trigger index is where we start reading raw samples for display
+        // Compensate for filter delay so trigger aligns with raw audio
+        result.triggerIndex = zeroCross - static_cast<float>(firDelay);
+
+        // Wrap if negative
+        while (result.triggerIndex < 0) {
+            result.triggerIndex += OSCILLOSCOPE_BUFFER_SIZE;
+        }
     } else {
         // No crossing found - use target as fallback
         result.triggerIndex = static_cast<float>(target);
@@ -180,13 +189,58 @@ OscilloscopeResult Oscilloscope::processSnapshot(const float* audioData, size_t 
     return process();
 }
 
-// Get samples from circular buffer starting at position
+// Get samples from circular buffer starting at position (integer version)
 // Returns RAW samples for display (shows all frequencies)
 // Trigger uses filtered signal, display uses raw signal
 void Oscilloscope::getSamples(float* output, size_t startPos, size_t count) const {
     for (size_t i = 0; i < count; i++) {
         size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
         output[i] = circularBuffer_[idx];  // Raw signal for display
+    }
+}
+
+// Get samples with sub-sample interpolation (float start position)
+// Uses Catmull-Rom spline for smooth rendering at sub-pixel precision
+// This preserves the high-precision trigger position from zero-crossing detection
+void Oscilloscope::getSamplesInterpolated(float* output, float startPos, size_t count) const {
+    for (size_t i = 0; i < count; i++) {
+        float pos = startPos + static_cast<float>(i);
+
+        // Wrap position to buffer bounds
+        while (pos < 0) pos += OSCILLOSCOPE_BUFFER_SIZE;
+        while (pos >= OSCILLOSCOPE_BUFFER_SIZE) pos -= OSCILLOSCOPE_BUFFER_SIZE;
+
+        size_t idx = static_cast<size_t>(pos) % OSCILLOSCOPE_BUFFER_SIZE;
+        float frac = pos - std::floor(pos);
+
+        if (frac < 0.0001f) {
+            // No interpolation needed - exact sample position
+            output[i] = circularBuffer_[idx];
+        } else {
+            // Cubic (Catmull-Rom) interpolation for smooth sub-sample rendering
+            // This eliminates pixel-level ghosting/jitter from truncated trigger positions
+            size_t i0 = (idx + OSCILLOSCOPE_BUFFER_SIZE - 1) % OSCILLOSCOPE_BUFFER_SIZE;
+            size_t i1 = idx;
+            size_t i2 = (idx + 1) % OSCILLOSCOPE_BUFFER_SIZE;
+            size_t i3 = (idx + 2) % OSCILLOSCOPE_BUFFER_SIZE;
+
+            float y0 = circularBuffer_[i0];
+            float y1 = circularBuffer_[i1];
+            float y2 = circularBuffer_[i2];
+            float y3 = circularBuffer_[i3];
+
+            // Catmull-Rom spline coefficients
+            float t = frac;
+            float t2 = t * t;
+            float t3 = t2 * t;
+
+            output[i] = 0.5f * (
+                (2.0f * y1) +
+                (-y0 + y2) * t +
+                (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3) * t2 +
+                (-y0 + 3.0f * y1 - 3.0f * y2 + y3) * t3
+            );
+        }
     }
 }
 

@@ -39,6 +39,9 @@ public:
     // Get samples from circular buffer (for rendering)
     void getSamples(float* output, size_t startPos, size_t count) const;
 
+    // Get samples with sub-sample interpolation (preserves trigger precision)
+    void getSamplesInterpolated(float* output, float startPos, size_t count) const;
+
     // Reset state
     void reset();
 

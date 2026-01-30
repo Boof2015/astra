@@ -78,6 +78,9 @@ private:
 // Pitch detection using autocorrelation
 float detectPitch(const float* data, size_t length, float sampleRate, float minFreq = 40.0f, float maxFreq = 2000.0f);
 
+// FFT-based pitch detection (more stable than autocorrelation)
+float detectPitchFFT(const float* data, size_t length, float sampleRate, float minFreq = 40.0f, float maxFreq = 2000.0f);
+
 // Find zero-crossing trigger point with hysteresis/hold-off (sub-sample precision)
 float findTriggerPoint(const float* data, size_t length, int searchStart, int searchEnd);
 

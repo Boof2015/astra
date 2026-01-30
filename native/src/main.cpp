@@ -99,21 +99,24 @@ Napi::Value OscilloscopeGetWritePos(const Napi::CallbackInfo& info) {
     return Napi::Number::New(info.Env(), static_cast<double>(oscilloscope.getWritePos()));
 }
 
-// Get samples from circular buffer for rendering
+// Get samples from circular buffer for rendering (with sub-sample interpolation)
 Napi::Value OscilloscopeGetSamples(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
-        Napi::TypeError::New(env, "Expected startPos and count").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected startPos (float) and count").ThrowAsJavaScriptException();
         return env.Null();
     }
 
-    size_t startPos = static_cast<size_t>(info[0].As<Napi::Number>().Uint32Value());
+    // Accept float startPos to preserve sub-sample trigger precision
+    float startPos = info[0].As<Napi::Number>().FloatValue();
     size_t count = static_cast<size_t>(info[1].As<Napi::Number>().Uint32Value());
 
     // Create output array
     Napi::Float32Array output = Napi::Float32Array::New(env, count);
-    oscilloscope.getSamples(output.Data(), startPos, count);
+
+    // Use interpolated version for smooth sub-pixel rendering
+    oscilloscope.getSamplesInterpolated(output.Data(), startPos, count);
 
     return output;
 }

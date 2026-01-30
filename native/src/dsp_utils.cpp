@@ -308,6 +308,67 @@ float detectPitch(const float* data, size_t length, float sampleRate, float minF
     return sampleRate / bestPeriod;
 }
 
+// FFT-based pitch detection (more stable than autocorrelation)
+float detectPitchFFT(const float* data, size_t length, float sampleRate, float minFreq, float maxFreq) {
+    // Use power-of-2 FFT size
+    size_t fftSize = 2048;
+    if (length < fftSize) {
+        fftSize = 1024;
+        if (length < fftSize) {
+            fftSize = 512;
+        }
+    }
+
+    FFT fft(fftSize);
+    std::vector<float> magnitudes(fftSize / 2);
+
+    // Apply Hann window and run FFT
+    std::vector<float> windowed(fftSize, 0.0f);
+    size_t copyLen = std::min(length, fftSize);
+    for (size_t i = 0; i < copyLen; i++) {
+        float win = 0.5f * (1.0f - cosf(2.0f * static_cast<float>(M_PI) * i / fftSize));
+        windowed[i] = data[i] * win;
+    }
+    fft.forward(windowed.data(), magnitudes.data());
+
+    // Find peak in frequency range
+    int minBin = std::max(1, static_cast<int>(minFreq * fftSize / sampleRate));
+    int maxBin = std::min(static_cast<int>(fftSize / 2 - 1), static_cast<int>(maxFreq * fftSize / sampleRate));
+
+    if (minBin >= maxBin) {
+        return 0.0f;
+    }
+
+    float peakMag = 0.0f;
+    int peakBin = minBin;
+    for (int i = minBin; i <= maxBin; i++) {
+        if (magnitudes[i] > peakMag) {
+            peakMag = magnitudes[i];
+            peakBin = i;
+        }
+    }
+
+    // Check if peak is significant (avoid noise)
+    if (peakMag < 1e-6f) {
+        return 0.0f;
+    }
+
+    // Quadratic interpolation for sub-bin accuracy
+    if (peakBin > 0 && peakBin < static_cast<int>(fftSize / 2) - 1) {
+        float y1 = magnitudes[peakBin - 1];
+        float y2 = magnitudes[peakBin];
+        float y3 = magnitudes[peakBin + 1];
+        float denom = y1 - 2.0f * y2 + y3;
+        if (std::abs(denom) > 1e-9f) {
+            float offset = 0.5f * (y1 - y3) / denom;
+            offset = std::clamp(offset, -0.5f, 0.5f);
+            return (static_cast<float>(peakBin) + offset) * sampleRate / static_cast<float>(fftSize);
+        }
+    }
+
+    return static_cast<float>(peakBin) * sampleRate / static_cast<float>(fftSize);
+}
+
 // Find zero-crossing trigger point (sub-sample precision)
 // searches in [searchStart, searchEnd)
 // Finds the STRONGEST (steepest slope) rising zero crossing for consistency
