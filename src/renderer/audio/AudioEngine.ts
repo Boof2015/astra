@@ -69,6 +69,8 @@ export class AudioEngine {
 
   // Notify all track change listeners
   private notifyTrackChange(): void {
+    // Clear pending samples from previous track to prevent buffer pollution
+    this.pendingOscilloscopeSamples = []
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
