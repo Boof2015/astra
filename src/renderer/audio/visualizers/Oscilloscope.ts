@@ -54,7 +54,7 @@ export class Oscilloscope {
       this.lastSampleRate = sampleRate
       nativeOscilloscope.setSampleRate(sampleRate)
       nativeOscilloscope.setPitchLock(this.options.pitchLock)
-      nativeOscilloscope.setDisplaySamples(1536) // ~3-4 cycles for typical bass (increased time window)
+      nativeOscilloscope.setDisplaySamples(2048) // ~3-4 cycles for typical bass (increased time window)
       // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
