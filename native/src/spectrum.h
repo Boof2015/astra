@@ -32,11 +32,14 @@ private:
     float smoothing_;
 
     std::unique_ptr<DSP::FFT> fft_;
+    std::vector<float> historyBuffer_;
     std::vector<float> windowedInput_;
     std::vector<float> magnitudes_;
     std::vector<float> smoothedMagnitudes_;
+    size_t bufferedSamples_;
 
     void applyWindow(const float* input, float* output, size_t length);
+    void pushSamples(const float* input, size_t length);
 };
 
 } // namespace Visualizer

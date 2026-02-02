@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Oscilloscope, SpectrumAnalyzer, Vectorscope } from '../../audio/visualizers'
-import { audioEngine } from '../../audio/AudioEngine'
 
 type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 
@@ -73,6 +72,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
         lineColor,
         lineWidth: 2,
         fillGradient: true,
+        fftSize,
         gradientColors: [
           'rgba(0, 255, 255, 0)',
           `${lineColor}33`,
@@ -114,6 +114,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
     scopeRef.current?.setOptions({ lineColor, pitchLock })
     spectrumRef.current?.setOptions({
       lineColor,
+      fftSize,
       gradientColors: [
         'rgba(0, 255, 255, 0)',
         `${lineColor}33`,
@@ -121,7 +122,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
       ]
     })
     vectorRef.current?.setOptions({ lineColor })
-  }, [lineColor, pitchLock])
+  }, [lineColor, pitchLock, fftSize])
 
   // Handle running state changes
   useEffect(() => {

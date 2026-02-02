@@ -15,6 +15,8 @@ export interface SpectrumAnalyzerOptions {
   maxDecibels?: number
   minFrequency?: number
   maxFrequency?: number
+  tiltDbPerOctave?: number
+  tiltReferenceHz?: number
   fftSize?: number
 }
 
@@ -27,11 +29,13 @@ const defaultOptions: Required<SpectrumAnalyzerOptions> = {
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
   scaleType: 'log',
-  smoothing: 0.85,
+  smoothing: 0.9,
   minDecibels: -90,
   maxDecibels: -10,
   minFrequency: 20,
   maxFrequency: 20000,
+  tiltDbPerOctave: 2.0,
+  tiltReferenceHz: 1000,
   fftSize: 2048
 }
 
@@ -41,9 +45,9 @@ export class SpectrumAnalyzer {
   private options: Required<SpectrumAnalyzerOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
-  private smoothedData: Float32Array = new Float32Array(0)
   private nativeInitialized: boolean = false
   private sampleRate: number = 48000
+  private lastSampleRate: number = 0
 
   constructor(canvas: HTMLCanvasElement, options: SpectrumAnalyzerOptions = {}) {
     this.canvas = canvas
@@ -58,14 +62,33 @@ export class SpectrumAnalyzer {
 
   private initNative(): void {
     if (isNativeAvailable() && !this.nativeInitialized) {
+      this.sampleRate = audioEngine.getSampleRate()
+      this.lastSampleRate = this.sampleRate
       nativeSpectrum.setFFTSize(this.options.fftSize)
       nativeSpectrum.setSampleRate(this.sampleRate)
-      nativeSpectrum.setSmoothing(this.options.smoothing)
+      nativeSpectrum.setSmoothing(this.getNativeSmoothing())
       this.nativeInitialized = true
-      console.log('SpectrumAnalyzer: Using native DSP')
+      console.log(`SpectrumAnalyzer: Using native DSP (${this.sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
       console.error('SpectrumAnalyzer: Native DSP not available!')
     }
+  }
+
+  private updateSampleRateIfNeeded(): void {
+    if (!isNativeAvailable()) return
+    const currentRate = audioEngine.getSampleRate()
+    if (currentRate !== this.lastSampleRate && currentRate > 0) {
+      this.sampleRate = currentRate
+      this.lastSampleRate = currentRate
+      nativeSpectrum.setSampleRate(currentRate)
+      console.log(`SpectrumAnalyzer: Sample rate updated to ${currentRate}Hz`)
+    }
+  }
+
+  private getNativeSmoothing(): number {
+    const base = Math.min(0.99, Math.max(0, this.options.smoothing))
+    const fftRatio = Math.max(0.5, this.options.fftSize / 2048)
+    return Math.min(0.99, Math.max(0, Math.pow(base, fftRatio)))
   }
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
@@ -76,8 +99,8 @@ export class SpectrumAnalyzer {
       if (options.fftSize !== undefined) {
         nativeSpectrum.setFFTSize(options.fftSize)
       }
-      if (options.smoothing !== undefined) {
-        nativeSpectrum.setSmoothing(options.smoothing)
+      if (options.smoothing !== undefined || options.fftSize !== undefined) {
+        nativeSpectrum.setSmoothing(this.getNativeSmoothing())
       }
     }
   }
@@ -113,12 +136,54 @@ export class SpectrumAnalyzer {
     return this.lerp(data[i0], data[i1], t)
   }
 
+  private frequencyAtPosition(t: number, minFrequency: number, maxFrequency: number): number {
+    if (this.options.scaleType === 'log') {
+      const logMin = Math.log10(minFrequency)
+      const logMax = Math.log10(maxFrequency)
+      return Math.pow(10, logMin + t * (logMax - logMin))
+    }
+    return minFrequency + t * (maxFrequency - minFrequency)
+  }
+
+  private getPeakInRange(data: Float32Array, startIndex: number, endIndex: number): number {
+    const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
+    const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
+    const lo = Math.floor(Math.min(clampedStart, clampedEnd))
+    const hi = Math.ceil(Math.max(clampedStart, clampedEnd))
+
+    if (hi <= lo) {
+      return this.getInterpolatedValue(data, clampedStart)
+    }
+
+    let peak = -Infinity
+    for (let i = lo; i <= hi; i++) {
+      peak = Math.max(peak, data[i])
+    }
+
+    return Math.max(
+      peak,
+      this.getInterpolatedValue(data, clampedStart),
+      this.getInterpolatedValue(data, clampedEnd)
+    )
+  }
+
+  private applyTilt(db: number, frequency: number): number {
+    const safeFreq = Math.max(1, frequency)
+    const reference = Math.max(1, this.options.tiltReferenceHz)
+    const octaves = Math.log2(safeFreq / reference)
+    return db + this.options.tiltDbPerOctave * octaves
+  }
+
   private draw = (): void => {
     if (!this.isRunning) return
 
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
+    if (width <= 0 || height <= 0) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
 
     // Get frequency data from native FFT
     if (!isNativeAvailable()) {
@@ -127,11 +192,47 @@ export class SpectrumAnalyzer {
       return
     }
 
-    // Use latest mono audio data from AudioEngine
-    const monoData = audioEngine.getLatestMonoChannel()
-    if (!monoData || monoData.length === 0) {
+    this.updateSampleRateIfNeeded()
+
+    if (audioEngine.playbackState !== 'playing') {
+      audioEngine.flushPendingSpectrumSamples()
+      nativeSpectrum.reset()
+
+      ctx.clearRect(0, 0, width, height)
+      if (options.backgroundColor !== 'transparent') {
+        ctx.fillStyle = options.backgroundColor
+        ctx.fillRect(0, 0, width, height)
+      }
+
+      const nyquist = this.sampleRate / 2
+      const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
+      const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
+      if (options.showGrid) {
+        this.drawGrid(minFrequency, maxFrequency)
+      }
+
       this.animationId = requestAnimationFrame(this.draw)
       return
+    }
+
+    const pendingSpectrum = audioEngine.flushPendingSpectrumSamples()
+    if (pendingSpectrum.length === 0) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    let monoData: Float32Array
+    if (pendingSpectrum.length === 1) {
+      monoData = pendingSpectrum[0]
+    } else {
+      let totalLength = 0
+      for (const chunk of pendingSpectrum) totalLength += chunk.length
+      monoData = new Float32Array(totalLength)
+      let offset = 0
+      for (const chunk of pendingSpectrum) {
+        monoData.set(chunk, offset)
+        offset += chunk.length
+      }
     }
 
     const nativeResult = nativeSpectrum.process(monoData)
@@ -148,21 +249,6 @@ export class SpectrumAnalyzer {
       return
     }
 
-    // Initialize smoothed data if needed (only for JS fallback)
-    if (!isNativeAvailable()) {
-      if (this.smoothedData.length !== bufferLength) {
-        this.smoothedData = new Float32Array(bufferLength)
-        this.smoothedData.fill(options.minDecibels)
-      }
-
-      // Apply temporal smoothing
-      for (let i = 0; i < bufferLength; i++) {
-        this.smoothedData[i] = this.smoothedData[i] * options.smoothing +
-                               frequencyData[i] * (1 - options.smoothing)
-      }
-      frequencyData = this.smoothedData
-    }
-
     // Clear canvas
     ctx.clearRect(0, 0, width, height)
 
@@ -173,36 +259,40 @@ export class SpectrumAnalyzer {
     }
 
     // Draw grid
+    const nyquist = this.sampleRate / 2
+    const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
+    const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
     if (options.showGrid) {
-      this.drawGrid()
+      this.drawGrid(minFrequency, maxFrequency)
     }
 
     // Calculate frequency mapping
-    const nyquist = this.sampleRate / 2
     const binWidth = nyquist / bufferLength
 
-    // Build smooth path using more points and interpolation
+    // Build one point per horizontal pixel and preserve local peaks.
     const points: { x: number; y: number }[] = []
-    const numPoints = Math.max(width, 256) // At least 256 points for smoothness
+    const numPoints = Math.max(2, Math.floor(width))
 
     for (let i = 0; i < numPoints; i++) {
-      const x = (i / (numPoints - 1)) * width
+      const t0 = i / (numPoints - 1)
+      const t1 = Math.min(1, (i + 1) / (numPoints - 1))
+      const x = t0 * width
 
-      // Map x position to frequency (log or linear)
-      let frequency: number
-      if (options.scaleType === 'log') {
-        const logMin = Math.log10(options.minFrequency)
-        const logMax = Math.log10(options.maxFrequency)
-        frequency = Math.pow(10, logMin + (i / (numPoints - 1)) * (logMax - logMin))
-      } else {
-        frequency = options.minFrequency + (i / (numPoints - 1)) * (options.maxFrequency - options.minFrequency)
-      }
+      const frequency0 = this.frequencyAtPosition(t0, minFrequency, maxFrequency)
+      const frequency1 = this.frequencyAtPosition(t1, minFrequency, maxFrequency)
+      const centerFrequency = (frequency0 + frequency1) * 0.5
+      const bin0 = frequency0 / binWidth
+      const bin1 = frequency1 / binWidth
 
-      // Convert frequency to bin index (floating point for interpolation)
-      const binIndex = frequency / binWidth
+      const centerBin = (bin0 + bin1) * 0.5
+      const binSpan = Math.abs(bin1 - bin0)
 
-      // Get interpolated dB value
-      const db = this.getInterpolatedValue(frequencyData, Math.min(binIndex, bufferLength - 1))
+      // Low frequencies can look stepped because each pixel maps to <1 FFT bin.
+      // Use sub-bin interpolation there, and keep peak-hold for wider spans.
+      const rawDb = binSpan <= 1
+        ? this.getInterpolatedValue(frequencyData, Math.min(centerBin, bufferLength - 1))
+        : this.getPeakInRange(frequencyData, bin0, bin1)
+      const db = this.applyTilt(rawDb, centerFrequency)
 
       // Normalize to 0-1 range
       const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
@@ -216,14 +306,9 @@ export class SpectrumAnalyzer {
       ctx.beginPath()
       ctx.moveTo(points[0].x, points[0].y)
 
-      // Use quadratic curves for smoother line
-      for (let i = 1; i < points.length - 1; i++) {
-        const xc = (points[i].x + points[i + 1].x) / 2
-        const yc = (points[i].y + points[i + 1].y) / 2
-        ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc)
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y)
       }
-      // Connect to last point
-      ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y)
 
       // Complete path for fill
       ctx.lineTo(width, height)
@@ -245,13 +330,9 @@ export class SpectrumAnalyzer {
     ctx.beginPath()
     ctx.moveTo(points[0].x, points[0].y)
 
-    // Use quadratic curves for smoother line
-    for (let i = 1; i < points.length - 1; i++) {
-      const xc = (points[i].x + points[i + 1].x) / 2
-      const yc = (points[i].y + points[i + 1].y) / 2
-      ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc)
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y)
     }
-    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y)
 
     ctx.lineWidth = options.lineWidth
     ctx.strokeStyle = options.lineColor
@@ -262,7 +343,7 @@ export class SpectrumAnalyzer {
     this.animationId = requestAnimationFrame(this.draw)
   }
 
-  private drawGrid(): void {
+  private drawGrid(minFrequency: number, maxFrequency: number): void {
     const { ctx, canvas, options } = this
     const width = canvas.width
     const height = canvas.height
@@ -293,16 +374,16 @@ export class SpectrumAnalyzer {
     ctx.textAlign = 'center'
 
     for (const freq of freqSteps) {
-      if (freq < options.minFrequency || freq > options.maxFrequency) continue
+      if (freq < minFrequency || freq > maxFrequency) continue
 
       let x: number
       if (options.scaleType === 'log') {
-        const logMin = Math.log10(options.minFrequency)
-        const logMax = Math.log10(options.maxFrequency)
+        const logMin = Math.log10(minFrequency)
+        const logMax = Math.log10(maxFrequency)
         const logFreq = Math.log10(freq)
         x = ((logFreq - logMin) / (logMax - logMin)) * width
       } else {
-        x = ((freq - options.minFrequency) / (options.maxFrequency - options.minFrequency)) * width
+        x = ((freq - minFrequency) / (maxFrequency - minFrequency)) * width
       }
 
       ctx.beginPath()
@@ -322,5 +403,6 @@ export class SpectrumAnalyzer {
     if (isNativeAvailable()) {
       nativeSpectrum.reset()
     }
+    this.lastSampleRate = 0
   }
 }

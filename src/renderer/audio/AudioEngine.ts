@@ -28,7 +28,9 @@ export class AudioEngine {
 
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
+  private pendingSpectrumSamples: Float32Array[] = []
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
+  private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
 
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
@@ -71,6 +73,7 @@ export class AudioEngine {
   private notifyTrackChange(): void {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
+    this.pendingSpectrumSamples = []
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
@@ -121,6 +124,14 @@ export class AudioEngine {
               mono[i] = (left[i] + right[i]) / 2
             }
             this.latestMonoChannel = mono
+
+            // Queue mono chunks for spectrum analyzer so it can consume all samples.
+            if (this.pendingSpectrumSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+              this.pendingSpectrumSamples = this.pendingSpectrumSamples.slice(
+                -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+              )
+            }
+            this.pendingSpectrumSamples.push(mono)
           }
         }
       }
@@ -277,6 +288,13 @@ export class AudioEngine {
   flushPendingOscilloscopeSamples(): Float32Array[] {
     const samples = this.pendingOscilloscopeSamples
     this.pendingOscilloscopeSamples = []
+    return samples
+  }
+
+  // Flush all pending mono chunks for spectrum processing.
+  flushPendingSpectrumSamples(): Float32Array[] {
+    const samples = this.pendingSpectrumSamples
+    this.pendingSpectrumSamples = []
     return samples
   }
 
