@@ -83,19 +83,47 @@ export default function MainContent() {
     }
   }
 
-  // Handle progress bar click
-  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (duration <= 0) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const percent = (e.clientX - rect.left) / rect.width
-    seek(percent * duration)
+  const getPercentFromClientX = (clientX: number, element: HTMLDivElement): number => {
+    const rect = element.getBoundingClientRect()
+    if (rect.width <= 0) return 0
+    const percent = (clientX - rect.left) / rect.width
+    return Math.max(0, Math.min(1, percent))
   }
 
-  // Handle volume change
-  const handleVolumeClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const percent = (e.clientX - rect.left) / rect.width
-    setVolume(Math.max(0, Math.min(1, percent)))
+  const handleProgressPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (duration <= 0) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    void seek(getPercentFromClientX(e.clientX, e.currentTarget) * duration)
+  }
+
+  const handleProgressPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (duration <= 0) return
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    void seek(getPercentFromClientX(e.clientX, e.currentTarget) * duration)
+  }
+
+  const releaseProgressPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+  }
+
+  const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
+  }
+
+  const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
+  }
+
+  const releaseVolumePointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
   }
 
   const isPlaying = playbackState === 'playing'
@@ -384,7 +412,10 @@ export default function MainContent() {
           <span className="progress-time">{formatTime(currentTime)}</span>
           <div
             className="progress-bar"
-            onClick={handleProgressClick}
+            onPointerDown={handleProgressPointerDown}
+            onPointerMove={handleProgressPointerMove}
+            onPointerUp={releaseProgressPointer}
+            onPointerCancel={releaseProgressPointer}
             role="slider"
             aria-valuenow={currentTime}
             aria-valuemin={0}
@@ -417,7 +448,10 @@ export default function MainContent() {
           </button>
           <div
             className="volume-slider"
-            onClick={handleVolumeClick}
+            onPointerDown={handleVolumePointerDown}
+            onPointerMove={handleVolumePointerMove}
+            onPointerUp={releaseVolumePointer}
+            onPointerCancel={releaseVolumePointer}
             role="slider"
             aria-valuenow={volume * 100}
             aria-valuemin={0}

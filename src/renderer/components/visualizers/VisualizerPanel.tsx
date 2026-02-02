@@ -26,7 +26,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
 
   // Settings
   const [lineColor, setLineColor] = useState('#00ffff')
-  const [fftSize, setFftSize] = useState<FFTSize>(2048)
+  const [fftSize, setFftSize] = useState<FFTSize>(4096)
   const [pitchLock, setPitchLock] = useState(true)
 
   // Resize a single canvas to fit its container

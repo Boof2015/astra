@@ -304,6 +304,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         await audioEngine.loadAudioData(result.data)
         set({ duration: audioEngine.duration })
+        await audioEngine.play()
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()

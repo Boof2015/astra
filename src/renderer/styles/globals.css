@@ -457,6 +457,7 @@ button, .titlebar, .sidebar-item {
   position: relative;
   display: flex;
   align-items: center;
+  touch-action: none;
 }
 
 .progress-bar::before {
@@ -498,6 +499,7 @@ button, .titlebar, .sidebar-item {
   position: relative;
   display: flex;
   align-items: center;
+  touch-action: none;
 }
 
 .volume-slider::before {

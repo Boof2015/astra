@@ -34,7 +34,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
 }
 
 export default function TrackList({ tracks, showArtist = true, showAlbum = true }: TrackListProps) {
-  const { currentTrack, playbackState, loadTrack, setQueue } = usePlayerStore()
+  const { currentTrack, playbackState, loadTrack, play, setQueue } = usePlayerStore()
 
   const formatDuration = (seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
@@ -63,6 +63,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
         artworkHash: dbTrack.artwork_hash ?? undefined
       }
       await loadTrack(track, result.data)
+      await play()
     }
   }
 
