@@ -59,6 +59,9 @@ private:
     DSP::FIRFilter bandpassFilter_;
     float lastFilterPitch_;  // Track pitch for filter redesign
 
+    // High shelf filter to reduce HF before pitch detection
+    DSP::BiquadFilter pitchAnalysisShelf_;
+
     float lastTrigger_;
     float smoothedPitch_;
     int pitchSamplesProcessed_;  // Track samples for adaptive smoothing

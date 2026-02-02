@@ -33,6 +33,7 @@ public:
     BiquadFilter();
     void setLowpass(float frequency, float sampleRate, float Q = 0.707f);
     void setBandpass(float frequency, float sampleRate, float Q = 2.0f);
+    void setHighShelf(float frequency, float sampleRate, float gainDB, float Q = 0.707f);
     float process(float input);
     void reset();
 

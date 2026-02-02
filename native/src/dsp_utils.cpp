@@ -102,6 +102,21 @@ void BiquadFilter::setBandpass(float frequency, float sampleRate, float Q) {
     a2_ = (1.0f - alpha) / a0;
 }
 
+void BiquadFilter::setHighShelf(float frequency, float sampleRate, float gainDB, float Q) {
+    float A = powf(10.0f, gainDB / 40.0f);  // sqrt(10^(dB/20))
+    float omega = 2.0f * M_PI * frequency / sampleRate;
+    float sinOmega = sinf(omega);
+    float cosOmega = cosf(omega);
+    float alpha = sinOmega / (2.0f * Q);
+
+    float a0 = (A + 1.0f) - (A - 1.0f) * cosOmega + 2.0f * sqrtf(A) * alpha;
+    b0_ = A * ((A + 1.0f) + (A - 1.0f) * cosOmega + 2.0f * sqrtf(A) * alpha) / a0;
+    b1_ = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cosOmega) / a0;
+    b2_ = A * ((A + 1.0f) + (A - 1.0f) * cosOmega - 2.0f * sqrtf(A) * alpha) / a0;
+    a1_ = 2.0f * ((A - 1.0f) - (A + 1.0f) * cosOmega) / a0;
+    a2_ = ((A + 1.0f) - (A - 1.0f) * cosOmega - 2.0f * sqrtf(A) * alpha) / a0;
+}
+
 float BiquadFilter::process(float input) {
     float output = b0_ * input + b1_ * x1_ + b2_ * x2_ - a1_ * y1_ - a2_ * y2_;
     x2_ = x1_;

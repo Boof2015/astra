@@ -21,6 +21,10 @@ Oscilloscope::Oscilloscope()
     // Initialize FIR bandpass filter centered at 200Hz with 10% bandwidth (20Hz)
     // Tight bandwidth removes harmonics, leaving only ONE rising zero crossing per period
     bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
+
+    // Initialize high shelf for pitch analysis (-2dB at 500Hz, Q=0.71)
+    // Reduces high frequency interference with pitch detection
+    pitchAnalysisShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
 }
 
 void Oscilloscope::setSampleRate(float sampleRate) {
@@ -28,6 +32,8 @@ void Oscilloscope::setSampleRate(float sampleRate) {
     // Redesign filter with new sample rate (10% bandwidth)
     float bandwidth = lastFilterPitch_ * 0.1f;
     bandpassFilter_.designBandpass(lastFilterPitch_, bandwidth, sampleRate_, 60.0f);
+    // Update high shelf for new sample rate
+    pitchAnalysisShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
 }
 
 void Oscilloscope::setPitchLock(bool enabled) {
@@ -117,6 +123,12 @@ OscilloscopeResult Oscilloscope::process() {
     for (size_t i = 0; i < 2048; i++) {
         size_t idx = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - 2048 + i) % OSCILLOSCOPE_BUFFER_SIZE;
         recentSamples[i] = circularBuffer_[idx];  // Use RAW samples, not filtered
+    }
+
+    // Apply high shelf filter to reduce HF interference with pitch detection
+    pitchAnalysisShelf_.reset();
+    for (size_t i = 0; i < 2048; i++) {
+        recentSamples[i] = pitchAnalysisShelf_.process(recentSamples[i]);
     }
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
@@ -262,6 +274,7 @@ void Oscilloscope::reset() {
 
     // Redesign filter to default 200Hz (reset() only clears delay line, not coefficients)
     bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
+    pitchAnalysisShelf_.reset();
 
     // Clear buffers
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);
