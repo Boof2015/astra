@@ -62,6 +62,16 @@ private:
     // High shelf filter to reduce HF before pitch detection
     DSP::BiquadFilter pitchAnalysisShelf_;
 
+    // Display filtering (high shelf + steep lowpass)
+    DSP::BiquadFilter displayShelf_;      // High shelf for display
+    DSP::BiquadFilter displayLowpass1_;   // First stage of cascaded lowpass
+    DSP::BiquadFilter displayLowpass2_;   // Second stage (4th order total = 24dB/oct)
+    std::vector<float> displayBuffer_;    // Filtered samples for display
+
+    // Pitch detection lowpass (after existing high shelf)
+    DSP::BiquadFilter pitchLowpass1_;     // First stage
+    DSP::BiquadFilter pitchLowpass2_;     // Second stage
+
     float lastTrigger_;
     float smoothedPitch_;
     int pitchSamplesProcessed_;  // Track samples for adaptive smoothing

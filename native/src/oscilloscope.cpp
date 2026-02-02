@@ -22,9 +22,21 @@ Oscilloscope::Oscilloscope()
     // Tight bandwidth removes harmonics, leaving only ONE rising zero crossing per period
     bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
 
-    // Initialize high shelf for pitch analysis (-2dB at 500Hz, Q=0.71)
+    // Initialize high shelf for pitch analysis (-3dB at 400Hz, Q=0.71)
     // Reduces high frequency interference with pitch detection
     pitchAnalysisShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
+
+    // Initialize display buffer
+    displayBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
+
+    // Initialize display filters (high shelf + cascaded lowpass for steep rolloff)
+    displayShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
+    displayLowpass1_.setLowpass(18000.0f, sampleRate_, 0.707f);
+    displayLowpass2_.setLowpass(18000.0f, sampleRate_, 0.707f);
+
+    // Initialize pitch detection lowpass (cascaded for steep slope)
+    pitchLowpass1_.setLowpass(18000.0f, sampleRate_, 0.707f);
+    pitchLowpass2_.setLowpass(18000.0f, sampleRate_, 0.707f);
 }
 
 void Oscilloscope::setSampleRate(float sampleRate) {
@@ -34,6 +46,15 @@ void Oscilloscope::setSampleRate(float sampleRate) {
     bandpassFilter_.designBandpass(lastFilterPitch_, bandwidth, sampleRate_, 60.0f);
     // Update high shelf for new sample rate
     pitchAnalysisShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
+
+    // Update display filters
+    displayShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
+    displayLowpass1_.setLowpass(18000.0f, sampleRate_, 0.707f);
+    displayLowpass2_.setLowpass(18000.0f, sampleRate_, 0.707f);
+
+    // Update pitch detection lowpass
+    pitchLowpass1_.setLowpass(18000.0f, sampleRate_, 0.707f);
+    pitchLowpass2_.setLowpass(18000.0f, sampleRate_, 0.707f);
 }
 
 void Oscilloscope::setPitchLock(bool enabled) {
@@ -53,6 +74,12 @@ void Oscilloscope::pushSamples(const float* samples, size_t count) {
         // Apply FIR bandpass filter and store filtered sample
         // Linear-phase filter provides consistent zero crossings
         filteredBuffer_[writePos_] = bandpassFilter_.process(samples[i]);
+
+        // Apply display filters: high shelf → cascaded lowpass
+        float displaySample = displayShelf_.process(samples[i]);
+        displaySample = displayLowpass1_.process(displaySample);
+        displaySample = displayLowpass2_.process(displaySample);
+        displayBuffer_[writePos_] = displaySample;
 
         writePos_ = (writePos_ + 1) % OSCILLOSCOPE_BUFFER_SIZE;
     }
@@ -122,13 +149,21 @@ OscilloscopeResult Oscilloscope::process() {
     std::vector<float> recentSamples(2048);
     for (size_t i = 0; i < 2048; i++) {
         size_t idx = (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - 2048 + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        recentSamples[i] = circularBuffer_[idx];  // Use RAW samples, not filtered
+        recentSamples[i] = displayBuffer_[idx];  // Use RAW samples, not filtered
     }
 
     // Apply high shelf filter to reduce HF interference with pitch detection
     pitchAnalysisShelf_.reset();
     for (size_t i = 0; i < 2048; i++) {
         recentSamples[i] = pitchAnalysisShelf_.process(recentSamples[i]);
+    }
+
+    // Apply cascaded lowpass for steep HF rejection
+    pitchLowpass1_.reset();
+    pitchLowpass2_.reset();
+    for (size_t i = 0; i < 2048; i++) {
+        recentSamples[i] = pitchLowpass1_.process(recentSamples[i]);
+        recentSamples[i] = pitchLowpass2_.process(recentSamples[i]);
     }
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
@@ -211,12 +246,11 @@ OscilloscopeResult Oscilloscope::processSnapshot(const float* audioData, size_t 
 }
 
 // Get samples from circular buffer starting at position (integer version)
-// Returns RAW samples for display (shows all frequencies)
-// Trigger uses filtered signal, display uses raw signal
+// Returns filtered samples for display (high shelf + lowpass applied)
 void Oscilloscope::getSamples(float* output, size_t startPos, size_t count) const {
     for (size_t i = 0; i < count; i++) {
         size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        output[i] = circularBuffer_[idx];  // Raw signal for display
+        output[i] = displayBuffer_[idx];  // Filtered signal for display
     }
 }
 
@@ -236,7 +270,7 @@ void Oscilloscope::getSamplesInterpolated(float* output, float startPos, size_t 
 
         if (frac < 0.0001f) {
             // No interpolation needed - exact sample position
-            output[i] = circularBuffer_[idx];
+            output[i] = displayBuffer_[idx];
         } else {
             // Cubic (Catmull-Rom) interpolation for smooth sub-sample rendering
             // This eliminates pixel-level ghosting/jitter from truncated trigger positions
@@ -276,9 +310,17 @@ void Oscilloscope::reset() {
     bandpassFilter_.designBandpass(200.0f, 20.0f, sampleRate_, 60.0f);
     pitchAnalysisShelf_.reset();
 
+    // Reset display and pitch detection filters
+    displayShelf_.reset();
+    displayLowpass1_.reset();
+    displayLowpass2_.reset();
+    pitchLowpass1_.reset();
+    pitchLowpass2_.reset();
+
     // Clear buffers
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);
     std::fill(filteredBuffer_.begin(), filteredBuffer_.end(), 0.0f);
+    std::fill(displayBuffer_.begin(), displayBuffer_.end(), 0.0f);
 }
 
 } // namespace Visualizer
