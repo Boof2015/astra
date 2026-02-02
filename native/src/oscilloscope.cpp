@@ -75,9 +75,8 @@ void Oscilloscope::pushSamples(const float* samples, size_t count) {
         // Linear-phase filter provides consistent zero crossings
         filteredBuffer_[writePos_] = bandpassFilter_.process(samples[i]);
 
-        // Apply display filters: high shelf → cascaded lowpass
-        float displaySample = displayShelf_.process(samples[i]);
-        displaySample = displayLowpass1_.process(displaySample);
+        // Apply display filters: cascaded lowpass only (no shelf)
+        float displaySample = displayLowpass1_.process(samples[i]);
         displaySample = displayLowpass2_.process(displaySample);
         displayBuffer_[writePos_] = displaySample;
 
