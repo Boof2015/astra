@@ -7,25 +7,31 @@ export interface VectorscopeOptions {
   backgroundColor?: string
   showGrid?: boolean
   gridColor?: string
-  bufferSize?: number
+  persistence?: number  // 0.0 (no trail) to 1.0 (infinite trail), default 0.92
+  displayPoints?: number  // how many points to request from native, default 4096
 }
 
 const defaultOptions: Required<VectorscopeOptions> = {
   lineColor: '#00ffff',
-  lineWidth: 1,
+  lineWidth: 1.5,
   backgroundColor: 'transparent',
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
-  bufferSize: 1024
+  persistence: 0.10,
+  displayPoints: 4096
 }
 
 export class Vectorscope {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
+  private offscreenCanvas: HTMLCanvasElement
+  private offscreenCtx: CanvasRenderingContext2D
   private options: Required<VectorscopeOptions>
   private animationId: number | null = null
   private isRunning: boolean = false
   private nativeInitialized: boolean = false
+  private lastSampleRate: number = 0
+  private unsubscribeTrackChange: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
     this.canvas = canvas
@@ -34,27 +40,54 @@ export class Vectorscope {
     this.ctx = ctx
     this.options = { ...defaultOptions, ...options }
 
+    // Create offscreen canvas for persistence/fade
+    this.offscreenCanvas = document.createElement('canvas')
+    this.offscreenCanvas.width = canvas.width
+    this.offscreenCanvas.height = canvas.height
+    const offCtx = this.offscreenCanvas.getContext('2d')
+    if (!offCtx) throw new Error('Could not get offscreen 2D context')
+    this.offscreenCtx = offCtx
+
     // Initialize native module if available
     this.initNative()
+
+    // Subscribe to track changes for clean reset
+    this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
+      this.resetDisplay()
+    })
   }
 
   private initNative(): void {
     if (isNativeAvailable() && !this.nativeInitialized) {
-      nativeVectorscope.setBufferSize(this.options.bufferSize)
+      const sampleRate = audioEngine.getSampleRate()
+      this.lastSampleRate = sampleRate
+      nativeVectorscope.setSampleRate(sampleRate)
       this.nativeInitialized = true
-      console.log('Vectorscope: Using native DSP')
+      console.log(`Vectorscope: Using native DSP (${sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
       console.log('Vectorscope: Using JavaScript fallback')
     }
   }
 
+  private updateSampleRateIfNeeded(): void {
+    if (!isNativeAvailable()) return
+    const currentRate = audioEngine.getSampleRate()
+    if (currentRate !== this.lastSampleRate && currentRate > 0) {
+      this.lastSampleRate = currentRate
+      nativeVectorscope.setSampleRate(currentRate)
+    }
+  }
+
+  private resetDisplay(): void {
+    // Clear the offscreen canvas and reset native state
+    if (isNativeAvailable()) {
+      nativeVectorscope.reset()
+    }
+    this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height)
+  }
+
   setOptions(options: Partial<VectorscopeOptions>): void {
     this.options = { ...this.options, ...options }
-
-    // Update native module settings
-    if (isNativeAvailable() && options.bufferSize !== undefined) {
-      nativeVectorscope.setBufferSize(options.bufferSize)
-    }
   }
 
   start(): void {
@@ -72,90 +105,135 @@ export class Vectorscope {
   }
 
   resize(): void {
-    // Canvas resize is handled externally
+    // Canvas resize is handled externally; offscreen will sync in draw()
   }
 
   private draw = (): void => {
     if (!this.isRunning) return
 
-    const { canvas, ctx, options } = this
+    const { canvas, ctx, offscreenCanvas, offscreenCtx, options } = this
     const width = canvas.width
     const height = canvas.height
     const centerX = width / 2
     const centerY = height / 2
     const scale = Math.min(centerX, centerY) * 0.9
 
-    // Get stereo time domain data from AudioEngine
-    const left = audioEngine.getLatestLeftChannel()
-    const right = audioEngine.getLatestRightChannel()
-
-    if (!left || !right || left.length === 0 || right.length === 0) {
-      this.animationId = requestAnimationFrame(this.draw)
-      return
+    // Sync offscreen canvas size
+    if (offscreenCanvas.width !== width || offscreenCanvas.height !== height) {
+      offscreenCanvas.width = width
+      offscreenCanvas.height = height
     }
 
-    // Clear canvas completely each frame (no fade)
+    // Update sample rate if changed
+    this.updateSampleRateIfNeeded()
+
+    // ---- PERSISTENCE FADE ----
+    // Fade existing content by drawing semi-transparent white with destination-in
+    // This progressively reduces alpha of every existing pixel each frame
+    offscreenCtx.globalCompositeOperation = 'destination-in'
+    offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
+    offscreenCtx.fillRect(0, 0, width, height)
+    offscreenCtx.globalCompositeOperation = 'source-over'
+
+    // ---- FLUSH SAMPLES TO NATIVE ----
+    const pendingSamples = audioEngine.flushPendingVectorscopeSamples()
+
+    if (isNativeAvailable()) {
+      // Push all accumulated stereo chunks to native circular buffer
+      for (const chunk of pendingSamples) {
+        nativeVectorscope.pushSamples(chunk.left, chunk.right)
+      }
+
+      // Get filtered points from native circular buffer
+      const pointsResult = nativeVectorscope.getPoints(options.displayPoints)
+
+      if (pointsResult && pointsResult.count > 0) {
+        this.drawPoints(offscreenCtx, pointsResult.x, pointsResult.y, pointsResult.count, centerX, centerY, scale)
+      }
+    } else {
+      // JavaScript fallback: draw raw samples from pending chunks
+      this.drawFallbackPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+    }
+
+    // ---- COMPOSITE TO VISIBLE CANVAS ----
     ctx.clearRect(0, 0, width, height)
 
-    // Draw background if not transparent
+    // Draw background
     if (options.backgroundColor !== 'transparent') {
       ctx.fillStyle = options.backgroundColor
       ctx.fillRect(0, 0, width, height)
     }
 
-    // Draw grid
+    // Draw grid underneath
     if (options.showGrid) {
       this.drawGrid()
     }
 
-    // Draw the Lissajous pattern as a single continuous line
-    ctx.beginPath()
-    ctx.lineWidth = options.lineWidth
-    ctx.strokeStyle = options.lineColor
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-
-    let firstPoint = true
-
-    if (isNativeAvailable()) {
-      // Use native vectorscope processing
-      const result = nativeVectorscope.process(left, right)
-      if (result && result.x && result.y) {
-        for (let i = 0; i < result.x.length; i++) {
-          // Native already provides X/Y in Lissajous coordinates
-          const x = centerX + result.x[i] * scale
-          const y = centerY - result.y[i] * scale
-
-          if (firstPoint) {
-            ctx.moveTo(x, y)
-            firstPoint = false
-          } else {
-            ctx.lineTo(x, y)
-          }
-        }
-      }
-    } else {
-      // JavaScript fallback
-      for (let i = 0; i < left.length; i++) {
-        const l = left[i]
-        const r = right[i]
-
-        // Standard Lissajous: X = Right, Y = Left (inverted for canvas)
-        const x = centerX + r * scale
-        const y = centerY - l * scale
-
-        if (firstPoint) {
-          ctx.moveTo(x, y)
-          firstPoint = false
-        } else {
-          ctx.lineTo(x, y)
-        }
-      }
-    }
-
-    ctx.stroke()
+    // Draw the accumulated vectorscope image on top
+    ctx.drawImage(offscreenCanvas, 0, 0)
 
     this.animationId = requestAnimationFrame(this.draw)
+  }
+
+  private drawPoints(
+    ctx: CanvasRenderingContext2D,
+    x: Float32Array,
+    y: Float32Array,
+    count: number,
+    centerX: number,
+    centerY: number,
+    scale: number
+  ): void {
+    const { options } = this
+    const dotSize = options.lineWidth
+
+    // Draw dots with age-based opacity: oldest dimmer, newest brighter
+    const segments = 8
+    const pointsPerSegment = Math.ceil(count / segments)
+
+    for (let seg = 0; seg < segments; seg++) {
+      const startIdx = seg * pointsPerSegment
+      const endIdx = Math.min((seg + 1) * pointsPerSegment, count)
+      if (startIdx >= count) break
+
+      // Older segments (lower seg) are dimmer
+      const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
+
+      ctx.fillStyle = options.lineColor
+      ctx.globalAlpha = alpha
+
+      for (let i = startIdx; i < endIdx; i++) {
+        const px = centerX + x[i] * scale
+        const py = centerY - y[i] * scale
+        ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+      }
+    }
+    ctx.globalAlpha = 1.0
+  }
+
+  private drawFallbackPoints(
+    ctx: CanvasRenderingContext2D,
+    pendingSamples: { left: Float32Array; right: Float32Array }[],
+    centerX: number,
+    centerY: number,
+    scale: number
+  ): void {
+    if (pendingSamples.length === 0) return
+
+    const { options } = this
+    const dotSize = options.lineWidth
+
+    ctx.fillStyle = options.lineColor
+    ctx.globalAlpha = 0.8
+
+    for (const chunk of pendingSamples) {
+      for (let i = 0; i < chunk.left.length; i++) {
+        const px = centerX + chunk.right[i] * scale
+        const py = centerY - chunk.left[i] * scale
+        ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+      }
+    }
+    ctx.globalAlpha = 1.0
   }
 
   private drawGrid(): void {
@@ -217,6 +295,12 @@ export class Vectorscope {
 
   dispose(): void {
     this.stop()
+
+    // Unsubscribe from track changes
+    if (this.unsubscribeTrackChange) {
+      this.unsubscribeTrackChange()
+      this.unsubscribeTrackChange = null
+    }
 
     // Reset native module state
     if (isNativeAvailable()) {

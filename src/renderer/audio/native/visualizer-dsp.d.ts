@@ -12,6 +12,12 @@ export interface VectorscopeResult {
   y: Float32Array;
 }
 
+export interface VectorscopePointsResult {
+  x: Float32Array;
+  y: Float32Array;
+  count: number;
+}
+
 // Circular buffer size (must match native code)
 export const OSCILLOSCOPE_BUFFER_SIZE = 32768;
 
@@ -49,6 +55,9 @@ export interface SpectrumModule {
 }
 
 export interface VectorscopeModule {
+  setSampleRate(sampleRate: number): void;
+  pushSamples(leftChannel: Float32Array, rightChannel: Float32Array): void;
+  getPoints(maxPoints: number): VectorscopePointsResult;
   setBufferSize(size: number): void;
   getBufferSize(): number;
   process(leftChannel: Float32Array, rightChannel: Float32Array): VectorscopeResult;

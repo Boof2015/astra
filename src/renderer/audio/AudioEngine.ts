@@ -29,8 +29,10 @@ export class AudioEngine {
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
+  private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
   private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
+  private static readonly MAX_PENDING_VECTORSCOPE_CHUNKS = 20
 
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
@@ -74,6 +76,7 @@ export class AudioEngine {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingVectorscopeSamples = []
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
@@ -132,6 +135,17 @@ export class AudioEngine {
               )
             }
             this.pendingSpectrumSamples.push(mono)
+
+            // Queue stereo chunks for vectorscope (prevents sample loss)
+            if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
+              this.pendingVectorscopeSamples = this.pendingVectorscopeSamples.slice(
+                -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
+              )
+            }
+            this.pendingVectorscopeSamples.push({
+              left: new Float32Array(left),
+              right: new Float32Array(right)
+            })
           }
         }
       }
@@ -295,6 +309,13 @@ export class AudioEngine {
   flushPendingSpectrumSamples(): Float32Array[] {
     const samples = this.pendingSpectrumSamples
     this.pendingSpectrumSamples = []
+    return samples
+  }
+
+  // Flush all pending stereo chunks for vectorscope processing.
+  flushPendingVectorscopeSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingVectorscopeSamples
+    this.pendingVectorscopeSamples = []
     return samples
   }
 

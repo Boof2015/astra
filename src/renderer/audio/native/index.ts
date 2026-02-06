@@ -1,7 +1,7 @@
 // Native visualizer DSP module loader
 // This loads the native C++ addon for high-performance audio visualization
 
-import type { VisualizerDSP, OscilloscopeResult, VectorscopeResult } from './visualizer-dsp'
+import type { VisualizerDSP, OscilloscopeResult, VectorscopeResult, VectorscopePointsResult } from './visualizer-dsp'
 
 let nativeModule: VisualizerDSP | null = null
 let loadError: Error | null = null
@@ -108,6 +108,19 @@ export const spectrum = {
 }
 
 export const vectorscope = {
+  setSampleRate: (sampleRate: number): void => {
+    nativeModule?.vectorscope.setSampleRate(sampleRate)
+  },
+
+  pushSamples: (leftChannel: Float32Array, rightChannel: Float32Array): void => {
+    nativeModule?.vectorscope.pushSamples(leftChannel, rightChannel)
+  },
+
+  getPoints: (maxPoints: number): VectorscopePointsResult | null => {
+    if (!nativeModule) return null
+    return nativeModule.vectorscope.getPoints(maxPoints)
+  },
+
   setBufferSize: (size: number): void => {
     nativeModule?.vectorscope.setBufferSize(size)
   },
@@ -126,4 +139,4 @@ export const vectorscope = {
   }
 }
 
-export type { OscilloscopeResult, VectorscopeResult }
+export type { OscilloscopeResult, VectorscopeResult, VectorscopePointsResult }

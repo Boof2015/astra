@@ -101,6 +101,9 @@ export interface VisualizerDSP {
     reset(): void
   }
   vectorscope: {
+    setSampleRate(sampleRate: number): void
+    pushSamples(leftChannel: Float32Array, rightChannel: Float32Array): void
+    getPoints(maxPoints: number): { x: Float32Array; y: Float32Array; count: number }
     setBufferSize(size: number): void
     getBufferSize(): number
     process(leftChannel: Float32Array, rightChannel: Float32Array): VectorscopeResult

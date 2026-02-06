@@ -199,6 +199,60 @@ Napi::Value SpectrumReset(const Napi::CallbackInfo& info) {
 
 // ============== Vectorscope ==============
 
+Napi::Value VectorscopeSetSampleRate(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected sample rate").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    vectorscope.setSampleRate(info[0].As<Napi::Number>().FloatValue());
+    return env.Undefined();
+}
+
+Napi::Value VectorscopePushSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsTypedArray() || !info[1].IsTypedArray()) {
+        Napi::TypeError::New(env, "Expected two Float32Arrays (left, right)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    Napi::Float32Array leftData = info[0].As<Napi::Float32Array>();
+    Napi::Float32Array rightData = info[1].As<Napi::Float32Array>();
+    size_t length = std::min(leftData.ElementLength(), rightData.ElementLength());
+    vectorscope.pushSamples(leftData.Data(), rightData.Data(), length);
+    return env.Undefined();
+}
+
+Napi::Value VectorscopeGetPoints(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected max points count").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    size_t maxPoints = static_cast<size_t>(info[0].As<Napi::Number>().Uint32Value());
+
+    Napi::Float32Array xArray = Napi::Float32Array::New(env, maxPoints);
+    Napi::Float32Array yArray = Napi::Float32Array::New(env, maxPoints);
+
+    size_t actual = vectorscope.getPoints(xArray.Data(), yArray.Data(), maxPoints);
+
+    Napi::Object result = Napi::Object::New(env);
+    if (actual < maxPoints) {
+        Napi::Float32Array xTrimmed = Napi::Float32Array::New(env, actual);
+        Napi::Float32Array yTrimmed = Napi::Float32Array::New(env, actual);
+        memcpy(xTrimmed.Data(), xArray.Data(), actual * sizeof(float));
+        memcpy(yTrimmed.Data(), yArray.Data(), actual * sizeof(float));
+        result.Set("x", xTrimmed);
+        result.Set("y", yTrimmed);
+    } else {
+        result.Set("x", xArray);
+        result.Set("y", yArray);
+    }
+    result.Set("count", Napi::Number::New(env, static_cast<double>(actual)));
+
+    return result;
+}
+
 Napi::Value VectorscopeSetBufferSize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsNumber()) {
@@ -277,6 +331,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     // Vectorscope
     Napi::Object vecExports = Napi::Object::New(env);
+    vecExports.Set("setSampleRate", Napi::Function::New(env, VectorscopeSetSampleRate));
+    vecExports.Set("pushSamples", Napi::Function::New(env, VectorscopePushSamples));
+    vecExports.Set("getPoints", Napi::Function::New(env, VectorscopeGetPoints));
     vecExports.Set("setBufferSize", Napi::Function::New(env, VectorscopeSetBufferSize));
     vecExports.Set("getBufferSize", Napi::Function::New(env, VectorscopeGetBufferSize));
     vecExports.Set("process", Napi::Function::New(env, VectorscopeProcess));
