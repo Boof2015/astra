@@ -1,4 +1,8 @@
+import { useEQStore } from '../../stores/eqStore'
+
 export default function Sidebar() {
+  const { showEQPanel, toggleEQPanel } = useEQStore()
+
   return (
     <aside className="sidebar glass-panel">
       <nav className="sidebar-nav">
@@ -48,7 +52,7 @@ export default function Sidebar() {
           <h3 className="sidebar-heading">Audio</h3>
           <ul className="sidebar-list">
             <li>
-              <button className="sidebar-item">
+              <button className={`sidebar-item ${showEQPanel ? 'active' : ''}`} onClick={toggleEQPanel}>
                 <span className="sidebar-icon">≡</span>
                 <span>Equalizer</span>
               </button>

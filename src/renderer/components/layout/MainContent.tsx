@@ -7,6 +7,8 @@ import QueuePanel from '../queue/QueuePanel'
 import AlbumArtwork from '../library/AlbumArtwork'
 import FolderSettings from '../settings/FolderSettings'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
+import EQPanel from '../eq/EQPanel'
+import { useEQStore } from '../../stores/eqStore'
 
 export default function MainContent() {
   const {
@@ -46,6 +48,8 @@ export default function MainContent() {
     selectArtist,
     clearSelection
   } = useLibraryStore()
+
+  const { showEQPanel, toggleEQPanel } = useEQStore()
 
   // Queue panel visibility
   const [showQueue, setShowQueue] = useState(false)
@@ -329,14 +333,20 @@ export default function MainContent() {
             <VisualizerPanel />
           </div>
 
-          {/* Library Panel */}
-          <div className="library-panel glass-panel">
-            {renderLibraryHeader()}
-            {renderScanProgress()}
-            <div className="library-content">
-              {renderLibraryContent()}
+          {/* Library Panel / EQ Panel */}
+          {showEQPanel ? (
+            <div className="eq-container glass-panel">
+              <EQPanel />
             </div>
-          </div>
+          ) : (
+            <div className="library-panel glass-panel">
+              {renderLibraryHeader()}
+              {renderScanProgress()}
+              <div className="library-content">
+                {renderLibraryContent()}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Queue Sidebar */}
@@ -462,6 +472,15 @@ export default function MainContent() {
               style={{ width: `${isMuted ? 0 : volume * 100}%` }}
             />
           </div>
+          <button
+            className={`eq-toggle-btn ${showEQPanel ? 'active' : ''}`}
+            onClick={toggleEQPanel}
+            title="Toggle equalizer"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
+            </svg>
+          </button>
           <button
             className={`queue-toggle-btn ${showQueue ? 'active' : ''}`}
             onClick={() => setShowQueue(!showQueue)}

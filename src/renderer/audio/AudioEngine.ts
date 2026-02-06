@@ -1,4 +1,4 @@
-import { PlaybackState } from '../types/audio'
+import { PlaybackState, EQBand } from '../types/audio'
 import workletUrl from './oscilloscope-worklet.ts?url'
 
 type EventCallback = (...args: unknown[]) => void
@@ -20,6 +20,10 @@ export class AudioEngine {
   private normalizationGainNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
+
+  // EQ nodes
+  private preampNode: GainNode | null = null
+  private eqFilters: BiquadFilterNode[] = []
 
   // Latest audio data from worklet (for visualizers)
   private latestLeftChannel: Float32Array = new Float32Array(0)
@@ -92,6 +96,10 @@ export class AudioEngine {
       this.normalizationGainNode = this.context.createGain()
       this.normalizationGainNode.gain.value = 1.0
 
+      // Preamp node (after metering worklet, before EQ filters)
+      this.preampNode = this.context.createGain()
+      this.preampNode.gain.value = 1.0
+
       // Load and create AudioWorklet for real-time analysis
       if (!this.workletLoaded) {
         try {
@@ -150,14 +158,17 @@ export class AudioEngine {
         }
       }
 
-      // Connect main signal path: normalization -> worklet -> gain -> destination
+      // Connect main signal path:
+      // normalization -> worklet -> preamp -> [eq filters] -> gain -> destination
       if (this.workletNode) {
         this.normalizationGainNode.connect(this.workletNode)
-        this.workletNode.connect(this.gainNode)
+        this.workletNode.connect(this.preampNode)
       } else {
         // Fallback if worklet failed to load
-        this.normalizationGainNode.connect(this.gainNode)
+        this.normalizationGainNode.connect(this.preampNode)
       }
+      // Initially preamp connects directly to gain (no EQ bands yet)
+      this.preampNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
     }
   }
@@ -397,7 +408,7 @@ export class AudioEngine {
     // Create and schedule the next source
     this.nextSourceNode = this.context.createBufferSource()
     this.nextSourceNode.buffer = this.nextBuffer
-    this.nextSourceNode.connect(this.normalizationGainNode)
+    this.nextSourceNode.connect(this.normalizationGainNode!)
 
     // Schedule to start exactly when current track ends
     this.nextSourceNode.start(this.scheduledEndTime)
@@ -501,7 +512,7 @@ export class AudioEngine {
     // Create new source
     this.sourceNode = this.context.createBufferSource()
     this.sourceNode.buffer = this.audioBuffer
-    this.sourceNode.connect(this.normalizationGainNode)
+    this.sourceNode.connect(this.normalizationGainNode!)
 
     // Handle track end
     this.sourceNode.onended = () => {
@@ -574,7 +585,7 @@ export class AudioEngine {
       // Directly create new source and start (bypass play() state check)
       this.sourceNode = this.context.createBufferSource()
       this.sourceNode.buffer = this.audioBuffer
-      this.sourceNode.connect(this.normalizationGainNode)
+      this.sourceNode.connect(this.normalizationGainNode!)
 
       this.sourceNode.onended = () => {
         if (this._playbackState === 'playing') {
@@ -618,6 +629,89 @@ export class AudioEngine {
     }
   }
 
+  // --- EQ Methods ---
+
+  /**
+   * Rebuild the entire EQ filter chain.
+   * Disconnects old chain then reconnects new one in the same synchronous block,
+   * so the audio thread only sees the final connected state (no audible gap).
+   */
+  updateEQ(bands: EQBand[], preampDb: number, enabled: boolean): void {
+    if (!this.context || !this.preampNode || !this.gainNode) return
+
+    // Update preamp
+    const linearPreamp = enabled ? Math.pow(10, preampDb / 20) : 1.0
+    this.preampNode.gain.setValueAtTime(linearPreamp, this.context.currentTime)
+
+    // Tear down old chain: disconnect preamp outputs and all old filters
+    try { this.preampNode.disconnect() } catch { /* ignore */ }
+    for (const filter of this.eqFilters) {
+      try { filter.disconnect() } catch { /* ignore */ }
+    }
+    this.eqFilters = []
+
+    // Rebuild chain immediately (same synchronous block)
+    if (enabled && bands.length > 0) {
+      const newFilters: BiquadFilterNode[] = bands.map((band) => {
+        const filter = this.context!.createBiquadFilter()
+        filter.type = this._mapBandType(band.type)
+        filter.frequency.setValueAtTime(band.frequency, this.context!.currentTime)
+        filter.Q.setValueAtTime(band.Q, this.context!.currentTime)
+        filter.gain.setValueAtTime(band.gain, this.context!.currentTime)
+        return filter
+      })
+
+      this.preampNode.connect(newFilters[0])
+      for (let i = 0; i < newFilters.length - 1; i++) {
+        newFilters[i].connect(newFilters[i + 1])
+      }
+      newFilters[newFilters.length - 1].connect(this.gainNode)
+      this.eqFilters = newFilters
+    } else {
+      // Bypass: connect preamp directly to gain
+      this.preampNode.connect(this.gainNode)
+    }
+  }
+
+  /**
+   * Update a single band's parameters without rebuilding the chain.
+   * Efficient for real-time slider dragging.
+   */
+  updateEQBand(index: number, band: EQBand): void {
+    if (index < 0 || index >= this.eqFilters.length || !this.context) return
+    const filter = this.eqFilters[index]
+    filter.type = this._mapBandType(band.type)
+    filter.frequency.setValueAtTime(band.frequency, this.context.currentTime)
+    filter.Q.setValueAtTime(band.Q, this.context.currentTime)
+    filter.gain.setValueAtTime(band.gain, this.context.currentTime)
+  }
+
+  /**
+   * Update only the preamp gain without touching filters.
+   */
+  updatePreamp(dB: number): void {
+    if (!this.preampNode) return
+    this.preampNode.gain.value = Math.pow(10, dB / 20)
+  }
+
+  private _mapBandType(type: EQBand['type']): BiquadFilterType {
+    switch (type) {
+      case 'lowshelf': return 'lowshelf'
+      case 'highshelf': return 'highshelf'
+      case 'peaking': return 'peaking'
+    }
+  }
+
+  private _disconnectEQChain(): void {
+    // Disconnect preamp from everything (will be reconnected by caller)
+    try { this.preampNode?.disconnect() } catch { /* ignore */ }
+    // Disconnect all existing filters
+    for (const filter of this.eqFilters) {
+      try { filter.disconnect() } catch { /* ignore */ }
+    }
+    this.eqFilters = []
+  }
+
   // Audio analysis is now handled by AudioWorklet -> Native C++
   // Visualizers should listen to worklet.port messages instead
 
@@ -658,6 +752,13 @@ export class AudioEngine {
     this.stop()
     this.clearNextBuffer()
     this.stopTimeUpdate()
+
+    // Clean up EQ chain
+    this._disconnectEQChain()
+    if (this.preampNode) {
+      try { this.preampNode.disconnect() } catch { /* ignore */ }
+      this.preampNode = null
+    }
 
     if (this.workletNode) {
       this.workletNode.disconnect()
