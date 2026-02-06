@@ -1,5 +1,4 @@
 import { PlaybackState, EQBand } from '../types/audio'
-import workletUrl from './oscilloscope-worklet.ts?url'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -109,7 +108,7 @@ export class AudioEngine {
       // Load and create AudioWorklet for real-time analysis
       if (!this.workletLoaded) {
         try {
-          await this.context.audioWorklet.addModule(workletUrl)
+          await this.context.audioWorklet.addModule('./oscilloscope-worklet.js')
           this.workletLoaded = true
         } catch (err) {
           console.error('Failed to load audio worklet:', err)

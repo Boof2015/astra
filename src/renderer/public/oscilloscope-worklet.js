@@ -3,23 +3,17 @@
 // Feeds samples to native C++ visualizers via main thread
 
 class OscilloscopeProcessor extends AudioWorkletProcessor {
-  process(inputs: Float32Array[][], outputs: Float32Array[][], parameters: Record<string, Float32Array>): boolean {
+  process(inputs, outputs, parameters) {
     const input = inputs[0]
     if (!input || input.length === 0) return true
 
-    // Get stereo channels (or mono if only one channel)
     const leftChannel = input[0]
     const rightChannel = input.length > 1 ? input[1] : input[0]
 
     if (!leftChannel || leftChannel.length === 0) return true
 
-    // Send stereo audio samples to main thread for native C++ processing
-    // Main thread will:
-    // - Feed left channel to oscilloscope
-    // - Feed stereo to vectorscope
-    // - Feed mono sum to spectrum analyzer
     this.port.postMessage({
-      left: leftChannel.slice(),  // Copy to avoid race conditions
+      left: leftChannel.slice(),
       right: rightChannel.slice()
     })
 
@@ -31,7 +25,7 @@ class OscilloscopeProcessor extends AudioWorkletProcessor {
       }
     }
 
-    return true // Keep processor alive
+    return true
   }
 }
 
