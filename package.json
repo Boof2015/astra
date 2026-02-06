@@ -9,7 +9,7 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
-    "rebuild:native": "cd native && node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers",
+    "rebuild:native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
     "postinstall": "npm run rebuild:native || echo 'Native build failed, will use JS fallback'",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",

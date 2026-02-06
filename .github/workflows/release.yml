@@ -43,6 +43,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      - name: Build native DSP module
+        shell: bash
+        run: |
+          cd native
+          ELECTRON_VERSION=$(node -p "require('electron/package.json').version")
+          ARCH=$(node -p "process.arch")
+          npx node-gyp rebuild --target=$ELECTRON_VERSION --arch=$ARCH --dist-url=https://electronjs.org/headers
+
+      - name: Verify native module exists
+        shell: bash
+        run: |
+          if [ ! -f native/build/Release/visualizer_dsp.node ]; then
+            echo "ERROR: native DSP module was not built!"
+            exit 1
+          fi
+          echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
+
       - name: Build distributable
         run: npm run ${{ matrix.dist_cmd }}
 
