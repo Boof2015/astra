@@ -24,6 +24,7 @@ export class AudioEngine {
   // EQ nodes
   private preampNode: GainNode | null = null
   private eqFilters: BiquadFilterNode[] = []
+  private eqAnalyserNode: AnalyserNode | null = null
 
   // Latest audio data from worklet (for visualizers)
   private latestLeftChannel: Float32Array = new Float32Array(0)
@@ -100,6 +101,11 @@ export class AudioEngine {
       this.preampNode = this.context.createGain()
       this.preampNode.gain.value = 1.0
 
+      // Post-EQ analyser node (for EQ panel spectrum overlay)
+      this.eqAnalyserNode = this.context.createAnalyser()
+      this.eqAnalyserNode.fftSize = 4096
+      this.eqAnalyserNode.smoothingTimeConstant = 0.7
+
       // Load and create AudioWorklet for real-time analysis
       if (!this.workletLoaded) {
         try {
@@ -167,8 +173,9 @@ export class AudioEngine {
         // Fallback if worklet failed to load
         this.normalizationGainNode.connect(this.preampNode)
       }
-      // Initially preamp connects directly to gain (no EQ bands yet)
-      this.preampNode.connect(this.gainNode)
+      // Initially preamp connects through analyser to gain (no EQ bands yet)
+      this.preampNode.connect(this.eqAnalyserNode)
+      this.eqAnalyserNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
     }
   }
@@ -285,6 +292,11 @@ export class AudioEngine {
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
     return this.context?.sampleRate ?? 48000
+  }
+
+  // Get post-EQ analyser node for spectrum overlay
+  getEQAnalyserNode(): AnalyserNode | null {
+    return this.eqAnalyserNode
   }
 
   // Check if audio context is initialized and ready
@@ -637,7 +649,7 @@ export class AudioEngine {
    * so the audio thread only sees the final connected state (no audible gap).
    */
   updateEQ(bands: EQBand[], preampDb: number, enabled: boolean): void {
-    if (!this.context || !this.preampNode || !this.gainNode) return
+    if (!this.context || !this.preampNode || !this.eqAnalyserNode) return
 
     // Update preamp
     const linearPreamp = enabled ? Math.pow(10, preampDb / 20) : 1.0
@@ -651,6 +663,7 @@ export class AudioEngine {
     this.eqFilters = []
 
     // Rebuild chain immediately (same synchronous block)
+    // Route: preamp -> [EQ filters] -> eqAnalyserNode (-> gainNode already connected)
     if (enabled && bands.length > 0) {
       const newFilters: BiquadFilterNode[] = bands.map((band) => {
         const filter = this.context!.createBiquadFilter()
@@ -665,11 +678,11 @@ export class AudioEngine {
       for (let i = 0; i < newFilters.length - 1; i++) {
         newFilters[i].connect(newFilters[i + 1])
       }
-      newFilters[newFilters.length - 1].connect(this.gainNode)
+      newFilters[newFilters.length - 1].connect(this.eqAnalyserNode)
       this.eqFilters = newFilters
     } else {
-      // Bypass: connect preamp directly to gain
-      this.preampNode.connect(this.gainNode)
+      // Bypass: connect preamp directly to analyser
+      this.preampNode.connect(this.eqAnalyserNode)
     }
   }
 
@@ -758,6 +771,10 @@ export class AudioEngine {
     if (this.preampNode) {
       try { this.preampNode.disconnect() } catch { /* ignore */ }
       this.preampNode = null
+    }
+    if (this.eqAnalyserNode) {
+      try { this.eqAnalyserNode.disconnect() } catch { /* ignore */ }
+      this.eqAnalyserNode = null
     }
 
     if (this.workletNode) {

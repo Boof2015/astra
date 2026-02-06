@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import { EQBand } from '../../types/audio'
 import EQFrequencyResponse from './EQFrequencyResponse'
+import EQSpectrumOverlay from './EQSpectrumOverlay'
 import EQBandSlider from './EQBandSlider'
 
 /** Text input that lets you clear and retype a number. Commits on blur/Enter, reverts if invalid. */
@@ -167,8 +168,12 @@ export default function EQPanel() {
         </div>
       </div>
 
-      {/* Frequency response curve */}
+      {/* Frequency response curve + spectrum overlay */}
       <div className="eq-response-area" ref={responseAreaRef}>
+        <EQSpectrumOverlay
+          width={responseDims.width}
+          height={responseDims.height}
+        />
         <EQFrequencyResponse
           bands={bands}
           preamp={preamp}
