@@ -2249,3 +2249,203 @@ button, .titlebar, .sidebar-item {
 .eq-toggle-btn.active {
   color: var(--accent);
 }
+
+/* ============================================
+   Track Row Inline Actions
+   ============================================ */
+.track-col-actions {
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.track-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.track-row:hover .track-actions {
+  opacity: 1;
+}
+
+.track-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.track-action-btn:hover {
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+/* ============================================
+   Now Playing Metadata
+   ============================================ */
+.now-playing-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.meta-tag {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  background: var(--accent-glow);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.meta-item {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.meta-item::before {
+  content: '\00b7';
+  margin-right: 6px;
+  color: var(--text-tertiary);
+}
+
+/* ============================================
+   Shuffle & Repeat Buttons
+   ============================================ */
+.control-btn-shuffle,
+.control-btn-repeat {
+  width: 32px;
+  height: 32px;
+}
+
+.control-btn-shuffle.active,
+.control-btn-repeat.active {
+  color: var(--accent);
+}
+
+.control-btn-shuffle.active::after,
+.control-btn-repeat.active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.control-btn-shuffle,
+.control-btn-repeat {
+  position: relative;
+}
+
+/* ============================================
+   Audio Output Select
+   ============================================ */
+.audio-output-select {
+  position: relative;
+}
+
+.audio-output-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.audio-output-btn:hover {
+  background: var(--glass-highlight);
+  color: var(--text-primary);
+}
+
+.audio-output-btn.active {
+  color: var(--accent);
+}
+
+.audio-output-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  min-width: 240px;
+  background: var(--bg-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  animation: fadeIn var(--transition-fast) ease;
+  z-index: 1000;
+}
+
+.audio-output-dropdown-title {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.audio-output-dropdown-empty {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.audio-output-dropdown-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+}
+
+.audio-output-dropdown-item:hover {
+  background: var(--glass-highlight);
+}
+
+.audio-output-dropdown-item.active {
+  color: var(--accent);
+}
+
+.audio-output-dropdown-item svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.audio-output-device-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

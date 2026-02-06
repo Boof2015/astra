@@ -16,6 +16,7 @@ export interface Track {
   format: string
   sampleRate?: number
   bitDepth?: number
+  bitrate?: number
 }
 
 // Playback state

@@ -8,7 +8,9 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import FolderSettings from '../settings/FolderSettings'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import EQPanel from '../eq/EQPanel'
+import AudioOutputSelect from '../settings/AudioOutputSelect'
 import { useEQStore } from '../../stores/eqStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 
 export default function MainContent() {
   const {
@@ -19,15 +21,17 @@ export default function MainContent() {
     volume,
     isMuted,
     queue,
-    queueIndex,
     loadTrack,
     togglePlay,
     seek,
     setVolume,
     toggleMute,
+    shuffle,
+    repeat,
     playNext,
     playPrevious,
-    setQueue
+    toggleShuffle,
+    toggleRepeat
   } = usePlayerStore()
 
   const {
@@ -50,16 +54,18 @@ export default function MainContent() {
   } = useLibraryStore()
 
   const { showEQPanel, toggleEQPanel } = useEQStore()
+  const { initFromSaved } = useAudioSettingsStore()
 
   // Queue panel visibility
   const [showQueue, setShowQueue] = useState(false)
   // Folder settings modal visibility
   const [showFolderSettings, setShowFolderSettings] = useState(false)
 
-  // Load library on mount
+  // Load library and audio settings on mount
   useEffect(() => {
     loadLibrary()
-  }, [loadLibrary])
+    initFromSaved()
+  }, [loadLibrary, initFromSaved])
 
   // Format time as M:SS
   const formatTime = (seconds: number): string => {
@@ -374,10 +380,36 @@ export default function MainContent() {
             <div className="now-playing-artist">
               {currentTrack?.artist ?? '—'}
             </div>
+            {currentTrack && (
+              <div className="now-playing-meta">
+                {currentTrack.format && (
+                  <span className="meta-tag">{currentTrack.format.toUpperCase()}</span>
+                )}
+                {currentTrack.sampleRate && (
+                  <span className="meta-item">{currentTrack.sampleRate >= 1000 ? `${(currentTrack.sampleRate / 1000).toFixed(1)} kHz` : `${currentTrack.sampleRate} Hz`}</span>
+                )}
+                {currentTrack.bitDepth && (
+                  <span className="meta-item">{currentTrack.bitDepth}-bit</span>
+                )}
+                {currentTrack.bitrate && (
+                  <span className="meta-item">{currentTrack.bitrate} kbps</span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
         <div className="now-playing-controls">
+          <button
+            className={`control-btn control-btn-shuffle ${shuffle ? 'active' : ''}`}
+            aria-label="Shuffle"
+            onClick={toggleShuffle}
+            title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/>
+            </svg>
+          </button>
           <button
             className="control-btn"
             aria-label="Previous"
@@ -415,6 +447,22 @@ export default function MainContent() {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
             </svg>
+          </button>
+          <button
+            className={`control-btn control-btn-repeat ${repeat !== 'none' ? 'active' : ''}`}
+            aria-label="Repeat"
+            onClick={toggleRepeat}
+            title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+          >
+            {repeat === 'one' ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/>
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+              </svg>
+            )}
           </button>
         </div>
 
@@ -472,6 +520,7 @@ export default function MainContent() {
               style={{ width: `${isMuted ? 0 : volume * 100}%` }}
             />
           </div>
+          <AudioOutputSelect />
           <button
             className={`eq-toggle-btn ${showEQPanel ? 'active' : ''}`}
             onClick={toggleEQPanel}

@@ -299,6 +299,13 @@ export class AudioEngine {
     return this.eqAnalyserNode
   }
 
+  // Audio output device selection
+  async setOutputDevice(deviceId: string): Promise<void> {
+    if (this.context && 'setSinkId' in this.context) {
+      await (this.context as AudioContext & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
+    }
+  }
+
   // Check if audio context is initialized and ready
   isContextReady(): boolean {
     return this.context !== null && this.workletLoaded
