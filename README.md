@@ -5,6 +5,12 @@ An audiophile-grade desktop music player with real-time visualizers, a professio
 ## Note:
 This software is in alpha, expect frequent builds and frequent changes while the software is in development.
 
+![code size](https://img.shields.io/github/languages/code-size/Boof2015/astra)
+![GitHub Release](https://img.shields.io/github/v/release/Boof2015/astra?include_prereleases)
+![GitHub License](https://img.shields.io/github/license/Boof2015/astra)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Boof2015/astra/main.yml)
+
+
 ## Features
 
 **Playback**
@@ -112,3 +118,7 @@ If you find Astra useful, consider supporting development:
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html). See [LICENSE](LICENSE) for the full text.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Boof2015/astra&type=date&legend=top-left)](https://www.star-history.com/#Boof2015/astra&type=date&legend=top-left)
