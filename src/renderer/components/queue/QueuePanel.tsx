@@ -1,16 +1,20 @@
 import { useState, useRef } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
-import { Track } from '../../types/audio'
 
 export default function QueuePanel() {
   const {
     queue,
     queueIndex,
     currentTrack,
+    shuffle,
+    shuffledIndices,
+    shufflePosition,
     playTrackAt,
     removeFromQueue,
     moveInQueue,
-    clearQueue
+    clearQueue,
+    getUpcomingTracks,
+    getPreviousTracks
   } = usePlayerStore()
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -53,8 +57,8 @@ export default function QueuePanel() {
     setDragOverIndex(null)
   }
 
-  const upcomingTracks = queue.slice(queueIndex + 1)
-  const previousTracks = queue.slice(0, queueIndex)
+  const upcomingTracks = getUpcomingTracks()
+  const previousTracks = getPreviousTracks()
 
   if (queue.length === 0) {
     return (
@@ -101,20 +105,30 @@ export default function QueuePanel() {
           <div className="queue-section">
             <div className="queue-section-title">
               Up Next ({upcomingTracks.length} {upcomingTracks.length === 1 ? 'track' : 'tracks'})
+              {shuffle && <span style={{ opacity: 0.5, marginLeft: 6, fontSize: '0.85em' }}>Shuffled</span>}
             </div>
             <div className="queue-list">
               {upcomingTracks.map((track, i) => {
-                const actualIndex = queueIndex + 1 + i
+                // Resolve the actual queue index for click-to-play and remove
+                const actualQueueIndex = shuffle && shuffledIndices.length > 0
+                  ? shuffledIndices[shufflePosition + 1 + i]
+                  : queueIndex + 1 + i
+
+                // For drag-to-reorder: pass shuffledIndices positions when shuffle is on
+                const dragIdx = shuffle && shuffledIndices.length > 0
+                  ? shufflePosition + 1 + i
+                  : queueIndex + 1 + i
+
                 return (
                   <div
-                    key={`${track.id}-${actualIndex}`}
-                    className={`queue-item ${dragOverIndex === actualIndex ? 'queue-item-drag-over' : ''}`}
+                    key={`${track.id}-${actualQueueIndex}`}
+                    className={`queue-item ${dragOverIndex === dragIdx ? 'queue-item-drag-over' : ''}`}
                     draggable
-                    onDragStart={(e) => handleDragStart(e, actualIndex)}
-                    onDragOver={(e) => handleDragOver(e, actualIndex)}
+                    onDragStart={(e) => handleDragStart(e, dragIdx)}
+                    onDragOver={(e) => handleDragOver(e, dragIdx)}
                     onDragEnd={handleDragEnd}
                     onDragLeave={handleDragLeave}
-                    onClick={() => playTrackAt(actualIndex)}
+                    onClick={() => playTrackAt(actualQueueIndex)}
                   >
                     <div className="queue-item-drag-handle">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -132,7 +146,7 @@ export default function QueuePanel() {
                       className="queue-item-remove"
                       onClick={(e) => {
                         e.stopPropagation()
-                        removeFromQueue(actualIndex)
+                        removeFromQueue(actualQueueIndex)
                       }}
                       title="Remove from queue"
                     >
@@ -152,21 +166,27 @@ export default function QueuePanel() {
           <div className="queue-section queue-section-previous">
             <div className="queue-section-title">Previously Played</div>
             <div className="queue-list">
-              {previousTracks.map((track, i) => (
-                <div
-                  key={`${track.id}-${i}`}
-                  className="queue-item queue-item-previous"
-                  onClick={() => playTrackAt(i)}
-                >
-                  <div className="queue-item-info">
-                    <div className="queue-item-title">{track.title}</div>
-                    <div className="queue-item-artist">{track.artist}</div>
+              {previousTracks.map((track, i) => {
+                const actualQueueIndex = shuffle && shuffledIndices.length > 0
+                  ? shuffledIndices[i]
+                  : i
+
+                return (
+                  <div
+                    key={`${track.id}-${actualQueueIndex}`}
+                    className="queue-item queue-item-previous"
+                    onClick={() => playTrackAt(actualQueueIndex)}
+                  >
+                    <div className="queue-item-info">
+                      <div className="queue-item-title">{track.title}</div>
+                      <div className="queue-item-artist">{track.artist}</div>
+                    </div>
+                    <div className="queue-item-duration">
+                      {formatDuration(track.duration)}
+                    </div>
                   </div>
-                  <div className="queue-item-duration">
-                    {formatDuration(track.duration)}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}

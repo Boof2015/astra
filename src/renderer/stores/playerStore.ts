@@ -16,6 +16,8 @@ interface PlayerStore {
   queueIndex: number
   shuffle: boolean
   repeat: 'none' | 'one' | 'all'
+  shuffledIndices: number[]
+  shufflePosition: number
 
   // Actions
   loadTrack: (track: Track, audioData: ArrayBuffer) => Promise<void>
@@ -39,6 +41,8 @@ interface PlayerStore {
   playTrackAt: (index: number) => Promise<void>
   toggleShuffle: () => void
   toggleRepeat: () => void
+  getUpcomingTracks: () => Track[]
+  getPreviousTracks: () => Track[]
 
   // Internal
   _initListeners: () => void
@@ -46,6 +50,7 @@ interface PlayerStore {
   _loadAndPlayTrack: (track: Track) => Promise<void>
   _preBufferNextTrack: () => Promise<void>
   _getNextIndex: () => number
+  _generateShuffleOrder: (currentQueueIndex: number) => void
 }
 
 export const usePlayerStore = create<PlayerStore>((set, get) => {
@@ -66,6 +71,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     queueIndex: -1,
     shuffle: false,
     repeat: 'none',
+    shuffledIndices: [],
+    shufflePosition: 0,
 
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
@@ -122,25 +129,53 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Queue actions
     setQueue: (tracks: Track[], startIndex = 0) => {
+      const { shuffle } = get()
       set({ queue: tracks, queueIndex: startIndex })
-      // Pre-buffer will be triggered after track loads
+
+      if (shuffle) {
+        get()._generateShuffleOrder(startIndex)
+      } else {
+        set({ shuffledIndices: [], shufflePosition: 0 })
+      }
     },
 
     addToQueue: (track: Track) => {
-      set((state) => ({ queue: [...state.queue, track] }))
+      const state = get()
+      const newQueue = [...state.queue, track]
+      const newTrackIndex = newQueue.length - 1
+
+      if (state.shuffle && state.shuffledIndices.length > 0) {
+        const insertableStart = state.shufflePosition + 1
+        const insertableRange = state.shuffledIndices.length + 1 - insertableStart
+        const insertPos = insertableStart + Math.floor(Math.random() * insertableRange)
+        const newShuffled = [...state.shuffledIndices]
+        newShuffled.splice(insertPos, 0, newTrackIndex)
+        set({ queue: newQueue, shuffledIndices: newShuffled })
+      } else {
+        set({ queue: newQueue })
+      }
     },
 
     addToQueueNext: (track: Track) => {
       const state = get()
       const newQueue = [...state.queue]
-      // Insert after current track
-      newQueue.splice(state.queueIndex + 1, 0, track)
-      set({ queue: newQueue })
+      const insertionPoint = state.queueIndex + 1
+      newQueue.splice(insertionPoint, 0, track)
 
-      // If we just added the next track, pre-buffer it
-      if (state.queueIndex + 1 === state.queueIndex + 1) {
-        get()._preBufferNextTrack()
+      if (state.shuffle && state.shuffledIndices.length > 0) {
+        // Increment indices >= insertion point (they shifted in the queue array)
+        const newShuffled = state.shuffledIndices.map(idx =>
+          idx >= insertionPoint ? idx + 1 : idx
+        )
+        // Insert the new track right after current in shuffle order
+        newShuffled.splice(state.shufflePosition + 1, 0, insertionPoint)
+        set({ queue: newQueue, shuffledIndices: newShuffled })
+      } else {
+        set({ queue: newQueue })
       }
+
+      audioEngine.clearNextBuffer()
+      get()._preBufferNextTrack()
     },
 
     removeFromQueue: (index: number) => {
@@ -148,100 +183,202 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (index < 0 || index >= state.queue.length) return
 
       const newQueue = state.queue.filter((_, i) => i !== index)
-      let newIndex = state.queueIndex
+      let newQueueIndex = state.queueIndex
 
-      // Adjust index if we removed a track before current
       if (index < state.queueIndex) {
-        newIndex = state.queueIndex - 1
+        newQueueIndex = state.queueIndex - 1
       } else if (index === state.queueIndex) {
-        // If we removed the current track, keep index (will point to next track)
-        // But make sure we don't go out of bounds
-        if (newIndex >= newQueue.length) {
-          newIndex = newQueue.length - 1
+        if (newQueueIndex >= newQueue.length) {
+          newQueueIndex = newQueue.length - 1
         }
       }
 
-      set({ queue: newQueue, queueIndex: newIndex })
+      if (state.shuffle && state.shuffledIndices.length > 0) {
+        const removedShufflePos = state.shuffledIndices.indexOf(index)
+        let newShuffled = state.shuffledIndices.filter(idx => idx !== index)
+        newShuffled = newShuffled.map(idx => idx > index ? idx - 1 : idx)
 
-      // If we removed the next track, re-buffer
-      if (index === state.queueIndex + 1) {
-        audioEngine.clearNextBuffer()
-        get()._preBufferNextTrack()
+        let newShufflePos = state.shufflePosition
+        if (removedShufflePos !== -1 && removedShufflePos < state.shufflePosition) {
+          newShufflePos = state.shufflePosition - 1
+        }
+        if (newShufflePos >= newShuffled.length) {
+          newShufflePos = Math.max(0, newShuffled.length - 1)
+        }
+
+        set({
+          queue: newQueue,
+          queueIndex: newQueueIndex,
+          shuffledIndices: newShuffled,
+          shufflePosition: newShufflePos
+        })
+      } else {
+        set({ queue: newQueue, queueIndex: newQueueIndex })
       }
+
+      audioEngine.clearNextBuffer()
+      get()._preBufferNextTrack()
     },
 
     moveInQueue: (fromIndex: number, toIndex: number) => {
       const state = get()
       if (fromIndex === toIndex) return
-      if (fromIndex < 0 || fromIndex >= state.queue.length) return
-      if (toIndex < 0 || toIndex >= state.queue.length) return
 
-      const newQueue = [...state.queue]
-      const [removed] = newQueue.splice(fromIndex, 1)
-      newQueue.splice(toIndex, 0, removed)
+      if (state.shuffle && state.shuffledIndices.length > 0) {
+        // When shuffle is on, reorder within shuffledIndices
+        if (fromIndex < 0 || fromIndex >= state.shuffledIndices.length) return
+        if (toIndex < 0 || toIndex >= state.shuffledIndices.length) return
 
-      // Adjust queueIndex if affected
-      let newIndex = state.queueIndex
-      if (state.queueIndex === fromIndex) {
-        // Moving current track
-        newIndex = toIndex
-      } else if (fromIndex < state.queueIndex && toIndex >= state.queueIndex) {
-        // Moving a track from before to after current
-        newIndex = state.queueIndex - 1
-      } else if (fromIndex > state.queueIndex && toIndex <= state.queueIndex) {
-        // Moving a track from after to before current
-        newIndex = state.queueIndex + 1
-      }
+        const newShuffled = [...state.shuffledIndices]
+        const [removed] = newShuffled.splice(fromIndex, 1)
+        newShuffled.splice(toIndex, 0, removed)
 
-      set({ queue: newQueue, queueIndex: newIndex })
+        let newShufflePos = state.shufflePosition
+        if (state.shufflePosition === fromIndex) {
+          newShufflePos = toIndex
+        } else if (fromIndex < state.shufflePosition && toIndex >= state.shufflePosition) {
+          newShufflePos = state.shufflePosition - 1
+        } else if (fromIndex > state.shufflePosition && toIndex <= state.shufflePosition) {
+          newShufflePos = state.shufflePosition + 1
+        }
 
-      // If the next track changed, re-buffer
-      const oldNextIndex = state.queueIndex + 1
-      const newNextIndex = newIndex + 1
-      if (fromIndex === oldNextIndex || toIndex === oldNextIndex ||
-          fromIndex === newNextIndex || toIndex === newNextIndex) {
+        set({ shuffledIndices: newShuffled, shufflePosition: newShufflePos })
+
         audioEngine.clearNextBuffer()
         get()._preBufferNextTrack()
+      } else {
+        // Original sequential reorder
+        if (fromIndex < 0 || fromIndex >= state.queue.length) return
+        if (toIndex < 0 || toIndex >= state.queue.length) return
+
+        const newQueue = [...state.queue]
+        const [removed] = newQueue.splice(fromIndex, 1)
+        newQueue.splice(toIndex, 0, removed)
+
+        let newIndex = state.queueIndex
+        if (state.queueIndex === fromIndex) {
+          newIndex = toIndex
+        } else if (fromIndex < state.queueIndex && toIndex >= state.queueIndex) {
+          newIndex = state.queueIndex - 1
+        } else if (fromIndex > state.queueIndex && toIndex <= state.queueIndex) {
+          newIndex = state.queueIndex + 1
+        }
+
+        set({ queue: newQueue, queueIndex: newIndex })
+
+        const oldNextIndex = state.queueIndex + 1
+        const newNextIndex = newIndex + 1
+        if (fromIndex === oldNextIndex || toIndex === oldNextIndex ||
+            fromIndex === newNextIndex || toIndex === newNextIndex) {
+          audioEngine.clearNextBuffer()
+          get()._preBufferNextTrack()
+        }
       }
     },
 
     clearQueue: () => {
       audioEngine.clearNextBuffer()
-      set({ queue: [], queueIndex: -1 })
+      set({ queue: [], queueIndex: -1, shuffledIndices: [], shufflePosition: 0 })
+    },
+
+    // Generate a shuffled playback order with the current track at position 0
+    _generateShuffleOrder: (currentQueueIndex: number) => {
+      const { queue } = get()
+      if (queue.length === 0) {
+        set({ shuffledIndices: [], shufflePosition: 0 })
+        return
+      }
+
+      const indices = queue.map((_, i) => i).filter(i => i !== currentQueueIndex)
+
+      // Fisher-Yates shuffle
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [indices[i], indices[j]] = [indices[j], indices[i]]
+      }
+
+      set({ shuffledIndices: [currentQueueIndex, ...indices], shufflePosition: 0 })
+    },
+
+    // Get upcoming tracks in the correct display order
+    getUpcomingTracks: () => {
+      const { queue, queueIndex, shuffle, shuffledIndices, shufflePosition } = get()
+      if (queue.length === 0) return []
+
+      if (shuffle && shuffledIndices.length > 0) {
+        return shuffledIndices
+          .slice(shufflePosition + 1)
+          .map(idx => queue[idx])
+          .filter(Boolean)
+      }
+      return queue.slice(queueIndex + 1)
+    },
+
+    // Get previously played tracks in the correct display order
+    getPreviousTracks: () => {
+      const { queue, queueIndex, shuffle, shuffledIndices, shufflePosition } = get()
+      if (queue.length === 0) return []
+
+      if (shuffle && shuffledIndices.length > 0) {
+        return shuffledIndices
+          .slice(0, shufflePosition)
+          .map(idx => queue[idx])
+          .filter(Boolean)
+      }
+      return queue.slice(0, queueIndex)
     },
 
     // Get the next index based on shuffle/repeat settings
     _getNextIndex: () => {
-      const { queue, queueIndex, repeat, shuffle } = get()
+      const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
       if (queue.length === 0) return -1
 
       if (repeat === 'one') {
         return queueIndex
-      } else if (shuffle) {
-        const availableIndices = queue.map((_, i) => i).filter(i => i !== queueIndex)
-        if (availableIndices.length === 0) return -1
-        return availableIndices[Math.floor(Math.random() * availableIndices.length)]
-      } else {
-        const nextIndex = queueIndex + 1
-        if (nextIndex >= queue.length) {
-          if (repeat === 'all') {
-            return 0
-          } else {
-            return -1
-          }
-        }
-        return nextIndex
       }
+
+      if (shuffle && shuffledIndices.length > 0) {
+        const nextPos = shufflePosition + 1
+        if (nextPos >= shuffledIndices.length) {
+          if (repeat === 'all') {
+            // Will re-shuffle at transition time, return first non-current track
+            const indices = queue.map((_, i) => i).filter(i => i !== queueIndex)
+            return indices.length > 0 ? indices[Math.floor(Math.random() * indices.length)] : queueIndex
+          }
+          return -1
+        }
+        return shuffledIndices[nextPos]
+      }
+
+      const nextIndex = queueIndex + 1
+      if (nextIndex >= queue.length) {
+        return repeat === 'all' ? 0 : -1
+      }
+      return nextIndex
     },
 
     playNext: async () => {
+      const { shuffle, shuffledIndices, shufflePosition, repeat, queueIndex } = get()
       const nextIndex = get()._getNextIndex()
       if (nextIndex === -1) return
-      await get().playTrackAt(nextIndex)
+
+      if (shuffle && shuffledIndices.length > 0) {
+        const nextPos = shufflePosition + 1
+        if (nextPos >= shuffledIndices.length && repeat === 'all') {
+          // Re-shuffle for new cycle
+          get()._generateShuffleOrder(nextIndex)
+          set({ shufflePosition: 0 })
+        } else {
+          set({ shufflePosition: nextPos })
+        }
+      }
+
+      set({ queueIndex: nextIndex })
+      await get()._loadAndPlayTrack(get().queue[nextIndex])
     },
 
     playPrevious: async () => {
-      const { queue, queueIndex, currentTime } = get()
+      const { queue, queueIndex, currentTime, shuffle, shuffledIndices, shufflePosition } = get()
       if (queue.length === 0) return
 
       // If more than 3 seconds into track, restart it
@@ -250,25 +387,54 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         return
       }
 
-      let prevIndex = queueIndex - 1
-      if (prevIndex < 0) {
-        prevIndex = queue.length - 1 // Wrap to end
+      if (shuffle && shuffledIndices.length > 0) {
+        if (shufflePosition <= 0) {
+          // At beginning of shuffle, wrap to end
+          const prevPos = shuffledIndices.length - 1
+          set({ shufflePosition: prevPos, queueIndex: shuffledIndices[prevPos] })
+          await get()._loadAndPlayTrack(queue[shuffledIndices[prevPos]])
+        } else {
+          const prevPos = shufflePosition - 1
+          set({ shufflePosition: prevPos, queueIndex: shuffledIndices[prevPos] })
+          await get()._loadAndPlayTrack(queue[shuffledIndices[prevPos]])
+        }
+      } else {
+        let prevIndex = queueIndex - 1
+        if (prevIndex < 0) {
+          prevIndex = queue.length - 1
+        }
+        set({ queueIndex: prevIndex })
+        await get()._loadAndPlayTrack(queue[prevIndex])
       }
-
-      await get().playTrackAt(prevIndex)
     },
 
     playTrackAt: async (index: number) => {
-      const { queue, _loadAndPlayTrack } = get()
+      const { queue, shuffle, shuffledIndices, _loadAndPlayTrack } = get()
       if (index < 0 || index >= queue.length) return
 
       set({ queueIndex: index })
+
+      if (shuffle && shuffledIndices.length > 0) {
+        const posInShuffle = shuffledIndices.indexOf(index)
+        if (posInShuffle !== -1) {
+          set({ shufflePosition: posInShuffle })
+        }
+      }
+
       await _loadAndPlayTrack(queue[index])
     },
 
     toggleShuffle: () => {
-      set((state) => ({ shuffle: !state.shuffle }))
-      // Re-buffer with new shuffle setting
+      const { shuffle, queueIndex } = get()
+      const newShuffle = !shuffle
+
+      if (newShuffle) {
+        set({ shuffle: true })
+        get()._generateShuffleOrder(queueIndex)
+      } else {
+        set({ shuffle: false, shuffledIndices: [], shufflePosition: 0 })
+      }
+
       audioEngine.clearNextBuffer()
       get()._preBufferNextTrack()
     },
@@ -316,33 +482,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Pre-buffer the next track for gapless playback
     _preBufferNextTrack: async () => {
-      const { queue, queueIndex, repeat, shuffle } = get()
-
-      // Don't pre-buffer if shuffle is on (we don't know what's next)
-      // Actually, we can pre-buffer a random track for shuffle too
-      let nextIndex: number
+      const { queue, repeat } = get()
 
       if (repeat === 'one') {
-        // For repeat one, we'll just replay the same track
-        // The audio engine handles this by not having a next buffer
         return
-      } else if (shuffle) {
-        // For shuffle, pick a random next track
-        const availableIndices = queue.map((_, i) => i).filter(i => i !== queueIndex)
-        if (availableIndices.length === 0) return
-        nextIndex = availableIndices[Math.floor(Math.random() * availableIndices.length)]
-      } else {
-        nextIndex = queueIndex + 1
-        if (nextIndex >= queue.length) {
-          if (repeat === 'all') {
-            nextIndex = 0
-          } else {
-            // No next track
-            return
-          }
-        }
       }
 
+      const nextIndex = get()._getNextIndex()
       if (nextIndex < 0 || nextIndex >= queue.length) return
 
       const nextTrack = queue[nextIndex]
@@ -376,17 +522,29 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
-        const { queue, queueIndex, repeat, shuffle } = get()
+        const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
 
         let nextIndex: number
+        let newShufflePosition = shufflePosition
+
         if (repeat === 'one') {
           nextIndex = queueIndex
-        } else if (shuffle) {
-          // For shuffle, we pre-buffered a random track
-          // We need to find which one... for now just advance
-          const availableIndices = queue.map((_, i) => i).filter(i => i !== queueIndex)
-          if (availableIndices.length === 0) return
-          nextIndex = availableIndices[Math.floor(Math.random() * availableIndices.length)]
+        } else if (shuffle && shuffledIndices.length > 0) {
+          const nextPos = shufflePosition + 1
+          if (nextPos >= shuffledIndices.length) {
+            if (repeat === 'all') {
+              // Re-shuffle for next cycle
+              get()._generateShuffleOrder(queueIndex)
+              const newState = get()
+              nextIndex = newState.shuffledIndices[1] !== undefined ? newState.shuffledIndices[1] : newState.shuffledIndices[0]
+              newShufflePosition = 1
+            } else {
+              return
+            }
+          } else {
+            nextIndex = shuffledIndices[nextPos]
+            newShufflePosition = nextPos
+          }
         } else {
           nextIndex = queueIndex + 1
           if (nextIndex >= queue.length) {
@@ -403,7 +561,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           set({
             queueIndex: nextIndex,
             currentTrack: nextTrack,
-            currentTime: 0
+            currentTime: 0,
+            shufflePosition: newShufflePosition
           })
 
           // Pre-buffer the NEXT next track
