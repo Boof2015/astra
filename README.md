@@ -2,8 +2,6 @@
 
 An audiophile-grade desktop music player with real-time visualizers, a professional equalizer, and full library management. Built with Electron, React, and native C++ DSP.
 
-## Note:
-This software is in alpha, expect frequent builds and frequent changes while the software is in development.
 
 ![code size](https://img.shields.io/github/languages/code-size/Boof2015/astra)
 ![GitHub Release](https://img.shields.io/github/v/release/Boof2015/astra?include_prereleases)
