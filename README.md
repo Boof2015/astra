@@ -2,6 +2,9 @@
 
 An audiophile-grade desktop music player with real-time visualizers, a professional equalizer, and full library management. Built with Electron, React, and native C++ DSP.
 
+## Note:
+This software is in alpha, expect frequent builds and frequent changes while the software is in development.
+
 ## Features
 
 **Playback**
