@@ -116,7 +116,8 @@ export class Vectorscope {
     const height = canvas.height
     const centerX = width / 2
     const centerY = height / 2
-    const scale = Math.min(centerX, centerY) * 0.9
+    const VISUAL_GAIN = 2.5
+    const scale = Math.min(centerX, centerY) * 0.9 * VISUAL_GAIN
 
     // Sync offscreen canvas size
     if (offscreenCanvas.width !== width || offscreenCanvas.height !== height) {

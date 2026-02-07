@@ -170,7 +170,8 @@ export class Oscilloscope {
 
     for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
       const sample = renderData[i]
-      const y = ((1 - sample) / 2) * height
+      const VISUAL_GAIN = 1.8
+      const y = ((1 - sample * VISUAL_GAIN) / 2) * height
       const x = i * sliceWidth
 
       if (i === 0) {
