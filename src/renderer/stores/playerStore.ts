@@ -362,7 +362,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const nextIndex = get()._getNextIndex()
       if (nextIndex === -1) return
 
-      if (shuffle && shuffledIndices.length > 0) {
+      if (shuffle && shuffledIndices.length > 0 && repeat !== 'one') {
         const nextPos = shufflePosition + 1
         if (nextPos >= shuffledIndices.length && repeat === 'all') {
           // Re-shuffle for new cycle
@@ -495,6 +495,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         const result = await window.electronAPI.loadAudioFile(nextTrack.path)
+        // Re-check repeat mode after async gap — may have changed to 'one'
+        if (get().repeat === 'one') {
+          return
+        }
         if (result) {
           await audioEngine.preBufferNext(result.data)
         }
@@ -528,7 +532,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let newShufflePosition = shufflePosition
 
         if (repeat === 'one') {
-          nextIndex = queueIndex
+          // Safety net: AudioEngine already swapped to the wrong buffer.
+          // Reload the correct track to fix audio/UI desync.
+          const correctTrack = queue[queueIndex]
+          if (correctTrack) {
+            get()._loadAndPlayTrack(correctTrack)
+          }
+          return
         } else if (shuffle && shuffledIndices.length > 0) {
           const nextPos = shufflePosition + 1
           if (nextPos >= shuffledIndices.length) {
