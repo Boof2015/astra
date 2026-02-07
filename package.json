@@ -31,7 +31,7 @@
     "name": "Astra",
     "email": "astra@users.noreply.github.com"
   },
-  "license": "CC-BY-NC-SA-4.0",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "music-metadata": "^11.10.6",
     "node-addon-api": "^8.5.0",

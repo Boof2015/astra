@@ -111,6 +111,4 @@ If you find Astra useful, consider supporting development:
 
 ## License
 
-This project is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
-
-You are free to share and adapt this work for non-commercial purposes, with appropriate credit, under the same license. See [LICENSE](LICENSE) for details.
+This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html). See [LICENSE](LICENSE) for the full text.
