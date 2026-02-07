@@ -9,6 +9,7 @@ import FolderSettings from '../settings/FolderSettings'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import EQPanel from '../eq/EQPanel'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
+import WaveformSeekBar from '../player/WaveformSeekBar'
 import { useEQStore } from '../../stores/eqStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 
@@ -31,7 +32,8 @@ export default function MainContent() {
     playNext,
     playPrevious,
     toggleShuffle,
-    toggleRepeat
+    toggleRepeat,
+    waveformData
   } = usePlayerStore()
 
   const {
@@ -98,25 +100,6 @@ export default function MainContent() {
     if (rect.width <= 0) return 0
     const percent = (clientX - rect.left) / rect.width
     return Math.max(0, Math.min(1, percent))
-  }
-
-  const handleProgressPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (duration <= 0) return
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    void seek(getPercentFromClientX(e.clientX, e.currentTarget) * duration)
-  }
-
-  const handleProgressPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (duration <= 0) return
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
-    void seek(getPercentFromClientX(e.clientX, e.currentTarget) * duration)
-  }
-
-  const releaseProgressPointer = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
   }
 
   const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -468,19 +451,13 @@ export default function MainContent() {
 
         <div className="now-playing-progress">
           <span className="progress-time">{formatTime(currentTime)}</span>
-          <div
-            className="progress-bar"
-            onPointerDown={handleProgressPointerDown}
-            onPointerMove={handleProgressPointerMove}
-            onPointerUp={releaseProgressPointer}
-            onPointerCancel={releaseProgressPointer}
-            role="slider"
-            aria-valuenow={currentTime}
-            aria-valuemin={0}
-            aria-valuemax={duration}
-          >
-            <div className="progress-fill" style={{ width: `${progress}%` }} />
-          </div>
+          <WaveformSeekBar
+            waveformData={waveformData}
+            progress={progress}
+            duration={duration}
+            currentTime={currentTime}
+            onSeek={(time) => void seek(time)}
+          />
           <span className="progress-time">{formatTime(duration)}</span>
         </div>
 

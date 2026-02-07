@@ -288,6 +288,10 @@ export class AudioEngine {
     return this.audioBuffer?.duration ?? 0
   }
 
+  getAudioBuffer(): AudioBuffer | null {
+    return this.audioBuffer
+  }
+
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
     return this.context?.sampleRate ?? 48000
@@ -382,6 +386,7 @@ export class AudioEngine {
       this.pauseTime = 0
       this.emit('stateChange', this._playbackState)
       this.emit('durationChange', this.audioBuffer.duration)
+      this.emit('bufferReady', this.audioBuffer)
     } catch (err) {
       this._playbackState = 'stopped'
       this.emit('stateChange', this._playbackState)
@@ -490,6 +495,7 @@ export class AudioEngine {
 
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)
+    this.emit('bufferReady', this.audioBuffer)
     this.emit('gaplessTransition')
   }
 

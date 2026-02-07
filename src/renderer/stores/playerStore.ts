@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
+import { extractWaveformPeaks } from '../audio/waveformExtractor'
 
 interface PlayerStore {
   // State
@@ -10,6 +11,7 @@ interface PlayerStore {
   duration: number
   volume: number
   isMuted: boolean
+  waveformData: Float32Array | null
 
   // Queue state
   queue: Track[]
@@ -53,6 +55,9 @@ interface PlayerStore {
   _generateShuffleOrder: (currentQueueIndex: number) => void
 }
 
+// Waveform cache stored outside zustand to avoid re-renders on cache updates
+const waveformCache = new Map<string, Float32Array>()
+
 export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
@@ -65,6 +70,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     duration: 0,
     volume: 0.7,
     isMuted: false,
+    waveformData: null,
 
     // Queue state
     queue: [],
@@ -81,7 +87,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
-      set({ currentTrack: track, playbackState: 'loading' })
+      set({ currentTrack: track, playbackState: 'loading', waveformData: null })
 
       try {
         await audioEngine.loadAudioData(audioData)
@@ -457,7 +463,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
-      set({ currentTrack: track, playbackState: 'loading' })
+      set({ currentTrack: track, playbackState: 'loading', waveformData: null })
 
       try {
         // Load audio file from path
@@ -522,6 +528,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('durationChange', (duration) => {
         set({ duration: duration as number })
+      })
+
+      audioEngine.on('bufferReady', (buffer) => {
+        const track = get().currentTrack
+        if (!track || !buffer) return
+
+        const cached = waveformCache.get(track.path)
+        if (cached) {
+          set({ waveformData: cached })
+          return
+        }
+
+        const peaks = extractWaveformPeaks(buffer as AudioBuffer)
+        waveformCache.set(track.path, peaks)
+        set({ waveformData: peaks })
       })
 
       // Handle gapless transition - advance queue without reloading
