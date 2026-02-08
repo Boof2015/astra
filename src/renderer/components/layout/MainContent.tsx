@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { Track } from '../../types/audio'
@@ -62,6 +62,34 @@ export default function MainContent() {
   const [showQueue, setShowQueue] = useState(false)
   // Folder settings modal visibility
   const [showFolderSettings, setShowFolderSettings] = useState(false)
+
+  // Marquee scroll for long titles
+  const titleOuterRef = useRef<HTMLDivElement>(null)
+  const titleInnerRef = useRef<HTMLSpanElement>(null)
+  const [titleOverflows, setTitleOverflows] = useState(false)
+
+  const checkTitleOverflow = useCallback(() => {
+    const outer = titleOuterRef.current
+    const inner = titleInnerRef.current
+    if (!outer || !inner) return
+    const overflows = inner.scrollWidth > outer.clientWidth
+    setTitleOverflows(overflows)
+    if (overflows) {
+      outer.style.setProperty('--marquee-offset', `${outer.clientWidth - inner.scrollWidth}px`)
+    }
+  }, [])
+
+  useEffect(() => {
+    checkTitleOverflow()
+  }, [currentTrack, checkTitleOverflow])
+
+  useEffect(() => {
+    const outer = titleOuterRef.current
+    if (!outer) return
+    const ro = new ResizeObserver(checkTitleOverflow)
+    ro.observe(outer)
+    return () => ro.disconnect()
+  }, [checkTitleOverflow])
 
   // Load library and audio settings on mount
   useEffect(() => {
@@ -357,8 +385,13 @@ export default function MainContent() {
             )}
           </div>
           <div className="now-playing-text">
-            <div className="now-playing-title">
-              {currentTrack?.title ?? 'No track playing'}
+            <div
+              ref={titleOuterRef}
+              className={`now-playing-title${titleOverflows ? ' marquee-active' : ''}`}
+            >
+              <span ref={titleInnerRef} className="now-playing-title-inner">
+                {currentTrack?.title ?? 'No track playing'}
+              </span>
             </div>
             <div className="now-playing-artist">
               {currentTrack?.artist ?? '—'}

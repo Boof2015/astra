@@ -325,6 +325,23 @@ button, .titlebar {
   text-overflow: ellipsis;
 }
 
+.now-playing-title-inner {
+  display: inline-block;
+}
+
+.now-playing-title.marquee-active {
+  text-overflow: clip;
+}
+
+.now-playing-title.marquee-active .now-playing-title-inner {
+  animation: marquee-scroll 8s linear infinite;
+}
+
+@keyframes marquee-scroll {
+  0%, 15%   { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--marquee-offset)); }
+}
+
 .now-playing-artist {
   font-size: 12px;
   color: var(--text-secondary);
