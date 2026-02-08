@@ -1,5 +1,9 @@
 import { audioEngine } from '../AudioEngine'
-import { oscilloscope as nativeOscilloscope, isNativeAvailable } from '../native'
+import {
+  oscilloscope as nativeOscilloscope,
+  OSCILLOSCOPE_BUFFER_SIZE,
+  isNativeAvailable
+} from '../native'
 
 export interface OscilloscopeOptions {
   lineColor?: string
@@ -134,9 +138,9 @@ export class Oscilloscope {
       this.samplesReceived += chunk.length
     }
 
-    // Skip pitch-locked processing during warmup period
-    // The circular buffer needs enough data for reliable pitch detection
-    if (this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
+    // Skip pitch-locked processing during warmup period.
+    // Bypass mode (pitchLock=false) should render immediately using a moving window.
+    if (options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
       // During warmup, just show a static waveform or grid
       this.animationId = requestAnimationFrame(this.draw)
       return
@@ -149,8 +153,16 @@ export class Oscilloscope {
       return
     }
 
-    const triggerIndex = result.triggerIndex
     const samplesToShow = result.samplesToShow
+    let triggerIndex = result.triggerIndex
+
+    // In bypass mode, ignore trigger locking and follow the live write head.
+    // This produces free-running oscilloscope motion without touching pitch-lock behavior.
+    if (!options.pitchLock) {
+      const writePos = result.writePos
+      triggerIndex = writePos - samplesToShow
+      while (triggerIndex < 0) triggerIndex += OSCILLOSCOPE_BUFFER_SIZE
+    }
 
     // Get samples from circular buffer for rendering
     const renderData = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
