@@ -261,10 +261,10 @@ export async function removeLibraryFolder(folderPath: string): Promise<void> {
 export async function scanFolder(
   folderPath: string,
   onProgress?: (current: number, total: number, file: string) => void
-): Promise<{ added: number; updated: number; errors: number }> {
-  if (!db) return { added: 0, updated: 0, errors: 0 }
+): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
+  if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
 
-  const files = await collectAudioFiles(folderPath)
+  const { files, skippedDirs } = await collectAudioFiles(folderPath)
   let added = 0
   let updated = 0
   let errors = 0
@@ -328,15 +328,26 @@ export async function scanFolder(
   }
 
   await saveDatabase()
-  return { added, updated, errors }
+  return { added, updated, errors, skippedDirs }
 }
 
 // Collect all audio files in a directory recursively
-async function collectAudioFiles(dir: string): Promise<string[]> {
+async function collectAudioFiles(dir: string): Promise<{ files: string[]; skippedDirs: string[] }> {
   const files: string[] = []
+  const skippedDirs: string[] = []
 
   async function walk(currentDir: string): Promise<void> {
-    const entries = await readdir(currentDir, { withFileTypes: true })
+    let entries
+    try {
+      entries = await readdir(currentDir, { withFileTypes: true })
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'code' in err &&
+          (err.code === 'EACCES' || err.code === 'EPERM')) {
+        skippedDirs.push(currentDir)
+        return
+      }
+      throw err
+    }
 
     for (const entry of entries) {
       const fullPath = join(currentDir, entry.name)
@@ -353,7 +364,7 @@ async function collectAudioFiles(dir: string): Promise<string[]> {
   }
 
   await walk(dir)
-  return files
+  return { files, skippedDirs }
 }
 
 // Extract metadata from audio file

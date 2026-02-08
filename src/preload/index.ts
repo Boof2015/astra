@@ -203,9 +203,9 @@ declare global {
         getAlbums: () => Promise<Album[]>
         search: (query: string) => Promise<DbTrack[]>
         getFolders: () => Promise<LibraryFolder[]>
-        addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; error?: string }>
+        addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
-        rescan: () => Promise<{ added: number; updated: number; errors: number }>
+        rescan: () => Promise<{ added: number; updated: number; errors: number; folderWarnings?: Record<string, string[]> }>
         getTrackCount: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>

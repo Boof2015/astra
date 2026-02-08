@@ -7,8 +7,9 @@ interface FolderSettingsProps {
 }
 
 export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps) {
-  const { folders, loadFolders, addFolder, removeFolder, isScanning } = useLibraryStore()
+  const { folders, loadFolders, addFolder, removeFolder, isScanning, folderWarnings } = useLibraryStore()
   const [removingPath, setRemovingPath] = useState<string | null>(null)
+  const [expandedWarning, setExpandedWarning] = useState<string | null>(null)
 
   useEffect(() => {
     if (isOpen) {
@@ -60,6 +61,28 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                     <div className="folder-meta">
                       Added {new Date(folder.added_at).toLocaleDateString()}
                     </div>
+                    {folderWarnings[folder.path] && folderWarnings[folder.path].length > 0 && (
+                      <div className="folder-warning">
+                        <button
+                          className="folder-warning-toggle"
+                          onClick={() => setExpandedWarning(
+                            expandedWarning === folder.path ? null : folder.path
+                          )}
+                        >
+                          <svg className="folder-warning-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+                          </svg>
+                          {folderWarnings[folder.path].length} subfolder{folderWarnings[folder.path].length !== 1 ? 's' : ''} inaccessible — permission denied
+                        </button>
+                        {expandedWarning === folder.path && (
+                          <div className="folder-warning-details">
+                            {folderWarnings[folder.path].map((dir) => (
+                              <div key={dir} className="folder-warning-path">{dir}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <button
                     className="folder-remove"

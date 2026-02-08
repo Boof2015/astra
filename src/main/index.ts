@@ -215,6 +215,7 @@ ipcMain.handle('library:rescan', async () => {
   let totalAdded = 0
   let totalUpdated = 0
   let totalErrors = 0
+  const folderWarnings: Record<string, string[]> = {}
 
   for (const folder of folders) {
     const result = await library.scanFolder(folder.path, (current, total, file) => {
@@ -223,12 +224,15 @@ ipcMain.handle('library:rescan', async () => {
     totalAdded += result.added
     totalUpdated += result.updated
     totalErrors += result.errors
+    if (result.skippedDirs.length > 0) {
+      folderWarnings[folder.path] = result.skippedDirs
+    }
   }
 
   // Clean up tracks that no longer exist on disk
   const removed = await library.cleanupMissingTracks()
 
-  return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed }
+  return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed, folderWarnings }
 })
 
 // Get track count

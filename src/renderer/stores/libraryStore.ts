@@ -57,6 +57,7 @@ interface LibraryStore {
   isLoading: boolean
   isScanning: boolean
   scanProgress: { current: number; total: number; file: string } | null
+  folderWarnings: Record<string, string[]>
   artworkCache: Map<string, string>
 
   // Actions
@@ -94,6 +95,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   isLoading: false,
   isScanning: false,
   scanProgress: null,
+  folderWarnings: {},
   artworkCache,
 
   // Load entire library
@@ -147,6 +149,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     try {
       const result = await window.electronAPI.library.addFolder(folderPath)
       if (result.success) {
+        if (result.skippedDirs && result.skippedDirs.length > 0) {
+          set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
+        }
         // Reload library after scan
         await get().loadLibrary()
       }
@@ -156,10 +161,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
   },
 
-  // Remove folder
+  // Remove folder and rescan remaining
   removeFolder: async (path: string) => {
     await window.electronAPI.library.removeFolder(path)
-    await get().loadLibrary()
+    const { [path]: _, ...remaining } = get().folderWarnings
+    set({ folderWarnings: remaining })
+    await get().rescan()
   },
 
   // Rescan all folders
@@ -171,7 +178,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
 
     try {
-      await window.electronAPI.library.rescan()
+      const result = await window.electronAPI.library.rescan()
+      if (result.folderWarnings) {
+        set({ folderWarnings: result.folderWarnings })
+      } else {
+        set({ folderWarnings: {} })
+      }
       await get().loadLibrary()
     } finally {
       unsubscribe()

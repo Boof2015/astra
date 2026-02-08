@@ -1575,6 +1575,47 @@ button, .titlebar {
   cursor: not-allowed;
 }
 
+.folder-warning {
+  margin-top: 6px;
+}
+
+.folder-warning-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: #e5a000;
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-warning-toggle:hover {
+  color: #f0b020;
+}
+
+.folder-warning-icon {
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.folder-warning-details {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(229, 160, 0, 0.08);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(229, 160, 0, 0.15);
+}
+
+.folder-warning-path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  word-break: break-all;
+  padding: 2px 0;
+}
+
 /* ============================================
    Visualizer Panel Styles
    ============================================ */
