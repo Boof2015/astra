@@ -56,6 +56,7 @@ export interface EQPreset {
   name: string
   bands: EQBand[]
   preamp: number
+  isCustom?: boolean
 }
 
 // Visualizer config

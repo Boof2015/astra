@@ -74,9 +74,18 @@ export default function EQPanel() {
     applyPreset,
     resetEQ,
     setShowEQPanel,
+    saveCustomPreset,
+    deleteCustomPreset,
+    exportPreset,
+    importFromFile,
+    importAutoEQ,
   } = useEQStore()
 
   const [selectedBandIndex, setSelectedBandIndex] = useState<number | null>(null)
+  const [showSaveInput, setShowSaveInput] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [showImportMenu, setShowImportMenu] = useState(false)
+  const importMenuRef = useRef<HTMLDivElement>(null)
   const responseAreaRef = useRef<HTMLDivElement>(null)
   const [responseDims, setResponseDims] = useState({ width: 0, height: 0 })
   const sampleRate = audioEngine.getSampleRate()
@@ -98,6 +107,18 @@ export default function EQPanel() {
     return () => observer.disconnect()
   }, [])
 
+  // Close import menu on outside click
+  useEffect(() => {
+    if (!showImportMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (importMenuRef.current && !importMenuRef.current.contains(e.target as Node)) {
+        setShowImportMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showImportMenu])
+
   const handleBandDragOnCurve = useCallback(
     (index: number, freq: number, gain: number) => {
       updateBand(index, { frequency: freq, gain })
@@ -117,6 +138,18 @@ export default function EQPanel() {
     },
     [selectedBandIndex, updateBand]
   )
+
+  const activePreset = activePresetId ? presets.find((p) => p.id === activePresetId) : null
+  const builtInPresets = presets.filter((p) => !p.isCustom)
+  const customPresets = presets.filter((p) => p.isCustom)
+
+  const handleSave = () => {
+    if (saveName.trim()) {
+      saveCustomPreset(saveName.trim())
+    }
+    setShowSaveInput(false)
+    setSaveName('')
+  }
 
   return (
     <div className="eq-panel">
@@ -143,12 +176,105 @@ export default function EQPanel() {
             }}
           >
             <option value="">Custom</option>
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            <optgroup label="Built-in">
+              {builtInPresets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </optgroup>
+            {customPresets.length > 0 && (
+              <optgroup label="My Presets">
+                {customPresets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
+
+          {/* Save preset */}
+          {showSaveInput ? (
+            <div className="eq-save-inline">
+              <input
+                className="eq-save-name-input"
+                type="text"
+                placeholder="Preset name..."
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSave()
+                  else if (e.key === 'Escape') {
+                    setShowSaveInput(false)
+                    setSaveName('')
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                className="eq-reset-btn"
+                onClick={handleSave}
+                title="Confirm save"
+                disabled={!saveName.trim()}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <button
+              className="eq-reset-btn"
+              onClick={() => setShowSaveInput(true)}
+              title="Save as preset"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
+              </svg>
+            </button>
+          )}
+
+          {/* Delete custom preset */}
+          {activePreset?.isCustom && (
+            <button
+              className="eq-reset-btn"
+              onClick={() => deleteCustomPreset(activePresetId!)}
+              title="Delete this preset"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+              </svg>
+            </button>
+          )}
+
+          {/* Import/Export menu */}
+          <div className="eq-import-wrapper" ref={importMenuRef}>
+            <button
+              className="eq-reset-btn"
+              onClick={() => setShowImportMenu(!showImportMenu)}
+              title="Import / Export"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+              </svg>
+            </button>
+            {showImportMenu && (
+              <div className="eq-import-menu">
+                <button onClick={() => { importFromFile(); setShowImportMenu(false) }}>
+                  Import Preset
+                </button>
+                <button onClick={() => { importAutoEQ(); setShowImportMenu(false) }}>
+                  Import AutoEQ
+                </button>
+                {activePresetId && (
+                  <button onClick={() => { exportPreset(activePresetId); setShowImportMenu(false) }}>
+                    Export Current
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
 
           <button className="eq-reset-btn" onClick={resetEQ} title="Reset EQ">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">

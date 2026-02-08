@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join, basename } from 'path'
-import { readFile } from 'fs/promises'
+import { readFile, writeFile } from 'fs/promises'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 
@@ -147,6 +147,48 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 // Load a specific audio file
 ipcMain.handle('audio:loadFile', async (_event, filePath: string) => {
   return loadAudioFile(filePath)
+})
+
+// ============================================
+// Generic file dialog & I/O handlers
+// ============================================
+
+ipcMain.handle('dialog:showSaveDialog', async (_event, options: {
+  title?: string
+  defaultPath?: string
+  filters?: { name: string; extensions: string[] }[]
+}) => {
+  if (!mainWindow) return null
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options.title,
+    defaultPath: options.defaultPath,
+    filters: options.filters,
+  })
+  if (result.canceled || !result.filePath) return null
+  return result.filePath
+})
+
+ipcMain.handle('dialog:openFile', async (_event, options: {
+  title?: string
+  filters?: { name: string; extensions: string[] }[]
+}) => {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: options.title,
+    filters: options.filters,
+    properties: ['openFile'],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
+ipcMain.handle('fs:readTextFile', async (_event, filePath: string) => {
+  return readFile(filePath, 'utf-8')
+})
+
+ipcMain.handle('fs:writeTextFile', async (_event, filePath: string, content: string) => {
+  await writeFile(filePath, content, 'utf-8')
+  return true
 })
 
 // ============================================

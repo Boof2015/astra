@@ -1,9 +1,48 @@
 import { create } from 'zustand'
 import { EQBand, EQPreset } from '../types/audio'
 import { audioEngine } from '../audio/AudioEngine'
+import { parseAutoEQ } from '../utils/autoEQParser'
 
 let bandIdCounter = 0
 const genId = (): string => `band-${++bandIdCounter}`
+
+// ============================================
+// Persistence helpers
+// ============================================
+
+const EQ_STORAGE_KEY = 'astra-eq-custom-presets'
+
+function loadCustomPresets(): EQPreset[] {
+  try {
+    const raw = localStorage.getItem(EQ_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as EQPreset[]
+    return parsed.map((p) => ({
+      ...p,
+      isCustom: true,
+      bands: p.bands.map((b) => ({ ...b, id: genId() })),
+    }))
+  } catch {
+    return []
+  }
+}
+
+function persistCustomPresets(presets: EQPreset[]): void {
+  const serializable = presets
+    .filter((p) => p.isCustom)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      preamp: p.preamp,
+      isCustom: true,
+      bands: p.bands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
+    }))
+  localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(serializable))
+}
+
+// ============================================
+// Default bands & built-in presets
+// ============================================
 
 const DEFAULT_BANDS: EQBand[] = [
   { id: genId(), type: 'lowshelf', frequency: 60, gain: 0, Q: 0.707 },
@@ -78,6 +117,14 @@ interface EQStore {
   toggleEQPanel: () => void
   setShowEQPanel: (show: boolean) => void
 
+  // Custom preset management
+  saveCustomPreset: (name: string) => void
+  deleteCustomPreset: (presetId: string) => void
+  importPreset: (preset: EQPreset) => void
+  exportPreset: (presetId: string) => Promise<void>
+  importFromFile: () => Promise<void>
+  importAutoEQ: () => Promise<void>
+
   // Internal
   _syncToEngine: () => void
 }
@@ -86,7 +133,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
   enabled: false,
   bands: DEFAULT_BANDS.map(b => ({ ...b, id: genId() })),
   preamp: 0,
-  presets: BUILT_IN_PRESETS,
+  presets: [...BUILT_IN_PRESETS, ...loadCustomPresets()],
   activePresetId: null,
   showEQPanel: false,
 
@@ -178,6 +225,128 @@ export const useEQStore = create<EQStore>((set, get) => ({
 
   toggleEQPanel: () => set(s => ({ showEQPanel: !s.showEQPanel })),
   setShowEQPanel: (show: boolean) => set({ showEQPanel: show }),
+
+  // ============================================
+  // Custom preset management
+  // ============================================
+
+  saveCustomPreset: (name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+
+    const { bands, preamp, presets } = get()
+    const id = `custom-${Date.now()}`
+    const newPreset: EQPreset = {
+      id,
+      name: trimmed,
+      bands: bands.map((b) => ({ ...b, id: genId() })),
+      preamp,
+      isCustom: true,
+    }
+    const updated = [...presets, newPreset]
+    set({ presets: updated, activePresetId: id })
+    persistCustomPresets(updated)
+  },
+
+  deleteCustomPreset: (presetId: string) => {
+    const { presets, activePresetId } = get()
+    const target = presets.find((p) => p.id === presetId)
+    if (!target || !target.isCustom) return
+
+    const updated = presets.filter((p) => p.id !== presetId)
+    set({
+      presets: updated,
+      activePresetId: activePresetId === presetId ? null : activePresetId,
+    })
+    persistCustomPresets(updated)
+  },
+
+  importPreset: (preset: EQPreset) => {
+    const { presets } = get()
+    const id = `custom-${Date.now()}`
+    const imported: EQPreset = {
+      ...preset,
+      id,
+      isCustom: true,
+      bands: preset.bands.slice(0, 10).map((b) => ({ ...b, id: genId() })),
+    }
+    const updated = [...presets, imported]
+    set({ presets: updated, activePresetId: id })
+    get().applyPreset(imported)
+    persistCustomPresets(updated)
+  },
+
+  exportPreset: async (presetId: string) => {
+    const { presets } = get()
+    const preset = presets.find((p) => p.id === presetId)
+    if (!preset) return
+
+    const exportData = {
+      version: 1,
+      name: preset.name,
+      preamp: preset.preamp,
+      bands: preset.bands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
+    }
+
+    const filePath = await window.electronAPI.showSaveDialog({
+      title: 'Export EQ Preset',
+      defaultPath: `${preset.name}.json`,
+      filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    })
+    if (filePath) {
+      await window.electronAPI.writeFile(filePath, JSON.stringify(exportData, null, 2))
+    }
+  },
+
+  importFromFile: async () => {
+    const filePath = await window.electronAPI.openFileDialog({
+      title: 'Import EQ Preset',
+      filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    })
+    if (!filePath) return
+
+    try {
+      const content = await window.electronAPI.readTextFile(filePath)
+      const data = JSON.parse(content)
+      if (!data.name || !Array.isArray(data.bands)) {
+        throw new Error('Invalid preset file')
+      }
+      const bands: EQBand[] = data.bands.map((b: Record<string, unknown>) => ({
+        id: genId(),
+        type: b.type === 'lowshelf' ? 'lowshelf' : b.type === 'highshelf' ? 'highshelf' : 'peaking',
+        frequency: Math.max(20, Math.min(20000, Number(b.frequency) || 1000)),
+        gain: Math.max(-12, Math.min(12, Number(b.gain) || 0)),
+        Q: Math.max(0.1, Math.min(18, Number(b.Q) || 1.0)),
+      }))
+      get().importPreset({
+        id: '',
+        name: data.name,
+        preamp: Math.max(-12, Math.min(12, Number(data.preamp) || 0)),
+        bands,
+      })
+    } catch (err) {
+      console.error('Failed to import preset:', err)
+    }
+  },
+
+  importAutoEQ: async () => {
+    const filePath = await window.electronAPI.openFileDialog({
+      title: 'Import AutoEQ Profile',
+      filters: [
+        { name: 'AutoEQ Files', extensions: ['txt'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    })
+    if (!filePath) return
+
+    try {
+      const content = await window.electronAPI.readTextFile(filePath)
+      const preset = parseAutoEQ(content, filePath)
+      get().importPreset(preset)
+    } catch (err) {
+      console.error('Failed to import AutoEQ profile:', err)
+    }
+  },
 
   _syncToEngine: () => {
     const { bands, preamp, enabled } = get()

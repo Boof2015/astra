@@ -150,6 +150,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string) => ipcRenderer.invoke('audio:loadFile', filePath),
 
+  // Generic file dialogs & I/O
+  showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
+    ipcRenderer.invoke('dialog:showSaveDialog', options),
+  openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) =>
+    ipcRenderer.invoke('dialog:openFile', options),
+  readTextFile: (filePath: string) => ipcRenderer.invoke('fs:readTextFile', filePath),
+  writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeTextFile', filePath, content),
+
   // Library operations
   library: {
     getTracks: () => ipcRenderer.invoke('library:getTracks'),
@@ -193,6 +201,12 @@ declare global {
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string) => Promise<AudioFileResult | null>
+
+      // Generic file dialogs & I/O
+      showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
+      openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
+      readTextFile: (filePath: string) => Promise<string>
+      writeFile: (filePath: string, content: string) => Promise<boolean>
 
       // Library operations
       library: {
