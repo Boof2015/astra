@@ -1972,27 +1972,35 @@ button, .titlebar {
 }
 
 .track-col-title {
-  flex: 2;
+  flex: 2.4;
   min-width: 0;
-  padding-right: 16px;
+  padding-right: 12px;
 }
 
 .track-col-artist {
-  flex: 1.5;
+  flex: 1.7;
   min-width: 0;
-  padding-right: 16px;
+  padding-right: 12px;
   color: var(--text-secondary);
 }
 
 .track-col-album {
-  flex: 1.5;
+  flex: 1.7;
   min-width: 0;
-  padding-right: 16px;
+  padding-right: 12px;
   color: var(--text-secondary);
 }
 
+.track-col-codec {
+  width: 72px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 12px;
+  color: var(--text-tertiary);
+}
+
 .track-col-duration {
-  width: 60px;
+  width: 64px;
   flex-shrink: 0;
   text-align: right;
   color: var(--text-tertiary);
@@ -2009,6 +2017,7 @@ button, .titlebar {
   font-size: 13px;
 }
 
+.track-codec,
 .track-duration {
   font-family: var(--font-mono);
   font-size: 13px;
@@ -3600,14 +3609,18 @@ button, .titlebar {
    Track Row Inline Actions
    ============================================ */
 .track-col-actions {
-  width: 60px;
+  width: 124px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  overflow: visible;
 }
 
 .track-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: flex-end;
+  gap: 3px;
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
@@ -4957,6 +4970,11 @@ body::after {
   font-size: 11px;
 }
 
+.track-col-codec {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .track-actions {
   gap: 3px;
 }
@@ -5372,6 +5390,10 @@ body::after {
 }
 
 @media (max-width: 1320px) {
+  .track-col-album {
+    display: none;
+  }
+
   .transport-info {
     width: 228px;
   }
@@ -5402,6 +5424,10 @@ body::after {
 }
 
 @media (max-width: 1040px) {
+  .track-col-codec {
+    display: none;
+  }
+
   .analyzer-brand-rail {
     display: none;
   }
@@ -5482,6 +5508,27 @@ body::after {
 }
 
 @media (max-width: 760px) {
+  .track-col-artist {
+    display: none;
+  }
+
+  .track-col-duration {
+    width: 54px;
+  }
+
+  .track-col-actions {
+    width: 106px;
+  }
+
+  .track-actions {
+    gap: 2px;
+  }
+
+  .track-action-btn {
+    width: 24px;
+    height: 24px;
+  }
+
   .titlebar {
     height: 30px;
   }
