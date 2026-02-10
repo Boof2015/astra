@@ -74,6 +74,11 @@ export interface Playlist {
   track_count: number
 }
 
+export interface AppPerformanceStats {
+  cpuPercent: number
+  memoryMb: number
+}
+
 // Native Visualizer Types
 export interface OscilloscopeResult {
   triggerIndex: number // float (position in circular buffer)
@@ -152,6 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Platform info
   platform: process.platform,
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
 
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
@@ -223,6 +230,8 @@ declare global {
 
       // Platform
       platform: NodeJS.Platform
+      getAppVersion: () => Promise<string>
+      getAppPerformanceStats: () => Promise<AppPerformanceStats>
 
       // File operations
       openAudioFile: () => Promise<AudioFileResult | null>

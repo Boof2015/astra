@@ -106,6 +106,22 @@ ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
+// App info
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion()
+})
+
+ipcMain.handle('app:getPerformanceStats', () => {
+  const metrics = app.getAppMetrics()
+  const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
+  const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
+
+  return {
+    cpuPercent: totalCpuPercent,
+    memoryMb: totalWorkingSetKb / 1024,
+  }
+})
+
 // ============================================
 // File dialog IPC handlers
 // ============================================

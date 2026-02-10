@@ -6,7 +6,6 @@ export default function AnalyzerDeck() {
       <div className="analyzer-brand-rail">
         <div className="analyzer-brand-dot" />
         <div className="analyzer-brand-label">SIGNAL PATH</div>
-        <div className="analyzer-brand-version">v2.4</div>
       </div>
       <div className="analyzer-visualizers">
         <VisualizerPanel />

@@ -46,6 +46,7 @@ export class AudioEngine {
   private _isMuted: boolean = false
   private _normalizationEnabled: boolean = true
   private _targetLufs: number = -14 // Target loudness in dB RMS
+  private _normalizationGainDb: number = 0
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -221,6 +222,7 @@ export class AudioEngine {
 
     console.log(`Normalization: ${currentDb.toFixed(1)} dB -> ${this._targetLufs} dB (gain: ${clampedGainDb.toFixed(1)} dB)`)
 
+    this._normalizationGainDb = clampedGainDb
     this.normalizationGainNode.gain.value = linearGain
   }
 
@@ -231,8 +233,11 @@ export class AudioEngine {
 
   set normalizationEnabled(enabled: boolean) {
     this._normalizationEnabled = enabled
-    if (!enabled && this.normalizationGainNode) {
-      this.normalizationGainNode.gain.value = 1.0
+    if (!enabled) {
+      this._normalizationGainDb = 0
+      if (this.normalizationGainNode) {
+        this.normalizationGainNode.gain.value = 1.0
+      }
     } else if (enabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     }
@@ -247,6 +252,10 @@ export class AudioEngine {
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     }
+  }
+
+  getNormalizationGainDb(): number {
+    return this._normalizationGainDb
   }
 
   // Event emitter methods
@@ -380,6 +389,7 @@ export class AudioEngine {
         this.applyNormalization(this.audioBuffer)
       } else {
         this.normalizationGainNode!.gain.value = 1.0
+        this._normalizationGainDb = 0
       }
 
       this._playbackState = 'stopped'
@@ -801,6 +811,7 @@ export class AudioEngine {
 
     this.gainNode = null
     this.normalizationGainNode = null
+    this._normalizationGainDb = 0
     this.audioBuffer = null
     this.eventListeners.clear()
   }

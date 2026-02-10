@@ -3,6 +3,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
@@ -102,6 +103,20 @@ export default function TransportBar() {
   const isLoadingTrack = playbackState === 'loading'
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
   const remaining = duration > 0 ? duration - currentTime : 0
+  const normalizationReadout = (() => {
+    if (!currentTrack) {
+      return { value: '\u2014', dim: true }
+    }
+    if (!audioEngine.normalizationEnabled) {
+      return { value: 'OFF', dim: true }
+    }
+
+    const gainDb = audioEngine.getNormalizationGainDb()
+    const rounded = Math.round(gainDb * 10) / 10
+    const displayDb = Math.abs(rounded) < 0.05 ? 0 : rounded
+    const sign = displayDb > 0 ? '+' : ''
+    return { value: `${sign}${displayDb.toFixed(1)}dB`, dim: false }
+  })()
 
   return (
     <div className="transport-bar">
@@ -337,8 +352,10 @@ export default function TransportBar() {
             <span className="readout-value">{currentTrack?.sampleRate ? (currentTrack.sampleRate / 1000).toFixed(1) : '—'}</span>
           </div>
           <div className="readout-cell">
-            <span className="readout-label">IO</span>
-            <span className="readout-value readout-value-dim">ASIO</span>
+            <span className="readout-label">NORM</span>
+            <span className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}`}>
+              {normalizationReadout.value}
+            </span>
           </div>
         </div>
       </div>

@@ -2,63 +2,9 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
-import { EQBand } from '../../types/audio'
 import EQFrequencyResponse from './EQFrequencyResponse'
 import EQSpectrumOverlay from './EQSpectrumOverlay'
 import EQBandSlider from './EQBandSlider'
-
-/** Text input that lets you clear and retype a number. Commits on blur/Enter, reverts if invalid. */
-function NumericInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  value: number
-  min: number
-  max: number
-  step: number
-  onChange: (v: number) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [text, setText] = useState('')
-  const displayValue = step < 1 ? String(Math.round(value * 10) / 10) : String(Math.round(value))
-
-  const commit = () => {
-    setEditing(false)
-    const v = parseFloat(text)
-    if (!isNaN(v)) {
-      onChange(Math.max(min, Math.min(max, v)))
-    }
-  }
-
-  return (
-    <input
-      className="eq-detail-input"
-      type="text"
-      inputMode="decimal"
-      value={editing ? text : displayValue}
-      onFocus={(e) => {
-        setEditing(true)
-        setText('')
-        // defer select so the cleared value is visible
-        requestAnimationFrame(() => e.target.select())
-      }}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          commit()
-          ;(e.target as HTMLInputElement).blur()
-        } else if (e.key === 'Escape') {
-          setEditing(false)
-          ;(e.target as HTMLInputElement).blur()
-        }
-      }}
-    />
-  )
-}
 
 export default function EQPanel() {
   const {
@@ -124,19 +70,6 @@ export default function EQPanel() {
       updateBand(index, { frequency: freq, gain })
     },
     [updateBand]
-  )
-
-  // Band detail editing
-  const selectedBand = selectedBandIndex !== null && selectedBandIndex < bands.length
-    ? bands[selectedBandIndex]
-    : null
-
-  const handleDetailChange = useCallback(
-    (field: keyof EQBand, value: number | string) => {
-      if (selectedBandIndex === null) return
-      updateBand(selectedBandIndex, { [field]: value })
-    },
-    [selectedBandIndex, updateBand]
   )
 
   const activePreset = activePresetId ? presets.find((p) => p.id === activePresetId) : null
@@ -335,6 +268,9 @@ export default function EQPanel() {
             band={band}
             index={i}
             onGainChange={(gain) => updateBand(i, { gain })}
+            onFrequencyChange={(frequency) => updateBand(i, { frequency })}
+            onQChange={(Q) => updateBand(i, { Q })}
+            onTypeChange={(type) => updateBand(i, { type })}
             onRemove={() => removeBand(i)}
             isSelected={selectedBandIndex === i}
             onSelect={() => setSelectedBandIndex(i)}
@@ -351,57 +287,6 @@ export default function EQPanel() {
           </button>
         )}
       </div>
-
-      {/* Band detail panel for precise editing */}
-      {selectedBand && (
-        <div className="eq-band-detail">
-          <div className="eq-detail-field">
-            <label className="eq-detail-label">Type</label>
-            <select
-              className="eq-detail-select"
-              value={selectedBand.type}
-              onChange={(e) => handleDetailChange('type', e.target.value)}
-            >
-              <option value="lowshelf">Low Shelf</option>
-              <option value="peaking">Peaking</option>
-              <option value="highshelf">High Shelf</option>
-            </select>
-          </div>
-
-          <div className="eq-detail-field">
-            <label className="eq-detail-label">Freq (Hz)</label>
-            <NumericInput
-              value={selectedBand.frequency}
-              min={20}
-              max={20000}
-              step={1}
-              onChange={(v) => handleDetailChange('frequency', v)}
-            />
-          </div>
-
-          <div className="eq-detail-field">
-            <label className="eq-detail-label">Gain (dB)</label>
-            <NumericInput
-              value={selectedBand.gain}
-              min={-12}
-              max={12}
-              step={0.1}
-              onChange={(v) => handleDetailChange('gain', v)}
-            />
-          </div>
-
-          <div className="eq-detail-field">
-            <label className="eq-detail-label">Q</label>
-            <NumericInput
-              value={selectedBand.Q}
-              min={0.1}
-              max={18}
-              step={0.1}
-              onChange={(v) => handleDetailChange('Q', v)}
-            />
-          </div>
-        </div>
-      )}
     </div>
   )
 }

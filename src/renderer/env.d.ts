@@ -11,6 +11,8 @@ declare global {
             close: () => void
             isMaximized: () => Promise<boolean>
             platform: NodeJS.Platform
+            getAppVersion: () => Promise<string>
+            getAppPerformanceStats: () => Promise<{ cpuPercent: number; memoryMb: number }>
             openAudioFile: () => Promise<any>
             openAudioFolder: () => Promise<string | null>
             loadAudioFile: (filePath: string) => Promise<any>
