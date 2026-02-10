@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
+import { useLibraryStore } from '../../stores/libraryStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
@@ -31,6 +32,10 @@ export default function TransportBar() {
 
   const { showQueue, toggleQueue, showInfoSidebar, toggleInfoSidebar, setFullscreen } = useUIStore()
   const eqEnabled = useEQStore((s) => s.enabled)
+  const favorites = useLibraryStore((s) => s.favorites)
+  const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
+
+  const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
 
   const [showEQPopover, setShowEQPopover] = useState(false)
 
@@ -129,10 +134,21 @@ export default function TransportBar() {
             {currentTrack?.artist ?? '\u2014'}
           </div>
         </div>
-        <button className="transport-fav-btn" title="Favorite">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-          </svg>
+        <button
+          className={`transport-fav-btn ${isFavorite ? 'active' : ''}`}
+          title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+          onClick={() => currentTrack && toggleFavorite(currentTrack.path)}
+          disabled={!currentTrack}
+        >
+          {isFavorite ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            </svg>
+          )}
         </button>
       </div>
 

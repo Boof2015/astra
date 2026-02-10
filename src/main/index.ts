@@ -317,6 +317,70 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
 })
 
 // ============================================
+// Favorites IPC handlers
+// ============================================
+
+ipcMain.handle('library:getFavorites', () => {
+  return library.getFavorites()
+})
+
+ipcMain.handle('library:getFavoritePaths', () => {
+  return library.getFavoritePaths()
+})
+
+ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
+  await library.addFavorite(trackPath)
+})
+
+ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
+  await library.removeFavorite(trackPath)
+})
+
+// ============================================
+// Recently Played IPC handlers
+// ============================================
+
+ipcMain.handle('library:getRecentlyPlayed', (_event, limit?: number) => {
+  return library.getRecentlyPlayed(limit)
+})
+
+ipcMain.handle('library:addRecentlyPlayed', async (_event, trackPath: string) => {
+  await library.addRecentlyPlayed(trackPath)
+})
+
+// ============================================
+// Playlist IPC handlers
+// ============================================
+
+ipcMain.handle('library:getPlaylists', () => {
+  return library.getPlaylists()
+})
+
+ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
+  return library.createPlaylist(name)
+})
+
+ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {
+  await library.renamePlaylist(id, name)
+})
+
+ipcMain.handle('library:deletePlaylist', async (_event, id: number) => {
+  await library.deletePlaylist(id)
+})
+
+ipcMain.handle('library:getPlaylistTracks', (_event, playlistId: number) => {
+  return library.getPlaylistTracks(playlistId)
+})
+
+ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, trackPaths: string[]) => {
+  await library.addToPlaylist(playlistId, trackPaths)
+})
+
+ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {
+  await library.removeFromPlaylist(playlistId, trackPath)
+})
+
+// ============================================
 // Helper functions
 // ============================================
 

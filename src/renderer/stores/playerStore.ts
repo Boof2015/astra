@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
+import { useLibraryStore } from './libraryStore'
 
 interface PlayerStore {
   // State
@@ -92,6 +93,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       try {
         await audioEngine.loadAudioData(audioData)
         set({ duration: audioEngine.duration })
+
+        // Record recently played
+        useLibraryStore.getState().recordPlay(track.path)
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
@@ -477,6 +481,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         await audioEngine.loadAudioData(result.data)
         set({ duration: audioEngine.duration })
         await audioEngine.play()
+
+        // Record recently played
+        useLibraryStore.getState().recordPlay(track.path)
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()

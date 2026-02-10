@@ -38,6 +38,14 @@ export interface LibraryFolder {
   added_at: number
 }
 
+export interface Playlist {
+  id: number
+  name: string
+  created_at: number
+  updated_at: number
+  track_count: number
+}
+
 let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
@@ -121,6 +129,47 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
+
+  // Favorites table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorites (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      added_at INTEGER NOT NULL
+    )
+  `)
+
+  // Recently played table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS recently_played (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      track_path TEXT NOT NULL,
+      played_at INTEGER NOT NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_recently_played_time ON recently_played(played_at DESC)')
+
+  // Playlists table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playlists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  // Playlist tracks table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playlist_tracks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      playlist_id INTEGER NOT NULL,
+      track_path TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      added_at INTEGER NOT NULL,
+      FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
 
   await saveDatabase()
 }
@@ -475,6 +524,145 @@ export function getTrackCount(): number {
   const result = db.exec('SELECT COUNT(*) as count FROM tracks')
   if (result.length === 0) return 0
   return result[0].values[0][0] as number
+}
+
+// ── Favorites ────────────────────────────────────────────
+
+export function getFavorites(): DbTrack[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT t.* FROM tracks t
+    INNER JOIN favorites f ON f.track_path = t.path
+    ORDER BY f.added_at DESC
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+export function getFavoritePaths(): string[] {
+  if (!db) return []
+  const result = db.exec('SELECT track_path FROM favorites')
+  if (result.length === 0) return []
+  return result[0].values.map((row: unknown[]) => row[0] as string)
+}
+
+export async function addFavorite(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, Date.now()])
+  await saveDatabase()
+}
+
+export async function removeFavorite(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
+  await saveDatabase()
+}
+
+// ── Recently Played ──────────────────────────────────────
+
+export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT t.* FROM tracks t
+    INNER JOIN recently_played r ON r.track_path = t.path
+    ORDER BY r.played_at DESC
+    LIMIT ${limit}
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+export async function addRecentlyPlayed(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, Date.now()])
+  // Prune old entries, keep last 200
+  db.run(`
+    DELETE FROM recently_played WHERE id NOT IN (
+      SELECT id FROM recently_played ORDER BY played_at DESC LIMIT 200
+    )
+  `)
+  await saveDatabase()
+}
+
+// ── Playlists ────────────────────────────────────────────
+
+export function getPlaylists(): Playlist[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT p.id, p.name, p.created_at, p.updated_at,
+           COUNT(pt.id) as track_count
+    FROM playlists p
+    LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+    GROUP BY p.id
+    ORDER BY p.updated_at DESC
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<Playlist>(result[0].columns, result[0].values)
+}
+
+export async function createPlaylist(name: string): Promise<Playlist> {
+  if (!db) throw new Error('Database not initialized')
+  const now = Date.now()
+  db.run('INSERT INTO playlists (name, created_at, updated_at) VALUES (?, ?, ?)', [name, now, now])
+  const result = db.exec('SELECT last_insert_rowid() as id')
+  const id = result[0].values[0][0] as number
+  await saveDatabase()
+  return { id, name, created_at: now, updated_at: now, track_count: 0 }
+}
+
+export async function renamePlaylist(id: number, name: string): Promise<void> {
+  if (!db) return
+  db.run('UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?', [name, Date.now(), id])
+  await saveDatabase()
+}
+
+export async function deletePlaylist(id: number): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+  db.run('DELETE FROM playlists WHERE id = ?', [id])
+  await saveDatabase()
+}
+
+export function getPlaylistTracks(playlistId: number): DbTrack[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT t.* FROM tracks t
+    INNER JOIN playlist_tracks pt ON pt.track_path = t.path
+    WHERE pt.playlist_id = ${playlistId}
+    ORDER BY pt.position
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
+  if (!db || trackPaths.length === 0) return
+  // Get current max position
+  const result = db.exec(`SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ${playlistId}`)
+  let position = (result[0].values[0][0] as number) + 1
+  const now = Date.now()
+  for (const trackPath of trackPaths) {
+    db.run(
+      'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at) VALUES (?, ?, ?, ?)',
+      [playlistId, trackPath, position++, now]
+    )
+  }
+  db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
+  await saveDatabase()
+}
+
+export async function removeFromPlaylist(playlistId: number, trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_path = ?', [playlistId, trackPath])
+  // Reorder positions
+  const result = db.exec(`SELECT id FROM playlist_tracks WHERE playlist_id = ${playlistId} ORDER BY position`)
+  if (result.length > 0) {
+    result[0].values.forEach((row: unknown[], i: number) => {
+      db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [i, row[0]])
+    })
+  }
+  db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
+  await saveDatabase()
 }
 
 // Remove tracks that no longer exist on disk

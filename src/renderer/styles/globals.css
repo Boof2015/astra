@@ -4660,6 +4660,257 @@ body::after {
   z-index: 1;
 }
 
+/* ============================================
+   Favorites & Playlists — Phase 2
+   ============================================ */
+
+/* Transport bar favorite button active state */
+.transport-fav-btn.active {
+  color: #f87171;
+}
+
+.transport-fav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Track list favorite button active state */
+.track-action-btn.active {
+  color: #f87171;
+  opacity: 1;
+}
+
+/* Playlist dropdown in track list */
+.track-playlist-wrap {
+  position: relative;
+}
+
+.track-playlist-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 100;
+  min-width: 160px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.track-playlist-option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.track-playlist-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.track-playlist-empty {
+  padding: 12px 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+}
+
+/* Home view — favorite heart button */
+.home-favorite-heart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.home-favorite-heart:hover {
+  color: #f87171;
+}
+
+.home-favorite-heart.active {
+  color: #f87171;
+}
+
+/* Home view — playlist grid */
+.home-playlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.home-playlist-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.home-playlist-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.home-playlist-icon {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.home-playlist-name {
+  font-size: 13px;
+  color: #fff;
+  font-weight: 500;
+}
+
+.home-playlist-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Home view — create playlist */
+.home-section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-create-playlist-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.home-create-playlist-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.home-create-playlist-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.home-create-playlist-input {
+  flex: 1;
+  max-width: 300px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  font-family: var(--font-body);
+}
+
+.home-create-playlist-input:focus {
+  border-color: var(--accent);
+}
+
+.home-create-playlist-confirm {
+  padding: 8px 16px;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.home-create-playlist-confirm:hover {
+  opacity: 0.85;
+}
+
+/* Playlist view */
+.playlist-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.playlist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+
+.playlist-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.playlist-header-left h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playlist-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.playlist-rename-input {
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  font-family: var(--font-body);
+  outline: none;
+}
+
+.playlist-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
 @media (max-width: 1320px) {
   .transport-info {
     width: 228px;

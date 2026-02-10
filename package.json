@@ -1,6 +1,6 @@
 {
   "name": "astra",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Audiophile music player with advanced visualization",
   "main": "./out/main/index.js",
   "scripts": {
@@ -28,8 +28,8 @@
     "electron"
   ],
   "author": {
-    "name": "Astra",
-    "email": "astra@users.noreply.github.com"
+    "name": "Boof2015",
+    "email": "contact@novaml.ai"
   },
   "license": "GPL-3.0-only",
   "dependencies": {

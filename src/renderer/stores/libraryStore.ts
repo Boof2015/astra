@@ -59,6 +59,9 @@ interface LibraryStore {
   scanProgress: { current: number; total: number; file: string } | null
   folderWarnings: Record<string, string[]>
   artworkCache: Map<string, string>
+  favorites: Set<string>
+  favoriteTracks: DbTrack[]
+  recentlyPlayed: DbTrack[]
 
   // Actions
   loadLibrary: () => Promise<void>
@@ -76,6 +79,11 @@ interface LibraryStore {
   search: (query: string) => Promise<void>
   clearSearch: () => void
   getArtwork: (hash: string | null) => Promise<string | null>
+  loadFavorites: () => Promise<void>
+  toggleFavorite: (trackPath: string) => Promise<void>
+  isFavorite: (trackPath: string) => boolean
+  loadRecentlyPlayed: () => Promise<void>
+  recordPlay: (trackPath: string) => Promise<void>
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
@@ -97,6 +105,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   scanProgress: null,
   folderWarnings: {},
   artworkCache,
+  favorites: new Set<string>(),
+  favoriteTracks: [],
+  recentlyPlayed: [],
 
   // Load entire library
   loadLibrary: async () => {
@@ -105,7 +116,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       get().loadTracks(),
       get().loadAlbums(),
       get().loadArtists(),
-      get().loadFolders()
+      get().loadFolders(),
+      get().loadFavorites(),
+      get().loadRecentlyPlayed()
     ])
     set({ isLoading: false })
   },
@@ -245,5 +258,52 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       artworkCache.set(hash, dataUrl)
     }
     return dataUrl
+  },
+
+  // Load favorite track paths and full track list
+  loadFavorites: async () => {
+    const [paths, favoriteTracks] = await Promise.all([
+      window.electronAPI.library.getFavoritePaths(),
+      window.electronAPI.library.getFavorites()
+    ])
+    set({ favorites: new Set(paths), favoriteTracks })
+  },
+
+  // Toggle favorite status
+  toggleFavorite: async (trackPath: string) => {
+    const { favorites } = get()
+    if (favorites.has(trackPath)) {
+      await window.electronAPI.library.removeFavorite(trackPath)
+      const next = new Set(favorites)
+      next.delete(trackPath)
+      set({ favorites: next })
+    } else {
+      await window.electronAPI.library.addFavorite(trackPath)
+      const next = new Set(favorites)
+      next.add(trackPath)
+      set({ favorites: next })
+    }
+    // Reload full favorite tracks list
+    const favoriteTracks = await window.electronAPI.library.getFavorites()
+    set({ favoriteTracks })
+  },
+
+  // Sync check if track is a favorite
+  isFavorite: (trackPath: string) => {
+    return get().favorites.has(trackPath)
+  },
+
+  // Load recently played tracks
+  loadRecentlyPlayed: async () => {
+    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(50)
+    set({ recentlyPlayed })
+  },
+
+  // Record a track play
+  recordPlay: async (trackPath: string) => {
+    await window.electronAPI.library.addRecentlyPlayed(trackPath)
+    // Reload recently played list
+    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(50)
+    set({ recentlyPlayed })
   }
 }))

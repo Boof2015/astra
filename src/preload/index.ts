@@ -66,6 +66,14 @@ export interface ScanProgress {
   file: string
 }
 
+export interface Playlist {
+  id: number
+  name: string
+  created_at: number
+  updated_at: number
+  track_count: number
+}
+
 // Native Visualizer Types
 export interface OscilloscopeResult {
   triggerIndex: number // float (position in circular buffer)
@@ -177,7 +185,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
       return () => ipcRenderer.removeListener('library:scanProgress', handler)
-    }
+    },
+
+    // Favorites
+    getFavorites: () => ipcRenderer.invoke('library:getFavorites'),
+    getFavoritePaths: () => ipcRenderer.invoke('library:getFavoritePaths'),
+    addFavorite: (trackPath: string) => ipcRenderer.invoke('library:addFavorite', trackPath),
+    removeFavorite: (trackPath: string) => ipcRenderer.invoke('library:removeFavorite', trackPath),
+
+    // Recently played
+    getRecentlyPlayed: (limit?: number) => ipcRenderer.invoke('library:getRecentlyPlayed', limit),
+    addRecentlyPlayed: (trackPath: string) => ipcRenderer.invoke('library:addRecentlyPlayed', trackPath),
+
+    // Playlists
+    getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
+    createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
+    renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
+    deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
+    getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
+    addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
+    removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
   }
 })
 
@@ -224,6 +251,25 @@ declare global {
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+
+        // Favorites
+        getFavorites: () => Promise<DbTrack[]>
+        getFavoritePaths: () => Promise<string[]>
+        addFavorite: (trackPath: string) => Promise<void>
+        removeFavorite: (trackPath: string) => Promise<void>
+
+        // Recently played
+        getRecentlyPlayed: (limit?: number) => Promise<DbTrack[]>
+        addRecentlyPlayed: (trackPath: string) => Promise<void>
+
+        // Playlists
+        getPlaylists: () => Promise<Playlist[]>
+        createPlaylist: (name: string) => Promise<Playlist>
+        renamePlaylist: (id: number, name: string) => Promise<void>
+        deletePlaylist: (id: number) => Promise<void>
+        getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
+        addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
+        removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
       }
     }
 

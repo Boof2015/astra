@@ -113,7 +113,7 @@ export default function EQResponsePreview({
     for (let i = 0; i <= pointCount; i++) {
       const x = (i / pointCount) * width
       const freq = xToFreq(x, width)
-      let totalDb = enabled ? preamp : 0
+      let totalDb = 0
 
       if (enabled) {
         for (const band of bands) {
