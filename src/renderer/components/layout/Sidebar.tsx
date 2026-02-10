@@ -40,17 +40,14 @@ const navItems: { id: AppView; label: string; icon: ReactNode }[] = [
       </svg>
     ),
   },
-  {
-    id: 'settings',
-    label: 'Settings',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-        <circle cx="12" cy="12" r="3" />
-      </svg>
-    ),
-  },
 ]
+
+const settingsIcon = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+)
 
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
@@ -58,20 +55,39 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="sidebar-brand-dot" />
+        <div className="sidebar-brand-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <circle cx="12" cy="12" r="3" />
+            <line x1="12" x2="12" y1="2" y2="6" />
+            <line x1="12" x2="12" y1="18" y2="22" />
+            <line x1="2" x2="6" y1="12" y2="12" />
+            <line x1="18" x2="22" y1="12" y2="12" />
+          </svg>
+        </div>
       </div>
       <nav className="sidebar-nav">
         {navItems.map((item) => (
           <button
             key={item.id}
-            className={`sidebar-icon-btn ${activeView === item.id ? 'active' : ''}`}
+            className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
             onClick={() => setActiveView(item.id)}
-            title={item.label}
+            aria-label={item.label}
           >
             {item.icon}
+            <span className="nav-tooltip">{item.label}</span>
           </button>
         ))}
       </nav>
+
+      <button
+        className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
+        onClick={() => setActiveView('settings')}
+        aria-label="Settings"
+      >
+        {settingsIcon}
+        <span className="nav-tooltip">Settings</span>
+      </button>
     </aside>
   )
 }

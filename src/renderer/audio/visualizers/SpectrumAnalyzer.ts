@@ -180,6 +180,7 @@ export class SpectrumAnalyzer {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
     if (width <= 0 || height <= 0) {
       this.animationId = requestAnimationFrame(this.draw)
       return
@@ -334,7 +335,7 @@ export class SpectrumAnalyzer {
       ctx.lineTo(points[i].x, points[i].y)
     }
 
-    ctx.lineWidth = options.lineWidth
+    ctx.lineWidth = options.lineWidth * dpr
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
@@ -347,14 +348,15 @@ export class SpectrumAnalyzer {
     const { ctx, canvas, options } = this
     const width = canvas.width
     const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
 
     ctx.strokeStyle = options.gridColor
-    ctx.lineWidth = 1
+    ctx.lineWidth = dpr
 
     // Horizontal dB lines
     const dbSteps = [-80, -60, -40, -20, 0]
     ctx.fillStyle = options.gridColor
-    ctx.font = '10px monospace'
+    ctx.font = `${10 * dpr}px monospace`
     ctx.textAlign = 'left'
 
     for (const db of dbSteps) {
@@ -366,7 +368,7 @@ export class SpectrumAnalyzer {
       ctx.lineTo(width, y)
       ctx.stroke()
 
-      ctx.fillText(`${db}dB`, 4, y - 2)
+      ctx.fillText(`${db}dB`, 4 * dpr, y - 2 * dpr)
     }
 
     // Vertical frequency lines (log scale)
@@ -392,7 +394,7 @@ export class SpectrumAnalyzer {
       ctx.stroke()
 
       const label = freq >= 1000 ? `${freq / 1000}k` : `${freq}`
-      ctx.fillText(label, x, height - 4)
+      ctx.fillText(label, x, height - 4 * dpr)
     }
   }
 

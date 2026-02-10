@@ -5,6 +5,7 @@ import { useEQStore } from '../../stores/eqStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
+import EQResponsePreview from '../eq/EQResponsePreview'
 
 export default function TransportBar() {
   const {
@@ -144,18 +145,23 @@ export default function TransportBar() {
             onClick={toggleShuffle}
             title={shuffle ? 'Shuffle on' : 'Shuffle off'}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 3h5v5" />
+              <path d="M4 20 21 3" />
+              <path d="M21 16v5h-5" />
+              <path d="M15 15 21 21" />
+              <path d="M4 4 9 9" />
             </svg>
           </button>
           <button
-            className="control-btn"
+            className="control-btn control-btn-skip"
             aria-label="Previous"
             onClick={playPrevious}
             disabled={queue.length === 0}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="6" y1="5" x2="6" y2="19" />
+              <polygon points="18,5 8,12 18,19" />
             </svg>
           </button>
           <button
@@ -167,23 +173,24 @@ export default function TransportBar() {
             {isLoadingTrack ? (
               <div className="loading-spinner" />
             ) : isPlaying ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
               </svg>
             ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M8 5v14l11-7z"/>
               </svg>
             )}
           </button>
           <button
-            className="control-btn"
+            className="control-btn control-btn-skip"
             aria-label="Next"
             onClick={playNext}
             disabled={queue.length === 0}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="5" x2="18" y2="19" />
+              <polygon points="6,5 16,12 6,19" />
             </svg>
           </button>
           <button
@@ -193,12 +200,19 @@ export default function TransportBar() {
             title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
           >
             {repeat === 'one' ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7h13a4 4 0 0 1 4 4v1" />
+                <polyline points="17 4 20 7 17 10" />
+                <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
+                <polyline points="7 20 4 17 7 14" />
+                <path d="M12 8v8" />
               </svg>
             ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7h13a4 4 0 0 1 4 4v1" />
+                <polyline points="17 4 20 7 17 10" />
+                <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
+                <polyline points="7 20 4 17 7 14" />
               </svg>
             )}
           </button>
@@ -262,15 +276,12 @@ export default function TransportBar() {
       <div className="transport-right">
         {/* EQ toggle button with mini curve */}
         <button
-          className={`transport-eq-btn ${showEQPopover ? 'active' : ''}`}
+          className={`transport-eq-btn ${showEQPopover ? 'active' : ''} ${eqEnabled ? 'enabled' : ''}`}
           onClick={() => setShowEQPopover(!showEQPopover)}
           title="Toggle equalizer"
         >
           <span className="transport-eq-label">EQ</span>
-          <svg className="transport-eq-curve" width="56" height="28" viewBox="0 0 80 30">
-            <line x1="0" y1="15" x2="80" y2="15" stroke="#444" strokeWidth="1" strokeDasharray="2 2" />
-            <path d="M0 15 C 10 15, 15 5, 25 5 S 35 15, 50 15 S 60 8, 70 8 S 78 15, 80 15" fill="none" stroke={eqEnabled ? '#38bdf8' : '#fff'} strokeWidth="1.5" />
-          </svg>
+          <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />
         </button>
 
         {/* Queue + Info stacked vertically */}

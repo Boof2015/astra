@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
-import FolderSettings from '../settings/FolderSettings'
 
 export default function LibraryView() {
   const {
@@ -18,8 +17,6 @@ export default function LibraryView() {
     isScanning,
     scanProgress,
     loadLibrary,
-    addFolder,
-    rescan,
     setViewMode,
     selectAlbum,
     selectArtist,
@@ -27,8 +24,6 @@ export default function LibraryView() {
   } = useLibraryStore()
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
-
-  const [showFolderSettings, setShowFolderSettings] = useState(false)
 
   useEffect(() => {
     loadLibrary()
@@ -108,7 +103,7 @@ export default function LibraryView() {
         <div className="library-empty">
           <div className="empty-icon">&#9835;</div>
           <p>Your library is empty</p>
-          <p className="empty-hint">Click "Add Folder" to scan your music</p>
+          <p className="empty-hint">Use Settings &gt; Library &gt; Add Folder to scan your music</p>
         </div>
       )
     }
@@ -214,19 +209,6 @@ export default function LibraryView() {
               <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
             </svg>
           </button>
-          <button className="icon-btn" onClick={rescan} title="Rescan Library" disabled={isScanning}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-            </svg>
-          </button>
-          <button className="icon-btn" onClick={() => setShowFolderSettings(true)} title="Manage Folders">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
-            </svg>
-          </button>
-          <button className="add-folder-btn" onClick={addFolder}>
-            <span>+</span> Add Folder
-          </button>
         </div>
       </div>
 
@@ -235,11 +217,6 @@ export default function LibraryView() {
       <div className="library-content">
         {renderContent()}
       </div>
-
-      <FolderSettings
-        isOpen={showFolderSettings}
-        onClose={() => setShowFolderSettings(false)}
-      />
     </div>
   )
 }

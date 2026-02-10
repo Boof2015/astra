@@ -29,22 +29,20 @@ function App() {
   return (
     <div className="app">
       <TitleBar />
+      <AnalyzerDeck />
       <div className="app-body">
         <Sidebar />
-        <div className="app-main">
-          <AnalyzerDeck />
-          <div className="app-content">
-            <ViewRouter />
-            {showQueue && (
-              <div className="queue-sidebar">
-                <QueuePanel />
-              </div>
-            )}
-            {showInfoSidebar && <InfoSidebar />}
-          </div>
-          <TransportBar />
+        <div className="app-content">
+          <ViewRouter />
+          {showQueue && (
+            <div className="queue-sidebar">
+              <QueuePanel />
+            </div>
+          )}
+          {showInfoSidebar && <InfoSidebar />}
         </div>
       </div>
+      <TransportBar />
       {isFullscreen && <FullscreenMode />}
     </div>
   )

@@ -135,7 +135,7 @@ export default function EQFrequencyResponse({
     for (let i = 0; i <= numPoints; i++) {
       const x = (i / numPoints) * width
       const freq = xToFreq(x, width)
-      let totalDb = 0
+      let totalDb = enabled ? preamp : 0
 
       if (enabled) {
         for (const band of bands) {

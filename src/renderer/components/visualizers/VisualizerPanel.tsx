@@ -1,11 +1,28 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { Oscilloscope, SpectrumAnalyzer, Vectorscope } from '../../audio/visualizers'
-
-type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
+import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 
 interface VisualizerPanelProps {
   className?: string
 }
+
+const spectrumDbLabels = [
+  { value: '-20dB', top: '10%' },
+  { value: '-40dB', top: '35%' },
+  { value: '-60dB', top: '60%' },
+  { value: '-80dB', top: '85%' },
+]
+
+const spectrumFreqLabels = [
+  { value: '50', left: '12%' },
+  { value: '100', left: '28%' },
+  { value: '200', left: '42%' },
+  { value: '500', left: '52%' },
+  { value: '1k', left: '62%' },
+  { value: '2k', left: '72%' },
+  { value: '5k', left: '82%' },
+  { value: '10k', left: '92%' },
+]
 
 export default function VisualizerPanel({ className = '' }: VisualizerPanelProps) {
   // Refs for all three canvases
@@ -22,18 +39,22 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
   const spectrumRef = useRef<SpectrumAnalyzer | null>(null)
   const vectorRef = useRef<Vectorscope | null>(null)
 
-  const [isRunning, setIsRunning] = useState(true)
-
-  // Settings
-  const [lineColor, setLineColor] = useState('#00ffff')
-  const [fftSize, setFftSize] = useState<FFTSize>(4096)
-  const [pitchLock, setPitchLock] = useState(true)
+  const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
+  const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
+  const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
+  const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
 
   // Resize a single canvas to fit its container
   const resizeCanvas = useCallback((canvas: HTMLCanvasElement, container: HTMLDivElement) => {
     const rect = container.getBoundingClientRect()
-    canvas.width = Math.floor(rect.width)
-    canvas.height = Math.floor(rect.height)
+    const width = Math.max(1, Math.floor(rect.width))
+    const height = Math.max(1, Math.floor(rect.height))
+    const dpr = window.devicePixelRatio || 1
+
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+    canvas.width = Math.max(1, Math.floor(width * dpr))
+    canvas.height = Math.max(1, Math.floor(height * dpr))
   }, [])
 
   // Resize all canvases
@@ -156,66 +177,42 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
     }
   }, [handleResize])
 
-  const toggleRunning = () => setIsRunning(prev => !prev)
-
   return (
     <div className={`visualizer-panel ${className}`}>
-      <div className="visualizer-controls">
-        <div className="visualizer-labels">
-          <span className="visualizer-label">Scope</span>
-          <span className="visualizer-label">Spectrum</span>
-          <span className="visualizer-label">Vector</span>
-        </div>
-
-        <div className="visualizer-settings">
-          <select
-            className="visualizer-select"
-            value={fftSize}
-            onChange={(e) => setFftSize(Number(e.target.value) as FFTSize)}
-            title="FFT Size"
-          >
-            <option value={1024}>1024</option>
-            <option value={2048}>2048</option>
-            <option value={4096}>4096</option>
-            <option value={8192}>8192</option>
-            <option value={16384}>16384</option>
-          </select>
-
-          <button
-            className={`visualizer-option-btn ${pitchLock ? 'active' : ''}`}
-            onClick={() => setPitchLock(!pitchLock)}
-            title="Pitch Lock"
-          >
-            PL
-          </button>
-
-          <label className="color-picker-label">
-            <input
-              type="color"
-              value={lineColor}
-              onChange={(e) => setLineColor(e.target.value)}
-              className="color-picker"
-            />
-          </label>
-
-          <button
-            className={`visualizer-toggle-btn ${isRunning ? 'running' : ''}`}
-            onClick={toggleRunning}
-            title={isRunning ? 'Pause' : 'Play'}
-          >
-            {isRunning ? '⏸' : '▶'}
-          </button>
-        </div>
-      </div>
-
       <div className="visualizer-grid">
-        <div className="visualizer-item" ref={scopeContainerRef}>
+        <div className="visualizer-item visualizer-item-spectrum" ref={spectrumContainerRef}>
+          <div className="visualizer-caption-left">SPECTRUM</div>
+          <div className="visualizer-caption-right">FFT {fftSize}</div>
+          <canvas ref={spectrumCanvasRef} className="visualizer-canvas" />
+          {spectrumDbLabels.map((label) => (
+            <span
+              key={label.value}
+              className="visualizer-db-label"
+              style={{ top: label.top }}
+            >
+              {label.value}
+            </span>
+          ))}
+          {spectrumFreqLabels.map((label) => (
+            <span
+              key={label.value}
+              className="visualizer-freq-label"
+              style={{ left: label.left }}
+            >
+              {label.value}
+            </span>
+          ))}
+        </div>
+
+        <div className="visualizer-item visualizer-item-scope" ref={scopeContainerRef}>
+          <div className="visualizer-caption-left">OSCILLOSCOPE</div>
+          <div className="visualizer-caption-right">{pitchLock ? 'PITCH-LOCK' : 'FREE-RUN'}</div>
           <canvas ref={scopeCanvasRef} className="visualizer-canvas" />
         </div>
-        <div className="visualizer-item" ref={spectrumContainerRef}>
-          <canvas ref={spectrumCanvasRef} className="visualizer-canvas" />
-        </div>
-        <div className="visualizer-item visualizer-item-square" ref={vectorContainerRef}>
+
+        <div className="visualizer-item visualizer-item-vector" ref={vectorContainerRef}>
+          <div className="visualizer-caption-left">VECTORSCOPE</div>
+          <div className="visualizer-caption-right">{isRunning ? 'LIVE' : 'PAUSED'}</div>
           <canvas ref={vectorCanvasRef} className="visualizer-canvas" />
         </div>
       </div>

@@ -109,6 +109,7 @@ export class Oscilloscope {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
 
     ctx.clearRect(0, 0, width, height)
 
@@ -172,7 +173,7 @@ export class Oscilloscope {
     }
 
     // Draw waveform (data already starts at trigger point)
-    ctx.lineWidth = options.lineWidth
+    ctx.lineWidth = options.lineWidth * dpr
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
@@ -201,9 +202,10 @@ export class Oscilloscope {
     const { ctx, canvas, options } = this
     const width = canvas.width
     const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
 
     ctx.strokeStyle = options.gridColor
-    ctx.lineWidth = 1
+    ctx.lineWidth = dpr
 
     ctx.beginPath()
     ctx.moveTo(0, height / 2)

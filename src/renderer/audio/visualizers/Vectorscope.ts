@@ -186,7 +186,8 @@ export class Vectorscope {
     scale: number
   ): void {
     const { options } = this
-    const dotSize = options.lineWidth
+    const dpr = window.devicePixelRatio || 1
+    const dotSize = options.lineWidth * dpr
 
     // Draw dots with age-based opacity: oldest dimmer, newest brighter
     const segments = 8
@@ -222,7 +223,8 @@ export class Vectorscope {
     if (pendingSamples.length === 0) return
 
     const { options } = this
-    const dotSize = options.lineWidth
+    const dpr = window.devicePixelRatio || 1
+    const dotSize = options.lineWidth * dpr
 
     ctx.fillStyle = options.lineColor
     ctx.globalAlpha = 0.8
@@ -244,9 +246,10 @@ export class Vectorscope {
     const centerX = width / 2
     const centerY = height / 2
     const radius = Math.min(centerX, centerY) * 0.9
+    const dpr = window.devicePixelRatio || 1
 
     ctx.strokeStyle = options.gridColor
-    ctx.lineWidth = 1
+    ctx.lineWidth = dpr
 
     // Draw circular guides
     const circles = [0.25, 0.5, 0.75, 1.0]
@@ -286,12 +289,12 @@ export class Vectorscope {
 
     // Labels
     ctx.fillStyle = options.gridColor
-    ctx.font = '10px monospace'
+    ctx.font = `${10 * dpr}px monospace`
     ctx.textAlign = 'center'
-    ctx.fillText('L', centerX - radius - 12, centerY + 4)
-    ctx.fillText('R', centerX + radius + 12, centerY + 4)
-    ctx.fillText('+', centerX, centerY - radius - 6)
-    ctx.fillText('-', centerX, centerY + radius + 12)
+    ctx.fillText('L', centerX - radius - 12 * dpr, centerY + 4 * dpr)
+    ctx.fillText('R', centerX + radius + 12 * dpr, centerY + 4 * dpr)
+    ctx.fillText('+', centerX, centerY - radius - 6 * dpr)
+    ctx.fillText('-', centerX, centerY + radius + 12 * dpr)
   }
 
   dispose(): void {

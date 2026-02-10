@@ -1,5 +1,6 @@
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
+import EQResponsePreview from './EQResponsePreview'
 
 interface EQPopoverProps {
   onClose: () => void
@@ -51,6 +52,9 @@ export default function EQPopover({ onClose }: EQPopoverProps) {
             </svg>
           </button>
         </div>
+      </div>
+      <div className="eq-popover-preview">
+        <EQResponsePreview className="eq-popover-preview-curve" width={420} height={118} />
       </div>
       <div className="eq-popover-status">
         <span className="eq-popover-preset-name">
