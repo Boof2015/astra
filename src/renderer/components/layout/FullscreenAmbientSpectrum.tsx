@@ -39,12 +39,25 @@ function colorWithAlpha(color: string, alpha: number): string {
 
 const MIN_FREQ = 20
 const MAX_FREQ = 20000
-const LOG_MIN = Math.log10(MIN_FREQ)
-const LOG_MAX = Math.log10(MAX_FREQ)
+const TILT_DB_PER_OCTAVE = 2.0
+const TILT_REFERENCE_HZ = 1000
 
-function frequencyAtX(x: number, width: number): number {
+function frequencyAtX(x: number, width: number, minFrequency: number, maxFrequency: number): number {
   const t = width <= 0 ? 0 : x / width
-  return Math.pow(10, LOG_MIN + t * (LOG_MAX - LOG_MIN))
+  const safeMin = Math.max(1, minFrequency)
+  const safeMax = Math.max(safeMin + 1, maxFrequency)
+  const logMin = Math.log10(safeMin)
+  const logMax = Math.log10(safeMax)
+  return Math.pow(10, logMin + t * (logMax - logMin))
+}
+
+function tiltOffsetAtFrequency(frequency: number): number {
+  const safeFreq = Math.max(1, frequency)
+  return TILT_DB_PER_OCTAVE * Math.log2(safeFreq / TILT_REFERENCE_HZ)
+}
+
+function applyTilt(db: number, frequency: number): number {
+  return db + tiltOffsetAtFrequency(frequency)
 }
 
 export default function FullscreenAmbientSpectrum({
@@ -153,13 +166,20 @@ export default function FullscreenAmbientSpectrum({
       const sampleRate = audioEngine.getSampleRate()
       const nyquist = sampleRate / 2
       const binWidth = nyquist / binCount
+      const maxDisplayFreq = Math.max(MIN_FREQ + 1, Math.min(MAX_FREQ, nyquist))
+      const minTiltOffset = tiltOffsetAtFrequency(MIN_FREQ)
+      const maxTiltOffset = tiltOffsetAtFrequency(maxDisplayFreq)
+
+      // Keep the normalization window aligned to analyser limits after tilt is applied.
+      const minDb = analyser.minDecibels + Math.min(minTiltOffset, maxTiltOffset)
+      const maxDb = analyser.maxDecibels + Math.max(minTiltOffset, maxTiltOffset)
 
       const points: Array<{ x: number; y: number }> = []
       const numPoints = Math.max(2, Math.floor(width))
 
       for (let i = 0; i < numPoints; i++) {
         const x = i
-        const freq = Math.min(MAX_FREQ, Math.max(MIN_FREQ, frequencyAtX(x, width)))
+        const freq = Math.max(MIN_FREQ, frequencyAtX(x, width, MIN_FREQ, maxDisplayFreq))
         const bin = freq / binWidth
         const low = Math.floor(bin)
         const high = Math.min(low + 1, binCount - 1)
@@ -168,10 +188,9 @@ export default function FullscreenAmbientSpectrum({
         const dbLow = smoothedFrequencyData[low] ?? -95
         const dbHigh = smoothedFrequencyData[high] ?? -95
         const db = dbLow + (dbHigh - dbLow) * frac
+        const tiltedDb = applyTilt(db, freq)
 
-        const minDb = -92
-        const maxDb = -24
-        const clampedDb = Math.max(minDb, Math.min(maxDb, db))
+        const clampedDb = Math.max(minDb, Math.min(maxDb, tiltedDb))
         const normalized = (clampedDb - minDb) / (maxDb - minDb)
         const shaped = Math.pow(Math.max(0, Math.min(1, normalized)), 0.86)
         const y = height - shaped * height

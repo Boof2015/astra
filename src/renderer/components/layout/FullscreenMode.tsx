@@ -168,41 +168,50 @@ export default function FullscreenMode() {
       setResolvedBackdropArtwork(url)
     }
 
-    if (!currentTrack) {
-      setResolvedIfCurrent(null)
-      return
-    }
-
-    const embeddedArtwork = currentTrack.artworkData ?? null
-    if (embeddedArtwork) {
-      void preloadImage(embeddedArtwork)
-        .then((readyUrl) => setResolvedIfCurrent(readyUrl))
-        .catch(() => setResolvedIfCurrent(embeddedArtwork))
-      return
-    }
-
-    if (!currentTrack.artworkHash) {
-      setResolvedIfCurrent(null)
-      return
-    }
-
-    void getArtwork(currentTrack.artworkHash)
-      .then(async (url) => {
-        if (backdropRequestTokenRef.current !== requestToken) return
-        if (!url) {
-          setResolvedIfCurrent(null)
-          return
-        }
-        try {
-          const readyUrl = await preloadImage(url)
-          setResolvedIfCurrent(readyUrl)
-        } catch {
-          setResolvedIfCurrent(url)
-        }
-      })
-      .catch(() => {
+    const resolveBackdropArtwork = async () => {
+      if (!currentTrack) {
         setResolvedIfCurrent(null)
-      })
+        return
+      }
+
+      const artworkCandidates: string[] = []
+
+      if (currentTrack.artworkHash) {
+        try {
+          const hashArtwork = await getArtwork(currentTrack.artworkHash)
+          if (backdropRequestTokenRef.current !== requestToken) return
+          if (hashArtwork) {
+            artworkCandidates.push(hashArtwork)
+          }
+        } catch {
+          if (backdropRequestTokenRef.current !== requestToken) return
+        }
+      }
+
+      if (currentTrack.artworkData) {
+        artworkCandidates.push(currentTrack.artworkData)
+      }
+
+      const uniqueCandidates = [...new Set(artworkCandidates)]
+      if (uniqueCandidates.length === 0) {
+        setResolvedIfCurrent(null)
+        return
+      }
+
+      for (const candidate of uniqueCandidates) {
+        try {
+          const readyUrl = await preloadImage(candidate)
+          setResolvedIfCurrent(readyUrl)
+          return
+        } catch {
+          if (backdropRequestTokenRef.current !== requestToken) return
+        }
+      }
+
+      setResolvedIfCurrent(null)
+    }
+
+    void resolveBackdropArtwork()
   }, [
     currentTrack,
     currentTrackId,
@@ -217,6 +226,15 @@ export default function FullscreenMode() {
     if (backdropCrossfadeTimeoutRef.current !== null) {
       window.clearTimeout(backdropCrossfadeTimeoutRef.current)
       backdropCrossfadeTimeoutRef.current = null
+    }
+
+    // First resolved backdrop should appear immediately instead of crossfading from fallback.
+    if (!activeBackdropArtwork && resolvedBackdropArtwork) {
+      setPreviousBackdropArtwork(null)
+      setShowPreviousBackdropLayer(false)
+      setActiveBackdropArtwork(resolvedBackdropArtwork)
+      setIsBackdropCrossfading(false)
+      return
     }
 
     setPreviousBackdropArtwork(activeBackdropArtwork)
