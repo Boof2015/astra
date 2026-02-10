@@ -720,35 +720,71 @@ button, .titlebar {
 
 .fullscreen-backdrop {
   position: absolute;
-  inset: -6%;
+  inset: 0;
   z-index: 0;
+  pointer-events: none;
+}
+
+.fullscreen-backdrop-layer {
+  position: absolute;
+  inset: -9%;
+  opacity: 1;
+}
+
+.fullscreen-backdrop-layer-previous {
+  z-index: 0;
+}
+
+.fullscreen-backdrop-layer-previous.is-fading {
+  opacity: 0;
+  transition: opacity 0.68s ease;
+}
+
+.fullscreen-backdrop-layer-current {
+  z-index: 1;
+}
+
+.fullscreen-backdrop-layer-current.is-entering {
+  animation: fullscreenBackdropLayerEnter 0.68s ease both;
 }
 
 .fullscreen-backdrop-image {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scale(1.16);
-  filter: blur(68px) saturate(1.12);
-  opacity: 0.5;
-  animation: fullscreenBackdropEnter 0.6s ease both;
+  transform: scale(1.14);
+  filter: blur(46px) saturate(1.35) brightness(1.02);
+  opacity: 0.92;
 }
 
 .fullscreen-backdrop-fallback {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(58% 62% at 14% 16%, rgba(56, 189, 248, 0.16), transparent 72%),
-    radial-gradient(64% 60% at 88% 84%, rgba(14, 116, 144, 0.18), transparent 74%),
-    linear-gradient(145deg, #02060b 0%, #030609 55%, #000 100%);
+    radial-gradient(55% 60% at 10% 14%, rgba(56, 189, 248, 0.62), transparent 70%),
+    radial-gradient(60% 58% at 88% 84%, rgba(14, 165, 233, 0.52), transparent 72%),
+    radial-gradient(46% 44% at 50% 36%, rgba(59, 130, 246, 0.3), transparent 70%),
+    linear-gradient(145deg, #030d16 0%, #021018 44%, #02070c 100%);
+}
+
+.fullscreen-backdrop-colorwash {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background:
+    radial-gradient(70% 62% at 30% 26%, rgba(125, 211, 252, 0.28), transparent 74%),
+    radial-gradient(80% 70% at 76% 76%, rgba(56, 189, 248, 0.2), transparent 76%);
+  mix-blend-mode: screen;
+  opacity: 0.98;
 }
 
 .fullscreen-backdrop-scrim {
   position: absolute;
   inset: 0;
+  z-index: 3;
   background:
-    radial-gradient(70% 58% at 52% 42%, rgba(0, 0, 0, 0.15), rgba(0, 0, 0, 0.72)),
-    linear-gradient(180deg, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0.8));
+    radial-gradient(70% 58% at 52% 42%, rgba(2, 8, 14, 0.05), rgba(0, 0, 0, 0.42)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.52));
 }
 
 .fullscreen-ambient-spectrum {
@@ -756,16 +792,17 @@ button, .titlebar {
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.7;
-  filter: blur(0.5px);
+  opacity: 0.36;
+  filter: blur(0.15px);
+  mix-blend-mode: screen;
 }
 
 .fullscreen-ambient-spectrum[data-opacity-intent='soft'] {
-  opacity: 0.85;
+  opacity: 0.42;
 }
 
 .fullscreen-ambient-spectrum.is-idle {
-  opacity: 0.34;
+  opacity: 0.19;
 }
 
 .fullscreen-ambient-canvas {
@@ -815,7 +852,8 @@ button, .titlebar {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
-  transition: opacity 0.28s ease, transform 0.32s ease;
+  transition: opacity 0.3s ease, transform 0.36s ease;
+  will-change: opacity, transform;
 }
 
 .fullscreen-hero-steady {
@@ -829,7 +867,7 @@ button, .titlebar {
 }
 
 .fullscreen-hero-enter {
-  animation: fullscreenHeroEnter 0.28s ease both;
+  animation: fullscreenHeroEnter 0.38s ease both;
 }
 
 .fullscreen-status-label {
@@ -1151,14 +1189,14 @@ button, .titlebar {
   transition: transform 0.2s linear;
 }
 
-@keyframes fullscreenBackdropEnter {
+@keyframes fullscreenBackdropLayerEnter {
   from {
-    opacity: 0.25;
-    transform: scale(1.2);
+    opacity: 0;
+    transform: scale(1.16);
   }
   to {
-    opacity: 0.5;
-    transform: scale(1.16);
+    opacity: 1;
+    transform: scale(1.14);
   }
 }
 
@@ -1174,6 +1212,14 @@ button, .titlebar {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .fullscreen-backdrop-layer-previous.is-fading {
+    transition-duration: 0.08s !important;
+  }
+
+  .fullscreen-backdrop-layer-current.is-entering {
+    animation: none;
+  }
+
   .fullscreen-hero,
   .fullscreen-next-cue,
   .fullscreen-next-cue-fill {

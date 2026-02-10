@@ -16,6 +16,28 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+function preloadImage(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    let settled = false
+
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      fn()
+    }
+
+    img.decoding = 'async'
+    img.onload = () => finish(() => resolve(url))
+    img.onerror = () => finish(() => reject(new Error('Backdrop image failed to load')))
+    img.src = url
+
+    if (img.complete && img.naturalWidth > 0) {
+      finish(() => resolve(url))
+    }
+  })
+}
+
 function usePrefersReducedMotion(): boolean {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)
 
@@ -60,13 +82,19 @@ export default function FullscreenMode() {
 
   const prefersReducedMotion = usePrefersReducedMotion()
 
-  const [backdropArtwork, setBackdropArtwork] = useState<string | null>(null)
+  const [resolvedBackdropArtwork, setResolvedBackdropArtwork] = useState<string | null>(null)
+  const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
+  const [previousBackdropArtwork, setPreviousBackdropArtwork] = useState<string | null>(null)
+  const [showPreviousBackdropLayer, setShowPreviousBackdropLayer] = useState(false)
+  const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
   const [cueState, setCueState] = useState<CueState>('hidden')
   const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
 
   const backdropRequestTokenRef = useRef(0)
   const previousTrackIdRef = useRef<string | null>(null)
   const enterResetTimeoutRef = useRef<number | null>(null)
+  const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
+  const heroEnterRafRef = useRef<number | null>(null)
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -123,38 +151,57 @@ export default function FullscreenMode() {
       if (enterResetTimeoutRef.current !== null) {
         window.clearTimeout(enterResetTimeoutRef.current)
       }
+      if (backdropCrossfadeTimeoutRef.current !== null) {
+        window.clearTimeout(backdropCrossfadeTimeoutRef.current)
+      }
+      if (heroEnterRafRef.current !== null) {
+        window.cancelAnimationFrame(heroEnterRafRef.current)
+      }
     }
   }, [])
 
   useEffect(() => {
     backdropRequestTokenRef.current += 1
     const requestToken = backdropRequestTokenRef.current
+    const setResolvedIfCurrent = (url: string | null) => {
+      if (backdropRequestTokenRef.current !== requestToken) return
+      setResolvedBackdropArtwork(url)
+    }
 
     if (!currentTrack) {
-      setBackdropArtwork(null)
+      setResolvedIfCurrent(null)
       return
     }
 
-    if (currentTrack.artworkData) {
-      setBackdropArtwork(currentTrack.artworkData)
+    const embeddedArtwork = currentTrack.artworkData ?? null
+    if (embeddedArtwork) {
+      void preloadImage(embeddedArtwork)
+        .then((readyUrl) => setResolvedIfCurrent(readyUrl))
+        .catch(() => setResolvedIfCurrent(embeddedArtwork))
       return
     }
 
     if (!currentTrack.artworkHash) {
-      setBackdropArtwork(null)
+      setResolvedIfCurrent(null)
       return
     }
 
-    setBackdropArtwork(null)
-
     void getArtwork(currentTrack.artworkHash)
-      .then((url) => {
+      .then(async (url) => {
         if (backdropRequestTokenRef.current !== requestToken) return
-        setBackdropArtwork(url ?? null)
+        if (!url) {
+          setResolvedIfCurrent(null)
+          return
+        }
+        try {
+          const readyUrl = await preloadImage(url)
+          setResolvedIfCurrent(readyUrl)
+        } catch {
+          setResolvedIfCurrent(url)
+        }
       })
       .catch(() => {
-        if (backdropRequestTokenRef.current !== requestToken) return
-        setBackdropArtwork(null)
+        setResolvedIfCurrent(null)
       })
   }, [
     currentTrack,
@@ -163,6 +210,26 @@ export default function FullscreenMode() {
     currentTrack?.artworkHash,
     getArtwork
   ])
+
+  useEffect(() => {
+    if (activeBackdropArtwork === resolvedBackdropArtwork) return
+
+    if (backdropCrossfadeTimeoutRef.current !== null) {
+      window.clearTimeout(backdropCrossfadeTimeoutRef.current)
+      backdropCrossfadeTimeoutRef.current = null
+    }
+
+    setPreviousBackdropArtwork(activeBackdropArtwork)
+    setShowPreviousBackdropLayer(true)
+    setActiveBackdropArtwork(resolvedBackdropArtwork)
+    setIsBackdropCrossfading(true)
+
+    backdropCrossfadeTimeoutRef.current = window.setTimeout(() => {
+      setShowPreviousBackdropLayer(false)
+      setIsBackdropCrossfading(false)
+      backdropCrossfadeTimeoutRef.current = null
+    }, prefersReducedMotion ? 120 : 680)
+  }, [activeBackdropArtwork, prefersReducedMotion, resolvedBackdropArtwork])
 
   useEffect(() => {
     if (previousTrackIdRef.current === currentTrackId) return
@@ -174,17 +241,24 @@ export default function FullscreenMode() {
       window.clearTimeout(enterResetTimeoutRef.current)
       enterResetTimeoutRef.current = null
     }
+    if (heroEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(heroEnterRafRef.current)
+      heroEnterRafRef.current = null
+    }
 
     if (!currentTrackId) {
       setHeroPhase('steady')
       return
     }
 
-    setHeroPhase('enter')
-    enterResetTimeoutRef.current = window.setTimeout(
-      () => setHeroPhase('steady'),
-      prefersReducedMotion ? 40 : 280
-    )
+    setHeroPhase('handoff')
+    heroEnterRafRef.current = window.requestAnimationFrame(() => {
+      setHeroPhase('enter')
+      enterResetTimeoutRef.current = window.setTimeout(
+        () => setHeroPhase('steady'),
+        prefersReducedMotion ? 80 : 420
+      )
+    })
   }, [currentTrackId, prefersReducedMotion])
 
   useEffect(() => {
@@ -218,11 +292,25 @@ export default function FullscreenMode() {
       aria-label="Fullscreen player"
     >
       <div className="fullscreen-backdrop" aria-hidden="true">
-        {backdropArtwork ? (
-          <img className="fullscreen-backdrop-image" src={backdropArtwork} alt="" />
-        ) : (
-          <div className="fullscreen-backdrop-fallback" />
+        {showPreviousBackdropLayer && (
+          <div className={`fullscreen-backdrop-layer fullscreen-backdrop-layer-previous ${isBackdropCrossfading ? 'is-fading' : ''}`}>
+            {previousBackdropArtwork ? (
+              <img className="fullscreen-backdrop-image" src={previousBackdropArtwork} alt="" />
+            ) : (
+              <div className="fullscreen-backdrop-fallback" />
+            )}
+          </div>
         )}
+
+        <div className={`fullscreen-backdrop-layer fullscreen-backdrop-layer-current ${isBackdropCrossfading ? 'is-entering' : ''}`}>
+          {activeBackdropArtwork ? (
+            <img className="fullscreen-backdrop-image" src={activeBackdropArtwork} alt="" />
+          ) : (
+            <div className="fullscreen-backdrop-fallback" />
+          )}
+        </div>
+
+        <div className="fullscreen-backdrop-colorwash" />
         <div className="fullscreen-backdrop-scrim" />
       </div>
 
@@ -245,7 +333,6 @@ export default function FullscreenMode() {
       <div className="fullscreen-content">
         <div
           className={`fullscreen-hero fullscreen-hero-${heroPhase}`}
-          key={currentTrackId ?? 'no-track'}
         >
           <span className="fullscreen-status-label">
             {isLoadingTrack ? 'Loading' : isPlaying ? 'Now Playing' : currentTrack ? 'Paused' : 'Ready'}
