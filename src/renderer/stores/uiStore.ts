@@ -14,7 +14,7 @@ interface UIStore {
 }
 
 export const useUIStore = create<UIStore>((set) => ({
-  activeView: 'library',
+  activeView: 'home',
   showQueue: false,
   showInfoSidebar: false,
   isFullscreen: false,

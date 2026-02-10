@@ -4229,6 +4229,7 @@ body::after {
   border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
   padding: 10px;
   display: flex;
   flex-direction: column;
@@ -4276,6 +4277,7 @@ body::after {
   border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
   padding: 10px;
   transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
 }

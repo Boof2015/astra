@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -13,10 +13,10 @@ export default function LibraryView() {
     viewMode,
     selectedAlbum,
     selectedArtist,
+    selectionOrigin,
     isLoading,
     isScanning,
     scanProgress,
-    loadLibrary,
     setViewMode,
     selectAlbum,
     selectArtist,
@@ -24,10 +24,15 @@ export default function LibraryView() {
   } = useLibraryStore()
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
+  const setActiveView = useUIStore((s) => s.setActiveView)
 
-  useEffect(() => {
-    loadLibrary()
-  }, [loadLibrary])
+  const handleBack = async () => {
+    const shouldReturnHome = selectionOrigin === 'home'
+    if (shouldReturnHome) {
+      setActiveView('home')
+    }
+    await clearSelection()
+  }
 
   const handleOpenFile = async () => {
     const result = await window.electronAPI.openAudioFile()
@@ -170,7 +175,7 @@ export default function LibraryView() {
       <div className="library-header">
         <div className="library-header-left">
           {(selectedAlbum || selectedArtist) && (
-            <button className="back-btn" onClick={clearSelection} title="Back">
+            <button className="back-btn" onClick={handleBack} title="Back">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>

@@ -42,6 +42,7 @@ interface LibraryFolder {
 }
 
 type ViewMode = 'tracks' | 'albums' | 'artists'
+type SelectionOrigin = 'home' | 'library' | null
 
 interface LibraryStore {
   // State
@@ -52,6 +53,7 @@ interface LibraryStore {
   viewMode: ViewMode
   selectedAlbum: { album: string; artist: string } | null
   selectedArtist: string | null
+  selectionOrigin: SelectionOrigin
   searchQuery: string
   searchResults: DbTrack[]
   isLoading: boolean
@@ -73,8 +75,8 @@ interface LibraryStore {
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
-  selectAlbum: (album: string, artist: string) => Promise<void>
-  selectArtist: (artist: string) => Promise<void>
+  selectAlbum: (album: string, artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
+  selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   clearSelection: () => void
   search: (query: string) => Promise<void>
   clearSearch: () => void
@@ -98,6 +100,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   viewMode: 'tracks',
   selectedAlbum: null,
   selectedArtist: null,
+  selectionOrigin: null,
   searchQuery: '',
   searchResults: [],
   isLoading: false,
@@ -126,7 +129,11 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Load tracks
   loadTracks: async () => {
     const tracks = await window.electronAPI.library.getTracks()
-    set({ tracks })
+    set((state) => {
+      // Avoid clobbering active artist/album selections with full library tracks.
+      if (state.selectedAlbum || state.selectedArtist) return {}
+      return { tracks }
+    })
   },
 
   // Load albums
@@ -206,24 +213,24 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Set view mode
   setViewMode: (mode: ViewMode) => {
-    set({ viewMode: mode, selectedAlbum: null, selectedArtist: null })
+    set({ viewMode: mode, selectedAlbum: null, selectedArtist: null, selectionOrigin: null })
   },
 
   // Select album
-  selectAlbum: async (album: string, artist: string) => {
+  selectAlbum: async (album: string, artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
     const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist)
-    set({ selectedAlbum: { album, artist }, tracks, selectedArtist: null })
+    set({ selectedAlbum: { album, artist }, tracks, selectedArtist: null, selectionOrigin: origin })
   },
 
   // Select artist
-  selectArtist: async (artist: string) => {
+  selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
     const tracks = await window.electronAPI.library.getTracksByArtist(artist)
-    set({ selectedArtist: artist, tracks, selectedAlbum: null })
+    set({ selectedArtist: artist, tracks, selectedAlbum: null, selectionOrigin: origin })
   },
 
   // Clear selection
   clearSelection: async () => {
-    set({ selectedAlbum: null, selectedArtist: null })
+    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null })
     await get().loadTracks()
   },
 

@@ -49,6 +49,9 @@ export default function HomeView() {
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const recentlyPlayed = useLibraryStore((s) => s.recentlyPlayed as HomeTrack[])
   const favoriteTracks = useLibraryStore((s) => s.favoriteTracks as HomeTrack[])
+  const setLibraryViewMode = useLibraryStore((s) => s.setViewMode)
+  const selectAlbum = useLibraryStore((s) => s.selectAlbum)
+  const selectArtist = useLibraryStore((s) => s.selectArtist)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
   const { loadTrack, play, setQueue } = usePlayerStore()
@@ -120,6 +123,18 @@ export default function HomeView() {
   const handleOpenPlaylist = async (playlistId: number) => {
     await selectPlaylist(playlistId)
     setActiveView('playlist')
+  }
+
+  const handleOpenArtist = async (artistName: string) => {
+    setLibraryViewMode('artists')
+    await selectArtist(artistName, 'home')
+    setActiveView('library')
+  }
+
+  const handleOpenAlbum = async (album: HomeAlbum) => {
+    setLibraryViewMode('albums')
+    await selectAlbum(album.album, album.artist, 'home')
+    setActiveView('library')
   }
 
   if (tracks.length === 0 && albums.length === 0 && artists.length === 0) {
@@ -219,7 +234,11 @@ export default function HomeView() {
           {artistPreview.length > 0 ? (
             <div className="home-artist-row">
               {artistPreview.map((artist) => (
-                <div key={artist.artist} className="home-artist-chip">
+                <div
+                  key={artist.artist}
+                  className="home-artist-chip"
+                  onClick={() => handleOpenArtist(artist.artist)}
+                >
                   <div className="home-artist-avatar">{artistInitial(artist.artist)}</div>
                   <div className="home-artist-name">{artist.artist}</div>
                   <div className="home-artist-count">{artist.track_count} tracks</div>
@@ -238,7 +257,11 @@ export default function HomeView() {
           {albumPreview.length > 0 ? (
             <div className="home-album-grid">
               {albumPreview.map((album) => (
-                <article key={`${album.album}-${album.artist}`} className="home-album-card">
+                <article
+                  key={`${album.album}-${album.artist}`}
+                  className="home-album-card"
+                  onClick={() => handleOpenAlbum(album)}
+                >
                   <div className="home-album-artwork">
                     {album.artwork_hash ? (
                       <AlbumArtwork hash={album.artwork_hash} alt={album.album} />

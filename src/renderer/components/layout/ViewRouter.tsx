@@ -20,6 +20,6 @@ export default function ViewRouter() {
     case 'playlist':
       return <PlaylistView />
     default:
-      return <LibraryView />
+      return <HomeView />
   }
 }
