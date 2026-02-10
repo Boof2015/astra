@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
+import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import { EQBand } from '../../types/audio'
 import EQFrequencyResponse from './EQFrequencyResponse'
@@ -73,7 +74,6 @@ export default function EQPanel() {
     updateBand,
     applyPreset,
     resetEQ,
-    setShowEQPanel,
     saveCustomPreset,
     deleteCustomPreset,
     exportPreset,
@@ -284,7 +284,7 @@ export default function EQPanel() {
 
           <button
             className="eq-close-btn"
-            onClick={() => setShowEQPanel(false)}
+            onClick={() => useUIStore.getState().setActiveView('library')}
             title="Close EQ"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">

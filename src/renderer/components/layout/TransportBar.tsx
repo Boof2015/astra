@@ -1,0 +1,325 @@
+import { useEffect, useState, useRef, useCallback } from 'react'
+import { usePlayerStore } from '../../stores/playerStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useEQStore } from '../../stores/eqStore'
+import AlbumArtwork from '../library/AlbumArtwork'
+import WaveformSeekBar from '../player/WaveformSeekBar'
+import EQPopover from '../eq/EQPopover'
+
+export default function TransportBar() {
+  const {
+    currentTrack,
+    playbackState,
+    currentTime,
+    duration,
+    volume,
+    isMuted,
+    queue,
+    togglePlay,
+    seek,
+    setVolume,
+    toggleMute,
+    shuffle,
+    repeat,
+    playNext,
+    playPrevious,
+    toggleShuffle,
+    toggleRepeat,
+    waveformData,
+  } = usePlayerStore()
+
+  const { showQueue, toggleQueue, showInfoSidebar, toggleInfoSidebar, setFullscreen } = useUIStore()
+  const eqEnabled = useEQStore((s) => s.enabled)
+
+  const [showEQPopover, setShowEQPopover] = useState(false)
+
+  // Marquee scroll for long titles
+  const titleOuterRef = useRef<HTMLDivElement>(null)
+  const titleInnerRef = useRef<HTMLSpanElement>(null)
+  const [titleOverflows, setTitleOverflows] = useState(false)
+
+  const checkTitleOverflow = useCallback(() => {
+    const outer = titleOuterRef.current
+    const inner = titleInnerRef.current
+    if (!outer || !inner) return
+    const overflows = inner.scrollWidth > outer.clientWidth
+    setTitleOverflows(overflows)
+    if (overflows) {
+      outer.style.setProperty('--marquee-offset', `${outer.clientWidth - inner.scrollWidth}px`)
+    }
+  }, [])
+
+  useEffect(() => {
+    checkTitleOverflow()
+  }, [currentTrack, checkTitleOverflow])
+
+  useEffect(() => {
+    const outer = titleOuterRef.current
+    if (!outer) return
+    const ro = new ResizeObserver(checkTitleOverflow)
+    ro.observe(outer)
+    return () => ro.disconnect()
+  }, [checkTitleOverflow])
+
+  const formatTime = (seconds: number): string => {
+    if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const getPercentFromClientX = (clientX: number, element: HTMLDivElement): number => {
+    const rect = element.getBoundingClientRect()
+    if (rect.width <= 0) return 0
+    const percent = (clientX - rect.left) / rect.width
+    return Math.max(0, Math.min(1, percent))
+  }
+
+  const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
+  }
+
+  const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
+  }
+
+  const releaseVolumePointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+  }
+
+  const isPlaying = playbackState === 'playing'
+  const isLoadingTrack = playbackState === 'loading'
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  const remaining = duration > 0 ? duration - currentTime : 0
+
+  return (
+    <div className="transport-bar">
+      {/* Left: Track info */}
+      <div className="transport-info">
+        <div className="transport-artwork" onClick={() => setFullscreen(true)}>
+          {currentTrack?.artworkHash ? (
+            <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+          ) : currentTrack?.artworkData ? (
+            <img src={currentTrack.artworkData} alt="Album art" />
+          ) : (
+            <div className="artwork-placeholder">&#9835;</div>
+          )}
+          <div className="transport-artwork-overlay">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+            </svg>
+          </div>
+        </div>
+        <div className="transport-text">
+          <div
+            ref={titleOuterRef}
+            className={`now-playing-title${titleOverflows ? ' marquee-active' : ''}`}
+          >
+            <span ref={titleInnerRef} className="now-playing-title-inner">
+              {currentTrack?.title ?? 'No track playing'}
+            </span>
+          </div>
+          <div className="now-playing-artist">
+            {currentTrack?.artist ?? '\u2014'}
+          </div>
+        </div>
+        <button className="transport-fav-btn" title="Favorite">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* Center: Controls + Waveform + Volume — single row */}
+      <div className="transport-center">
+        <div className="transport-controls">
+          <button
+            className={`control-btn control-btn-shuffle ${shuffle ? 'active' : ''}`}
+            aria-label="Shuffle"
+            onClick={toggleShuffle}
+            title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/>
+            </svg>
+          </button>
+          <button
+            className="control-btn"
+            aria-label="Previous"
+            onClick={playPrevious}
+            disabled={queue.length === 0}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+            </svg>
+          </button>
+          <button
+            className="control-btn control-btn-play"
+            onClick={togglePlay}
+            disabled={!currentTrack || isLoadingTrack}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isLoadingTrack ? (
+              <div className="loading-spinner" />
+            ) : isPlaying ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            )}
+          </button>
+          <button
+            className="control-btn"
+            aria-label="Next"
+            onClick={playNext}
+            disabled={queue.length === 0}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+            </svg>
+          </button>
+          <button
+            className={`control-btn control-btn-repeat ${repeat !== 'none' ? 'active' : ''}`}
+            aria-label="Repeat"
+            onClick={toggleRepeat}
+            title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+          >
+            {repeat === 'one' ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+              </svg>
+            )}
+          </button>
+        </div>
+
+        {/* Waveform with floating time labels */}
+        <div className="transport-waveform-wrap">
+          <span className="waveform-time waveform-time-current">{formatTime(currentTime)}</span>
+          <span className="waveform-time waveform-time-remaining">-{formatTime(remaining)}</span>
+          <WaveformSeekBar
+            waveformData={waveformData}
+            progress={progress}
+            duration={duration}
+            currentTime={currentTime}
+            onSeek={(time) => void seek(time)}
+          />
+        </div>
+
+        {/* Volume */}
+        <div className="transport-volume">
+          <button
+            className="volume-btn"
+            onClick={toggleMute}
+            aria-label={isMuted ? 'Unmute' : 'Mute'}
+          >
+            {isMuted || volume === 0 ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+              </svg>
+            ) : volume < 0.5 ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 9v6h4l5 5V4l-5 5H7z"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+              </svg>
+            )}
+          </button>
+          <div
+            className="volume-slider"
+            onPointerDown={handleVolumePointerDown}
+            onPointerMove={handleVolumePointerMove}
+            onPointerUp={releaseVolumePointer}
+            onPointerCancel={releaseVolumePointer}
+            role="slider"
+            aria-valuenow={volume * 100}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="volume-fill"
+              style={{ width: `${isMuted ? 0 : volume * 100}%` }}
+            />
+          </div>
+          <span className="volume-label">{Math.round(isMuted ? 0 : volume * 100)}</span>
+        </div>
+      </div>
+
+      {/* Right: EQ + Queue/Info + File readout */}
+      <div className="transport-right">
+        {/* EQ toggle button with mini curve */}
+        <button
+          className={`transport-eq-btn ${showEQPopover ? 'active' : ''}`}
+          onClick={() => setShowEQPopover(!showEQPopover)}
+          title="Toggle equalizer"
+        >
+          <span className="transport-eq-label">EQ</span>
+          <svg className="transport-eq-curve" width="56" height="28" viewBox="0 0 80 30">
+            <line x1="0" y1="15" x2="80" y2="15" stroke="#444" strokeWidth="1" strokeDasharray="2 2" />
+            <path d="M0 15 C 10 15, 15 5, 25 5 S 35 15, 50 15 S 60 8, 70 8 S 78 15, 80 15" fill="none" stroke={eqEnabled ? '#38bdf8' : '#fff'} strokeWidth="1.5" />
+          </svg>
+        </button>
+
+        {/* Queue + Info stacked vertically */}
+        <div className="transport-qi-stack">
+          <button
+            className={`transport-qi-btn ${showQueue ? 'active' : ''}`}
+            onClick={toggleQueue}
+            title="Toggle queue"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+            </svg>
+          </button>
+          <button
+            className={`transport-qi-btn ${showInfoSidebar ? 'active' : ''}`}
+            onClick={toggleInfoSidebar}
+            title="Toggle track info"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* File info readout — 2x2 grid */}
+        <div className="transport-file-readout">
+          <div className="readout-cell">
+            <span className="readout-label">FMT</span>
+            <span className="readout-value">{currentTrack?.format?.toUpperCase() ?? '—'}</span>
+          </div>
+          <div className="readout-cell">
+            <span className="readout-label">BIT</span>
+            <span className="readout-value">{currentTrack?.bitDepth ?? '—'}</span>
+          </div>
+          <div className="readout-cell">
+            <span className="readout-label">KHZ</span>
+            <span className="readout-value">{currentTrack?.sampleRate ? (currentTrack.sampleRate / 1000).toFixed(1) : '—'}</span>
+          </div>
+          <div className="readout-cell">
+            <span className="readout-label">IO</span>
+            <span className="readout-value readout-value-dim">ASIO</span>
+          </div>
+        </div>
+      </div>
+
+      {/* EQ Popover */}
+      {showEQPopover && (
+        <EQPopover onClose={() => setShowEQPopover(false)} />
+      )}
+    </div>
+  )
+}

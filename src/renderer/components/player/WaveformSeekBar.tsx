@@ -84,8 +84,8 @@ export default function WaveformSeekBar({
 
     const playedX = (progress / 100) * width
     const centerY = height / 2
-    const playedColor = '#8b5cf6'
-    const unplayedColor = 'rgba(255, 255, 255, 0.15)'
+    const playedColor = '#0ea5e9'
+    const unplayedColor = 'rgba(255, 255, 255, 0.12)'
 
     if (!displayData || displayData.length === 0) {
       // Fallback: simple thin progress line
