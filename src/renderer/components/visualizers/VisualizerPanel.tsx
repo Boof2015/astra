@@ -6,24 +6,6 @@ interface VisualizerPanelProps {
   className?: string
 }
 
-const spectrumDbLabels = [
-  { value: '-20dB', top: '10%' },
-  { value: '-40dB', top: '35%' },
-  { value: '-60dB', top: '60%' },
-  { value: '-80dB', top: '85%' },
-]
-
-const spectrumFreqLabels = [
-  { value: '50', left: '12%' },
-  { value: '100', left: '28%' },
-  { value: '200', left: '42%' },
-  { value: '500', left: '52%' },
-  { value: '1k', left: '62%' },
-  { value: '2k', left: '72%' },
-  { value: '5k', left: '82%' },
-  { value: '10k', left: '92%' },
-]
-
 export default function VisualizerPanel({ className = '' }: VisualizerPanelProps) {
   // Refs for all three canvases
   const scopeCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -184,24 +166,6 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
           <div className="visualizer-caption-left">SPECTRUM</div>
           <div className="visualizer-caption-right">FFT {fftSize}</div>
           <canvas ref={spectrumCanvasRef} className="visualizer-canvas" />
-          {spectrumDbLabels.map((label) => (
-            <span
-              key={label.value}
-              className="visualizer-db-label"
-              style={{ top: label.top }}
-            >
-              {label.value}
-            </span>
-          ))}
-          {spectrumFreqLabels.map((label) => (
-            <span
-              key={label.value}
-              className="visualizer-freq-label"
-              style={{ left: label.left }}
-            >
-              {label.value}
-            </span>
-          ))}
         </div>
 
         <div className="visualizer-item visualizer-item-scope" ref={scopeContainerRef}>

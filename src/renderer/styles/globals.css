@@ -4200,7 +4200,11 @@ body::after {
 .visualizer-grid {
   flex: 1;
   min-height: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, 1.4fr)
+    minmax(96px, clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)));
   background: transparent;
   gap: 0;
 }
@@ -4215,19 +4219,6 @@ body::after {
 
 .visualizer-item:last-child {
   border-right: none;
-}
-
-.visualizer-item-spectrum {
-  flex: 1;
-}
-
-.visualizer-item-scope {
-  flex: 1.5;
-}
-
-.visualizer-item-vector {
-  flex: 1;
-  display: block;
 }
 
 .visualizer-vector-pane {
@@ -4255,25 +4246,6 @@ body::after {
 .visualizer-caption-right {
   right: 8px;
   color: rgba(255, 255, 255, 0.34);
-}
-
-.visualizer-db-label,
-.visualizer-freq-label {
-  position: absolute;
-  z-index: 4;
-  font-family: var(--font-mono);
-  font-size: 7px;
-  color: rgba(255, 255, 255, 0.3);
-  pointer-events: none;
-}
-
-.visualizer-db-label {
-  right: 3px;
-}
-
-.visualizer-freq-label {
-  bottom: 2px;
-  transform: translateX(-50%);
 }
 
 .transport-bar {
@@ -5660,10 +5632,6 @@ body::after {
 
   .analyzer-deck {
     height: 136px;
-  }
-
-  .visualizer-item-vector {
-    display: none;
   }
 
   .transport-info {
