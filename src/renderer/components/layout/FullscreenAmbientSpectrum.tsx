@@ -39,7 +39,7 @@ function colorWithAlpha(color: string, alpha: number): string {
 
 const MIN_FREQ = 20
 const MAX_FREQ = 20000
-const TILT_DB_PER_OCTAVE = 2.0
+const TILT_DB_PER_OCTAVE = 2.4
 const TILT_REFERENCE_HZ = 1000
 
 function frequencyAtX(x: number, width: number, minFrequency: number, maxFrequency: number): number {
@@ -160,7 +160,7 @@ export default function FullscreenAmbientSpectrum({
 
       // High temporal smoothing for calmer fullscreen ambient motion.
       for (let i = 0; i < binCount; i++) {
-        smoothedFrequencyData[i] = smoothedFrequencyData[i] * 0.88 + frequencyData[i] * 0.12
+        smoothedFrequencyData[i] = smoothedFrequencyData[i] * 0.92 + frequencyData[i] * 0.08
       }
 
       const sampleRate = audioEngine.getSampleRate()
