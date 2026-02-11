@@ -15,6 +15,10 @@ export interface AudioFileResult {
     duration?: number
     format?: string
     sampleRate?: number
+    channels?: number
+    codec?: string
+    codecProfile?: string
+    isAtmosJoc?: boolean
     artwork?: string  // Base64 data URL
   }
 }
@@ -37,6 +41,10 @@ export interface DbTrack {
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
+  channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
   added_at: number
   modified_at: number
 }
@@ -164,6 +172,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string) => ipcRenderer.invoke('audio:loadFile', filePath),
+  decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
 
   // Generic file dialogs & I/O
   showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
@@ -192,6 +201,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
       return () => ipcRenderer.removeListener('library:scanProgress', handler)
+    },
+    onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
+      ipcRenderer.on('library:audioMetadataBackfillComplete', handler)
+      return () => ipcRenderer.removeListener('library:audioMetadataBackfillComplete', handler)
     },
 
     // Favorites
@@ -237,6 +251,7 @@ declare global {
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string) => Promise<AudioFileResult | null>
+      decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
@@ -260,6 +275,7 @@ declare global {
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+        onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
 
         // Favorites
         getFavorites: () => Promise<DbTrack[]>

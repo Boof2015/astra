@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
-import { join, basename } from 'path'
-import { readFile, writeFile } from 'fs/promises'
+import { join, basename, extname } from 'path'
+import { readFile, writeFile, mkdtemp, rm, access } from 'fs/promises'
+import { tmpdir } from 'os'
+import { execFile, type ExecFileOptions } from 'child_process'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 
@@ -65,6 +67,20 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+
+  // Non-blocking metadata pass for older libraries missing extended audio metadata.
+  void library.backfillMissingChannelCounts()
+    .then(({ scanned, updated, errors }) => {
+      if (scanned > 0) {
+        console.log(`Audio metadata backfill: scanned=${scanned}, updated=${updated}, errors=${errors}`)
+      }
+      if (updated > 0) {
+        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+      }
+    })
+    .catch((err) => {
+      console.warn('Audio metadata backfill failed:', err)
+    })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -163,6 +179,11 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 // Load a specific audio file
 ipcMain.handle('audio:loadFile', async (_event, filePath: string) => {
   return loadAudioFile(filePath)
+})
+
+// Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
+ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
+  return decodeAudioWithFfmpeg(filePath)
 })
 
 // ============================================
@@ -400,20 +421,280 @@ ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, 
 // Helper functions
 // ============================================
 
+interface LoadedAudioMetadata {
+  title: string
+  artist: string
+  album: string
+  duration?: number
+  format: string
+  artwork?: string
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
+}
+
+interface FfprobeAudioMetadata {
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
+  hints: string[]
+}
+
+const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> = {
+  ffmpeg: undefined,
+  ffprobe: undefined
+}
+
+function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        ...options,
+        encoding: 'utf8',
+        windowsHide: true
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(stdout ?? '')
+      }
+    )
+  })
+}
+
+async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
+  const cached = binaryPathCache[binary]
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const isWindows = process.platform === 'win32'
+  const executable = `${binary}${isWindows ? '.exe' : ''}`
+  const systemCandidates = binary === 'ffmpeg'
+    ? (isWindows ? ['ffmpeg.exe', 'ffmpeg'] : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'])
+    : (isWindows ? ['ffprobe.exe', 'ffprobe'] : ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe'])
+
+  const staticModulePath = await resolveStaticModuleBinary(binary)
+  const candidateSet = new Set<string>([
+    ...(isDev ? [] : [
+      join(process.resourcesPath, executable),
+      join(process.resourcesPath, 'bin', executable)
+    ]),
+    ...(staticModulePath ? [staticModulePath] : []),
+    ...systemCandidates
+  ])
+  const candidates = Array.from(candidateSet).flatMap((candidate) => {
+    const unpacked = toAsarUnpackedPath(candidate)
+    return unpacked !== candidate ? [candidate, unpacked] : [candidate]
+  })
+
+  for (const candidate of candidates) {
+    if (looksLikePath(candidate)) {
+      try {
+        await access(candidate)
+      } catch {
+        continue
+      }
+    }
+    try {
+      await execFileAsync(candidate, ['-version'], { timeout: 4000, maxBuffer: 64 * 1024 })
+      binaryPathCache[binary] = candidate
+      return candidate
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  binaryPathCache[binary] = null
+  return null
+}
+
+async function resolveStaticModuleBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
+  try {
+    if (binary === 'ffmpeg') {
+      const module = await import('ffmpeg-static')
+      return typeof module.default === 'string' ? module.default : null
+    }
+
+    const module = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
+    const modulePath = module.path ?? module.default?.path
+    return typeof modulePath === 'string' ? modulePath : null
+  } catch {
+    return null
+  }
+}
+
+function toAsarUnpackedPath(candidate: string): string {
+  if (!candidate.includes('app.asar')) return candidate
+  return candidate.replace('app.asar', 'app.asar.unpacked')
+}
+
+function looksLikePath(candidate: string): boolean {
+  return candidate.includes('/') || candidate.includes('\\') || /^[a-zA-Z]:[\\/]/.test(candidate)
+}
+
+function toStringOrUndefined(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function toNumberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  return undefined
+}
+
+function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
+  const hints: string[] = []
+  const push = (value: unknown) => {
+    const text = toStringOrUndefined(value)
+    if (text) hints.push(text)
+  }
+
+  push(stream.codec_name)
+  push(stream.codec_long_name)
+  push(stream.profile)
+  push(stream.codec_tag_string)
+  push(stream.codec_tag)
+  push(stream.channel_layout)
+
+  const streamTags = stream.tags
+  if (streamTags && typeof streamTags === 'object') {
+    for (const tagValue of Object.values(streamTags)) {
+      push(tagValue)
+    }
+  }
+
+  const sideDataList = stream.side_data_list
+  if (Array.isArray(sideDataList)) {
+    for (const sideData of sideDataList) {
+      if (!sideData || typeof sideData !== 'object') continue
+      for (const sideDataValue of Object.values(sideData)) {
+        push(sideDataValue)
+      }
+    }
+  }
+
+  if (format && typeof format === 'object') {
+    push(format.format_name)
+    push(format.format_long_name)
+    const formatTags = format.tags
+    if (formatTags && typeof formatTags === 'object') {
+      for (const tagValue of Object.values(formatTags)) {
+        push(tagValue)
+      }
+    }
+  }
+
+  return hints
+}
+
+function shouldProbeWithFfprobe(filePath: string, metadata: LoadedAudioMetadata): boolean {
+  const ext = extname(filePath).toLowerCase()
+  if (ext === '.m4a' || ext === '.mp4' || ext === '.m4b' || ext === '.m4p' || ext === '.aac') {
+    return true
+  }
+
+  return !metadata.channels || !metadata.codec || !metadata.codecProfile
+}
+
+async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeAudioMetadata | null> {
+  const ffprobePath = await resolveBinary('ffprobe')
+  if (!ffprobePath) return null
+
+  try {
+    const stdout = await execFileAsync(
+      ffprobePath,
+      [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_streams',
+        '-show_format',
+        '-select_streams', 'a:0',
+        filePath
+      ],
+      { timeout: 10000, maxBuffer: 1024 * 1024 }
+    )
+    const parsed = JSON.parse(stdout) as { streams?: Array<Record<string, unknown>>; format?: Record<string, unknown> }
+    const stream = parsed.streams?.[0]
+    if (!stream) return null
+
+    const codecName = toStringOrUndefined(stream.codec_name)
+    const codecLongName = toStringOrUndefined(stream.codec_long_name)
+    const codecProfile = toStringOrUndefined(stream.profile)
+    const channels = toNumberOrUndefined(stream.channels)
+    const hints = collectFfprobeHints(stream, parsed.format)
+
+    return {
+      channels,
+      codec: codecName ?? codecLongName,
+      codecProfile,
+      isAtmosJoc: isAtmosJocStream(codecName ?? codecLongName, codecProfile, hints),
+      hints
+    }
+  } catch (error) {
+    console.warn(`ffprobe metadata probe failed for ${filePath}:`, error)
+    return null
+  }
+}
+
+async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | null> {
+  const ffmpegPath = await resolveBinary('ffmpeg')
+  if (!ffmpegPath) return null
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'astra-ffmpeg-'))
+  const outputPath = join(tempDir, 'decoded.wav')
+
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      [
+        '-v', 'error',
+        '-y',
+        '-i', filePath,
+        '-map', '0:a:0',
+        '-vn',
+        '-c:a', 'pcm_s16le',
+        '-f', 'wav',
+        outputPath
+      ],
+      { timeout: 60000, maxBuffer: 4 * 1024 * 1024 }
+    )
+
+    const decoded = await readFile(outputPath)
+    return decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength)
+  } catch (error) {
+    console.warn(`FFmpeg compatibility decode failed for ${filePath}:`, error)
+    return null
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
 async function loadAudioFile(filePath: string) {
   try {
     // Read file as buffer
     const buffer = await readFile(filePath)
     const name = basename(filePath)
+    const fallbackTitle = name.replace(/\.[^.]+$/, '')
+    const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
 
-    // Extract metadata using music-metadata
-    let metadata: {
-      title: string
-      artist: string
-      album: string
-      duration?: number
-      format: string
-      artwork?: string
+    // Extract metadata using music-metadata with ffprobe enrichment fallback.
+    let metadata: LoadedAudioMetadata = {
+      title: fallbackTitle,
+      artist: 'Unknown Artist',
+      album: 'Unknown Album',
+      format
     }
 
     try {
@@ -424,25 +705,37 @@ async function loadAudioFile(filePath: string) {
       let artworkDataUrl: string | undefined
       if (common.picture && common.picture.length > 0) {
         const pic = common.picture[0]
-        const base64 = pic.data.toString('base64')
+        const base64 = Buffer.from(pic.data).toString('base64')
         artworkDataUrl = `data:${pic.format};base64,${base64}`
       }
 
       metadata = {
-        title: common.title || name.replace(/\.[^.]+$/, ''),
+        title: common.title || fallbackTitle,
         artist: common.artist || 'Unknown Artist',
         album: common.album || 'Unknown Album',
         duration: mm_metadata.format.duration,
-        format: filePath.split('.').pop()?.toLowerCase() ?? 'unknown',
-        artwork: artworkDataUrl
+        format,
+        artwork: artworkDataUrl,
+        channels: mm_metadata.format.numberOfChannels,
+        codec: mm_metadata.format.codec,
+        codecProfile: mm_metadata.format.codecProfile,
+        isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile)
       }
     } catch {
-      // Fallback to basic metadata
-      metadata = {
-        title: name.replace(/\.[^.]+$/, ''),
-        artist: 'Unknown Artist',
-        album: 'Unknown Album',
-        format: filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+      // Keep default metadata when parser fails.
+    }
+
+    if (shouldProbeWithFfprobe(filePath, metadata)) {
+      const ffprobeMetadata = await probeAudioMetadataWithFfprobe(filePath)
+      if (ffprobeMetadata) {
+        metadata.channels = ffprobeMetadata.channels ?? metadata.channels
+        metadata.codec = ffprobeMetadata.codec ?? metadata.codec
+        metadata.codecProfile = ffprobeMetadata.codecProfile ?? metadata.codecProfile
+        metadata.isAtmosJoc = Boolean(
+          metadata.isAtmosJoc ||
+          ffprobeMetadata.isAtmosJoc ||
+          isAtmosJocStream(metadata.codec, metadata.codecProfile, ffprobeMetadata.hints)
+        )
       }
     }
 
@@ -456,4 +749,24 @@ async function loadAudioFile(filePath: string) {
     console.error('Failed to load audio file:', error)
     return null
   }
+}
+
+function isAtmosJocStream(codec?: string, codecProfile?: string, hints: string[] = []): boolean {
+  const codecText = (codec ?? '').toLowerCase()
+  const profileText = (codecProfile ?? '').toLowerCase()
+  const hintText = hints.join(' ').toLowerCase()
+  const combined = `${codecText} ${profileText} ${hintText}`
+  const mentionsAtmos = combined.includes('joc') || combined.includes('atmos')
+  const isEc3Family =
+    combined.includes('ec-3') ||
+    combined.includes('eac3') ||
+    combined.includes('ec3') ||
+    combined.includes('e-ac-3') ||
+    combined.includes('dolby digital plus') ||
+    combined.includes('dd+')
+
+  // JOC indicates Atmos in E-AC-3-based streams.
+  if (combined.includes('joc')) return true
+
+  return mentionsAtmos && isEc3Family
 }

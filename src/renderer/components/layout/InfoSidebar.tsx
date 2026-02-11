@@ -84,6 +84,18 @@ export default function InfoSidebar() {
                 <div className="info-tech-value">{currentTrack.bitrate} kbps</div>
               </div>
             )}
+            {currentTrack.channels && (
+              <div className="info-tech-item">
+                <div className="info-tech-label">Channels</div>
+                <div className="info-tech-value">{currentTrack.channels}</div>
+              </div>
+            )}
+            {currentTrack.isAtmosJoc && (
+              <div className="info-tech-item info-tech-item-warning">
+                <div className="info-tech-label">Atmos Source</div>
+                <div className="info-tech-value">Compatibility mode. Object rendering and mix quality are not guaranteed.</div>
+              </div>
+            )}
           </div>
 
           <div className="info-sidebar-path">

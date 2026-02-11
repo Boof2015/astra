@@ -17,6 +17,7 @@ interface HomeTrack {
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
+  channels: number | null
 }
 
 interface HomeAlbum {
@@ -84,10 +85,16 @@ export default function HomeView() {
         artworkHash: track.artwork_hash ?? undefined,
         sampleRate: track.sample_rate ?? undefined,
         bitDepth: track.bit_depth ?? undefined,
-        bitrate: track.bitrate ?? undefined
+        bitrate: track.bitrate ?? undefined,
+        channels: result.metadata?.channels ?? track.channels ?? undefined,
+        codec: result.metadata?.codec,
+        codecProfile: result.metadata?.codecProfile,
+        isAtmosJoc: result.metadata?.isAtmosJoc
       }
-      await loadTrack(t, result.data)
-      await play()
+      const loaded = await loadTrack(t, result.data)
+      if (loaded) {
+        await play()
+      }
     }
   }
 
@@ -104,7 +111,8 @@ export default function HomeView() {
       artworkHash: t.artwork_hash ?? undefined,
       sampleRate: t.sample_rate ?? undefined,
       bitDepth: t.bit_depth ?? undefined,
-      bitrate: t.bitrate ?? undefined
+      bitrate: t.bitrate ?? undefined,
+      channels: t.channels ?? undefined
     }))
     setQueue(queueTracks, index)
     await handlePlayTrack(track)

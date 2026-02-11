@@ -103,6 +103,10 @@ export default function TransportBar() {
   const isLoadingTrack = playbackState === 'loading'
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
   const remaining = duration > 0 ? duration - currentTime : 0
+  const resolvedChannelCount = currentTrack?.channels ?? null
+  const isMultichannel = (resolvedChannelCount ?? 0) > 2
+  const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+  const showAtmosBadge = Boolean(currentTrack?.isAtmosJoc || currentCodecProfile.includes('atmos'))
   const normalizationReadout = (() => {
     if (!currentTrack) {
       return { value: '\u2014', dim: true }
@@ -145,8 +149,30 @@ export default function TransportBar() {
               {currentTrack?.title ?? 'No track playing'}
             </span>
           </div>
-          <div className="now-playing-artist">
-            {currentTrack?.artist ?? '\u2014'}
+          <div className="transport-subline">
+            <div className="now-playing-artist">
+              {currentTrack?.artist ?? '\u2014'}
+            </div>
+            {(showAtmosBadge || isMultichannel) && (
+              <div className="transport-audio-badges">
+              {showAtmosBadge && (
+                  <span
+                    className="transport-audio-badge transport-audio-badge-atmos"
+                    title="Atmos metadata detected"
+                  >
+                    ATM
+                  </span>
+                )}
+                {isMultichannel && (
+                  <span
+                    className="transport-audio-badge transport-audio-badge-ch"
+                    title={`${resolvedChannelCount} channels`}
+                  >
+                    <span>{resolvedChannelCount}CH</span>
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <button

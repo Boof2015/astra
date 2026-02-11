@@ -8,15 +8,16 @@ type EventCallback = (...args: unknown[]) => void
  * Supports gapless playback through pre-buffering and sample-accurate scheduling.
  *
  * Audio Graph:
- * Source -> NormalizationGain -> AudioWorklet (analysis tap) -> GainNode (volume) -> Destination
- *                                      |
- *                                      +-> Feeds native C++ visualizers continuously
+ * Playback: Source -> [optional remap matrix] -> NormalizationGain -> Preamp/EQ -> GainNode (volume) -> Destination
+ * Analysis tap: Source -> AnalysisNormalizationGain -> AudioWorklet -> Silent sink (for pull)
  */
 export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
   private normalizationGainNode: GainNode | null = null
+  private analysisNormalizationGainNode: GainNode | null = null
+  private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
 
@@ -56,6 +57,12 @@ export class AudioEngine {
 
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
+  private multichannelEnabled: boolean = false
+  private manualChannelRoutingMap: number[] | null = null
+  private sourceRoutingNodes: WeakMap<AudioBufferSourceNode, {
+    splitter: ChannelSplitterNode
+    merger: ChannelMergerNode
+  }> = new WeakMap()
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -85,6 +92,191 @@ export class AudioEngine {
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
+  private getMaxDestinationChannelCount(): number {
+    return Math.max(1, Math.min(32, this.context?.destination.maxChannelCount ?? 2))
+  }
+
+  private getRoutingOutputChannelCount(sourceChannels?: number): number {
+    const maxChannels = this.getMaxDestinationChannelCount()
+    if (!this.multichannelEnabled) {
+      return Math.max(1, Math.min(maxChannels, 2))
+    }
+
+    const manualMapChannelCount = this.manualChannelRoutingMap?.length ?? 0
+
+    if (manualMapChannelCount > 0) {
+      return Math.max(1, Math.min(maxChannels, manualMapChannelCount))
+    }
+
+    const preferred = sourceChannels && sourceChannels > 0
+      ? sourceChannels
+      : this.audioBuffer?.numberOfChannels ?? 2
+
+    return Math.max(1, Math.min(maxChannels, preferred))
+  }
+
+  private applyNodeRoutingMode(
+    node: AudioNode | AudioDestinationNode | null,
+    channelCount: number,
+    mode: ChannelCountMode,
+    interpretation: ChannelInterpretation
+  ): void {
+    if (!node) return
+
+    const channelNode = node as AudioNode & {
+      channelCount: number
+      channelCountMode: ChannelCountMode
+      channelInterpretation: ChannelInterpretation
+    }
+
+    try {
+      channelNode.channelCountMode = mode
+    } catch {
+      // Some nodes may not allow this property to be set.
+    }
+
+    try {
+      channelNode.channelInterpretation = interpretation
+    } catch {
+      // Some nodes may not allow this property to be set.
+    }
+
+    try {
+      channelNode.channelCount = channelCount
+    } catch {
+      // Some nodes may not allow this property to be set.
+    }
+  }
+
+  private applyChannelRoutingPreferences(preferredChannels?: number): void {
+    if (!this.context) return
+
+    const routingChannels = this.getRoutingOutputChannelCount(preferredChannels)
+    const useDiscreteRouting = routingChannels > 2
+    const mode: ChannelCountMode = useDiscreteRouting ? 'explicit' : 'max'
+    const interpretation: ChannelInterpretation = useDiscreteRouting ? 'discrete' : 'speakers'
+
+    const nodes: Array<AudioNode | AudioDestinationNode | null> = [
+      this.context.destination,
+      this.normalizationGainNode,
+      this.preampNode,
+      this.eqAnalyserNode,
+      this.gainNode
+    ]
+
+    for (const node of nodes) {
+      this.applyNodeRoutingMode(node, routingChannels, mode, interpretation)
+    }
+  }
+
+  private getEffectiveChannelMap(sourceChannels: number, outputChannels: number): Array<number | null> {
+    return Array.from({ length: outputChannels }, (_, outputIndex) => {
+      const manualSourceIndex = this.manualChannelRoutingMap?.[outputIndex]
+      if (typeof manualSourceIndex === 'number' && Number.isInteger(manualSourceIndex)) {
+        if (manualSourceIndex === -1) return null
+        if (manualSourceIndex >= 0 && manualSourceIndex < sourceChannels) return manualSourceIndex
+      }
+
+      return outputIndex < sourceChannels ? outputIndex : null
+    })
+  }
+
+  private connectSourceWithRouting(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+    if (!this.context || !this.normalizationGainNode) return
+
+    this.applyChannelRoutingPreferences(sourceChannels)
+
+    const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
+    const shouldUseRoutingMatrix = Boolean(
+      this.multichannelEnabled &&
+      this.manualChannelRoutingMap &&
+      this.manualChannelRoutingMap.length > 0
+    )
+
+    if (!shouldUseRoutingMatrix) {
+      sourceNode.connect(this.normalizationGainNode)
+      return
+    }
+
+    const splitter = this.context.createChannelSplitter(Math.max(1, sourceChannels))
+    const merger = this.context.createChannelMerger(Math.max(1, outputChannels))
+    this.applyNodeRoutingMode(splitter, sourceChannels, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(
+      merger,
+      outputChannels,
+      outputChannels > 2 ? 'explicit' : 'max',
+      outputChannels > 2 ? 'discrete' : 'speakers'
+    )
+
+    sourceNode.connect(splitter)
+
+    const channelMap = this.getEffectiveChannelMap(sourceChannels, outputChannels)
+    for (let outputIndex = 0; outputIndex < outputChannels; outputIndex++) {
+      const sourceIndex = channelMap[outputIndex]
+      if (sourceIndex === null) continue
+      splitter.connect(merger, sourceIndex, outputIndex)
+    }
+
+    merger.connect(this.normalizationGainNode)
+    this.sourceRoutingNodes.set(sourceNode, { splitter, merger })
+  }
+
+  private connectSourceToAnalysisTap(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+    if (!this.analysisNormalizationGainNode) return
+
+    this.applyNodeRoutingMode(
+      this.analysisNormalizationGainNode,
+      Math.max(1, sourceChannels),
+      sourceChannels > 2 ? 'explicit' : 'max',
+      sourceChannels > 2 ? 'discrete' : 'speakers'
+    )
+
+    sourceNode.connect(this.analysisNormalizationGainNode)
+  }
+
+  private disconnectSourceRouting(sourceNode: AudioBufferSourceNode | null): void {
+    if (!sourceNode) return
+
+    const routingNodes = this.sourceRoutingNodes.get(sourceNode)
+    if (!routingNodes) return
+
+    try { routingNodes.splitter.disconnect() } catch { /* ignore */ }
+    try { routingNodes.merger.disconnect() } catch { /* ignore */ }
+    this.sourceRoutingNodes.delete(sourceNode)
+  }
+
+  async setChannelRoutingMap(map: number[] | null): Promise<void> {
+    await this.initContext()
+
+    const normalized = map && map.length > 0
+      ? map
+        .map((value) => {
+          if (!Number.isFinite(value)) return -1
+          const rounded = Math.trunc(value)
+          return rounded >= -1 ? rounded : -1
+        })
+        .slice(0, this.getMaxDestinationChannelCount())
+      : null
+
+    this.manualChannelRoutingMap = normalized
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.multichannelEnabled && this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  async setMultichannelEnabled(enabled: boolean): Promise<void> {
+    await this.initContext()
+
+    this.multichannelEnabled = enabled
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
   private async initContext(): Promise<void> {
     if (!this.context) {
       this.context = new AudioContext()
@@ -96,6 +288,8 @@ export class AudioEngine {
       // Normalization gain node (applied before volume)
       this.normalizationGainNode = this.context.createGain()
       this.normalizationGainNode.gain.value = 1.0
+      this.analysisNormalizationGainNode = this.context.createGain()
+      this.analysisNormalizationGainNode.gain.value = 1.0
 
       // Preamp node (after metering worklet, before EQ filters)
       this.preampNode = this.context.createGain()
@@ -165,18 +359,24 @@ export class AudioEngine {
       }
 
       // Connect main signal path:
-      // normalization -> worklet -> preamp -> [eq filters] -> gain -> destination
-      if (this.workletNode) {
-        this.normalizationGainNode.connect(this.workletNode)
-        this.workletNode.connect(this.preampNode)
-      } else {
-        // Fallback if worklet failed to load
-        this.normalizationGainNode.connect(this.preampNode)
-      }
+      // playback: normalization -> preamp -> [eq filters] -> gain -> destination
+      this.normalizationGainNode.connect(this.preampNode)
       // Initially preamp connects through analyser to gain (no EQ bands yet)
       this.preampNode.connect(this.eqAnalyserNode)
       this.eqAnalyserNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
+
+      // analysis: normalization tap -> worklet -> silent sink so the worklet stays pulled.
+      if (this.workletNode && this.analysisNormalizationGainNode) {
+        this.analysisTapSinkNode = this.context.createGain()
+        this.analysisTapSinkNode.gain.value = 0
+        this.analysisNormalizationGainNode.connect(this.workletNode)
+        this.workletNode.connect(this.analysisTapSinkNode)
+        this.analysisTapSinkNode.connect(this.context.destination)
+      }
+
+      // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
+      this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
     }
   }
 
@@ -208,7 +408,7 @@ export class AudioEngine {
    * Apply normalization gain based on buffer loudness
    */
   private applyNormalization(buffer: AudioBuffer): void {
-    if (!this.normalizationGainNode) return
+    if (!this.normalizationGainNode || !this.analysisNormalizationGainNode) return
 
     const currentDb = this.calculateLoudness(buffer)
     const gainDb = this._targetLufs - currentDb
@@ -224,6 +424,7 @@ export class AudioEngine {
 
     this._normalizationGainDb = clampedGainDb
     this.normalizationGainNode.gain.value = linearGain
+    this.analysisNormalizationGainNode.gain.value = linearGain
   }
 
   // Normalization settings
@@ -237,6 +438,9 @@ export class AudioEngine {
       this._normalizationGainDb = 0
       if (this.normalizationGainNode) {
         this.normalizationGainNode.gain.value = 1.0
+      }
+      if (this.analysisNormalizationGainNode) {
+        this.analysisNormalizationGainNode.gain.value = 1.0
       }
     } else if (enabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
@@ -301,6 +505,10 @@ export class AudioEngine {
     return this.audioBuffer
   }
 
+  getCurrentTrackChannelCount(): number | null {
+    return this.audioBuffer?.numberOfChannels ?? null
+  }
+
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
     return this.context?.sampleRate ?? 48000
@@ -311,11 +519,24 @@ export class AudioEngine {
     return this.eqAnalyserNode
   }
 
+  getOutputMaxChannelCount(): number | null {
+    return this.context?.destination.maxChannelCount ?? null
+  }
+
   // Audio output device selection
   async setOutputDevice(deviceId: string): Promise<void> {
+    await this.initContext()
     if (this.context && 'setSinkId' in this.context) {
       await (this.context as AudioContext & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
+      this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+      if (this._playbackState === 'playing' && this.audioBuffer) {
+        await this.seek(this.currentTime)
+      }
     }
+  }
+
+  async ensureContextReady(): Promise<void> {
+    await this.initContext()
   }
 
   // Check if audio context is initialized and ready
@@ -377,9 +598,13 @@ export class AudioEngine {
       // Stop any current playback
       this.stopSource()
       this.clearNextBuffer()
+      // Clear current decoded buffer so failed decode cannot replay stale audio.
+      this.audioBuffer = null
+      this.pauseTime = 0
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+      this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
       // Notify visualizers of track change (reset their state for fresh pitch detection)
       this.notifyTrackChange()
@@ -389,6 +614,9 @@ export class AudioEngine {
         this.applyNormalization(this.audioBuffer)
       } else {
         this.normalizationGainNode!.gain.value = 1.0
+        if (this.analysisNormalizationGainNode) {
+          this.analysisNormalizationGainNode.gain.value = 1.0
+        }
         this._normalizationGainDb = 0
       }
 
@@ -398,8 +626,11 @@ export class AudioEngine {
       this.emit('durationChange', this.audioBuffer.duration)
       this.emit('bufferReady', this.audioBuffer)
     } catch (err) {
+      this.audioBuffer = null
+      this.pauseTime = 0
       this._playbackState = 'stopped'
       this.emit('stateChange', this._playbackState)
+      this.emit('durationChange', 0)
       this.emit('error', err instanceof Error ? err : new Error('Failed to decode audio'))
       throw err
     }
@@ -441,7 +672,8 @@ export class AudioEngine {
     // Create and schedule the next source
     this.nextSourceNode = this.context.createBufferSource()
     this.nextSourceNode.buffer = this.nextBuffer
-    this.nextSourceNode.connect(this.normalizationGainNode!)
+    this.connectSourceWithRouting(this.nextSourceNode, this.nextBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(this.nextSourceNode, this.nextBuffer.numberOfChannels)
 
     // Schedule to start exactly when current track ends
     this.nextSourceNode.start(this.scheduledEndTime)
@@ -480,6 +712,7 @@ export class AudioEngine {
     // Swap source nodes
     if (this.sourceNode) {
       this.sourceNode.onended = null
+      this.disconnectSourceRouting(this.sourceNode)
       try {
         this.sourceNode.disconnect()
       } catch { /* ignore */ }
@@ -490,6 +723,7 @@ export class AudioEngine {
     // Update timing
     this.startTime = this.scheduledEndTime
     this.pauseTime = 0
+    this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
     // Set up ended handler for the new current track
     this.sourceNode.onended = () => {
@@ -520,6 +754,7 @@ export class AudioEngine {
     if (this.nextSourceNode) {
       try {
         this.nextSourceNode.onended = null
+        this.disconnectSourceRouting(this.nextSourceNode)
         this.nextSourceNode.stop()
         this.nextSourceNode.disconnect()
       } catch { /* ignore */ }
@@ -546,7 +781,8 @@ export class AudioEngine {
     // Create new source
     this.sourceNode = this.context.createBufferSource()
     this.sourceNode.buffer = this.audioBuffer
-    this.sourceNode.connect(this.normalizationGainNode!)
+    this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
     // Handle track end
     this.sourceNode.onended = () => {
@@ -619,7 +855,8 @@ export class AudioEngine {
       // Directly create new source and start (bypass play() state check)
       this.sourceNode = this.context.createBufferSource()
       this.sourceNode.buffer = this.audioBuffer
-      this.sourceNode.connect(this.normalizationGainNode!)
+      this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+      this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
       this.sourceNode.onended = () => {
         if (this._playbackState === 'playing') {
@@ -756,6 +993,7 @@ export class AudioEngine {
       try {
         this.sourceNode.onended = null
         this.sourceNode.stop()
+        this.disconnectSourceRouting(this.sourceNode)
         this.sourceNode.disconnect()
       } catch {
         // Ignore errors from already stopped source
@@ -803,6 +1041,10 @@ export class AudioEngine {
       this.workletNode.disconnect()
       this.workletNode = null
     }
+    if (this.analysisTapSinkNode) {
+      try { this.analysisTapSinkNode.disconnect() } catch { /* ignore */ }
+      this.analysisTapSinkNode = null
+    }
 
     if (this.context) {
       this.context.close()
@@ -811,6 +1053,7 @@ export class AudioEngine {
 
     this.gainNode = null
     this.normalizationGainNode = null
+    this.analysisNormalizationGainNode = null
     this._normalizationGainDb = 0
     this.audioBuffer = null
     this.eventListeners.clear()

@@ -13,6 +13,12 @@ interface PlayerStore {
   volume: number
   isMuted: boolean
   waveformData: Float32Array | null
+  ffmpegFallbackNotice: {
+    id: number
+    trackPath: string
+    title: string
+    artist: string
+  } | null
 
   // Queue state
   queue: Track[]
@@ -23,7 +29,7 @@ interface PlayerStore {
   shufflePosition: number
 
   // Actions
-  loadTrack: (track: Track, audioData: ArrayBuffer) => Promise<void>
+  loadTrack: (track: Track, audioData: ArrayBuffer) => Promise<boolean>
   play: () => Promise<void>
   pause: () => void
   togglePlay: () => Promise<void>
@@ -46,6 +52,7 @@ interface PlayerStore {
   toggleRepeat: () => void
   getUpcomingTracks: () => Track[]
   getPreviousTracks: () => Track[]
+  clearFfmpegFallbackNotice: () => void
 
   // Internal
   _initListeners: () => void
@@ -62,6 +69,19 @@ const waveformCache = new Map<string, Float32Array>()
 export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
+  let ffmpegFallbackNoticeId = 0
+
+  const showFfmpegFallbackNotice = (track: Track) => {
+    ffmpegFallbackNoticeId += 1
+    set({
+      ffmpegFallbackNotice: {
+        id: ffmpegFallbackNoticeId,
+        trackPath: track.path,
+        title: track.title,
+        artist: track.artist
+      }
+    })
+  }
 
   return {
     // Initial state
@@ -72,6 +92,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     volume: 0.7,
     isMuted: false,
     waveformData: null,
+    ffmpegFallbackNotice: null,
 
     // Queue state
     queue: [],
@@ -91,17 +112,42 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({ currentTrack: track, playbackState: 'loading', waveformData: null })
 
       try {
-        await audioEngine.loadAudioData(audioData)
-        set({ duration: audioEngine.duration })
+        let usedFfmpegFallback = false
+        try {
+          await audioEngine.loadAudioData(audioData)
+        } catch (primaryDecodeError) {
+          const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+          if (!fallbackData) {
+            throw primaryDecodeError
+          }
+
+          usedFfmpegFallback = true
+          console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
+          await audioEngine.loadAudioData(fallbackData)
+        }
+        const detectedChannels = audioEngine.getCurrentTrackChannelCount()
+        const resolvedTrack: Track = {
+          ...track,
+          channels: detectedChannels ?? track.channels
+        }
+        set({
+          duration: audioEngine.duration,
+          currentTrack: resolvedTrack
+        })
+        if (usedFfmpegFallback) {
+          showFfmpegFallbackNotice(resolvedTrack)
+        }
 
         // Record recently played
         useLibraryStore.getState().recordPlay(track.path)
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
+        return true
       } catch (error) {
         console.error('Failed to load track:', error)
         set({ playbackState: 'stopped' })
+        return false
       }
     },
 
@@ -338,6 +384,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return queue.slice(0, queueIndex)
     },
 
+    clearFfmpegFallbackNotice: () => {
+      set({ ffmpegFallbackNotice: null })
+    },
+
     // Get the next index based on shuffle/repeat settings
     _getNextIndex: () => {
       const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
@@ -368,7 +418,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playNext: async () => {
-      const { shuffle, shuffledIndices, shufflePosition, repeat, queueIndex } = get()
+      const { shuffle, shuffledIndices, shufflePosition, repeat } = get()
       const nextIndex = get()._getNextIndex()
       if (nextIndex === -1) return
 
@@ -478,8 +528,38 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return
         }
 
-        await audioEngine.loadAudioData(result.data)
-        set({ duration: audioEngine.duration })
+        let usedFfmpegFallback = false
+        try {
+          await audioEngine.loadAudioData(result.data)
+        } catch (primaryDecodeError) {
+          const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+          if (!fallbackData) {
+            throw primaryDecodeError
+          }
+
+          usedFfmpegFallback = true
+          console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
+          await audioEngine.loadAudioData(fallbackData)
+        }
+        const detectedChannels = audioEngine.getCurrentTrackChannelCount()
+        const resolvedTrack: Track = {
+          ...track,
+          title: result.metadata?.title ?? track.title,
+          artist: result.metadata?.artist ?? track.artist,
+          album: result.metadata?.album ?? track.album,
+          duration: result.metadata?.duration ?? track.duration,
+          channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
+          codec: result.metadata?.codec ?? track.codec,
+          codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
+          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc
+        }
+        set({
+          duration: audioEngine.duration,
+          currentTrack: resolvedTrack
+        })
+        if (usedFfmpegFallback) {
+          showFfmpegFallbackNotice(resolvedTrack)
+        }
         await audioEngine.play()
 
         // Record recently played

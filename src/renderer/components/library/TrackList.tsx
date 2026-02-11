@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { Track } from '../../types/audio'
 import AlbumArtwork from './AlbumArtwork'
 
@@ -18,6 +19,10 @@ interface DbTrack {
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
+  channels: number | null
+  codec?: string | null
+  codec_profile?: string | null
+  is_atmos_joc?: number | null
 }
 
 interface TrackListProps {
@@ -39,12 +44,17 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     artworkHash: dbTrack.artwork_hash ?? undefined,
     sampleRate: dbTrack.sample_rate ?? undefined,
     bitDepth: dbTrack.bit_depth ?? undefined,
-    bitrate: dbTrack.bitrate ?? undefined
+    bitrate: dbTrack.bitrate ?? undefined,
+    channels: dbTrack.channels ?? undefined,
+    codec: dbTrack.codec ?? undefined,
+    codecProfile: dbTrack.codec_profile ?? undefined,
+    isAtmosJoc: dbTrack.is_atmos_joc === 1
   }
 }
 
 export default function TrackList({ tracks, showArtist = true, showAlbum = true }: TrackListProps) {
   const { currentTrack, playbackState, queue, queueIndex, loadTrack, play, setQueue, addToQueue, addToQueueNext } = usePlayerStore()
+  const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const { playlists, addToPlaylist } = usePlaylistStore()
@@ -120,10 +130,16 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
         artworkHash: dbTrack.artwork_hash ?? undefined,
         sampleRate: dbTrack.sample_rate ?? undefined,
         bitDepth: dbTrack.bit_depth ?? undefined,
-        bitrate: dbTrack.bitrate ?? undefined
+        bitrate: dbTrack.bitrate ?? undefined,
+        channels: result.metadata?.channels ?? dbTrack.channels ?? undefined,
+        codec: result.metadata?.codec,
+        codecProfile: result.metadata?.codecProfile,
+        isAtmosJoc: result.metadata?.isAtmosJoc
       }
-      await loadTrack(track, result.data)
-      await play()
+      const loaded = await loadTrack(track, result.data)
+      if (loaded) {
+        await play()
+      }
     }
   }
 
@@ -165,15 +181,43 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
         {tracks.map((track, index) => {
           const showPlayNextCheck = nextQueuedTrackPath === track.path || hasQueueActionFeedback('next', track.path)
           const showAddQueueCheck = queuedTrackPaths.has(track.path) || hasQueueActionFeedback('queue', track.path)
+          const isCurrent = isCurrentTrack(track)
+          const resolvedChannelCount = track.channels ?? (isCurrent ? currentTrack?.channels : undefined)
+          const isMultichannel = (resolvedChannelCount ?? 0) > 2
+          const rowCodecProfile = track.codec_profile?.toLowerCase() ?? ''
+          const rowIsAtmosJoc = Boolean(track.is_atmos_joc === 1 || rowCodecProfile.includes('atmos'))
+          const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+          const currentIsAtmosJoc = Boolean(
+            isCurrent && (
+              currentTrack?.isAtmosJoc ||
+              currentCodecProfile.includes('atmos')
+            )
+          )
+          const showAtmosBadge = Boolean(rowIsAtmosJoc || currentIsAtmosJoc)
+          const isDownmixingCurrentAtmos = Boolean(
+            currentIsAtmosJoc &&
+            selectedOutputChannelCount &&
+            currentTrack?.channels &&
+            selectedOutputChannelCount > 0 &&
+            selectedOutputChannelCount < currentTrack.channels
+          )
+          const atmosphereBadgeTitle = isDownmixingCurrentAtmos
+            ? `Atmos (EC-3/JOC) source is being downmixed to ${selectedOutputChannelCount} channels. Output quality can vary.`
+            : 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
+          const channelBadgeTitle = isDownmixingCurrentAtmos
+            ? `Atmos (EC-3/JOC) source is being downmixed to ${selectedOutputChannelCount} channels. Output quality can vary.`
+            : showAtmosBadge
+              ? 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
+              : `${resolvedChannelCount ?? 0} channels`
 
           return (
             <div
               key={track.id}
-              className={`track-row ${isCurrentTrack(track) ? 'track-row-active' : ''}`}
+              className={`track-row ${isCurrent ? 'track-row-active' : ''}`}
               onClick={() => handleTrackClick(track, index)}
             >
               <div className="track-col track-col-num">
-                {isCurrentTrack(track) && isPlaying ? (
+                {isCurrent && isPlaying ? (
                   <span className="track-playing-icon">&#9654;</span>
                 ) : (
                   <span className="track-number">{track.track_number ?? index + 1}</span>
@@ -185,6 +229,19 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
                     <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} />
                   </div>
                   <span className="track-title">{track.title}</span>
+                  {showAtmosBadge && (
+                    <span className="track-channel-badge track-channel-badge-atmos" title={atmosphereBadgeTitle}>
+                      <span>ATMOS</span>
+                    </span>
+                  )}
+                  {isMultichannel && (
+                    <span className="track-channel-badge" title={channelBadgeTitle}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
+                      </svg>
+                      <span>{resolvedChannelCount}CH</span>
+                    </span>
+                  )}
                 </div>
               </div>
               {showArtist && (

@@ -100,6 +100,10 @@ export default function FullscreenMode() {
   const isLoadingTrack = playbackState === 'loading'
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
   const currentTrackId = currentTrack?.id ?? null
+  const resolvedChannelCount = currentTrack?.channels ?? null
+  const isMultichannel = (resolvedChannelCount ?? 0) > 2
+  const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+  const showAtmosBadge = Boolean(currentTrack?.isAtmosJoc || currentCodecProfile.includes('atmos'))
   const remaining = duration > 0 ? Math.max(0, duration - currentTime) : 0
   const progress = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0
 
@@ -371,6 +375,23 @@ export default function FullscreenMode() {
               <h1 className="fullscreen-title">{currentTrack?.title ?? 'No track playing'}</h1>
               <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
               <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
+              {(showAtmosBadge || isMultichannel) && (
+                <div className="fullscreen-audio-badges">
+                  {showAtmosBadge && (
+                    <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
+                      ATMOS
+                    </span>
+                  )}
+                  {isMultichannel && (
+                    <span className="fullscreen-audio-badge fullscreen-audio-badge-ch">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
+                      </svg>
+                      <span>{resolvedChannelCount}CH</span>
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

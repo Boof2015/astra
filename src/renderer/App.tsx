@@ -7,6 +7,7 @@ import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
+import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -24,6 +25,10 @@ function App() {
   useEffect(() => {
     useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
+    const unsubscribe = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
+      void useLibraryStore.getState().loadLibrary()
+    })
+    return () => unsubscribe()
   }, [])
 
   return (
@@ -43,6 +48,7 @@ function App() {
         </div>
       </div>
       <TransportBar />
+      <DecodeFallbackCue />
       {isFullscreen && <FullscreenMode />}
     </div>
   )

@@ -35,6 +35,8 @@
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
     "music-metadata": "^11.10.6",
     "node-addon-api": "^8.5.0",
     "react": "^19.2.3",
@@ -64,6 +66,10 @@
     "directories": {
       "output": "dist"
     },
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
     "files": [
       "out/**/*",
       "native/build/Release/*.node"

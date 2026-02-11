@@ -46,6 +46,10 @@ export default function LibraryView() {
         duration: result.metadata?.duration ?? 0,
         format: result.metadata?.format ?? 'unknown',
         artworkData: result.metadata?.artwork,
+        channels: result.metadata?.channels,
+        codec: result.metadata?.codec,
+        codecProfile: result.metadata?.codecProfile,
+        isAtmosJoc: result.metadata?.isAtmosJoc,
       }
       await loadTrack(track, result.data)
     }

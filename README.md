@@ -14,18 +14,23 @@ An audiophile-grade desktop music player with real-time visualizers, a professio
 **Playback**
 - Gapless playback with pre-buffering
 - Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF
+- FFmpeg compatibility fallback decode when primary browser decode fails (for example, some EC-3/JOC M4A files)
+- Atmos (EC-3/JOC) metadata detection with compatibility FFmpeg decode into channel-based PCM (up to 5.1); not native Atmos object rendering/passthrough
 - Shuffle, repeat (one/all), and queue management with drag-and-drop
+- Track badges for Atmos and multichannel channel counts in library/now-playing/fullscreen views
 
 **Visualizers** (native C++ accelerated)
 - Oscilloscope with pitch-lock detection
 - Spectrum analyzer with configurable FFT
 - Vectorscope for stereo phase imaging
+- Analyzer path is tapped post-normalization and independent from output routing/remap, so scopes stay source-faithful
 
 **Equalizer**
 - Up to 10 bands (low shelf, peaking, high shelf)
 - Built-in presets: Bass Boost, Treble Boost, Vocal, Loudness
 - Preamp control (-12 to +12 dB)
 - Real-time frequency response graph with spectrum overlay
+- AutoEQ profile import support (`ParametricEQ.txt`) with preamp/filter parsing into Astra presets (up to 10 bands)
 
 **Library**
 - Scan and manage multiple music folders
@@ -36,6 +41,33 @@ An audiophile-grade desktop music player with real-time visualizers, a professio
 **Audio Settings**
 - Loudness normalization (LUFS-based)
 - Audio output device selection
+- Output channel capability detection (per selected hardware device)
+- Stereo-safe default mode with optional multichannel output mode
+- Per-output channel remapping (including mute) with one-click reset to automatic routing
+- Channel routing panel with mapped-channel status and downmix indicators
+
+## Audio Pipeline
+
+Current playback and analysis paths are intentionally split:
+
+```text
+Playback path:
+Source Buffer
+  -> (optional remap matrix: splitter/merger)
+  -> Normalization Gain
+  -> Preamp / EQ chain
+  -> EQ Analyser (for EQ/fullscreen ambient overlays)
+  -> Master Gain (volume/mute)
+  -> Audio Destination
+
+Analysis path (scopes):
+Source Buffer
+  -> Analysis Normalization Gain
+  -> AudioWorklet tap
+  -> Silent sink (keeps worklet pulled)
+```
+
+This keeps oscilloscope/spectrum/vectorscope data post-normalization but outside hardware routing/downmix decisions.
 
 ## Download
 

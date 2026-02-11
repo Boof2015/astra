@@ -17,6 +17,10 @@ export interface Track {
   sampleRate?: number
   bitDepth?: number
   bitrate?: number
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
 }
 
 // Playback state

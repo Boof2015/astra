@@ -18,6 +18,7 @@ interface DbTrack {
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
+  channels: number | null
   added_at: number
   modified_at: number
 }

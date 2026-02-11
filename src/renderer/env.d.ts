@@ -16,6 +16,7 @@ declare global {
             openAudioFile: () => Promise<any>
             openAudioFolder: () => Promise<string | null>
             loadAudioFile: (filePath: string) => Promise<any>
+            decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
             library: any
         }
     }

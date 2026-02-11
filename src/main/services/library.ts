@@ -4,6 +4,7 @@ import { app } from 'electron'
 import { join, extname, basename } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile } from 'fs/promises'
 import { createHash } from 'crypto'
+import { execFile, type ExecFileOptions } from 'child_process'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -28,6 +29,10 @@ export interface DbTrack {
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
+  channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
   added_at: number
   modified_at: number
 }
@@ -113,10 +118,38 @@ export async function initDatabase(): Promise<void> {
       sample_rate INTEGER,
       bit_depth INTEGER,
       bitrate INTEGER,
+      channels INTEGER,
+      codec TEXT,
+      codec_profile TEXT,
+      is_atmos_joc INTEGER,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
   `)
+
+  // Schema migration: existing libraries may not have channels yet.
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
+  } catch {
+    // Column already exists.
+  }
+
+  // Schema migration: extended codec metadata for pre-play Atmos/multichannel indicators.
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN codec TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN codec_profile TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN is_atmos_joc INTEGER')
+  } catch {
+    // Column already exists.
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS folders (
@@ -344,24 +377,24 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, now, filePath
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, now, now
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, now, now
         ])
         added++
       }
@@ -416,6 +449,223 @@ async function collectAudioFiles(dir: string): Promise<{ files: string[]; skippe
   return { files, skippedDirs }
 }
 
+interface ResolvedCodecMetadata {
+  channels: number | null
+  codec: string | null
+  codecProfile: string | null
+  isAtmosJoc: boolean
+}
+
+interface FfprobeAudioMetadata {
+  channels: number | null
+  codec: string | null
+  codecProfile: string | null
+  hints: string[]
+}
+
+let resolvedFfprobeBinaryPath: string | null | undefined
+
+function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        ...options,
+        encoding: 'utf8',
+        windowsHide: true
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(stdout ?? '')
+      }
+    )
+  })
+}
+
+async function resolveFfprobeBinaryPath(): Promise<string | null> {
+  if (resolvedFfprobeBinaryPath !== undefined) {
+    return resolvedFfprobeBinaryPath
+  }
+
+  const isWindows = process.platform === 'win32'
+  const candidates = isWindows
+    ? ['ffprobe.exe', 'ffprobe']
+    : ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe']
+
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync(candidate, ['-version'], { timeout: 4000, maxBuffer: 64 * 1024 })
+      resolvedFfprobeBinaryPath = candidate
+      return candidate
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  resolvedFfprobeBinaryPath = null
+  return null
+}
+
+function toText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
+  const hints: string[] = []
+  const push = (value: unknown) => {
+    const text = toText(value)
+    if (text) hints.push(text)
+  }
+
+  push(stream.codec_name)
+  push(stream.codec_long_name)
+  push(stream.profile)
+  push(stream.codec_tag_string)
+  push(stream.codec_tag)
+  push(stream.channel_layout)
+
+  const streamTags = stream.tags
+  if (streamTags && typeof streamTags === 'object') {
+    for (const tagValue of Object.values(streamTags)) {
+      push(tagValue)
+    }
+  }
+
+  const sideDataList = stream.side_data_list
+  if (Array.isArray(sideDataList)) {
+    for (const sideData of sideDataList) {
+      if (!sideData || typeof sideData !== 'object') continue
+      for (const sideDataValue of Object.values(sideData)) {
+        push(sideDataValue)
+      }
+    }
+  }
+
+  if (format && typeof format === 'object') {
+    push(format.format_name)
+    push(format.format_long_name)
+    const formatTags = format.tags
+    if (formatTags && typeof formatTags === 'object') {
+      for (const tagValue of Object.values(formatTags)) {
+        push(tagValue)
+      }
+    }
+  }
+
+  return hints
+}
+
+function isAtmosJocStream(codec?: string | null, codecProfile?: string | null, hints: string[] = []): boolean {
+  const codecText = (codec ?? '').toLowerCase()
+  const profileText = (codecProfile ?? '').toLowerCase()
+  const hintText = hints.join(' ').toLowerCase()
+  const combined = `${codecText} ${profileText} ${hintText}`
+  const mentionsAtmos = combined.includes('joc') || combined.includes('atmos')
+  const isEc3Family =
+    combined.includes('ec-3') ||
+    combined.includes('eac3') ||
+    combined.includes('ec3') ||
+    combined.includes('e-ac-3') ||
+    combined.includes('dolby digital plus') ||
+    combined.includes('dd+')
+
+  if (combined.includes('joc')) return true
+  return mentionsAtmos && isEc3Family
+}
+
+function shouldProbeWithFfprobe(
+  filePath: string,
+  channels: number | null,
+  codec: string | null,
+  codecProfile: string | null
+): boolean {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.m4a' || extension === '.mp4' || extension === '.m4b' || extension === '.m4p' || extension === '.aac') {
+    return true
+  }
+
+  return !channels || !codec || !codecProfile
+}
+
+async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeAudioMetadata | null> {
+  const ffprobePath = await resolveFfprobeBinaryPath()
+  if (!ffprobePath) return null
+
+  try {
+    const stdout = await execFileAsync(
+      ffprobePath,
+      [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_streams',
+        '-show_format',
+        '-select_streams', 'a:0',
+        filePath
+      ],
+      { timeout: 10000, maxBuffer: 1024 * 1024 }
+    )
+
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<Record<string, unknown>>
+      format?: Record<string, unknown>
+    }
+    const stream = parsed.streams?.find((entry) => entry.codec_type === 'audio') ?? parsed.streams?.[0]
+    if (!stream) return null
+
+    return {
+      channels: toNumber(stream.channels),
+      codec: toText(stream.codec_name) ?? toText(stream.codec_long_name),
+      codecProfile: toText(stream.profile),
+      hints: collectFfprobeHints(stream, parsed.format)
+    }
+  } catch (error) {
+    console.warn(`ffprobe metadata probe failed for ${filePath}:`, error)
+    return null
+  }
+}
+
+async function resolveCodecMetadata(
+  filePath: string,
+  base: { channels: number | null; codec: string | null; codecProfile: string | null }
+): Promise<ResolvedCodecMetadata> {
+  let channels = base.channels
+  let codec = base.codec
+  let codecProfile = base.codecProfile
+  let hints: string[] = []
+
+  if (shouldProbeWithFfprobe(filePath, channels, codec, codecProfile)) {
+    const ffprobeMetadata = await probeAudioMetadataWithFfprobe(filePath)
+    if (ffprobeMetadata) {
+      channels = ffprobeMetadata.channels ?? channels
+      codec = ffprobeMetadata.codec ?? codec
+      codecProfile = ffprobeMetadata.codecProfile ?? codecProfile
+      hints = ffprobeMetadata.hints
+    }
+  }
+
+  return {
+    channels,
+    codec,
+    codecProfile,
+    isAtmosJoc: isAtmosJocStream(codec, codecProfile, hints)
+  }
+}
+
 // Extract metadata from audio file
 async function extractMetadata(filePath: string): Promise<{
   title: string
@@ -432,10 +682,19 @@ async function extractMetadata(filePath: string): Promise<{
   sampleRate: number | null
   bitDepth: number | null
   bitrate: number | null
+  channels: number | null
+  codec: string | null
+  codecProfile: string | null
+  isAtmosJoc: number
 }> {
   const metadata = await mm.parseFile(filePath)
   const common = metadata.common
   const format = metadata.format
+  const resolvedCodecMetadata = await resolveCodecMetadata(filePath, {
+    channels: format.numberOfChannels || null,
+    codec: toText(format.codec),
+    codecProfile: toText(format.codecProfile)
+  })
 
   // Extract and save artwork using selectCover for best image selection
   let artworkHash: string | null = null
@@ -483,8 +742,76 @@ async function extractMetadata(filePath: string): Promise<{
     format: extname(filePath).slice(1).toLowerCase(),
     sampleRate: format.sampleRate || null,
     bitDepth: format.bitsPerSample || null,
-    bitrate: format.bitrate ? Math.round(format.bitrate / 1000) : null
+    bitrate: format.bitrate ? Math.round(format.bitrate / 1000) : null,
+    channels: resolvedCodecMetadata.channels,
+    codec: resolvedCodecMetadata.codec,
+    codecProfile: resolvedCodecMetadata.codecProfile,
+    isAtmosJoc: resolvedCodecMetadata.isAtmosJoc ? 1 : 0
   }
+}
+
+export async function backfillMissingChannelCounts(): Promise<{ scanned: number; updated: number; errors: number }> {
+  if (!db) return { scanned: 0, updated: 0, errors: 0 }
+
+  const result = db.exec(`
+    SELECT path FROM tracks
+    WHERE channels IS NULL
+       OR codec IS NULL
+       OR codec_profile IS NULL
+       OR is_atmos_joc IS NULL
+  `)
+  if (result.length === 0) return { scanned: 0, updated: 0, errors: 0 }
+
+  const pathColumnIndex = result[0].columns.indexOf('path')
+  if (pathColumnIndex === -1) return { scanned: 0, updated: 0, errors: 0 }
+
+  const paths = result[0].values.map((row: unknown[]) => row[pathColumnIndex] as string)
+  let updated = 0
+  let errors = 0
+
+  for (const path of paths) {
+    try {
+      let baseChannels: number | null = null
+      let baseCodec: string | null = null
+      let baseCodecProfile: string | null = null
+
+      try {
+        const metadata = await mm.parseFile(path)
+        baseChannels = metadata.format.numberOfChannels || null
+        baseCodec = toText(metadata.format.codec)
+        baseCodecProfile = toText(metadata.format.codecProfile)
+      } catch {
+        // We'll still attempt ffprobe-only resolution below.
+      }
+
+      const resolvedCodecMetadata = await resolveCodecMetadata(path, {
+        channels: baseChannels,
+        codec: baseCodec,
+        codecProfile: baseCodecProfile
+      })
+
+      db.run(
+        'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ? WHERE path = ?',
+        [
+          resolvedCodecMetadata.channels,
+          resolvedCodecMetadata.codec,
+          resolvedCodecMetadata.codecProfile,
+          resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
+          path
+        ]
+      )
+      updated++
+    } catch (err) {
+      console.warn(`Failed to backfill audio metadata for ${path}:`, err)
+      errors++
+    }
+  }
+
+  if (updated > 0) {
+    await saveDatabase()
+  }
+
+  return { scanned: paths.length, updated, errors }
 }
 
 // Get image extension from mime type
@@ -495,16 +822,6 @@ function getImageExtension(mimeType: string): string {
   if (type.includes('webp')) return '.webp'
   if (type.includes('bmp')) return '.bmp'
   return '.jpg' // Default to jpg for jpeg and unknown types
-}
-
-// Get mime type from file extension
-function getMimeTypeFromExtension(filename: string): string {
-  const ext = filename.toLowerCase()
-  if (ext.endsWith('.png')) return 'image/png'
-  if (ext.endsWith('.gif')) return 'image/gif'
-  if (ext.endsWith('.webp')) return 'image/webp'
-  if (ext.endsWith('.bmp')) return 'image/bmp'
-  return 'image/jpeg' // Default
 }
 
 // Get artwork path by hash
