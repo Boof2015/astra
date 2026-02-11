@@ -15,11 +15,13 @@ import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
+import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
 
 function App() {
   useKeyboardShortcuts()
   useMediaSession()
   useDiscordPresence()
+  useMiniPlayerBridge()
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)

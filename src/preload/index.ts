@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { join } from 'path'
+import type { MiniPlayerCommand, MiniPlayerSnapshot, MiniPlayerWindowState } from '../types/miniPlayer'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -191,6 +192,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
+  miniPlayer: {
+    open: () => ipcRenderer.invoke('mini-player:open'),
+    close: () => ipcRenderer.invoke('mini-player:close'),
+    getWindowState: () => ipcRenderer.invoke('mini-player:getWindowState'),
+    toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
+    getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
+    publishSnapshot: (snapshot: MiniPlayerSnapshot) => ipcRenderer.send('mini-player:publishSnapshot', snapshot),
+    sendCommand: (command: MiniPlayerCommand) => ipcRenderer.send('mini-player:sendCommand', command),
+    onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: MiniPlayerSnapshot) => callback(snapshot)
+      ipcRenderer.on('mini-player:snapshot', handler)
+      return () => ipcRenderer.removeListener('mini-player:snapshot', handler)
+    },
+    onCommand: (callback: (command: MiniPlayerCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: MiniPlayerCommand) => callback(command)
+      ipcRenderer.on('mini-player:command', handler)
+      return () => ipcRenderer.removeListener('mini-player:command', handler)
+    },
+    onWindowState: (callback: (state: MiniPlayerWindowState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: MiniPlayerWindowState) => callback(state)
+      ipcRenderer.on('mini-player:windowState', handler)
+      return () => ipcRenderer.removeListener('mini-player:windowState', handler)
+    }
+  },
+
   // Platform info
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -277,6 +303,18 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
+      miniPlayer: {
+        open: () => Promise<void>
+        close: () => Promise<void>
+        getWindowState: () => Promise<MiniPlayerWindowState>
+        toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
+        getSnapshot: () => Promise<MiniPlayerSnapshot | null>
+        publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+        sendCommand: (command: MiniPlayerCommand) => void
+        onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
+        onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
+        onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
+      }
 
       // Platform
       platform: NodeJS.Platform

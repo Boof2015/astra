@@ -8,6 +8,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
+import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 export default function TransportBar() {
   const {
@@ -39,6 +40,10 @@ export default function TransportBar() {
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
 
   const [showEQPopover, setShowEQPopover] = useState(false)
+  const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
+    isOpen: false,
+    alwaysOnTop: true
+  })
 
   // Marquee scroll for long titles
   const titleOuterRef = useRef<HTMLDivElement>(null)
@@ -67,6 +72,24 @@ export default function TransportBar() {
     ro.observe(outer)
     return () => ro.disconnect()
   }, [checkTitleOverflow])
+
+  useEffect(() => {
+    let isMounted = true
+
+    void window.electronAPI.miniPlayer.getWindowState().then((state) => {
+      if (!isMounted) return
+      setMiniWindowState(state)
+    })
+
+    const unsubscribe = window.electronAPI.miniPlayer.onWindowState((state) => {
+      setMiniWindowState(state)
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+  }, [])
 
   const formatTime = (seconds: number): string => {
     if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
@@ -338,6 +361,19 @@ export default function TransportBar() {
 
       {/* Right: EQ + Queue/Info + File readout */}
       <div className="transport-right">
+        <button
+          className={`transport-mini-btn ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
+          onClick={() => void window.electronAPI.miniPlayer.open()}
+          title={miniWindowState.alwaysOnTop ? 'Open mini player (pinned)' : 'Open mini player'}
+          aria-label="Open mini player"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+            <line x1="7" y1="8.5" x2="17" y2="8.5" />
+            <line x1="7" y1="12.5" x2="14" y2="12.5" />
+          </svg>
+        </button>
+
         {/* EQ toggle button with mini curve */}
         <button
           className={`transport-eq-btn ${showEQPopover ? 'active' : ''} ${eqEnabled ? 'enabled' : ''}`}

@@ -7,10 +7,14 @@ import '@fontsource/inter/700.css'
 import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
 import App from './App'
+import MiniPlayerApp from './components/mini/MiniPlayerApp'
 import './styles/globals.css'
+
+const windowMode = new URLSearchParams(window.location.search).get('window')
+const RootComponent = windowMode === 'mini' ? MiniPlayerApp : App
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <RootComponent />
   </React.StrictMode>
 )

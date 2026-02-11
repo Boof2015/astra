@@ -6,11 +6,29 @@ import { execFile, type ExecFileOptions } from 'child_process'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import { discordRpcService, type DiscordPresenceUpdate } from './services/discordRpc'
+import {
+  MINI_WINDOW_MIN_HEIGHT,
+  MINI_WINDOW_MIN_WIDTH,
+  loadMiniWindowPrefs,
+  saveMiniWindowPrefs,
+} from './services/miniWindowPrefs'
+import type {
+  MiniPlayerCommand,
+  MiniPlayerSnapshot,
+  MiniPlayerWindowPrefs,
+  MiniPlayerWindowState,
+} from '../types/miniPlayer'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow: BrowserWindow | null = null
+let miniWindow: BrowserWindow | null = null
+let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
+let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
+let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 
 // Supported audio formats
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff']
@@ -20,6 +38,136 @@ const AUDIO_FILTERS = [
     extensions: AUDIO_EXTENSIONS
   }
 ]
+
+function getMiniWindowState(): MiniPlayerWindowState {
+  const isOpen = Boolean(miniWindow && !miniWindow.isDestroyed())
+  const alwaysOnTop = isOpen
+    ? miniWindow!.isAlwaysOnTop()
+    : miniWindowPrefs?.alwaysOnTop ?? true
+
+  return { isOpen, alwaysOnTop }
+}
+
+function broadcastMiniWindowState(): void {
+  const payload = getMiniWindowState()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mini-player:windowState', payload)
+  }
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.webContents.send('mini-player:windowState', payload)
+  }
+}
+
+function captureMiniWindowPrefs(): MiniPlayerWindowPrefs | null {
+  if (!miniWindow || miniWindow.isDestroyed()) return null
+  const bounds = miniWindow.getBounds()
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    alwaysOnTop: miniWindow.isAlwaysOnTop()
+  }
+}
+
+async function persistMiniWindowPrefs(): Promise<void> {
+  const captured = captureMiniWindowPrefs()
+  if (!captured) return
+
+  miniWindowPrefs = captured
+  try {
+    await saveMiniWindowPrefs(captured)
+  } catch (error) {
+    console.warn('Failed to persist mini player window prefs:', error)
+  }
+}
+
+function schedulePersistMiniWindowPrefs(): void {
+  if (miniWindowPersistTimer !== null) {
+    clearTimeout(miniWindowPersistTimer)
+  }
+  miniWindowPersistTimer = setTimeout(() => {
+    miniWindowPersistTimer = null
+    void persistMiniWindowPrefs()
+  }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
+}
+
+async function createMiniPlayerWindow(): Promise<void> {
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    if (miniWindow.isMinimized()) {
+      miniWindow.restore()
+    }
+    miniWindow.focus()
+    broadcastMiniWindowState()
+    return
+  }
+
+  const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
+  miniWindowPrefs = prefs
+
+  miniWindow = new BrowserWindow({
+    width: prefs.width,
+    height: prefs.height,
+    x: prefs.x,
+    y: prefs.y,
+    minWidth: MINI_WINDOW_MIN_WIDTH,
+    minHeight: MINI_WINDOW_MIN_HEIGHT,
+    frame: false,
+    transparent: false,
+    backgroundColor: '#050507',
+    alwaysOnTop: prefs.alwaysOnTop,
+    autoHideMenuBar: true,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    title: 'Astra Mini Player',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  miniWindow.on('ready-to-show', () => {
+    miniWindow?.show()
+  })
+
+  miniWindow.on('move', schedulePersistMiniWindowPrefs)
+  miniWindow.on('resize', schedulePersistMiniWindowPrefs)
+  miniWindow.on('close', () => {
+    if (miniWindowPersistTimer !== null) {
+      clearTimeout(miniWindowPersistTimer)
+      miniWindowPersistTimer = null
+    }
+    void persistMiniWindowPrefs()
+  })
+  miniWindow.on('always-on-top-changed', () => {
+    schedulePersistMiniWindowPrefs()
+    broadcastMiniWindowState()
+  })
+  miniWindow.on('closed', () => {
+    miniWindow = null
+    broadcastMiniWindowState()
+  })
+
+  miniWindow.webContents.on('did-finish-load', () => {
+    if (latestMiniPlayerSnapshot) {
+      miniWindow?.webContents.send('mini-player:snapshot', latestMiniPlayerSnapshot)
+    }
+    broadcastMiniWindowState()
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    await miniWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=mini`)
+  } else {
+    await miniWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+      query: { window: 'mini' }
+    })
+  }
+
+  broadcastMiniWindowState()
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -45,6 +193,13 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    if (miniWindow && !miniWindow.isDestroyed()) {
+      miniWindow.close()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -55,11 +210,14 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  broadcastMiniWindowState()
 }
 
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
+  miniWindowPrefs = await loadMiniWindowPrefs()
 
   // Clean up tracks that no longer exist on disk
   const removedCount = await library.cleanupMissingTracks()
@@ -84,7 +242,7 @@ app.whenReady().then(async () => {
     })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
     }
   })
@@ -97,6 +255,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  if (miniWindowPersistTimer !== null) {
+    clearTimeout(miniWindowPersistTimer)
+    miniWindowPersistTimer = null
+  }
+  void persistMiniWindowPrefs()
   discordRpcService.shutdown()
   library.closeDatabase()
 })
@@ -122,6 +285,53 @@ ipcMain.on('window:close', () => {
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
+})
+
+// Mini player window controls/state
+ipcMain.handle('mini-player:open', async () => {
+  await createMiniPlayerWindow()
+})
+
+ipcMain.handle('mini-player:close', async () => {
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.close()
+  }
+})
+
+ipcMain.handle('mini-player:getWindowState', () => {
+  return getMiniWindowState()
+})
+
+ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
+  if (!miniWindow || miniWindow.isDestroyed()) {
+    await createMiniPlayerWindow()
+  }
+
+  if (!miniWindow || miniWindow.isDestroyed()) {
+    return getMiniWindowState()
+  }
+
+  miniWindow.setAlwaysOnTop(!miniWindow.isAlwaysOnTop())
+  await persistMiniWindowPrefs()
+  broadcastMiniWindowState()
+  return getMiniWindowState()
+})
+
+ipcMain.handle('mini-player:getSnapshot', () => {
+  return latestMiniPlayerSnapshot
+})
+
+ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
+  latestMiniPlayerSnapshot = snapshot
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.webContents.send('mini-player:snapshot', snapshot)
+  }
+})
+
+ipcMain.on('mini-player:sendCommand', (_event, command: MiniPlayerCommand) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mini-player:command', command)
+  }
 })
 
 // App info

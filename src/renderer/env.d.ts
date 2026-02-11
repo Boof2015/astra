@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
+import type { MiniPlayerCommand, MiniPlayerSnapshot, MiniPlayerWindowState } from '../types/miniPlayer'
 
 declare global {
     interface Window {
@@ -10,6 +11,18 @@ declare global {
             maximize: () => void
             close: () => void
             isMaximized: () => Promise<boolean>
+            miniPlayer: {
+                open: () => Promise<void>
+                close: () => Promise<void>
+                getWindowState: () => Promise<MiniPlayerWindowState>
+                toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
+                getSnapshot: () => Promise<MiniPlayerSnapshot | null>
+                publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+                sendCommand: (command: MiniPlayerCommand) => void
+                onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
+                onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
+                onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
+            }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; memoryMb: number }>

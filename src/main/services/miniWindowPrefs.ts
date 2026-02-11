@@ -1,0 +1,103 @@
+import { app, screen, type Rectangle } from 'electron'
+import { join } from 'path'
+import { readFile, writeFile } from 'fs/promises'
+import type { MiniPlayerWindowPrefs } from '../../types/miniPlayer'
+
+const PREFS_FILE_NAME = 'mini-player-window.json'
+
+export const MINI_WINDOW_MIN_WIDTH = 280
+export const MINI_WINDOW_MIN_HEIGHT = 116
+export const MINI_WINDOW_DEFAULT_WIDTH = 420
+export const MINI_WINDOW_DEFAULT_HEIGHT = 220
+
+const MAX_WIDTH = 1600
+const MAX_HEIGHT = 1200
+
+const DEFAULT_PREFS: MiniPlayerWindowPrefs = {
+  width: MINI_WINDOW_DEFAULT_WIDTH,
+  height: MINI_WINDOW_DEFAULT_HEIGHT,
+  alwaysOnTop: true
+}
+
+function prefsPath(): string {
+  return join(app.getPath('userData'), PREFS_FILE_NAME)
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function intersects(a: Rectangle, b: Rectangle): boolean {
+  return a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+}
+
+function isOnAnyDisplay(bounds: Rectangle): boolean {
+  return screen.getAllDisplays().some((display) => intersects(bounds, display.workArea))
+}
+
+export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs {
+  if (!value || typeof value !== 'object') {
+    return { ...DEFAULT_PREFS }
+  }
+
+  const raw = value as Record<string, unknown>
+  const width = clamp(
+    toFiniteNumber(raw.width) ?? DEFAULT_PREFS.width,
+    MINI_WINDOW_MIN_WIDTH,
+    MAX_WIDTH
+  )
+  const height = clamp(
+    toFiniteNumber(raw.height) ?? DEFAULT_PREFS.height,
+    MINI_WINDOW_MIN_HEIGHT,
+    MAX_HEIGHT
+  )
+  const alwaysOnTop = typeof raw.alwaysOnTop === 'boolean'
+    ? raw.alwaysOnTop
+    : DEFAULT_PREFS.alwaysOnTop
+
+  const x = toFiniteNumber(raw.x)
+  const y = toFiniteNumber(raw.y)
+  if (x === undefined || y === undefined) {
+    return { width, height, alwaysOnTop }
+  }
+
+  const bounds: Rectangle = {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height)
+  }
+
+  if (!isOnAnyDisplay(bounds)) {
+    return { width, height, alwaysOnTop }
+  }
+
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    alwaysOnTop
+  }
+}
+
+export async function loadMiniWindowPrefs(): Promise<MiniPlayerWindowPrefs> {
+  try {
+    const data = await readFile(prefsPath(), 'utf-8')
+    return normalizeMiniWindowPrefs(JSON.parse(data))
+  } catch {
+    return { ...DEFAULT_PREFS }
+  }
+}
+
+export async function saveMiniWindowPrefs(prefs: MiniPlayerWindowPrefs): Promise<void> {
+  const normalized = normalizeMiniWindowPrefs(prefs)
+  await writeFile(prefsPath(), JSON.stringify(normalized, null, 2), 'utf-8')
+}

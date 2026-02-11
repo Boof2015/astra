@@ -525,6 +525,46 @@ button, .titlebar {
   flex-shrink: 0;
 }
 
+.transport-mini-btn {
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-right: 1px solid var(--glass-border);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.transport-mini-btn:hover {
+  background: var(--glass-highlight);
+  color: var(--text-primary);
+}
+
+.transport-mini-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--accent);
+}
+
+.transport-mini-btn.pinned svg {
+  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.42));
+}
+
+.transport-mini-btn.pinned::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.68);
+}
+
 /* EQ button with mini curve */
 .transport-eq-btn {
   width: 80px;
