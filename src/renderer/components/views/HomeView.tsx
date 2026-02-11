@@ -68,8 +68,6 @@ export default function HomeView() {
 
   const recentTracks = useMemo(() => recentlyPlayed.slice(0, 8), [recentlyPlayed])
   const favoritePreview = useMemo(() => favoriteTracks.slice(0, 10), [favoriteTracks])
-  const artistPreview = useMemo(() => artists.slice(0, 8), [artists])
-  const albumPreview = useMemo(() => albums.slice(0, 12), [albums])
 
   const handlePlayTrack = async (track: HomeTrack) => {
     const result = await window.electronAPI.loadAudioFile(track.path)
@@ -231,9 +229,9 @@ export default function HomeView() {
           <div className="home-section-header">
             <h2>ARTISTS</h2>
           </div>
-          {artistPreview.length > 0 ? (
-            <div className="home-artist-row">
-              {artistPreview.map((artist) => (
+          {artists.length > 0 ? (
+            <div className="home-artist-grid">
+              {artists.map((artist) => (
                 <div
                   key={artist.artist}
                   className="home-artist-chip"
@@ -254,9 +252,9 @@ export default function HomeView() {
           <div className="home-section-header">
             <h2>ALBUMS</h2>
           </div>
-          {albumPreview.length > 0 ? (
+          {albums.length > 0 ? (
             <div className="home-album-grid">
-              {albumPreview.map((album) => (
+              {albums.map((album) => (
                 <article
                   key={`${album.album}-${album.artist}`}
                   className="home-album-card"
