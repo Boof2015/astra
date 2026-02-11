@@ -132,9 +132,9 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
         bitDepth: dbTrack.bit_depth ?? undefined,
         bitrate: dbTrack.bitrate ?? undefined,
         channels: result.metadata?.channels ?? dbTrack.channels ?? undefined,
-        codec: result.metadata?.codec,
-        codecProfile: result.metadata?.codecProfile,
-        isAtmosJoc: result.metadata?.isAtmosJoc
+        codec: result.metadata?.codec ?? dbTrack.codec ?? undefined,
+        codecProfile: result.metadata?.codecProfile ?? dbTrack.codec_profile ?? undefined,
+        isAtmosJoc: result.metadata?.isAtmosJoc ?? (dbTrack.is_atmos_joc === 1)
       }
       const loaded = await loadTrack(track, result.data)
       if (loaded) {

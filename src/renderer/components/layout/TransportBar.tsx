@@ -106,7 +106,14 @@ export default function TransportBar() {
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
-  const showAtmosBadge = Boolean(currentTrack?.isAtmosJoc || currentCodecProfile.includes('atmos'))
+  const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
+  const showAtmosBadge = Boolean(
+    currentTrack?.isAtmosJoc ||
+    currentCodecProfile.includes('atmos') ||
+    currentCodecProfile.includes('joc') ||
+    currentCodec.includes('atmos') ||
+    currentCodec.includes('joc')
+  )
   const normalizationReadout = (() => {
     if (!currentTrack) {
       return { value: '\u2014', dim: true }

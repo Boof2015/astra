@@ -103,7 +103,14 @@ export default function FullscreenMode() {
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
-  const showAtmosBadge = Boolean(currentTrack?.isAtmosJoc || currentCodecProfile.includes('atmos'))
+  const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
+  const showAtmosBadge = Boolean(
+    currentTrack?.isAtmosJoc ||
+    currentCodecProfile.includes('atmos') ||
+    currentCodecProfile.includes('joc') ||
+    currentCodec.includes('atmos') ||
+    currentCodec.includes('joc')
+  )
   const remaining = duration > 0 ? Math.max(0, duration - currentTime) : 0
   const progress = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0
 
