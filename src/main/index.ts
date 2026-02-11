@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { execFile, type ExecFileOptions } from 'child_process'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import { discordRpcService, type DiscordPresenceUpdate } from './services/discordRpc'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -96,6 +97,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  discordRpcService.shutdown()
   library.closeDatabase()
 })
 
@@ -136,6 +138,19 @@ ipcMain.handle('app:getPerformanceStats', () => {
     cpuPercent: totalCpuPercent,
     memoryMb: totalWorkingSetKb / 1024,
   }
+})
+
+// Discord Rich Presence
+ipcMain.handle('discord:configure', async (_event, options: { enabled: boolean; clientId: string }) => {
+  return discordRpcService.configure(options)
+})
+
+ipcMain.on('discord:updatePresence', (_event, update: DiscordPresenceUpdate) => {
+  discordRpcService.updatePresence(update)
+})
+
+ipcMain.on('discord:clearPresence', () => {
+  discordRpcService.clearPresence()
 })
 
 // ============================================

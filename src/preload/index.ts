@@ -87,6 +87,34 @@ export interface AppPerformanceStats {
   memoryMb: number
 }
 
+export interface DiscordTrackPresence {
+  title: string
+  artist?: string
+  album?: string
+  durationSeconds?: number
+  format?: string
+  sampleRate?: number
+  bitDepth?: number
+  bitrate?: number
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
+}
+
+export interface DiscordPresenceUpdate {
+  playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
+  currentTimeSeconds?: number
+  durationSeconds?: number
+  track?: DiscordTrackPresence | null
+}
+
+export interface DiscordRpcConfigureResult {
+  ok: boolean
+  connected: boolean
+  message: string
+}
+
 // Native Visualizer Types
 export interface OscilloscopeResult {
   triggerIndex: number // float (position in circular buffer)
@@ -168,6 +196,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
 
+  // Integrations
+  discord: {
+    configure: (options: { enabled: boolean; clientId: string }): Promise<DiscordRpcConfigureResult> =>
+      ipcRenderer.invoke('discord:configure', options),
+    updatePresence: (update: DiscordPresenceUpdate) => ipcRenderer.send('discord:updatePresence', update),
+    clearPresence: () => ipcRenderer.send('discord:clearPresence')
+  },
+
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
@@ -246,6 +282,13 @@ declare global {
       platform: NodeJS.Platform
       getAppVersion: () => Promise<string>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+
+      // Integrations
+      discord: {
+        configure: (options: { enabled: boolean; clientId: string }) => Promise<DiscordRpcConfigureResult>
+        updatePresence: (update: DiscordPresenceUpdate) => void
+        clearPresence: () => void
+      }
 
       // File operations
       openAudioFile: () => Promise<AudioFileResult | null>

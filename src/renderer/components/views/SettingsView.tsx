@@ -4,6 +4,7 @@ import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
+import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
@@ -18,6 +19,11 @@ export default function SettingsView() {
     setPitchLock,
     setIsRunning,
   } = useVisualizerSettingsStore()
+  const {
+    enabled: discordEnabled,
+    statusMessage: discordStatusMessage,
+    setEnabled: setDiscordEnabled,
+  } = useDiscordSettingsStore()
 
   return (
     <div className="settings-view">
@@ -126,6 +132,25 @@ export default function SettingsView() {
               <AudioOutputSelect />
             </div>
             <ChannelRoutingPanel />
+          </section>
+
+          <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Integrations</h3>
+              <p>Enable optional platform integrations. Discord Rich Presence uses the app default configuration.</p>
+            </div>
+            <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Discord Rich Presence</span>
+                <button
+                  className={`settings-toggle ${discordEnabled ? 'active' : ''}`}
+                  onClick={() => void setDiscordEnabled(!discordEnabled)}
+                >
+                  {discordEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+            </div>
+            <p className="settings-note">{discordStatusMessage}</p>
           </section>
         </div>
       </div>

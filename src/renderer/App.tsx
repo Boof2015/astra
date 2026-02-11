@@ -11,12 +11,15 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
+import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
+import { useDiscordPresence } from './hooks/useDiscordPresence'
 
 function App() {
   useKeyboardShortcuts()
   useMediaSession()
+  useDiscordPresence()
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
@@ -25,6 +28,7 @@ function App() {
   useEffect(() => {
     useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
+    useDiscordSettingsStore.getState().initFromSaved()
     const unsubscribe = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })

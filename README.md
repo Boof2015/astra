@@ -18,6 +18,7 @@ An audiophile-grade desktop music player with real-time visualizers, a professio
 - Atmos (EC-3/JOC) metadata detection with compatibility FFmpeg decode into channel-based PCM (up to 5.1); not native Atmos object rendering/passthrough
 - Shuffle, repeat (one/all), and queue management with drag-and-drop
 - Track badges for Atmos and multichannel channel counts in library/now-playing/fullscreen views
+- Optional Discord Rich Presence integration with live track/playback state updates
 
 **Visualizers** (native C++ accelerated)
 - Oscilloscope with pitch-lock detection

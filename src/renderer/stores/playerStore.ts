@@ -109,7 +109,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
-      set({ currentTrack: track, playbackState: 'loading', waveformData: null })
+      set({
+        currentTrack: track,
+        playbackState: 'loading',
+        waveformData: null,
+        currentTime: 0,
+        duration: track.duration
+      })
 
       try {
         let usedFfmpegFallback = false
@@ -132,7 +138,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         set({
           duration: audioEngine.duration,
-          currentTrack: resolvedTrack
+          currentTrack: resolvedTrack,
+          currentTime: 0
         })
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
@@ -517,7 +524,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
-      set({ currentTrack: track, playbackState: 'loading', waveformData: null })
+      set({
+        currentTrack: track,
+        playbackState: 'loading',
+        waveformData: null,
+        currentTime: 0,
+        duration: track.duration
+      })
 
       try {
         // Load audio file from path
@@ -555,7 +568,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         set({
           duration: audioEngine.duration,
-          currentTrack: resolvedTrack
+          currentTrack: resolvedTrack,
+          currentTime: 0
         })
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
