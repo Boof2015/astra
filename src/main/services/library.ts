@@ -615,7 +615,10 @@ function isAtmosJocStream(codec?: string | null, codecProfile?: string | null, h
   const profileText = (codecProfile ?? '').toLowerCase()
   const hintText = hints.join(' ').toLowerCase()
   const combined = `${codecText} ${profileText} ${hintText}`
-  const mentionsAtmos = combined.includes('joc') || combined.includes('atmos')
+  const mentionsAtmos =
+    combined.includes('joc') ||
+    combined.includes('atmos') ||
+    combined.includes('dby1')
   const isEc3Family =
     combined.includes('ec-3') ||
     combined.includes('eac3') ||
