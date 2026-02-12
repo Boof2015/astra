@@ -15,10 +15,10 @@ const CALIBRATION_MIN_SUCCESSFUL_PASSES = 2
 const CALIBRATION_MIN_CONFIDENCE = 0.22
 const CALIBRATION_MIN_CORRELATION = 0.12
 const CALIBRATION_MIN_PEAK_RATIO = 0.6
-const CALIBRATION_CHIRP_DURATION_SEC = 0.16
-const CALIBRATION_GAP_SEC = 0.08
-const CALIBRATION_BURST_COUNT = 4
-const CALIBRATION_BURST_WEIGHTS: readonly number[] = [1.0, -0.72, 0.58, -0.44]
+const CALIBRATION_CHIRP_DURATION_SEC = 0.3
+const CALIBRATION_GAP_SEC = 0
+const CALIBRATION_BURST_COUNT = 1
+const CALIBRATION_BURST_WEIGHTS: readonly number[] = [1.0]
 const CALIBRATION_LEAD_IN_SEC = 0.12
 const CALIBRATION_OUTPUT_GAIN = 0.72
 const CALIBRATION_START_FREQ_HZ = 2000
@@ -31,8 +31,8 @@ const CALIBRATION_DIRECT_PATH_RELATIVE_THRESHOLD = 0.72
 const CALIBRATION_MIN_RELATIVE_SEGMENT_ENERGY = 0.08
 const CALIBRATION_MIN_CORRELATION_FOR_PEAK_SCAN = 0.08
 const CALIBRATION_MAX_PEAK_CANDIDATES = 10
-const CALIBRATION_PERIOD_ALIAS_CORRELATION_THRESHOLD = 0.72
-const CALIBRATION_PERIOD_ALIAS_ENERGY_THRESHOLD = 0.45
+const CALIBRATION_PERIOD_ALIAS_CORRELATION_THRESHOLD = 0.93
+const CALIBRATION_PERIOD_ALIAS_ENERGY_THRESHOLD = 0.75
 const CALIBRATION_ROUNDTRIP_OVERSHOOT_TOLERANCE_MS = 225
 const CALIBRATION_EDGE_LOCK_MARGIN_MS = 40
 const CALIBRATION_EDGE_LOCK_MIN_CONFIDENCE = 0.72
@@ -1306,6 +1306,10 @@ export class AudioEngine {
     reducedRate: number,
     peakSeparationSamples: number
   ): { index: number; correlation: number } | null {
+    if (CALIBRATION_BURST_COUNT <= 1) {
+      return null
+    }
+
     const burstPeriodSamples = Math.max(
       1,
       Math.round((CALIBRATION_CHIRP_DURATION_SEC + CALIBRATION_GAP_SEC) * reducedRate)
@@ -1327,7 +1331,7 @@ export class AudioEngine {
     }
     let bestEnergy = selectedEnergy
 
-    for (let step = 1; step <= CALIBRATION_BURST_COUNT; step++) {
+    for (let step = 1; step <= 1; step++) {
       const targetIndex = selectedIndex - (step * burstPeriodSamples)
       if (targetIndex < searchStart) {
         break

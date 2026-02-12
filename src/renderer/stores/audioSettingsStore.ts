@@ -95,6 +95,8 @@ const MAX_DELAY_MS = 2500
 const MAX_BASELINE_RTT_MS = 5000
 const DELAY_STEP_MS = 5
 const BASELINE_IMPROVEMENT_THRESHOLD_MS = 10
+const AUTO_OFFSET_DOWNWARD_OUTLIER_DELTA_MS = 220
+const AUTO_OFFSET_DOWNWARD_OUTLIER_MAX_CONFIDENCE = 0.5
 let mediaDeviceChangeListenerAttached = false
 
 function clampAppliedDelayMs(value: number): number {
@@ -327,9 +329,10 @@ function resolveActiveDelayProfileTarget(
   if (!isSystemDefault) {
     const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
     if (selectedDevice?.groupId) {
+      const groupKey = buildOutputGroupProfileKey(selectedDevice.groupId)
       return {
-        key: buildOutputGroupProfileKey(selectedDevice.groupId),
-        legacyFallbackKeys: dedupeKeys([normalizedSelection], buildOutputGroupProfileKey(selectedDevice.groupId))
+        key: normalizedSelection,
+        legacyFallbackKeys: dedupeKeys([groupKey], normalizedSelection)
       }
     }
 
@@ -359,6 +362,94 @@ function resolveActiveDelayProfileTarget(
   return {
     key: physicalDefaultId,
     legacyFallbackKeys: dedupeKeys(['default'], physicalDefaultId)
+  }
+}
+
+function resolveDelayProfileForTarget(
+  profiles: Record<string, DelayCompensationProfile>,
+  target: { key: string; legacyFallbackKeys: string[] }
+): {
+  profile: DelayCompensationProfile
+} {
+  const candidateKeys = [target.key, ...target.legacyFallbackKeys]
+  let selectedKey: string | null = null
+  let selectedProfile: DelayCompensationProfile | null = null
+  let selectedStamp = -1
+
+  for (const key of candidateKeys) {
+    const rawProfile = profiles[key]
+    if (!rawProfile) continue
+
+    const normalized = normalizeDelayProfile(rawProfile)
+    const candidateStamp = normalized.lastCalibrationAt ?? 0
+
+    if (!selectedProfile) {
+      selectedKey = key
+      selectedProfile = normalized
+      selectedStamp = candidateStamp
+      continue
+    }
+
+    if (candidateStamp > selectedStamp) {
+      selectedKey = key
+      selectedProfile = normalized
+      selectedStamp = candidateStamp
+      continue
+    }
+
+    const shouldPreferTargetKey = (
+      candidateStamp === selectedStamp
+      && key === target.key
+      && selectedKey !== target.key
+    )
+    if (shouldPreferTargetKey) {
+      selectedKey = key
+      selectedProfile = normalized
+      selectedStamp = candidateStamp
+    }
+  }
+
+  return {
+    profile: selectedProfile ?? { ...DEFAULT_DELAY_PROFILE }
+  }
+}
+
+function upsertCanonicalDelayProfileForTarget(
+  profiles: Record<string, DelayCompensationProfile>,
+  target: { key: string; legacyFallbackKeys: string[] },
+  profile: DelayCompensationProfile
+): {
+  profiles: Record<string, DelayCompensationProfile>
+  changed: boolean
+} {
+  const normalizedProfile = normalizeDelayProfile(profile)
+  const fallbackKeys = new Set(target.legacyFallbackKeys)
+  const keysToSync = [target.key, ...Array.from(fallbackKeys)]
+
+  let changed = false
+  for (const key of keysToSync) {
+    const existing = profiles[key]
+    if (!existing || !areDelayProfilesEqual(existing, normalizedProfile)) {
+      changed = true
+      break
+    }
+  }
+
+  if (!changed) {
+    return {
+      profiles,
+      changed: false
+    }
+  }
+
+  const nextProfiles: Record<string, DelayCompensationProfile> = { ...profiles }
+  for (const key of keysToSync) {
+    nextProfiles[key] = normalizedProfile
+  }
+
+  return {
+    profiles: nextProfiles,
+    changed: true
   }
 }
 
@@ -452,22 +543,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
     const activeDelayProfileKey = profileTarget.key
 
-    const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
-    const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
-    const sourceProfile = currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
-    const normalizedProfile = normalizeDelayProfile(sourceProfile)
-
-    let nextProfiles = state.delayProfilesByDeviceKey
-    const shouldWriteNormalizedProfile = (
-      !currentByActiveKey
-      || !areDelayProfilesEqual(currentByActiveKey, normalizedProfile)
+    const normalizedProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
+    const canonicalized = upsertCanonicalDelayProfileForTarget(
+      state.delayProfilesByDeviceKey,
+      profileTarget,
+      normalizedProfile
     )
-
-    if (shouldWriteNormalizedProfile) {
-      nextProfiles = {
-        ...nextProfiles,
-        [activeDelayProfileKey]: normalizedProfile,
-      }
+    const nextProfiles = canonicalized.profiles
+    if (canonicalized.changed) {
       persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
     }
 
@@ -506,17 +589,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     const state = get()
     const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
     const activeDelayProfileKey = profileTarget.key
-    const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
-    const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
-    const currentProfile = normalizeDelayProfile(
-      currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
-    )
+    const currentProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
     const updatedProfile = normalizeDelayProfile(updater(currentProfile))
-
-    const nextProfiles = {
-      ...state.delayProfilesByDeviceKey,
-      [activeDelayProfileKey]: updatedProfile,
-    }
+    const canonicalized = upsertCanonicalDelayProfileForTarget(
+      state.delayProfilesByDeviceKey,
+      profileTarget,
+      updatedProfile
+    )
+    const nextProfiles = canonicalized.profiles
     const effectiveDelayMs = computeEffectiveDelayMs(updatedProfile)
 
     set({
@@ -742,11 +822,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const state = get()
       const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
       const activeDelayProfileKey = profileTarget.key
-      const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
-      const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
-      const currentActiveProfile = normalizeDelayProfile(
-        currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
-      )
+      const currentActiveProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
       const calibrationInputKey = resolveCalibrationInputDeviceKey(
         calibrationInputDeviceId,
         state.availableInputDevices
@@ -790,11 +866,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       baselineRttMs = nextBaselines[baselineKey]?.baselineRttMs ?? baselineRttMs
       const derivedOutputMs = clampAppliedDelayMs(roundTripMs - baselineRttMs)
-      const nextProfiles: Record<string, DelayCompensationProfile> = {
+      const previousAutoOffsetMs = currentActiveProfile.autoOffsetMs
+      const shouldSuppressDownwardOutlierAutoOffset = (
+        previousAutoOffsetMs != null
+        && !baselineWasLowered
+        && (previousAutoOffsetMs - derivedOutputMs) >= AUTO_OFFSET_DOWNWARD_OUTLIER_DELTA_MS
+        && result.confidence <= AUTO_OFFSET_DOWNWARD_OUTLIER_MAX_CONFIDENCE
+      )
+      const appliedAutoOffsetMs = shouldSuppressDownwardOutlierAutoOffset
+        ? previousAutoOffsetMs
+        : derivedOutputMs
+      let nextProfiles: Record<string, DelayCompensationProfile> = {
         ...state.delayProfilesByDeviceKey,
         [activeDelayProfileKey]: normalizeDelayProfile({
           ...currentActiveProfile,
-          autoOffsetMs: derivedOutputMs,
+          autoOffsetMs: appliedAutoOffsetMs,
           lastRoundTripMs: roundTripMs,
           lastCalibrationInputKey: calibrationInputKey,
           lastCalibrationSampleRate: sampleRate,
@@ -820,11 +906,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
       }
 
+      const canonicalized = upsertCanonicalDelayProfileForTarget(
+        nextProfiles,
+        profileTarget,
+        normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
+      )
+      nextProfiles = canonicalized.profiles
+
       const activeProfile = normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
       const effectiveDelayMs = computeEffectiveDelayMs(activeProfile)
       const confidencePct = Math.round(result.confidence * 100)
       const baselineNote = baselineWasLowered
         ? ' Baseline improved and matching profiles were rebased.'
+        : ''
+      const outlierNote = shouldSuppressDownwardOutlierAutoOffset
+        ? ` Large downward jump detected; kept prior auto estimate ${previousAutoOffsetMs ?? 0} ms.`
         : ''
 
       set({
@@ -834,7 +930,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         activeDelayProfile: activeProfile,
         effectiveDelayMs,
         delayCalibrationState: 'success',
-        delayCalibrationMessage: `Round-trip ${roundTripMs} ms, input baseline ${baselineRttMs} ms, derived output ${derivedOutputMs} ms (confidence ${confidencePct}%).${baselineNote}`
+        delayCalibrationMessage: `Round-trip ${roundTripMs} ms, input baseline ${baselineRttMs} ms, derived output ${derivedOutputMs} ms, applied output ${appliedAutoOffsetMs} ms (confidence ${confidencePct}%).${baselineNote}${outlierNote}`
       })
 
       persistDelaySettings(nextProfiles, nextBaselines)
