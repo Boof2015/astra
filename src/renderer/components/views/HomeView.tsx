@@ -58,7 +58,9 @@ export default function HomeView() {
   const selectArtist = useLibraryStore((s) => s.selectArtist)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
-  const { loadTrack, play, setQueue } = usePlayerStore()
+  const loadTrack = usePlayerStore((s) => s.loadTrack)
+  const play = usePlayerStore((s) => s.play)
+  const setQueue = usePlayerStore((s) => s.setQueue)
   const { playlists, loadPlaylists, createPlaylist } = usePlaylistStore()
   const { setActiveView } = useUIStore()
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
@@ -74,7 +76,7 @@ export default function HomeView() {
   const favoritePreview = useMemo(() => favoriteTracks.slice(0, 10), [favoriteTracks])
 
   const handlePlayTrack = async (track: HomeTrack) => {
-    const result = await window.electronAPI.loadAudioFile(track.path)
+    const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
     if (result) {
       const t: Track = {
         id: track.path,

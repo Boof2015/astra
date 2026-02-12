@@ -27,8 +27,11 @@ let miniWindow: BrowserWindow | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
+let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
+const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
+const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
 
 // Supported audio formats
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff']
@@ -214,6 +217,45 @@ function createWindow(): void {
   broadcastMiniWindowState()
 }
 
+async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(AUDIO_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingChannelCounts()
+    if (scanned > 0) {
+      console.log(`Audio metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+  } catch (err) {
+    console.warn('Audio metadata backfill failed:', err)
+  } finally {
+    try {
+      await library.setAppMeta(AUDIO_METADATA_BACKFILL_MIGRATION_KEY, '1')
+    } catch (err) {
+      console.warn('Failed to persist audio metadata backfill migration flag:', err)
+    }
+  }
+}
+
+function scheduleAudioMetadataBackfillMigration(): void {
+  if (library.getAppMeta(AUDIO_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (audioMetadataBackfillTimer !== null) {
+    clearTimeout(audioMetadataBackfillTimer)
+  }
+
+  audioMetadataBackfillTimer = setTimeout(() => {
+    audioMetadataBackfillTimer = null
+    void maybeRunAudioMetadataBackfillOnce()
+  }, AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS)
+}
+
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
@@ -226,20 +268,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
-
-  // Non-blocking metadata pass for older libraries missing extended audio metadata.
-  void library.backfillMissingChannelCounts()
-    .then(({ scanned, updated, errors }) => {
-      if (scanned > 0) {
-        console.log(`Audio metadata backfill: scanned=${scanned}, updated=${updated}, errors=${errors}`)
-      }
-      if (updated > 0) {
-        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
-      }
-    })
-    .catch((err) => {
-      console.warn('Audio metadata backfill failed:', err)
-    })
+  scheduleAudioMetadataBackfillMigration()
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -258,6 +287,10 @@ app.on('before-quit', () => {
   if (miniWindowPersistTimer !== null) {
     clearTimeout(miniWindowPersistTimer)
     miniWindowPersistTimer = null
+  }
+  if (audioMetadataBackfillTimer !== null) {
+    clearTimeout(audioMetadataBackfillTimer)
+    audioMetadataBackfillTimer = null
   }
   void persistMiniWindowPrefs()
   discordRpcService.shutdown()
@@ -402,8 +435,8 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 })
 
 // Load a specific audio file
-ipcMain.handle('audio:loadFile', async (_event, filePath: string) => {
-  return loadAudioFile(filePath)
+ipcMain.handle('audio:loadFile', async (_event, filePath: string, options?: LoadAudioFileOptions) => {
+  return loadAudioFile(filePath, options)
 })
 
 // Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
@@ -504,6 +537,14 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
     mainWindow?.webContents.send('library:scanProgress', { current, total, file })
   })
 
+  const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath)
+  if (metadataBackfill.scanned > 0) {
+    console.log(`Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`)
+  }
+  if (metadataBackfill.updated > 0) {
+    mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
+  }
+
   return { success: true, folder, ...result }
 })
 
@@ -519,6 +560,9 @@ ipcMain.handle('library:rescan', async () => {
   let totalAdded = 0
   let totalUpdated = 0
   let totalErrors = 0
+  let metadataBackfillScanned = 0
+  let metadataBackfillUpdated = 0
+  let metadataBackfillErrors = 0
   const folderWarnings: Record<string, string[]> = {}
 
   for (const folder of folders) {
@@ -531,6 +575,22 @@ ipcMain.handle('library:rescan', async () => {
     if (result.skippedDirs.length > 0) {
       folderWarnings[folder.path] = result.skippedDirs
     }
+
+    const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path)
+    metadataBackfillScanned += metadataBackfill.scanned
+    metadataBackfillUpdated += metadataBackfill.updated
+    metadataBackfillErrors += metadataBackfill.errors
+  }
+
+  if (metadataBackfillScanned > 0) {
+    console.log(`Rescan metadata backfill: scanned=${metadataBackfillScanned}, updated=${metadataBackfillUpdated}, errors=${metadataBackfillErrors}`)
+  }
+  if (metadataBackfillUpdated > 0) {
+    mainWindow?.webContents.send('library:audioMetadataBackfillComplete', {
+      scanned: metadataBackfillScanned,
+      updated: metadataBackfillUpdated,
+      errors: metadataBackfillErrors
+    })
   }
 
   // Clean up tracks that no longer exist on disk
@@ -657,6 +717,10 @@ interface LoadedAudioMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+}
+
+interface LoadAudioFileOptions {
+  metadataMode?: 'full' | 'none'
 }
 
 interface FfprobeAudioMetadata {
@@ -906,13 +970,29 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
   }
 }
 
-async function loadAudioFile(filePath: string) {
+async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {}) {
+  const loadStartMs = Date.now()
   try {
     // Read file as buffer
     const buffer = await readFile(filePath)
     const name = basename(filePath)
     const fallbackTitle = name.replace(/\.[^.]+$/, '')
     const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+
+    if (options.metadataMode === 'none') {
+      const elapsedMs = Date.now() - loadStartMs
+      if (isDev && elapsedMs > 1500) {
+        console.warn(`[perf] loadAudioFile slow path (${elapsedMs}ms):`, {
+          filePath,
+          metadataMode: 'none'
+        })
+      }
+      return {
+        path: filePath,
+        name,
+        data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+      }
+    }
 
     // Extract metadata using music-metadata with ffprobe enrichment fallback.
     let metadata: LoadedAudioMetadata = {
@@ -964,14 +1044,29 @@ async function loadAudioFile(filePath: string) {
       }
     }
 
-    return {
+    const payload = {
       path: filePath,
       name: name,
       data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
       metadata
     }
+    const elapsedMs = Date.now() - loadStartMs
+    if (isDev && elapsedMs > 1500) {
+      console.warn(`[perf] loadAudioFile slow path (${elapsedMs}ms):`, {
+        filePath,
+        metadataMode: 'full'
+      })
+    }
+    return payload
   } catch (error) {
+    const elapsedMs = Date.now() - loadStartMs
     console.error('Failed to load audio file:', error)
+    if (isDev && elapsedMs > 1500) {
+      console.warn(`[perf] loadAudioFile failed slow path (${elapsedMs}ms):`, {
+        filePath,
+        metadataMode: options.metadataMode ?? 'full'
+      })
+    }
     return null
   }
 }

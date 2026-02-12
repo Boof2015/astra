@@ -24,6 +24,10 @@ export interface AudioFileResult {
   }
 }
 
+export interface AudioLoadOptions {
+  metadataMode?: 'full' | 'none'
+}
+
 // Library types
 export interface DbTrack {
   id: number
@@ -233,7 +237,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
-  loadAudioFile: (filePath: string) => ipcRenderer.invoke('audio:loadFile', filePath),
+  loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
 
   // Generic file dialogs & I/O
@@ -331,7 +335,7 @@ declare global {
       // File operations
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
-      loadAudioFile: (filePath: string) => Promise<AudioFileResult | null>
+      loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
 
       // Generic file dialogs & I/O

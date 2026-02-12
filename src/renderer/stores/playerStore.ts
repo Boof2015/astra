@@ -65,6 +65,14 @@ interface PlayerStore {
 
 // Waveform cache stored outside zustand to avoid re-renders on cache updates
 const waveformCache = new Map<string, Float32Array>()
+const SLOW_PATH_THRESHOLD_MS = 1500
+
+function logSlowPath(label: string, startTime: number, details: Record<string, unknown>): void {
+  if (!import.meta.env.DEV) return
+  const elapsed = performance.now() - startTime
+  if (elapsed <= SLOW_PATH_THRESHOLD_MS) return
+  console.warn(`[perf] ${label} slow path (${Math.round(elapsed)}ms)`, details)
+}
 
 export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
@@ -104,6 +112,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
+      const loadStart = performance.now()
       // Initialize listeners on first load
       if (!listenersInitialized) {
         get()._initListeners()
@@ -119,6 +128,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         let usedFfmpegFallback = false
+        const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(audioData)
         } catch (primaryDecodeError) {
@@ -131,6 +141,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
           await audioEngine.loadAudioData(fallbackData)
         }
+        const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const resolvedTrack: Track = {
           ...track,
@@ -150,9 +161,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
+        logSlowPath('loadTrack', loadStart, {
+          trackPath: track.path,
+          usedFfmpegFallback,
+          decodeMs
+        })
         return true
       } catch (error) {
         console.error('Failed to load track:', error)
+        logSlowPath('loadTrack', loadStart, {
+          trackPath: track.path,
+          failed: true
+        })
         set({ playbackState: 'stopped' })
         return false
       }
@@ -519,6 +539,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Internal: Load and play a track from queue
     _loadAndPlayTrack: async (track: Track) => {
+      const loadStart = performance.now()
       // Initialize listeners if needed
       if (!listenersInitialized) {
         get()._initListeners()
@@ -533,15 +554,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       try {
+        const fileLoadStart = performance.now()
         // Load audio file from path
-        const result = await window.electronAPI.loadAudioFile(track.path)
+        const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+        const fileLoadMs = Math.round(performance.now() - fileLoadStart)
         if (!result) {
           console.error('Failed to load audio file:', track.path)
+          logSlowPath('queueLoadAndPlayTrack', loadStart, {
+            trackPath: track.path,
+            failed: true,
+            stage: 'fileLoad'
+          })
           set({ playbackState: 'stopped' })
           return
         }
 
         let usedFfmpegFallback = false
+        const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(result.data)
         } catch (primaryDecodeError) {
@@ -554,6 +583,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
           await audioEngine.loadAudioData(fallbackData)
         }
+        const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const resolvedTrack: Track = {
           ...track,
@@ -581,14 +611,25 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
+        logSlowPath('queueLoadAndPlayTrack', loadStart, {
+          trackPath: track.path,
+          fileLoadMs,
+          decodeMs,
+          usedFfmpegFallback
+        })
       } catch (error) {
         console.error('Failed to load track:', error)
+        logSlowPath('queueLoadAndPlayTrack', loadStart, {
+          trackPath: track.path,
+          failed: true
+        })
         set({ playbackState: 'stopped' })
       }
     },
 
     // Pre-buffer the next track for gapless playback
     _preBufferNextTrack: async () => {
+      const bufferStart = performance.now()
       const { queue, repeat } = get()
 
       if (repeat === 'one') {
@@ -601,7 +642,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const nextTrack = queue[nextIndex]
 
       try {
-        const result = await window.electronAPI.loadAudioFile(nextTrack.path)
+        const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
         // Re-check repeat mode after async gap — may have changed to 'one'
         if (get().repeat === 'one') {
           return
@@ -609,8 +650,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (result) {
           await audioEngine.preBufferNext(result.data)
         }
+        logSlowPath('preBufferNextTrack', bufferStart, {
+          trackPath: nextTrack.path,
+          loaded: Boolean(result)
+        })
       } catch (error) {
         console.error('Failed to pre-buffer next track:', error)
+        logSlowPath('preBufferNextTrack', bufferStart, {
+          trackPath: nextTrack.path,
+          failed: true
+        })
       }
     },
 

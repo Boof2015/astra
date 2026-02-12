@@ -53,11 +53,20 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
 }
 
 export default function TrackList({ tracks, showArtist = true, showAlbum = true }: TrackListProps) {
-  const { currentTrack, playbackState, queue, queueIndex, loadTrack, play, setQueue, addToQueue, addToQueueNext } = usePlayerStore()
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const playbackState = usePlayerStore((s) => s.playbackState)
+  const queue = usePlayerStore((s) => s.queue)
+  const queueIndex = usePlayerStore((s) => s.queueIndex)
+  const loadTrack = usePlayerStore((s) => s.loadTrack)
+  const play = usePlayerStore((s) => s.play)
+  const setQueue = usePlayerStore((s) => s.setQueue)
+  const addToQueue = usePlayerStore((s) => s.addToQueue)
+  const addToQueueNext = usePlayerStore((s) => s.addToQueueNext)
   const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
-  const { playlists, addToPlaylist } = usePlaylistStore()
+  const playlists = usePlaylistStore((s) => s.playlists)
+  const addToPlaylist = usePlaylistStore((s) => s.addToPlaylist)
 
   const [playlistDropdownTrack, setPlaylistDropdownTrack] = useState<string | null>(null)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
@@ -73,6 +82,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
   }, [])
 
   const queuedTrackPaths = useMemo(() => new Set(queue.map((queuedTrack) => queuedTrack.path)), [queue])
+  const queueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
   const nextQueueIndex = queueIndex >= 0 ? queueIndex + 1 : 0
   const nextQueuedTrackPath = queue[nextQueueIndex]?.path ?? null
 
@@ -112,11 +122,10 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
 
   const handleTrackClick = async (dbTrack: DbTrack, index: number) => {
     // Convert all tracks to Track format and set queue
-    const queueTracks = tracks.map(dbTrackToTrack)
     setQueue(queueTracks, index)
 
     // Load the audio file
-    const result = await window.electronAPI.loadAudioFile(dbTrack.path)
+    const result = await window.electronAPI.loadAudioFile(dbTrack.path, { metadataMode: 'none' })
     if (result) {
       const track: Track = {
         id: dbTrack.path,
@@ -157,6 +166,8 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
 
   const isCurrentTrack = (track: DbTrack) => currentTrack?.path === track.path
   const isPlaying = playbackState === 'playing'
+  const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+  const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
 
   if (tracks.length === 0) {
     return (
@@ -193,8 +204,6 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
             rowCodec.includes('atmos') ||
             rowCodec.includes('joc')
           )
-          const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
-          const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
           const currentIsAtmosJoc = Boolean(
             isCurrent && (
               currentTrack?.isAtmosJoc ||

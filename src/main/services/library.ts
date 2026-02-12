@@ -54,6 +54,12 @@ export interface Playlist {
 let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
+const BACKFILL_BATCH_SIZE = 5
+const BACKFILL_PAUSE_MS = 25
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 // Save database to file
 async function saveDatabase(): Promise<void> {
@@ -204,6 +210,15 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
 
+  // Generic app metadata table (schema/migration flags, etc.)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   await saveDatabase()
 }
 
@@ -213,6 +228,27 @@ export function closeDatabase(): void {
     db.close()
     db = null
   }
+}
+
+export function getAppMeta(key: string): string | null {
+  if (!db) return null
+  const stmt = db.prepare('SELECT value FROM app_meta WHERE key = ? LIMIT 1')
+  stmt.bind([key])
+  const value = stmt.step() ? (stmt.getAsObject().value as string | undefined) : undefined
+  stmt.free()
+  return value ?? null
+}
+
+export async function setAppMeta(key: string, value: string): Promise<void> {
+  if (!db) return
+  const now = Date.now()
+  db.run(
+    `INSERT INTO app_meta (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    [key, value, now]
+  )
+  await saveDatabase()
 }
 
 // Get all tracks
@@ -793,65 +829,106 @@ async function extractMetadata(filePath: string): Promise<{
   }
 }
 
-export async function backfillMissingChannelCounts(): Promise<{ scanned: number; updated: number; errors: number }> {
-  if (!db) return { scanned: 0, updated: 0, errors: 0 }
+function getBackfillCandidatePaths(options: {
+  folderPath?: string
+  includeLegacyAtmosHeuristic: boolean
+}): string[] {
+  if (!db) return []
 
-  const result = db.exec(`
-    SELECT path FROM tracks
-    WHERE channels IS NULL
-       OR codec IS NULL
-       OR codec_profile IS NULL
-       OR is_atmos_joc IS NULL
-       OR (
-         LOWER(format) IN ('m4a', 'mp4', 'm4b', 'm4p', 'aac')
-         AND COALESCE(channels, 0) > 2
-         AND COALESCE(is_atmos_joc, 0) = 0
-       )
-  `)
-  if (result.length === 0) return { scanned: 0, updated: 0, errors: 0 }
+  const missingMetadataClause = `
+    channels IS NULL
+    OR codec IS NULL
+    OR codec_profile IS NULL
+    OR is_atmos_joc IS NULL
+  `
+  const legacyAtmosClause = `
+    LOWER(format) IN ('m4a', 'mp4', 'm4b', 'm4p', 'aac')
+    AND COALESCE(channels, 0) > 2
+    AND COALESCE(is_atmos_joc, 0) = 0
+  `
 
-  const pathColumnIndex = result[0].columns.indexOf('path')
-  if (pathColumnIndex === -1) return { scanned: 0, updated: 0, errors: 0 }
+  const candidateClauses = [missingMetadataClause]
+  if (options.includeLegacyAtmosHeuristic) {
+    candidateClauses.push(legacyAtmosClause)
+  }
 
-  const paths = result[0].values.map((row: unknown[]) => row[pathColumnIndex] as string)
+  let sql = `SELECT path FROM tracks WHERE (${candidateClauses.join(' OR ')})`
+  const params: unknown[] = []
+  if (options.folderPath) {
+    sql += ' AND path LIKE ?'
+    params.push(`${options.folderPath}%`)
+  }
+
+  const stmt = db.prepare(sql)
+  if (params.length > 0) {
+    stmt.bind(params)
+  }
+
+  const paths: string[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject()
+    if (typeof row.path === 'string') {
+      paths.push(row.path)
+    }
+  }
+  stmt.free()
+  return paths
+}
+
+async function backfillTrackAudioMetadata(path: string): Promise<void> {
+  if (!db) return
+
+  let baseChannels: number | null = null
+  let baseCodec: string | null = null
+  let baseCodecProfile: string | null = null
+
+  try {
+    const metadata = await mm.parseFile(path)
+    baseChannels = metadata.format.numberOfChannels || null
+    baseCodec = toText(metadata.format.codec)
+    baseCodecProfile = toText(metadata.format.codecProfile)
+  } catch {
+    // We'll still attempt ffprobe-only resolution below.
+  }
+
+  const resolvedCodecMetadata = await resolveCodecMetadata(path, {
+    channels: baseChannels,
+    codec: baseCodec,
+    codecProfile: baseCodecProfile
+  })
+
+  db.run(
+    'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ? WHERE path = ?',
+    [
+      resolvedCodecMetadata.channels,
+      resolvedCodecMetadata.codec,
+      resolvedCodecMetadata.codecProfile,
+      resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
+      path
+    ]
+  )
+}
+
+async function backfillPaths(paths: string[]): Promise<{ scanned: number; updated: number; errors: number }> {
+  if (!db || paths.length === 0) {
+    return { scanned: 0, updated: 0, errors: 0 }
+  }
+
   let updated = 0
   let errors = 0
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i]
     try {
-      let baseChannels: number | null = null
-      let baseCodec: string | null = null
-      let baseCodecProfile: string | null = null
-
-      try {
-        const metadata = await mm.parseFile(path)
-        baseChannels = metadata.format.numberOfChannels || null
-        baseCodec = toText(metadata.format.codec)
-        baseCodecProfile = toText(metadata.format.codecProfile)
-      } catch {
-        // We'll still attempt ffprobe-only resolution below.
-      }
-
-      const resolvedCodecMetadata = await resolveCodecMetadata(path, {
-        channels: baseChannels,
-        codec: baseCodec,
-        codecProfile: baseCodecProfile
-      })
-
-      db.run(
-        'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ? WHERE path = ?',
-        [
-          resolvedCodecMetadata.channels,
-          resolvedCodecMetadata.codec,
-          resolvedCodecMetadata.codecProfile,
-          resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
-          path
-        ]
-      )
+      await backfillTrackAudioMetadata(path)
       updated++
     } catch (err) {
       console.warn(`Failed to backfill audio metadata for ${path}:`, err)
       errors++
+    }
+
+    if ((i + 1) % BACKFILL_BATCH_SIZE === 0 && i < paths.length - 1) {
+      await sleep(BACKFILL_PAUSE_MS)
     }
   }
 
@@ -860,6 +937,24 @@ export async function backfillMissingChannelCounts(): Promise<{ scanned: number;
   }
 
   return { scanned: paths.length, updated, errors }
+}
+
+export async function backfillMissingChannelCounts(): Promise<{ scanned: number; updated: number; errors: number }> {
+  const paths = getBackfillCandidatePaths({
+    includeLegacyAtmosHeuristic: true
+  })
+  return backfillPaths(paths)
+}
+
+export async function backfillIncompleteAudioMetadataForFolder(folderPath: string): Promise<{ scanned: number; updated: number; errors: number }> {
+  const normalizedPath = folderPath.trim()
+  if (!normalizedPath) return { scanned: 0, updated: 0, errors: 0 }
+
+  const paths = getBackfillCandidatePaths({
+    folderPath: normalizedPath,
+    includeLegacyAtmosHeuristic: false
+  })
+  return backfillPaths(paths)
 }
 
 // Get image extension from mime type
