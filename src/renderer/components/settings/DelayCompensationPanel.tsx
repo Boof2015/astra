@@ -9,6 +9,7 @@ const MODES: Array<{ value: DelayCompensationMode; label: string }> = [
   { value: 'manual', label: 'Manual' },
   { value: 'auto', label: 'Auto Guess' },
 ]
+const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 
 function formatConfidence(value: number | null): string {
   if (!Number.isFinite(value)) return 'n/a'
@@ -75,6 +76,25 @@ export default function DelayCompensationPanel() {
     if (activeDelayProfileKey === 'default') {
       return 'System Default (unresolved physical target)'
     }
+
+    if (activeDelayProfileKey.startsWith(OUTPUT_GROUP_PROFILE_KEY_PREFIX)) {
+      const groupId = activeDelayProfileKey.slice(OUTPUT_GROUP_PROFILE_KEY_PREFIX.length)
+      const groupMatchedDevice = availableDevices.find((device) => (
+        !device.isDefaultAlias
+        && device.groupId.length > 0
+        && device.groupId === groupId
+      )) ?? availableDevices.find((device) => (
+        device.groupId.length > 0
+        && device.groupId === groupId
+      ))
+
+      if (groupMatchedDevice) {
+        return groupMatchedDevice.label
+      }
+
+      return 'System Default (resolved profile group)'
+    }
+
     return availableDevices.find((device) => device.deviceId === activeDelayProfileKey)?.label
       ?? `Device ${activeDelayProfileKey}`
   }, [activeDelayProfileKey, availableDevices])

@@ -77,6 +77,7 @@ const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
+const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
@@ -294,6 +295,73 @@ function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
   return physical?.deviceId ?? null
 }
 
+function buildOutputGroupProfileKey(groupId: string): string {
+  return `${OUTPUT_GROUP_PROFILE_KEY_PREFIX}${groupId}`
+}
+
+function dedupeKeys(values: string[], exclude: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const normalized = value.trim()
+    if (normalized.length === 0) continue
+    if (normalized === exclude) continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
+function resolveActiveDelayProfileTarget(
+  selectedDeviceId: string,
+  devices: AudioDevice[]
+): {
+  key: string
+  legacyFallbackKeys: string[]
+} {
+  const normalizedSelection = selectedDeviceId.trim()
+  const isSystemDefault = normalizedSelection.length === 0 || normalizedSelection === 'default'
+
+  if (!isSystemDefault) {
+    const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
+    if (selectedDevice?.groupId) {
+      return {
+        key: buildOutputGroupProfileKey(selectedDevice.groupId),
+        legacyFallbackKeys: dedupeKeys([normalizedSelection], buildOutputGroupProfileKey(selectedDevice.groupId))
+      }
+    }
+
+    return {
+      key: normalizedSelection,
+      legacyFallbackKeys: []
+    }
+  }
+
+  const physicalDefaultId = resolvePhysicalDefaultDeviceId(devices)
+  if (!physicalDefaultId) {
+    return {
+      key: 'default',
+      legacyFallbackKeys: []
+    }
+  }
+
+  const physicalDevice = devices.find((device) => device.deviceId === physicalDefaultId) ?? null
+  if (physicalDevice?.groupId) {
+    const key = buildOutputGroupProfileKey(physicalDevice.groupId)
+    return {
+      key,
+      legacyFallbackKeys: dedupeKeys([physicalDefaultId, 'default'], key)
+    }
+  }
+
+  return {
+    key: physicalDefaultId,
+    legacyFallbackKeys: dedupeKeys(['default'], physicalDefaultId)
+  }
+}
+
 function resolvePhysicalDefaultInputDeviceId(inputs: CalibrationInputDevice[]): string | null {
   const defaultAlias = inputs.find((input) => input.isDefaultAlias)
   if (!defaultAlias || !defaultAlias.groupId) return null
@@ -305,16 +373,6 @@ function resolvePhysicalDefaultInputDeviceId(inputs: CalibrationInputDevice[]): 
   ))
 
   return physical?.deviceId ?? null
-}
-
-function resolveActiveDelayProfileKey(selectedDeviceId: string, devices: AudioDevice[]): string {
-  const normalizedSelection = selectedDeviceId.trim()
-  const isSystemDefault = normalizedSelection.length === 0 || normalizedSelection === 'default'
-  if (!isSystemDefault) {
-    return normalizedSelection
-  }
-
-  return resolvePhysicalDefaultDeviceId(devices) ?? 'default'
 }
 
 function resolveCalibrationInputDeviceKey(
@@ -391,14 +449,23 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     options: { resetCalibrationStatus?: boolean } = {}
   ): Promise<void> => {
     const state = get()
-    const activeDelayProfileKey = resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
-    const existingProfile = state.delayProfilesByDeviceKey[activeDelayProfileKey]
-    const normalizedProfile = normalizeDelayProfile(existingProfile)
+    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const activeDelayProfileKey = profileTarget.key
+
+    const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
+    const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
+    const sourceProfile = currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
+    const normalizedProfile = normalizeDelayProfile(sourceProfile)
 
     let nextProfiles = state.delayProfilesByDeviceKey
-    if (!existingProfile || !areDelayProfilesEqual(existingProfile, normalizedProfile)) {
+    const shouldWriteNormalizedProfile = (
+      !currentByActiveKey
+      || !areDelayProfilesEqual(currentByActiveKey, normalizedProfile)
+    )
+
+    if (shouldWriteNormalizedProfile) {
       nextProfiles = {
-        ...state.delayProfilesByDeviceKey,
+        ...nextProfiles,
         [activeDelayProfileKey]: normalizedProfile,
       }
       persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
@@ -416,7 +483,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         : {}),
     })
 
-    await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+    try {
+      await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+    } catch (error) {
+      console.warn('Failed to apply analysis delay for active output profile, retrying...', error)
+      try {
+        await audioEngine.ensureContextReady()
+        await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+      } catch (retryError) {
+        console.error('Failed to apply analysis delay after retry:', retryError)
+      }
+    }
   }
 
   const updateActiveDelayProfile = async (
@@ -427,8 +504,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     } = {}
   ): Promise<void> => {
     const state = get()
-    const activeDelayProfileKey = state.activeDelayProfileKey || resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
-    const currentProfile = normalizeDelayProfile(state.delayProfilesByDeviceKey[activeDelayProfileKey])
+    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const activeDelayProfileKey = profileTarget.key
+    const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
+    const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
+    const currentProfile = normalizeDelayProfile(
+      currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
+    )
     const updatedProfile = normalizeDelayProfile(updater(currentProfile))
 
     const nextProfiles = {
@@ -447,7 +529,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     })
 
     persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
-    await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+    try {
+      await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+    } catch (error) {
+      console.warn('Failed to apply analysis delay after profile update, retrying...', error)
+      try {
+        await audioEngine.ensureContextReady()
+        await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+      } catch (retryError) {
+        console.error('Failed to apply analysis delay after retry:', retryError)
+      }
+    }
   }
 
   const handleMediaDeviceChange = async (): Promise<void> => {
@@ -648,8 +740,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       const state = get()
-      const activeDelayProfileKey = state.activeDelayProfileKey || resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
-      const currentActiveProfile = normalizeDelayProfile(state.delayProfilesByDeviceKey[activeDelayProfileKey])
+      const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+      const activeDelayProfileKey = profileTarget.key
+      const currentByActiveKey = state.delayProfilesByDeviceKey[activeDelayProfileKey]
+      const legacyProfileEntry = profileTarget.legacyFallbackKeys.find((key) => state.delayProfilesByDeviceKey[key] != null)
+      const currentActiveProfile = normalizeDelayProfile(
+        currentByActiveKey ?? (legacyProfileEntry ? state.delayProfilesByDeviceKey[legacyProfileEntry] : undefined)
+      )
       const calibrationInputKey = resolveCalibrationInputDeviceKey(
         calibrationInputDeviceId,
         state.availableInputDevices
@@ -741,7 +838,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       })
 
       persistDelaySettings(nextProfiles, nextBaselines)
-      await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+      try {
+        await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+      } catch (error) {
+        console.warn('Failed to apply analysis delay after calibration, retrying...', error)
+        try {
+          await audioEngine.ensureContextReady()
+          await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+        } catch (retryError) {
+          console.error('Failed to apply analysis delay after retry:', retryError)
+        }
+      }
     },
 
     resetDelayToAutoGuess: async () => {
