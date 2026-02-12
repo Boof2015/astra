@@ -3,6 +3,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
+import { useAudioSettingsStore } from './audioSettingsStore'
 
 interface PlayerStore {
   // State
@@ -18,6 +19,14 @@ interface PlayerStore {
     trackPath: string
     title: string
     artist: string
+  } | null
+  outputDelayNotice: {
+    id: number
+    trackPath: string
+    title: string
+    artist: string
+    delayMs: number
+    outputLabel: string
   } | null
 
   // Queue state
@@ -53,11 +62,12 @@ interface PlayerStore {
   getUpcomingTracks: () => Track[]
   getPreviousTracks: () => Track[]
   clearFfmpegFallbackNotice: () => void
+  clearOutputDelayNotice: () => void
 
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track) => Promise<void>
+  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<void>
   _preBufferNextTrack: () => Promise<void>
   _getNextIndex: () => number
   _generateShuffleOrder: (currentQueueIndex: number) => void
@@ -66,6 +76,7 @@ interface PlayerStore {
 // Waveform cache stored outside zustand to avoid re-renders on cache updates
 const waveformCache = new Map<string, Float32Array>()
 const SLOW_PATH_THRESHOLD_MS = 1500
+const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 
 function logSlowPath(label: string, startTime: number, details: Record<string, unknown>): void {
   if (!import.meta.env.DEV) return
@@ -78,6 +89,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let ffmpegFallbackNoticeId = 0
+  let outputDelayNoticeId = 0
+  let pendingManualLoadCueTrack: Track | null = null
 
   const showFfmpegFallbackNotice = (track: Track) => {
     ffmpegFallbackNoticeId += 1
@@ -87,6 +100,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         trackPath: track.path,
         title: track.title,
         artist: track.artist
+      }
+    })
+  }
+
+  const showOutputDelayNotice = (track: Track) => {
+    const audioSettingsState = useAudioSettingsStore.getState()
+    const delayMs = Math.round(audioSettingsState.effectiveDelayMs)
+    if (delayMs < OUTPUT_DELAY_NOTICE_THRESHOLD_MS) return
+
+    const selectedDeviceLabel = audioSettingsState.selectedDeviceId
+      ? audioSettingsState.availableDevices.find((device) => device.deviceId === audioSettingsState.selectedDeviceId)?.label
+      : null
+
+    outputDelayNoticeId += 1
+    set({
+      outputDelayNotice: {
+        id: outputDelayNoticeId,
+        trackPath: track.path,
+        title: track.title,
+        artist: track.artist,
+        delayMs,
+        outputLabel: selectedDeviceLabel ?? 'System Default Output'
       }
     })
   }
@@ -101,6 +136,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     isMuted: false,
     waveformData: null,
     ffmpegFallbackNotice: null,
+    outputDelayNotice: null,
 
     // Queue state
     queue: [],
@@ -113,6 +149,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
       const loadStart = performance.now()
+      pendingManualLoadCueTrack = null
       // Initialize listeners on first load
       if (!listenersInitialized) {
         get()._initListeners()
@@ -155,6 +192,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }
+        pendingManualLoadCueTrack = resolvedTrack
 
         // Record recently played
         useLibraryStore.getState().recordPlay(track.path)
@@ -174,12 +212,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           failed: true
         })
         set({ playbackState: 'stopped' })
+        pendingManualLoadCueTrack = null
         return false
       }
     },
 
     // Playback controls
     play: async () => {
+      if (pendingManualLoadCueTrack) {
+        showOutputDelayNotice(pendingManualLoadCueTrack)
+        pendingManualLoadCueTrack = null
+      }
       await audioEngine.play()
     },
 
@@ -192,6 +235,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     stop: () => {
+      pendingManualLoadCueTrack = null
       audioEngine.stop()
     },
 
@@ -415,6 +459,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({ ffmpegFallbackNotice: null })
     },
 
+    clearOutputDelayNotice: () => {
+      set({ outputDelayNotice: null })
+    },
+
     // Get the next index based on shuffle/repeat settings
     _getNextIndex: () => {
       const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
@@ -508,7 +556,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
       }
 
-      await _loadAndPlayTrack(queue[index])
+      await _loadAndPlayTrack(queue[index], { manualStart: true })
     },
 
     toggleShuffle: () => {
@@ -538,8 +586,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     // Internal: Load and play a track from queue
-    _loadAndPlayTrack: async (track: Track) => {
+    _loadAndPlayTrack: async (track: Track, options = {}) => {
       const loadStart = performance.now()
+      const manualStart = Boolean(options.manualStart)
+      pendingManualLoadCueTrack = null
       // Initialize listeners if needed
       if (!listenersInitialized) {
         get()._initListeners()
@@ -603,6 +653,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
+        }
+        if (manualStart) {
+          showOutputDelayNotice(resolvedTrack)
         }
         await audioEngine.play()
 

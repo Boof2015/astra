@@ -1394,6 +1394,54 @@ button, .titlebar {
   }
 }
 
+.output-delay-cue {
+  position: fixed;
+  right: clamp(18px, 4vw, 40px);
+  bottom: calc(var(--now-playing-height) + 14px);
+  z-index: 241;
+  width: min(360px, calc(100vw - 40px));
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.3s ease, transform 0.36s ease;
+}
+
+.output-delay-cue-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.output-delay-cue-fullscreen {
+  bottom: clamp(18px, 3.6vh, 36px);
+}
+
+.output-delay-cue-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.94);
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(250, 204, 21, 0.36);
+  background: rgba(250, 204, 21, 0.2);
+  flex-shrink: 0;
+}
+
+.output-delay-cue-fill {
+  animation-name: outputDelayCueFill;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes outputDelayCueFill {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 @keyframes fullscreenBackdropLayerEnter {
   from {
     opacity: 0;
@@ -1428,8 +1476,11 @@ button, .titlebar {
   .fullscreen-hero,
   .fullscreen-next-cue,
   .decode-fallback-cue,
-  .fullscreen-next-cue-fill {
+  .output-delay-cue,
+  .fullscreen-next-cue-fill,
+  .output-delay-cue-fill {
     transition-duration: 0.08s !important;
+    animation-duration: 0.08s !important;
   }
 
   .fullscreen-hero-enter {
@@ -1439,9 +1490,11 @@ button, .titlebar {
   .fullscreen-hero,
   .fullscreen-next-cue,
   .decode-fallback-cue,
+  .output-delay-cue,
   .fullscreen-next-cue-visible,
   .fullscreen-next-cue-handoff,
-  .decode-fallback-cue-visible {
+  .decode-fallback-cue-visible,
+  .output-delay-cue-visible {
     transform: none !important;
   }
 }
@@ -5798,6 +5851,11 @@ body::after {
     right: 16px;
     width: min(320px, calc(100vw - 32px));
   }
+
+  .output-delay-cue {
+    right: 16px;
+    width: min(320px, calc(100vw - 32px));
+  }
 }
 
 @media (max-width: 760px) {
@@ -5988,6 +6046,12 @@ body::after {
   }
 
   .decode-fallback-cue {
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+
+  .output-delay-cue {
     right: 10px;
     left: 10px;
     width: auto;
@@ -6285,6 +6349,101 @@ body::after {
   width: min(460px, 100%);
   max-height: 280px;
   overflow-y: auto;
+}
+
+.delay-comp-panel {
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(7, 11, 18, 0.9), rgba(3, 4, 8, 0.92));
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.delay-comp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.delay-comp-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.86);
+  text-transform: uppercase;
+}
+
+.delay-comp-device {
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.delay-comp-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.delay-comp-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.delay-comp-offset-row {
+  display: grid;
+  grid-template-columns: 1fr 90px;
+  gap: 8px;
+  align-items: center;
+}
+
+.delay-comp-slider {
+  width: 100%;
+  accent-color: #38bdf8;
+}
+
+.delay-comp-number {
+  width: 100%;
+  padding: 0 8px;
+}
+
+.delay-comp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.delay-comp-note {
+  margin-top: 0;
+}
+
+.delay-comp-note-running {
+  color: #fef08a;
+}
+
+.delay-comp-note-success {
+  color: #86efac;
+}
+
+.delay-comp-note-error {
+  color: #fecaca;
 }
 
 .channel-routing-panel {
@@ -6641,6 +6800,19 @@ body::after {
 
   .audio-output-dropdown {
     width: 100%;
+  }
+
+  .delay-comp-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .delay-comp-device {
+    max-width: 100%;
+  }
+
+  .delay-comp-offset-row {
+    grid-template-columns: 1fr;
   }
 
   .channel-routing-header {

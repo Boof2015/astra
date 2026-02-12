@@ -2,6 +2,7 @@ import { useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
+import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
@@ -131,6 +132,7 @@ export default function SettingsView() {
             <div className="settings-audio-control">
               <AudioOutputSelect />
             </div>
+            <DelayCompensationPanel />
             <ChannelRoutingPanel />
           </section>
 

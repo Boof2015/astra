@@ -1,141 +1,842 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
 
-interface AudioDevice {
+export interface AudioDevice {
   deviceId: string
   label: string
+  groupId: string
+  isDefaultAlias: boolean
+}
+
+export interface CalibrationInputDevice {
+  deviceId: string
+  label: string
+  groupId: string
+  isDefaultAlias: boolean
+}
+
+export type DelayCompensationMode = 'manual' | 'auto'
+
+type DelayCalibrationState = 'idle' | 'running' | 'success' | 'error'
+
+export interface DelayCompensationProfile {
+  enabled: boolean
+  mode: DelayCompensationMode
+  manualOffsetMs: number
+  autoOffsetMs: number | null
+  lastRoundTripMs: number | null
+  lastCalibrationInputKey: string | null
+  lastCalibrationSampleRate: number | null
+  lastCalibrationConfidence: number | null
+  lastCalibrationAt: number | null
+}
+
+export interface InputDelayBaseline {
+  baselineRttMs: number
+  sampleRate: number
+  updatedAt: number
 }
 
 interface AudioSettingsStore {
   selectedDeviceId: string
   availableDevices: AudioDevice[]
+  availableInputDevices: CalibrationInputDevice[]
+  selectedCalibrationInputDeviceId: string
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
   channelRoutingMap: number[] | null
 
+  delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
+  inputBaselinesByKey: Record<string, InputDelayBaseline>
+  activeDelayProfileKey: string
+  activeDelayProfile: DelayCompensationProfile
+  effectiveDelayMs: number
+  delayCalibrationState: DelayCalibrationState
+  delayCalibrationMessage: string | null
+
   refreshDevices: () => Promise<void>
   refreshOutputChannelCount: () => Promise<void>
   selectDevice: (deviceId: string) => Promise<void>
+  setCalibrationInputDeviceId: (deviceId: string) => void
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
+
+  setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
+  setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
+  setDelayCompensationManualOffsetMs: (offsetMs: number) => Promise<void>
+  runDelayAutoCalibration: () => Promise<void>
+  resetDelayToAutoGuess: () => Promise<void>
+
   initFromSaved: () => Promise<void>
 }
 
 const STORAGE_KEY = 'astra-audio-output-device'
+const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
+const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
+const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 
-export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => ({
-  selectedDeviceId: '',
-  availableDevices: [],
-  selectedOutputChannelCount: null,
-  multichannelEnabled: false,
-  channelRoutingMap: null,
+const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
+  enabled: false,
+  mode: 'manual',
+  manualOffsetMs: 0,
+  autoOffsetMs: null,
+  lastRoundTripMs: null,
+  lastCalibrationInputKey: null,
+  lastCalibrationSampleRate: null,
+  lastCalibrationConfidence: null,
+  lastCalibrationAt: null,
+}
 
-  refreshDevices: async () => {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      const audioOutputs = devices
-        .filter(d => d.kind === 'audiooutput')
-        .map(d => ({
-          deviceId: d.deviceId,
-          label: d.label || `Speaker (${d.deviceId.slice(0, 8)}...)`
-        }))
-      set({ availableDevices: audioOutputs })
-      await get().refreshOutputChannelCount()
-    } catch {
-      console.warn('Could not enumerate audio devices')
+const MAX_DELAY_MS = 1500
+const MAX_BASELINE_RTT_MS = 5000
+const DELAY_STEP_MS = 5
+const BASELINE_IMPROVEMENT_THRESHOLD_MS = 10
+let mediaDeviceChangeListenerAttached = false
+
+function clampAppliedDelayMs(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  const rounded = Math.round(value / DELAY_STEP_MS) * DELAY_STEP_MS
+  return Math.max(0, Math.min(MAX_DELAY_MS, rounded))
+}
+
+function clampSignedFineTuneMs(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  const rounded = Math.round(value / DELAY_STEP_MS) * DELAY_STEP_MS
+  return Math.max(-MAX_DELAY_MS, Math.min(MAX_DELAY_MS, rounded))
+}
+
+function clampManualOffsetForMode(mode: DelayCompensationMode, value: number): number {
+  if (mode === 'manual') {
+    return clampAppliedDelayMs(value)
+  }
+
+  return clampSignedFineTuneMs(value)
+}
+
+function clampRoundTripMs(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(MAX_BASELINE_RTT_MS, Math.round(value)))
+}
+
+function normalizeSampleRate(value: unknown): number | null {
+  if (!Number.isFinite(value)) return null
+  const rounded = Math.round(Number(value))
+  if (rounded <= 0) return null
+  return rounded
+}
+
+function normalizeDelayMode(value: unknown): DelayCompensationMode {
+  if (value === 'auto' || value === 'auto-manual') return 'auto'
+  if (value === 'manual') return 'manual'
+  return 'manual'
+}
+
+function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ...DEFAULT_DELAY_PROFILE }
+  }
+
+  const raw = value as Partial<DelayCompensationProfile>
+  const mode = normalizeDelayMode(raw.mode)
+  const autoOffsetMs = raw.autoOffsetMs == null ? null : clampAppliedDelayMs(raw.autoOffsetMs)
+  const lastRoundTripMs = raw.lastRoundTripMs == null ? null : clampRoundTripMs(raw.lastRoundTripMs)
+  const lastCalibrationInputKey = typeof raw.lastCalibrationInputKey === 'string' && raw.lastCalibrationInputKey.trim().length > 0
+    ? raw.lastCalibrationInputKey.trim()
+    : null
+
+  return {
+    enabled: Boolean(raw.enabled),
+    mode,
+    manualOffsetMs: clampManualOffsetForMode(mode, raw.manualOffsetMs ?? 0),
+    autoOffsetMs,
+    lastRoundTripMs,
+    lastCalibrationInputKey,
+    lastCalibrationSampleRate: normalizeSampleRate(raw.lastCalibrationSampleRate),
+    lastCalibrationConfidence: Number.isFinite(raw.lastCalibrationConfidence)
+      ? Math.max(0, Math.min(1, Number(raw.lastCalibrationConfidence)))
+      : null,
+    lastCalibrationAt: Number.isFinite(raw.lastCalibrationAt)
+      ? Math.max(0, Math.trunc(Number(raw.lastCalibrationAt)))
+      : null,
+  }
+}
+
+function areDelayProfilesEqual(a: DelayCompensationProfile, b: DelayCompensationProfile): boolean {
+  return a.enabled === b.enabled
+    && a.mode === b.mode
+    && a.manualOffsetMs === b.manualOffsetMs
+    && a.autoOffsetMs === b.autoOffsetMs
+    && a.lastRoundTripMs === b.lastRoundTripMs
+    && a.lastCalibrationInputKey === b.lastCalibrationInputKey
+    && a.lastCalibrationSampleRate === b.lastCalibrationSampleRate
+    && a.lastCalibrationConfidence === b.lastCalibrationConfidence
+    && a.lastCalibrationAt === b.lastCalibrationAt
+}
+
+function parseDelayProfilesValue(value: unknown): Record<string, DelayCompensationProfile> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const map: Record<string, DelayCompensationProfile> = {}
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (!key || typeof key !== 'string') continue
+    map[key] = normalizeDelayProfile(rawValue)
+  }
+
+  return map
+}
+
+function parseDelayProfiles(raw: string | null): Record<string, DelayCompensationProfile> {
+  if (!raw) return {}
+
+  try {
+    return parseDelayProfilesValue(JSON.parse(raw))
+  } catch {
+    return {}
+  }
+}
+
+function normalizeInputDelayBaseline(value: unknown): InputDelayBaseline | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const raw = value as Partial<InputDelayBaseline>
+  const sampleRate = normalizeSampleRate(raw.sampleRate)
+  if (!sampleRate) return null
+
+  return {
+    baselineRttMs: clampRoundTripMs(raw.baselineRttMs ?? 0),
+    sampleRate,
+    updatedAt: Number.isFinite(raw.updatedAt)
+      ? Math.max(0, Math.trunc(Number(raw.updatedAt)))
+      : Date.now()
+  }
+}
+
+function parseInputDelayBaselines(value: unknown): Record<string, InputDelayBaseline> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const map: Record<string, InputDelayBaseline> = {}
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (!key || typeof key !== 'string') continue
+    const normalized = normalizeInputDelayBaseline(rawValue)
+    if (!normalized) continue
+    map[key] = normalized
+  }
+
+  return map
+}
+
+function parseDelaySettingsV2(raw: string | null): {
+  profiles: Record<string, DelayCompensationProfile>
+  inputBaselinesByKey: Record<string, InputDelayBaseline>
+} {
+  if (!raw) {
+    return {
+      profiles: {},
+      inputBaselinesByKey: {}
     }
-  },
+  }
 
-  refreshOutputChannelCount: async () => {
-    try {
-      await audioEngine.ensureContextReady()
-      const maxChannels = audioEngine.getOutputMaxChannelCount()
-      set({ selectedOutputChannelCount: maxChannels })
-    } catch {
-      set({ selectedOutputChannelCount: null })
-    }
-  },
-
-  selectDevice: async (deviceId: string) => {
-    try {
-      await audioEngine.setOutputDevice(deviceId)
-      set({ selectedDeviceId: deviceId })
-      localStorage.setItem(STORAGE_KEY, deviceId)
-      await get().refreshOutputChannelCount()
-    } catch (err) {
-      console.error('Failed to set audio output device:', err)
-    }
-  },
-
-  setMultichannelEnabled: async (enabled: boolean) => {
-    set({ multichannelEnabled: enabled })
-    localStorage.setItem(MULTICHANNEL_STORAGE_KEY, enabled ? '1' : '0')
-    await audioEngine.setMultichannelEnabled(enabled)
-  },
-
-  setChannelRoutingMap: async (map: number[] | null) => {
-    const normalized = map && map.length > 0
-      ? map.map((value) => {
-          if (!Number.isFinite(value)) return -1
-          const rounded = Math.trunc(value)
-          return rounded >= -1 ? rounded : -1
-        })
-      : null
-
-    set({ channelRoutingMap: normalized })
-
-    if (normalized) {
-      localStorage.setItem(ROUTING_STORAGE_KEY, JSON.stringify(normalized))
-    } else {
-      localStorage.removeItem(ROUTING_STORAGE_KEY)
-    }
-
-    await audioEngine.setChannelRoutingMap(normalized)
-  },
-
-  resetChannelRoutingMap: async () => {
-    await get().setChannelRoutingMap(null)
-  },
-
-  initFromSaved: async () => {
-    await get().refreshDevices()
-
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) {
-      const { availableDevices } = get()
-      const exists = availableDevices.some(d => d.deviceId === saved)
-      if (exists) {
-        await get().selectDevice(saved)
-      } else {
-        // Saved device no longer available, use default
-        localStorage.removeItem(STORAGE_KEY)
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        profiles: {},
+        inputBaselinesByKey: {}
       }
     }
 
-    const savedMultichannel = localStorage.getItem(MULTICHANNEL_STORAGE_KEY)
-    const multichannelEnabled = savedMultichannel === '1'
-    await get().setMultichannelEnabled(multichannelEnabled)
+    const envelope = parsed as {
+      profiles?: unknown
+      inputBaselinesByKey?: unknown
+    }
 
-    const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
-    if (!savedRoutingMap) return
+    return {
+      profiles: parseDelayProfilesValue(envelope.profiles),
+      inputBaselinesByKey: parseInputDelayBaselines(envelope.inputBaselinesByKey)
+    }
+  } catch {
+    return {
+      profiles: {},
+      inputBaselinesByKey: {}
+    }
+  }
+}
 
-    try {
-      const parsed = JSON.parse(savedRoutingMap)
-      if (Array.isArray(parsed)) {
-        const map = parsed.map((value) => {
+function computeEffectiveDelayMs(profile: DelayCompensationProfile): number {
+  if (!profile.enabled) return 0
+
+  if (profile.mode === 'manual') {
+    return clampAppliedDelayMs(profile.manualOffsetMs)
+  }
+
+  return clampAppliedDelayMs((profile.autoOffsetMs ?? 0) + clampSignedFineTuneMs(profile.manualOffsetMs))
+}
+
+function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
+  const defaultAlias = devices.find((device) => device.isDefaultAlias)
+  if (!defaultAlias || !defaultAlias.groupId) return null
+
+  const physical = devices.find((device) => (
+    !device.isDefaultAlias
+    && device.groupId.length > 0
+    && device.groupId === defaultAlias.groupId
+  ))
+
+  return physical?.deviceId ?? null
+}
+
+function resolvePhysicalDefaultInputDeviceId(inputs: CalibrationInputDevice[]): string | null {
+  const defaultAlias = inputs.find((input) => input.isDefaultAlias)
+  if (!defaultAlias || !defaultAlias.groupId) return null
+
+  const physical = inputs.find((input) => (
+    !input.isDefaultAlias
+    && input.groupId.length > 0
+    && input.groupId === defaultAlias.groupId
+  ))
+
+  return physical?.deviceId ?? null
+}
+
+function resolveActiveDelayProfileKey(selectedDeviceId: string, devices: AudioDevice[]): string {
+  const normalizedSelection = selectedDeviceId.trim()
+  const isSystemDefault = normalizedSelection.length === 0 || normalizedSelection === 'default'
+  if (!isSystemDefault) {
+    return normalizedSelection
+  }
+
+  return resolvePhysicalDefaultDeviceId(devices) ?? 'default'
+}
+
+function resolveCalibrationInputDeviceKey(
+  selectedInputDeviceId: string,
+  inputs: CalibrationInputDevice[]
+): string {
+  const normalizedSelection = selectedInputDeviceId.trim()
+  const isSystemDefault = normalizedSelection.length === 0 || normalizedSelection === 'default'
+  if (!isSystemDefault) {
+    return normalizedSelection
+  }
+
+  return resolvePhysicalDefaultInputDeviceId(inputs) ?? 'default-input'
+}
+
+function buildInputBaselineKey(inputDeviceKey: string, sampleRate: number): string {
+  return `${inputDeviceKey}@${sampleRate}`
+}
+
+function buildAudioDevice(entry: MediaDeviceInfo): AudioDevice {
+  const deviceId = entry.deviceId
+  const isDefaultAlias = deviceId === 'default' || deviceId === ''
+  const fallbackLabel = isDefaultAlias
+    ? 'System Default Device'
+    : `Speaker (${deviceId.slice(0, 8)}...)`
+
+  return {
+    deviceId,
+    label: entry.label || fallbackLabel,
+    groupId: entry.groupId || '',
+    isDefaultAlias,
+  }
+}
+
+function buildCalibrationInputDevice(entry: MediaDeviceInfo): CalibrationInputDevice {
+  const deviceId = entry.deviceId
+  const isDefaultAlias = deviceId === 'default' || deviceId === ''
+  const fallbackLabel = isDefaultAlias
+    ? 'System Default Input'
+    : `Input (${deviceId.slice(0, 8)}...)`
+
+  return {
+    deviceId,
+    label: entry.label || fallbackLabel,
+    groupId: entry.groupId || '',
+    isDefaultAlias,
+  }
+}
+
+function formatCalibrationFailureMessage(message: string, code: string): string {
+  if (code === 'mic-denied' || code === 'mic-unavailable') {
+    return `${message} Falling back to manual offset.`
+  }
+  if (code === 'low-confidence') {
+    return `${message} Keep using manual offset or retry in a quieter setup.`
+  }
+  return message
+}
+
+export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
+  const persistDelaySettings = (
+    profiles: Record<string, DelayCompensationProfile>,
+    inputBaselinesByKey: Record<string, InputDelayBaseline>
+  ) => {
+    localStorage.setItem(DELAY_PROFILE_STORAGE_KEY_V2, JSON.stringify({
+      version: 2,
+      profiles,
+      inputBaselinesByKey
+    }))
+    localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
+  }
+
+  const syncDelayCompensationForActiveDevice = async (
+    options: { resetCalibrationStatus?: boolean } = {}
+  ): Promise<void> => {
+    const state = get()
+    const activeDelayProfileKey = resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
+    const existingProfile = state.delayProfilesByDeviceKey[activeDelayProfileKey]
+    const normalizedProfile = normalizeDelayProfile(existingProfile)
+
+    let nextProfiles = state.delayProfilesByDeviceKey
+    if (!existingProfile || !areDelayProfilesEqual(existingProfile, normalizedProfile)) {
+      nextProfiles = {
+        ...state.delayProfilesByDeviceKey,
+        [activeDelayProfileKey]: normalizedProfile,
+      }
+      persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
+    }
+
+    const effectiveDelayMs = computeEffectiveDelayMs(normalizedProfile)
+
+    set({
+      delayProfilesByDeviceKey: nextProfiles,
+      activeDelayProfileKey,
+      activeDelayProfile: normalizedProfile,
+      effectiveDelayMs,
+      ...(options.resetCalibrationStatus
+        ? { delayCalibrationState: 'idle' as const, delayCalibrationMessage: null }
+        : {}),
+    })
+
+    await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+  }
+
+  const updateActiveDelayProfile = async (
+    updater: (profile: DelayCompensationProfile) => DelayCompensationProfile,
+    options: {
+      calibrationState?: DelayCalibrationState
+      calibrationMessage?: string | null
+    } = {}
+  ): Promise<void> => {
+    const state = get()
+    const activeDelayProfileKey = state.activeDelayProfileKey || resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
+    const currentProfile = normalizeDelayProfile(state.delayProfilesByDeviceKey[activeDelayProfileKey])
+    const updatedProfile = normalizeDelayProfile(updater(currentProfile))
+
+    const nextProfiles = {
+      ...state.delayProfilesByDeviceKey,
+      [activeDelayProfileKey]: updatedProfile,
+    }
+    const effectiveDelayMs = computeEffectiveDelayMs(updatedProfile)
+
+    set({
+      delayProfilesByDeviceKey: nextProfiles,
+      activeDelayProfileKey,
+      activeDelayProfile: updatedProfile,
+      effectiveDelayMs,
+      ...(options.calibrationState ? { delayCalibrationState: options.calibrationState } : {}),
+      ...(options.calibrationMessage !== undefined ? { delayCalibrationMessage: options.calibrationMessage } : {}),
+    })
+
+    persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
+    await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+  }
+
+  const handleMediaDeviceChange = async (): Promise<void> => {
+    await get().refreshDevices()
+
+    const state = get()
+    const selectedDeviceId = state.selectedDeviceId.trim()
+    if (selectedDeviceId.length > 0 && selectedDeviceId !== 'default') {
+      const deviceStillExists = state.availableDevices.some((device) => device.deviceId === selectedDeviceId)
+      if (!deviceStillExists) {
+        try {
+          await audioEngine.setOutputDevice('')
+        } catch {
+          // Ignore failures when falling back to default output.
+        }
+        set({ selectedDeviceId: '' })
+        localStorage.removeItem(STORAGE_KEY)
+        await syncDelayCompensationForActiveDevice()
+      }
+    }
+  }
+
+  const ensureMediaDeviceChangeListener = (): void => {
+    if (mediaDeviceChangeListenerAttached) return
+    if (!navigator.mediaDevices?.addEventListener) return
+
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+      void handleMediaDeviceChange()
+    })
+
+    mediaDeviceChangeListenerAttached = true
+  }
+
+  return {
+    selectedDeviceId: '',
+    availableDevices: [],
+    availableInputDevices: [],
+    selectedCalibrationInputDeviceId: '',
+    selectedOutputChannelCount: null,
+    multichannelEnabled: false,
+    channelRoutingMap: null,
+
+    delayProfilesByDeviceKey: {},
+    inputBaselinesByKey: {},
+    activeDelayProfileKey: 'default',
+    activeDelayProfile: { ...DEFAULT_DELAY_PROFILE },
+    effectiveDelayMs: 0,
+    delayCalibrationState: 'idle',
+    delayCalibrationMessage: null,
+
+    refreshDevices: async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioOutputs = devices
+          .filter((device) => device.kind === 'audiooutput')
+          .map(buildAudioDevice)
+        const audioInputs = devices
+          .filter((device) => device.kind === 'audioinput')
+          .map(buildCalibrationInputDevice)
+
+        set({
+          availableDevices: audioOutputs,
+          availableInputDevices: audioInputs
+        })
+
+        const selectedInputId = get().selectedCalibrationInputDeviceId.trim()
+        if (selectedInputId.length > 0 && selectedInputId !== 'default') {
+          const inputStillExists = audioInputs.some((device) => device.deviceId === selectedInputId)
+          if (!inputStillExists) {
+            set({ selectedCalibrationInputDeviceId: '' })
+            localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
+          }
+        }
+
+        await get().refreshOutputChannelCount()
+        await syncDelayCompensationForActiveDevice()
+      } catch {
+        console.warn('Could not enumerate audio devices')
+      }
+    },
+
+    refreshOutputChannelCount: async () => {
+      try {
+        await audioEngine.ensureContextReady()
+        const maxChannels = audioEngine.getOutputMaxChannelCount()
+        set({ selectedOutputChannelCount: maxChannels })
+      } catch {
+        set({ selectedOutputChannelCount: null })
+      }
+    },
+
+    selectDevice: async (deviceId: string) => {
+      try {
+        await audioEngine.setOutputDevice(deviceId)
+        set({ selectedDeviceId: deviceId })
+
+        if (deviceId.trim().length > 0) {
+          localStorage.setItem(STORAGE_KEY, deviceId)
+        } else {
+          localStorage.removeItem(STORAGE_KEY)
+        }
+
+        await get().refreshOutputChannelCount()
+        await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
+      } catch (err) {
+        console.error('Failed to set audio output device:', err)
+      }
+    },
+
+    setCalibrationInputDeviceId: (deviceId: string) => {
+      const normalized = deviceId.trim()
+      set({ selectedCalibrationInputDeviceId: deviceId })
+      if (normalized.length > 0) {
+        localStorage.setItem(CALIBRATION_INPUT_STORAGE_KEY, deviceId)
+      } else {
+        localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
+      }
+    },
+
+    setMultichannelEnabled: async (enabled: boolean) => {
+      set({ multichannelEnabled: enabled })
+      localStorage.setItem(MULTICHANNEL_STORAGE_KEY, enabled ? '1' : '0')
+      await audioEngine.setMultichannelEnabled(enabled)
+    },
+
+    setChannelRoutingMap: async (map: number[] | null) => {
+      const normalized = map && map.length > 0
+        ? map.map((value) => {
           if (!Number.isFinite(value)) return -1
           const rounded = Math.trunc(value)
           return rounded >= -1 ? rounded : -1
         })
-        await get().setChannelRoutingMap(map)
+        : null
+
+      set({ channelRoutingMap: normalized })
+
+      if (normalized) {
+        localStorage.setItem(ROUTING_STORAGE_KEY, JSON.stringify(normalized))
       } else {
         localStorage.removeItem(ROUTING_STORAGE_KEY)
       }
-    } catch {
-      localStorage.removeItem(ROUTING_STORAGE_KEY)
+
+      await audioEngine.setChannelRoutingMap(normalized)
+    },
+
+    resetChannelRoutingMap: async () => {
+      await get().setChannelRoutingMap(null)
+    },
+
+    setDelayCompensationEnabled: async (enabled: boolean) => {
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        enabled,
+      }))
+    },
+
+    setDelayCompensationMode: async (mode: DelayCompensationMode) => {
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        mode,
+      }))
+    },
+
+    setDelayCompensationManualOffsetMs: async (offsetMs: number) => {
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        manualOffsetMs: clampManualOffsetForMode(profile.mode, offsetMs),
+      }))
+    },
+
+    runDelayAutoCalibration: async () => {
+      set({
+        delayCalibrationState: 'running',
+        delayCalibrationMessage: 'Running output calibration...'
+      })
+
+      const calibrationInputDeviceId = get().selectedCalibrationInputDeviceId
+      const result = await audioEngine.runOutputDelayCalibration(calibrationInputDeviceId)
+      if (!result.ok) {
+        const shouldFallbackToManual = (
+          (result.code === 'mic-denied' || result.code === 'mic-unavailable' || result.code === 'low-confidence')
+          && get().activeDelayProfile.mode === 'auto'
+          && get().activeDelayProfile.autoOffsetMs == null
+        )
+
+        if (shouldFallbackToManual) {
+          await updateActiveDelayProfile((profile) => ({
+            ...profile,
+            mode: 'manual',
+          }))
+        }
+
+        set({
+          delayCalibrationState: 'error',
+          delayCalibrationMessage: formatCalibrationFailureMessage(result.message, result.code)
+        })
+        return
+      }
+
+      const state = get()
+      const activeDelayProfileKey = state.activeDelayProfileKey || resolveActiveDelayProfileKey(state.selectedDeviceId, state.availableDevices)
+      const currentActiveProfile = normalizeDelayProfile(state.delayProfilesByDeviceKey[activeDelayProfileKey])
+      const calibrationInputKey = resolveCalibrationInputDeviceKey(
+        calibrationInputDeviceId,
+        state.availableInputDevices
+      )
+      const sampleRate = normalizeSampleRate(result.sampleRate)
+        ?? Math.max(1, Math.round(audioEngine.getSampleRate()))
+      const roundTripMs = clampRoundTripMs(result.roundTripMs)
+      const baselineKey = buildInputBaselineKey(calibrationInputKey, sampleRate)
+      const existingBaseline = state.inputBaselinesByKey[baselineKey]
+      const now = Date.now()
+
+      let baselineRttMs = roundTripMs
+      let baselineWasLowered = false
+      let nextBaselines = state.inputBaselinesByKey
+
+      if (!existingBaseline) {
+        nextBaselines = {
+          ...state.inputBaselinesByKey,
+          [baselineKey]: {
+            baselineRttMs: roundTripMs,
+            sampleRate,
+            updatedAt: now
+          }
+        }
+      } else {
+        const improvement = existingBaseline.baselineRttMs - roundTripMs
+        if (improvement >= BASELINE_IMPROVEMENT_THRESHOLD_MS) {
+          baselineWasLowered = true
+          nextBaselines = {
+            ...state.inputBaselinesByKey,
+            [baselineKey]: {
+              baselineRttMs: roundTripMs,
+              sampleRate,
+              updatedAt: now
+            }
+          }
+        } else {
+          baselineRttMs = existingBaseline.baselineRttMs
+        }
+      }
+
+      baselineRttMs = nextBaselines[baselineKey]?.baselineRttMs ?? baselineRttMs
+      const derivedOutputMs = clampAppliedDelayMs(roundTripMs - baselineRttMs)
+      const nextProfiles: Record<string, DelayCompensationProfile> = {
+        ...state.delayProfilesByDeviceKey,
+        [activeDelayProfileKey]: normalizeDelayProfile({
+          ...currentActiveProfile,
+          autoOffsetMs: derivedOutputMs,
+          lastRoundTripMs: roundTripMs,
+          lastCalibrationInputKey: calibrationInputKey,
+          lastCalibrationSampleRate: sampleRate,
+          lastCalibrationConfidence: result.confidence,
+          lastCalibrationAt: now,
+        })
+      }
+
+      if (baselineWasLowered) {
+        for (const [profileKey, rawProfile] of Object.entries(nextProfiles)) {
+          const profile = normalizeDelayProfile(rawProfile)
+          if (profile.lastCalibrationInputKey !== calibrationInputKey) continue
+          if (profile.lastCalibrationSampleRate !== sampleRate) continue
+          if (profile.lastRoundTripMs == null) continue
+
+          const rebasedAutoOffset = clampAppliedDelayMs(profile.lastRoundTripMs - baselineRttMs)
+          if (profile.autoOffsetMs === rebasedAutoOffset) continue
+
+          nextProfiles[profileKey] = {
+            ...profile,
+            autoOffsetMs: rebasedAutoOffset
+          }
+        }
+      }
+
+      const activeProfile = normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
+      const effectiveDelayMs = computeEffectiveDelayMs(activeProfile)
+      const confidencePct = Math.round(result.confidence * 100)
+      const baselineNote = baselineWasLowered
+        ? ' Baseline improved and matching profiles were rebased.'
+        : ''
+
+      set({
+        inputBaselinesByKey: nextBaselines,
+        delayProfilesByDeviceKey: nextProfiles,
+        activeDelayProfileKey,
+        activeDelayProfile: activeProfile,
+        effectiveDelayMs,
+        delayCalibrationState: 'success',
+        delayCalibrationMessage: `Round-trip ${roundTripMs} ms, input baseline ${baselineRttMs} ms, derived output ${derivedOutputMs} ms (confidence ${confidencePct}%).${baselineNote}`
+      })
+
+      persistDelaySettings(nextProfiles, nextBaselines)
+      await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+    },
+
+    resetDelayToAutoGuess: async () => {
+      const { activeDelayProfile } = get()
+      if (activeDelayProfile.autoOffsetMs == null) {
+        set({
+          delayCalibrationState: 'error',
+          delayCalibrationMessage: 'No auto estimate exists for this output yet.'
+        })
+        return
+      }
+
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        mode: 'auto',
+        manualOffsetMs: 0,
+      }), {
+        calibrationState: 'success',
+        calibrationMessage: `Using stored auto estimate (${activeDelayProfile.autoOffsetMs ?? 0} ms).`
+      })
+    },
+
+    initFromSaved: async () => {
+      const rawDelaySettingsV2 = localStorage.getItem(DELAY_PROFILE_STORAGE_KEY_V2)
+      let savedProfiles: Record<string, DelayCompensationProfile> = {}
+      let savedInputBaselines: Record<string, InputDelayBaseline> = {}
+
+      if (rawDelaySettingsV2) {
+        const parsedV2 = parseDelaySettingsV2(rawDelaySettingsV2)
+        savedProfiles = parsedV2.profiles
+        savedInputBaselines = parsedV2.inputBaselinesByKey
+      } else {
+        const legacyProfiles = parseDelayProfiles(localStorage.getItem(DELAY_PROFILE_STORAGE_KEY_V1))
+        savedProfiles = legacyProfiles
+        if (Object.keys(legacyProfiles).length > 0) {
+          persistDelaySettings(legacyProfiles, {})
+        }
+      }
+
+      set({
+        delayProfilesByDeviceKey: savedProfiles,
+        inputBaselinesByKey: savedInputBaselines
+      })
+
+      await get().refreshDevices()
+
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (saved) {
+        const { availableDevices } = get()
+        const exists = availableDevices.some((device) => device.deviceId === saved)
+        if (exists) {
+          await get().selectDevice(saved)
+        } else {
+          localStorage.removeItem(STORAGE_KEY)
+          set({ selectedDeviceId: '' })
+        }
+      }
+
+      const savedCalibrationInputDeviceId = localStorage.getItem(CALIBRATION_INPUT_STORAGE_KEY)
+      if (savedCalibrationInputDeviceId) {
+        const { availableInputDevices } = get()
+        const exists = availableInputDevices.some((device) => device.deviceId === savedCalibrationInputDeviceId)
+        if (exists) {
+          get().setCalibrationInputDeviceId(savedCalibrationInputDeviceId)
+        } else {
+          localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
+          set({ selectedCalibrationInputDeviceId: '' })
+        }
+      }
+
+      const savedMultichannel = localStorage.getItem(MULTICHANNEL_STORAGE_KEY)
+      const multichannelEnabled = savedMultichannel === '1'
+      await get().setMultichannelEnabled(multichannelEnabled)
+
+      const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
+      if (savedRoutingMap) {
+        try {
+          const parsed = JSON.parse(savedRoutingMap)
+          if (Array.isArray(parsed)) {
+            const map = parsed.map((value) => {
+              if (!Number.isFinite(value)) return -1
+              const rounded = Math.trunc(value)
+              return rounded >= -1 ? rounded : -1
+            })
+            await get().setChannelRoutingMap(map)
+          } else {
+            localStorage.removeItem(ROUTING_STORAGE_KEY)
+          }
+        } catch {
+          localStorage.removeItem(ROUTING_STORAGE_KEY)
+        }
+      }
+
+      ensureMediaDeviceChangeListener()
+      await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
     }
   }
-}))
+})

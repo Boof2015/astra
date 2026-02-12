@@ -8,6 +8,7 @@ import QueuePanel from './components/queue/QueuePanel'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
+import OutputDelayCue from './components/layout/OutputDelayCue'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -55,6 +56,7 @@ function App() {
       </div>
       <TransportBar />
       <DecodeFallbackCue />
+      <OutputDelayCue />
       {isFullscreen && <FullscreenMode />}
     </div>
   )

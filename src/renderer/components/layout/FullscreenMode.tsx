@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
@@ -79,6 +80,7 @@ export default function FullscreenMode() {
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const getArtwork = useLibraryStore((s) => s.getArtwork)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
 
   const prefersReducedMotion = usePrefersReducedMotion()
 
@@ -111,8 +113,12 @@ export default function FullscreenMode() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
-  const remaining = duration > 0 ? Math.max(0, duration - currentTime) : 0
-  const progress = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0
+  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
+  const compensatedTime = duration > 0
+    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
+    : 0
+  const remaining = duration > 0 ? Math.max(0, duration - compensatedTime) : 0
+  const progress = duration > 0 ? Math.max(0, Math.min(100, (compensatedTime / duration) * 100)) : 0
 
   const nextQueueIndex = useMemo(() => {
     if (queue.length === 0 || queueIndex < 0 || repeat === 'one') return -1
@@ -489,14 +495,17 @@ export default function FullscreenMode() {
           </div>
 
           <div className="fullscreen-waveform-wrap">
-            <span className="fullscreen-time fullscreen-time-current">{formatTime(currentTime)}</span>
+            <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
             <span className="fullscreen-time fullscreen-time-remaining">-{formatTime(remaining)}</span>
             <WaveformSeekBar
               waveformData={waveformData}
               progress={progress}
               duration={duration}
-              currentTime={currentTime}
-              onSeek={(time) => void seek(time)}
+              currentTime={compensatedTime}
+              onSeek={(time) => {
+                const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
+                void seek(rawSeekTime)
+              }}
             />
           </div>
 

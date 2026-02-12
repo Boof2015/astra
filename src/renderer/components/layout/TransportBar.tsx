@@ -3,6 +3,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
@@ -36,6 +37,7 @@ export default function TransportBar() {
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
 
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
 
@@ -124,8 +126,12 @@ export default function TransportBar() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
-  const remaining = duration > 0 ? duration - currentTime : 0
+  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
+  const compensatedTime = duration > 0
+    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
+    : 0
+  const progress = duration > 0 ? (compensatedTime / duration) * 100 : 0
+  const remaining = duration > 0 ? duration - compensatedTime : 0
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
@@ -307,14 +313,17 @@ export default function TransportBar() {
 
         {/* Waveform with floating time labels */}
         <div className="transport-waveform-wrap">
-          <span className="waveform-time waveform-time-current">{formatTime(currentTime)}</span>
+          <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
           <span className="waveform-time waveform-time-remaining">-{formatTime(remaining)}</span>
           <WaveformSeekBar
             waveformData={waveformData}
             progress={progress}
             duration={duration}
-            currentTime={currentTime}
-            onSeek={(time) => void seek(time)}
+            currentTime={compensatedTime}
+            onSeek={(time) => {
+              const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
+              void seek(rawSeekTime)
+            }}
           />
         </div>
 

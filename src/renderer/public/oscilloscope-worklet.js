@@ -1,6 +1,6 @@
-// AudioWorklet processor for continuous audio capture
-// This runs in a separate audio thread and captures samples in real-time
-// Feeds samples to native C++ visualizers via main thread
+// AudioWorklet processors for real-time analysis and calibration capture.
+// Both processors run in the audio render thread and stream sample blocks
+// to the renderer main thread for downstream DSP.
 
 class OscilloscopeProcessor extends AudioWorkletProcessor {
   process(inputs, outputs, parameters) {
@@ -30,3 +30,27 @@ class OscilloscopeProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('oscilloscope-processor', OscilloscopeProcessor)
+
+class CalibrationCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs, outputs) {
+    const input = inputs[0]
+    const output = outputs[0]
+
+    if (input && input.length > 0 && input[0] && input[0].length > 0) {
+      this.port.postMessage({
+        samples: input[0].slice()
+      })
+    }
+
+    // Emit silence so the node can stay connected without monitoring the mic.
+    if (output && output.length > 0) {
+      for (let channel = 0; channel < output.length; channel++) {
+        output[channel].fill(0)
+      }
+    }
+
+    return true
+  }
+}
+
+registerProcessor('calibration-capture-processor', CalibrationCaptureProcessor)

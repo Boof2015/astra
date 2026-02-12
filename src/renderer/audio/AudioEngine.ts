@@ -2,6 +2,72 @@ import { PlaybackState, EQBand } from '../types/audio'
 
 type EventCallback = (...args: unknown[]) => void
 
+const ANALYSIS_DELAY_MAX_MS = 1500
+const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
+
+const NORMALIZATION_MIN_GAIN_DB = -18
+const NORMALIZATION_MAX_GAIN_DB = 6
+
+const CALIBRATION_RTT_MAX_MS = 2500
+const CALIBRATION_CAPTURE_WINDOW_SEC = 4
+const CALIBRATION_PASSES = 3
+const CALIBRATION_MIN_SUCCESSFUL_PASSES = 2
+const CALIBRATION_MIN_CONFIDENCE = 0.3
+const CALIBRATION_MIN_CORRELATION = 0.16
+const CALIBRATION_MIN_PEAK_RATIO = 1.06
+const CALIBRATION_CHIRP_DURATION_SEC = 0.12
+const CALIBRATION_GAP_SEC = 0.08
+const CALIBRATION_BURST_COUNT = 4
+const CALIBRATION_BURST_WEIGHTS: readonly number[] = [1.0, -0.72, 0.58, -0.44]
+const CALIBRATION_LEAD_IN_SEC = 0.12
+const CALIBRATION_OUTPUT_GAIN = 0.62
+const CALIBRATION_START_FREQ_HZ = 2000
+const CALIBRATION_END_FREQ_HZ = 8000
+const CALIBRATION_DOWNSAMPLE_FACTOR = 4
+const CALIBRATION_PRE_ROLL_SEC = 0.02
+const CALIBRATION_SEARCH_TAIL_SEC = 0.2
+const CALIBRATION_PEAK_SEPARATION_SEC = 0.03
+
+export type OutputDelayCalibrationFailureCode =
+  | 'not-supported'
+  | 'mic-denied'
+  | 'mic-unavailable'
+  | 'worklet-unavailable'
+  | 'low-confidence'
+  | 'timeout'
+  | 'unknown'
+
+export type OutputDelayCalibrationResult =
+  | {
+      ok: true
+      roundTripMs: number
+      confidence: number
+      sampleRate: number
+    }
+  | {
+      ok: false
+      code: OutputDelayCalibrationFailureCode
+      message: string
+    }
+
+type OutputDelayCalibrationPassResult =
+  | {
+      ok: true
+      roundTripMs: number
+      confidence: number
+    }
+  | {
+      ok: false
+      code: OutputDelayCalibrationFailureCode
+      message: string
+    }
+
+interface CalibrationToneSignal {
+  buffer: AudioBuffer
+  referenceSequence: Float32Array
+  leadInSamples: number
+}
+
 /**
  * AudioEngine - Core Web Audio API wrapper for audio playback and analysis
  *
@@ -17,9 +83,11 @@ export class AudioEngine {
   private gainNode: GainNode | null = null
   private normalizationGainNode: GainNode | null = null
   private analysisNormalizationGainNode: GainNode | null = null
+  private analysisDelayNode: DelayNode | null = null
   private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
+  private analysisDelayMs: number = 0
 
   // EQ nodes
   private preampNode: GainNode | null = null
@@ -48,6 +116,8 @@ export class AudioEngine {
   private _normalizationEnabled: boolean = true
   private _targetLufs: number = -14 // Target loudness in dB RMS
   private _normalizationGainDb: number = 0
+  private nextNormalizationGainDb: number | null = null
+  private nextNormalizationLinearGain: number | null = null
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -290,6 +360,8 @@ export class AudioEngine {
       this.normalizationGainNode.gain.value = 1.0
       this.analysisNormalizationGainNode = this.context.createGain()
       this.analysisNormalizationGainNode.gain.value = 1.0
+      this.analysisDelayNode = this.context.createDelay(ANALYSIS_DELAY_MAX_SEC)
+      this.analysisDelayNode.delayTime.value = this.analysisDelayMs / 1000
 
       // Preamp node (after metering worklet, before EQ filters)
       this.preampNode = this.context.createGain()
@@ -367,10 +439,11 @@ export class AudioEngine {
       this.gainNode.connect(this.context.destination)
 
       // analysis: normalization tap -> worklet -> silent sink so the worklet stays pulled.
-      if (this.workletNode && this.analysisNormalizationGainNode) {
+      if (this.workletNode && this.analysisNormalizationGainNode && this.analysisDelayNode) {
         this.analysisTapSinkNode = this.context.createGain()
         this.analysisTapSinkNode.gain.value = 0
-        this.analysisNormalizationGainNode.connect(this.workletNode)
+        this.analysisNormalizationGainNode.connect(this.analysisDelayNode)
+        this.analysisDelayNode.connect(this.workletNode)
         this.workletNode.connect(this.analysisTapSinkNode)
         this.analysisTapSinkNode.connect(this.context.destination)
       }
@@ -407,24 +480,110 @@ export class AudioEngine {
   /**
    * Apply normalization gain based on buffer loudness
    */
-  private applyNormalization(buffer: AudioBuffer): void {
-    if (!this.normalizationGainNode || !this.analysisNormalizationGainNode) return
-
+  private computeNormalizationForBuffer(buffer: AudioBuffer): { gainDb: number; linearGain: number } {
     const currentDb = this.calculateLoudness(buffer)
     const gainDb = this._targetLufs - currentDb
 
     // Clamp gain to prevent extreme values
     // Allow up to +6dB boost and -18dB cut
-    const clampedGainDb = Math.max(-18, Math.min(6, gainDb))
+    const clampedGainDb = Math.max(NORMALIZATION_MIN_GAIN_DB, Math.min(NORMALIZATION_MAX_GAIN_DB, gainDb))
 
     // Convert dB to linear gain
     const linearGain = Math.pow(10, clampedGainDb / 20)
 
     console.log(`Normalization: ${currentDb.toFixed(1)} dB -> ${this._targetLufs} dB (gain: ${clampedGainDb.toFixed(1)} dB)`)
 
-    this._normalizationGainDb = clampedGainDb
-    this.normalizationGainNode.gain.value = linearGain
-    this.analysisNormalizationGainNode.gain.value = linearGain
+    return {
+      gainDb: clampedGainDb,
+      linearGain
+    }
+  }
+
+  private applyNormalizationGain(gainDb: number, linearGain: number): void {
+    this._normalizationGainDb = gainDb
+    if (this.normalizationGainNode) {
+      this.normalizationGainNode.gain.value = linearGain
+    }
+    if (this.analysisNormalizationGainNode) {
+      this.analysisNormalizationGainNode.gain.value = linearGain
+    }
+  }
+
+  private getCurrentNormalizationLinearGain(): number {
+    if (!this._normalizationEnabled) return 1
+    return Math.pow(10, this._normalizationGainDb / 20)
+  }
+
+  private clearNextNormalizationCache(): void {
+    this.nextNormalizationGainDb = null
+    this.nextNormalizationLinearGain = null
+  }
+
+  private updateNextNormalizationCache(): void {
+    if (!this.nextBuffer) {
+      this.clearNextNormalizationCache()
+      return
+    }
+
+    if (!this._normalizationEnabled) {
+      this.nextNormalizationGainDb = 0
+      this.nextNormalizationLinearGain = 1
+      return
+    }
+
+    const normalization = this.computeNormalizationForBuffer(this.nextBuffer)
+    this.nextNormalizationGainDb = normalization.gainDb
+    this.nextNormalizationLinearGain = normalization.linearGain
+  }
+
+  private getPendingNextNormalization(buffer: AudioBuffer): { gainDb: number; linearGain: number } {
+    if (this.nextNormalizationGainDb != null && this.nextNormalizationLinearGain != null) {
+      return {
+        gainDb: this.nextNormalizationGainDb,
+        linearGain: this.nextNormalizationLinearGain
+      }
+    }
+
+    if (!this._normalizationEnabled) {
+      return {
+        gainDb: 0,
+        linearGain: 1
+      }
+    }
+
+    return this.computeNormalizationForBuffer(buffer)
+  }
+
+  private scheduleNormalizationTransition(targetLinearGain: number, transitionTime: number): void {
+    if (!this.context || !this.normalizationGainNode || !this.analysisNormalizationGainNode) return
+
+    const now = this.context.currentTime
+    const currentLinearGain = this.getCurrentNormalizationLinearGain()
+    const params = [this.normalizationGainNode.gain, this.analysisNormalizationGainNode.gain]
+
+    for (const param of params) {
+      param.cancelScheduledValues(now)
+      param.setValueAtTime(currentLinearGain, now)
+      param.setValueAtTime(targetLinearGain, transitionTime)
+    }
+  }
+
+  private restoreCurrentNormalizationGainNow(): void {
+    if (!this.context || !this.normalizationGainNode || !this.analysisNormalizationGainNode) return
+
+    const now = this.context.currentTime
+    const currentLinearGain = this.getCurrentNormalizationLinearGain()
+    const params = [this.normalizationGainNode.gain, this.analysisNormalizationGainNode.gain]
+
+    for (const param of params) {
+      param.cancelScheduledValues(now)
+      param.setValueAtTime(currentLinearGain, now)
+    }
+  }
+
+  private applyNormalization(buffer: AudioBuffer): void {
+    const normalization = this.computeNormalizationForBuffer(buffer)
+    this.applyNormalizationGain(normalization.gainDb, normalization.linearGain)
   }
 
   // Normalization settings
@@ -435,15 +594,14 @@ export class AudioEngine {
   set normalizationEnabled(enabled: boolean) {
     this._normalizationEnabled = enabled
     if (!enabled) {
-      this._normalizationGainDb = 0
-      if (this.normalizationGainNode) {
-        this.normalizationGainNode.gain.value = 1.0
-      }
-      if (this.analysisNormalizationGainNode) {
-        this.analysisNormalizationGainNode.gain.value = 1.0
-      }
+      this.applyNormalizationGain(0, 1)
     } else if (enabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
+    }
+
+    this.updateNextNormalizationCache()
+    if (this._playbackState === 'playing' && this.nextBuffer) {
+      this.scheduleGaplessTransition()
     }
   }
 
@@ -455,6 +613,11 @@ export class AudioEngine {
     this._targetLufs = lufs
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
+    }
+
+    this.updateNextNormalizationCache()
+    if (this._playbackState === 'playing' && this.nextBuffer) {
+      this.scheduleGaplessTransition()
     }
   }
 
@@ -521,6 +684,464 @@ export class AudioEngine {
 
   getOutputMaxChannelCount(): number | null {
     return this.context?.destination.maxChannelCount ?? null
+  }
+
+  async setAnalysisDelayMs(ms: number): Promise<void> {
+    await this.initContext()
+    const safeMs = Number.isFinite(ms) ? ms : 0
+    const clampedMs = Math.max(0, Math.min(ANALYSIS_DELAY_MAX_MS, safeMs))
+    this.analysisDelayMs = clampedMs
+
+    if (this.context && this.analysisDelayNode) {
+      this.analysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
+    }
+  }
+
+  async runOutputDelayCalibration(inputDeviceId: string = ''): Promise<OutputDelayCalibrationResult> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: 'Microphone calibration is not supported in this browser.'
+      }
+    }
+
+    await this.initContext()
+    if (!this.context) {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: 'Audio context is unavailable for calibration.'
+      }
+    }
+    if (!this.workletLoaded) {
+      return {
+        ok: false,
+        code: 'worklet-unavailable',
+        message: 'Audio worklet is unavailable for calibration.'
+      }
+    }
+
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+    }
+
+    const normalizedInputDeviceId = inputDeviceId.trim()
+    const selectedInputDeviceId = (
+      normalizedInputDeviceId.length > 0 && normalizedInputDeviceId !== 'default'
+    )
+      ? normalizedInputDeviceId
+      : null
+
+    let stream: MediaStream
+    try {
+      const audioConstraints: MediaTrackConstraints = {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+
+      if (selectedInputDeviceId) {
+        audioConstraints.deviceId = { exact: selectedInputDeviceId }
+      }
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: false
+      })
+    } catch (error) {
+      const code = this.isLikelyPermissionDenied(error) ? 'mic-denied' : 'mic-unavailable'
+      return {
+        ok: false,
+        code,
+        message: code === 'mic-denied'
+          ? 'Microphone permission was denied for calibration.'
+          : 'Microphone is unavailable for calibration.'
+      }
+    }
+
+    try {
+      const micSource = this.context.createMediaStreamSource(stream)
+      const toneSignal = this.createCalibrationToneSignal()
+      const successfulPasses: Array<{ roundTripMs: number; confidence: number }> = []
+      let lastFailure: OutputDelayCalibrationResult = {
+        ok: false,
+        code: 'low-confidence',
+        message: 'Could not detect a reliable calibration response.'
+      }
+
+      for (let passIndex = 0; passIndex < CALIBRATION_PASSES; passIndex++) {
+        const passResult = await this.runSingleCalibrationPass(micSource, toneSignal)
+        if (passResult.ok) {
+          successfulPasses.push({
+            roundTripMs: passResult.roundTripMs,
+            confidence: passResult.confidence
+          })
+        } else {
+          lastFailure = passResult
+          if (passResult.code === 'mic-denied' || passResult.code === 'mic-unavailable') {
+            break
+          }
+        }
+
+        if (passIndex < CALIBRATION_PASSES - 1) {
+          await this.sleep(120)
+        }
+      }
+
+      try {
+        micSource.disconnect()
+      } catch {
+        // Ignore disconnect failures during calibration cleanup.
+      }
+
+      if (successfulPasses.length < CALIBRATION_MIN_SUCCESSFUL_PASSES) {
+        return lastFailure
+      }
+
+      const roundTrips = successfulPasses
+        .map((entry) => entry.roundTripMs)
+        .sort((a, b) => a - b)
+      const medianRoundTrip = roundTrips[Math.floor(roundTrips.length / 2)]
+      const averageConfidence = successfulPasses.reduce((sum, entry) => sum + entry.confidence, 0) / successfulPasses.length
+      const quantizedRoundTrip = Math.round(medianRoundTrip / 5) * 5
+
+      return {
+        ok: true,
+        roundTripMs: Math.max(0, Math.min(CALIBRATION_RTT_MAX_MS, quantizedRoundTrip)),
+        confidence: Math.round(averageConfidence * 1000) / 1000,
+        sampleRate: this.context.sampleRate
+      }
+    } catch (error) {
+      console.error('Output delay calibration failed:', error)
+      return {
+        ok: false,
+        code: 'unknown',
+        message: 'Calibration failed unexpectedly.'
+      }
+    } finally {
+      stream.getTracks().forEach((track) => track.stop())
+    }
+  }
+
+  private async runSingleCalibrationPass(
+    micSource: MediaStreamAudioSourceNode,
+    toneSignal: CalibrationToneSignal
+  ): Promise<OutputDelayCalibrationPassResult> {
+    if (!this.context || !this.workletLoaded) {
+      return {
+        ok: false,
+        code: 'worklet-unavailable',
+        message: 'Calibration processor is unavailable.'
+      }
+    }
+
+    const captureNode = new AudioWorkletNode(this.context, 'calibration-capture-processor')
+    const captureSink = this.context.createGain()
+    captureSink.gain.value = 0
+
+    const playbackGain = this.context.createGain()
+    playbackGain.gain.value = CALIBRATION_OUTPUT_GAIN
+
+    const playbackSource = this.context.createBufferSource()
+    playbackSource.buffer = toneSignal.buffer
+
+    const captureChunks: Float32Array[] = []
+    captureNode.port.onmessage = (event: MessageEvent<{ samples?: Float32Array }>) => {
+      const samples = event.data?.samples
+      if (!samples || samples.length === 0) return
+      captureChunks.push(new Float32Array(samples))
+    }
+
+    try {
+      micSource.connect(captureNode)
+      captureNode.connect(captureSink)
+      captureSink.connect(this.context.destination)
+
+      playbackSource.connect(playbackGain)
+      playbackGain.connect(this.context.destination)
+
+      const toneStartAt = this.context.currentTime + 0.05
+      playbackSource.start(toneStartAt)
+
+      await this.sleep(CALIBRATION_CAPTURE_WINDOW_SEC * 1000)
+
+      const capturedSignal = this.combineFloat32Chunks(captureChunks)
+      if (capturedSignal.length === 0) {
+        return {
+          ok: false,
+          code: 'timeout',
+          message: 'No microphone signal was captured during calibration.'
+        }
+      }
+
+      const estimate = this.estimateDelayFromCapture(
+        capturedSignal,
+        this.context.sampleRate,
+        toneSignal.referenceSequence,
+        toneSignal.leadInSamples
+      )
+
+      if (!estimate
+        || estimate.correlation < CALIBRATION_MIN_CORRELATION
+        || estimate.peakRatio < CALIBRATION_MIN_PEAK_RATIO
+        || estimate.confidence < CALIBRATION_MIN_CONFIDENCE
+      ) {
+        const correlation = estimate ? Math.round(estimate.correlation * 100) / 100 : null
+        const peakRatio = estimate ? Math.round(estimate.peakRatio * 100) / 100 : null
+        return {
+          ok: false,
+          code: 'low-confidence',
+          message: `Calibration signal was too noisy (corr ${correlation ?? 'n/a'}, peak ${peakRatio ?? 'n/a'}). Try raising output volume, moving mic closer, and selecting a specific calibration input.`
+        }
+      }
+
+      return {
+        ok: true,
+        roundTripMs: estimate.roundTripMs,
+        confidence: estimate.confidence
+      }
+    } finally {
+      captureNode.port.onmessage = null
+      try {
+        micSource.disconnect(captureNode)
+      } catch {
+        // Ignore cleanup disconnect failures.
+      }
+      try {
+        playbackSource.stop()
+      } catch {
+        // Ignore stop errors if already stopped.
+      }
+      try {
+        playbackSource.disconnect()
+      } catch {
+        // Ignore cleanup disconnect failures.
+      }
+      try {
+        playbackGain.disconnect()
+      } catch {
+        // Ignore cleanup disconnect failures.
+      }
+      try {
+        captureNode.disconnect()
+      } catch {
+        // Ignore cleanup disconnect failures.
+      }
+      try {
+        captureSink.disconnect()
+      } catch {
+        // Ignore cleanup disconnect failures.
+      }
+    }
+  }
+
+  private createCalibrationToneSignal(): CalibrationToneSignal {
+    if (!this.context) {
+      throw new Error('AudioContext not initialized')
+    }
+
+    const sampleRate = this.context.sampleRate
+    const burst = this.createChirpBurst(sampleRate)
+    const burstSamples = burst.length
+    const gapSamples = Math.max(0, Math.round(CALIBRATION_GAP_SEC * sampleRate))
+    const leadInSamples = Math.max(0, Math.round(CALIBRATION_LEAD_IN_SEC * sampleRate))
+    const totalSamples = leadInSamples
+      + (burstSamples * CALIBRATION_BURST_COUNT)
+      + (gapSamples * Math.max(0, CALIBRATION_BURST_COUNT - 1))
+
+    const sequence = new Float32Array(totalSamples)
+    let writeIndex = leadInSamples
+
+    for (let burstIndex = 0; burstIndex < CALIBRATION_BURST_COUNT; burstIndex++) {
+      const weight = CALIBRATION_BURST_WEIGHTS[burstIndex] ?? (burstIndex % 2 === 0 ? 1 : -1)
+      for (let sampleIndex = 0; sampleIndex < burst.length; sampleIndex++) {
+        sequence[writeIndex + sampleIndex] = burst[sampleIndex] * weight
+      }
+      writeIndex += burstSamples
+      if (burstIndex < CALIBRATION_BURST_COUNT - 1) {
+        writeIndex += gapSamples
+      }
+    }
+
+    const buffer = this.context.createBuffer(1, totalSamples, sampleRate)
+    buffer.copyToChannel(sequence, 0)
+
+    return {
+      buffer,
+      referenceSequence: sequence,
+      leadInSamples
+    }
+  }
+
+  private createChirpBurst(sampleRate: number): Float32Array {
+    const burstSamples = Math.max(256, Math.round(CALIBRATION_CHIRP_DURATION_SEC * sampleRate))
+    const chirp = new Float32Array(burstSamples)
+    const frequencyRatio = CALIBRATION_END_FREQ_HZ / CALIBRATION_START_FREQ_HZ
+    let phase = 0
+
+    for (let i = 0; i < burstSamples; i++) {
+      const t = burstSamples > 1 ? i / (burstSamples - 1) : 0
+      const frequency = CALIBRATION_START_FREQ_HZ * Math.pow(frequencyRatio, t)
+      phase += (2 * Math.PI * frequency) / sampleRate
+      const window = 0.5 - (0.5 * Math.cos(2 * Math.PI * t))
+      chirp[i] = Math.sin(phase) * window
+    }
+
+    return chirp
+  }
+
+  private estimateDelayFromCapture(
+    capturedSignal: Float32Array,
+    sampleRate: number,
+    referenceSequence: Float32Array,
+    leadInSamples: number
+  ): { roundTripMs: number; correlation: number; peakRatio: number; confidence: number } | null {
+    const reducedCapture = this.downsampleForCorrelation(capturedSignal, CALIBRATION_DOWNSAMPLE_FACTOR)
+    const reducedReference = this.downsampleForCorrelation(referenceSequence, CALIBRATION_DOWNSAMPLE_FACTOR)
+    if (reducedCapture.length <= reducedReference.length || reducedReference.length < 16) {
+      return null
+    }
+
+    const reducedRate = sampleRate / CALIBRATION_DOWNSAMPLE_FACTOR
+    const leadInReduced = Math.max(0, Math.floor(leadInSamples / CALIBRATION_DOWNSAMPLE_FACTOR))
+    const maxDelaySamples = Math.floor((CALIBRATION_RTT_MAX_MS / 1000) * reducedRate)
+    const preRollSamples = Math.floor(CALIBRATION_PRE_ROLL_SEC * reducedRate)
+    const tailSamples = Math.floor(CALIBRATION_SEARCH_TAIL_SEC * reducedRate)
+    const peakSeparationSamples = Math.max(1, Math.floor(CALIBRATION_PEAK_SEPARATION_SEC * reducedRate))
+
+    const searchStart = Math.max(0, leadInReduced - preRollSamples)
+    const maxSearchIndex = reducedCapture.length - reducedReference.length
+    const searchEnd = Math.min(maxSearchIndex, leadInReduced + maxDelaySamples + tailSamples)
+    if (searchEnd <= searchStart) {
+      return null
+    }
+
+    let referenceEnergy = 0
+    for (let i = 0; i < reducedReference.length; i++) {
+      const value = reducedReference[i]
+      referenceEnergy += value * value
+    }
+    if (referenceEnergy <= 1e-12) {
+      return null
+    }
+
+    const searchLength = searchEnd - searchStart + 1
+    const correlations = new Float32Array(searchLength)
+    let bestCorrelation = Number.NEGATIVE_INFINITY
+    let bestIndex = -1
+
+    for (let startIndex = searchStart; startIndex <= searchEnd; startIndex++) {
+      let dot = 0
+      let segmentEnergy = 0
+      for (let i = 0; i < reducedReference.length; i++) {
+        const captured = reducedCapture[startIndex + i]
+        const reference = reducedReference[i]
+        dot += captured * reference
+        segmentEnergy += captured * captured
+      }
+
+      const correlationIndex = startIndex - searchStart
+      if (segmentEnergy <= 1e-12) {
+        correlations[correlationIndex] = Number.NEGATIVE_INFINITY
+        continue
+      }
+      const correlation = dot / Math.sqrt(segmentEnergy * referenceEnergy)
+      correlations[correlationIndex] = correlation
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation
+        bestIndex = startIndex
+      }
+    }
+
+    if (!Number.isFinite(bestCorrelation) || bestIndex < 0) {
+      return null
+    }
+
+    let secondBestCorrelation = Number.NEGATIVE_INFINITY
+    for (let i = 0; i < correlations.length; i++) {
+      const startIndex = searchStart + i
+      if (Math.abs(startIndex - bestIndex) <= peakSeparationSamples) {
+        continue
+      }
+
+      const correlation = correlations[i]
+      if (correlation > secondBestCorrelation) {
+        secondBestCorrelation = correlation
+      }
+    }
+
+    const offsetReducedSamples = bestIndex - leadInReduced
+    const roundTripSamples = offsetReducedSamples * CALIBRATION_DOWNSAMPLE_FACTOR
+    const roundTripMs = (roundTripSamples / sampleRate) * 1000
+    if (!Number.isFinite(roundTripMs) || roundTripMs < 0 || roundTripMs > CALIBRATION_RTT_MAX_MS) {
+      return null
+    }
+
+    const secondPeakFloor = Number.isFinite(secondBestCorrelation)
+      ? Math.max(0.01, secondBestCorrelation)
+      : Math.max(0.01, bestCorrelation * 0.85)
+    const peakRatio = bestCorrelation / secondPeakFloor
+    const normalizedCorrelation = Math.max(0, Math.min(1, bestCorrelation))
+    const normalizedPeakRatio = Math.max(0, Math.min(1, (peakRatio - 1) / 0.8))
+    const confidence = Math.max(0, Math.min(1, (normalizedCorrelation * 0.72) + (normalizedPeakRatio * 0.28)))
+
+    return {
+      roundTripMs,
+      correlation: bestCorrelation,
+      peakRatio,
+      confidence
+    }
+  }
+
+  private downsampleForCorrelation(input: Float32Array, factor: number): Float32Array {
+    if (!Number.isFinite(factor) || factor <= 1) {
+      return new Float32Array(input)
+    }
+
+    const sampleFactor = Math.max(1, Math.trunc(factor))
+    const length = Math.floor(input.length / sampleFactor)
+    if (length <= 0) {
+      return new Float32Array(0)
+    }
+
+    const reduced = new Float32Array(length)
+    for (let i = 0; i < length; i++) {
+      reduced[i] = input[i * sampleFactor]
+    }
+    return reduced
+  }
+
+  private combineFloat32Chunks(chunks: Float32Array[]): Float32Array {
+    let totalSamples = 0
+    for (const chunk of chunks) {
+      totalSamples += chunk.length
+    }
+
+    if (totalSamples === 0) {
+      return new Float32Array(0)
+    }
+
+    const combined = new Float32Array(totalSamples)
+    let offset = 0
+    for (const chunk of chunks) {
+      combined.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    return combined
+  }
+
+  private isLikelyPermissionDenied(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+    return error.name === 'NotAllowedError' || error.name === 'SecurityError'
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms)
+    })
   }
 
   // Audio output device selection
@@ -613,11 +1234,7 @@ export class AudioEngine {
       if (this._normalizationEnabled) {
         this.applyNormalization(this.audioBuffer)
       } else {
-        this.normalizationGainNode!.gain.value = 1.0
-        if (this.analysisNormalizationGainNode) {
-          this.analysisNormalizationGainNode.gain.value = 1.0
-        }
-        this._normalizationGainDb = 0
+        this.applyNormalizationGain(0, 1)
       }
 
       this._playbackState = 'stopped'
@@ -645,6 +1262,7 @@ export class AudioEngine {
       // Clone the ArrayBuffer since decodeAudioData detaches it
       const clonedBuffer = arrayBuffer.slice(0)
       this.nextBuffer = await this.context.decodeAudioData(clonedBuffer)
+      this.updateNextNormalizationCache()
 
       // If currently playing, schedule the gapless transition
       if (this._playbackState === 'playing' && this.audioBuffer) {
@@ -653,6 +1271,7 @@ export class AudioEngine {
     } catch (err) {
       console.error('Failed to pre-buffer next track:', err)
       this.nextBuffer = null
+      this.clearNextNormalizationCache()
     }
   }
 
@@ -660,6 +1279,10 @@ export class AudioEngine {
   private scheduleGaplessTransition(): void {
     if (!this.context || !this.nextBuffer || !this.audioBuffer) return
     if (this._playbackState !== 'playing') return
+
+    if (this.nextNormalizationLinearGain == null) {
+      this.updateNextNormalizationCache()
+    }
 
     // Cancel any existing scheduled next source
     this.cancelScheduledNext()
@@ -677,6 +1300,9 @@ export class AudioEngine {
 
     // Schedule to start exactly when current track ends
     this.nextSourceNode.start(this.scheduledEndTime)
+    if (this.nextNormalizationLinearGain != null) {
+      this.scheduleNormalizationTransition(this.nextNormalizationLinearGain, this.scheduledEndTime)
+    }
 
     // Set up ended handler for the NEXT track (not current)
     this.nextSourceNode.onended = () => {
@@ -694,6 +1320,7 @@ export class AudioEngine {
   // Transition to the next track (called when current track actually ends)
   private performGaplessTransition(): void {
     if (!this.nextBuffer || !this.nextSourceNode) {
+      this.clearNextNormalizationCache()
       // No next track buffered, emit ended normally
       this._playbackState = 'stopped'
       this.pauseTime = 0
@@ -705,8 +1332,12 @@ export class AudioEngine {
 
     this.isGaplessTransition = true
 
+    const nextBuffer = this.nextBuffer
+    const nextSourceNode = this.nextSourceNode
+    const nextNormalization = this.getPendingNextNormalization(nextBuffer)
+
     // Swap buffers
-    this.audioBuffer = this.nextBuffer
+    this.audioBuffer = nextBuffer
     this.nextBuffer = null
 
     // Swap source nodes
@@ -717,12 +1348,14 @@ export class AudioEngine {
         this.sourceNode.disconnect()
       } catch { /* ignore */ }
     }
-    this.sourceNode = this.nextSourceNode
+    this.sourceNode = nextSourceNode
     this.nextSourceNode = null
 
     // Update timing
     this.startTime = this.scheduledEndTime
     this.pauseTime = 0
+    this.applyNormalizationGain(nextNormalization.gainDb, nextNormalization.linearGain)
+    this.clearNextNormalizationCache()
     this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
     // Set up ended handler for the new current track
@@ -747,6 +1380,7 @@ export class AudioEngine {
   clearNextBuffer(): void {
     this.cancelScheduledNext()
     this.nextBuffer = null
+    this.clearNextNormalizationCache()
   }
 
   // Cancel scheduled next track
@@ -760,6 +1394,7 @@ export class AudioEngine {
       } catch { /* ignore */ }
       this.nextSourceNode = null
     }
+    this.restoreCurrentNormalizationGainNow()
     this.scheduledEndTime = 0
   }
 
@@ -1045,6 +1680,10 @@ export class AudioEngine {
       try { this.analysisTapSinkNode.disconnect() } catch { /* ignore */ }
       this.analysisTapSinkNode = null
     }
+    if (this.analysisDelayNode) {
+      try { this.analysisDelayNode.disconnect() } catch { /* ignore */ }
+      this.analysisDelayNode = null
+    }
 
     if (this.context) {
       this.context.close()
@@ -1054,7 +1693,9 @@ export class AudioEngine {
     this.gainNode = null
     this.normalizationGainNode = null
     this.analysisNormalizationGainNode = null
+    this.analysisDelayMs = 0
     this._normalizationGainDb = 0
+    this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.eventListeners.clear()
   }
