@@ -2,7 +2,7 @@ import { PlaybackState, EQBand } from '../types/audio'
 
 type EventCallback = (...args: unknown[]) => void
 
-const ANALYSIS_DELAY_MAX_MS = 1500
+const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
 
 const NORMALIZATION_MIN_GAIN_DB = -18
@@ -12,21 +12,31 @@ const CALIBRATION_RTT_MAX_MS = 2500
 const CALIBRATION_CAPTURE_WINDOW_SEC = 4
 const CALIBRATION_PASSES = 3
 const CALIBRATION_MIN_SUCCESSFUL_PASSES = 2
-const CALIBRATION_MIN_CONFIDENCE = 0.3
-const CALIBRATION_MIN_CORRELATION = 0.16
-const CALIBRATION_MIN_PEAK_RATIO = 1.06
-const CALIBRATION_CHIRP_DURATION_SEC = 0.12
+const CALIBRATION_MIN_CONFIDENCE = 0.22
+const CALIBRATION_MIN_CORRELATION = 0.12
+const CALIBRATION_MIN_PEAK_RATIO = 0.6
+const CALIBRATION_CHIRP_DURATION_SEC = 0.16
 const CALIBRATION_GAP_SEC = 0.08
 const CALIBRATION_BURST_COUNT = 4
 const CALIBRATION_BURST_WEIGHTS: readonly number[] = [1.0, -0.72, 0.58, -0.44]
 const CALIBRATION_LEAD_IN_SEC = 0.12
-const CALIBRATION_OUTPUT_GAIN = 0.62
+const CALIBRATION_OUTPUT_GAIN = 0.72
 const CALIBRATION_START_FREQ_HZ = 2000
 const CALIBRATION_END_FREQ_HZ = 8000
 const CALIBRATION_DOWNSAMPLE_FACTOR = 4
 const CALIBRATION_PRE_ROLL_SEC = 0.02
 const CALIBRATION_SEARCH_TAIL_SEC = 0.2
 const CALIBRATION_PEAK_SEPARATION_SEC = 0.03
+const CALIBRATION_DIRECT_PATH_RELATIVE_THRESHOLD = 0.72
+const CALIBRATION_MIN_RELATIVE_SEGMENT_ENERGY = 0.08
+const CALIBRATION_MIN_CORRELATION_FOR_PEAK_SCAN = 0.08
+const CALIBRATION_MAX_PEAK_CANDIDATES = 10
+const CALIBRATION_PERIOD_ALIAS_CORRELATION_THRESHOLD = 0.72
+const CALIBRATION_PERIOD_ALIAS_ENERGY_THRESHOLD = 0.45
+const CALIBRATION_ROUNDTRIP_OVERSHOOT_TOLERANCE_MS = 225
+const CALIBRATION_EDGE_LOCK_MARGIN_MS = 40
+const CALIBRATION_EDGE_LOCK_MIN_CONFIDENCE = 0.72
+const CALIBRATION_EDGE_LOCK_MAX_SPREAD_MS = 35
 
 export type OutputDelayCalibrationFailureCode =
   | 'not-supported'
@@ -806,6 +816,24 @@ export class AudioEngine {
       const medianRoundTrip = roundTrips[Math.floor(roundTrips.length / 2)]
       const averageConfidence = successfulPasses.reduce((sum, entry) => sum + entry.confidence, 0) / successfulPasses.length
       const quantizedRoundTrip = Math.round(medianRoundTrip / 5) * 5
+      const minRoundTrip = roundTrips[0]
+      const maxRoundTrip = roundTrips[roundTrips.length - 1]
+      const roundTripSpreadMs = maxRoundTrip - minRoundTrip
+      const nearUpperBound = quantizedRoundTrip >= (CALIBRATION_RTT_MAX_MS - CALIBRATION_EDGE_LOCK_MARGIN_MS)
+
+      if (
+        nearUpperBound
+        && (
+          averageConfidence < CALIBRATION_EDGE_LOCK_MIN_CONFIDENCE
+          && roundTripSpreadMs > CALIBRATION_EDGE_LOCK_MAX_SPREAD_MS
+        )
+      ) {
+        return {
+          ok: false,
+          code: 'low-confidence',
+          message: `Calibration locked near max RTT (${quantizedRoundTrip} ms) with weak confidence/spread. Try calibrating again at higher output volume or quieter conditions.`
+        }
+      }
 
       return {
         ok: true,
@@ -885,7 +913,6 @@ export class AudioEngine {
 
       if (!estimate
         || estimate.correlation < CALIBRATION_MIN_CORRELATION
-        || estimate.peakRatio < CALIBRATION_MIN_PEAK_RATIO
         || estimate.confidence < CALIBRATION_MIN_CONFIDENCE
       ) {
         const correlation = estimate ? Math.round(estimate.correlation * 100) / 100 : null
@@ -998,8 +1025,10 @@ export class AudioEngine {
     referenceSequence: Float32Array,
     leadInSamples: number
   ): { roundTripMs: number; correlation: number; peakRatio: number; confidence: number } | null {
-    const reducedCapture = this.downsampleForCorrelation(capturedSignal, CALIBRATION_DOWNSAMPLE_FACTOR)
-    const reducedReference = this.downsampleForCorrelation(referenceSequence, CALIBRATION_DOWNSAMPLE_FACTOR)
+    const processedCapture = this.preprocessCalibrationSignal(capturedSignal, sampleRate)
+    const processedReference = this.preprocessCalibrationSignal(referenceSequence, sampleRate)
+    const reducedCapture = this.downsampleForCorrelation(processedCapture, CALIBRATION_DOWNSAMPLE_FACTOR)
+    const reducedReference = this.downsampleForCorrelation(processedReference, CALIBRATION_DOWNSAMPLE_FACTOR)
     if (reducedCapture.length <= reducedReference.length || reducedReference.length < 16) {
       return null
     }
@@ -1029,8 +1058,10 @@ export class AudioEngine {
 
     const searchLength = searchEnd - searchStart + 1
     const correlations = new Float32Array(searchLength)
+    const segmentEnergies = new Float32Array(searchLength)
     let bestCorrelation = Number.NEGATIVE_INFINITY
     let bestIndex = -1
+    let maxSegmentEnergy = 0
 
     for (let startIndex = searchStart; startIndex <= searchEnd; startIndex++) {
       let dot = 0
@@ -1043,6 +1074,10 @@ export class AudioEngine {
       }
 
       const correlationIndex = startIndex - searchStart
+      segmentEnergies[correlationIndex] = segmentEnergy
+      if (segmentEnergy > maxSegmentEnergy) {
+        maxSegmentEnergy = segmentEnergy
+      }
       if (segmentEnergy <= 1e-12) {
         correlations[correlationIndex] = Number.NEGATIVE_INFINITY
         continue
@@ -1058,11 +1093,52 @@ export class AudioEngine {
     if (!Number.isFinite(bestCorrelation) || bestIndex < 0) {
       return null
     }
+    const globalBestCorrelation = bestCorrelation
+
+    const directPathEnergyThreshold = maxSegmentEnergy * CALIBRATION_MIN_RELATIVE_SEGMENT_ENERGY
+    const bestHighEnergy = this.findBestHighEnergyCorrelationIndex(
+      correlations,
+      segmentEnergies,
+      searchStart,
+      directPathEnergyThreshold
+    )
+    if (bestHighEnergy) {
+      bestIndex = bestHighEnergy.index
+      bestCorrelation = bestHighEnergy.correlation
+    }
+
+    // Prefer the earliest strong candidate near the best-correlation solution.
+    const directPathCorrelationThreshold = Math.max(
+      CALIBRATION_MIN_CORRELATION,
+      bestCorrelation * CALIBRATION_DIRECT_PATH_RELATIVE_THRESHOLD
+    )
+    const selectedPeak = this.selectDirectPathCandidate(
+      correlations,
+      segmentEnergies,
+      searchStart,
+      directPathCorrelationThreshold,
+      directPathEnergyThreshold,
+      peakSeparationSamples
+    )
+    let selectedIndex = selectedPeak?.index ?? bestIndex
+    let selectedCorrelation = selectedPeak?.correlation ?? bestCorrelation
+    const aliasAdjustedPeak = this.resolveBurstPeriodAliasCandidate(
+      correlations,
+      segmentEnergies,
+      searchStart,
+      selectedIndex,
+      reducedRate,
+      peakSeparationSamples
+    )
+    if (aliasAdjustedPeak) {
+      selectedIndex = aliasAdjustedPeak.index
+      selectedCorrelation = aliasAdjustedPeak.correlation
+    }
 
     let secondBestCorrelation = Number.NEGATIVE_INFINITY
     for (let i = 0; i < correlations.length; i++) {
       const startIndex = searchStart + i
-      if (Math.abs(startIndex - bestIndex) <= peakSeparationSamples) {
+      if (Math.abs(startIndex - selectedIndex) <= peakSeparationSamples) {
         continue
       }
 
@@ -1072,27 +1148,295 @@ export class AudioEngine {
       }
     }
 
-    const offsetReducedSamples = bestIndex - leadInReduced
+    const offsetReducedSamples = selectedIndex - leadInReduced
     const roundTripSamples = offsetReducedSamples * CALIBRATION_DOWNSAMPLE_FACTOR
-    const roundTripMs = (roundTripSamples / sampleRate) * 1000
-    if (!Number.isFinite(roundTripMs) || roundTripMs < 0 || roundTripMs > CALIBRATION_RTT_MAX_MS) {
+    const estimatedRoundTripMs = (roundTripSamples / sampleRate) * 1000
+    if (!Number.isFinite(estimatedRoundTripMs) || estimatedRoundTripMs < 0) {
       return null
     }
+    if (estimatedRoundTripMs > (CALIBRATION_RTT_MAX_MS + CALIBRATION_ROUNDTRIP_OVERSHOOT_TOLERANCE_MS)) {
+      return null
+    }
+    const roundTripMs = Math.max(0, Math.min(CALIBRATION_RTT_MAX_MS, estimatedRoundTripMs))
 
     const secondPeakFloor = Number.isFinite(secondBestCorrelation)
       ? Math.max(0.01, secondBestCorrelation)
-      : Math.max(0.01, bestCorrelation * 0.85)
-    const peakRatio = bestCorrelation / secondPeakFloor
-    const normalizedCorrelation = Math.max(0, Math.min(1, bestCorrelation))
-    const normalizedPeakRatio = Math.max(0, Math.min(1, (peakRatio - 1) / 0.8))
-    const confidence = Math.max(0, Math.min(1, (normalizedCorrelation * 0.72) + (normalizedPeakRatio * 0.28)))
+      : Math.max(0.01, selectedCorrelation * 0.85)
+    const peakRatio = selectedCorrelation / secondPeakFloor
+    const selectedVsGlobalPeak = selectedCorrelation / Math.max(0.01, globalBestCorrelation)
+    const normalizedCorrelation = Math.max(0, Math.min(1, selectedCorrelation))
+    const normalizedSelectedVsGlobalPeak = Math.max(0, Math.min(1, selectedVsGlobalPeak))
+    const normalizedPeakRatio = Math.max(0, Math.min(1, (peakRatio - CALIBRATION_MIN_PEAK_RATIO) / (1.35 - CALIBRATION_MIN_PEAK_RATIO)))
+    const prominence = Number.isFinite(secondBestCorrelation)
+      ? Math.max(0, selectedCorrelation - secondBestCorrelation)
+      : selectedCorrelation
+    const normalizedProminence = Math.max(0, Math.min(1, prominence / 0.45))
+    let confidence = Math.max(0, Math.min(1, (
+      (normalizedCorrelation * 0.45)
+      + (normalizedSelectedVsGlobalPeak * 0.35)
+      + (normalizedPeakRatio * 0.12)
+      + (normalizedProminence * 0.08)
+    )))
+    if (estimatedRoundTripMs > CALIBRATION_RTT_MAX_MS) {
+      confidence *= 0.7
+    }
 
     return {
       roundTripMs,
-      correlation: bestCorrelation,
+      correlation: selectedCorrelation,
       peakRatio,
       confidence
     }
+  }
+
+  private findBestHighEnergyCorrelationIndex(
+    correlations: Float32Array,
+    segmentEnergies: Float32Array,
+    searchStart: number,
+    minEnergy: number
+  ): { index: number; correlation: number } | null {
+    let bestIndex = -1
+    let bestCorrelation = Number.NEGATIVE_INFINITY
+
+    for (let offset = 0; offset < correlations.length; offset++) {
+      if (segmentEnergies[offset] < minEnergy) continue
+      const correlation = correlations[offset]
+      if (!Number.isFinite(correlation)) continue
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation
+        bestIndex = searchStart + offset
+      }
+    }
+
+    if (bestIndex < 0 || !Number.isFinite(bestCorrelation)) {
+      return null
+    }
+
+    return {
+      index: bestIndex,
+      correlation: bestCorrelation
+    }
+  }
+
+  private selectDirectPathCandidate(
+    correlations: Float32Array,
+    segmentEnergies: Float32Array,
+    searchStart: number,
+    minCorrelation: number,
+    minEnergy: number,
+    peakSeparationSamples: number
+  ): { index: number; correlation: number } | null {
+    const peaks = this.collectCorrelationPeaks(
+      correlations,
+      searchStart,
+      peakSeparationSamples
+    )
+    if (peaks.length === 0) {
+      return null
+    }
+
+    let bestPeakCorrelation = Number.NEGATIVE_INFINITY
+    for (const peak of peaks) {
+      if (peak.correlation > bestPeakCorrelation) {
+        bestPeakCorrelation = peak.correlation
+      }
+    }
+
+    const candidateCorrelationThreshold = Math.max(
+      minCorrelation,
+      bestPeakCorrelation * CALIBRATION_DIRECT_PATH_RELATIVE_THRESHOLD
+    )
+
+    for (const peak of peaks) {
+      const offset = peak.index - searchStart
+      if (offset < 0 || offset >= segmentEnergies.length) continue
+      if (segmentEnergies[offset] < minEnergy) continue
+      if (peak.correlation < candidateCorrelationThreshold) continue
+      return peak
+    }
+
+    return null
+  }
+
+  private collectCorrelationPeaks(
+    correlations: Float32Array,
+    searchStart: number,
+    peakSeparationSamples: number
+  ): Array<{ index: number; correlation: number }> {
+    const localPeaks: Array<{ offset: number; correlation: number }> = []
+
+    for (let offset = 1; offset < (correlations.length - 1); offset++) {
+      const correlation = correlations[offset]
+      if (!Number.isFinite(correlation)) continue
+      if (correlation < CALIBRATION_MIN_CORRELATION_FOR_PEAK_SCAN) continue
+
+      const prev = correlations[offset - 1]
+      const next = correlations[offset + 1]
+      if (correlation < prev || correlation < next) continue
+      localPeaks.push({ offset, correlation })
+    }
+
+    if (localPeaks.length === 0) {
+      return []
+    }
+
+    localPeaks.sort((a, b) => b.correlation - a.correlation)
+    const selected: Array<{ offset: number; correlation: number }> = []
+    for (const peak of localPeaks) {
+      const tooClose = selected.some((chosen) => (
+        Math.abs(chosen.offset - peak.offset) <= peakSeparationSamples
+      ))
+      if (tooClose) continue
+      selected.push(peak)
+      if (selected.length >= CALIBRATION_MAX_PEAK_CANDIDATES) break
+    }
+
+    selected.sort((a, b) => a.offset - b.offset)
+    return selected.map((peak) => ({
+      index: searchStart + peak.offset,
+      correlation: peak.correlation
+    }))
+  }
+
+  private resolveBurstPeriodAliasCandidate(
+    correlations: Float32Array,
+    segmentEnergies: Float32Array,
+    searchStart: number,
+    selectedIndex: number,
+    reducedRate: number,
+    peakSeparationSamples: number
+  ): { index: number; correlation: number } | null {
+    const burstPeriodSamples = Math.max(
+      1,
+      Math.round((CALIBRATION_CHIRP_DURATION_SEC + CALIBRATION_GAP_SEC) * reducedRate)
+    )
+    const selectedOffset = selectedIndex - searchStart
+    if (selectedOffset < 0 || selectedOffset >= correlations.length) {
+      return null
+    }
+    const selectedCorrelation = correlations[selectedOffset]
+    const selectedEnergy = segmentEnergies[selectedOffset]
+    if (!Number.isFinite(selectedCorrelation) || !Number.isFinite(selectedEnergy)) {
+      return null
+    }
+
+    const searchRadius = Math.max(1, Math.floor(peakSeparationSamples / 3))
+    let best: { index: number; correlation: number } = {
+      index: selectedIndex,
+      correlation: selectedCorrelation
+    }
+    let bestEnergy = selectedEnergy
+
+    for (let step = 1; step <= CALIBRATION_BURST_COUNT; step++) {
+      const targetIndex = selectedIndex - (step * burstPeriodSamples)
+      if (targetIndex < searchStart) {
+        break
+      }
+
+      const candidate = this.findStrongestPeakAroundOffset(
+        correlations,
+        segmentEnergies,
+        searchStart,
+        targetIndex,
+        searchRadius
+      )
+      if (!candidate) {
+        continue
+      }
+
+      if (candidate.correlation < (best.correlation * CALIBRATION_PERIOD_ALIAS_CORRELATION_THRESHOLD)) {
+        continue
+      }
+      if (candidate.energy < (bestEnergy * CALIBRATION_PERIOD_ALIAS_ENERGY_THRESHOLD)) {
+        continue
+      }
+
+      best = {
+        index: candidate.index,
+        correlation: candidate.correlation
+      }
+      bestEnergy = candidate.energy
+    }
+
+    if (best.index === selectedIndex) {
+      return null
+    }
+
+    return best
+  }
+
+  private findStrongestPeakAroundOffset(
+    correlations: Float32Array,
+    segmentEnergies: Float32Array,
+    searchStart: number,
+    targetIndex: number,
+    radius: number
+  ): { index: number; correlation: number; energy: number } | null {
+    const targetOffset = targetIndex - searchStart
+    const startOffset = Math.max(1, targetOffset - radius)
+    const endOffset = Math.min(correlations.length - 2, targetOffset + radius)
+    if (startOffset > endOffset) {
+      return null
+    }
+
+    let bestCorrelation = Number.NEGATIVE_INFINITY
+    let bestOffset = -1
+    for (let offset = startOffset; offset <= endOffset; offset++) {
+      const correlation = correlations[offset]
+      if (!Number.isFinite(correlation)) continue
+      if (correlation < CALIBRATION_MIN_CORRELATION_FOR_PEAK_SCAN) continue
+      const prev = correlations[offset - 1]
+      const next = correlations[offset + 1]
+      if (correlation < prev || correlation < next) continue
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation
+        bestOffset = offset
+      }
+    }
+
+    if (bestOffset < 0) {
+      return null
+    }
+
+    return {
+      index: searchStart + bestOffset,
+      correlation: bestCorrelation,
+      energy: segmentEnergies[bestOffset]
+    }
+  }
+
+  private preprocessCalibrationSignal(
+    input: Float32Array,
+    sampleRate: number
+  ): Float32Array {
+    if (input.length === 0) {
+      return new Float32Array(0)
+    }
+
+    const output = new Float32Array(input.length)
+    const highPassCutoff = Math.max(80, Math.min(CALIBRATION_START_FREQ_HZ * 0.65, sampleRate * 0.2))
+    const antiAliasCutoff = Math.max(
+      highPassCutoff * 1.4,
+      Math.min(
+        CALIBRATION_END_FREQ_HZ * 1.1,
+        (sampleRate / (2 * CALIBRATION_DOWNSAMPLE_FACTOR)) * 0.9
+      )
+    )
+    const hpAlpha = Math.exp((-2 * Math.PI * highPassCutoff) / sampleRate)
+    const lpAlpha = 1 - Math.exp((-2 * Math.PI * antiAliasCutoff) / sampleRate)
+
+    let previousInput = 0
+    let highPassState = 0
+    let lowPassState = 0
+    for (let i = 0; i < input.length; i++) {
+      const sample = input[i]
+      highPassState = sample - previousInput + (hpAlpha * highPassState)
+      previousInput = sample
+      lowPassState += lpAlpha * (highPassState - lowPassState)
+      output[i] = lowPassState
+    }
+
+    return output
   }
 
   private downsampleForCorrelation(input: Float32Array, factor: number): Float32Array {
@@ -1108,7 +1452,12 @@ export class AudioEngine {
 
     const reduced = new Float32Array(length)
     for (let i = 0; i < length; i++) {
-      reduced[i] = input[i * sampleFactor]
+      const start = i * sampleFactor
+      let sum = 0
+      for (let k = 0; k < sampleFactor; k++) {
+        sum += input[start + k]
+      }
+      reduced[i] = sum / sampleFactor
     }
     return reduced
   }

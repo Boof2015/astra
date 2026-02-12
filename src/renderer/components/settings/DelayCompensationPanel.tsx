@@ -10,6 +10,7 @@ const MODES: Array<{ value: DelayCompensationMode; label: string }> = [
   { value: 'auto', label: 'Auto Guess' },
 ]
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
+const MANUAL_OFFSET_MAX_MS = 2500
 
 function formatConfidence(value: number | null): string {
   if (!Number.isFinite(value)) return 'n/a'
@@ -134,8 +135,8 @@ export default function DelayCompensationPanel() {
     void setDelayCompensationManualOffsetMs(value)
   }
 
-  const manualOffsetMin = activeDelayProfile.mode === 'auto' ? -1500 : 0
-  const manualOffsetMax = 1500
+  const manualOffsetMin = activeDelayProfile.mode === 'auto' ? -MANUAL_OFFSET_MAX_MS : 0
+  const manualOffsetMax = MANUAL_OFFSET_MAX_MS
 
   return (
     <div className="delay-comp-panel">

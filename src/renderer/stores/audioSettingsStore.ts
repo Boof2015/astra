@@ -91,7 +91,7 @@ const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   lastCalibrationAt: null,
 }
 
-const MAX_DELAY_MS = 1500
+const MAX_DELAY_MS = 2500
 const MAX_BASELINE_RTT_MS = 5000
 const DELAY_STEP_MS = 5
 const BASELINE_IMPROVEMENT_THRESHOLD_MS = 10
