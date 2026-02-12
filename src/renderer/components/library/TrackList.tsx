@@ -185,12 +185,23 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
           const resolvedChannelCount = track.channels ?? (isCurrent ? currentTrack?.channels : undefined)
           const isMultichannel = (resolvedChannelCount ?? 0) > 2
           const rowCodecProfile = track.codec_profile?.toLowerCase() ?? ''
-          const rowIsAtmosJoc = Boolean(track.is_atmos_joc === 1 || rowCodecProfile.includes('atmos'))
+          const rowCodec = track.codec?.toLowerCase() ?? ''
+          const rowIsAtmosJoc = Boolean(
+            track.is_atmos_joc === 1 ||
+            rowCodecProfile.includes('atmos') ||
+            rowCodecProfile.includes('joc') ||
+            rowCodec.includes('atmos') ||
+            rowCodec.includes('joc')
+          )
           const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+          const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
           const currentIsAtmosJoc = Boolean(
             isCurrent && (
               currentTrack?.isAtmosJoc ||
-              currentCodecProfile.includes('atmos')
+              currentCodecProfile.includes('atmos') ||
+              currentCodecProfile.includes('joc') ||
+              currentCodec.includes('atmos') ||
+              currentCodec.includes('joc')
             )
           )
           const showAtmosBadge = Boolean(rowIsAtmosJoc || currentIsAtmosJoc)

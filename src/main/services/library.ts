@@ -2,7 +2,7 @@ import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
 import { join, extname, basename } from 'path'
-import { readdir, stat, mkdir, writeFile, readFile } from 'fs/promises'
+import { readdir, stat, mkdir, writeFile, readFile, access } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 
@@ -492,11 +492,32 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
   }
 
   const isWindows = process.platform === 'win32'
-  const candidates = isWindows
-    ? ['ffprobe.exe', 'ffprobe']
-    : ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe']
+  const executable = `ffprobe${isWindows ? '.exe' : ''}`
+  const staticModulePath = await resolveStaticFfprobeBinaryPath()
+  const candidates = [
+    ...(app.isPackaged
+      ? [
+          join(process.resourcesPath, executable),
+          join(process.resourcesPath, 'bin', executable)
+        ]
+      : []),
+    ...(staticModulePath ? [staticModulePath] : []),
+    ...(isWindows
+      ? ['ffprobe.exe', 'ffprobe']
+      : ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe'])
+  ].flatMap((candidate) => {
+    const unpacked = toAsarUnpackedPath(candidate)
+    return unpacked !== candidate ? [candidate, unpacked] : [candidate]
+  })
 
   for (const candidate of candidates) {
+    if (looksLikePath(candidate)) {
+      try {
+        await access(candidate)
+      } catch {
+        continue
+      }
+    }
     try {
       await execFileAsync(candidate, ['-version'], { timeout: 4000, maxBuffer: 64 * 1024 })
       resolvedFfprobeBinaryPath = candidate
@@ -508,6 +529,25 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
 
   resolvedFfprobeBinaryPath = null
   return null
+}
+
+async function resolveStaticFfprobeBinaryPath(): Promise<string | null> {
+  try {
+    const module = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
+    const modulePath = module.path ?? module.default?.path
+    return typeof modulePath === 'string' ? modulePath : null
+  } catch {
+    return null
+  }
+}
+
+function toAsarUnpackedPath(candidate: string): string {
+  if (!candidate.includes('app.asar')) return candidate
+  return candidate.replace('app.asar', 'app.asar.unpacked')
+}
+
+function looksLikePath(candidate: string): boolean {
+  return candidate.includes('/') || candidate.includes('\\') || /^[a-zA-Z]:[\\/]/.test(candidate)
 }
 
 function toText(value: unknown): string | null {
@@ -759,6 +799,11 @@ export async function backfillMissingChannelCounts(): Promise<{ scanned: number;
        OR codec IS NULL
        OR codec_profile IS NULL
        OR is_atmos_joc IS NULL
+       OR (
+         LOWER(format) IN ('m4a', 'mp4', 'm4b', 'm4p', 'aac')
+         AND COALESCE(channels, 0) > 2
+         AND COALESCE(is_atmos_joc, 0) = 0
+       )
   `)
   if (result.length === 0) return { scanned: 0, updated: 0, errors: 0 }
 
