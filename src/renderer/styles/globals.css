@@ -2640,11 +2640,13 @@ button, .titlebar {
    ============================================ */
 .search-container {
   position: relative;
+  flex-shrink: 0;
 }
 
 .search-input {
-  width: 200px;
-  padding: 8px 12px 8px 32px;
+  width: clamp(170px, 22vw, 240px);
+  height: 32px;
+  padding: 8px 32px 8px 32px;
   background: var(--bg-tertiary);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
@@ -2668,9 +2670,36 @@ button, .titlebar {
   left: 10px;
   top: 50%;
   transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-tertiary);
-  font-size: 12px;
   pointer-events: none;
+}
+
+.search-clear-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.search-clear-btn:hover {
+  color: var(--text-primary);
+  background: var(--glass-highlight);
 }
 
 /* ============================================
@@ -5938,6 +5967,10 @@ body::after {
     right: 16px;
     width: min(320px, calc(100vw - 32px));
   }
+
+  .search-input {
+    width: clamp(140px, 20vw, 180px);
+  }
 }
 
 @media (max-width: 760px) {
@@ -5960,6 +5993,14 @@ body::after {
   .track-action-btn {
     width: 24px;
     height: 24px;
+  }
+
+  .search-input {
+    width: 130px;
+  }
+
+  .library-header-right .icon-btn {
+    flex-shrink: 0;
   }
 
   .titlebar {

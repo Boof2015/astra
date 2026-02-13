@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -25,6 +26,50 @@ export default function LibraryView() {
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const [searchQuery, setSearchQuery] = useState('')
+  const previousInDetailViewRef = useRef(false)
+
+  const normalizedQuery = searchQuery.trim().toLowerCase()
+  const hasSearchQuery = normalizedQuery.length > 0
+  const inDetailView = Boolean(selectedAlbum || selectedArtist)
+
+  useEffect(() => {
+    if (!previousInDetailViewRef.current && inDetailView) {
+      setSearchQuery('')
+    }
+    previousInDetailViewRef.current = inDetailView
+  }, [inDetailView])
+
+  const filteredTracks = useMemo(() => {
+    if (!hasSearchQuery) return tracks
+    return tracks.filter((track) =>
+      track.title.toLowerCase().includes(normalizedQuery)
+      || track.artist.toLowerCase().includes(normalizedQuery)
+      || track.album.toLowerCase().includes(normalizedQuery)
+    )
+  }, [tracks, hasSearchQuery, normalizedQuery])
+
+  const filteredAlbums = useMemo(() => {
+    if (!hasSearchQuery) return albums
+    return albums.filter((album) =>
+      album.album.toLowerCase().includes(normalizedQuery)
+      || album.artist.toLowerCase().includes(normalizedQuery)
+    )
+  }, [albums, hasSearchQuery, normalizedQuery])
+
+  const filteredArtists = useMemo(() => {
+    if (!hasSearchQuery) return artists
+    return artists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
+  }, [artists, hasSearchQuery, normalizedQuery])
+
+  const trimmedQueryForMessage = searchQuery.trim()
+  const searchPlaceholder = inDetailView
+    ? 'Search tracks...'
+    : viewMode === 'albums'
+      ? 'Search albums...'
+      : viewMode === 'artists'
+        ? 'Search artists...'
+        : 'Search tracks...'
 
   const handleBack = async () => {
     const shouldReturnHome = selectionOrigin === 'home'
@@ -58,8 +103,8 @@ export default function LibraryView() {
   // Header
   let title = 'Library'
   let showViewTabs = true
-  let itemCount = tracks.length
-  let itemLabel = tracks.length === 1 ? 'track' : 'tracks'
+  let itemCount = filteredTracks.length
+  let itemLabel = filteredTracks.length === 1 ? 'track' : 'tracks'
 
   if (selectedAlbum) {
     title = selectedAlbum.album
@@ -68,11 +113,11 @@ export default function LibraryView() {
     title = selectedArtist
     showViewTabs = false
   } else if (viewMode === 'albums') {
-    itemCount = albums.length
-    itemLabel = albums.length === 1 ? 'album' : 'albums'
+    itemCount = filteredAlbums.length
+    itemLabel = filteredAlbums.length === 1 ? 'album' : 'albums'
   } else if (viewMode === 'artists') {
-    itemCount = artists.length
-    itemLabel = artists.length === 1 ? 'artist' : 'artists'
+    itemCount = filteredArtists.length
+    itemLabel = filteredArtists.length === 1 ? 'artist' : 'artists'
   }
 
   // Scan progress overlay
@@ -117,14 +162,24 @@ export default function LibraryView() {
       )
     }
 
+    if (hasSearchQuery && filteredTracks.length === 0 && (selectedAlbum || selectedArtist || viewMode === 'tracks')) {
+      return (
+        <div className="library-empty">
+          <p>No tracks found for "{trimmedQueryForMessage}"</p>
+        </div>
+      )
+    }
+
     // Albums grid
     if (viewMode === 'albums' && !selectedAlbum && !selectedArtist) {
-      if (albums.length === 0) {
-        return <div className="library-empty"><p>No albums found</p></div>
+      if (filteredAlbums.length === 0) {
+        return hasSearchQuery
+          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
+          : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
         <div className="album-grid">
-          {albums.map((album) => (
+          {filteredAlbums.map((album) => (
             <div
               key={`${album.album}-${album.artist}`}
               className="album-card"
@@ -146,12 +201,14 @@ export default function LibraryView() {
 
     // Artists list
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist) {
-      if (artists.length === 0) {
-        return <div className="library-empty"><p>No artists found</p></div>
+      if (filteredArtists.length === 0) {
+        return hasSearchQuery
+          ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
+          : <div className="library-empty"><p>No artists found</p></div>
       }
       return (
         <div className="artist-list">
-          {artists.map((artist) => (
+          {filteredArtists.map((artist) => (
             <div
               key={artist.artist}
               className="artist-item"
@@ -175,7 +232,7 @@ export default function LibraryView() {
     }
 
     // Tracks
-    return <TrackList tracks={tracks} showArtist={!selectedArtist} showAlbum={!selectedAlbum} />
+    return <TrackList tracks={filteredTracks} showArtist={!selectedArtist} showAlbum={!selectedAlbum} />
   }
 
   return (
@@ -217,6 +274,33 @@ export default function LibraryView() {
           </span>
         </div>
         <div className="library-header-right">
+          <div className="search-container">
+            <span className="search-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+              </svg>
+            </span>
+            <input
+              type="text"
+              className="search-input"
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery.length > 0 && (
+              <button
+                type="button"
+                className="search-clear-btn"
+                aria-label="Clear search"
+                title="Clear search"
+                onClick={() => setSearchQuery('')}
+              >
+                ×
+              </button>
+            )}
+          </div>
           <button className="icon-btn" onClick={handleOpenFile} title="Open File">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
