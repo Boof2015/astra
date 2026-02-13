@@ -550,7 +550,7 @@ button, .titlebar {
 }
 
 .transport-mini-btn.pinned svg {
-  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.42));
+  filter: drop-shadow(0 0 6px var(--accent-glow));
 }
 
 .transport-mini-btn.pinned::after {
@@ -561,8 +561,8 @@ button, .titlebar {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #38bdf8;
-  box-shadow: 0 0 6px rgba(56, 189, 248, 0.68);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 /* EQ button with mini curve */

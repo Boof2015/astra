@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { downsampleWaveform } from '../../audio/waveformExtractor'
+import { useThemeStore } from '../../stores/themeStore'
 
 interface WaveformSeekBarProps {
   waveformData: Float32Array | null
@@ -30,6 +31,7 @@ export default function WaveformSeekBar({
   const [hoverPercent, setHoverPercent] = useState<number | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const isDraggingRef = useRef(false)
+  const accent = useThemeStore((s) => s.resolvedTokens.accent)
 
   // Resize observer for responsive canvas
   useEffect(() => {
@@ -84,7 +86,7 @@ export default function WaveformSeekBar({
 
     const playedX = (progress / 100) * width
     const centerY = height / 2
-    const playedColor = '#0ea5e9'
+    const playedColor = accent
     const unplayedColor = 'rgba(255, 255, 255, 0.12)'
 
     if (!displayData || displayData.length === 0) {
@@ -141,7 +143,7 @@ export default function WaveformSeekBar({
       ctx.lineTo(hoverX, height)
       ctx.stroke()
     }
-  }, [displayData, progress, hoverPercent, canvasSize])
+  }, [displayData, progress, hoverPercent, canvasSize, accent])
 
   // Redraw on any dependency change
   useEffect(() => {
