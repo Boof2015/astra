@@ -1,21 +1,21 @@
 import { useEffect } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 
+const isTextEntryTarget = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) return false
+
+  const tagName = target.tagName.toLowerCase()
+  return tagName === 'input' || tagName === 'textarea' || target.isContentEditable
+}
+
 export function useKeyboardShortcuts(): void {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       // Don't intercept when modifier keys are held (e.g. Cmd+Space = Spotlight)
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
-      // Don't intercept when typing in input fields
-      const target = e.target as HTMLElement
-      const tagName = target.tagName.toLowerCase()
-      if (
-        tagName === 'input' ||
-        tagName === 'textarea' ||
-        tagName === 'select' ||
-        target.isContentEditable
-      ) {
+      // Don't intercept while typing in text-entry fields.
+      if (isTextEntryTarget(e.target)) {
         return
       }
 
