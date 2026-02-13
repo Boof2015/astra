@@ -394,7 +394,7 @@ ipcMain.handle('updates:openReleasesPage', async () => {
 })
 
 // Discord Rich Presence
-ipcMain.handle('discord:configure', async (_event, options: { enabled: boolean; clientId: string }) => {
+ipcMain.handle('discord:configure', async (_event, options: { enabled: boolean }) => {
   return discordRpcService.configure(options)
 })
 

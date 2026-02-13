@@ -12,8 +12,6 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    env:
-      VITE_DISCORD_CLIENT_ID: ${{ vars.VITE_DISCORD_CLIENT_ID || '1471059486100815915' }}
     strategy:
       fail-fast: false
       matrix:

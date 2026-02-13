@@ -15,7 +15,6 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
   'astra-discord-rpc-enabled',
-  'astra-discord-rpc-client-id',
   'astra-updates-auto-check-enabled',
   'astra-eq-custom-presets',
 ] as const

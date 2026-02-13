@@ -10,27 +10,17 @@ interface DiscordSettingsStore {
 
 const ENABLED_STORAGE_KEY = 'astra-discord-rpc-enabled'
 const LEGACY_CLIENT_ID_STORAGE_KEY = 'astra-discord-rpc-client-id'
-const DEFAULT_DISCORD_CLIENT_ID = (import.meta.env.VITE_DISCORD_CLIENT_ID ?? '').trim()
-
-function resolveClientId(): string {
-  const legacyClientId = (localStorage.getItem(LEGACY_CLIENT_ID_STORAGE_KEY) ?? '').trim()
-  if (legacyClientId) return legacyClientId
-  return DEFAULT_DISCORD_CLIENT_ID
-}
 
 export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) => {
+  const clearLegacyClientId = () => {
+    localStorage.removeItem(LEGACY_CLIENT_ID_STORAGE_KEY)
+  }
+
   const applyDiscordConfig = async () => {
     const { enabled } = get()
-    const clientId = resolveClientId()
-
-    if (enabled && !clientId) {
-      window.electronAPI.discord.clearPresence()
-      set({ statusMessage: 'Discord Rich Presence is not configured for this build.' })
-      return
-    }
 
     try {
-      const result = await window.electronAPI.discord.configure({ enabled, clientId })
+      const result = await window.electronAPI.discord.configure({ enabled })
       set({ statusMessage: result.message })
       if (!enabled) {
         window.electronAPI.discord.clearPresence()
@@ -52,6 +42,7 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
     },
 
     initFromSaved: async () => {
+      clearLegacyClientId()
       const enabled = localStorage.getItem(ENABLED_STORAGE_KEY) === '1'
       set({ enabled })
       await applyDiscordConfig()
@@ -60,7 +51,7 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
     resetToDefaults: async () => {
       set({ enabled: false })
       localStorage.removeItem(ENABLED_STORAGE_KEY)
-      localStorage.removeItem(LEGACY_CLIENT_ID_STORAGE_KEY)
+      clearLegacyClientId()
       await applyDiscordConfig()
     },
   }

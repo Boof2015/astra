@@ -41,7 +41,7 @@ declare global {
                 openReleasesPage: () => Promise<boolean>
             }
             discord: {
-                configure: (options: { enabled: boolean; clientId: string }) => Promise<{ ok: boolean; connected: boolean; message: string }>
+                configure: (options: { enabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {
                     playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
                     currentTimeSeconds?: number

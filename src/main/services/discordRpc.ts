@@ -6,6 +6,7 @@ import { tmpdir } from 'os'
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
 const MAX_RPC_PACKET_SIZE = 1024 * 1024
+const DISCORD_RPC_CLIENT_ID = '1471059486100815915'
 
 const OPCODE_HANDSHAKE = 0
 const OPCODE_FRAME = 1
@@ -40,17 +41,12 @@ export interface DiscordPresenceUpdate {
 
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
-  clientId: string
 }
 
 export interface DiscordRpcConfigureResult {
   ok: boolean
   connected: boolean
   message: string
-}
-
-function normalizeClientId(value: string): string {
-  return value.trim()
 }
 
 function normalizeText(value: unknown): string | undefined {
@@ -119,7 +115,6 @@ function buildQualityLine(track: DiscordTrackPresence): string | null {
 
 export class DiscordRpcService {
   private enabled = false
-  private clientId: string | null = null
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -129,13 +124,10 @@ export class DiscordRpcService {
   private lastPresenceSignature: string | null = null
 
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
-    const nextClientId = normalizeClientId(options.clientId)
     const nextEnabled = Boolean(options.enabled)
-    const clientChanged = this.clientId !== (nextClientId || null)
     const enabledChanged = this.enabled !== nextEnabled
 
     this.enabled = nextEnabled
-    this.clientId = nextClientId || null
 
     if (!this.enabled) {
       this.clearReconnectTimer()
@@ -147,17 +139,7 @@ export class DiscordRpcService {
       }
     }
 
-    if (!this.clientId) {
-      this.clearReconnectTimer()
-      this.disconnectSocket()
-      return {
-        ok: false,
-        connected: false,
-        message: 'Discord Rich Presence is not configured for this build.'
-      }
-    }
-
-    if (clientChanged || enabledChanged) {
+    if (enabledChanged) {
       this.disconnectSocket()
     }
 
@@ -201,7 +183,7 @@ export class DiscordRpcService {
         : null
     }
 
-    if (!this.enabled || !this.clientId) return
+    if (!this.enabled) return
     if (!this.ready) {
       void this.ensureConnected()
       return
@@ -219,7 +201,6 @@ export class DiscordRpcService {
 
   shutdown(): void {
     this.enabled = false
-    this.clientId = null
     this.pendingPresence = null
     this.lastPresenceSignature = null
     this.clearReconnectTimer()
@@ -227,7 +208,7 @@ export class DiscordRpcService {
   }
 
   private async ensureConnected(): Promise<boolean> {
-    if (!this.enabled || !this.clientId) return false
+    if (!this.enabled) return false
     if (this.socket && !this.socket.destroyed) return true
     if (this.connectPromise) return this.connectPromise
 
@@ -303,7 +284,7 @@ export class DiscordRpcService {
         this.ready = false
         this.receiveBuffer = Buffer.alloc(0)
       }
-      if (this.enabled && this.clientId) {
+      if (this.enabled) {
         this.scheduleReconnect()
       }
     })
@@ -329,7 +310,7 @@ export class DiscordRpcService {
     if (this.reconnectTimer) return
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (!this.enabled || !this.clientId) return
+      if (!this.enabled) return
       void this.ensureConnected()
     }, RECONNECT_DELAY_MS)
   }
@@ -355,10 +336,9 @@ export class DiscordRpcService {
   }
 
   private sendHandshake(): void {
-    if (!this.clientId) return
     this.sendFrame(OPCODE_HANDSHAKE, {
       v: 1,
-      client_id: this.clientId
+      client_id: DISCORD_RPC_CLIENT_ID
     })
   }
 
@@ -489,7 +469,7 @@ export class DiscordRpcService {
 
     if (opcode === OPCODE_CLOSE) {
       this.disconnectSocket()
-      if (this.enabled && this.clientId) {
+      if (this.enabled) {
         this.scheduleReconnect()
       }
       return
