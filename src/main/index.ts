@@ -6,6 +6,7 @@ import { execFile, type ExecFileOptions } from 'child_process'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import { discordRpcService, type DiscordPresenceUpdate } from './services/discordRpc'
+import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
@@ -381,6 +382,15 @@ ipcMain.handle('app:getPerformanceStats', () => {
     cpuPercent: totalCpuPercent,
     memoryMb: totalWorkingSetKb / 1024,
   }
+})
+
+ipcMain.handle('updates:check', async () => {
+  return checkForUpdates(app.getVersion())
+})
+
+ipcMain.handle('updates:openReleasesPage', async () => {
+  await shell.openExternal(RELEASES_PAGE_URL)
+  return true
 })
 
 // Discord Rich Presence

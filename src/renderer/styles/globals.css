@@ -245,6 +245,16 @@ button, .titlebar {
   color: white;
 }
 
+.titlebar-button-update {
+  color: #bae6fd;
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.titlebar-button-update:hover {
+  color: #e0f2fe;
+  background: rgba(56, 189, 248, 0.24);
+}
+
 /* ============================================
    Sidebar (icon nav)
    ============================================ */
@@ -1442,6 +1452,52 @@ button, .titlebar {
   }
 }
 
+.update-available-cue {
+  position: fixed;
+  right: clamp(18px, 4vw, 40px);
+  bottom: calc(var(--now-playing-height) + 14px);
+  z-index: 242;
+  width: min(360px, calc(100vw - 40px));
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.3s ease, transform 0.36s ease;
+}
+
+.update-available-cue-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.update-available-cue-fullscreen {
+  bottom: clamp(18px, 3.6vh, 36px);
+}
+
+.update-available-cue-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.94);
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.2);
+  flex-shrink: 0;
+}
+
+.update-available-cue-fill {
+  animation: updateAvailableCueFill 5.6s linear forwards;
+}
+
+@keyframes updateAvailableCueFill {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 @keyframes fullscreenBackdropLayerEnter {
   from {
     opacity: 0;
@@ -1477,8 +1533,10 @@ button, .titlebar {
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
+  .update-available-cue,
   .fullscreen-next-cue-fill,
-  .output-delay-cue-fill {
+  .output-delay-cue-fill,
+  .update-available-cue-fill {
     transition-duration: 0.08s !important;
     animation-duration: 0.08s !important;
   }
@@ -1491,10 +1549,12 @@ button, .titlebar {
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
+  .update-available-cue,
   .fullscreen-next-cue-visible,
   .fullscreen-next-cue-handoff,
   .decode-fallback-cue-visible,
-  .output-delay-cue-visible {
+  .output-delay-cue-visible,
+  .update-available-cue-visible {
     transform: none !important;
   }
 }
@@ -5873,6 +5933,11 @@ body::after {
     right: 16px;
     width: min(320px, calc(100vw - 32px));
   }
+
+  .update-available-cue {
+    right: 16px;
+    width: min(320px, calc(100vw - 32px));
+  }
 }
 
 @media (max-width: 760px) {
@@ -6069,6 +6134,12 @@ body::after {
   }
 
   .output-delay-cue {
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+
+  .update-available-cue {
     right: 10px;
     left: 10px;
     width: auto;
@@ -6299,6 +6370,33 @@ body::after {
 
 .settings-note {
   margin-top: 10px;
+}
+
+.settings-update-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.settings-update-status-available {
+  color: #86efac;
+}
+
+.settings-update-status-error {
+  color: #fecaca;
+}
+
+.settings-update-status-checking {
+  color: #fef08a;
+}
+
+.settings-update-status-default {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.settings-update-meta {
+  color: rgba(255, 255, 255, 0.58);
+  margin-top: 4px;
 }
 
 .settings-audio-control {

@@ -121,6 +121,20 @@ export interface DiscordRpcConfigureResult {
   message: string
 }
 
+export type UpdateCheckStatus = 'up-to-date' | 'update-available' | 'error'
+
+export interface UpdateCheckResult {
+  status: UpdateCheckStatus
+  updateAvailable: boolean
+  currentVersion: string
+  latestTag: string | null
+  latestVersion: string | null
+  releaseName: string | null
+  releaseUrl: string
+  checkedAt: number
+  message: string
+}
+
 // Native Visualizer Types
 export interface OscilloscopeResult {
   triggerIndex: number // float (position in circular buffer)
@@ -227,6 +241,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
 
+  updates: {
+    checkForUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
+    openReleasesPage: () => ipcRenderer.invoke('updates:openReleasesPage')
+  },
+
   // Integrations
   discord: {
     configure: (options: { enabled: boolean; clientId: string }): Promise<DiscordRpcConfigureResult> =>
@@ -327,6 +346,10 @@ declare global {
       platform: NodeJS.Platform
       getAppVersion: () => Promise<string>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      updates: {
+        checkForUpdates: () => Promise<UpdateCheckResult>
+        openReleasesPage: () => Promise<boolean>
+      }
 
       // Integrations
       discord: {

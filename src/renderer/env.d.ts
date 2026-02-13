@@ -26,6 +26,20 @@ declare global {
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; memoryMb: number }>
+            updates: {
+                checkForUpdates: () => Promise<{
+                    status: 'up-to-date' | 'update-available' | 'error'
+                    updateAvailable: boolean
+                    currentVersion: string
+                    latestTag: string | null
+                    latestVersion: string | null
+                    releaseName: string | null
+                    releaseUrl: string
+                    checkedAt: number
+                    message: string
+                }>
+                openReleasesPage: () => Promise<boolean>
+            }
             discord: {
                 configure: (options: { enabled: boolean; clientId: string }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {

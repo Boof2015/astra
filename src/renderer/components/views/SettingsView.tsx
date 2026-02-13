@@ -7,6 +7,7 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
+import { useUpdateStore } from '../../stores/updateStore'
 import { THEME_PRESET_LIST, useThemeStore, type ThemePresetId } from '../../stores/themeStore'
 import {
   factoryResetApplication,
@@ -107,6 +108,18 @@ export default function SettingsView() {
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
   } = useDiscordSettingsStore()
+  const {
+    autoCheckEnabled,
+    checkState: updateCheckState,
+    statusMessage: updateStatusMessage,
+    updateAvailable,
+    latestTag,
+    releaseName,
+    lastCheckedAt,
+    setAutoCheckEnabled,
+    checkForUpdates,
+    openReleasesPage,
+  } = useUpdateStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
 
   const selectedPreset = useMemo(
@@ -209,6 +222,16 @@ export default function SettingsView() {
 
   const pendingReset = pendingResetId ? (resetActionMap.get(pendingResetId) ?? null) : null
   const isAnyResetRunning = Object.values(resetStatuses).some((status) => status.state === 'running')
+  const updateStatusTone = updateCheckState === 'update-available'
+    ? 'available'
+    : updateCheckState === 'error'
+      ? 'error'
+      : updateCheckState === 'checking'
+        ? 'checking'
+        : 'default'
+  const lastCheckedLabel = lastCheckedAt
+    ? new Date(lastCheckedAt).toLocaleString()
+    : 'No update checks have run yet.'
 
   const executeResetAction = async (actionId: ResetActionId): Promise<void> => {
     const action = resetActionMap.get(actionId)
@@ -439,6 +462,57 @@ export default function SettingsView() {
               </div>
             </div>
             <p className="settings-note">{discordStatusMessage}</p>
+          </section>
+
+          <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Updates</h3>
+              <p>Check GitHub releases for new Astra builds.</p>
+            </div>
+            <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Auto-check on Startup</span>
+                <button
+                  className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
+                  onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
+                >
+                  {autoCheckEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Check for Updates</span>
+                <button
+                  className="settings-btn settings-btn-primary"
+                  onClick={() => void checkForUpdates()}
+                  disabled={updateCheckState === 'checking'}
+                >
+                  {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
+                </button>
+              </div>
+
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Download</span>
+                <button
+                  className="settings-btn"
+                  onClick={() => void openReleasesPage()}
+                  disabled={!updateAvailable}
+                >
+                  Open Releases
+                </button>
+              </div>
+            </div>
+            <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
+              {updateStatusMessage}
+            </p>
+            {updateAvailable && latestTag && (
+              <p className="settings-note settings-update-meta">
+                Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
+              </p>
+            )}
+            <p className="settings-note settings-update-meta">
+              {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
+            </p>
           </section>
 
           <section className="settings-section settings-section-panel settings-danger-zone">

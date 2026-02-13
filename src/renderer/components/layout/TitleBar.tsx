@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useUpdateStore } from '../../stores/updateStore'
 
 interface AppPerformanceStats {
   cpuPercent: number
@@ -10,6 +11,8 @@ export default function TitleBar() {
   const [appVersion, setAppVersion] = useState('')
   const [appStats, setAppStats] = useState<AppPerformanceStats | null>(null)
   const [fps, setFps] = useState(0)
+  const updateAvailable = useUpdateStore((s) => s.updateAvailable)
+  const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
 
@@ -103,6 +106,9 @@ export default function TitleBar() {
   }, [])
 
   const handleMinimize = () => window.electronAPI?.minimize()
+  const handleOpenUpdate = () => {
+    void openReleasesPage()
+  }
   const handleMaximize = async () => {
     window.electronAPI?.maximize()
     const maximized = await window.electronAPI?.isMaximized()
@@ -151,6 +157,21 @@ export default function TitleBar() {
             <span>{formattedFps}</span>
           </span>
         </div>
+
+        {updateAvailable && (
+          <button
+            className="titlebar-button titlebar-button-update"
+            onClick={handleOpenUpdate}
+            aria-label="Download update"
+            title="Update available - open downloads"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3v11" />
+              <polyline points="7 11 12 16 17 11" />
+              <path d="M5 21h14v-5" />
+            </svg>
+          </button>
+        )}
 
         {/* Windows/Linux: custom window controls */}
         {!isMac && (

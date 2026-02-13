@@ -9,11 +9,13 @@ import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
+import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useThemeStore } from './stores/themeStore'
+import { useUpdateStore } from './stores/updateStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -34,6 +36,10 @@ function App() {
     useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
+    const updatesStore = useUpdateStore.getState()
+    if (updatesStore.autoCheckEnabled) {
+      void updatesStore.checkForUpdates()
+    }
     const unsubscribe = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })
@@ -59,6 +65,7 @@ function App() {
       <TransportBar />
       <DecodeFallbackCue />
       <OutputDelayCue />
+      <UpdateAvailableCue />
       {isFullscreen && <FullscreenMode />}
     </div>
   )
