@@ -85,7 +85,8 @@ interface CalibrationToneSignal {
  *
  * Audio Graph:
  * Playback: Source -> [optional remap matrix] -> NormalizationGain -> Preamp/EQ -> GainNode (volume) -> Destination
- * Analysis tap: Source -> AnalysisNormalizationGain -> AudioWorklet -> Silent sink (for pull)
+ * Analysis tap: Source -> AnalysisNormalizationGain -> AnalysisDelay -> AudioWorklet -> Silent sink (for pull)
+ * EQ visual tap: Post-EQ -> EQAnalysisDelay -> EQAnalyser -> Silent sink (for delayed EQ/fullscreen visuals)
  */
 export class AudioEngine {
   private context: AudioContext | null = null
@@ -103,6 +104,9 @@ export class AudioEngine {
   private preampNode: GainNode | null = null
   private eqFilters: BiquadFilterNode[] = []
   private eqAnalyserNode: AnalyserNode | null = null
+  private eqAnalysisDelayNode: DelayNode | null = null
+  private eqDisplayAnalyserNode: AnalyserNode | null = null
+  private eqAnalysisTapSinkNode: GainNode | null = null
   private requestedEQBands: EQBand[] = []
   private requestedEQPreampDb: number = 0
   private requestedEQEnabled: boolean = false
@@ -244,6 +248,9 @@ export class AudioEngine {
       this.normalizationGainNode,
       this.preampNode,
       this.eqAnalyserNode,
+      this.eqAnalysisDelayNode,
+      this.eqDisplayAnalyserNode,
+      this.eqAnalysisTapSinkNode,
       this.gainNode
     ]
 
@@ -384,6 +391,13 @@ export class AudioEngine {
       this.eqAnalyserNode = this.context.createAnalyser()
       this.eqAnalyserNode.fftSize = 4096
       this.eqAnalyserNode.smoothingTimeConstant = 0.7
+      this.eqAnalysisDelayNode = this.context.createDelay(ANALYSIS_DELAY_MAX_SEC)
+      this.eqAnalysisDelayNode.delayTime.value = this.analysisDelayMs / 1000
+      this.eqDisplayAnalyserNode = this.context.createAnalyser()
+      this.eqDisplayAnalyserNode.fftSize = 4096
+      this.eqDisplayAnalyserNode.smoothingTimeConstant = 0.7
+      this.eqAnalysisTapSinkNode = this.context.createGain()
+      this.eqAnalysisTapSinkNode.gain.value = 0
 
       // Load and create AudioWorklet for real-time analysis
       if (!this.workletLoaded) {
@@ -450,6 +464,14 @@ export class AudioEngine {
       this.preampNode.connect(this.eqAnalyserNode)
       this.eqAnalyserNode.connect(this.gainNode)
       this.gainNode.connect(this.context.destination)
+
+      // delayed EQ analyser tap for EQ/fullscreen visuals
+      if (this.eqAnalysisDelayNode && this.eqDisplayAnalyserNode && this.eqAnalysisTapSinkNode) {
+        this.eqAnalyserNode.connect(this.eqAnalysisDelayNode)
+        this.eqAnalysisDelayNode.connect(this.eqDisplayAnalyserNode)
+        this.eqDisplayAnalyserNode.connect(this.eqAnalysisTapSinkNode)
+        this.eqAnalysisTapSinkNode.connect(this.context.destination)
+      }
 
       // analysis: normalization tap -> worklet -> silent sink so the worklet stays pulled.
       if (this.workletNode && this.analysisNormalizationGainNode && this.analysisDelayNode) {
@@ -695,7 +717,7 @@ export class AudioEngine {
 
   // Get post-EQ analyser node for spectrum overlay
   getEQAnalyserNode(): AnalyserNode | null {
-    return this.eqAnalyserNode
+    return this.eqDisplayAnalyserNode ?? this.eqAnalyserNode
   }
 
   getOutputMaxChannelCount(): number | null {
@@ -708,8 +730,13 @@ export class AudioEngine {
     const clampedMs = Math.max(0, Math.min(ANALYSIS_DELAY_MAX_MS, safeMs))
     this.analysisDelayMs = clampedMs
 
-    if (this.context && this.analysisDelayNode) {
-      this.analysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
+    if (this.context) {
+      if (this.analysisDelayNode) {
+        this.analysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
+      }
+      if (this.eqAnalysisDelayNode) {
+        this.eqAnalysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
+      }
     }
   }
 
@@ -2039,6 +2066,18 @@ export class AudioEngine {
     if (this.eqAnalyserNode) {
       try { this.eqAnalyserNode.disconnect() } catch { /* ignore */ }
       this.eqAnalyserNode = null
+    }
+    if (this.eqDisplayAnalyserNode) {
+      try { this.eqDisplayAnalyserNode.disconnect() } catch { /* ignore */ }
+      this.eqDisplayAnalyserNode = null
+    }
+    if (this.eqAnalysisTapSinkNode) {
+      try { this.eqAnalysisTapSinkNode.disconnect() } catch { /* ignore */ }
+      this.eqAnalysisTapSinkNode = null
+    }
+    if (this.eqAnalysisDelayNode) {
+      try { this.eqAnalysisDelayNode.disconnect() } catch { /* ignore */ }
+      this.eqAnalysisDelayNode = null
     }
 
     if (this.workletNode) {
