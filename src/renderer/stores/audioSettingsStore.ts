@@ -330,9 +330,17 @@ function resolveActiveDelayProfileTarget(
     const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
     if (selectedDevice?.groupId) {
       const groupKey = buildOutputGroupProfileKey(selectedDevice.groupId)
+      const physicalWithSameGroup = devices.filter((device) => (
+        !device.isDefaultAlias
+        && device.groupId.length > 0
+        && device.groupId === selectedDevice.groupId
+      ))
       return {
         key: normalizedSelection,
-        legacyFallbackKeys: dedupeKeys([groupKey], normalizedSelection)
+        legacyFallbackKeys: dedupeKeys(
+          physicalWithSameGroup.length === 1 ? [groupKey] : [],
+          normalizedSelection
+        )
       }
     }
 
@@ -353,15 +361,28 @@ function resolveActiveDelayProfileTarget(
   const physicalDevice = devices.find((device) => device.deviceId === physicalDefaultId) ?? null
   if (physicalDevice?.groupId) {
     const key = buildOutputGroupProfileKey(physicalDevice.groupId)
+    const physicalWithSameGroup = devices.filter((device) => (
+      !device.isDefaultAlias
+      && device.groupId.length > 0
+      && device.groupId === physicalDevice.groupId
+    ))
+
+    if (physicalWithSameGroup.length === 1) {
+      return {
+        key,
+        legacyFallbackKeys: dedupeKeys([physicalDefaultId], key)
+      }
+    }
+
     return {
-      key,
-      legacyFallbackKeys: dedupeKeys([physicalDefaultId, 'default'], key)
+      key: physicalDefaultId,
+      legacyFallbackKeys: []
     }
   }
 
   return {
     key: physicalDefaultId,
-    legacyFallbackKeys: dedupeKeys(['default'], physicalDefaultId)
+    legacyFallbackKeys: []
   }
 }
 
@@ -371,46 +392,23 @@ function resolveDelayProfileForTarget(
 ): {
   profile: DelayCompensationProfile
 } {
-  const candidateKeys = [target.key, ...target.legacyFallbackKeys]
-  let selectedKey: string | null = null
-  let selectedProfile: DelayCompensationProfile | null = null
-  let selectedStamp = -1
-
-  for (const key of candidateKeys) {
-    const rawProfile = profiles[key]
-    if (!rawProfile) continue
-
-    const normalized = normalizeDelayProfile(rawProfile)
-    const candidateStamp = normalized.lastCalibrationAt ?? 0
-
-    if (!selectedProfile) {
-      selectedKey = key
-      selectedProfile = normalized
-      selectedStamp = candidateStamp
-      continue
+  const direct = profiles[target.key]
+  if (direct) {
+    return {
+      profile: normalizeDelayProfile(direct)
     }
+  }
 
-    if (candidateStamp > selectedStamp) {
-      selectedKey = key
-      selectedProfile = normalized
-      selectedStamp = candidateStamp
-      continue
-    }
-
-    const shouldPreferTargetKey = (
-      candidateStamp === selectedStamp
-      && key === target.key
-      && selectedKey !== target.key
-    )
-    if (shouldPreferTargetKey) {
-      selectedKey = key
-      selectedProfile = normalized
-      selectedStamp = candidateStamp
+  for (const key of target.legacyFallbackKeys) {
+    const fallback = profiles[key]
+    if (!fallback) continue
+    return {
+      profile: normalizeDelayProfile(fallback)
     }
   }
 
   return {
-    profile: selectedProfile ?? { ...DEFAULT_DELAY_PROFILE }
+    profile: { ...DEFAULT_DELAY_PROFILE }
   }
 }
 
@@ -423,28 +421,17 @@ function upsertCanonicalDelayProfileForTarget(
   changed: boolean
 } {
   const normalizedProfile = normalizeDelayProfile(profile)
-  const fallbackKeys = new Set(target.legacyFallbackKeys)
-  const keysToSync = [target.key, ...Array.from(fallbackKeys)]
-
-  let changed = false
-  for (const key of keysToSync) {
-    const existing = profiles[key]
-    if (!existing || !areDelayProfilesEqual(existing, normalizedProfile)) {
-      changed = true
-      break
-    }
-  }
-
-  if (!changed) {
+  const currentAtTarget = profiles[target.key]
+  if (currentAtTarget && areDelayProfilesEqual(currentAtTarget, normalizedProfile)) {
     return {
       profiles,
       changed: false
     }
   }
 
-  const nextProfiles: Record<string, DelayCompensationProfile> = { ...profiles }
-  for (const key of keysToSync) {
-    nextProfiles[key] = normalizedProfile
+  const nextProfiles: Record<string, DelayCompensationProfile> = {
+    ...profiles,
+    [target.key]: normalizedProfile
   }
 
   return {
