@@ -259,6 +259,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getFolders: () => ipcRenderer.invoke('library:getFolders'),
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
+    factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan'),
     getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
@@ -355,6 +357,8 @@ declare global {
         getFolders: () => Promise<LibraryFolder[]>
         addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
+        factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{ added: number; updated: number; errors: number; folderWarnings?: Record<string, string[]> }>
         getTrackCount: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>

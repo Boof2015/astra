@@ -13,6 +13,7 @@ import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
+import { useThemeStore } from './stores/themeStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -29,6 +30,7 @@ function App() {
   const isFullscreen = useUIStore((s) => s.isFullscreen)
 
   useEffect(() => {
+    useThemeStore.getState().initFromSaved()
     useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()

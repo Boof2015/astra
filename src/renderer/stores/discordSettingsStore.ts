@@ -5,6 +5,7 @@ interface DiscordSettingsStore {
   statusMessage: string
   setEnabled: (enabled: boolean) => Promise<void>
   initFromSaved: () => Promise<void>
+  resetToDefaults: () => Promise<void>
 }
 
 const ENABLED_STORAGE_KEY = 'astra-discord-rpc-enabled'
@@ -54,6 +55,13 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
       const enabled = localStorage.getItem(ENABLED_STORAGE_KEY) === '1'
       set({ enabled })
       await applyDiscordConfig()
-    }
+    },
+
+    resetToDefaults: async () => {
+      set({ enabled: false })
+      localStorage.removeItem(ENABLED_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_CLIENT_ID_STORAGE_KEY)
+      await applyDiscordConfig()
+    },
   }
 })

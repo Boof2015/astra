@@ -2,7 +2,7 @@ import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
 import { join, extname, basename } from 'path'
-import { readdir, stat, mkdir, writeFile, readFile, access } from 'fs/promises'
+import { readdir, stat, mkdir, writeFile, readFile, access, rm } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 
@@ -67,6 +67,25 @@ async function saveDatabase(): Promise<void> {
   const data = db.export()
   const buffer = Buffer.from(data)
   await writeFile(dbPath, buffer)
+}
+
+function readCount(sql: string): number {
+  if (!db) return 0
+  const result = db.exec(sql)
+  if (result.length === 0 || result[0].values.length === 0) return 0
+  const raw = result[0].values[0][0]
+  return typeof raw === 'number' ? raw : Number(raw) || 0
+}
+
+async function clearArtworkCacheDirectory(): Promise<void> {
+  if (!artworkDir) return
+
+  try {
+    await rm(artworkDir, { recursive: true, force: true })
+    await mkdir(artworkDir, { recursive: true })
+  } catch (error) {
+    console.warn('Failed to clear artwork cache directory:', artworkDir, error)
+  }
 }
 
 // Helper to convert sql.js result to objects
@@ -597,6 +616,41 @@ export async function removeLibraryFolder(folderPath: string): Promise<void> {
   if (!db) return
   db.run('DELETE FROM folders WHERE path = ?', [folderPath])
   db.run('DELETE FROM tracks WHERE path LIKE ?', [`${folderPath}%`])
+  await saveDatabase()
+}
+
+export async function resetMappedFoldersData(): Promise<{ clearedFolders: number; clearedTracks: number }> {
+  if (!db) {
+    return { clearedFolders: 0, clearedTracks: 0 }
+  }
+
+  const clearedFolders = readCount('SELECT COUNT(*) FROM folders')
+  const clearedTracks = readCount('SELECT COUNT(*) FROM tracks')
+
+  db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM recently_played')
+  db.run('DELETE FROM favorites')
+  db.run('DELETE FROM tracks')
+  db.run('DELETE FROM folders')
+
+  await clearArtworkCacheDirectory()
+  await saveDatabase()
+
+  return { clearedFolders, clearedTracks }
+}
+
+export async function factoryResetLibraryData(): Promise<void> {
+  if (!db) return
+
+  db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM playlists')
+  db.run('DELETE FROM recently_played')
+  db.run('DELETE FROM favorites')
+  db.run('DELETE FROM tracks')
+  db.run('DELETE FROM folders')
+  db.run('DELETE FROM app_meta')
+
+  await clearArtworkCacheDirectory()
   await saveDatabase()
 }
 

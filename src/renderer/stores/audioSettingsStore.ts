@@ -67,6 +67,7 @@ interface AudioSettingsStore {
   setDelayCompensationManualOffsetMs: (offsetMs: number) => Promise<void>
   runDelayAutoCalibration: () => Promise<void>
   resetDelayToAutoGuess: () => Promise<void>
+  resetToDefaults: () => Promise<void>
 
   initFromSaved: () => Promise<void>
 }
@@ -951,6 +952,85 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }), {
         calibrationState: 'success',
         calibrationMessage: `Using stored auto estimate (${activeDelayProfile.autoOffsetMs ?? 0} ms).`
+      })
+    },
+
+    resetToDefaults: async () => {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
+      localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
+      localStorage.removeItem(ROUTING_STORAGE_KEY)
+      localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
+      localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V2)
+
+      try {
+        await audioEngine.setOutputDevice('')
+      } catch (error) {
+        console.warn('Failed to reset output device to system default:', error)
+      }
+
+      try {
+        await audioEngine.setMultichannelEnabled(false)
+      } catch (error) {
+        console.warn('Failed to reset multichannel mode:', error)
+      }
+
+      try {
+        await audioEngine.setChannelRoutingMap(null)
+      } catch (error) {
+        console.warn('Failed to reset channel routing map:', error)
+      }
+
+      try {
+        await audioEngine.setAnalysisDelayMs(0)
+      } catch (error) {
+        console.warn('Failed to reset analysis delay, retrying...', error)
+        try {
+          await audioEngine.ensureContextReady()
+          await audioEngine.setAnalysisDelayMs(0)
+        } catch (retryError) {
+          console.error('Failed to reset analysis delay after retry:', retryError)
+        }
+      }
+
+      let availableDevices = get().availableDevices
+      let availableInputDevices = get().availableInputDevices
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        availableDevices = devices
+          .filter((device) => device.kind === 'audiooutput')
+          .map(buildAudioDevice)
+        availableInputDevices = devices
+          .filter((device) => device.kind === 'audioinput')
+          .map(buildCalibrationInputDevice)
+      } catch {
+        console.warn('Could not enumerate audio devices during reset')
+      }
+
+      let selectedOutputChannelCount: number | null = null
+      try {
+        await audioEngine.ensureContextReady()
+        selectedOutputChannelCount = audioEngine.getOutputMaxChannelCount()
+      } catch {
+        selectedOutputChannelCount = null
+      }
+
+      set({
+        selectedDeviceId: '',
+        availableDevices,
+        availableInputDevices,
+        selectedCalibrationInputDeviceId: '',
+        selectedOutputChannelCount,
+        multichannelEnabled: false,
+        channelRoutingMap: null,
+        delayProfilesByDeviceKey: {},
+        inputBaselinesByKey: {},
+        activeDelayProfileKey: 'default',
+        activeDelayProfile: { ...DEFAULT_DELAY_PROFILE },
+        effectiveDelayMs: 0,
+        delayCalibrationState: 'idle',
+        delayCalibrationMessage: null,
       })
     },
 

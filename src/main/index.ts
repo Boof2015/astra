@@ -554,6 +554,16 @@ ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
   return { success: true }
 })
 
+ipcMain.handle('library:resetMappedFolders', async () => {
+  const result = await library.resetMappedFoldersData()
+  return { success: true, ...result }
+})
+
+ipcMain.handle('library:factoryReset', async () => {
+  await library.factoryResetLibraryData()
+  return { success: true }
+})
+
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
   const folders = library.getLibraryFolders()

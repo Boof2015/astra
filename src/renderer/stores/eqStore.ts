@@ -124,6 +124,7 @@ interface EQStore {
   exportPreset: (presetId: string) => Promise<void>
   importFromFile: () => Promise<void>
   importAutoEQ: () => Promise<void>
+  resetToDefaults: () => void
 
   // Internal
   _syncToEngine: () => void
@@ -346,6 +347,20 @@ export const useEQStore = create<EQStore>((set, get) => ({
     } catch (err) {
       console.error('Failed to import AutoEQ profile:', err)
     }
+  },
+
+  resetToDefaults: () => {
+    localStorage.removeItem(EQ_STORAGE_KEY)
+    const newBands = DEFAULT_BANDS.map((band) => ({ ...band, id: genId(), gain: 0 }))
+    set({
+      enabled: false,
+      bands: newBands,
+      preamp: 0,
+      presets: [...BUILT_IN_PRESETS],
+      activePresetId: null,
+      showEQPanel: false,
+    })
+    get()._syncToEngine()
   },
 
   _syncToEngine: () => {
