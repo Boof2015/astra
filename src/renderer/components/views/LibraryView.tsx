@@ -158,7 +158,11 @@ export default function LibraryView() {
               onClick={() => selectArtist(artist.artist)}
             >
               <div className="artist-avatar">
-                {artist.artist.charAt(0).toUpperCase()}
+                {artist.artwork_hash ? (
+                  <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="artist-avatar-artwork" />
+                ) : (
+                  artist.artist.charAt(0).toUpperCase()
+                )}
               </div>
               <div className="artist-info">
                 <div className="artist-name">{artist.artist}</div>

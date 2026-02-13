@@ -34,6 +34,7 @@ interface Album {
 interface Artist {
   artist: string
   track_count: number
+  artwork_hash: string | null
 }
 
 interface LibraryFolder {

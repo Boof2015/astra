@@ -2482,11 +2482,20 @@ button, .titlebar {
   height: 40px;
   border-radius: 50%;
   background: var(--bg-tertiary);
+  overflow: hidden;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
   color: var(--text-tertiary);
+}
+
+.artist-avatar-artwork {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .artist-info {
@@ -5076,11 +5085,19 @@ body::after {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(56, 189, 248, 0.08);
   color: var(--accent);
+  overflow: hidden;
   font-family: var(--font-mono);
   font-size: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.home-artist-artwork {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .home-artist-name {

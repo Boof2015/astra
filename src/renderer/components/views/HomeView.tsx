@@ -34,6 +34,7 @@ interface HomeAlbum {
 interface HomeArtist {
   artist: string
   track_count: number
+  artwork_hash: string | null
 }
 
 function formatDuration(seconds: number): string {
@@ -253,7 +254,13 @@ export default function HomeView() {
                   className="home-artist-chip"
                   onClick={() => handleOpenArtist(artist.artist)}
                 >
-                  <div className="home-artist-avatar">{artistInitial(artist.artist)}</div>
+                  <div className="home-artist-avatar">
+                    {artist.artwork_hash ? (
+                      <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="home-artist-artwork" />
+                    ) : (
+                      artistInitial(artist.artist)
+                    )}
+                  </div>
                   <div className="home-artist-name">{artist.artist}</div>
                   <div className="home-artist-count">{artist.track_count} tracks</div>
                 </div>

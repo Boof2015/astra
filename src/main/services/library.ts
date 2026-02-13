@@ -514,16 +514,24 @@ export function getTracksByAlbum(album: string, artist?: string): DbTrack[] {
 }
 
 // Get unique artists
-export function getArtists(): { artist: string; track_count: number }[] {
+export function getArtists(): { artist: string; track_count: number; artwork_hash: string | null }[] {
   if (!db) return []
-  const result = db.exec('SELECT artist FROM tracks')
-  if (result.length === 0) return []
+  const tracks = readAllTracksUnordered()
+  if (tracks.length === 0) return []
 
-  const rows = rowsToObjects<{ artist: string }>(result[0].columns, result[0].values)
-  const artistCounts = new Map<string, { artist: string; track_count: number }>()
+  interface ArtistAggregate {
+    artist: string
+    track_count: number
+    artwork_hash: string | null
+    newestArtworkYear: number
+    newestArtworkAddedAt: number
+    newestArtworkModifiedAt: number
+  }
 
-  for (const row of rows) {
-    const contributors = splitCollaborators(row.artist)
+  const artistCounts = new Map<string, ArtistAggregate>()
+
+  for (const track of tracks) {
+    const contributors = splitCollaborators(track.artist)
     const effectiveContributors = contributors.length > 0 ? contributors : ['Unknown Artist']
     const seenForTrack = new Set<string>()
 
@@ -536,14 +544,47 @@ export function getArtists(): { artist: string; track_count: number }[] {
       if (existing) {
         existing.track_count += 1
       } else {
-        artistCounts.set(key, { artist: contributor, track_count: 1 })
+        artistCounts.set(key, {
+          artist: contributor,
+          track_count: 1,
+          artwork_hash: null,
+          newestArtworkYear: -1,
+          newestArtworkAddedAt: -1,
+          newestArtworkModifiedAt: -1,
+        })
       }
+
+      if (!track.artwork_hash) continue
+      const aggregate = artistCounts.get(key)
+      if (!aggregate) continue
+
+      const candidateYear = track.year ?? -1
+      const shouldReplaceArtwork = (
+        aggregate.artwork_hash == null
+        || candidateYear > aggregate.newestArtworkYear
+        || (
+          candidateYear === aggregate.newestArtworkYear
+          && (
+            track.added_at > aggregate.newestArtworkAddedAt
+            || (
+              track.added_at === aggregate.newestArtworkAddedAt
+              && track.modified_at > aggregate.newestArtworkModifiedAt
+            )
+          )
+        )
+      )
+
+      if (!shouldReplaceArtwork) continue
+      aggregate.artwork_hash = track.artwork_hash
+      aggregate.newestArtworkYear = candidateYear
+      aggregate.newestArtworkAddedAt = track.added_at
+      aggregate.newestArtworkModifiedAt = track.modified_at
     }
   }
 
-  return Array.from(artistCounts.values()).sort((a, b) =>
-    a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-  )
+  return Array.from(artistCounts.values())
+    .map(({ artist, track_count, artwork_hash }) => ({ artist, track_count, artwork_hash }))
+    .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
 }
 
 // Get unique albums
