@@ -80,6 +80,195 @@ function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
   })
 }
 
+interface CountedDisplayVariant {
+  display: string
+  count: number
+}
+
+interface AlbumGroupAccumulator {
+  albumKey: string
+  artistKey: string
+  albumVariants: Map<string, CountedDisplayVariant>
+  artistVariants: Map<string, CountedDisplayVariant>
+  artworkCounts: Map<string, number>
+  firstArtworkHash: string | null
+  year: number | null
+  trackCount: number
+  tracks: DbTrack[]
+}
+
+function normalizeDisplay(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeKey(value: string): string {
+  return normalizeDisplay(value).toLocaleLowerCase()
+}
+
+function normalizeAlbumName(album: string): string {
+  const normalized = normalizeDisplay(album)
+  return normalized || 'Unknown Album'
+}
+
+function splitCollaborators(rawArtist: string): string[] {
+  const normalized = normalizeDisplay(rawArtist)
+  if (!normalized) return []
+
+  const unified = normalized
+    .replace(/\s*;\s*/g, ',')
+    .replace(/\s+&\s+/g, ',')
+    .replace(/\s+[x×]\s+/gi, ',')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/gi, ',')
+
+  const unique = new Map<string, string>()
+  for (const part of unified.split(',')) {
+    const display = normalizeDisplay(part)
+    if (!display) continue
+    const key = normalizeKey(display)
+    if (!key || unique.has(key)) continue
+    unique.set(key, display)
+  }
+
+  return Array.from(unique.values())
+}
+
+function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
+  const contributors = splitCollaborators(trackArtist)
+  return contributors[0] ?? 'Unknown Artist'
+}
+
+function getAlbumIdentityArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
+  const albumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (albumArtist) return albumArtist
+  return getPrimaryArtistFromTrackArtist(track.artist)
+}
+
+function incrementDisplayVariant(map: Map<string, CountedDisplayVariant>, display: string): void {
+  const key = normalizeKey(display)
+  if (!key) return
+  const existing = map.get(key)
+  if (existing) {
+    existing.count += 1
+    return
+  }
+  map.set(key, { display, count: 1 })
+}
+
+function pickMostFrequentDisplayVariant(
+  map: Map<string, CountedDisplayVariant>,
+  fallback: string
+): string {
+  let best: CountedDisplayVariant | null = null
+  for (const variant of map.values()) {
+    if (!best || variant.count > best.count) {
+      best = variant
+      continue
+    }
+    if (
+      variant.count === best.count &&
+      variant.display.localeCompare(best.display, undefined, { sensitivity: 'base' }) < 0
+    ) {
+      best = variant
+    }
+  }
+  return best?.display ?? fallback
+}
+
+function pickMostFrequentArtworkHash(
+  artworkCounts: Map<string, number>,
+  fallback: string | null
+): string | null {
+  let bestHash: string | null = null
+  let bestCount = -1
+
+  for (const [hash, count] of artworkCounts.entries()) {
+    if (count > bestCount) {
+      bestHash = hash
+      bestCount = count
+      continue
+    }
+    if (count === bestCount && bestHash && hash.localeCompare(bestHash) < 0) {
+      bestHash = hash
+    }
+  }
+
+  return bestHash ?? fallback
+}
+
+function readAllTracksUnordered(): DbTrack[] {
+  if (!db) return []
+  const result = db.exec('SELECT * FROM tracks')
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+  const discA = a.disc_number ?? 0
+  const discB = b.disc_number ?? 0
+  if (discA !== discB) return discA - discB
+
+  const trackA = a.track_number ?? 0
+  const trackB = b.track_number ?? 0
+  if (trackA !== trackB) return trackA - trackB
+
+  const titleCompare = normalizeDisplay(a.title).localeCompare(normalizeDisplay(b.title), undefined, { sensitivity: 'base' })
+  if (titleCompare !== 0) return titleCompare
+
+  return a.path.localeCompare(b.path)
+}
+
+function compareTracksByAlbumDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+  const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
+  if (albumCompare !== 0) return albumCompare
+  return compareTracksByDiscTrackTitle(a, b)
+}
+
+function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator> {
+  const groups = new Map<string, AlbumGroupAccumulator>()
+
+  for (const track of tracks) {
+    const albumName = normalizeAlbumName(track.album)
+    const identityArtist = normalizeDisplay(getAlbumIdentityArtist(track)) || 'Unknown Artist'
+    const albumKey = normalizeKey(albumName)
+    const artistKey = normalizeKey(identityArtist)
+    const groupKey = `${albumKey}\u0000${artistKey}`
+
+    let group = groups.get(groupKey)
+    if (!group) {
+      group = {
+        albumKey,
+        artistKey,
+        albumVariants: new Map(),
+        artistVariants: new Map(),
+        artworkCounts: new Map(),
+        firstArtworkHash: null,
+        year: null,
+        trackCount: 0,
+        tracks: []
+      }
+      groups.set(groupKey, group)
+    }
+
+    incrementDisplayVariant(group.albumVariants, albumName)
+    incrementDisplayVariant(group.artistVariants, identityArtist)
+    group.trackCount += 1
+    group.tracks.push(track)
+
+    if (track.year !== null && (group.year === null || track.year > group.year)) {
+      group.year = track.year
+    }
+
+    if (track.artwork_hash) {
+      if (group.firstArtworkHash === null) {
+        group.firstArtworkHash = track.artwork_hash
+      }
+      group.artworkCounts.set(track.artwork_hash, (group.artworkCounts.get(track.artwork_hash) ?? 0) + 1)
+    }
+  }
+
+  return groups
+}
+
 // Initialize database
 export async function initDatabase(): Promise<void> {
   const userDataPath = app.getPath('userData')
@@ -262,66 +451,102 @@ export function getAllTracks(): DbTrack[] {
 // Get tracks by artist
 export function getTracksByArtist(artist: string): DbTrack[] {
   if (!db) return []
-  const stmt = db.prepare('SELECT * FROM tracks WHERE artist = ? ORDER BY album, disc_number, track_number')
-  stmt.bind([artist])
-  const tracks: DbTrack[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as DbTrack
-    tracks.push(row)
-  }
-  stmt.free()
-  return tracks
+  const targetArtistKey = normalizeKey(artist)
+  if (!targetArtistKey) return []
+
+  const tracks = readAllTracksUnordered()
+  const matched = tracks.filter((track) => {
+    const contributors = splitCollaborators(track.artist)
+    const effectiveContributors = contributors.length > 0 ? contributors : ['Unknown Artist']
+    return effectiveContributors.some((name) => normalizeKey(name) === targetArtistKey)
+  })
+
+  return matched.sort(compareTracksByAlbumDiscTrackTitle)
 }
 
 // Get tracks by album
 export function getTracksByAlbum(album: string, artist?: string): DbTrack[] {
   if (!db) return []
-  let stmt
-  if (artist) {
-    stmt = db.prepare('SELECT * FROM tracks WHERE album = ? AND (artist = ? OR album_artist = ?) ORDER BY disc_number, track_number')
-    stmt.bind([album, artist, artist])
-  } else {
-    stmt = db.prepare('SELECT * FROM tracks WHERE album = ? ORDER BY disc_number, track_number')
-    stmt.bind([album])
+  const albumKey = normalizeKey(normalizeAlbumName(album))
+  const tracks = readAllTracksUnordered()
+  if (tracks.length === 0) return []
+
+  if (!artist || !normalizeDisplay(artist)) {
+    const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
+    return matched.sort(compareTracksByDiscTrackTitle)
   }
-  const tracks: DbTrack[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as DbTrack
-    tracks.push(row)
+
+  const artistKey = normalizeKey(artist)
+  const groups = buildAlbumGroups(tracks)
+  for (const group of groups.values()) {
+    if (group.albumKey === albumKey && group.artistKey === artistKey) {
+      return [...group.tracks].sort(compareTracksByDiscTrackTitle)
+    }
   }
-  stmt.free()
-  return tracks
+
+  // Defensive fallback if canonical grouping misses a case.
+  const fallback = tracks.filter((track) => {
+    if (normalizeKey(normalizeAlbumName(track.album)) !== albumKey) return false
+    if (normalizeKey(track.album_artist ?? '') === artistKey) return true
+    if (normalizeKey(track.artist) === artistKey) return true
+    return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
+  })
+  return fallback.sort(compareTracksByDiscTrackTitle)
 }
 
 // Get unique artists
 export function getArtists(): { artist: string; track_count: number }[] {
   if (!db) return []
-  const result = db.exec(`
-    SELECT artist, COUNT(*) as track_count
-    FROM tracks
-    GROUP BY artist
-    ORDER BY artist
-  `)
+  const result = db.exec('SELECT artist FROM tracks')
   if (result.length === 0) return []
-  return rowsToObjects<{ artist: string; track_count: number }>(result[0].columns, result[0].values)
+
+  const rows = rowsToObjects<{ artist: string }>(result[0].columns, result[0].values)
+  const artistCounts = new Map<string, { artist: string; track_count: number }>()
+
+  for (const row of rows) {
+    const contributors = splitCollaborators(row.artist)
+    const effectiveContributors = contributors.length > 0 ? contributors : ['Unknown Artist']
+    const seenForTrack = new Set<string>()
+
+    for (const contributor of effectiveContributors) {
+      const key = normalizeKey(contributor)
+      if (!key || seenForTrack.has(key)) continue
+      seenForTrack.add(key)
+
+      const existing = artistCounts.get(key)
+      if (existing) {
+        existing.track_count += 1
+      } else {
+        artistCounts.set(key, { artist: contributor, track_count: 1 })
+      }
+    }
+  }
+
+  return Array.from(artistCounts.values()).sort((a, b) =>
+    a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+  )
 }
 
 // Get unique albums
 export function getAlbums(): { album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }[] {
   if (!db) return []
-  const result = db.exec(`
-    SELECT
-      album,
-      COALESCE(album_artist, artist) as artist,
-      MAX(year) as year,
-      MAX(artwork_hash) as artwork_hash,
-      COUNT(*) as track_count
-    FROM tracks
-    GROUP BY album, COALESCE(album_artist, artist)
-    ORDER BY artist, album
-  `)
-  if (result.length === 0) return []
-  return rowsToObjects<{ album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }>(result[0].columns, result[0].values)
+  const tracks = readAllTracksUnordered()
+  if (tracks.length === 0) return []
+
+  const groups = buildAlbumGroups(tracks)
+  const albums = Array.from(groups.values()).map((group) => ({
+    album: pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album'),
+    artist: pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist'),
+    year: group.year,
+    artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
+    track_count: group.trackCount
+  }))
+
+  return albums.sort((a, b) => {
+    const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+    if (artistCompare !== 0) return artistCompare
+    return a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+  })
 }
 
 // Search tracks
