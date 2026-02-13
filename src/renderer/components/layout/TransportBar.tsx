@@ -9,6 +9,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
+import AudioPipelineShelf from './AudioPipelineShelf'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 export default function TransportBar() {
@@ -33,7 +34,7 @@ export default function TransportBar() {
     waveformData,
   } = usePlayerStore()
 
-  const { showQueue, toggleQueue, showInfoSidebar, toggleInfoSidebar, setFullscreen } = useUIStore()
+  const { showQueue, toggleQueue, showInfoSidebar, toggleInfoSidebar, showPipelineShelf, togglePipelineShelf, setFullscreen } = useUIStore()
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
@@ -160,6 +161,24 @@ export default function TransportBar() {
 
   return (
     <div className="transport-bar">
+      <button
+        className={`pipeline-shelf-toggle${showPipelineShelf ? ' pipeline-shelf-toggle-open' : ''}`}
+        onClick={togglePipelineShelf}
+        title={showPipelineShelf ? 'Hide audio pipeline' : 'Show audio pipeline'}
+        aria-label="Toggle audio pipeline shelf"
+      >
+        <svg width="14" height="8" viewBox="0 0 14 8" fill="none">
+          <path
+            d="M1 7l6-5 6 5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      <AudioPipelineShelf />
+
       {/* Left: Track info */}
       <div className="transport-info">
         <div className="transport-artwork" onClick={() => setFullscreen(true)}>
