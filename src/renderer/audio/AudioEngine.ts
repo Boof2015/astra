@@ -103,6 +103,9 @@ export class AudioEngine {
   private preampNode: GainNode | null = null
   private eqFilters: BiquadFilterNode[] = []
   private eqAnalyserNode: AnalyserNode | null = null
+  private requestedEQBands: EQBand[] = []
+  private requestedEQPreampDb: number = 0
+  private requestedEQEnabled: boolean = false
 
   // Latest audio data from worklet (for visualizers)
   private latestLeftChannel: Float32Array = new Float32Array(0)
@@ -457,6 +460,9 @@ export class AudioEngine {
         this.workletNode.connect(this.analysisTapSinkNode)
         this.analysisTapSinkNode.connect(this.context.destination)
       }
+
+      // Apply the latest requested EQ state now that the EQ nodes exist.
+      this.updateEQ(this.requestedEQBands, this.requestedEQPreampDb, this.requestedEQEnabled)
 
       // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
@@ -1896,6 +1902,10 @@ export class AudioEngine {
    * so the audio thread only sees the final connected state (no audible gap).
    */
   updateEQ(bands: EQBand[], preampDb: number, enabled: boolean): void {
+    this.requestedEQBands = bands.map((band) => ({ ...band }))
+    this.requestedEQPreampDb = preampDb
+    this.requestedEQEnabled = enabled
+
     if (!this.context || !this.preampNode || !this.eqAnalyserNode) return
 
     // Update preamp
@@ -1938,6 +1948,10 @@ export class AudioEngine {
    * Efficient for real-time slider dragging.
    */
   updateEQBand(index: number, band: EQBand): void {
+    if (index >= 0 && index < this.requestedEQBands.length) {
+      this.requestedEQBands[index] = { ...band }
+    }
+
     if (index < 0 || index >= this.eqFilters.length || !this.context) return
     const filter = this.eqFilters[index]
     filter.type = this._mapBandType(band.type)
@@ -1950,8 +1964,10 @@ export class AudioEngine {
    * Update only the preamp gain without touching filters.
    */
   updatePreamp(dB: number): void {
+    this.requestedEQPreampDb = dB
     if (!this.preampNode) return
-    this.preampNode.gain.value = Math.pow(10, dB / 20)
+    const effectiveDb = this.requestedEQEnabled ? dB : 0
+    this.preampNode.gain.value = Math.pow(10, effectiveDb / 20)
   }
 
   private _mapBandType(type: EQBand['type']): BiquadFilterType {
