@@ -5,7 +5,7 @@
   isolation: isolate;
   width: 100%;
   height: 100%;
-  color: rgba(255, 255, 255, 0.95);
+  color: #fff;
   background: #020305;
   overflow: hidden;
   border-radius: 18px;
@@ -103,7 +103,7 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.66);
   flex: 1;
 }
 
@@ -146,7 +146,7 @@
   display: grid;
   grid-template-columns: clamp(72px, 22%, 104px) minmax(0, 1fr);
   gap: clamp(8px, 1.9vw, 14px);
-  padding: clamp(8px, 2vw, 14px);
+  padding: clamp(10px, 2.2vw, 16px);
 }
 
 .mini-player-art-panel {
@@ -160,10 +160,10 @@
 .mini-player-artwork {
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.46);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
   background: rgba(0, 0, 0, 0.24);
 }
 
@@ -187,7 +187,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: clamp(6px, 1.4vw, 10px);
+  gap: clamp(8px, 1.6vw, 12px);
 }
 
 .mini-player-meta {
@@ -195,12 +195,13 @@
 }
 
 .mini-player-title {
-  font-size: clamp(12px, 2.6vw, 17px);
+  font-size: clamp(13px, 2.8vw, 19px);
   font-weight: 650;
   line-height: 1.22;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 .mini-player-secondary-line {
@@ -210,8 +211,9 @@
   gap: 6px;
   min-width: 0;
   color: var(--mini-accent);
-  font-size: clamp(11px, 2.2vw, 14px);
+  font-size: clamp(11px, 2.4vw, 15px);
   font-weight: 550;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .mini-player-secondary-line span {
@@ -222,11 +224,12 @@
 
 .mini-player-context-line {
   margin-top: 2px;
-  color: rgba(255, 255, 255, 0.54);
+  color: rgba(255, 255, 255, 0.64);
   font-size: clamp(10px, 1.9vw, 12px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.36);
 }
 
 .mini-player-controls {
@@ -238,8 +241,8 @@
 
 .mini-control-btn,
 .mini-favorite-btn {
-  width: clamp(28px, 7vw, 34px);
-  height: clamp(28px, 7vw, 34px);
+  width: clamp(30px, 7vw, 36px);
+  height: clamp(30px, 7vw, 36px);
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.06);
@@ -266,8 +269,8 @@
 }
 
 .mini-control-btn-play {
-  width: clamp(34px, 8vw, 42px);
-  height: clamp(34px, 8vw, 42px);
+  width: clamp(36px, 8vw, 44px);
+  height: clamp(36px, 8vw, 44px);
   background: rgba(255, 255, 255, 0.94);
   color: #020202;
   border-color: rgba(255, 255, 255, 0.26);
@@ -295,8 +298,9 @@
   align-items: center;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.64);
+  color: rgba(255, 255, 255, 0.72);
   margin-bottom: 4px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.34);
 }
 
 .mini-player-seek {
@@ -381,7 +385,7 @@
 }
 
 .mini-player-mode-tiny .mini-player-body {
-  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-columns: 60px minmax(0, 1fr);
   gap: 8px;
   padding: 8px;
 }
@@ -412,7 +416,7 @@
 }
 
 .mini-player-mode-tiny .mini-player-title {
-  font-size: clamp(12px, 3.3vw, 15px);
+  font-size: clamp(12.5px, 3.4vw, 15px);
 }
 
 .mini-player-mode-tiny .mini-player-secondary-line {
@@ -486,8 +490,8 @@
 .mini-player-mode-wide .mini-player-backdrop-scrim,
 .mini-player-mode-hero .mini-player-backdrop-scrim {
   background:
-    radial-gradient(70% 58% at 52% 42%, rgba(2, 8, 14, 0.05), rgba(0, 0, 0, 0.44)),
-    linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.56));
+    radial-gradient(72% 62% at 50% 44%, rgba(2, 8, 14, 0.10), rgba(0, 0, 0, 0.52)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.24), rgba(0, 0, 0, 0.72));
 }
 
 .mini-player-mode-wide .mini-player-main {
@@ -513,6 +517,9 @@
   border: 1px solid rgba(255, 255, 255, 0.14);
   background:
     linear-gradient(180deg, rgba(125, 211, 252, 0.48), rgba(7, 31, 47, 0.62));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
 }
 
 .mini-player-mode-hero .mini-player-artwork {
@@ -530,6 +537,7 @@
 .mini-player-mode-hero .mini-player-title {
   font-size: clamp(18px, 4.5vw, 42px);
   line-height: 1.1;
+  text-wrap: balance;
 }
 
 .mini-player-mode-hero .mini-player-secondary-line {
@@ -545,6 +553,84 @@
 .mini-player-mode-hero .mini-player-controls {
   justify-content: flex-start;
   margin-top: 0;
+}
+
+@media (max-aspect-ratio: 3/4) {
+  .mini-player-mode-hero .mini-player-body {
+    grid-template-rows: auto auto;
+    align-content: center;
+    justify-items: center;
+    gap: 18px;
+  }
+
+  .mini-player-mode-hero .mini-player-art-panel {
+    width: min(72%, 320px);
+  }
+
+  .mini-player-mode-hero .mini-player-artwork {
+    width: 100%;
+  }
+
+  .mini-player-mode-hero .mini-player-main {
+    justify-content: flex-start;
+    align-items: center;
+    text-align: center;
+  }
+
+  .mini-player-mode-hero .mini-player-controls {
+    justify-content: center;
+  }
+
+  /* Compact portrait */
+  .mini-player-mode-compact .mini-player-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    align-content: center;
+    justify-items: center;
+    gap: 14px;
+  }
+
+  .mini-player-mode-compact .mini-player-art-panel {
+    width: min(48%, 160px);
+  }
+
+  .mini-player-mode-compact .mini-player-main {
+    align-items: center;
+    text-align: center;
+  }
+
+  .mini-player-mode-compact .mini-player-controls {
+    justify-content: center;
+    margin-top: 4px;
+  }
+
+  /* Tiny portrait */
+  .mini-player-mode-tiny .mini-player-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    align-content: center;
+    justify-items: center;
+    gap: 12px;
+    padding: 10px;
+  }
+
+  .mini-player-mode-tiny .mini-player-art-panel {
+    width: min(40%, 120px);
+  }
+
+  .mini-player-mode-tiny .mini-player-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 8px;
+  }
+
+  .mini-player-mode-tiny .mini-player-controls {
+    grid-column: auto;
+    grid-row: auto;
+    justify-content: center;
+  }
 }
 
 @media (min-width: 760px) and (min-height: 360px) {
