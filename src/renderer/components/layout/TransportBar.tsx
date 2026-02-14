@@ -4,8 +4,10 @@ import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
+import ArtistNameLinks from '../library/ArtistNameLinks'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
@@ -38,6 +40,7 @@ export default function TransportBar() {
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
+  const openArtistInLibrary = useOpenArtistInLibrary()
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
 
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
@@ -206,7 +209,16 @@ export default function TransportBar() {
           </div>
           <div className="transport-subline">
             <div className="now-playing-artist">
-              {currentTrack?.artist ?? '\u2014'}
+              {currentTrack?.artist?.trim()
+                ? (
+                  <ArtistNameLinks
+                    artistText={currentTrack.artist}
+                    onArtistClick={openArtistInLibrary}
+                    className="now-playing-artist-links"
+                    linkClassName="artist-name-link-inline"
+                  />
+                )
+                : '\u2014'}
             </div>
             {(showAtmosBadge || isMultichannel) && (
               <div className="transport-audio-badges">

@@ -1,10 +1,13 @@
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import AlbumArtwork from '../library/AlbumArtwork'
+import ArtistNameLinks from '../library/ArtistNameLinks'
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
+  const openArtistInLibrary = useOpenArtistInLibrary()
 
   return (
     <aside className="info-sidebar">
@@ -31,7 +34,14 @@ export default function InfoSidebar() {
 
           <div className="info-sidebar-track">
             <h2 className="info-sidebar-title">{currentTrack.title}</h2>
-            <div className="info-sidebar-artist">{currentTrack.artist}</div>
+            <div className="info-sidebar-artist">
+              <ArtistNameLinks
+                artistText={currentTrack.artist}
+                onArtistClick={openArtistInLibrary}
+                className="info-sidebar-artist-links"
+                linkClassName="artist-name-link-inline"
+              />
+            </div>
           </div>
 
           <div className="info-sidebar-meta">

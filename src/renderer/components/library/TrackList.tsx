@@ -3,8 +3,10 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { Track } from '../../types/audio'
 import AlbumArtwork from './AlbumArtwork'
+import ArtistNameLinks from './ArtistNameLinks'
 
 interface DbTrack {
   id: number
@@ -67,6 +69,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const playlists = usePlaylistStore((s) => s.playlists)
   const addToPlaylist = usePlaylistStore((s) => s.addToPlaylist)
+  const openArtistInLibrary = useOpenArtistInLibrary()
 
   const [playlistDropdownTrack, setPlaylistDropdownTrack] = useState<string | null>(null)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
@@ -266,7 +269,13 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
               </div>
               {showArtist && (
                 <div className="track-col track-col-artist">
-                  <span className="track-artist">{track.artist}</span>
+                  <ArtistNameLinks
+                    artistText={track.artist}
+                    onArtistClick={openArtistInLibrary}
+                    className="track-artist"
+                    linkClassName="artist-name-link-inline"
+                    stopPropagation
+                  />
                 </div>
               )}
               {showAlbum && (

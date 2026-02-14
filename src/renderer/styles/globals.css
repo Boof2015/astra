@@ -2082,6 +2082,44 @@ button, .titlebar {
   text-overflow: ellipsis;
 }
 
+.artist-name-links {
+  min-width: 0;
+  color: inherit;
+}
+
+.artist-name-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+.artist-name-link-inline {
+  white-space: nowrap;
+}
+
+.artist-name-link:hover {
+  text-decoration: underline;
+}
+
+.artist-name-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.artist-name-separator {
+  color: inherit;
+  white-space: pre;
+}
+
 /* Playback Controls */
 .now-playing-controls {
   display: flex;
