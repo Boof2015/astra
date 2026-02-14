@@ -2,12 +2,17 @@ import { useMemo } from 'react'
 import {
   useAudioSettingsStore,
   type CalibrationInputDevice,
+  type DelayCalibrationMethod,
   type DelayCompensationMode
 } from '../../stores/audioSettingsStore'
 
 const MODES: Array<{ value: DelayCompensationMode; label: string }> = [
   { value: 'manual', label: 'Manual' },
   { value: 'auto', label: 'Auto Guess' },
+]
+const CALIBRATION_METHODS: Array<{ value: DelayCalibrationMethod; label: string }> = [
+  { value: 'differential', label: 'New (Differential)' },
+  { value: 'legacy', label: 'Old (Legacy)' }
 ]
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 const MANUAL_OFFSET_MAX_MS = 2500
@@ -61,6 +66,8 @@ export default function DelayCompensationPanel() {
     delayCalibrationMessage,
     setDelayCompensationEnabled,
     setDelayCompensationMode,
+    setDelayCalibrationMethod,
+    setDifferentialReferenceOutputDeviceId,
     setDelayCompensationManualOffsetMs,
     setCalibrationInputDeviceId,
     runDelayAutoCalibration,
@@ -100,9 +107,12 @@ export default function DelayCompensationPanel() {
       ?? `Device ${activeDelayProfileKey}`
   }, [activeDelayProfileKey, availableDevices])
 
+  const isDifferentialMethod = activeDelayProfile.calibrationMethod === 'differential'
   const modeDescription = activeDelayProfile.mode === 'manual'
     ? 'Manual offset only.'
-    : 'Auto mode uses round-trip calibration minus input baseline, plus manual fine-tune.'
+    : isDifferentialMethod
+      ? 'New (Differential): More accurate for Bluetooth, but requires reference output setup and mic placement.'
+      : 'Old (Legacy): Easier setup, less accurate on Bluetooth.'
 
   const isRunningCalibration = delayCalibrationState === 'running'
   const hasAutoEstimate = activeDelayProfile.autoOffsetMs != null
@@ -125,11 +135,18 @@ export default function DelayCompensationPanel() {
     calibrationInputKey,
     inputBaselinesByKey
   ])
+  const referenceOutputLabel = useMemo(() => {
+    const referenceId = activeDelayProfile.differentialReferenceOutputDeviceId
+    if (!referenceId) return 'System Default Output'
+    return availableDevices.find((device) => device.deviceId === referenceId)?.label ?? 'Selected Reference Output'
+  }, [activeDelayProfile.differentialReferenceOutputDeviceId, availableDevices])
 
   const statusLine = delayCalibrationMessage
     ?? (hasAutoEstimate
       ? `Stored auto estimate: ${activeDelayProfile.autoOffsetMs} ms (confidence ${formatConfidence(activeDelayProfile.lastCalibrationConfidence)}).`
-      : 'Auto calibration measures round-trip delay and subtracts input latency baseline.')
+      : isDifferentialMethod
+        ? 'New method estimates output delay directly using a reference output.'
+        : 'Old method measures round-trip delay and subtracts input latency baseline.')
 
   const handleManualOffsetChange = (value: number) => {
     void setDelayCompensationManualOffsetMs(value)
@@ -137,6 +154,11 @@ export default function DelayCompensationPanel() {
 
   const manualOffsetMin = activeDelayProfile.mode === 'auto' ? -MANUAL_OFFSET_MAX_MS : 0
   const manualOffsetMax = MANUAL_OFFSET_MAX_MS
+  const runButtonLabel = isRunningCalibration
+    ? 'Calibrating...'
+    : (isDifferentialMethod && delayCalibrationState === 'error'
+      ? 'Retry New Method'
+      : (isDifferentialMethod ? 'Run New Method Calibration' : 'Run Old Method Calibration'))
 
   return (
     <div className="delay-comp-panel">
@@ -147,8 +169,18 @@ export default function DelayCompensationPanel() {
 
       <div className="delay-comp-meta">
         <span className="delay-comp-chip">Profile: {activeProfileLabel}</span>
-        <span className="delay-comp-chip">Round-trip: {formatMetricMs(activeDelayProfile.lastRoundTripMs)}</span>
-        <span className="delay-comp-chip">Input baseline: {formatMetricMs(baselineRttMs)}</span>
+        <span className="delay-comp-chip">
+          Calibration: {isDifferentialMethod ? 'New (Differential)' : 'Old (Legacy)'}
+        </span>
+        {!isDifferentialMethod && (
+          <span className="delay-comp-chip">Round-trip: {formatMetricMs(activeDelayProfile.lastRoundTripMs)}</span>
+        )}
+        {!isDifferentialMethod && (
+          <span className="delay-comp-chip">Input baseline: {formatMetricMs(baselineRttMs)}</span>
+        )}
+        {isDifferentialMethod && (
+          <span className="delay-comp-chip">Reference output: {referenceOutputLabel}</span>
+        )}
       </div>
 
       <div className="delay-comp-meta">
@@ -180,6 +212,39 @@ export default function DelayCompensationPanel() {
             ))}
           </select>
         </label>
+
+        <label className="settings-field">
+          <span className="settings-field-label">Calibration Method</span>
+          <select
+            className="settings-select"
+            value={activeDelayProfile.calibrationMethod}
+            onChange={(event) => void setDelayCalibrationMethod(event.target.value as DelayCalibrationMethod)}
+          >
+            {CALIBRATION_METHODS.map((method) => (
+              <option key={method.value} value={method.value}>{method.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {isDifferentialMethod && (
+          <label className="settings-field">
+            <span className="settings-field-label">Reference Output</span>
+            <select
+              className="settings-select"
+              value={activeDelayProfile.differentialReferenceOutputDeviceId}
+              onChange={(event) => void setDifferentialReferenceOutputDeviceId(event.target.value)}
+            >
+              <option value="">System Default Output</option>
+              {availableDevices
+                .filter((device) => device.deviceId !== selectedDeviceId)
+                .map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
 
         <label className="settings-field">
           <span className="settings-field-label">Calibration Input</span>
@@ -231,7 +296,7 @@ export default function DelayCompensationPanel() {
           onClick={() => void runDelayAutoCalibration()}
           disabled={isRunningCalibration}
         >
-          {isRunningCalibration ? 'Calibrating...' : 'Run Auto Calibration'}
+          {runButtonLabel}
         </button>
         <button
           type="button"

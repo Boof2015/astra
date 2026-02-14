@@ -37,6 +37,15 @@ const CALIBRATION_ROUNDTRIP_OVERSHOOT_TOLERANCE_MS = 225
 const CALIBRATION_EDGE_LOCK_MARGIN_MS = 40
 const CALIBRATION_EDGE_LOCK_MIN_CONFIDENCE = 0.72
 const CALIBRATION_EDGE_LOCK_MAX_SPREAD_MS = 35
+const DIFFERENTIAL_STAGGER_MS = 700
+const DIFFERENTIAL_SCHEDULE_HEADROOM_MS = 220
+const DIFFERENTIAL_SEARCH_PRE_ROLL_MS = 180
+const DIFFERENTIAL_WIRED_SEARCH_WINDOW_MS = 550
+const DIFFERENTIAL_BT_SEARCH_WINDOW_MS = 1200
+const DIFFERENTIAL_MIN_BT_LATENCY_MS = 15
+const DIFFERENTIAL_WIRED_FALLBACK_LATENCY_MS = 20
+const DIFFERENTIAL_REFERENCE_PREVIEW_DELAY_MS = 80
+const DIFFERENTIAL_REFERENCE_PREVIEW_TAIL_MS = 220
 
 export type OutputDelayCalibrationFailureCode =
   | 'not-supported'
@@ -56,6 +65,21 @@ export type OutputDelayCalibrationResult =
       inputLatencyMs: number | null
       outputLatencyMs: number | null
       baseLatencyMs: number | null
+    }
+  | {
+      ok: false
+      code: OutputDelayCalibrationFailureCode
+      message: string
+    }
+
+export type DifferentialCalibrationResult =
+  | {
+      ok: true
+      btOutputLatencyMs: number
+      refOutputLatencyMs: number
+      propagationBiasWarning: boolean
+      confidence: number
+      sampleRate: number
     }
   | {
       ok: false
@@ -901,6 +925,359 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Differential dual-output BT latency calibration.
+   *
+   * Plays staggered chirps through reference and BT outputs into a single mic.
+   * Mic latency cancels algebraically when comparing per-fire offsets.
+   */
+  async runDifferentialCalibration(
+    btDeviceId: string,
+    referenceDeviceId: string = '',
+    inputDeviceId: string = ''
+  ): Promise<DifferentialCalibrationResult> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: 'Microphone calibration is not supported in this browser.'
+      }
+    }
+
+    let supportProbe: AudioContext | null = null
+    try {
+      supportProbe = new AudioContext()
+      if (!('setSinkId' in supportProbe)) {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Differential calibration requires setSinkId support in this browser.'
+        }
+      }
+    } catch {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: 'Differential calibration is not supported in this environment.'
+      }
+    } finally {
+      if (supportProbe) {
+        try {
+          await supportProbe.close()
+        } catch {
+          // Ignore probe cleanup failures.
+        }
+      }
+    }
+
+    const normalizedBtDeviceId = btDeviceId.trim()
+    const normalizedReferenceDeviceId = referenceDeviceId.trim()
+    const normalizedInputDeviceId = inputDeviceId.trim()
+
+    let stream: MediaStream
+    try {
+      const audioConstraints: MediaTrackConstraints = {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+
+      if (normalizedInputDeviceId.length > 0 && normalizedInputDeviceId !== 'default') {
+        audioConstraints.deviceId = { exact: normalizedInputDeviceId }
+      }
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: false
+      })
+    } catch (error) {
+      const code = this.isLikelyPermissionDenied(error) ? 'mic-denied' : 'mic-unavailable'
+      return {
+        ok: false,
+        code,
+        message: code === 'mic-denied'
+          ? 'Microphone permission was denied for differential calibration.'
+          : 'Microphone is unavailable for differential calibration.'
+      }
+    }
+
+    let btContext: AudioContext | null = null
+    let refContext: AudioContext | null = null
+
+    try {
+      btContext = new AudioContext()
+      refContext = new AudioContext()
+
+      const setSinkId = (ctx: AudioContext, sinkId: string): Promise<void> => {
+        return (ctx as AudioContext & { setSinkId: (id: string) => Promise<void> }).setSinkId(sinkId)
+      }
+
+      try {
+        await setSinkId(
+          btContext,
+          normalizedBtDeviceId.length > 0 && normalizedBtDeviceId !== 'default'
+            ? normalizedBtDeviceId
+            : ''
+        )
+      } catch {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Could not route Bluetooth output for differential calibration.'
+        }
+      }
+      const btSinkId = (btContext as AudioContext & { sinkId?: unknown }).sinkId
+      if (
+        normalizedBtDeviceId.length > 0
+        && normalizedBtDeviceId !== 'default'
+        && typeof btSinkId === 'string'
+        && btSinkId.length > 0
+        && btSinkId !== normalizedBtDeviceId
+      ) {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Bluetooth output routing did not apply to the selected device.'
+        }
+      }
+
+      try {
+        await setSinkId(
+          refContext,
+          normalizedReferenceDeviceId.length > 0 && normalizedReferenceDeviceId !== 'default'
+            ? normalizedReferenceDeviceId
+            : ''
+        )
+      } catch {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Could not route reference output for differential calibration.'
+        }
+      }
+      const refSinkId = (refContext as AudioContext & { sinkId?: unknown }).sinkId
+      if (
+        normalizedReferenceDeviceId.length > 0
+        && normalizedReferenceDeviceId !== 'default'
+        && typeof refSinkId === 'string'
+        && refSinkId.length > 0
+        && refSinkId !== normalizedReferenceDeviceId
+      ) {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Reference output routing did not apply to the selected device.'
+        }
+      }
+
+      await btContext.resume()
+      await refContext.resume()
+      if (btContext.state !== 'running' || refContext.state !== 'running') {
+        return {
+          ok: false,
+          code: 'not-supported',
+          message: 'Audio outputs are not active for differential calibration.'
+        }
+      }
+
+      try {
+        await btContext.audioWorklet.addModule('./oscilloscope-worklet.js')
+      } catch {
+        return {
+          ok: false,
+          code: 'worklet-unavailable',
+          message: 'Audio worklet is unavailable for differential calibration.'
+        }
+      }
+
+      const captureRate = btContext.sampleRate
+      const btTone = this.createCalibrationToneSignalForContext(btContext)
+      const refTone = this.createCalibrationToneSignalForContext(refContext)
+
+      // Preview only on reference output so users can confirm routing before the measurement run.
+      const referencePreviewSource = refContext.createBufferSource()
+      referencePreviewSource.buffer = refTone.buffer
+      const referencePreviewGain = refContext.createGain()
+      referencePreviewGain.gain.value = CALIBRATION_OUTPUT_GAIN
+      referencePreviewSource.connect(referencePreviewGain)
+      referencePreviewGain.connect(refContext.destination)
+      referencePreviewSource.start(refContext.currentTime + (DIFFERENTIAL_REFERENCE_PREVIEW_DELAY_MS / 1000))
+
+      await this.sleep(
+        DIFFERENTIAL_REFERENCE_PREVIEW_DELAY_MS
+        + Math.round(CALIBRATION_CHIRP_DURATION_SEC * 1000)
+        + DIFFERENTIAL_REFERENCE_PREVIEW_TAIL_MS
+      )
+
+      const captureNode = new AudioWorkletNode(btContext, 'calibration-capture-processor')
+      const captureSink = btContext.createGain()
+      captureSink.gain.value = 0
+      captureSink.connect(btContext.destination)
+
+      const micSource = btContext.createMediaStreamSource(stream)
+      micSource.connect(captureNode)
+      captureNode.connect(captureSink)
+
+      const captureChunks: Float32Array[] = []
+      captureNode.port.onmessage = (event: MessageEvent<{ samples?: Float32Array }>) => {
+        const samples = event.data?.samples
+        if (!samples || samples.length === 0) return
+        captureChunks.push(new Float32Array(samples))
+      }
+
+      const minScheduleGuardSec = 0.08
+      const headroomSec = DIFFERENTIAL_SCHEDULE_HEADROOM_MS / 1000
+      const staggerSec = DIFFERENTIAL_STAGGER_MS / 1000
+      const captureStartContextTime = btContext.currentTime
+
+      // Primary schedule path: use each context's own timeline to avoid cross-context drift bugs.
+      let refFireAt = refContext.currentTime + headroomSec
+      let wiredFireInBtContext = btContext.currentTime + headroomSec
+      let btFireAt = btContext.currentTime + headroomSec + staggerSec
+
+      // Optional refinement via getOutputTimestamp mapping. If mapping looks invalid,
+      // keep the timeline-local schedule above.
+      const btClock = this.getContextClockSnapshot(btContext)
+      const refClock = this.getContextClockSnapshot(refContext)
+      const scheduleWallNowMs = performance.now()
+      const wiredWallFireMs = scheduleWallNowMs + DIFFERENTIAL_SCHEDULE_HEADROOM_MS
+      const mappedRefFireAt = refClock.contextTime + ((wiredWallFireMs - refClock.performanceTime) / 1000)
+      const mappedWiredFireInBtContext = btClock.contextTime + ((wiredWallFireMs - btClock.performanceTime) / 1000)
+      const mappedBtFireAt = mappedWiredFireInBtContext + staggerSec
+      const mappedTimesAreUsable = (
+        Number.isFinite(mappedRefFireAt)
+        && Number.isFinite(mappedWiredFireInBtContext)
+        && Number.isFinite(mappedBtFireAt)
+        && mappedRefFireAt >= (refContext.currentTime + minScheduleGuardSec)
+        && mappedBtFireAt >= (btContext.currentTime + minScheduleGuardSec)
+      )
+      if (mappedTimesAreUsable) {
+        refFireAt = mappedRefFireAt
+        wiredFireInBtContext = mappedWiredFireInBtContext
+        btFireAt = mappedBtFireAt
+      }
+
+      refFireAt = Math.max(refFireAt, refContext.currentTime + minScheduleGuardSec)
+      wiredFireInBtContext = Math.max(wiredFireInBtContext, btContext.currentTime + minScheduleGuardSec)
+      btFireAt = Math.max(
+        btFireAt,
+        btContext.currentTime + minScheduleGuardSec + staggerSec,
+        wiredFireInBtContext + staggerSec
+      )
+
+      const captureLeadInSamples = Math.max(
+        0,
+        Math.round((wiredFireInBtContext - captureStartContextTime) * captureRate)
+      )
+      const staggerSamples = Math.max(
+        0,
+        Math.round((DIFFERENTIAL_STAGGER_MS / 1000) * captureRate)
+      )
+
+      const refSource = refContext.createBufferSource()
+      refSource.buffer = refTone.buffer
+      const refGain = refContext.createGain()
+      refGain.gain.value = CALIBRATION_OUTPUT_GAIN
+      refSource.connect(refGain)
+      refGain.connect(refContext.destination)
+
+      const btSource = btContext.createBufferSource()
+      btSource.buffer = btTone.buffer
+      const btGain = btContext.createGain()
+      btGain.gain.value = CALIBRATION_OUTPUT_GAIN
+      btSource.connect(btGain)
+      btGain.connect(btContext.destination)
+
+      refSource.start(refFireAt)
+      btSource.start(btFireAt)
+
+      const captureDurationMs = (
+        DIFFERENTIAL_SCHEDULE_HEADROOM_MS
+        + DIFFERENTIAL_STAGGER_MS
+        + DIFFERENTIAL_BT_SEARCH_WINDOW_MS
+        + 450
+      )
+      await this.sleep(captureDurationMs)
+
+      const capturedSignal = this.combineFloat32Chunks(captureChunks)
+      if (capturedSignal.length === 0) {
+        return {
+          ok: false,
+          code: 'timeout',
+          message: 'No microphone signal was captured during differential calibration.'
+        }
+      }
+
+      const estimate = this.estimateDifferentialDelay(
+        capturedSignal,
+        captureRate,
+        btTone.referenceSequence,
+        captureLeadInSamples,
+        staggerSamples
+      )
+      if (!estimate) {
+        return {
+          ok: false,
+          code: 'low-confidence',
+          message: 'Could not find both differential chirp arrivals. Ensure both outputs are audible to the mic and retry.'
+        }
+      }
+
+      const refOutputLatencyMs = (
+        (this.normalizeReportedLatencyMs(refContext.outputLatency) ?? 0)
+        + (this.normalizeReportedLatencyMs(refContext.baseLatency) ?? 0)
+      )
+      const knownRefOutputLatencyMs = refOutputLatencyMs > 0
+        ? refOutputLatencyMs
+        : DIFFERENTIAL_WIRED_FALLBACK_LATENCY_MS
+
+      const btOutputLatencyMs = Math.max(
+        0,
+        (((estimate.offsetBtSamples - estimate.offsetWiredSamples) / captureRate) * 1000)
+          + knownRefOutputLatencyMs
+      )
+
+      const impliedMicAndPropagationMs = (
+        ((estimate.offsetWiredSamples / captureRate) * 1000)
+        - knownRefOutputLatencyMs
+      )
+      const propagationBiasWarning = impliedMicAndPropagationMs > 60
+
+      return {
+        ok: true,
+        btOutputLatencyMs,
+        refOutputLatencyMs: knownRefOutputLatencyMs,
+        propagationBiasWarning,
+        confidence: Math.max(0, Math.min(1, estimate.confidence)),
+        sampleRate: captureRate
+      }
+    } catch (error) {
+      console.error('Differential output delay calibration failed:', error)
+      return {
+        ok: false,
+        code: 'unknown',
+        message: 'Differential calibration failed unexpectedly.'
+      }
+    } finally {
+      stream.getTracks().forEach((track) => track.stop())
+      if (btContext) {
+        try {
+          await btContext.close()
+        } catch {
+          // Ignore context close failures.
+        }
+      }
+      if (refContext) {
+        try {
+          await refContext.close()
+        } catch {
+          // Ignore context close failures.
+        }
+      }
+    }
+  }
+
   private async runSingleCalibrationPass(
     micSource: MediaStreamAudioSourceNode,
     toneSignal: CalibrationToneSignal
@@ -1043,6 +1420,39 @@ export class AudioEngine {
     const buffer = this.context.createBuffer(1, totalSamples, sampleRate)
     buffer.copyToChannel(sequence, 0)
 
+    return {
+      buffer,
+      referenceSequence: sequence,
+      leadInSamples
+    }
+  }
+
+  private createCalibrationToneSignalForContext(ctx: AudioContext): CalibrationToneSignal {
+    const sampleRate = ctx.sampleRate
+    const burst = this.createChirpBurst(sampleRate)
+    const burstSamples = burst.length
+    const gapSamples = Math.max(0, Math.round(CALIBRATION_GAP_SEC * sampleRate))
+    const leadInSamples = Math.max(0, Math.round(CALIBRATION_LEAD_IN_SEC * sampleRate))
+    const totalSamples = leadInSamples
+      + (burstSamples * CALIBRATION_BURST_COUNT)
+      + (gapSamples * Math.max(0, CALIBRATION_BURST_COUNT - 1))
+
+    const sequence = new Float32Array(totalSamples)
+    let writeIndex = leadInSamples
+
+    for (let burstIndex = 0; burstIndex < CALIBRATION_BURST_COUNT; burstIndex++) {
+      const weight = CALIBRATION_BURST_WEIGHTS[burstIndex] ?? (burstIndex % 2 === 0 ? 1 : -1)
+      for (let sampleIndex = 0; sampleIndex < burst.length; sampleIndex++) {
+        sequence[writeIndex + sampleIndex] = burst[sampleIndex] * weight
+      }
+      writeIndex += burstSamples
+      if (burstIndex < CALIBRATION_BURST_COUNT - 1) {
+        writeIndex += gapSamples
+      }
+    }
+
+    const buffer = ctx.createBuffer(1, totalSamples, sampleRate)
+    buffer.copyToChannel(sequence, 0)
     return {
       buffer,
       referenceSequence: sequence,
@@ -1234,6 +1644,111 @@ export class AudioEngine {
       correlation: selectedCorrelation,
       peakRatio,
       confidence
+    }
+  }
+
+  private estimateDifferentialDelay(
+    capturedSignal: Float32Array,
+    sampleRate: number,
+    referenceSequence: Float32Array,
+    captureLeadInSamples: number,
+    staggerSamples: number
+  ): { offsetWiredSamples: number; offsetBtSamples: number; confidence: number } | null {
+    const processedCapture = this.preprocessCalibrationSignal(capturedSignal, sampleRate)
+    const processedReference = this.preprocessCalibrationSignal(referenceSequence, sampleRate)
+    const reducedCapture = this.downsampleForCorrelation(processedCapture, CALIBRATION_DOWNSAMPLE_FACTOR)
+    const reducedReference = this.downsampleForCorrelation(processedReference, CALIBRATION_DOWNSAMPLE_FACTOR)
+
+    if (reducedCapture.length <= reducedReference.length || reducedReference.length < 16) {
+      return null
+    }
+
+    const reducedRate = sampleRate / CALIBRATION_DOWNSAMPLE_FACTOR
+    const templateLength = reducedReference.length
+    let referenceEnergy = 0
+    for (let i = 0; i < templateLength; i++) {
+      const value = reducedReference[i]
+      referenceEnergy += value * value
+    }
+    if (referenceEnergy <= 1e-12) {
+      return null
+    }
+
+    const leadInReduced = Math.max(0, Math.floor(captureLeadInSamples / CALIBRATION_DOWNSAMPLE_FACTOR))
+    const staggerReduced = Math.max(0, Math.floor(staggerSamples / CALIBRATION_DOWNSAMPLE_FACTOR))
+    const preRollReduced = Math.max(0, Math.floor((DIFFERENTIAL_SEARCH_PRE_ROLL_MS / 1000) * reducedRate))
+    const minBtReduced = Math.max(1, Math.floor((DIFFERENTIAL_MIN_BT_LATENCY_MS / 1000) * reducedRate))
+    const wiredWindowReduced = Math.max(1, Math.floor((DIFFERENTIAL_WIRED_SEARCH_WINDOW_MS / 1000) * reducedRate))
+    const btWindowReduced = Math.max(1, Math.floor((DIFFERENTIAL_BT_SEARCH_WINDOW_MS / 1000) * reducedRate))
+
+    const maxSearchIndex = reducedCapture.length - templateLength
+    if (maxSearchIndex <= 0) {
+      return null
+    }
+
+    const wiredSearchStart = Math.max(0, Math.min(maxSearchIndex, leadInReduced - preRollReduced))
+    const wiredSearchEnd = Math.max(0, Math.min(maxSearchIndex, leadInReduced + wiredWindowReduced))
+    const btSearchStart = Math.max(
+      0,
+      Math.min(maxSearchIndex, leadInReduced + staggerReduced + minBtReduced - preRollReduced)
+    )
+    const btSearchEnd = Math.max(0, Math.min(maxSearchIndex, leadInReduced + staggerReduced + btWindowReduced))
+
+    if (wiredSearchEnd <= wiredSearchStart || btSearchEnd <= btSearchStart) {
+      return null
+    }
+
+    const findBestPeak = (
+      searchStart: number,
+      searchEnd: number
+    ): { index: number; correlation: number } | null => {
+      let bestCorrelation = Number.NEGATIVE_INFINITY
+      let bestIndex = -1
+
+      for (let startIndex = searchStart; startIndex <= searchEnd; startIndex++) {
+        let dot = 0
+        let segmentEnergy = 0
+        for (let i = 0; i < templateLength; i++) {
+          const captured = reducedCapture[startIndex + i]
+          const reference = reducedReference[i]
+          dot += captured * reference
+          segmentEnergy += captured * captured
+        }
+
+        if (segmentEnergy <= 1e-12) continue
+        const correlation = dot / Math.sqrt(segmentEnergy * referenceEnergy)
+        if (correlation > bestCorrelation) {
+          bestCorrelation = correlation
+          bestIndex = startIndex
+        }
+      }
+
+      if (!Number.isFinite(bestCorrelation) || bestIndex < 0 || bestCorrelation < CALIBRATION_MIN_CORRELATION) {
+        return null
+      }
+
+      return {
+        index: bestIndex,
+        correlation: bestCorrelation
+      }
+    }
+
+    const wiredPeak = findBestPeak(wiredSearchStart, wiredSearchEnd)
+    const btPeak = findBestPeak(btSearchStart, btSearchEnd)
+    if (!wiredPeak || !btPeak) {
+      return null
+    }
+
+    const offsetWiredSamples = (wiredPeak.index - leadInReduced) * CALIBRATION_DOWNSAMPLE_FACTOR
+    const offsetBtSamples = (btPeak.index - leadInReduced - staggerReduced) * CALIBRATION_DOWNSAMPLE_FACTOR
+    if (offsetWiredSamples < 0 || offsetBtSamples < 0) {
+      return null
+    }
+
+    return {
+      offsetWiredSamples,
+      offsetBtSamples,
+      confidence: Math.min(wiredPeak.correlation, btPeak.correlation)
     }
   }
 
@@ -1544,6 +2059,38 @@ export class AudioEngine {
     const ms = Number(seconds) * 1000
     if (!Number.isFinite(ms) || ms < 0) return null
     return Math.max(0, Math.min(5000, ms))
+  }
+
+  private getContextClockSnapshot(ctx: AudioContext): { contextTime: number; performanceTime: number } {
+    const fallback = {
+      contextTime: ctx.currentTime,
+      performanceTime: performance.now()
+    }
+
+    if (!('getOutputTimestamp' in ctx)) {
+      return fallback
+    }
+
+    try {
+      const timestamp = (
+        ctx as AudioContext & {
+          getOutputTimestamp: () => { contextTime: number; performanceTime: number }
+        }
+      ).getOutputTimestamp()
+
+      const contextTime = Number(timestamp.contextTime)
+      const performanceTime = Number(timestamp.performanceTime)
+      if (!Number.isFinite(contextTime) || !Number.isFinite(performanceTime)) {
+        return fallback
+      }
+
+      return {
+        contextTime,
+        performanceTime
+      }
+    } catch {
+      return fallback
+    }
   }
 
   private sleep(ms: number): Promise<void> {

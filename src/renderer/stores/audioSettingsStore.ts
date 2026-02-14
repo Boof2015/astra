@@ -16,18 +16,22 @@ export interface CalibrationInputDevice {
 }
 
 export type DelayCompensationMode = 'manual' | 'auto'
+export type DelayCalibrationMethod = 'legacy' | 'differential'
 
 type DelayCalibrationState = 'idle' | 'running' | 'success' | 'error'
 
 export interface DelayCompensationProfile {
   enabled: boolean
   mode: DelayCompensationMode
+  calibrationMethod: DelayCalibrationMethod
+  differentialReferenceOutputDeviceId: string
   manualOffsetMs: number
   autoOffsetMs: number | null
   lastRoundTripMs: number | null
   lastCalibrationInputKey: string | null
   lastCalibrationSampleRate: number | null
   lastCalibrationConfidence: number | null
+  lastCalibrationMethod: DelayCalibrationMethod | null
   lastCalibrationAt: number | null
 }
 
@@ -64,6 +68,8 @@ interface AudioSettingsStore {
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
+  setDelayCalibrationMethod: (method: DelayCalibrationMethod) => Promise<void>
+  setDifferentialReferenceOutputDeviceId: (deviceId: string) => Promise<void>
   setDelayCompensationManualOffsetMs: (offsetMs: number) => Promise<void>
   runDelayAutoCalibration: () => Promise<void>
   resetDelayToAutoGuess: () => Promise<void>
@@ -83,12 +89,15 @@ const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
   mode: 'manual',
+  calibrationMethod: 'legacy',
+  differentialReferenceOutputDeviceId: '',
   manualOffsetMs: 0,
   autoOffsetMs: null,
   lastRoundTripMs: null,
   lastCalibrationInputKey: null,
   lastCalibrationSampleRate: null,
   lastCalibrationConfidence: null,
+  lastCalibrationMethod: null,
   lastCalibrationAt: null,
 }
 
@@ -143,6 +152,10 @@ function normalizeDelayMode(value: unknown): DelayCompensationMode {
   return 'manual'
 }
 
+function normalizeCalibrationMethod(value: unknown): DelayCalibrationMethod {
+  return value === 'differential' ? 'differential' : 'legacy'
+}
+
 function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { ...DEFAULT_DELAY_PROFILE }
@@ -150,15 +163,23 @@ function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
 
   const raw = value as Partial<DelayCompensationProfile>
   const mode = normalizeDelayMode(raw.mode)
+  const calibrationMethod = normalizeCalibrationMethod(raw.calibrationMethod)
   const autoOffsetMs = raw.autoOffsetMs == null ? null : clampAppliedDelayMs(raw.autoOffsetMs)
   const lastRoundTripMs = raw.lastRoundTripMs == null ? null : clampRoundTripMs(raw.lastRoundTripMs)
   const lastCalibrationInputKey = typeof raw.lastCalibrationInputKey === 'string' && raw.lastCalibrationInputKey.trim().length > 0
     ? raw.lastCalibrationInputKey.trim()
     : null
+  const normalizedReferenceOutputId = typeof raw.differentialReferenceOutputDeviceId === 'string'
+    ? raw.differentialReferenceOutputDeviceId.trim()
+    : ''
 
   return {
     enabled: Boolean(raw.enabled),
     mode,
+    calibrationMethod,
+    differentialReferenceOutputDeviceId: normalizedReferenceOutputId === 'default'
+      ? ''
+      : normalizedReferenceOutputId,
     manualOffsetMs: clampManualOffsetForMode(mode, raw.manualOffsetMs ?? 0),
     autoOffsetMs,
     lastRoundTripMs,
@@ -167,6 +188,9 @@ function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
     lastCalibrationConfidence: Number.isFinite(raw.lastCalibrationConfidence)
       ? Math.max(0, Math.min(1, Number(raw.lastCalibrationConfidence)))
       : null,
+    lastCalibrationMethod: raw.lastCalibrationMethod == null
+      ? null
+      : normalizeCalibrationMethod(raw.lastCalibrationMethod),
     lastCalibrationAt: Number.isFinite(raw.lastCalibrationAt)
       ? Math.max(0, Math.trunc(Number(raw.lastCalibrationAt)))
       : null,
@@ -176,12 +200,15 @@ function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
 function areDelayProfilesEqual(a: DelayCompensationProfile, b: DelayCompensationProfile): boolean {
   return a.enabled === b.enabled
     && a.mode === b.mode
+    && a.calibrationMethod === b.calibrationMethod
+    && a.differentialReferenceOutputDeviceId === b.differentialReferenceOutputDeviceId
     && a.manualOffsetMs === b.manualOffsetMs
     && a.autoOffsetMs === b.autoOffsetMs
     && a.lastRoundTripMs === b.lastRoundTripMs
     && a.lastCalibrationInputKey === b.lastCalibrationInputKey
     && a.lastCalibrationSampleRate === b.lastCalibrationSampleRate
     && a.lastCalibrationConfidence === b.lastCalibrationConfidence
+    && a.lastCalibrationMethod === b.lastCalibrationMethod
     && a.lastCalibrationAt === b.lastCalibrationAt
 }
 
@@ -516,6 +543,19 @@ function formatCalibrationFailureMessage(message: string, code: string): string 
   return message
 }
 
+function formatDifferentialCalibrationFailureMessage(message: string, code: string): string {
+  if (code === 'not-supported') {
+    return `${message} Switch to Old (Legacy) method for this device or retry on a supported setup.`
+  }
+  if (code === 'mic-denied' || code === 'mic-unavailable') {
+    return `${message} Grant mic access and retry New (Differential) calibration.`
+  }
+  if (code === 'low-confidence' || code === 'timeout') {
+    return `${message} Keep both outputs audible to the mic, then retry New (Differential).`
+  }
+  return `${message} Retry New (Differential) calibration.`
+}
+
 export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   const persistDelaySettings = (
     profiles: Record<string, DelayCompensationProfile>,
@@ -776,6 +816,20 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }))
     },
 
+    setDelayCalibrationMethod: async (method: DelayCalibrationMethod) => {
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        calibrationMethod: normalizeCalibrationMethod(method)
+      }))
+    },
+
+    setDifferentialReferenceOutputDeviceId: async (deviceId: string) => {
+      await updateActiveDelayProfile((profile) => ({
+        ...profile,
+        differentialReferenceOutputDeviceId: deviceId.trim() === 'default' ? '' : deviceId.trim()
+      }))
+    },
+
     setDelayCompensationManualOffsetMs: async (offsetMs: number) => {
       await updateActiveDelayProfile((profile) => ({
         ...profile,
@@ -784,12 +838,128 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     runDelayAutoCalibration: async () => {
+      const initialState = get()
+      const selectedMethod = initialState.activeDelayProfile.calibrationMethod
       set({
         delayCalibrationState: 'running',
-        delayCalibrationMessage: 'Running output calibration...'
+        delayCalibrationMessage: selectedMethod === 'differential'
+          ? 'Running New (Differential) calibration...'
+          : 'Running Old (Legacy) calibration...'
       })
 
       const calibrationInputDeviceId = get().selectedCalibrationInputDeviceId
+
+      if (selectedMethod === 'differential') {
+        const differentialInputState = get()
+        const btDeviceId = differentialInputState.selectedDeviceId
+        const referenceDeviceId = differentialInputState.activeDelayProfile.differentialReferenceOutputDeviceId
+        const normalizedReferenceDeviceId = referenceDeviceId.trim()
+        const availableOutputs = differentialInputState.availableDevices
+        const selectedOutputDevice = availableOutputs.find((device) => device.deviceId === btDeviceId) ?? null
+        const defaultOutputAlias = availableOutputs.find((device) => device.isDefaultAlias) ?? null
+        const selectedReferenceDevice = (
+          normalizedReferenceDeviceId.length > 0 && normalizedReferenceDeviceId !== 'default'
+            ? (availableOutputs.find((device) => device.deviceId === normalizedReferenceDeviceId) ?? null)
+            : defaultOutputAlias
+        )
+
+        if (normalizedReferenceDeviceId.length > 0 && normalizedReferenceDeviceId !== 'default' && !selectedReferenceDevice) {
+          set({
+            delayCalibrationState: 'error',
+            delayCalibrationMessage: 'Selected reference output is unavailable. Re-select a reference output and retry New (Differential).'
+          })
+          return
+        }
+
+        if (
+          selectedOutputDevice
+          && selectedReferenceDevice
+          && selectedOutputDevice.groupId.length > 0
+          && selectedReferenceDevice.groupId.length > 0
+          && selectedOutputDevice.groupId === selectedReferenceDevice.groupId
+        ) {
+          set({
+            delayCalibrationState: 'error',
+            delayCalibrationMessage: 'Reference output resolves to the same physical device as target output. Pick a different reference speaker and retry New (Differential).'
+          })
+          return
+        }
+
+        const result = await audioEngine.runDifferentialCalibration(
+          btDeviceId,
+          referenceDeviceId,
+          calibrationInputDeviceId
+        )
+
+        if (!result.ok) {
+          set({
+            delayCalibrationState: 'error',
+            delayCalibrationMessage: formatDifferentialCalibrationFailureMessage(result.message, result.code)
+          })
+          return
+        }
+
+        const state = get()
+        const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+        const activeDelayProfileKey = profileTarget.key
+        const currentActiveProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
+        const sampleRate = normalizeSampleRate(result.sampleRate)
+          ?? Math.max(1, Math.round(audioEngine.getSampleRate()))
+        const now = Date.now()
+        const autoOffsetMs = clampAppliedDelayMs(result.btOutputLatencyMs)
+
+        let nextProfiles: Record<string, DelayCompensationProfile> = {
+          ...state.delayProfilesByDeviceKey,
+          [activeDelayProfileKey]: normalizeDelayProfile({
+            ...currentActiveProfile,
+            autoOffsetMs,
+            lastRoundTripMs: null,
+            lastCalibrationInputKey: null,
+            lastCalibrationSampleRate: sampleRate,
+            lastCalibrationConfidence: result.confidence,
+            lastCalibrationMethod: 'differential',
+            lastCalibrationAt: now
+          })
+        }
+
+        const canonicalized = upsertCanonicalDelayProfileForTarget(
+          nextProfiles,
+          profileTarget,
+          normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
+        )
+        nextProfiles = canonicalized.profiles
+
+        const activeProfile = normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
+        const effectiveDelayMs = computeEffectiveDelayMs(activeProfile)
+        const confidencePct = Math.round(result.confidence * 100)
+        const propagationBiasNote = result.propagationBiasWarning
+          ? ' Mic placement may bias this result; keep the mic near both outputs and retry if needed.'
+          : ''
+
+        set({
+          delayProfilesByDeviceKey: nextProfiles,
+          activeDelayProfileKey,
+          activeDelayProfile: activeProfile,
+          effectiveDelayMs,
+          delayCalibrationState: 'success',
+          delayCalibrationMessage: `Differential output ${autoOffsetMs} ms, reference output ${Math.round(result.refOutputLatencyMs)} ms (confidence ${confidencePct}%).${propagationBiasNote}`
+        })
+
+        persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
+        try {
+          await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+        } catch (error) {
+          console.warn('Failed to apply analysis delay after differential calibration, retrying...', error)
+          try {
+            await audioEngine.ensureContextReady()
+            await audioEngine.setAnalysisDelayMs(effectiveDelayMs)
+          } catch (retryError) {
+            console.error('Failed to apply analysis delay after retry:', retryError)
+          }
+        }
+        return
+      }
+
       const result = await audioEngine.runOutputDelayCalibration(calibrationInputDeviceId)
       if (!result.ok) {
         const shouldFallbackToManual = (
@@ -935,6 +1105,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           lastCalibrationInputKey: calibrationInputKey,
           lastCalibrationSampleRate: sampleRate,
           lastCalibrationConfidence: result.confidence,
+          lastCalibrationMethod: 'legacy',
           lastCalibrationAt: now,
         })
       }
