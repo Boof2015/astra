@@ -116,6 +116,10 @@ interface AlbumGroupAccumulator {
   tracks: DbTrack[]
 }
 
+const UNKNOWN_ALBUM_NAME = 'Unknown Album'
+const UNKNOWN_ALBUM_KEY = UNKNOWN_ALBUM_NAME.toLocaleLowerCase()
+const MIN_TRACKS_FOR_ALBUM = 2
+
 function normalizeDisplay(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
@@ -126,7 +130,17 @@ function normalizeKey(value: string): string {
 
 function normalizeAlbumName(album: string): string {
   const normalized = normalizeDisplay(album)
-  return normalized || 'Unknown Album'
+  return normalized || UNKNOWN_ALBUM_NAME
+}
+
+function isUnknownAlbumKey(albumKey: string): boolean {
+  return albumKey === UNKNOWN_ALBUM_KEY
+}
+
+function isEligibleAlbumGroup(group: AlbumGroupAccumulator): boolean {
+  if (group.trackCount < MIN_TRACKS_FOR_ALBUM) return false
+  if (isUnknownAlbumKey(group.albumKey)) return false
+  return true
 }
 
 function splitCollaborators(rawArtist: string): string[] {
@@ -602,13 +616,15 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
   if (tracks.length === 0) return []
 
   const groups = buildAlbumGroups(tracks)
-  const albums = Array.from(groups.values()).map((group) => ({
-    album: pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album'),
-    artist: pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist'),
-    year: group.year,
-    artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
-    track_count: group.trackCount
-  }))
+  const albums = Array.from(groups.values())
+    .filter(isEligibleAlbumGroup)
+    .map((group) => ({
+      album: pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album'),
+      artist: pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist'),
+      year: group.year,
+      artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
+      track_count: group.trackCount
+    }))
 
   return albums.sort((a, b) => {
     const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })

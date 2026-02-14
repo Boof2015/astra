@@ -881,15 +881,17 @@ export default function HomeView() {
       const identityArtist = getAlbumIdentityArtist(track)
       const albumKey = buildAlbumKey(track.album, identityArtist)
       if (seenAlbumKeys.has(albumKey)) continue
-      seenAlbumKeys.add(albumKey)
 
       const metadata = albumByKey.get(albumKey)
+      if (!metadata) continue
+
+      seenAlbumKeys.add(albumKey)
       uniqueAlbums.push({
-        album: metadata?.album ?? normalizeAlbumName(track.album),
-        artist: metadata?.artist ?? identityArtist,
-        year: metadata?.year ?? null,
-        artwork_hash: metadata?.artwork_hash ?? track.artwork_hash,
-        track_count: metadata?.track_count ?? 0
+        album: metadata.album,
+        artist: metadata.artist,
+        year: metadata.year,
+        artwork_hash: metadata.artwork_hash,
+        track_count: metadata.track_count
       })
 
       if (uniqueAlbums.length >= RECENT_ALBUM_LIMIT) break
