@@ -96,6 +96,11 @@ const MAX_DELAY_MS = 2500
 const MAX_BASELINE_RTT_MS = 5000
 const DELAY_STEP_MS = 5
 const BASELINE_IMPROVEMENT_THRESHOLD_MS = 10
+const REPORTED_INPUT_LATENCY_MAX_MS = 3500
+const REPORTED_INPUT_LATENCY_ROUNDTRIP_TOLERANCE_MS = 300
+const REPORTED_INPUT_BASELINE_LOWER_MIN_CONFIDENCE = 0.32
+const OUTPUT_ANCHOR_MIN_CONFIDENCE = 0.28
+const OUTPUT_ANCHOR_ROUNDTRIP_TOLERANCE_MS = 250
 const AUTO_OFFSET_DOWNWARD_OUTLIER_DELTA_MS = 220
 const AUTO_OFFSET_DOWNWARD_OUTLIER_MAX_CONFIDENCE = 0.5
 let mediaDeviceChangeListenerAttached = false
@@ -822,27 +827,85 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const existingBaseline = state.inputBaselinesByKey[baselineKey]
       const now = Date.now()
 
+      const rawReportedInputLatencyMs = result.inputLatencyMs
+      const hasUsableReportedInputLatency = (
+        Number.isFinite(rawReportedInputLatencyMs)
+        && rawReportedInputLatencyMs != null
+        && rawReportedInputLatencyMs >= 0
+        && rawReportedInputLatencyMs <= REPORTED_INPUT_LATENCY_MAX_MS
+        && rawReportedInputLatencyMs <= (roundTripMs + REPORTED_INPUT_LATENCY_ROUNDTRIP_TOLERANCE_MS)
+      )
+      const reportedInputBaselineCandidate = hasUsableReportedInputLatency
+        ? clampRoundTripMs(rawReportedInputLatencyMs as number)
+        : null
+      const allowReportedInputBaselineLowering = (
+        reportedInputBaselineCandidate != null
+        && result.confidence >= REPORTED_INPUT_BASELINE_LOWER_MIN_CONFIDENCE
+      )
+
+      const previousAutoOffsetMs = currentActiveProfile.autoOffsetMs
+      const previousOutputConfidence = currentActiveProfile.lastCalibrationConfidence
+      const outputAnchorConfidenceOk = (
+        previousOutputConfidence == null
+        || previousOutputConfidence >= OUTPUT_ANCHOR_MIN_CONFIDENCE
+      )
+      const outputAnchorMagnitudeOk = (
+        previousAutoOffsetMs != null
+        && previousAutoOffsetMs >= 0
+        && previousAutoOffsetMs <= (roundTripMs + OUTPUT_ANCHOR_ROUNDTRIP_TOLERANCE_MS)
+      )
+      const anchoredBaselineCandidate = (
+        reportedInputBaselineCandidate == null
+        && outputAnchorConfidenceOk && outputAnchorMagnitudeOk && previousAutoOffsetMs != null
+      )
+        ? clampRoundTripMs(roundTripMs - previousAutoOffsetMs)
+        : null
+
       let baselineRttMs = roundTripMs
       let baselineWasLowered = false
+      let baselineUsedInputEstimate = false
+      let baselineUsedOutputAnchor = false
       let nextBaselines = state.inputBaselinesByKey
 
       if (!existingBaseline) {
+        baselineRttMs = reportedInputBaselineCandidate ?? anchoredBaselineCandidate ?? roundTripMs
+        baselineUsedInputEstimate = reportedInputBaselineCandidate != null
+        baselineUsedOutputAnchor = !baselineUsedInputEstimate && anchoredBaselineCandidate != null
         nextBaselines = {
           ...state.inputBaselinesByKey,
           [baselineKey]: {
-            baselineRttMs: roundTripMs,
+            baselineRttMs,
             sampleRate,
             updatedAt: now
           }
         }
       } else {
-        const improvement = existingBaseline.baselineRttMs - roundTripMs
+        const baselineCandidates = [roundTripMs, existingBaseline.baselineRttMs]
+        if (allowReportedInputBaselineLowering && reportedInputBaselineCandidate != null) {
+          baselineCandidates.push(reportedInputBaselineCandidate)
+        }
+        if (anchoredBaselineCandidate != null) {
+          baselineCandidates.push(anchoredBaselineCandidate)
+        }
+        const baselineCandidate = Math.min(...baselineCandidates)
+        const improvement = existingBaseline.baselineRttMs - baselineCandidate
         if (improvement >= BASELINE_IMPROVEMENT_THRESHOLD_MS) {
           baselineWasLowered = true
+          baselineRttMs = baselineCandidate
+          baselineUsedInputEstimate = (
+            allowReportedInputBaselineLowering
+            && reportedInputBaselineCandidate != null
+            && baselineCandidate === reportedInputBaselineCandidate
+          )
+          baselineUsedOutputAnchor = (
+            !baselineUsedInputEstimate
+            && anchoredBaselineCandidate != null
+            && baselineCandidate === anchoredBaselineCandidate
+          )
           nextBaselines = {
             ...state.inputBaselinesByKey,
             [baselineKey]: {
-              baselineRttMs: roundTripMs,
+              baselineRttMs,
               sampleRate,
               updatedAt: now
             }
@@ -854,7 +917,6 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       baselineRttMs = nextBaselines[baselineKey]?.baselineRttMs ?? baselineRttMs
       const derivedOutputMs = clampAppliedDelayMs(roundTripMs - baselineRttMs)
-      const previousAutoOffsetMs = currentActiveProfile.autoOffsetMs
       const shouldSuppressDownwardOutlierAutoOffset = (
         previousAutoOffsetMs != null
         && !baselineWasLowered
@@ -907,6 +969,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const baselineNote = baselineWasLowered
         ? ' Baseline improved and matching profiles were rebased.'
         : ''
+      const inputLatencyNote = baselineUsedInputEstimate
+        ? ' Input baseline used reported capture latency.'
+        : ''
+      const anchorNote = baselineUsedOutputAnchor
+        ? ' Input baseline was anchored using current output estimate.'
+        : ''
       const outlierNote = shouldSuppressDownwardOutlierAutoOffset
         ? ` Large downward jump detected; kept prior auto estimate ${previousAutoOffsetMs ?? 0} ms.`
         : ''
@@ -918,7 +986,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         activeDelayProfile: activeProfile,
         effectiveDelayMs,
         delayCalibrationState: 'success',
-        delayCalibrationMessage: `Round-trip ${roundTripMs} ms, input baseline ${baselineRttMs} ms, derived output ${derivedOutputMs} ms, applied output ${appliedAutoOffsetMs} ms (confidence ${confidencePct}%).${baselineNote}${outlierNote}`
+        delayCalibrationMessage: `Round-trip ${roundTripMs} ms, input baseline ${baselineRttMs} ms, derived output ${derivedOutputMs} ms, applied output ${appliedAutoOffsetMs} ms (confidence ${confidencePct}%).${inputLatencyNote}${anchorNote}${baselineNote}${outlierNote}`
       })
 
       persistDelaySettings(nextProfiles, nextBaselines)

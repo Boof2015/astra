@@ -53,6 +53,9 @@ export type OutputDelayCalibrationResult =
       roundTripMs: number
       confidence: number
       sampleRate: number
+      inputLatencyMs: number | null
+      outputLatencyMs: number | null
+      baseLatencyMs: number | null
     }
   | {
       ok: false
@@ -805,6 +808,15 @@ export class AudioEngine {
     }
 
     try {
+      const audioTrack = stream.getAudioTracks()[0] ?? null
+      const trackSettings = audioTrack?.getSettings?.()
+      const rawInputLatencySeconds = (
+        trackSettings as (MediaTrackSettings & { latency?: number }) | undefined
+      )?.latency
+      const inputLatencyMs = this.normalizeReportedLatencyMs(rawInputLatencySeconds)
+      const outputLatencyMs = this.normalizeReportedLatencyMs(this.context.outputLatency)
+      const baseLatencyMs = this.normalizeReportedLatencyMs(this.context.baseLatency)
+
       const micSource = this.context.createMediaStreamSource(stream)
       const toneSignal = this.createCalibrationToneSignal()
       const successfulPasses: Array<{ roundTripMs: number; confidence: number }> = []
@@ -872,7 +884,10 @@ export class AudioEngine {
         ok: true,
         roundTripMs: Math.max(0, Math.min(CALIBRATION_RTT_MAX_MS, quantizedRoundTrip)),
         confidence: Math.round(averageConfidence * 1000) / 1000,
-        sampleRate: this.context.sampleRate
+        sampleRate: this.context.sampleRate,
+        inputLatencyMs,
+        outputLatencyMs,
+        baseLatencyMs
       }
     } catch (error) {
       console.error('Output delay calibration failed:', error)
@@ -1522,6 +1537,13 @@ export class AudioEngine {
   private isLikelyPermissionDenied(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     return error.name === 'NotAllowedError' || error.name === 'SecurityError'
+  }
+
+  private normalizeReportedLatencyMs(seconds: number | undefined): number | null {
+    if (!Number.isFinite(seconds)) return null
+    const ms = Number(seconds) * 1000
+    if (!Number.isFinite(ms) || ms < 0) return null
+    return Math.max(0, Math.min(5000, ms))
   }
 
   private sleep(ms: number): Promise<void> {
