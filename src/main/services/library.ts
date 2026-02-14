@@ -462,7 +462,15 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
   if (!db) return []
-  const result = db.exec('SELECT * FROM tracks ORDER BY artist, album, disc_number, track_number')
+  const result = db.exec(`
+    SELECT * FROM tracks
+    ORDER BY
+      title COLLATE NOCASE,
+      album COLLATE NOCASE,
+      COALESCE(disc_number, 0),
+      COALESCE(track_number, 0),
+      path COLLATE NOCASE
+  `)
   if (result.length === 0) return []
   return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
@@ -603,9 +611,9 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
   }))
 
   return albums.sort((a, b) => {
-    const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-    if (artistCompare !== 0) return artistCompare
-    return a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+    const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+    if (albumCompare !== 0) return albumCompare
+    return a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
   })
 }
 
@@ -616,7 +624,12 @@ export function searchTracks(query: string): DbTrack[] {
   const stmt = db.prepare(`
     SELECT * FROM tracks
     WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
-    ORDER BY artist, album, track_number
+    ORDER BY
+      title COLLATE NOCASE,
+      album COLLATE NOCASE,
+      COALESCE(disc_number, 0),
+      COALESCE(track_number, 0),
+      path COLLATE NOCASE
     LIMIT 100
   `)
   stmt.bind([pattern, pattern, pattern])
