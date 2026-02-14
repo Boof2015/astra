@@ -13,18 +13,32 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
   const getArtwork = useLibraryStore((state) => state.getArtwork)
 
   useEffect(() => {
+    let isCancelled = false
+
     if (!hash) {
       setArtworkUrl(null)
+      setLoading(false)
       return
     }
 
     setLoading(true)
-    getArtwork(hash).then((url) => {
-      setArtworkUrl(url)
-      setLoading(false)
-    }).catch(() => {
-      setLoading(false)
-    })
+    setArtworkUrl(null)
+
+    void getArtwork(hash)
+      .then((url) => {
+        if (isCancelled) return
+        setArtworkUrl(url)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (isCancelled) return
+        setArtworkUrl(null)
+        setLoading(false)
+      })
+
+    return () => {
+      isCancelled = true
+    }
   }, [hash, getArtwork])
 
   if (!hash || (!loading && !artworkUrl)) {
@@ -48,10 +62,11 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
       src={artworkUrl!}
       alt={alt}
       className={className}
-      onError={(e) => {
-        // If image fails to load, show placeholder
-        e.currentTarget.style.display = 'none'
-        e.currentTarget.parentElement?.classList.add('artwork-error')
+      loading="lazy"
+      decoding="async"
+      onError={() => {
+        setArtworkUrl(null)
+        setLoading(false)
       }}
     />
   )

@@ -92,6 +92,7 @@ interface LibraryStore {
 
 // Artwork cache stored outside of zustand to avoid re-renders
 const artworkCache = new Map<string, string>()
+const artworkRequestCache = new Map<string, Promise<string | null>>()
 
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
@@ -261,12 +262,25 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       return artworkCache.get(hash)!
     }
 
-    // Load from disk
-    const dataUrl = await window.electronAPI.library.getArtworkDataUrl(hash)
-    if (dataUrl) {
-      artworkCache.set(hash, dataUrl)
+    // Deduplicate concurrent requests for the same artwork hash.
+    if (artworkRequestCache.has(hash)) {
+      return artworkRequestCache.get(hash)!
     }
-    return dataUrl
+
+    const request = window.electronAPI.library.getArtworkDataUrl(hash)
+      .then((dataUrl) => {
+        if (dataUrl) {
+          artworkCache.set(hash, dataUrl)
+        }
+        return dataUrl
+      })
+      .catch(() => null)
+      .finally(() => {
+        artworkRequestCache.delete(hash)
+      })
+
+    artworkRequestCache.set(hash, request)
+    return request
   },
 
   // Load favorite track paths and full track list

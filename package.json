@@ -41,6 +41,7 @@
     "node-addon-api": "^8.5.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "react-window": "^2.2.7",
     "sql.js": "^1.13.0",
     "zustand": "^5.0.10"
   },
