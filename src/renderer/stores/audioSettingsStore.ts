@@ -363,15 +363,17 @@ function resolveActiveDelayProfileTarget(
     const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
     if (selectedDevice?.groupId) {
       const groupKey = buildOutputGroupProfileKey(selectedDevice.groupId)
-      const physicalWithSameGroup = devices.filter((device) => (
-        !device.isDefaultAlias
-        && device.groupId.length > 0
-        && device.groupId === selectedDevice.groupId
-      ))
+      const sameGroupDeviceIds = devices
+        .filter((device) => (
+          !device.isDefaultAlias
+          && device.groupId.length > 0
+          && device.groupId === selectedDevice.groupId
+        ))
+        .map((device) => device.deviceId)
       return {
         key: normalizedSelection,
         legacyFallbackKeys: dedupeKeys(
-          physicalWithSameGroup.length === 1 ? [groupKey] : [],
+          [groupKey, ...sameGroupDeviceIds],
           normalizedSelection
         )
       }
@@ -394,22 +396,20 @@ function resolveActiveDelayProfileTarget(
   const physicalDevice = devices.find((device) => device.deviceId === physicalDefaultId) ?? null
   if (physicalDevice?.groupId) {
     const key = buildOutputGroupProfileKey(physicalDevice.groupId)
-    const physicalWithSameGroup = devices.filter((device) => (
-      !device.isDefaultAlias
-      && device.groupId.length > 0
-      && device.groupId === physicalDevice.groupId
-    ))
-
-    if (physicalWithSameGroup.length === 1) {
-      return {
-        key,
-        legacyFallbackKeys: dedupeKeys([physicalDefaultId], key)
-      }
-    }
+    const sameGroupDeviceIds = devices
+      .filter((device) => (
+        !device.isDefaultAlias
+        && device.groupId.length > 0
+        && device.groupId === physicalDevice.groupId
+      ))
+      .map((device) => device.deviceId)
 
     return {
       key: physicalDefaultId,
-      legacyFallbackKeys: []
+      legacyFallbackKeys: dedupeKeys(
+        [key, ...sameGroupDeviceIds],
+        physicalDefaultId
+      )
     }
   }
 
@@ -426,17 +426,72 @@ function resolveDelayProfileForTarget(
   profile: DelayCompensationProfile
 } {
   const direct = profiles[target.key]
-  if (direct) {
-    return {
-      profile: normalizeDelayProfile(direct)
-    }
-  }
-
+  const directNormalized = direct ? normalizeDelayProfile(direct) : null
+  const fallbackCandidates: DelayCompensationProfile[] = []
   for (const key of target.legacyFallbackKeys) {
     const fallback = profiles[key]
     if (!fallback) continue
+    fallbackCandidates.push(normalizeDelayProfile(fallback))
+  }
+
+  // Prefer the most recent calibrated profile when timestamps are available.
+  let bestByTimestamp: DelayCompensationProfile | null = directNormalized
+  let bestTimestamp = directNormalized?.lastCalibrationAt ?? 0
+  for (const candidate of fallbackCandidates) {
+    const timestamp = candidate.lastCalibrationAt ?? 0
+    if (!bestByTimestamp || timestamp > bestTimestamp) {
+      bestByTimestamp = candidate
+      bestTimestamp = timestamp
+    }
+  }
+  if (bestByTimestamp && bestTimestamp > 0) {
     return {
-      profile: normalizeDelayProfile(fallback)
+      profile: bestByTimestamp
+    }
+  }
+
+  // If timestamps are missing, preserve any known auto estimate over empty defaults.
+  if (directNormalized?.autoOffsetMs != null) {
+    return {
+      profile: directNormalized
+    }
+  }
+  const fallbackWithEstimate = fallbackCandidates.find((candidate) => candidate.autoOffsetMs != null)
+  if (fallbackWithEstimate) {
+    return {
+      profile: fallbackWithEstimate
+    }
+  }
+
+  if (directNormalized) {
+    return {
+      profile: directNormalized
+    }
+  }
+
+  const firstFallback = fallbackCandidates[0]
+  if (firstFallback) {
+    return {
+      profile: firstFallback
+    }
+  }
+
+  // Last-resort recovery path for key churn: keep the most recently calibrated
+  // non-empty profile instead of dropping to defaults.
+  let bestGlobalWithEstimate: DelayCompensationProfile | null = null
+  let bestGlobalTimestamp = Number.NEGATIVE_INFINITY
+  for (const rawProfile of Object.values(profiles)) {
+    const normalized = normalizeDelayProfile(rawProfile)
+    if (normalized.autoOffsetMs == null) continue
+    const timestamp = normalized.lastCalibrationAt ?? 0
+    if (bestGlobalWithEstimate == null || timestamp > bestGlobalTimestamp) {
+      bestGlobalWithEstimate = normalized
+      bestGlobalTimestamp = timestamp
+    }
+  }
+  if (bestGlobalWithEstimate) {
+    return {
+      profile: bestGlobalWithEstimate
     }
   }
 

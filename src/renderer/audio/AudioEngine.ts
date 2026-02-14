@@ -46,6 +46,10 @@ const DIFFERENTIAL_MIN_BT_LATENCY_MS = 15
 const DIFFERENTIAL_WIRED_FALLBACK_LATENCY_MS = 20
 const DIFFERENTIAL_REFERENCE_PREVIEW_DELAY_MS = 80
 const DIFFERENTIAL_REFERENCE_PREVIEW_TAIL_MS = 220
+const DIFFERENTIAL_MIN_CORRELATION = 0.06
+const DIFFERENTIAL_BT_GAIN_MULTIPLIER = 1.25
+const DIFFERENTIAL_START_FREQ_HZ = 900
+const DIFFERENTIAL_END_FREQ_HZ = 4200
 
 export type OutputDelayCalibrationFailureCode =
   | 'not-supported'
@@ -1092,8 +1096,14 @@ export class AudioEngine {
       }
 
       const captureRate = btContext.sampleRate
-      const btTone = this.createCalibrationToneSignalForContext(btContext)
-      const refTone = this.createCalibrationToneSignalForContext(refContext)
+      const btTone = this.createCalibrationToneSignalForContext(btContext, {
+        startFreqHz: DIFFERENTIAL_START_FREQ_HZ,
+        endFreqHz: DIFFERENTIAL_END_FREQ_HZ
+      })
+      const refTone = this.createCalibrationToneSignalForContext(refContext, {
+        startFreqHz: DIFFERENTIAL_START_FREQ_HZ,
+        endFreqHz: DIFFERENTIAL_END_FREQ_HZ
+      })
 
       // Preview only on reference output so users can confirm routing before the measurement run.
       const referencePreviewSource = refContext.createBufferSource()
@@ -1185,7 +1195,7 @@ export class AudioEngine {
       const btSource = btContext.createBufferSource()
       btSource.buffer = btTone.buffer
       const btGain = btContext.createGain()
-      btGain.gain.value = CALIBRATION_OUTPUT_GAIN
+      btGain.gain.value = Math.min(1, CALIBRATION_OUTPUT_GAIN * DIFFERENTIAL_BT_GAIN_MULTIPLIER)
       btSource.connect(btGain)
       btGain.connect(btContext.destination)
 
@@ -1427,9 +1437,16 @@ export class AudioEngine {
     }
   }
 
-  private createCalibrationToneSignalForContext(ctx: AudioContext): CalibrationToneSignal {
+  private createCalibrationToneSignalForContext(
+    ctx: AudioContext,
+    options: { startFreqHz?: number; endFreqHz?: number } = {}
+  ): CalibrationToneSignal {
     const sampleRate = ctx.sampleRate
-    const burst = this.createChirpBurst(sampleRate)
+    const burst = this.createChirpBurst(
+      sampleRate,
+      options.startFreqHz ?? CALIBRATION_START_FREQ_HZ,
+      options.endFreqHz ?? CALIBRATION_END_FREQ_HZ
+    )
     const burstSamples = burst.length
     const gapSamples = Math.max(0, Math.round(CALIBRATION_GAP_SEC * sampleRate))
     const leadInSamples = Math.max(0, Math.round(CALIBRATION_LEAD_IN_SEC * sampleRate))
@@ -1460,15 +1477,21 @@ export class AudioEngine {
     }
   }
 
-  private createChirpBurst(sampleRate: number): Float32Array {
+  private createChirpBurst(
+    sampleRate: number,
+    startFreqHz: number = CALIBRATION_START_FREQ_HZ,
+    endFreqHz: number = CALIBRATION_END_FREQ_HZ
+  ): Float32Array {
     const burstSamples = Math.max(256, Math.round(CALIBRATION_CHIRP_DURATION_SEC * sampleRate))
     const chirp = new Float32Array(burstSamples)
-    const frequencyRatio = CALIBRATION_END_FREQ_HZ / CALIBRATION_START_FREQ_HZ
+    const safeStartFreqHz = Math.max(80, startFreqHz)
+    const safeEndFreqHz = Math.max(safeStartFreqHz + 10, endFreqHz)
+    const frequencyRatio = safeEndFreqHz / safeStartFreqHz
     let phase = 0
 
     for (let i = 0; i < burstSamples; i++) {
       const t = burstSamples > 1 ? i / (burstSamples - 1) : 0
-      const frequency = CALIBRATION_START_FREQ_HZ * Math.pow(frequencyRatio, t)
+      const frequency = safeStartFreqHz * Math.pow(frequencyRatio, t)
       phase += (2 * Math.PI * frequency) / sampleRate
       const window = 0.5 - (0.5 * Math.cos(2 * Math.PI * t))
       chirp[i] = Math.sin(phase) * window
@@ -1723,7 +1746,7 @@ export class AudioEngine {
         }
       }
 
-      if (!Number.isFinite(bestCorrelation) || bestIndex < 0 || bestCorrelation < CALIBRATION_MIN_CORRELATION) {
+      if (!Number.isFinite(bestCorrelation) || bestIndex < 0 || bestCorrelation < DIFFERENTIAL_MIN_CORRELATION) {
         return null
       }
 
