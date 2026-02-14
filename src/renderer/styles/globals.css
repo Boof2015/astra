@@ -2683,6 +2683,9 @@ button, .titlebar {
   flex-direction: column;
   cursor: pointer;
   transition: transform var(--transition-fast);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 1px 260px;
 }
 
 .album-card:hover {
@@ -2749,6 +2752,9 @@ button, .titlebar {
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 1px 64px;
 }
 
 .artist-item:hover {
