@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
@@ -11,6 +11,7 @@ interface HomeTrack {
   title: string
   artist: string
   album: string
+  album_artist: string | null
   duration: number
   format: string
   artwork_hash: string | null
@@ -37,6 +38,259 @@ interface HomeArtist {
   artwork_hash: string | null
 }
 
+type TimeBucket = 'morning' | 'afternoon' | 'evening' | 'late-night'
+
+interface GreetingCopy {
+  id: string
+  primary: string
+  subline: string
+}
+
+interface GreetingSelection extends GreetingCopy {
+  bucket: TimeBucket
+}
+
+interface BucketPalette {
+  top: [number, number, number]
+  mid: [number, number, number]
+  bottom: [number, number, number]
+  starOpacity: number
+}
+
+interface SkyColorKeyframe {
+  hour: number
+  top: [number, number, number]
+  mid: [number, number, number]
+  bottom: [number, number, number]
+  stars: number
+}
+
+interface PixelStar {
+  gx: number
+  gy: number
+  phase: number
+  freq: number
+  bright: number
+  cross: boolean
+}
+
+interface PixelCluster {
+  gx: number
+  gy: number
+}
+
+interface StarField {
+  stars: PixelStar[]
+  clusters: PixelCluster[]
+}
+
+interface TimeGreetingWindow {
+  startMinute: number
+  endMinute: number
+  messages: GreetingCopy[]
+}
+
+interface WeightedGreetingPool {
+  messages: GreetingCopy[]
+  weight: number
+}
+
+const RECENT_TRACK_LIMIT = 8
+const RECENT_ARTIST_LIMIT = 6
+const RECENT_ALBUM_LIMIT = 6
+const FAVORITE_LIMIT = 8
+const PLAYLIST_LIMIT = 6
+const GREETING_ROTATION_MS = 30 * 60 * 1000
+const SKY_PIXEL_SCALE = 4
+const STAR_GRID_SIZE = 6
+const STAR_PIXEL_SIZE = 2
+const STAR_CLUSTER_RATIO = 0.16
+const STAR_OPACITY_SCALE = 0.52
+
+const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
+  { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
+  { hour: 4, top: [12, 16, 36], mid: [8, 10, 16], bottom: [4, 4, 10], stars: 0.9 },
+  { hour: 4.6, top: [18, 16, 52], mid: [11, 10, 20], bottom: [5, 4, 10], stars: 0.78 },
+  { hour: 5, top: [30, 18, 64], mid: [16, 12, 28], bottom: [6, 5, 12], stars: 0.65 },
+  { hour: 5.35, top: [58, 24, 68], mid: [22, 13, 30], bottom: [6, 5, 12], stars: 0.5 },
+  { hour: 5.8, top: [90, 32, 64], mid: [30, 14, 24], bottom: [7, 5, 12], stars: 0.25 },
+  { hour: 6.15, top: [116, 52, 64], mid: [35, 18, 20], bottom: [7, 5, 11], stars: 0.14 },
+  { hour: 6.5, top: [138, 72, 64], mid: [42, 20, 16], bottom: [8, 6, 10], stars: 0.05 },
+  { hour: 6.9, top: [142, 104, 88], mid: [40, 28, 20], bottom: [8, 7, 10], stars: 0.02 },
+  { hour: 7.3, top: [130, 136, 152], mid: [34, 44, 54], bottom: [8, 10, 12], stars: 0.0 },
+  { hour: 7.8, top: [114, 146, 170], mid: [28, 38, 50], bottom: [7, 10, 12], stars: 0.0 },
+  { hour: 9, top: [90, 138, 170], mid: [24, 36, 48], bottom: [7, 10, 12], stars: 0.0 },
+  { hour: 12, top: [74, 120, 152], mid: [20, 32, 48], bottom: [6, 9, 12], stars: 0.0 },
+  { hour: 15, top: [80, 112, 144], mid: [22, 30, 42], bottom: [6, 8, 9], stars: 0.0 },
+  { hour: 17, top: [144, 96, 80], mid: [40, 26, 20], bottom: [8, 6, 10], stars: 0.0 },
+  { hour: 18, top: [144, 64, 64], mid: [42, 16, 16], bottom: [9, 5, 10], stars: 0.05 },
+  { hour: 19, top: [96, 32, 80], mid: [26, 12, 24], bottom: [7, 5, 12], stars: 0.2 },
+  { hour: 20, top: [36, 24, 56], mid: [14, 12, 28], bottom: [6, 5, 14], stars: 0.5 },
+  { hour: 22, top: [16, 20, 40], mid: [9, 10, 20], bottom: [4, 4, 12], stars: 0.85 },
+  { hour: 24, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 }
+]
+
+const PLAYFUL_GREETINGS: GreetingCopy[] = [
+  {
+    id: 'playful-back-again',
+    primary: 'Back again.',
+    subline: 'Good taste.'
+  },
+  {
+    id: 'playful-silence',
+    primary: 'Silence?',
+    subline: 'Not today.'
+  },
+  {
+    id: 'playful-missed-you',
+    primary: 'Missed you!',
+    subline: ''
+  },
+  {
+    id: 'playful-no-algo',
+    primary: 'No algorithm.',
+    subline: 'Just you.'
+  },
+  {
+    id: 'playful-aux',
+    primary: 'The aux is yours.',
+    subline: ''
+  }
+]
+
+const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
+  {
+    startMinute: 0,
+    endMinute: 180,
+    messages: [
+      {
+        id: 'late-still-up',
+        primary: 'Still up?',
+        subline: 'Astra never sleeps either.'
+      },
+      {
+        id: 'late-same',
+        primary: 'Late night?',
+        subline: 'Same.'
+      }
+    ]
+  },
+  {
+    startMinute: 180,
+    endMinute: 300,
+    messages: [
+      {
+        id: 'late-same',
+        primary: 'Late night?',
+        subline: 'Same.'
+      },
+      {
+        id: 'late-still-up',
+        primary: 'Still up?',
+        subline: 'Astra never sleeps either.'
+      }
+    ]
+  },
+  {
+    startMinute: 300,
+    endMinute: 420,
+    messages: [
+      {
+        id: 'morning-easy',
+        primary: 'Morning.',
+        subline: "Let's start easy."
+      }
+    ]
+  },
+  {
+    startMinute: 420,
+    endMinute: 660,
+    messages: [
+      {
+        id: 'morning-good',
+        primary: 'Good morning.',
+        subline: ''
+      },
+      {
+        id: 'morning-easy',
+        primary: 'Morning.',
+        subline: "Let's start easy."
+      }
+    ]
+  },
+  {
+    startMinute: 660,
+    endMinute: 720,
+    messages: [
+      {
+        id: 'late-morning',
+        primary: 'Late morning.',
+        subline: 'Ease into it.'
+      }
+    ]
+  },
+  {
+    startMinute: 720,
+    endMinute: 840,
+    messages: [
+      {
+        id: 'afternoon-halfway',
+        primary: 'Good afternoon.',
+        subline: 'Halfway there.'
+      }
+    ]
+  },
+  {
+    startMinute: 840,
+    endMinute: 1020,
+    messages: [
+      {
+        id: 'afternoon-stretch',
+        primary: 'Afternoon stretch.',
+        subline: 'One more push.'
+      }
+    ]
+  },
+  {
+    startMinute: 1020,
+    endMinute: 1080,
+    messages: [
+      {
+        id: 'sunset-switch',
+        primary: 'Sunset switch.',
+        subline: 'Set the evening tone.'
+      }
+    ]
+  },
+  {
+    startMinute: 1080,
+    endMinute: 1380,
+    messages: [
+      {
+        id: 'evening-night',
+        primary: 'Good evening.',
+        subline: 'The night is yours.'
+      }
+    ]
+  },
+  {
+    startMinute: 1380,
+    endMinute: 1440,
+    messages: [
+      {
+        id: 'late-same',
+        primary: 'Late night?',
+        subline: 'Same.'
+      },
+      {
+        id: 'late-still-up',
+        primary: 'Still up?',
+        subline: 'Astra never sleeps either.'
+      }
+    ]
+  }
+]
+
 function formatDuration(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return '--:--'
   const mins = Math.floor(seconds / 60)
@@ -46,6 +300,354 @@ function formatDuration(seconds: number): string {
 
 function artistInitial(artist: string): string {
   return artist.trim().charAt(0).toUpperCase() || '?'
+}
+
+function normalizeDisplay(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeKey(value: string): string {
+  return normalizeDisplay(value).toLocaleLowerCase()
+}
+
+function normalizeAlbumName(album: string): string {
+  const normalized = normalizeDisplay(album)
+  return normalized || 'Unknown Album'
+}
+
+function splitCollaborators(rawArtist: string): string[] {
+  const normalized = normalizeDisplay(rawArtist)
+  if (!normalized) return []
+
+  const unified = normalized
+    .replace(/\s*;\s*/g, ',')
+    .replace(/\s+&\s+/g, ',')
+    .replace(/\s+[x×]\s+/gi, ',')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/gi, ',')
+
+  const unique = new Map<string, string>()
+  for (const part of unified.split(',')) {
+    const display = normalizeDisplay(part)
+    if (!display) continue
+    const key = normalizeKey(display)
+    if (!key || unique.has(key)) continue
+    unique.set(key, display)
+  }
+
+  return Array.from(unique.values())
+}
+
+function getPrimaryArtist(trackArtist: string): string {
+  const contributors = splitCollaborators(trackArtist)
+  return contributors[0] ?? 'Unknown Artist'
+}
+
+function getAlbumIdentityArtist(track: Pick<HomeTrack, 'artist' | 'album_artist'>): string {
+  const albumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (albumArtist) return albumArtist
+  return getPrimaryArtist(track.artist)
+}
+
+function buildAlbumKey(album: string, artist: string): string {
+  const normalizedArtist = normalizeDisplay(artist) || 'Unknown Artist'
+  return `${normalizeKey(normalizeAlbumName(album))}::${normalizeKey(normalizedArtist)}`
+}
+
+function getTimeBucket(date: Date): TimeBucket {
+  const hour = date.getHours()
+  if (hour >= 5 && hour <= 11) return 'morning'
+  if (hour >= 12 && hour <= 17) return 'afternoon'
+  if (hour >= 18 && hour <= 22) return 'evening'
+  return 'late-night'
+}
+
+function getDayAwareGreetings(date: Date): GreetingCopy[] {
+  const messages: GreetingCopy[] = []
+  const day = date.getDay()
+  if (day === 1) {
+    messages.push({
+      id: 'day-monday',
+      primary: 'Monday.',
+      subline: "Let's fix that."
+    })
+  }
+  if (day === 3) {
+    messages.push({
+      id: 'day-wednesday',
+      primary: "It's Wednesday somehow.",
+      subline: ''
+    })
+  }
+  if (day === 5) {
+    messages.push({
+      id: 'day-friday',
+      primary: "It's Friday.",
+      subline: 'You made it.'
+    })
+  }
+  if (day === 0) {
+    messages.push({
+      id: 'day-sunday',
+      primary: 'Sunday already?',
+      subline: 'Put something good on.'
+    })
+  }
+
+  return messages
+}
+
+function getMinutesOfDay(date: Date): number {
+  return date.getHours() * 60 + date.getMinutes()
+}
+
+function getTimeAwareGreetings(date: Date): GreetingCopy[] {
+  const minuteOfDay = getMinutesOfDay(date)
+  const window = TIME_AWARE_GREETINGS.find(
+    (entry) => minuteOfDay >= entry.startMinute && minuteOfDay < entry.endMinute
+  )
+  return window?.messages ?? []
+}
+
+function getMinuteStamp(date: Date): number {
+  return Math.floor(date.getTime() / 60000)
+}
+
+function pickRandomGreeting(messages: GreetingCopy[], previousId: string | null): GreetingCopy {
+  if (messages.length === 0) return PLAYFUL_GREETINGS[0]
+  if (messages.length === 1) return messages[0]
+
+  const filtered = previousId ? messages.filter((message) => message.id !== previousId) : messages
+  const candidates = filtered.length > 0 ? filtered : messages
+  const index = Math.floor(Math.random() * candidates.length)
+  return candidates[index]
+}
+
+function pickWeightedGreetingPool(pools: WeightedGreetingPool[]): WeightedGreetingPool {
+  if (pools.length === 1) return pools[0]
+  const totalWeight = pools.reduce((sum, pool) => sum + pool.weight, 0)
+  if (totalWeight <= 0) return pools[0]
+
+  let threshold = Math.random() * totalWeight
+  for (const pool of pools) {
+    threshold -= pool.weight
+    if (threshold <= 0) return pool
+  }
+  return pools[pools.length - 1]
+}
+
+function chooseGreeting(previousId: string | null, now: Date): GreetingSelection {
+  const bucket = getTimeBucket(now)
+  const timeAware = getTimeAwareGreetings(now)
+  const dayAware = getDayAwareGreetings(now)
+  const playful = [...PLAYFUL_GREETINGS]
+
+  const pools: WeightedGreetingPool[] = []
+  if (timeAware.length > 0) {
+    pools.push({ messages: timeAware, weight: 0.68 })
+  }
+  if (dayAware.length > 0) {
+    pools.push({ messages: dayAware, weight: 0.2 })
+  }
+  if (playful.length > 0) {
+    pools.push({ messages: playful, weight: 0.12 })
+  }
+
+  const fallbackMessages = timeAware.length > 0 ? timeAware : dayAware.length > 0 ? dayAware : playful
+  if (pools.length === 0) {
+    pools.push({ messages: fallbackMessages, weight: 1 })
+  }
+
+  // First render should feel situational before playful/day variants rotate in.
+  if (previousId === null && timeAware.length > 0) {
+    const initialGreeting = pickRandomGreeting(timeAware, null)
+    return {
+      id: initialGreeting.id,
+      primary: initialGreeting.primary,
+      subline: initialGreeting.subline,
+      bucket
+    }
+  }
+
+  const selectedPool = pickWeightedGreetingPool(pools)
+  let greeting = pickRandomGreeting(selectedPool.messages, previousId)
+  if (previousId && greeting.id === previousId) {
+    const alternatives = pools
+      .flatMap((pool) => pool.messages)
+      .filter((candidate) => candidate.id !== previousId)
+    if (alternatives.length > 0) {
+      greeting = pickRandomGreeting(alternatives, previousId)
+    }
+  }
+
+  return {
+    id: greeting.id,
+    primary: greeting.primary,
+    subline: greeting.subline,
+    bucket
+  }
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t
+}
+
+function smoothStep(t: number): number {
+  return t * t * (3 - 2 * t)
+}
+
+function lerpColor(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number
+): [number, number, number] {
+  return [
+    Math.round(lerp(a[0], b[0], t)),
+    Math.round(lerp(a[1], b[1], t)),
+    Math.round(lerp(a[2], b[2], t))
+  ]
+}
+
+function getAdaptivePalette(date: Date): BucketPalette {
+  const hour = date.getHours() + date.getMinutes() / 60
+
+  for (let i = 0; i < SKY_COLOR_KEYFRAMES.length - 1; i++) {
+    const current = SKY_COLOR_KEYFRAMES[i]
+    const next = SKY_COLOR_KEYFRAMES[i + 1]
+
+    if (hour < current.hour || hour > next.hour) continue
+
+    const segmentLength = next.hour - current.hour
+    const rawT = segmentLength <= 0 ? 0 : (hour - current.hour) / segmentLength
+    const t = smoothStep(Math.max(0, Math.min(rawT, 1)))
+
+    return {
+      top: lerpColor(current.top, next.top, t),
+      mid: lerpColor(current.mid, next.mid, t),
+      bottom: lerpColor(current.bottom, next.bottom, t),
+      starOpacity: lerp(current.stars, next.stars, t) * STAR_OPACITY_SCALE
+    }
+  }
+
+  const fallback = SKY_COLOR_KEYFRAMES[0]
+  return {
+    top: fallback.top,
+    mid: fallback.mid,
+    bottom: fallback.bottom,
+    starOpacity: fallback.stars * STAR_OPACITY_SCALE
+  }
+}
+
+function drawPixelSky(
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  palette: BucketPalette
+): void {
+  const lowWidth = Math.max(1, Math.ceil(width / SKY_PIXEL_SCALE))
+  const lowHeight = Math.max(1, Math.ceil(height / SKY_PIXEL_SCALE))
+
+  if (canvas.width !== lowWidth || canvas.height !== lowHeight) {
+    canvas.width = lowWidth
+    canvas.height = lowHeight
+  }
+
+  const imageData = context.createImageData(lowWidth, lowHeight)
+  const data = imageData.data
+
+  for (let y = 0; y < lowHeight; y++) {
+    const t = lowHeight <= 1 ? 0 : y / (lowHeight - 1)
+    const tCurved = Math.pow(t, 0.7)
+
+    let rgb: [number, number, number]
+    if (tCurved < 0.3) {
+      rgb = lerpColor(palette.top, palette.mid, tCurved / 0.3)
+    } else {
+      const bottomBlend = Math.pow((tCurved - 0.3) / 0.7, 1.6)
+      rgb = lerpColor(palette.mid, palette.bottom, Math.min(bottomBlend, 1))
+    }
+
+    for (let x = 0; x < lowWidth; x++) {
+      const index = (y * lowWidth + x) * 4
+      data[index] = rgb[0]
+      data[index + 1] = rgb[1]
+      data[index + 2] = rgb[2]
+      data[index + 3] = 255
+    }
+  }
+
+  context.putImageData(imageData, 0, 0)
+}
+
+function createStarField(width: number, height: number): StarField {
+  const columns = Math.max(1, Math.ceil(width / STAR_GRID_SIZE))
+  const rows = Math.max(1, Math.ceil((height * 0.8) / STAR_GRID_SIZE))
+  const starCount = Math.max(24, Math.min(120, Math.round(columns * rows * 0.035)))
+  const clusterCount = Math.max(6, Math.min(24, Math.round(starCount * STAR_CLUSTER_RATIO)))
+
+  const stars: PixelStar[] = Array.from({ length: starCount }, () => ({
+    gx: Math.floor(Math.random() * columns),
+    gy: Math.floor(Math.random() * rows),
+    phase: Math.random() * Math.PI * 2,
+    freq: 0.24 + Math.random() * 0.48,
+    bright: 0.48 + Math.random() * 0.52,
+    cross: Math.random() > 0.82
+  }))
+
+  const clusters: PixelCluster[] = Array.from({ length: clusterCount }, () => ({
+    gx: Math.floor(Math.random() * columns),
+    gy: Math.floor(Math.random() * rows)
+  }))
+
+  return { stars, clusters }
+}
+
+function drawStarField(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  starField: StarField,
+  opacity: number,
+  timestamp: number
+): void {
+  context.clearRect(0, 0, width, height)
+  if (opacity <= 0.01) return
+
+  for (const cluster of starField.clusters) {
+    const clusterOpacity = opacity * 0.065
+    context.fillStyle = `rgba(200, 210, 232, ${clusterOpacity})`
+    for (let dx = 0; dx < 3; dx++) {
+      for (let dy = 0; dy < 2; dy++) {
+        context.fillRect(
+          (cluster.gx + dx) * STAR_GRID_SIZE,
+          (cluster.gy + dy) * STAR_GRID_SIZE,
+          STAR_PIXEL_SIZE,
+          STAR_PIXEL_SIZE
+        )
+      }
+    }
+  }
+
+  const now = timestamp / 1000
+  for (const star of starField.stars) {
+    const raw = 0.5 + 0.5 * Math.sin(now * star.freq + star.phase)
+    const level = Math.floor(raw * 4) / 4
+    const alpha = opacity * star.bright * (0.34 + 0.66 * level)
+
+    const x = star.gx * STAR_GRID_SIZE
+    const y = star.gy * STAR_GRID_SIZE
+
+    context.fillStyle = `rgba(222, 230, 244, ${alpha})`
+    context.fillRect(x, y, STAR_PIXEL_SIZE, STAR_PIXEL_SIZE)
+
+    if (star.cross && level > 0.5) {
+      const dim = alpha * 0.34
+      context.fillStyle = `rgba(222, 230, 244, ${dim})`
+      context.fillRect(x - STAR_PIXEL_SIZE, y, STAR_PIXEL_SIZE, STAR_PIXEL_SIZE)
+      context.fillRect(x + STAR_PIXEL_SIZE, y, STAR_PIXEL_SIZE, STAR_PIXEL_SIZE)
+      context.fillRect(x, y - STAR_PIXEL_SIZE, STAR_PIXEL_SIZE, STAR_PIXEL_SIZE)
+    }
+  }
 }
 
 export default function HomeView() {
@@ -62,67 +664,294 @@ export default function HomeView() {
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const play = usePlayerStore((s) => s.play)
   const setQueue = usePlayerStore((s) => s.setQueue)
-  const { playlists, loadPlaylists, createPlaylist } = usePlaylistStore()
-  const { setActiveView } = useUIStore()
+  const playlists = usePlaylistStore((s) => s.playlists)
+  const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
+  const createPlaylist = usePlaylistStore((s) => s.createPlaylist)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
+  const setActiveView = useUIStore((s) => s.setActiveView)
 
   const [showCreateInput, setShowCreateInput] = useState(false)
+  const [showAllPlaylists, setShowAllPlaylists] = useState(false)
   const [newPlaylistName, setNewPlaylistName] = useState('')
+  const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
+  const greetingCardRef = useRef<HTMLElement | null>(null)
+  const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const hasLibraryContent = tracks.length > 0 || albums.length > 0 || artists.length > 0
 
   useEffect(() => {
-    loadPlaylists()
+    void loadPlaylists()
   }, [loadPlaylists])
 
-  const recentTracks = useMemo(() => recentlyPlayed.slice(0, 8), [recentlyPlayed])
-  const favoritePreview = useMemo(() => favoriteTracks.slice(0, 10), [favoriteTracks])
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const now = new Date()
+      setGreeting((current) => chooseGreeting(current.id, now))
+    }, GREETING_ROTATION_MS)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    if (playlists.length <= PLAYLIST_LIMIT) {
+      setShowAllPlaylists(false)
+    }
+  }, [playlists.length])
+
+  useEffect(() => {
+    if (!hasLibraryContent) return
+
+    const card = greetingCardRef.current
+    const skyCanvas = skyCanvasRef.current
+    const starCanvas = starCanvasRef.current
+    if (!card || !skyCanvas || !starCanvas) return
+
+    const skyContext = skyCanvas.getContext('2d')
+    const starContext = starCanvas.getContext('2d')
+    if (!skyContext || !starContext) return
+
+    let width = 0
+    let height = 0
+    let starField: StarField = createStarField(1, 1)
+    let rafId: number | null = null
+    let lastSkyMinute = -1
+    let isActive = true
+    let currentPalette = getAdaptivePalette(new Date())
+
+    const applyCardTint = (palette: BucketPalette) => {
+      card.style.setProperty(
+        '--home-greeting-top-color',
+        `rgba(${palette.top[0]}, ${palette.top[1]}, ${palette.top[2]}, 0.62)`
+      )
+    }
+
+    const syncCanvasDimensions = () => {
+      const rect = card.getBoundingClientRect()
+      const nextWidth = Math.max(1, Math.floor(rect.width))
+      const nextHeight = Math.max(1, Math.floor(rect.height))
+      if (nextWidth === width && nextHeight === height) return
+
+      width = nextWidth
+      height = nextHeight
+      starField = createStarField(width, height)
+
+      skyCanvas.style.width = `${width}px`
+      skyCanvas.style.height = `${height}px`
+      starCanvas.style.width = `${width}px`
+      starCanvas.style.height = `${height}px`
+      starCanvas.width = width
+      starCanvas.height = height
+
+      drawPixelSky(skyCanvas, skyContext, width, height, currentPalette)
+      applyCardTint(currentPalette)
+      lastSkyMinute = getMinuteStamp(new Date())
+    }
+
+    const syncPaletteFromNow = (now: Date) => {
+      currentPalette = getAdaptivePalette(now)
+      drawPixelSky(skyCanvas, skyContext, width, height, currentPalette)
+      applyCardTint(currentPalette)
+      lastSkyMinute = getMinuteStamp(now)
+    }
+
+    const syncClockState = (forceGreeting = false) => {
+      const now = new Date()
+      const currentMinute = getMinuteStamp(now)
+      const minuteChanged = currentMinute !== lastSkyMinute
+
+      if (minuteChanged) {
+        syncPaletteFromNow(now)
+      }
+      if (forceGreeting) {
+        setGreeting((current) => chooseGreeting(current.id, now))
+      }
+    }
+
+    const drawFrame = (timestamp: number) => {
+      if (!isActive) return
+
+      syncClockState()
+
+      drawStarField(starContext, width, height, starField, currentPalette.starOpacity, timestamp)
+      rafId = window.requestAnimationFrame(drawFrame)
+    }
+
+    const startAnimation = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(drawFrame)
+    }
+
+    const stopAnimation = () => {
+      if (rafId === null) return
+      window.cancelAnimationFrame(rafId)
+      rafId = null
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopAnimation()
+        return
+      }
+      lastSkyMinute = -1
+      syncClockState()
+      startAnimation()
+    }
+
+    const resizeObserver = new ResizeObserver(() => syncCanvasDimensions())
+    resizeObserver.observe(card)
+
+    syncCanvasDimensions()
+    syncClockState()
+    startAnimation()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      isActive = false
+      stopAnimation()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      resizeObserver.disconnect()
+    }
+  }, [hasLibraryContent])
+
+  const artistByKey = useMemo(() => {
+    const map = new Map<string, HomeArtist>()
+    for (const artist of artists) {
+      const key = normalizeKey(artist.artist)
+      if (!key || map.has(key)) continue
+      map.set(key, artist)
+    }
+    return map
+  }, [artists])
+
+  const albumByKey = useMemo(() => {
+    const map = new Map<string, HomeAlbum>()
+    for (const album of albums) {
+      const key = buildAlbumKey(album.album, album.artist)
+      if (map.has(key)) continue
+      map.set(key, album)
+    }
+    return map
+  }, [albums])
+
+  const recentTracks = useMemo(() => {
+    const seenTrackPaths = new Set<string>()
+    const uniqueTracks: HomeTrack[] = []
+    for (const track of recentlyPlayed) {
+      if (seenTrackPaths.has(track.path)) continue
+      seenTrackPaths.add(track.path)
+      uniqueTracks.push(track)
+      if (uniqueTracks.length >= RECENT_TRACK_LIMIT) break
+    }
+    return uniqueTracks
+  }, [recentlyPlayed])
+
+  const recentArtists = useMemo(() => {
+    const seenArtistKeys = new Set<string>()
+    const uniqueArtists: HomeArtist[] = []
+
+    for (const track of recentlyPlayed) {
+      const contributors = splitCollaborators(track.artist)
+      const candidates = contributors.length > 0 ? contributors : ['Unknown Artist']
+
+      for (const contributor of candidates) {
+        const key = normalizeKey(contributor)
+        if (!key || seenArtistKeys.has(key)) continue
+        seenArtistKeys.add(key)
+
+        const metadata = artistByKey.get(key)
+        uniqueArtists.push({
+          artist: metadata?.artist ?? contributor,
+          track_count: metadata?.track_count ?? 0,
+          artwork_hash: metadata?.artwork_hash ?? track.artwork_hash
+        })
+
+        if (uniqueArtists.length >= RECENT_ARTIST_LIMIT) {
+          return uniqueArtists
+        }
+      }
+    }
+
+    return uniqueArtists
+  }, [recentlyPlayed, artistByKey])
+
+  const recentAlbums = useMemo(() => {
+    const seenAlbumKeys = new Set<string>()
+    const uniqueAlbums: HomeAlbum[] = []
+
+    for (const track of recentlyPlayed) {
+      const identityArtist = getAlbumIdentityArtist(track)
+      const albumKey = buildAlbumKey(track.album, identityArtist)
+      if (seenAlbumKeys.has(albumKey)) continue
+      seenAlbumKeys.add(albumKey)
+
+      const metadata = albumByKey.get(albumKey)
+      uniqueAlbums.push({
+        album: metadata?.album ?? normalizeAlbumName(track.album),
+        artist: metadata?.artist ?? identityArtist,
+        year: metadata?.year ?? null,
+        artwork_hash: metadata?.artwork_hash ?? track.artwork_hash,
+        track_count: metadata?.track_count ?? 0
+      })
+
+      if (uniqueAlbums.length >= RECENT_ALBUM_LIMIT) break
+    }
+
+    return uniqueAlbums
+  }, [recentlyPlayed, albumByKey])
+
+  const favoritePreview = useMemo(() => favoriteTracks.slice(0, FAVORITE_LIMIT), [favoriteTracks])
+  const visiblePlaylists = useMemo(
+    () => (showAllPlaylists ? playlists : playlists.slice(0, PLAYLIST_LIMIT)),
+    [playlists, showAllPlaylists]
+  )
 
   const handlePlayTrack = async (track: HomeTrack) => {
     const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
-    if (result) {
-      const t: Track = {
-        id: track.path,
-        path: track.path,
-        title: result.metadata?.title ?? track.title,
-        artist: result.metadata?.artist ?? track.artist,
-        album: result.metadata?.album ?? track.album,
-        duration: result.metadata?.duration ?? track.duration,
-        format: track.format,
-        artworkData: result.metadata?.artwork,
-        artworkHash: track.artwork_hash ?? undefined,
-        sampleRate: track.sample_rate ?? undefined,
-        bitDepth: track.bit_depth ?? undefined,
-        bitrate: track.bitrate ?? undefined,
-        channels: result.metadata?.channels ?? track.channels ?? undefined,
-        codec: result.metadata?.codec ?? track.codec ?? undefined,
-        codecProfile: result.metadata?.codecProfile ?? track.codec_profile ?? undefined,
-        isAtmosJoc: result.metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1)
-      }
-      const loaded = await loadTrack(t, result.data)
-      if (loaded) {
-        await play()
-      }
+    if (!result) return
+
+    const playerTrack: Track = {
+      id: track.path,
+      path: track.path,
+      title: result.metadata?.title ?? track.title,
+      artist: result.metadata?.artist ?? track.artist,
+      album: result.metadata?.album ?? track.album,
+      duration: result.metadata?.duration ?? track.duration,
+      format: track.format,
+      artworkData: result.metadata?.artwork,
+      artworkHash: track.artwork_hash ?? undefined,
+      sampleRate: track.sample_rate ?? undefined,
+      bitDepth: track.bit_depth ?? undefined,
+      bitrate: track.bitrate ?? undefined,
+      channels: result.metadata?.channels ?? track.channels ?? undefined,
+      codec: result.metadata?.codec ?? track.codec ?? undefined,
+      codecProfile: result.metadata?.codecProfile ?? track.codec_profile ?? undefined,
+      isAtmosJoc: result.metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1)
+    }
+
+    const loaded = await loadTrack(playerTrack, result.data)
+    if (loaded) {
+      await play()
     }
   }
 
   const handlePlayRecentList = async (track: HomeTrack, index: number) => {
-    // Set queue from recent tracks and play selected
-    const queueTracks: Track[] = recentTracks.map((t) => ({
-      id: t.path,
-      path: t.path,
-      title: t.title,
-      artist: t.artist,
-      album: t.album,
-      duration: t.duration,
-      format: t.format,
-      artworkHash: t.artwork_hash ?? undefined,
-      sampleRate: t.sample_rate ?? undefined,
-      bitDepth: t.bit_depth ?? undefined,
-      bitrate: t.bitrate ?? undefined,
-      channels: t.channels ?? undefined,
-      codec: t.codec ?? undefined,
-      codecProfile: t.codec_profile ?? undefined,
-      isAtmosJoc: t.is_atmos_joc === 1
+    const queueTracks: Track[] = recentTracks.map((recentTrack) => ({
+      id: recentTrack.path,
+      path: recentTrack.path,
+      title: recentTrack.title,
+      artist: recentTrack.artist,
+      album: recentTrack.album,
+      duration: recentTrack.duration,
+      format: recentTrack.format,
+      artworkHash: recentTrack.artwork_hash ?? undefined,
+      sampleRate: recentTrack.sample_rate ?? undefined,
+      bitDepth: recentTrack.bit_depth ?? undefined,
+      bitrate: recentTrack.bitrate ?? undefined,
+      channels: recentTrack.channels ?? undefined,
+      codec: recentTrack.codec ?? undefined,
+      codecProfile: recentTrack.codec_profile ?? undefined,
+      isAtmosJoc: recentTrack.is_atmos_joc === 1
     }))
+
     setQueue(queueTracks, index)
     await handlePlayTrack(track)
   }
@@ -152,7 +981,17 @@ export default function HomeView() {
     setActiveView('library')
   }
 
-  if (tracks.length === 0 && albums.length === 0 && artists.length === 0) {
+  const handleOpenArtistsLibrary = () => {
+    setLibraryViewMode('artists')
+    setActiveView('library')
+  }
+
+  const handleOpenAlbumsLibrary = () => {
+    setLibraryViewMode('albums')
+    setActiveView('library')
+  }
+
+  if (!hasLibraryContent) {
     return (
       <div className="home-view">
         <div className="home-placeholder">
@@ -174,17 +1013,40 @@ export default function HomeView() {
   return (
     <div className="home-view">
       <div className="home-content">
+        <section ref={greetingCardRef} className={`home-greeting-card is-${greeting.bucket}`}>
+          <canvas ref={skyCanvasRef} className="home-greeting-sky-canvas" aria-hidden="true" />
+          <canvas ref={starCanvasRef} className="home-greeting-star-canvas" aria-hidden="true" />
+          <div className="home-greeting-content">
+            <h1 className="home-greeting-message">{greeting.primary}</h1>
+            {greeting.subline.trim().length > 0 && <p className="home-greeting-subline">{greeting.subline}</p>}
+          </div>
+          <div className="home-greeting-stats">
+            <div className="home-greeting-stat">
+              <span className="home-greeting-stat-label">Tracks</span>
+              <span className="home-greeting-stat-value">{tracks.length}</span>
+            </div>
+            <div className="home-greeting-stat">
+              <span className="home-greeting-stat-label">Albums</span>
+              <span className="home-greeting-stat-value">{albums.length}</span>
+            </div>
+            <div className="home-greeting-stat">
+              <span className="home-greeting-stat-label">Artists</span>
+              <span className="home-greeting-stat-value">{artists.length}</span>
+            </div>
+          </div>
+        </section>
+
         <section className="home-section">
           <div className="home-section-header">
             <h2>RECENTLY PLAYED</h2>
           </div>
           {recentTracks.length > 0 ? (
             <div className="home-recent-row">
-              {recentTracks.map((track, i) => (
+              {recentTracks.map((track, index) => (
                 <article
-                  key={`${track.path}-${i}`}
+                  key={track.path}
                   className={`home-track-card ${currentTrackPath === track.path ? 'active' : ''}`}
-                  onClick={() => handlePlayRecentList(track, i)}
+                  onClick={() => handlePlayRecentList(track, index)}
                 >
                   <div className="home-track-artwork">
                     {track.artwork_hash ? (
@@ -207,6 +1069,80 @@ export default function HomeView() {
 
         <section className="home-section">
           <div className="home-section-header">
+            <h2>RECENT ARTISTS</h2>
+            <div className="home-section-actions">
+              <button className="home-section-link-btn" onClick={handleOpenArtistsLibrary}>
+                Open Library
+              </button>
+            </div>
+          </div>
+          {recentArtists.length > 0 ? (
+            <div className="home-artist-grid">
+              {recentArtists.map((artist) => (
+                <div
+                  key={artist.artist}
+                  className="home-artist-chip"
+                  onClick={() => handleOpenArtist(artist.artist)}
+                >
+                  <div className="home-artist-avatar">
+                    {artist.artwork_hash ? (
+                      <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="home-artist-artwork" />
+                    ) : (
+                      artistInitial(artist.artist)
+                    )}
+                  </div>
+                  <div className="home-artist-name">{artist.artist}</div>
+                  <div className="home-artist-count">
+                    {artist.track_count > 0 ? `${artist.track_count} tracks` : 'Recent play'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="home-empty-strip">No recent artists yet. Play a few tracks first.</div>
+          )}
+        </section>
+
+        <section className="home-section">
+          <div className="home-section-header">
+            <h2>RECENT ALBUMS</h2>
+            <div className="home-section-actions">
+              <button className="home-section-link-btn" onClick={handleOpenAlbumsLibrary}>
+                Open Library
+              </button>
+            </div>
+          </div>
+          {recentAlbums.length > 0 ? (
+            <div className="home-album-grid">
+              {recentAlbums.map((album) => (
+                <article
+                  key={`${album.album}-${album.artist}`}
+                  className="home-album-card"
+                  onClick={() => handleOpenAlbum(album)}
+                >
+                  <div className="home-album-artwork">
+                    {album.artwork_hash ? (
+                      <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
+                    ) : (
+                      <span>&#9835;</span>
+                    )}
+                  </div>
+                  <div className="home-album-title">{album.album}</div>
+                  <div className="home-album-artist">{album.artist}</div>
+                  <div className="home-album-meta">
+                    {album.track_count > 0 ? `${album.track_count} tracks` : 'Recent play'}
+                    {album.year ? ` \u00b7 ${album.year}` : ''}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="home-empty-strip">No recent albums yet. Your latest albums will appear here.</div>
+          )}
+        </section>
+
+        <section className="home-section">
+          <div className="home-section-header">
             <h2>FAVORITES</h2>
           </div>
           {favoritePreview.length > 0 ? (
@@ -219,11 +1155,14 @@ export default function HomeView() {
                 >
                   <button
                     className="home-favorite-heart active"
-                    onClick={(e) => { e.stopPropagation(); toggleFavorite(track.path) }}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void toggleFavorite(track.path)
+                    }}
                     title="Remove from favorites"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                     </svg>
                   </button>
                   <div className="home-favorite-main">
@@ -244,80 +1183,26 @@ export default function HomeView() {
 
         <section className="home-section">
           <div className="home-section-header">
-            <h2>ARTISTS</h2>
-          </div>
-          {artists.length > 0 ? (
-            <div className="home-artist-grid">
-              {artists.map((artist) => (
-                <div
-                  key={artist.artist}
-                  className="home-artist-chip"
-                  onClick={() => handleOpenArtist(artist.artist)}
-                >
-                  <div className="home-artist-avatar">
-                    {artist.artwork_hash ? (
-                      <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="home-artist-artwork" />
-                    ) : (
-                      artistInitial(artist.artist)
-                    )}
-                  </div>
-                  <div className="home-artist-name">{artist.artist}</div>
-                  <div className="home-artist-count">{artist.track_count} tracks</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="home-empty-strip">No artists found.</div>
-          )}
-        </section>
-
-        <section className="home-section">
-          <div className="home-section-header">
-            <h2>ALBUMS</h2>
-          </div>
-          {albums.length > 0 ? (
-            <div className="home-album-grid">
-              {albums.map((album) => (
-                <article
-                  key={`${album.album}-${album.artist}`}
-                  className="home-album-card"
-                  onClick={() => handleOpenAlbum(album)}
-                >
-                  <div className="home-album-artwork">
-                    {album.artwork_hash ? (
-                      <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
-                    ) : (
-                      <span>&#9835;</span>
-                    )}
-                  </div>
-                  <div className="home-album-title">{album.album}</div>
-                  <div className="home-album-artist">{album.artist}</div>
-                  <div className="home-album-meta">
-                    {album.track_count} tracks
-                    {album.year ? ` \u00b7 ${album.year}` : ''}
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="home-empty-strip">No albums found.</div>
-          )}
-        </section>
-
-        <section className="home-section">
-          <div className="home-section-header">
             <h2>PLAYLISTS</h2>
-            <button
-              className="home-create-playlist-btn"
-              onClick={() => setShowCreateInput(!showCreateInput)}
-              title="Create playlist"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </button>
+            <div className="home-section-actions">
+              {playlists.length > PLAYLIST_LIMIT && (
+                <button className="home-playlist-toggle-btn" onClick={() => setShowAllPlaylists((value) => !value)}>
+                  {showAllPlaylists ? 'Show recent' : `Show all (${playlists.length})`}
+                </button>
+              )}
+              <button
+                className="home-create-playlist-btn"
+                onClick={() => setShowCreateInput((value) => !value)}
+                title="Create playlist"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+            </div>
           </div>
+
           {showCreateInput && (
             <div className="home-create-playlist-form">
               <input
@@ -325,22 +1210,26 @@ export default function HomeView() {
                 className="home-create-playlist-input"
                 placeholder="Playlist name..."
                 value={newPlaylistName}
-                onChange={(e) => setNewPlaylistName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleCreatePlaylist(); if (e.key === 'Escape') setShowCreateInput(false) }}
+                onChange={(event) => setNewPlaylistName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void handleCreatePlaylist()
+                  if (event.key === 'Escape') setShowCreateInput(false)
+                }}
                 autoFocus
               />
-              <button className="home-create-playlist-confirm" onClick={handleCreatePlaylist}>
+              <button className="home-create-playlist-confirm" onClick={() => void handleCreatePlaylist()}>
                 Create
               </button>
             </div>
           )}
-          {playlists.length > 0 ? (
+
+          {visiblePlaylists.length > 0 ? (
             <div className="home-playlist-grid">
-              {playlists.map((playlist) => (
+              {visiblePlaylists.map((playlist) => (
                 <div
                   key={playlist.id}
                   className="home-playlist-card"
-                  onClick={() => handleOpenPlaylist(playlist.id)}
+                  onClick={() => void handleOpenPlaylist(playlist.id)}
                 >
                   <div className="home-playlist-icon">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -358,9 +1247,7 @@ export default function HomeView() {
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">
-              {showCreateInput ? '' : 'No playlists yet. Click + to create one.'}
-            </div>
+            <div className="home-empty-strip">{showCreateInput ? '' : 'No playlists yet. Click + to create one.'}</div>
           )}
         </section>
       </div>
