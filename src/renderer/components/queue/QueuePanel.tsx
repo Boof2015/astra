@@ -1,64 +1,401 @@
-import { useState, useRef } from 'react'
+import {
+  CSSProperties,
+  DragEvent,
+  memo,
+  MouseEvent,
+  ReactElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
+import { List, RowComponentProps } from 'react-window'
 import { usePlayerStore } from '../../stores/playerStore'
+import { Track } from '../../types/audio'
+
+interface QueueSectionRow {
+  kind: 'section'
+  key: string
+  label: string
+  showShuffled?: boolean
+  faded?: boolean
+}
+
+interface QueueTrackRow {
+  kind: 'track'
+  key: string
+  track: Track
+  variant: 'current' | 'upcoming' | 'previous'
+  actualQueueIndex: number | null
+  dragIndex: number | null
+  draggable: boolean
+  removable: boolean
+}
+
+type QueueVirtualRow = QueueSectionRow | QueueTrackRow
+
+interface QueueRowSharedProps {
+  rows: QueueVirtualRow[]
+  dragOverIndex: number | null
+  formatDuration: (seconds: number) => string
+  onDragStart: (event: DragEvent<HTMLDivElement>, index: number) => void
+  onDragOver: (event: DragEvent<HTMLDivElement>, index: number) => void
+  onDragEnd: () => void
+  onDragLeave: () => void
+  onPlayTrackAt: (index: number) => void
+  onRemoveFromQueue: (event: MouseEvent<HTMLButtonElement>, index: number) => void
+}
+
+const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
+const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
+const QUEUE_LIST_OVERSCAN_COUNT = 8
+
+function parseCssPixelValue(value: string, fallback: number): number {
+  const parsed = Number.parseFloat(value.trim())
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.round(parsed)
+}
+
+function resolveQueueRowHeights(element: HTMLElement | null): { itemRowHeight: number; sectionRowHeight: number } {
+  if (!element) {
+    return {
+      itemRowHeight: QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX,
+      sectionRowHeight: QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX
+    }
+  }
+
+  const styles = getComputedStyle(element)
+  return {
+    itemRowHeight: parseCssPixelValue(
+      styles.getPropertyValue('--queue-item-row-height'),
+      QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX
+    ),
+    sectionRowHeight: parseCssPixelValue(
+      styles.getPropertyValue('--queue-section-row-height'),
+      QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX
+    )
+  }
+}
+
+function QueueRowRenderer({
+  ariaAttributes,
+  index,
+  style,
+  rows,
+  dragOverIndex,
+  formatDuration,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  onDragLeave,
+  onPlayTrackAt,
+  onRemoveFromQueue
+}: RowComponentProps<QueueRowSharedProps>): ReactElement | null {
+  const row = rows[index]
+  if (!row) return null
+
+  if (row.kind === 'section') {
+    return (
+      <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
+        <div className={`queue-section-title ${row.faded ? 'queue-section-title-faded' : ''}`}>
+          {row.label}
+          {row.showShuffled && <span className="queue-section-shuffled">Shuffled</span>}
+        </div>
+      </div>
+    )
+  }
+
+  const isDragOver = row.dragIndex !== null && dragOverIndex === row.dragIndex
+  const canPlay = row.actualQueueIndex !== null
+
+  return (
+    <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
+      <div
+        className={`queue-item ${row.variant === 'current' ? 'queue-item-current' : ''} ${
+          row.variant === 'previous' ? 'queue-item-previous' : ''
+        } ${isDragOver ? 'queue-item-drag-over' : ''}`}
+        draggable={row.draggable}
+        onDragStart={row.draggable && row.dragIndex !== null ? (event) => onDragStart(event, row.dragIndex!) : undefined}
+        onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
+        onDragEnd={row.draggable ? onDragEnd : undefined}
+        onDragLeave={row.draggable ? onDragLeave : undefined}
+        onClick={canPlay ? () => onPlayTrackAt(row.actualQueueIndex!) : undefined}
+      >
+        {row.draggable && (
+          <div className="queue-item-drag-handle">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z"/>
+            </svg>
+          </div>
+        )}
+        <div className="queue-item-info">
+          <div className="queue-item-title">{row.track.title}</div>
+          <div className="queue-item-artist">{row.track.artist}</div>
+        </div>
+        <div className="queue-item-duration">
+          {formatDuration(row.track.duration)}
+        </div>
+        {row.removable && row.actualQueueIndex !== null && (
+          <button
+            className="queue-item-remove"
+            onClick={(event) => onRemoveFromQueue(event, row.actualQueueIndex!)}
+            title="Remove from queue"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const QueueRow = memo(QueueRowRenderer) as (
+  props: RowComponentProps<QueueRowSharedProps>
+) => ReactElement | null
 
 export default function QueuePanel() {
-  const {
-    queue,
-    queueIndex,
-    currentTrack,
-    shuffle,
-    shuffledIndices,
-    shufflePosition,
-    playTrackAt,
-    removeFromQueue,
-    moveInQueue,
-    clearQueue,
-    getUpcomingTracks,
-    getPreviousTracks
-  } = usePlayerStore()
+  const queue = usePlayerStore((state) => state.queue)
+  const queueIndex = usePlayerStore((state) => state.queueIndex)
+  const currentTrack = usePlayerStore((state) => state.currentTrack)
+  const shuffle = usePlayerStore((state) => state.shuffle)
+  const shuffledIndices = usePlayerStore((state) => state.shuffledIndices)
+  const shufflePosition = usePlayerStore((state) => state.shufflePosition)
+  const playTrackAt = usePlayerStore((state) => state.playTrackAt)
+  const removeFromQueue = usePlayerStore((state) => state.removeFromQueue)
+  const moveInQueue = usePlayerStore((state) => state.moveInQueue)
+  const clearQueue = usePlayerStore((state) => state.clearQueue)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const [listViewportHeight, setListViewportHeight] = useState(0)
+  const [queueItemRowHeight, setQueueItemRowHeight] = useState(QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX)
+  const [queueSectionRowHeight, setQueueSectionRowHeight] = useState(QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX)
   const dragNodeRef = useRef<HTMLDivElement | null>(null)
+  const queueContentRef = useRef<HTMLDivElement | null>(null)
 
-  const formatDuration = (seconds: number): string => {
+  useEffect(() => {
+    return () => {
+      dragNodeRef.current?.classList.remove('dragging')
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    const element = queueContentRef.current
+    if (!element) return
+
+    const updateMeasurements = () => {
+      const nextHeight = Math.max(0, Math.round(element.clientHeight))
+      const { itemRowHeight, sectionRowHeight } = resolveQueueRowHeights(element)
+
+      setListViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+      setQueueItemRowHeight((previous) => (previous === itemRowHeight ? previous : itemRowHeight))
+      setQueueSectionRowHeight((previous) => (previous === sectionRowHeight ? previous : sectionRowHeight))
+    }
+
+    updateMeasurements()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateMeasurements)
+      return () => {
+        window.removeEventListener('resize', updateMeasurements)
+      }
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateMeasurements()
+    })
+    resizeObserver.observe(element)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [])
+
+  const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
+  }, [])
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
+  const upcomingTracks = useMemo(() => {
+    if (queue.length === 0) return []
+    if (shuffle && shuffledIndices.length > 0) {
+      return shuffledIndices
+        .slice(shufflePosition + 1)
+        .map((queueItemIndex) => queue[queueItemIndex])
+        .filter((track): track is Track => Boolean(track))
+    }
+
+    return queue.slice(queueIndex + 1)
+  }, [queue, queueIndex, shuffle, shuffledIndices, shufflePosition])
+
+  const previousTracks = useMemo(() => {
+    if (queue.length === 0) return []
+    if (shuffle && shuffledIndices.length > 0) {
+      return shuffledIndices
+        .slice(0, shufflePosition)
+        .map((queueItemIndex) => queue[queueItemIndex])
+        .filter((track): track is Track => Boolean(track))
+    }
+
+    return queue.slice(0, queueIndex)
+  }, [queue, queueIndex, shuffle, shuffledIndices, shufflePosition])
+
+  const rows = useMemo<QueueVirtualRow[]>(() => {
+    const nextRows: QueueVirtualRow[] = []
+
+    if (currentTrack) {
+      nextRows.push({
+        kind: 'section',
+        key: 'section-now-playing',
+        label: 'Now Playing'
+      })
+      nextRows.push({
+        kind: 'track',
+        key: `track-current-${currentTrack.id}-${queueIndex}`,
+        track: currentTrack,
+        variant: 'current',
+        actualQueueIndex: null,
+        dragIndex: null,
+        draggable: false,
+        removable: false
+      })
+    }
+
+    if (upcomingTracks.length > 0) {
+      nextRows.push({
+        kind: 'section',
+        key: 'section-up-next',
+        label: `Up Next (${upcomingTracks.length} ${upcomingTracks.length === 1 ? 'track' : 'tracks'})`,
+        showShuffled: shuffle
+      })
+
+      for (let index = 0; index < upcomingTracks.length; index += 1) {
+        const track = upcomingTracks[index]
+        const actualQueueIndex = shuffle && shuffledIndices.length > 0
+          ? shuffledIndices[shufflePosition + 1 + index]
+          : queueIndex + 1 + index
+        const nextDragIndex = shuffle && shuffledIndices.length > 0
+          ? shufflePosition + 1 + index
+          : queueIndex + 1 + index
+
+        if (!Number.isInteger(actualQueueIndex)) continue
+
+        nextRows.push({
+          kind: 'track',
+          key: `track-upcoming-${track.id}-${actualQueueIndex}`,
+          track,
+          variant: 'upcoming',
+          actualQueueIndex,
+          dragIndex: nextDragIndex,
+          draggable: true,
+          removable: true
+        })
+      }
+    }
+
+    if (previousTracks.length > 0) {
+      nextRows.push({
+        kind: 'section',
+        key: 'section-previously-played',
+        label: 'Previously Played',
+        faded: true
+      })
+
+      for (let index = 0; index < previousTracks.length; index += 1) {
+        const track = previousTracks[index]
+        const actualQueueIndex = shuffle && shuffledIndices.length > 0
+          ? shuffledIndices[index]
+          : index
+
+        if (!Number.isInteger(actualQueueIndex)) continue
+
+        nextRows.push({
+          kind: 'track',
+          key: `track-previous-${track.id}-${actualQueueIndex}`,
+          track,
+          variant: 'previous',
+          actualQueueIndex,
+          dragIndex: null,
+          draggable: false,
+          removable: false
+        })
+      }
+    }
+
+    return nextRows
+  }, [currentTrack, queueIndex, previousTracks, shuffle, shuffledIndices, shufflePosition, upcomingTracks])
+
+  const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
     setDragIndex(index)
-    dragNodeRef.current = e.target as HTMLDivElement
-    e.dataTransfer.effectAllowed = 'move'
+    dragNodeRef.current = event.currentTarget
+    event.dataTransfer.effectAllowed = 'move'
     // Add dragging class after a frame to avoid affecting the drag image
     setTimeout(() => {
       dragNodeRef.current?.classList.add('dragging')
     }, 0)
-  }
+  }, [])
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault()
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
+    event.preventDefault()
     if (dragIndex === null || dragIndex === index) return
     setDragOverIndex(index)
-  }
+  }, [dragIndex])
 
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     if (dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
       moveInQueue(dragIndex, dragOverIndex)
     }
     dragNodeRef.current?.classList.remove('dragging')
     setDragIndex(null)
     setDragOverIndex(null)
-  }
+  }, [dragIndex, dragOverIndex, moveInQueue])
 
-  const handleDragLeave = () => {
+  const handleDragLeave = useCallback(() => {
     setDragOverIndex(null)
-  }
+  }, [])
 
-  const upcomingTracks = getUpcomingTracks()
-  const previousTracks = getPreviousTracks()
+  const handlePlayTrackAt = useCallback((index: number) => {
+    void playTrackAt(index)
+  }, [playTrackAt])
+
+  const handleRemoveFromQueue = useCallback((event: MouseEvent<HTMLButtonElement>, index: number) => {
+    event.stopPropagation()
+    removeFromQueue(index)
+  }, [removeFromQueue])
+
+  const resolveRowHeight = useCallback((index: number) => {
+    const row = rows[index]
+    if (!row) return queueItemRowHeight
+    return row.kind === 'section' ? queueSectionRowHeight : queueItemRowHeight
+  }, [rows, queueItemRowHeight, queueSectionRowHeight])
+
+  const rowProps = useMemo<QueueRowSharedProps>(() => ({
+    rows,
+    dragOverIndex,
+    formatDuration,
+    onDragStart: handleDragStart,
+    onDragOver: handleDragOver,
+    onDragEnd: handleDragEnd,
+    onDragLeave: handleDragLeave,
+    onPlayTrackAt: handlePlayTrackAt,
+    onRemoveFromQueue: handleRemoveFromQueue
+  }), [
+    rows,
+    dragOverIndex,
+    formatDuration,
+    handleDragStart,
+    handleDragOver,
+    handleDragEnd,
+    handleDragLeave,
+    handlePlayTrackAt,
+    handleRemoveFromQueue
+  ])
 
   if (queue.length === 0) {
     return (
@@ -74,6 +411,8 @@ export default function QueuePanel() {
     )
   }
 
+  const listHeight = listViewportHeight > 0 ? listViewportHeight : queueItemRowHeight * 8
+
   return (
     <div className="queue-panel">
       <div className="queue-header">
@@ -83,113 +422,17 @@ export default function QueuePanel() {
         </button>
       </div>
 
-      <div className="queue-content">
-        {/* Now Playing */}
-        {currentTrack && (
-          <div className="queue-section">
-            <div className="queue-section-title">Now Playing</div>
-            <div className="queue-item queue-item-current">
-              <div className="queue-item-info">
-                <div className="queue-item-title">{currentTrack.title}</div>
-                <div className="queue-item-artist">{currentTrack.artist}</div>
-              </div>
-              <div className="queue-item-duration">
-                {formatDuration(currentTrack.duration)}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Up Next */}
-        {upcomingTracks.length > 0 && (
-          <div className="queue-section">
-            <div className="queue-section-title">
-              Up Next ({upcomingTracks.length} {upcomingTracks.length === 1 ? 'track' : 'tracks'})
-              {shuffle && <span style={{ opacity: 0.5, marginLeft: 6, fontSize: '0.85em' }}>Shuffled</span>}
-            </div>
-            <div className="queue-list">
-              {upcomingTracks.map((track, i) => {
-                // Resolve the actual queue index for click-to-play and remove
-                const actualQueueIndex = shuffle && shuffledIndices.length > 0
-                  ? shuffledIndices[shufflePosition + 1 + i]
-                  : queueIndex + 1 + i
-
-                // For drag-to-reorder: pass shuffledIndices positions when shuffle is on
-                const dragIdx = shuffle && shuffledIndices.length > 0
-                  ? shufflePosition + 1 + i
-                  : queueIndex + 1 + i
-
-                return (
-                  <div
-                    key={`${track.id}-${actualQueueIndex}`}
-                    className={`queue-item ${dragOverIndex === dragIdx ? 'queue-item-drag-over' : ''}`}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, dragIdx)}
-                    onDragOver={(e) => handleDragOver(e, dragIdx)}
-                    onDragEnd={handleDragEnd}
-                    onDragLeave={handleDragLeave}
-                    onClick={() => playTrackAt(actualQueueIndex)}
-                  >
-                    <div className="queue-item-drag-handle">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z"/>
-                      </svg>
-                    </div>
-                    <div className="queue-item-info">
-                      <div className="queue-item-title">{track.title}</div>
-                      <div className="queue-item-artist">{track.artist}</div>
-                    </div>
-                    <div className="queue-item-duration">
-                      {formatDuration(track.duration)}
-                    </div>
-                    <button
-                      className="queue-item-remove"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeFromQueue(actualQueueIndex)
-                      }}
-                      title="Remove from queue"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                      </svg>
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Previously Played */}
-        {previousTracks.length > 0 && (
-          <div className="queue-section queue-section-previous">
-            <div className="queue-section-title">Previously Played</div>
-            <div className="queue-list">
-              {previousTracks.map((track, i) => {
-                const actualQueueIndex = shuffle && shuffledIndices.length > 0
-                  ? shuffledIndices[i]
-                  : i
-
-                return (
-                  <div
-                    key={`${track.id}-${actualQueueIndex}`}
-                    className="queue-item queue-item-previous"
-                    onClick={() => playTrackAt(actualQueueIndex)}
-                  >
-                    <div className="queue-item-info">
-                      <div className="queue-item-title">{track.title}</div>
-                      <div className="queue-item-artist">{track.artist}</div>
-                    </div>
-                    <div className="queue-item-duration">
-                      {formatDuration(track.duration)}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
+      <div className="queue-content" ref={queueContentRef}>
+        <List
+          className="queue-list-virtualized"
+          defaultHeight={QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX * 8}
+          overscanCount={QUEUE_LIST_OVERSCAN_COUNT}
+          rowComponent={QueueRow}
+          rowCount={rows.length}
+          rowHeight={resolveRowHeight}
+          rowProps={rowProps}
+          style={{ height: listHeight, width: '100%' }}
+        />
       </div>
     </div>
   )

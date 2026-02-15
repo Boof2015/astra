@@ -5,24 +5,23 @@ import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
+import ArtistList from '../library/ArtistList'
 
 export default function LibraryView() {
-  const {
-    tracks,
-    albums,
-    artists,
-    viewMode,
-    selectedAlbum,
-    selectedArtist,
-    selectionOrigin,
-    isLoading,
-    isScanning,
-    scanProgress,
-    setViewMode,
-    selectAlbum,
-    selectArtist,
-    clearSelection,
-  } = useLibraryStore()
+  const tracks = useLibraryStore((state) => state.tracks)
+  const albums = useLibraryStore((state) => state.albums)
+  const artists = useLibraryStore((state) => state.artists)
+  const viewMode = useLibraryStore((state) => state.viewMode)
+  const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
+  const selectedArtist = useLibraryStore((state) => state.selectedArtist)
+  const selectionOrigin = useLibraryStore((state) => state.selectionOrigin)
+  const isLoading = useLibraryStore((state) => state.isLoading)
+  const isScanning = useLibraryStore((state) => state.isScanning)
+  const scanProgress = useLibraryStore((state) => state.scanProgress)
+  const setViewMode = useLibraryStore((state) => state.setViewMode)
+  const selectAlbum = useLibraryStore((state) => state.selectAlbum)
+  const selectArtist = useLibraryStore((state) => state.selectArtist)
+  const clearSelection = useLibraryStore((state) => state.clearSelection)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const setActiveView = useUIStore((s) => s.setActiveView)
@@ -206,29 +205,7 @@ export default function LibraryView() {
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
           : <div className="library-empty"><p>No artists found</p></div>
       }
-      return (
-        <div className="artist-list">
-          {filteredArtists.map((artist) => (
-            <div
-              key={artist.artist}
-              className="artist-item"
-              onClick={() => selectArtist(artist.artist)}
-            >
-              <div className="artist-avatar">
-                {artist.artwork_hash ? (
-                  <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="artist-avatar-artwork" />
-                ) : (
-                  artist.artist.charAt(0).toUpperCase()
-                )}
-              </div>
-              <div className="artist-info">
-                <div className="artist-name">{artist.artist}</div>
-                <div className="artist-track-count">{artist.track_count} tracks</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )
+      return <ArtistList artists={filteredArtists} onSelectArtist={selectArtist} />
     }
 
     // Tracks
