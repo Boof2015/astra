@@ -20,12 +20,14 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
+import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 
 function App() {
   useKeyboardShortcuts()
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
+  useCoverArtAccent()
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)

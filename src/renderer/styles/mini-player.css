@@ -136,7 +136,7 @@
 
 .mini-header-btn.active {
   color: var(--mini-accent);
-  border-color: rgba(56, 189, 248, 0.58);
+  border-color: rgba(var(--accent-rgb), 0.58);
   background: var(--mini-accent-glow);
 }
 
@@ -284,7 +284,7 @@
 .mini-favorite-btn.active {
   color: #031017;
   background: var(--mini-accent);
-  border-color: rgba(56, 189, 248, 0.65);
+  border-color: rgba(var(--accent-rgb), 0.65);
   box-shadow: 0 0 0 3px var(--mini-accent-glow);
 }
 

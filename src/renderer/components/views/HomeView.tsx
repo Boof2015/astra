@@ -185,6 +185,11 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
         subline: 'Same.'
       },
       {
+        id: 'late-void',
+        primary: '3 AM again, huh',
+        subline: 'The void has music in it'
+      },
+      {
         id: 'late-still-up',
         primary: 'Still up?',
         subline: 'Astra never sleeps either.'
@@ -443,29 +448,18 @@ function chooseGreeting(previousId: string | null, now: Date): GreetingSelection
 
   const pools: WeightedGreetingPool[] = []
   if (timeAware.length > 0) {
-    pools.push({ messages: timeAware, weight: 0.68 })
+    pools.push({ messages: timeAware, weight: 0.5 })
   }
   if (dayAware.length > 0) {
-    pools.push({ messages: dayAware, weight: 0.2 })
+    pools.push({ messages: dayAware, weight: 0.3 })
   }
   if (playful.length > 0) {
-    pools.push({ messages: playful, weight: 0.12 })
+    pools.push({ messages: playful, weight: 0.2 })
   }
 
   const fallbackMessages = timeAware.length > 0 ? timeAware : dayAware.length > 0 ? dayAware : playful
   if (pools.length === 0) {
     pools.push({ messages: fallbackMessages, weight: 1 })
-  }
-
-  // First render should feel situational before playful/day variants rotate in.
-  if (previousId === null && timeAware.length > 0) {
-    const initialGreeting = pickRandomGreeting(timeAware, null)
-    return {
-      id: initialGreeting.id,
-      primary: initialGreeting.primary,
-      subline: initialGreeting.subline,
-      bucket
-    }
   }
 
   const selectedPool = pickWeightedGreetingPool(pools)

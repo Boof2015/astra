@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { useVisualizerSettingsStore } from './visualizerSettingsStore'
 
 export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson'
+export type AccentSource = 'theme' | 'cover-art'
+export type CoverArtAccentMethod = 'dominant' | 'average'
 
 export interface ResolvedThemeTokens {
   bgPrimary: string
@@ -28,20 +30,37 @@ interface ThemePresetDefinition {
   accentGlow: string
 }
 
+interface SavedThemeSettings {
+  presetId: ThemePresetId
+  customAccent: string | null
+  accentSource: AccentSource
+  coverArtAccentMethod: CoverArtAccentMethod
+}
+
 export interface ThemeSettingsState {
   presetId: ThemePresetId
   customAccent: string | null
+  accentSource: AccentSource
+  coverArtAccentMethod: CoverArtAccentMethod
+  coverArtAccent: string | null
   resolvedTokens: ResolvedThemeTokens
   setPreset: (presetId: ThemePresetId) => void
   setCustomAccent: (accentHex: string) => void
   usePresetAccent: () => void
+  setAccentSource: (source: AccentSource) => void
+  setCoverArtAccentMethod: (method: CoverArtAccentMethod) => void
+  setCoverArtAccent: (accentHexOrNull: string | null) => void
   resetToDefault: () => void
   initFromSaved: () => void
 }
 
 const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
+const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
+const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'
 const DEFAULT_ACCENT = '#38bdf8'
+const ACCENT_TRANSITION_MS = 280
+const REDUCED_MOTION_ACCENT_TRANSITION_MS = 80
 
 const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
   default: {
@@ -142,6 +161,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
 }
 
 export const THEME_PRESET_LIST: ThemePresetDefinition[] = Object.values(THEME_PRESETS)
+export const DEFAULT_THEME_ACCENT = THEME_PRESETS.default.accent
 
 function normalizeHexColor(value: string): string | null {
   const trimmed = value.trim()
@@ -167,6 +187,12 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   }
 }
 
+function rgbToHex(r: number, g: number, b: number): string {
+  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+  const toHex = (value: number) => value.toString(16).padStart(2, '0')
+  return `#${toHex(clamp(r))}${toHex(clamp(g))}${toHex(clamp(b))}`
+}
+
 function lightenChannel(channel: number, amount: number): number {
   return Math.round(channel + ((255 - channel) * amount))
 }
@@ -177,8 +203,7 @@ function deriveAccentHover(hex: string): string {
   const r = lightenChannel(rgb.r, 0.35)
   const g = lightenChannel(rgb.g, 0.35)
   const b = lightenChannel(rgb.b, 0.35)
-  const toHex = (value: number) => value.toString(16).padStart(2, '0')
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+  return rgbToHex(r, g, b)
 }
 
 function deriveAccentGlow(hex: string): string {
@@ -187,21 +212,44 @@ function deriveAccentGlow(hex: string): string {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.3)`
 }
 
-function resolveThemeTokens(presetId: ThemePresetId, customAccent: string | null): ResolvedThemeTokens {
+function deriveAccentRgb(hex: string): string {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return '56, 189, 248'
+  return `${rgb.r}, ${rgb.g}, ${rgb.b}`
+}
+
+function deriveAccentText(hex: string, amount: number, fallbackHex: string): string {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return fallbackHex
+
+  return rgbToHex(
+    lightenChannel(rgb.r, amount),
+    lightenChannel(rgb.g, amount),
+    lightenChannel(rgb.b, amount)
+  )
+}
+
+function resolveThemeTokens(
+  presetId: ThemePresetId,
+  customAccent: string | null,
+  accentSource: AccentSource,
+  coverArtAccent: string | null
+): ResolvedThemeTokens {
   const preset = THEME_PRESETS[presetId] ?? THEME_PRESETS.default
-  const accent = customAccent ?? preset.accent
-  const accentHover = customAccent ? deriveAccentHover(customAccent) : preset.accentHover
-  const accentGlow = customAccent ? deriveAccentGlow(customAccent) : preset.accentGlow
+  const themeAccent = customAccent ?? preset.accent
+  const effectiveAccent = accentSource === 'cover-art' && coverArtAccent
+    ? coverArtAccent
+    : themeAccent
 
   return {
     ...preset.tokens,
-    accent,
-    accentHover,
-    accentGlow,
+    accent: effectiveAccent,
+    accentHover: deriveAccentHover(effectiveAccent),
+    accentGlow: deriveAccentGlow(effectiveAccent),
   }
 }
 
-function applyTokensToDocument(tokens: ResolvedThemeTokens): void {
+function applyNonAccentTokensToDocument(tokens: ResolvedThemeTokens): void {
   const root = document.documentElement
   root.style.setProperty('--bg-primary', tokens.bgPrimary)
   root.style.setProperty('--bg-secondary', tokens.bgSecondary)
@@ -212,24 +260,50 @@ function applyTokensToDocument(tokens: ResolvedThemeTokens): void {
   root.style.setProperty('--text-primary', tokens.textPrimary)
   root.style.setProperty('--text-secondary', tokens.textSecondary)
   root.style.setProperty('--text-tertiary', tokens.textTertiary)
-  root.style.setProperty('--accent', tokens.accent)
-  root.style.setProperty('--accent-hover', tokens.accentHover)
-  root.style.setProperty('--accent-glow', tokens.accentGlow)
 }
 
-function persistThemeSettings(presetId: ThemePresetId, customAccent: string | null): void {
+function applyAccentTokensToDocument(accent: string, accentHover: string, accentGlow: string): void {
+  const root = document.documentElement
+  const accentRgb = deriveAccentRgb(accent)
+  const accentHoverRgb = deriveAccentRgb(accentHover)
+  const accentText = deriveAccentText(accent, 0.65, '#bae6fd')
+  const accentTextStrong = deriveAccentText(accent, 0.85, '#e0f2fe')
+
+  root.style.setProperty('--accent', accent)
+  root.style.setProperty('--accent-hover', accentHover)
+  root.style.setProperty('--accent-glow', accentGlow)
+  root.style.setProperty('--accent-rgb', accentRgb)
+  root.style.setProperty('--accent-hover-rgb', accentHoverRgb)
+  root.style.setProperty('--accent-text', accentText)
+  root.style.setProperty('--accent-text-strong', accentTextStrong)
+}
+
+function persistThemeSettings(
+  presetId: ThemePresetId,
+  customAccent: string | null,
+  accentSource: AccentSource,
+  coverArtAccentMethod: CoverArtAccentMethod
+): void {
   localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
     presetId,
     customAccent,
+    accentSource,
+    coverArtAccentMethod,
   }))
 }
 
-function readSavedThemeSettings(): { presetId: ThemePresetId; customAccent: string | null } | null {
+function readSavedThemeSettings(): SavedThemeSettings | null {
   const raw = localStorage.getItem(THEME_STORAGE_KEY)
   if (!raw) return null
 
   try {
-    const parsed = JSON.parse(raw) as { presetId?: unknown; customAccent?: unknown }
+    const parsed = JSON.parse(raw) as {
+      presetId?: unknown
+      customAccent?: unknown
+      accentSource?: unknown
+      coverArtAccentMethod?: unknown
+    }
+
     const presetCandidate = parsed.presetId
     const presetId = (
       presetCandidate === 'default'
@@ -245,54 +319,298 @@ function readSavedThemeSettings(): { presetId: ThemePresetId; customAccent: stri
       ? normalizeHexColor(parsed.customAccent)
       : null
 
+    const accentSource = parsed.accentSource === 'cover-art'
+      ? 'cover-art'
+      : DEFAULT_ACCENT_SOURCE
+
+    const coverArtAccentMethod = parsed.coverArtAccentMethod === 'average'
+      ? 'average'
+      : DEFAULT_COVER_ART_ACCENT_METHOD
+
     return {
       presetId,
       customAccent,
+      accentSource,
+      coverArtAccentMethod,
     }
   } catch {
     return null
   }
 }
 
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
+
+function easeInOutSine(value: number): number {
+  return 0.5 - (Math.cos(Math.PI * value) / 2)
+}
+
+interface ThemeMutation {
+  presetId: ThemePresetId
+  customAccent: string | null
+  accentSource: AccentSource
+  coverArtAccentMethod: CoverArtAccentMethod
+  coverArtAccent: string | null
+}
+
 export const useThemeStore = create<ThemeSettingsState>((set, get) => {
-  const applyAndSet = (presetId: ThemePresetId, customAccent: string | null, persist: boolean) => {
-    const resolvedTokens = resolveThemeTokens(presetId, customAccent)
-    applyTokensToDocument(resolvedTokens)
-    useVisualizerSettingsStore.getState().setLineColor(resolvedTokens.accent)
-    set({ presetId, customAccent, resolvedTokens })
-    if (persist) {
-      persistThemeSettings(presetId, customAccent)
+  let accentAnimationFrame: number | null = null
+  let accentAnimationToken = 0
+
+  const cancelAccentAnimation = () => {
+    if (accentAnimationFrame !== null) {
+      window.cancelAnimationFrame(accentAnimationFrame)
+      accentAnimationFrame = null
     }
+    accentAnimationToken += 1
   }
 
-  const defaultTokens = resolveThemeTokens(DEFAULT_PRESET_ID, null)
+  const applyAndSet = (nextState: ThemeMutation, persist: boolean) => {
+    const normalizedCustomAccent = nextState.customAccent ? normalizeHexColor(nextState.customAccent) : null
+    const normalizedCoverArtAccent = nextState.coverArtAccent ? normalizeHexColor(nextState.coverArtAccent) : null
+
+    const targetTokens = resolveThemeTokens(
+      nextState.presetId,
+      normalizedCustomAccent,
+      nextState.accentSource,
+      normalizedCoverArtAccent
+    )
+
+    const previousAccent = normalizeHexColor(get().resolvedTokens.accent) ?? targetTokens.accent
+    const initialAccent = previousAccent
+    const initialTokens: ResolvedThemeTokens = {
+      ...targetTokens,
+      accent: initialAccent,
+      accentHover: deriveAccentHover(initialAccent),
+      accentGlow: deriveAccentGlow(initialAccent),
+    }
+
+    cancelAccentAnimation()
+
+    applyNonAccentTokensToDocument(targetTokens)
+    applyAccentTokensToDocument(initialTokens.accent, initialTokens.accentHover, initialTokens.accentGlow)
+    useVisualizerSettingsStore.getState().setLineColor(initialTokens.accent)
+
+    set({
+      presetId: nextState.presetId,
+      customAccent: normalizedCustomAccent,
+      accentSource: nextState.accentSource,
+      coverArtAccentMethod: nextState.coverArtAccentMethod,
+      coverArtAccent: normalizedCoverArtAccent,
+      resolvedTokens: initialTokens,
+    })
+
+    if (persist) {
+      persistThemeSettings(
+        nextState.presetId,
+        normalizedCustomAccent,
+        nextState.accentSource,
+        nextState.coverArtAccentMethod
+      )
+    }
+
+    if (initialTokens.accent === targetTokens.accent) {
+      set((state) => ({
+        resolvedTokens: {
+          ...state.resolvedTokens,
+          accent: targetTokens.accent,
+          accentHover: targetTokens.accentHover,
+          accentGlow: targetTokens.accentGlow,
+        },
+      }))
+      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+      useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
+      return
+    }
+
+    const startRgb = hexToRgb(initialTokens.accent)
+    const endRgb = hexToRgb(targetTokens.accent)
+    if (!startRgb || !endRgb) {
+      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+      useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
+      set((state) => ({
+        resolvedTokens: {
+          ...state.resolvedTokens,
+          accent: targetTokens.accent,
+          accentHover: targetTokens.accentHover,
+          accentGlow: targetTokens.accentGlow,
+        },
+      }))
+      return
+    }
+
+    const durationMs = prefersReducedMotion()
+      ? REDUCED_MOTION_ACCENT_TRANSITION_MS
+      : ACCENT_TRANSITION_MS
+
+    const animationToken = ++accentAnimationToken
+    let startTime: number | null = null
+
+    const animate = (timestamp: number) => {
+      if (animationToken !== accentAnimationToken) return
+
+      if (startTime == null) {
+        startTime = timestamp
+      }
+
+      const elapsed = timestamp - startTime
+      const progress = Math.max(0, Math.min(1, elapsed / durationMs))
+      const eased = easeInOutSine(progress)
+
+      const accent = rgbToHex(
+        startRgb.r + ((endRgb.r - startRgb.r) * eased),
+        startRgb.g + ((endRgb.g - startRgb.g) * eased),
+        startRgb.b + ((endRgb.b - startRgb.b) * eased)
+      )
+      const accentHover = deriveAccentHover(accent)
+      const accentGlow = deriveAccentGlow(accent)
+
+      applyAccentTokensToDocument(accent, accentHover, accentGlow)
+      useVisualizerSettingsStore.getState().setLineColor(accent)
+      set((state) => ({
+        resolvedTokens: {
+          ...state.resolvedTokens,
+          accent,
+          accentHover,
+          accentGlow,
+        },
+      }))
+
+      if (progress >= 1) {
+        accentAnimationFrame = null
+        applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+        useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
+        set((state) => ({
+          resolvedTokens: {
+            ...state.resolvedTokens,
+            accent: targetTokens.accent,
+            accentHover: targetTokens.accentHover,
+            accentGlow: targetTokens.accentGlow,
+          },
+        }))
+        return
+      }
+
+      accentAnimationFrame = window.requestAnimationFrame(animate)
+    }
+
+    accentAnimationFrame = window.requestAnimationFrame(animate)
+  }
+
+  const defaultTokens = resolveThemeTokens(
+    DEFAULT_PRESET_ID,
+    null,
+    DEFAULT_ACCENT_SOURCE,
+    null
+  )
 
   return {
     presetId: DEFAULT_PRESET_ID,
     customAccent: null,
+    accentSource: DEFAULT_ACCENT_SOURCE,
+    coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
+    coverArtAccent: null,
     resolvedTokens: defaultTokens,
     setPreset: (presetId) => {
-      applyAndSet(presetId, get().customAccent, true)
+      const state = get()
+      applyAndSet({
+        presetId,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
     },
     setCustomAccent: (accentHex) => {
       const normalized = normalizeHexColor(accentHex)
       if (!normalized) return
-      applyAndSet(get().presetId, normalized, true)
+
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: normalized,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
     },
     usePresetAccent: () => {
-      applyAndSet(get().presetId, null, true)
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: null,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    setAccentSource: (source) => {
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: state.customAccent,
+        accentSource: source,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: source === 'cover-art' ? state.coverArtAccent : null,
+      }, true)
+    },
+    setCoverArtAccentMethod: (method) => {
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: method,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    setCoverArtAccent: (accentHexOrNull) => {
+      const normalized = accentHexOrNull ? normalizeHexColor(accentHexOrNull) : null
+      const state = get()
+      if (state.coverArtAccent === normalized) return
+
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: normalized,
+      }, false)
     },
     resetToDefault: () => {
-      applyAndSet(DEFAULT_PRESET_ID, null, true)
+      applyAndSet({
+        presetId: DEFAULT_PRESET_ID,
+        customAccent: null,
+        accentSource: DEFAULT_ACCENT_SOURCE,
+        coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
+        coverArtAccent: null,
+      }, true)
     },
     initFromSaved: () => {
       const saved = readSavedThemeSettings()
       if (!saved) {
-        applyAndSet(DEFAULT_PRESET_ID, null, false)
+        applyAndSet({
+          presetId: DEFAULT_PRESET_ID,
+          customAccent: null,
+          accentSource: DEFAULT_ACCENT_SOURCE,
+          coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
+          coverArtAccent: null,
+        }, false)
         return
       }
 
-      applyAndSet(saved.presetId, saved.customAccent, false)
+      applyAndSet({
+        presetId: saved.presetId,
+        customAccent: saved.customAccent,
+        accentSource: saved.accentSource,
+        coverArtAccentMethod: saved.coverArtAccentMethod,
+        coverArtAccent: null,
+      }, false)
     },
   }
 })

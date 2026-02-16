@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -8,7 +8,14 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
-import { THEME_PRESET_LIST, useThemeStore, type ThemePresetId } from '../../stores/themeStore'
+import {
+  DEFAULT_THEME_ACCENT,
+  THEME_PRESET_LIST,
+  useThemeStore,
+  type AccentSource,
+  type CoverArtAccentMethod,
+  type ThemePresetId
+} from '../../stores/themeStore'
 import {
   factoryResetApplication,
   resetAllSettings,
@@ -59,6 +66,24 @@ const RESET_ACTION_IDS: ResetActionId[] = [
   'factory-reset',
 ]
 
+const ASTRA_REPOSITORY_URL = 'https://github.com/Boof2015/astra'
+const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
+const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
+const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
+
+const SETTINGS_SECTIONS = [
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'library', label: 'Library' },
+  { id: 'analyzer', label: 'Analyzer' },
+  { id: 'audio', label: 'Audio Output' },
+  { id: 'integrations', label: 'Integrations' },
+  { id: 'info', label: 'Info' },
+  { id: 'danger', label: 'Danger Zone' },
+] as const
+
+type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
+const SETTINGS_SECTION_ID_SET = new Set<string>(SETTINGS_SECTIONS.map((section) => section.id))
+
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
     acc[actionId] = { state: 'idle', message: '' }
@@ -79,9 +104,24 @@ function normalizeHexColor(value: string): string | null {
   return `#${fullMatch[1].toLowerCase()}`
 }
 
+function buildInitialSectionVisibilityMap(): Record<SettingsSectionId, number> {
+  return SETTINGS_SECTIONS.reduce((acc, section) => {
+    acc[section.id] = 0
+    return acc
+  }, {} as Record<SettingsSectionId, number>)
+}
+
+function isSettingsSectionId(value: string): value is SettingsSectionId {
+  return SETTINGS_SECTION_ID_SET.has(value)
+}
+
 export default function SettingsView() {
+  const settingsViewRef = useRef<HTMLDivElement | null>(null)
+  const sectionVisibilityRef = useRef<Record<SettingsSectionId, number>>(buildInitialSectionVisibilityMap())
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
+  const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
+  const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
@@ -89,10 +129,14 @@ export default function SettingsView() {
   const {
     presetId,
     customAccent,
+    accentSource,
+    coverArtAccentMethod,
     resolvedTokens,
     setPreset,
     setCustomAccent,
     usePresetAccent,
+    setAccentSource,
+    setCoverArtAccentMethod,
     resetToDefault: resetThemeToDefault,
   } = useThemeStore()
   const {
@@ -126,11 +170,15 @@ export default function SettingsView() {
     () => THEME_PRESET_LIST.find((preset) => preset.id === presetId) ?? THEME_PRESET_LIST[0],
     [presetId]
   )
-  const effectiveAccent = customAccent ?? selectedPreset.accent
+  const defaultPresetAccent = useMemo(
+    () => THEME_PRESET_LIST.find((preset) => preset.id === 'default')?.accent ?? DEFAULT_THEME_ACCENT,
+    []
+  )
+  const fallbackAccent = customAccent ?? selectedPreset.accent
 
   useEffect(() => {
-    setAccentInputValue(effectiveAccent)
-  }, [effectiveAccent])
+    setAccentInputValue(fallbackAccent)
+  }, [fallbackAccent])
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -219,6 +267,14 @@ export default function SettingsView() {
   const resetActionMap = useMemo(() => {
     return new Map<ResetActionId, ResetActionDefinition>(resetActions.map((action) => [action.id, action]))
   }, [resetActions])
+  const safeResetActions = useMemo(
+    () => resetActions.filter((action) => !action.destructive),
+    [resetActions]
+  )
+  const destructiveResetActions = useMemo(
+    () => resetActions.filter((action) => action.destructive),
+    [resetActions]
+  )
 
   const pendingReset = pendingResetId ? (resetActionMap.get(pendingResetId) ?? null) : null
   const isAnyResetRunning = Object.values(resetStatuses).some((status) => status.state === 'running')
@@ -232,6 +288,69 @@ export default function SettingsView() {
   const lastCheckedLabel = lastCheckedAt
     ? new Date(lastCheckedAt).toLocaleString()
     : 'No update checks have run yet.'
+
+  useEffect(() => {
+    let isMounted = true
+
+    const loadAppVersion = async () => {
+      if (!window.electronAPI?.getAppVersion) {
+        if (isMounted) setAppVersionLabel('Unavailable')
+        return
+      }
+
+      try {
+        const version = await window.electronAPI.getAppVersion()
+        if (!isMounted) return
+        setAppVersionLabel(version ? `v${version}` : 'Unavailable')
+      } catch {
+        if (isMounted) setAppVersionLabel('Unavailable')
+      }
+    }
+
+    void loadAppVersion()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const rootElement = settingsViewRef.current
+    if (!rootElement) return
+
+    const sectionElements = Array.from(
+      rootElement.querySelectorAll<HTMLElement>('[data-settings-section-id]')
+    )
+    if (sectionElements.length === 0) return
+
+    sectionVisibilityRef.current = buildInitialSectionVisibilityMap()
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const rawSectionId = entry.target.getAttribute('data-settings-section-id')
+        if (!rawSectionId || !isSettingsSectionId(rawSectionId)) continue
+        sectionVisibilityRef.current[rawSectionId] = entry.isIntersecting ? entry.intersectionRatio : 0
+      }
+
+      let nextSectionId: SettingsSectionId = SETTINGS_SECTIONS[0].id
+      let maxRatio = sectionVisibilityRef.current[nextSectionId]
+      for (const section of SETTINGS_SECTIONS) {
+        const ratio = sectionVisibilityRef.current[section.id]
+        if (ratio > maxRatio) {
+          maxRatio = ratio
+          nextSectionId = section.id
+        }
+      }
+
+      if (maxRatio <= 0) return
+      setActiveSectionId((prev) => (prev === nextSectionId ? prev : nextSectionId))
+    }, {
+      root: rootElement,
+      rootMargin: '-28% 0px -56% 0px',
+      threshold: [0, 0.15, 0.35, 0.55, 0.75, 1],
+    })
+
+    sectionElements.forEach((sectionElement) => observer.observe(sectionElement))
+    return () => observer.disconnect()
+  }, [])
 
   const executeResetAction = async (actionId: ResetActionId): Promise<void> => {
     const action = resetActionMap.get(actionId)
@@ -266,14 +385,53 @@ export default function SettingsView() {
     setCustomAccent(normalized)
   }
 
+  const handleJumpToSection = (sectionId: SettingsSectionId) => {
+    setActiveSectionId(sectionId)
+    const sectionElement = settingsViewRef.current?.querySelector<HTMLElement>(
+      `#settings-section-${sectionId}`
+    )
+    sectionElement?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const openExternalLink = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const renderResetAction = (action: ResetActionDefinition) => {
+    const status = resetStatuses[action.id]
+    return (
+      <div
+        key={action.id}
+        className={`settings-danger-item ${action.destructive ? 'settings-danger-item-destructive' : ''}`}
+      >
+        <div className="settings-danger-item-copy">
+          <p className="settings-danger-item-title">{action.title}</p>
+          <p className="settings-danger-item-description">{action.description}</p>
+          {status.state !== 'idle' && (
+            <p className={`settings-danger-status settings-danger-status-${status.state}`}>
+              {status.message}
+            </p>
+          )}
+        </div>
+        <button
+          className={`settings-btn ${action.destructive ? 'settings-btn-danger' : ''}`}
+          onClick={() => setPendingResetId(action.id)}
+          disabled={Boolean(action.disabled) || isAnyResetRunning}
+        >
+          {action.buttonLabel}
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <div className="settings-view">
+    <div className="settings-view" ref={settingsViewRef}>
       <div className="settings-shell">
         <div className="settings-header">
           <div>
             <p className="settings-kicker">System Controls</p>
             <h2>Settings</h2>
-            <p className="settings-subtitle">Manage your library, analyzer behavior, and playback output.</p>
+            <p className="settings-subtitle">Manage playback behavior, library scanning, and application preferences.</p>
           </div>
           {isScanning && (
             <div className="settings-scan-badge">
@@ -283,11 +441,29 @@ export default function SettingsView() {
           )}
         </div>
 
+        <nav className="settings-nav" aria-label="Settings sections">
+          {SETTINGS_SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={`settings-nav-item ${activeSectionId === section.id ? 'active' : ''}`}
+              aria-current={activeSectionId === section.id ? 'true' : undefined}
+              onClick={() => handleJumpToSection(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+
         <div className="settings-content">
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-appearance"
+            data-settings-section-id="appearance"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
               <h3>Appearance</h3>
-              <p>Choose a theme preset and customize accent color.</p>
+              <p>Theme and accent preferences.</p>
             </div>
             <div className="settings-theme-grid">
               {THEME_PRESET_LIST.map((preset) => (
@@ -304,12 +480,14 @@ export default function SettingsView() {
             </div>
             <div className="settings-grid">
               <label className="settings-field">
-                <span className="settings-field-label">Accent Color</span>
+                <span className="settings-field-label">
+                  {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
+                </span>
                 <div className="settings-accent-inputs">
                   <input
                     className="settings-color settings-color-wide"
                     type="color"
-                    value={effectiveAccent}
+                    value={fallbackAccent}
                     onChange={(event) => {
                       const next = event.target.value.toLowerCase()
                       setAccentInputValue(next)
@@ -324,18 +502,50 @@ export default function SettingsView() {
                     onBlur={() => {
                       const normalized = normalizeHexColor(accentInputValue)
                       if (!normalized) {
-                        setAccentInputValue(effectiveAccent)
+                        setAccentInputValue(fallbackAccent)
                         return
                       }
                       setAccentInputValue(normalized)
                     }}
-                    placeholder="#38bdf8"
+                    placeholder={defaultPresetAccent}
                     spellCheck={false}
                   />
                 </div>
               </label>
-              <div className="settings-field settings-field-inline">
+              <label className="settings-field">
                 <span className="settings-field-label">Accent Source</span>
+                <select
+                  className="settings-select"
+                  value={accentSource}
+                  onChange={(event) => {
+                    const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
+                    setAccentSource(source)
+                  }}
+                >
+                  <option value="theme">Theme Accent</option>
+                  <option value="cover-art">Cover Art (Now Playing)</option>
+                </select>
+              </label>
+              {accentSource === 'cover-art' && (
+                <label className="settings-field">
+                  <span className="settings-field-label">Cover Art Method</span>
+                  <select
+                    className="settings-select"
+                    value={coverArtAccentMethod}
+                    onChange={(event) => {
+                      const method: CoverArtAccentMethod = event.target.value === 'average' ? 'average' : 'dominant'
+                      setCoverArtAccentMethod(method)
+                    }}
+                  >
+                    <option value="dominant">Dominant</option>
+                    <option value="average">Average</option>
+                  </select>
+                </label>
+              )}
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">
+                  {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
+                </span>
                 {customAccent ? (
                   <button className="settings-btn" onClick={usePresetAccent}>
                     Use Preset Accent
@@ -350,20 +560,29 @@ export default function SettingsView() {
                   className="settings-btn settings-btn-primary"
                   onClick={() => {
                     resetThemeToDefault()
-                    setAccentInputValue('#38bdf8')
+                    setAccentInputValue(defaultPresetAccent)
                   }}
                 >
                   Reset Theme to Default
                 </button>
               </div>
             </div>
-            <p className="settings-note">The current Astra look is preserved as the default theme preset.</p>
+            <p className="settings-note">The current Astra look is preserved as the default preset.</p>
+            {accentSource === 'cover-art' && (
+              <p className="settings-note">
+                Cover art accents use the selected method on the current track artwork. If artwork is missing, Astra uses the fallback accent color.
+              </p>
+            )}
           </section>
 
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-library"
+            data-settings-section-id="library"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
               <h3>Library</h3>
-              <p>Choose source folders and keep metadata in sync.</p>
+              <p>Manage folders and refresh indexed metadata.</p>
             </div>
             <div className="settings-actions settings-actions-grid">
               <button className="settings-btn settings-btn-primary" onClick={() => setShowFolderSettings(true)}>
@@ -383,13 +602,17 @@ export default function SettingsView() {
                 Rescan Library
               </button>
             </div>
-            <p className="settings-note">Use Manage Folders to review indexed locations and permission warnings.</p>
+            <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
           </section>
 
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-analyzer"
+            data-settings-section-id="analyzer"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
               <h3>Analyzer</h3>
-              <p>Configure FFT resolution and visualizer behavior.</p>
+              <p>FFT and visualizer behavior.</p>
             </div>
             <div className="settings-grid">
               <label className="settings-field">
@@ -428,15 +651,17 @@ export default function SettingsView() {
               </div>
 
             </div>
-            <p className="settings-note">
-              Analyzer controls are centralized here. Visualizer line color follows the active theme accent.
-            </p>
+            <p className="settings-note">Visualizer line color follows the active theme accent.</p>
           </section>
 
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-audio"
+            data-settings-section-id="audio"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
               <h3>Audio Output</h3>
-              <p>Select the playback device used by the player.</p>
+              <p>Output device, delay compensation, and channel routing.</p>
             </div>
             <div className="settings-audio-control">
               <AudioOutputSelect />
@@ -445,10 +670,14 @@ export default function SettingsView() {
             <ChannelRoutingPanel />
           </section>
 
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-integrations"
+            data-settings-section-id="integrations"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
               <h3>Integrations</h3>
-              <p>Enable optional platform integrations. Discord Rich Presence uses the app default configuration.</p>
+              <p>Optional platform integrations.</p>
             </div>
             <div className="settings-grid">
               <div className="settings-field settings-field-inline">
@@ -464,12 +693,21 @@ export default function SettingsView() {
             <p className="settings-note">{discordStatusMessage}</p>
           </section>
 
-          <section className="settings-section settings-section-panel">
+          <section
+            id="settings-section-info"
+            data-settings-section-id="info"
+            className="settings-section settings-section-panel"
+          >
             <div className="settings-section-head">
-              <h3>Updates</h3>
-              <p>Check GitHub releases for new Astra builds.</p>
+              <h3>Info</h3>
+              <p>Version, updates, attribution, and license details.</p>
             </div>
-            <div className="settings-grid">
+            <div className="settings-grid settings-info-grid">
+              <div className="settings-field">
+                <span className="settings-field-label">App Version</span>
+                <span className="settings-info-value">{appVersionLabel}</span>
+              </div>
+
               <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">Auto-check on Startup</span>
                 <button
@@ -496,7 +734,6 @@ export default function SettingsView() {
                 <button
                   className="settings-btn"
                   onClick={() => void openReleasesPage()}
-                  disabled={!updateAvailable}
                 >
                   Open Releases
                 </button>
@@ -513,37 +750,79 @@ export default function SettingsView() {
             <p className="settings-note settings-update-meta">
               {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
             </p>
+            <div className="settings-info-panels">
+              <div className="settings-info-panel">
+                <h4>Attribution</h4>
+                <p>Astra is created and maintained by Boof2015.</p>
+                <p className="settings-info-meta">Contact: contact@novaml.ai</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_REPOSITORY_URL)}
+                  >
+                    GitHub Repository
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_SUPPORT_URL)}
+                  >
+                    Support
+                  </button>
+                </div>
+              </div>
+              <div className="settings-info-panel">
+                <h4>License</h4>
+                <p>Astra is distributed under GPL-3.0-only.</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_LICENSE_URL)}
+                  >
+                    View LICENSE
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(GPL_V3_URL)}
+                  >
+                    GPL v3 Text
+                  </button>
+                </div>
+              </div>
+            </div>
           </section>
 
-          <section className="settings-section settings-section-panel settings-danger-zone">
+          <section
+            id="settings-section-danger"
+            data-settings-section-id="danger"
+            className="settings-section settings-section-panel settings-danger-zone"
+          >
             <div className="settings-section-head">
               <h3>Danger Zone</h3>
-              <p>Use these only when troubleshooting or intentionally wiping settings/data.</p>
+              <p>Use these actions when troubleshooting or intentionally resetting data.</p>
             </div>
-            <div className="settings-danger-list">
-              {resetActions.map((action) => {
-                const status = resetStatuses[action.id]
-                return (
-                  <div key={action.id} className="settings-danger-item">
-                    <div className="settings-danger-item-copy">
-                      <p className="settings-danger-item-title">{action.title}</p>
-                      <p className="settings-danger-item-description">{action.description}</p>
-                      {status.state !== 'idle' && (
-                        <p className={`settings-danger-status settings-danger-status-${status.state}`}>
-                          {status.message}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      className={`settings-btn ${action.destructive ? 'settings-btn-danger' : ''}`}
-                      onClick={() => setPendingResetId(action.id)}
-                      disabled={Boolean(action.disabled) || isAnyResetRunning}
-                    >
-                      {action.buttonLabel}
-                    </button>
-                  </div>
-                )
-              })}
+            <div className="settings-danger-groups">
+              <div className="settings-danger-group">
+                <p className="settings-danger-group-title">Safe Resets</p>
+                <p className="settings-danger-group-description">
+                  Reset app preferences while keeping primary library data.
+                </p>
+                <div className="settings-danger-list">
+                  {safeResetActions.map((action) => renderResetAction(action))}
+                </div>
+              </div>
+              <div className="settings-danger-group settings-danger-group-destructive">
+                <p className="settings-danger-group-title">Destructive Resets</p>
+                <p className="settings-danger-group-description">
+                  Remove indexed media data or perform a full wipe.
+                </p>
+                <div className="settings-danger-list">
+                  {destructiveResetActions.map((action) => renderResetAction(action))}
+                </div>
+              </div>
             </div>
             {isScanning && (
               <p className="settings-note settings-danger-note">

@@ -1,40 +1,52 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import { DEFAULT_THEME_ACCENT } from '../../stores/themeStore'
 
 export interface FullscreenAmbientSpectrumProps {
   className?: string
   opacityIntent?: 'subtle' | 'soft'
 }
 
-function colorWithAlpha(color: string, alpha: number): string {
-  const safeAlpha = Math.max(0, Math.min(1, alpha))
+function colorToRgbChannels(color: string): string | null {
+  const normalizedColor = color.trim()
 
-  if (color.startsWith('#')) {
-    const hex = color.slice(1)
-    const normalized = hex.length === 3
+  if (normalizedColor.startsWith('#')) {
+    const hex = normalizedColor.slice(1)
+    const normalizedHex = hex.length === 3
       ? hex.split('').map((ch) => `${ch}${ch}`).join('')
       : hex
 
-    if (normalized.length === 6) {
-      const r = parseInt(normalized.slice(0, 2), 16)
-      const g = parseInt(normalized.slice(2, 4), 16)
-      const b = parseInt(normalized.slice(4, 6), 16)
-      return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`
+    if (normalizedHex.length === 6) {
+      const r = parseInt(normalizedHex.slice(0, 2), 16)
+      const g = parseInt(normalizedHex.slice(2, 4), 16)
+      const b = parseInt(normalizedHex.slice(4, 6), 16)
+      return `${r}, ${g}, ${b}`
     }
   }
 
-  if (color.startsWith('rgb(')) {
-    const values = color.slice(4, -1)
-    return `rgba(${values}, ${safeAlpha})`
+  if (normalizedColor.startsWith('rgb(')) {
+    return normalizedColor.slice(4, -1).trim()
   }
 
-  if (color.startsWith('rgba(')) {
-    const values = color.slice(5, -1).split(',').slice(0, 3).join(',')
-    return `rgba(${values}, ${safeAlpha})`
+  if (normalizedColor.startsWith('rgba(')) {
+    return normalizedColor.slice(5, -1).split(',').slice(0, 3).map((value) => value.trim()).join(', ')
   }
 
-  return `rgba(56, 189, 248, ${safeAlpha})`
+  return null
+}
+
+function colorWithAlpha(color: string, alpha: number, fallbackColor: string): string {
+  const safeAlpha = Math.max(0, Math.min(1, alpha))
+  const channels = colorToRgbChannels(color)
+    ?? colorToRgbChannels(fallbackColor)
+    ?? colorToRgbChannels(DEFAULT_THEME_ACCENT)
+
+  if (!channels) {
+    return `rgba(0, 0, 0, ${safeAlpha})`
+  }
+
+  return `rgba(${channels}, ${safeAlpha})`
 }
 
 const MIN_FREQ = 20
@@ -117,6 +129,8 @@ export default function FullscreenAmbientSpectrum({
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    const runtimeAccent = window.getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+      || DEFAULT_THEME_ACCENT
 
     const lineAlpha = opacityIntent === 'soft' ? 0.56 : 0.46
     const fillTopAlpha = opacityIntent === 'soft' ? 0.17 : 0.12
@@ -212,9 +226,9 @@ export default function FullscreenAmbientSpectrum({
       ctx.closePath()
 
       const gradient = ctx.createLinearGradient(0, height, 0, 0)
-      gradient.addColorStop(0, colorWithAlpha(lineColor, 0))
-      gradient.addColorStop(0.45, colorWithAlpha(lineColor, fillMidAlpha))
-      gradient.addColorStop(1, colorWithAlpha(lineColor, fillTopAlpha))
+      gradient.addColorStop(0, colorWithAlpha(lineColor, 0, runtimeAccent))
+      gradient.addColorStop(0.45, colorWithAlpha(lineColor, fillMidAlpha, runtimeAccent))
+      gradient.addColorStop(1, colorWithAlpha(lineColor, fillTopAlpha, runtimeAccent))
       ctx.fillStyle = gradient
       ctx.fill()
 
@@ -223,7 +237,7 @@ export default function FullscreenAmbientSpectrum({
       for (let i = 1; i < points.length; i++) {
         ctx.lineTo(points[i].x, points[i].y)
       }
-      ctx.strokeStyle = colorWithAlpha(lineColor, lineAlpha)
+      ctx.strokeStyle = colorWithAlpha(lineColor, lineAlpha, runtimeAccent)
       ctx.lineWidth = 1.8
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
