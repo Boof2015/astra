@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useUpdateStore } from '../../stores/updateStore'
+import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
   cpuPercent: number
@@ -134,7 +135,9 @@ export default function TitleBar() {
 
       {/* App title/logo */}
       <div className="titlebar-title">
-        <span className="titlebar-logo">✦</span>
+        <span className="titlebar-logo">
+          <AstraLogo includeBackground={false} />
+        </span>
         <span>Astra</span>
         {appVersion && <span className="titlebar-version">v{appVersion}</span>}
       </div>

@@ -218,6 +218,39 @@ function deriveAccentRgb(hex: string): string {
   return `${rgb.r}, ${rgb.g}, ${rgb.b}`
 }
 
+function deriveHueFromRgb({ r, g, b }: { r: number; g: number; b: number }): number {
+  const nr = r / 255
+  const ng = g / 255
+  const nb = b / 255
+  const max = Math.max(nr, ng, nb)
+  const min = Math.min(nr, ng, nb)
+  const delta = max - min
+
+  if (delta === 0) return 0
+
+  let hueSegment = 0
+  if (max === nr) {
+    hueSegment = ((ng - nb) / delta) % 6
+  } else if (max === ng) {
+    hueSegment = ((nb - nr) / delta) + 2
+  } else {
+    hueSegment = ((nr - ng) / delta) + 4
+  }
+
+  const hue = (hueSegment * 60 + 360) % 360
+  return Math.round(hue)
+}
+
+export function deriveAccentHue(hex: string): number {
+  const rgb = hexToRgb(hex)
+  if (rgb) return deriveHueFromRgb(rgb)
+
+  const fallbackRgb = hexToRgb(DEFAULT_ACCENT)
+  if (fallbackRgb) return deriveHueFromRgb(fallbackRgb)
+
+  return 199
+}
+
 function deriveAccentText(hex: string, amount: number, fallbackHex: string): string {
   const rgb = hexToRgb(hex)
   if (!rgb) return fallbackHex
@@ -268,6 +301,7 @@ function applyAccentTokensToDocument(accent: string, accentHover: string, accent
   const accentHoverRgb = deriveAccentRgb(accentHover)
   const accentText = deriveAccentText(accent, 0.65, '#bae6fd')
   const accentTextStrong = deriveAccentText(accent, 0.85, '#e0f2fe')
+  const accentHue = deriveAccentHue(accent)
 
   root.style.setProperty('--accent', accent)
   root.style.setProperty('--accent-hover', accentHover)
@@ -276,6 +310,7 @@ function applyAccentTokensToDocument(accent: string, accentHover: string, accent
   root.style.setProperty('--accent-hover-rgb', accentHoverRgb)
   root.style.setProperty('--accent-text', accentText)
   root.style.setProperty('--accent-text-strong', accentTextStrong)
+  root.style.setProperty('--accent-h', `${accentHue}`)
 }
 
 function persistThemeSettings(

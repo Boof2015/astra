@@ -40,6 +40,9 @@ declare global {
                 }>
                 openReleasesPage: () => Promise<boolean>
             }
+            theme: {
+                setRuntimeIconDataUrl: (dataUrl: string) => void
+            }
             discord: {
                 configure: (options: { enabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {

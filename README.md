@@ -70,7 +70,7 @@ For detailed technical documentation — audio pipeline, project structure, arch
 
 ## Support
 
-If you find Astra useful, consider supporting development:
+If you find Astra useful, and want to support a broke college student, consider supporting development:
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/boof2015)
 

@@ -117,6 +117,19 @@
       "icon": "resources/icon.png",
       "category": "Audio"
     },
+    "dmg": {
+      "background": "resources/background.png",
+      "iconSize": 80,
+      "iconTextSize": 12,
+      "window": {
+        "width": 540,
+        "height": 440
+      },
+      "contents": [
+        { "x": 130, "y": 220, "type": "file" },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true

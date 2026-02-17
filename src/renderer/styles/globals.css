@@ -25,6 +25,7 @@
   --accent-glow: rgba(56, 189, 248, 0.3);
   --accent-rgb: 56, 189, 248;
   --accent-hover-rgb: 125, 211, 252;
+  --accent-h: 198;
   --accent-text: #bae6fd;
   --accent-text-strong: #e0f2fe;
 
@@ -172,8 +173,18 @@ button, .titlebar {
 }
 
 .titlebar-logo {
-  color: var(--accent);
-  font-size: 16px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.titlebar-logo > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .titlebar-version {
@@ -4531,8 +4542,8 @@ body::after {
 }
 
 .titlebar-logo {
-  font-size: 11px;
-  color: var(--accent);
+  width: 14px;
+  height: 14px;
 }
 
 .titlebar-version {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -33,6 +33,8 @@ let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
+const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
+const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
 
 // Supported audio formats
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff']
@@ -50,6 +52,32 @@ function getMiniWindowState(): MiniPlayerWindowState {
     : miniWindowPrefs?.alwaysOnTop ?? true
 
   return { isOpen, alwaysOnTop }
+}
+
+function applyRuntimeIconImage(image: Electron.NativeImage): void {
+  if (process.platform === 'darwin') {
+    app.dock?.setIcon(image)
+    return
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setIcon(image)
+  }
+
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.setIcon(image)
+  }
+}
+
+function applyRuntimeIconDataUrl(dataUrl: string): boolean {
+  if (!dataUrl.startsWith(RUNTIME_ICON_DATA_URL_PREFIX)) return false
+  if (dataUrl.length > MAX_RUNTIME_ICON_DATA_URL_LENGTH) return false
+
+  const image = nativeImage.createFromDataURL(dataUrl)
+  if (image.isEmpty()) return false
+
+  applyRuntimeIconImage(image)
+  return true
 }
 
 function broadcastMiniWindowState(): void {
@@ -391,6 +419,21 @@ ipcMain.handle('updates:check', async () => {
 ipcMain.handle('updates:openReleasesPage', async () => {
   await shell.openExternal(RELEASES_PAGE_URL)
   return true
+})
+
+ipcMain.on('theme:setRuntimeIconDataUrl', (_event, dataUrl: unknown) => {
+  if (typeof dataUrl !== 'string') {
+    console.warn('Ignored runtime icon update: payload must be a data URL string')
+    return
+  }
+
+  try {
+    if (!applyRuntimeIconDataUrl(dataUrl)) {
+      console.warn('Ignored runtime icon update: invalid data URL payload')
+    }
+  } catch (error) {
+    console.warn('Failed to apply runtime icon update:', error)
+  }
 })
 
 // Discord Rich Presence

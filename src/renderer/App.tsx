@@ -21,6 +21,7 @@ import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
+import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 
 function App() {
   useKeyboardShortcuts()
@@ -28,6 +29,7 @@ function App() {
   useDiscordPresence()
   useMiniPlayerBridge()
   useCoverArtAccent()
+  useRuntimeAppIconSync()
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)

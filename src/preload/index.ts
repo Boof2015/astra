@@ -246,6 +246,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openReleasesPage: () => ipcRenderer.invoke('updates:openReleasesPage')
   },
 
+  theme: {
+    setRuntimeIconDataUrl: (dataUrl: string) => ipcRenderer.send('theme:setRuntimeIconDataUrl', dataUrl),
+  },
+
   // Integrations
   discord: {
     configure: (options: { enabled: boolean }): Promise<DiscordRpcConfigureResult> =>
@@ -349,6 +353,9 @@ declare global {
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
         openReleasesPage: () => Promise<boolean>
+      }
+      theme: {
+        setRuntimeIconDataUrl: (dataUrl: string) => void
       }
 
       // Integrations
