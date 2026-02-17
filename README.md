@@ -1,91 +1,51 @@
 # Astra
 
-An audiophile-grade desktop music player with real-time visualizers, a professional equalizer, and full library management. Built with Electron, React, and native C++ DSP.
-
+A desktop music player for people who still have a music library.
 
 ![code size](https://img.shields.io/github/languages/code-size/Boof2015/astra)
 ![GitHub Release](https://img.shields.io/github/v/release/Boof2015/astra?include_prereleases)
 ![GitHub License](https://img.shields.io/github/license/Boof2015/astra)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Boof2015/astra/main.yml)
 
+![Astra home page](assets/home.png)
 
-## Features
+Astra is a music player built for local files — your FLACs, your MP3s, your carefully tagged collection. It's designed to sound right, look good, and stay out of the way. Under the hood it uses the Web Audio API and a native C++ DSP module for real-time analysis, but from the outside it's just a nice place to listen to music.
 
-**Playback**
-- Gapless playback with pre-buffering
-- Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF
-- FFmpeg compatibility fallback decode when primary browser decode fails (for example, some EC-3/JOC M4A files)
-- Atmos (EC-3/JOC) metadata detection with compatibility FFmpeg decode into channel-based PCM (up to 5.1); not native Atmos object rendering/passthrough
-- Shuffle, repeat (one/all), and queue management with drag-and-drop
-- Track badges for Atmos and multichannel channel counts in library/now-playing/fullscreen views
-- Optional Discord Rich Presence integration with live track/playback state updates
+![Astra fullscreen mode](assets/Fullscreen.png)
 
-**Visualizers** (native C++ accelerated)
-- Oscilloscope with pitch-lock detection
-- Spectrum analyzer with configurable FFT
-- Vectorscope for stereo phase imaging
-- Analyzer path is tapped post-normalization and independent from output routing/remap, so scopes stay source-faithful
+## Playback
 
-**Equalizer**
-- Up to 10 bands (low shelf, peaking, high shelf)
-- Built-in presets: Bass Boost, Treble Boost, Vocal, Loudness
-- Preamp control (-12 to +12 dB)
-- Real-time frequency response graph with spectrum overlay
-- AutoEQ profile import support (`ParametricEQ.txt`) with preamp/filter parsing into Astra presets (up to 10 bands)
+Gapless playback with pre-buffering, so albums flow the way they're meant to. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF, with an FFmpeg fallback for anything the browser can't decode natively. Shuffle, repeat, and a drag-and-drop queue round out the basics.
 
-**Library**
-- Scan and manage multiple music folders
-- Browse by artist, album, or track
-- Full-text search
-- Automatic metadata extraction and album artwork caching
+## Visualizers
 
-**Audio Settings**
-- Loudness normalization (LUFS-based)
-- Audio output device selection
-- Output channel capability detection (per selected hardware device)
-- Stereo-safe default mode with optional multichannel output mode
-- Per-output channel remapping (including mute) with one-click reset to automatic routing
-- Channel routing panel with mapped-channel status and downmix indicators
+Three real-time visualizers powered by native C++ — an oscilloscope with pitch-lock detection, a spectrum analyzer with configurable FFT, and a vectorscope for stereo phase imaging. The analysis path is tapped independently from your output routing, so the scopes always reflect the source material.
 
-## Audio Pipeline
+## Equalizer
 
-Current playback and analysis paths are intentionally split:
+A fully parametric EQ with up to 10 bands, a live frequency response graph with spectrum overlay, and built-in presets. You can save your own presets, and if you use AutoEQ, you can import headphone calibration profiles directly.
 
-```text
-Playback path:
-Source Buffer
-  -> (optional remap matrix: splitter/merger)
-  -> Normalization Gain
-  -> Preamp / EQ chain
-  -> EQ Analyser (for EQ/fullscreen ambient overlays)
-  -> Master Gain (volume/mute)
-  -> Audio Destination
+![Astra equalizer](assets/EQ.png)
 
-Analysis path (scopes):
-Source Buffer
-  -> Analysis Normalization Gain
-  -> AudioWorklet tap
-  -> Silent sink (keeps worklet pulled)
-```
+## Library
 
-This keeps oscilloscope/spectrum/vectorscope data post-normalization but outside hardware routing/downmix decisions.
+Point Astra at your music folders and it handles the rest — metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. Favorites and recently played are tracked automatically.
+
+## The rest of the experience
+
+Astra has a fullscreen mode with an album art backdrop and ambient spectrum, a mini player for when you want it out of the way, and a home page with a sky that changes with the time of day. The interface adapts its accent color to whatever album art is playing, or you can pick from a handful of dark themes and set your own accent. There's an info sidebar for when you want to see the technical details of a track, and Discord Rich Presence if you like sharing what you're listening to.
+
+## Audio settings
+
+Output device selection, loudness normalization, multichannel support with per-channel remapping, and delay calibration for wireless or Bluetooth speaker setups.
 
 ## Download
 
 Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page.
 
-## Building from Source
+## Building from source
 
-### Prerequisites
-
-- Node.js 18+
-- npm
-- A C++ compiler toolchain (for the native module)
-  - macOS: Xcode Command Line Tools
-  - Windows: Visual Studio Build Tools
-  - Linux: `build-essential`
-
-### Install
+You'll need Node.js 18+, npm, and a C++ compiler toolchain (Xcode CLI tools on macOS, Visual Studio Build Tools on Windows, or `build-essential` on Linux).
 
 ```bash
 git clone https://github.com/Boof2015/astra.git
@@ -93,17 +53,10 @@ cd astra
 npm install
 ```
 
-The `postinstall` script automatically compiles the native C++ visualizer module for your platform.
-
-### Development
+The `postinstall` script compiles the native C++ visualizer module for your platform.
 
 ```bash
-npm run dev
-```
-
-### Build
-
-```bash
+npm run dev              # Development
 npm run build            # Build application assets
 npm run dist             # Package for current platform
 npm run dist:mac         # macOS (DMG + ZIP)
@@ -111,34 +64,9 @@ npm run dist:win         # Windows (NSIS + Portable)
 npm run dist:linux       # Linux (AppImage + DEB)
 ```
 
-## Tech Stack
+## Documentation
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | Electron 40 |
-| UI | React 19, Tailwind CSS 4 |
-| State | Zustand |
-| Build | Vite, electron-vite |
-| Audio | Web Audio API |
-| DSP | Native C++ (N-API) |
-| Database | sql.js (SQLite) |
-| Metadata | music-metadata |
-| Language | TypeScript |
-
-## Project Structure
-
-```
-src/
-  main/           Electron main process, IPC handlers, library DB
-  preload/        Context bridge
-  renderer/
-    audio/        AudioEngine, native module loader, visualizers
-    components/   React UI (layout, library, visualizers, EQ, queue, settings)
-    stores/       Zustand stores (player, library, EQ, audio settings)
-    types/        TypeScript type definitions
-native/
-  src/            C++ visualizer implementations (oscilloscope, spectrum, vectorscope)
-```
+For detailed technical documentation — audio pipeline, project structure, architecture, and more — see the [Wiki](https://github.com/Boof2015/astra/wiki).
 
 ## Support
 
