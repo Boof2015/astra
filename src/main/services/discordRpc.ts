@@ -346,6 +346,12 @@ export class DiscordRpcService {
     const activity = this.buildActivityFromPresence(this.pendingPresence)
     const signature = JSON.stringify(activity)
     if (!force && signature === this.lastPresenceSignature) return
+    
+    // Only send if socket is actually alive
+    if (!this.socket || this.socket.destroyed) {
+      return // Will retry on reconnect, pendingPresence is preserved
+    }
+    
     if (this.sendSetActivity(activity)) {
       this.lastPresenceSignature = signature
     }
