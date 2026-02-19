@@ -345,6 +345,15 @@ export class DiscordRpcService {
   private sendPendingPresence(force = false): void {
     const activity = this.buildActivityFromPresence(this.pendingPresence)
     const signature = JSON.stringify(activity)
+    const socket = this.socket
+    if (!socket || socket.destroyed) {
+      this.ready = false
+      if (this.enabled) {
+        void this.ensureConnected()
+        this.scheduleReconnect()
+      }
+      return
+    }
     if (!force && signature === this.lastPresenceSignature) return
     if (this.sendSetActivity(activity)) {
       this.lastPresenceSignature = signature
