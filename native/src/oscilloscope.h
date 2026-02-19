@@ -66,7 +66,8 @@ private:
     DSP::BiquadFilter displayShelf_;      // High shelf for display
     DSP::BiquadFilter displayLowpass1_;   // First stage of cascaded lowpass
     DSP::BiquadFilter displayLowpass2_;   // Second stage (4th order total = 24dB/oct)
-    std::vector<float> displayBuffer_;    // Filtered samples for display
+    std::vector<float> displayBuffer_;    // Lowpass filtered samples for tracking
+    std::vector<float> visualBuffer_;     // Visual-only samples (display shelf applied)
 
     // Pitch detection lowpass (after existing high shelf)
     DSP::BiquadFilter pitchLowpass1_;     // First stage

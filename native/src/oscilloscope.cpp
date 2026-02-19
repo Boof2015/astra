@@ -26,8 +26,9 @@ Oscilloscope::Oscilloscope()
     // Reduces high frequency interference with pitch detection
     pitchAnalysisShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
 
-    // Initialize display buffer
+    // Initialize analysis and render buffers
     displayBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
+    visualBuffer_.resize(OSCILLOSCOPE_BUFFER_SIZE, 0.0f);
 
     // Initialize display filters (high shelf + cascaded lowpass for steep rolloff)
     displayShelf_.setHighShelf(400.0f, sampleRate_, -3.0f, 0.71f);
@@ -75,10 +76,14 @@ void Oscilloscope::pushSamples(const float* samples, size_t count) {
         // Linear-phase filter provides consistent zero crossings
         filteredBuffer_[writePos_] = bandpassFilter_.process(samples[i]);
 
-        // Apply display filters: cascaded lowpass only (no shelf)
+        // Tracking path: cascaded lowpass only
         float displaySample = displayLowpass1_.process(samples[i]);
         displaySample = displayLowpass2_.process(displaySample);
         displayBuffer_[writePos_] = displaySample;
+
+        // Visual path: high shelf on top of tracking sample
+        float visualSample = displayShelf_.process(displaySample);
+        visualBuffer_[writePos_] = visualSample;
 
         writePos_ = (writePos_ + 1) % OSCILLOSCOPE_BUFFER_SIZE;
     }
@@ -249,7 +254,7 @@ OscilloscopeResult Oscilloscope::processSnapshot(const float* audioData, size_t 
 void Oscilloscope::getSamples(float* output, size_t startPos, size_t count) const {
     for (size_t i = 0; i < count; i++) {
         size_t idx = (startPos + i) % OSCILLOSCOPE_BUFFER_SIZE;
-        output[i] = displayBuffer_[idx];  // Filtered signal for display
+        output[i] = visualBuffer_[idx];  // Visual-only filtered signal
     }
 }
 
@@ -269,7 +274,7 @@ void Oscilloscope::getSamplesInterpolated(float* output, float startPos, size_t 
 
         if (frac < 0.0001f) {
             // No interpolation needed - exact sample position
-            output[i] = displayBuffer_[idx];
+            output[i] = visualBuffer_[idx];
         } else {
             // Cubic (Catmull-Rom) interpolation for smooth sub-sample rendering
             // This eliminates pixel-level ghosting/jitter from truncated trigger positions
@@ -278,10 +283,10 @@ void Oscilloscope::getSamplesInterpolated(float* output, float startPos, size_t 
             size_t i2 = (idx + 1) % OSCILLOSCOPE_BUFFER_SIZE;
             size_t i3 = (idx + 2) % OSCILLOSCOPE_BUFFER_SIZE;
 
-            float y0 = circularBuffer_[i0];
-            float y1 = circularBuffer_[i1];
-            float y2 = circularBuffer_[i2];
-            float y3 = circularBuffer_[i3];
+            float y0 = visualBuffer_[i0];
+            float y1 = visualBuffer_[i1];
+            float y2 = visualBuffer_[i2];
+            float y3 = visualBuffer_[i3];
 
             // Catmull-Rom spline coefficients
             float t = frac;
@@ -320,6 +325,7 @@ void Oscilloscope::reset() {
     std::fill(circularBuffer_.begin(), circularBuffer_.end(), 0.0f);
     std::fill(filteredBuffer_.begin(), filteredBuffer_.end(), 0.0f);
     std::fill(displayBuffer_.begin(), displayBuffer_.end(), 0.0f);
+    std::fill(visualBuffer_.begin(), visualBuffer_.end(), 0.0f);
 }
 
 } // namespace Visualizer
