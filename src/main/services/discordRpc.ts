@@ -7,6 +7,9 @@ const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
 const MAX_RPC_PACKET_SIZE = 1024 * 1024
 const DISCORD_RPC_CLIENT_ID = '1471059486100815915'
+const DISCORD_APP_INFO_LOOKUP_URL = `https://discord.com/api/v10/oauth2/applications/${DISCORD_RPC_CLIENT_ID}/rpc`
+const DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS = 5000
+const DISCORD_RPC_USER_AGENT = 'Astra-Discord-RPC/0.2.0 (https://github.com/Boof2015/astra)'
 
 const OPCODE_HANDSHAKE = 0
 const OPCODE_FRAME = 1
@@ -50,6 +53,10 @@ export interface DiscordRpcConfigureResult {
   ok: boolean
   connected: boolean
   message: string
+}
+
+interface DiscordRpcApplicationInfoResponse {
+  icon?: unknown
 }
 
 function normalizeText(value: unknown): string | undefined {
@@ -140,6 +147,8 @@ export class DiscordRpcService {
   private connectPromise: Promise<boolean> | null = null
   private pendingPresence: DiscordPresenceUpdate | null = null
   private lastPresenceSignature: string | null = null
+  private fallbackLargeImageUrl: string | null = null
+  private fallbackLargeImageLookupPromise: Promise<void> | null = null
 
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
@@ -164,6 +173,9 @@ export class DiscordRpcService {
     }
 
     const connected = await this.ensureConnected()
+    if (!this.fallbackLargeImageUrl) {
+      void this.ensureFallbackLargeImageUrl()
+    }
     if (connected) {
       return {
         ok: true,
@@ -440,13 +452,69 @@ export class DiscordRpcService {
     }
 
     const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence.track.coverArtUrl) : undefined
-    if (coverArtUrl) {
+    const largeImage = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
+    if (largeImage) {
       activity.assets = {
-        large_image: coverArtUrl
+        large_image: largeImage
       }
     }
 
     return activity
+  }
+
+  private async ensureFallbackLargeImageUrl(): Promise<void> {
+    if (this.fallbackLargeImageUrl) return
+    if (this.fallbackLargeImageLookupPromise) {
+      await this.fallbackLargeImageLookupPromise
+      return
+    }
+
+    this.fallbackLargeImageLookupPromise = this.fetchFallbackLargeImageUrl()
+      .catch(() => {
+        // Ignore fallback lookup failures and keep presence updates running.
+      })
+      .finally(() => {
+        this.fallbackLargeImageLookupPromise = null
+      })
+
+    await this.fallbackLargeImageLookupPromise
+  }
+
+  private async fetchFallbackLargeImageUrl(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(DISCORD_APP_INFO_LOOKUP_URL, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': DISCORD_RPC_USER_AGENT
+        },
+        signal: controller.signal
+      })
+
+      if (!response.ok) return
+
+      const payload: unknown = await response.json()
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return
+
+      const iconHash = normalizeText((payload as DiscordRpcApplicationInfoResponse).icon)
+      if (!iconHash) return
+
+      const extension = iconHash.startsWith('a_') ? 'gif' : 'png'
+      const iconUrl = normalizeHttpsUrl(
+        `https://cdn.discordapp.com/app-icons/${DISCORD_RPC_CLIENT_ID}/${iconHash}.${extension}?size=512`
+      )
+      if (!iconUrl) return
+
+      this.fallbackLargeImageUrl = iconUrl
+      if (this.enabled && this.ready && this.pendingPresence) {
+        this.sendPendingPresence(true)
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   private sendFrame(opcode: number, payload: unknown): boolean {
@@ -518,6 +586,9 @@ export class DiscordRpcService {
     const record = payload as Record<string, unknown>
     if (record.evt === 'READY') {
       this.ready = true
+      if (!this.fallbackLargeImageUrl) {
+        void this.ensureFallbackLargeImageUrl()
+      }
       this.sendPendingPresence(true)
       return
     }
