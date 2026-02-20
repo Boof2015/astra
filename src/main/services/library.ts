@@ -2,10 +2,11 @@ import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
 import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath } from 'path'
-import { readdir, stat, mkdir, writeFile, readFile, access, rm } from 'fs/promises'
+import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { fileURLToPath } from 'url'
+import { tmpdir } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 
 // Supported audio extensions
@@ -71,6 +72,39 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export type MetadataSaveMode = 'virtual' | 'file'
+
+export interface MetadataEditChanges {
+  title?: string
+  artist?: string
+  album?: string
+  albumArtist?: string | null
+  genre?: string | null
+  year?: number | null
+  trackNumber?: number | null
+  discNumber?: number | null
+}
+
+export interface MetadataEditRequest {
+  mode: MetadataSaveMode
+  trackPaths: string[]
+  changes: MetadataEditChanges
+}
+
+export interface MetadataEditFailure {
+  trackPath: string
+  message: string
+}
+
+export interface MetadataEditResult {
+  mode: MetadataSaveMode
+  requested: number
+  succeeded: number
+  failed: number
+  updatedTrackPaths: string[]
+  failures: MetadataEditFailure[]
+}
+
 let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
@@ -78,6 +112,69 @@ let playlistCoverDir: string = ''
 const BACKFILL_BATCH_SIZE = 5
 const BACKFILL_PAUSE_MS = 25
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
+const EFFECTIVE_TRACK_SELECT_COLUMNS = `
+  t.id AS id,
+  t.path AS path,
+  COALESCE(o.title, t.title) AS title,
+  COALESCE(o.artist, t.artist) AS artist,
+  COALESCE(o.album, t.album) AS album,
+  COALESCE(o.album_artist, t.album_artist) AS album_artist,
+  t.duration AS duration,
+  COALESCE(o.track_number, t.track_number) AS track_number,
+  COALESCE(o.disc_number, t.disc_number) AS disc_number,
+  COALESCE(o.year, t.year) AS year,
+  COALESCE(o.genre, t.genre) AS genre,
+  t.artwork_hash AS artwork_hash,
+  t.format AS format,
+  t.sample_rate AS sample_rate,
+  t.bit_depth AS bit_depth,
+  t.bitrate AS bitrate,
+  t.channels AS channels,
+  t.codec AS codec,
+  t.codec_profile AS codec_profile,
+  t.is_atmos_joc AS is_atmos_joc,
+  t.added_at AS added_at,
+  t.modified_at AS modified_at
+`
+const EFFECTIVE_TRACK_FROM_CLAUSE = `
+  FROM tracks t
+  LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+`
+
+interface TrackMetadataOverrideRow {
+  title: string | null
+  artist: string | null
+  album: string | null
+  album_artist: string | null
+  genre: string | null
+  year: number | null
+  track_number: number | null
+  disc_number: number | null
+}
+
+interface EditableTrackSnapshot {
+  path: string
+  base: {
+    title: string
+    artist: string
+    album: string
+    albumArtist: string | null
+    genre: string | null
+    year: number | null
+    trackNumber: number | null
+    discNumber: number | null
+  }
+  effective: {
+    title: string
+    artist: string
+    album: string
+    albumArtist: string | null
+    genre: string | null
+    year: number | null
+    trackNumber: number | null
+    discNumber: number | null
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -130,6 +227,48 @@ function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
     })
     return obj as T
   })
+}
+
+function readEffectiveTracks(sql: string): DbTrack[] {
+  if (!db) return []
+  const result = db.exec(sql)
+  if (result.length === 0) return []
+  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
+  const normalized = value.trim()
+  if (!normalized) {
+    throw new Error(`${fieldName} cannot be empty.`)
+  }
+  return normalized
+}
+
+function normalizeOptionalTextField(value: string | null): string | null {
+  if (value === null) return null
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+function normalizeOptionalIntegerField(value: number | null, fieldName: 'year' | 'trackNumber' | 'discNumber'): number | null {
+  if (value === null) return null
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer.`)
+  }
+  return value
+}
+
+function hasOverrideValues(row: TrackMetadataOverrideRow): boolean {
+  return (
+    row.title !== null ||
+    row.artist !== null ||
+    row.album !== null ||
+    row.album_artist !== null ||
+    row.genre !== null ||
+    row.year !== null ||
+    row.track_number !== null ||
+    row.disc_number !== null
+  )
 }
 
 interface CountedDisplayVariant {
@@ -262,10 +401,10 @@ function pickMostFrequentArtworkHash(
 }
 
 function readAllTracksUnordered(): DbTrack[] {
-  if (!db) return []
-  const result = db.exec('SELECT * FROM tracks')
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+  return readEffectiveTracks(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)
 }
 
 function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
@@ -388,6 +527,31 @@ export async function initDatabase(): Promise<void> {
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_metadata_overrides (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      title TEXT,
+      artist TEXT,
+      album TEXT,
+      album_artist TEXT,
+      genre TEXT,
+      year INTEGER,
+      track_number INTEGER,
+      disc_number INTEGER,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (track_path) REFERENCES tracks(path) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_track_metadata_overrides_cleanup
+    AFTER DELETE ON tracks
+    FOR EACH ROW
+    BEGIN
+      DELETE FROM track_metadata_overrides WHERE track_path = OLD.path;
+    END;
   `)
 
   // Schema migration: existing libraries may not have channels yet.
@@ -523,18 +687,16 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
 
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
-  if (!db) return []
-  const result = db.exec(`
-    SELECT * FROM tracks
+  return readEffectiveTracks(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
     ORDER BY
-      title COLLATE NOCASE,
-      album COLLATE NOCASE,
-      COALESCE(disc_number, 0),
-      COALESCE(track_number, 0),
-      path COLLATE NOCASE
+      COALESCE(o.title, t.title) COLLATE NOCASE,
+      COALESCE(o.album, t.album) COLLATE NOCASE,
+      COALESCE(o.disc_number, t.disc_number, 0),
+      COALESCE(o.track_number, t.track_number, 0),
+      t.path COLLATE NOCASE
   `)
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
 
 // Get tracks by artist
@@ -686,14 +848,15 @@ export function searchTracks(query: string): DbTrack[] {
   if (!db) return []
   const pattern = `%${query}%`
   const stmt = db.prepare(`
-    SELECT * FROM tracks
-    WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE COALESCE(o.title, t.title) LIKE ? OR COALESCE(o.artist, t.artist) LIKE ? OR COALESCE(o.album, t.album) LIKE ?
     ORDER BY
-      title COLLATE NOCASE,
-      album COLLATE NOCASE,
-      COALESCE(disc_number, 0),
-      COALESCE(track_number, 0),
-      path COLLATE NOCASE
+      COALESCE(o.title, t.title) COLLATE NOCASE,
+      COALESCE(o.album, t.album) COLLATE NOCASE,
+      COALESCE(o.disc_number, t.disc_number, 0),
+      COALESCE(o.track_number, t.track_number, 0),
+      t.path COLLATE NOCASE
     LIMIT 100
   `)
   stmt.bind([pattern, pattern, pattern])
@@ -704,6 +867,153 @@ export function searchTracks(query: string): DbTrack[] {
   }
   stmt.free()
   return tracks
+}
+
+function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | null {
+  if (!db) return null
+
+  const stmt = db.prepare(`
+    SELECT
+      t.path AS path,
+      t.title AS base_title,
+      t.artist AS base_artist,
+      t.album AS base_album,
+      t.album_artist AS base_album_artist,
+      t.genre AS base_genre,
+      t.year AS base_year,
+      t.track_number AS base_track_number,
+      t.disc_number AS base_disc_number,
+      COALESCE(o.title, t.title) AS effective_title,
+      COALESCE(o.artist, t.artist) AS effective_artist,
+      COALESCE(o.album, t.album) AS effective_album,
+      COALESCE(o.album_artist, t.album_artist) AS effective_album_artist,
+      COALESCE(o.genre, t.genre) AS effective_genre,
+      COALESCE(o.year, t.year) AS effective_year,
+      COALESCE(o.track_number, t.track_number) AS effective_track_number,
+      COALESCE(o.disc_number, t.disc_number) AS effective_disc_number
+    FROM tracks t
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE t.path = ?
+    LIMIT 1
+  `)
+  stmt.bind([trackPath])
+
+  if (!stmt.step()) {
+    stmt.free()
+    return null
+  }
+
+  const row = stmt.getAsObject() as Record<string, unknown>
+  stmt.free()
+
+  const path = toText(row.path)
+  const baseTitle = toText(row.base_title)
+  const baseArtist = toText(row.base_artist)
+  const baseAlbum = toText(row.base_album)
+  const effectiveTitle = toText(row.effective_title)
+  const effectiveArtist = toText(row.effective_artist)
+  const effectiveAlbum = toText(row.effective_album)
+  if (!path || !baseTitle || !baseArtist || !baseAlbum || !effectiveTitle || !effectiveArtist || !effectiveAlbum) {
+    return null
+  }
+
+  return {
+    path,
+    base: {
+      title: baseTitle,
+      artist: baseArtist,
+      album: baseAlbum,
+      albumArtist: toText(row.base_album_artist),
+      genre: toText(row.base_genre),
+      year: toNumber(row.base_year),
+      trackNumber: toNumber(row.base_track_number),
+      discNumber: toNumber(row.base_disc_number)
+    },
+    effective: {
+      title: effectiveTitle,
+      artist: effectiveArtist,
+      album: effectiveAlbum,
+      albumArtist: toText(row.effective_album_artist),
+      genre: toText(row.effective_genre),
+      year: toNumber(row.effective_year),
+      trackNumber: toNumber(row.effective_track_number),
+      discNumber: toNumber(row.effective_disc_number)
+    }
+  }
+}
+
+function buildNextOverrideRow(snapshot: EditableTrackSnapshot, changes: MetadataEditChanges): TrackMetadataOverrideRow {
+  const nextTitle = changes.title === undefined
+    ? snapshot.effective.title
+    : normalizeRequiredTextField(changes.title, 'title')
+  const nextArtist = changes.artist === undefined
+    ? snapshot.effective.artist
+    : normalizeRequiredTextField(changes.artist, 'artist')
+  const nextAlbum = changes.album === undefined
+    ? snapshot.effective.album
+    : normalizeRequiredTextField(changes.album, 'album')
+  const nextAlbumArtist = changes.albumArtist === undefined
+    ? snapshot.effective.albumArtist
+    : normalizeOptionalTextField(changes.albumArtist)
+  const nextGenre = changes.genre === undefined
+    ? snapshot.effective.genre
+    : normalizeOptionalTextField(changes.genre)
+  const nextYear = changes.year === undefined
+    ? snapshot.effective.year
+    : normalizeOptionalIntegerField(changes.year, 'year')
+  const nextTrackNumber = changes.trackNumber === undefined
+    ? snapshot.effective.trackNumber
+    : normalizeOptionalIntegerField(changes.trackNumber, 'trackNumber')
+  const nextDiscNumber = changes.discNumber === undefined
+    ? snapshot.effective.discNumber
+    : normalizeOptionalIntegerField(changes.discNumber, 'discNumber')
+
+  return {
+    title: nextTitle !== snapshot.base.title ? nextTitle : null,
+    artist: nextArtist !== snapshot.base.artist ? nextArtist : null,
+    album: nextAlbum !== snapshot.base.album ? nextAlbum : null,
+    album_artist: nextAlbumArtist !== snapshot.base.albumArtist ? nextAlbumArtist : null,
+    genre: nextGenre !== snapshot.base.genre ? nextGenre : null,
+    year: nextYear !== snapshot.base.year ? nextYear : null,
+    track_number: nextTrackNumber !== snapshot.base.trackNumber ? nextTrackNumber : null,
+    disc_number: nextDiscNumber !== snapshot.base.discNumber ? nextDiscNumber : null
+  }
+}
+
+function upsertTrackMetadataOverride(trackPath: string, row: TrackMetadataOverrideRow): void {
+  if (!db) return
+  if (!hasOverrideValues(row)) {
+    db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
+    return
+  }
+
+  db.run(
+    `INSERT INTO track_metadata_overrides (
+      track_path, title, artist, album, album_artist, genre, year, track_number, disc_number, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(track_path) DO UPDATE SET
+      title = excluded.title,
+      artist = excluded.artist,
+      album = excluded.album,
+      album_artist = excluded.album_artist,
+      genre = excluded.genre,
+      year = excluded.year,
+      track_number = excluded.track_number,
+      disc_number = excluded.disc_number,
+      updated_at = excluded.updated_at`,
+    [
+      trackPath,
+      row.title,
+      row.artist,
+      row.album,
+      row.album_artist,
+      row.genre,
+      row.year,
+      row.track_number,
+      row.disc_number,
+      Date.now()
+    ]
+  )
 }
 
 // Get library folders
@@ -898,6 +1208,7 @@ interface FfprobeAudioMetadata {
 }
 
 let resolvedFfprobeBinaryPath: string | null | undefined
+let resolvedFfmpegBinaryPath: string | null | undefined
 
 function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -965,11 +1276,65 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
   return null
 }
 
+async function resolveFfmpegBinaryPath(): Promise<string | null> {
+  if (resolvedFfmpegBinaryPath !== undefined) {
+    return resolvedFfmpegBinaryPath
+  }
+
+  const isWindows = process.platform === 'win32'
+  const executable = `ffmpeg${isWindows ? '.exe' : ''}`
+  const staticModulePath = await resolveStaticFfmpegBinaryPath()
+  const candidates = [
+    ...(app.isPackaged
+      ? [
+          join(process.resourcesPath, executable),
+          join(process.resourcesPath, 'bin', executable)
+        ]
+      : []),
+    ...(staticModulePath ? [staticModulePath] : []),
+    ...(isWindows
+      ? ['ffmpeg.exe', 'ffmpeg']
+      : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'])
+  ].flatMap((candidate) => {
+    const unpacked = toAsarUnpackedPath(candidate)
+    return unpacked !== candidate ? [candidate, unpacked] : [candidate]
+  })
+
+  for (const candidate of candidates) {
+    if (looksLikePath(candidate)) {
+      try {
+        await access(candidate)
+      } catch {
+        continue
+      }
+    }
+    try {
+      await execFileAsync(candidate, ['-version'], { timeout: 4000, maxBuffer: 64 * 1024 })
+      resolvedFfmpegBinaryPath = candidate
+      return candidate
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  resolvedFfmpegBinaryPath = null
+  return null
+}
+
 async function resolveStaticFfprobeBinaryPath(): Promise<string | null> {
   try {
     const module = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
     const modulePath = module.path ?? module.default?.path
     return typeof modulePath === 'string' ? modulePath : null
+  } catch {
+    return null
+  }
+}
+
+async function resolveStaticFfmpegBinaryPath(): Promise<string | null> {
+  try {
+    const module = await import('ffmpeg-static')
+    return typeof module.default === 'string' ? module.default : null
   } catch {
     return null
   }
@@ -1388,17 +1753,239 @@ export function getTrackCount(): number {
   return result[0].values[0][0] as number
 }
 
+function resolveEditableValuesForSave(
+  snapshot: EditableTrackSnapshot,
+  changes: MetadataEditChanges
+): {
+  title: string
+  artist: string
+  album: string
+  albumArtist: string | null
+  genre: string | null
+  year: number | null
+  trackNumber: number | null
+  discNumber: number | null
+} {
+  const title = changes.title === undefined
+    ? snapshot.effective.title
+    : normalizeRequiredTextField(changes.title, 'title')
+  const artist = changes.artist === undefined
+    ? snapshot.effective.artist
+    : normalizeRequiredTextField(changes.artist, 'artist')
+  const album = changes.album === undefined
+    ? snapshot.effective.album
+    : normalizeRequiredTextField(changes.album, 'album')
+  const albumArtist = changes.albumArtist === undefined
+    ? snapshot.effective.albumArtist
+    : normalizeOptionalTextField(changes.albumArtist)
+  const genre = changes.genre === undefined
+    ? snapshot.effective.genre
+    : normalizeOptionalTextField(changes.genre)
+  const year = changes.year === undefined
+    ? snapshot.effective.year
+    : normalizeOptionalIntegerField(changes.year, 'year')
+  const trackNumber = changes.trackNumber === undefined
+    ? snapshot.effective.trackNumber
+    : normalizeOptionalIntegerField(changes.trackNumber, 'trackNumber')
+  const discNumber = changes.discNumber === undefined
+    ? snapshot.effective.discNumber
+    : normalizeOptionalIntegerField(changes.discNumber, 'discNumber')
+
+  return { title, artist, album, albumArtist, genre, year, trackNumber, discNumber }
+}
+
+function buildFfmpegMetadataArgs(values: {
+  title: string
+  artist: string
+  album: string
+  albumArtist: string | null
+  genre: string | null
+  year: number | null
+  trackNumber: number | null
+  discNumber: number | null
+}): string[] {
+  const args: string[] = [
+    '-metadata', `title=${values.title}`,
+    '-metadata', `artist=${values.artist}`,
+    '-metadata', `album=${values.album}`,
+    '-metadata', `album_artist=${values.albumArtist ?? ''}`,
+    '-metadata', `genre=${values.genre ?? ''}`,
+    '-metadata', `date=${values.year !== null ? String(values.year) : ''}`,
+    '-metadata', `year=${values.year !== null ? String(values.year) : ''}`,
+    '-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`,
+    '-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`
+  ]
+  return args
+}
+
+async function writeTrackMetadataToFile(
+  trackPath: string,
+  values: {
+    title: string
+    artist: string
+    album: string
+    albumArtist: string | null
+    genre: string | null
+    year: number | null
+    trackNumber: number | null
+    discNumber: number | null
+  }
+): Promise<void> {
+  const ffmpegPath = await resolveFfmpegBinaryPath()
+  if (!ffmpegPath) {
+    throw new Error('FFmpeg binary is not available.')
+  }
+
+  const extension = extname(trackPath).toLowerCase()
+  const tempDir = await mkdtemp(join(tmpdir(), 'astra-tag-write-'))
+  const outputPath = join(tempDir, `updated${extension || '.media'}`)
+
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      [
+        '-v', 'error',
+        '-y',
+        '-i', trackPath,
+        '-map', '0',
+        '-c', 'copy',
+        ...buildFfmpegMetadataArgs(values),
+        outputPath
+      ],
+      { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }
+    )
+
+    await copyFile(outputPath, trackPath)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> {
+  if (!db) return
+  const metadata = await extractMetadata(trackPath)
+  const now = Date.now()
+
+  db.run(`
+    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, modified_at=?
+    WHERE path=?
+  `, [
+    metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+    metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+    metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
+    metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, now, trackPath
+  ])
+}
+
+function normalizeMetadataEditChanges(changes: MetadataEditChanges): MetadataEditChanges {
+  const normalized: MetadataEditChanges = {}
+  if (changes.title !== undefined) normalized.title = changes.title
+  if (changes.artist !== undefined) normalized.artist = changes.artist
+  if (changes.album !== undefined) normalized.album = changes.album
+  if (changes.albumArtist !== undefined) normalized.albumArtist = changes.albumArtist
+  if (changes.genre !== undefined) normalized.genre = changes.genre
+  if (changes.year !== undefined) normalized.year = changes.year
+  if (changes.trackNumber !== undefined) normalized.trackNumber = changes.trackNumber
+  if (changes.discNumber !== undefined) normalized.discNumber = changes.discNumber
+  return normalized
+}
+
+function normalizeMetadataEditTrackPaths(trackPaths: string[]): string[] {
+  const normalizedPaths = trackPaths
+    .map((path) => path.trim())
+    .filter((path) => path.length > 0)
+  return Array.from(new Set(normalizedPaths))
+}
+
+export function getMetadataOverridePaths(): string[] {
+  if (!db) return []
+  const result = db.exec('SELECT track_path FROM track_metadata_overrides ORDER BY track_path COLLATE NOCASE')
+  if (result.length === 0) return []
+  return result[0].values.map((row) => String(row[0]))
+}
+
+export async function clearMetadataOverrides(trackPaths: string[]): Promise<{ cleared: number }> {
+  if (!db) return { cleared: 0 }
+  const normalizedPaths = normalizeMetadataEditTrackPaths(trackPaths)
+  if (normalizedPaths.length === 0) return { cleared: 0 }
+
+  const placeholders = normalizedPaths.map(() => '?').join(', ')
+  db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, normalizedPaths)
+  const changesResult = db.exec('SELECT changes() as count')
+  const cleared = changesResult.length > 0 ? Number(changesResult[0].values[0][0] ?? 0) : 0
+  await saveDatabase()
+  return { cleared: Number.isFinite(cleared) ? cleared : 0 }
+}
+
+export async function saveMetadataEdits(request: MetadataEditRequest): Promise<MetadataEditResult> {
+  if (!db) {
+    throw new Error('Database not initialized')
+  }
+
+  const mode = request.mode
+  if (mode !== 'virtual' && mode !== 'file') {
+    throw new Error('Invalid metadata save mode.')
+  }
+
+  const normalizedPaths = normalizeMetadataEditTrackPaths(request.trackPaths)
+  const normalizedChanges = normalizeMetadataEditChanges(request.changes)
+  if (normalizedPaths.length === 0) {
+    throw new Error('No track paths were provided.')
+  }
+  if (Object.keys(normalizedChanges).length === 0) {
+    throw new Error('No metadata changes were provided.')
+  }
+
+  const failures: MetadataEditFailure[] = []
+  const updatedTrackPaths: string[] = []
+
+  for (const trackPath of normalizedPaths) {
+    try {
+      const snapshot = getEditableTrackSnapshot(trackPath)
+      if (!snapshot) {
+        throw new Error('Track not found in library.')
+      }
+
+      if (mode === 'virtual') {
+        const row = buildNextOverrideRow(snapshot, normalizedChanges)
+        upsertTrackMetadataOverride(trackPath, row)
+      } else {
+        const resolvedValues = resolveEditableValuesForSave(snapshot, normalizedChanges)
+        await writeTrackMetadataToFile(trackPath, resolvedValues)
+        await updateTrackRowFromFileMetadata(trackPath)
+        db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
+      }
+
+      updatedTrackPaths.push(trackPath)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown metadata write failure.'
+      failures.push({ trackPath, message })
+    }
+  }
+
+  if (updatedTrackPaths.length > 0) {
+    await saveDatabase()
+  }
+
+  return {
+    mode,
+    requested: normalizedPaths.length,
+    succeeded: updatedTrackPaths.length,
+    failed: failures.length,
+    updatedTrackPaths,
+    failures
+  }
+}
+
 // ── Favorites ────────────────────────────────────────────
 
 export function getFavorites(): DbTrack[] {
-  if (!db) return []
-  const result = db.exec(`
-    SELECT t.* FROM tracks t
+  return readEffectiveTracks(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
     INNER JOIN favorites f ON f.track_path = t.path
     ORDER BY f.added_at DESC
   `)
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
 
 export function getFavoritePaths(): string[] {
@@ -1423,15 +2010,13 @@ export async function removeFavorite(trackPath: string): Promise<void> {
 // ── Recently Played ──────────────────────────────────────
 
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
-  if (!db) return []
-  const result = db.exec(`
-    SELECT t.* FROM tracks t
+  return readEffectiveTracks(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
     INNER JOIN recently_played r ON r.track_path = t.path
     ORDER BY r.played_at DESC
     LIMIT ${limit}
   `)
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
 
 export async function addRecentlyPlayed(trackPath: string): Promise<void> {
@@ -1527,15 +2112,13 @@ export async function markPlaylistPlayed(id: number): Promise<void> {
 }
 
 export function getPlaylistTracks(playlistId: number): DbTrack[] {
-  if (!db) return []
-  const result = db.exec(`
-    SELECT t.* FROM tracks t
+  return readEffectiveTracks(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
     INNER JOIN playlist_tracks pt ON pt.track_path = t.path
     WHERE pt.playlist_id = ${playlistId}
     ORDER BY pt.position
   `)
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
 }
 
 export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {

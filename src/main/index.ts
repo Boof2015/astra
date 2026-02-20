@@ -623,6 +623,18 @@ ipcMain.handle('library:search', (_event, query: string) => {
   return library.searchTracks(query)
 })
 
+ipcMain.handle('library:getMetadataOverridePaths', () => {
+  return library.getMetadataOverridePaths()
+})
+
+ipcMain.handle('library:clearMetadataOverrides', async (_event, trackPaths: string[]) => {
+  return library.clearMetadataOverrides(trackPaths)
+})
+
+ipcMain.handle('library:saveMetadataEdits', async (_event, request: library.MetadataEditRequest) => {
+  return library.saveMetadataEdits(request)
+})
+
 // Get library folders
 ipcMain.handle('library:getFolders', () => {
   return library.getLibraryFolders()

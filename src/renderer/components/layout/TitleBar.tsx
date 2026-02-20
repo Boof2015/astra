@@ -7,6 +7,8 @@ interface AppPerformanceStats {
   memoryMb: number
 }
 
+const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
+
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [appVersion, setAppVersion] = useState('')
@@ -116,6 +118,9 @@ export default function TitleBar() {
     setIsMaximized(maximized ?? false)
   }
   const handleClose = () => window.electronAPI?.close()
+  const handleOpenSupport = () => {
+    window.open(ASTRA_SUPPORT_URL, '_blank', 'noopener,noreferrer')
+  }
 
   const formattedCpu = appStats ? `${Math.max(0, Math.round(appStats.cpuPercent))}%` : '\u2014'
   const formattedMemory = appStats
@@ -135,9 +140,18 @@ export default function TitleBar() {
 
       {/* App title/logo */}
       <div className="titlebar-title">
-        <span className="titlebar-logo">
-          <AstraLogo includeBackground={false} />
-        </span>
+        <button
+          type="button"
+          className="titlebar-logo-link"
+          onClick={handleOpenSupport}
+          aria-label="Support Astra on Ko-fi"
+          title="Support Astra on Ko-fi"
+        >
+          <span className="titlebar-logo">
+            <AstraLogo includeBackground={false} />
+          </span>
+          <span className="titlebar-logo-heart" aria-hidden="true" />
+        </button>
         <span>Astra</span>
         {appVersion && <span className="titlebar-version">v{appVersion}</span>}
       </div>

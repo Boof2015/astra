@@ -115,6 +115,39 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export type MetadataSaveMode = 'virtual' | 'file'
+
+export interface MetadataEditChanges {
+  title?: string
+  artist?: string
+  album?: string
+  albumArtist?: string | null
+  genre?: string | null
+  year?: number | null
+  trackNumber?: number | null
+  discNumber?: number | null
+}
+
+export interface MetadataEditRequest {
+  mode: MetadataSaveMode
+  trackPaths: string[]
+  changes: MetadataEditChanges
+}
+
+export interface MetadataEditFailure {
+  trackPath: string
+  message: string
+}
+
+export interface MetadataEditResult {
+  mode: MetadataSaveMode
+  requested: number
+  succeeded: number
+  failed: number
+  updatedTrackPaths: string[]
+  failures: MetadataEditFailure[]
+}
+
 export interface AppPerformanceStats {
   cpuPercent: number
   memoryMb: number
@@ -329,6 +362,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getArtists: () => ipcRenderer.invoke('library:getArtists'),
     getAlbums: () => ipcRenderer.invoke('library:getAlbums'),
     search: (query: string) => ipcRenderer.invoke('library:search', query),
+    getMetadataOverridePaths: () => ipcRenderer.invoke('library:getMetadataOverridePaths'),
+    clearMetadataOverrides: (trackPaths: string[]) => ipcRenderer.invoke('library:clearMetadataOverrides', trackPaths),
+    saveMetadataEdits: (request: MetadataEditRequest) => ipcRenderer.invoke('library:saveMetadataEdits', request),
     getFolders: () => ipcRenderer.invoke('library:getFolders'),
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
@@ -443,6 +479,9 @@ declare global {
         getArtists: () => Promise<Artist[]>
         getAlbums: () => Promise<Album[]>
         search: (query: string) => Promise<DbTrack[]>
+        getMetadataOverridePaths: () => Promise<string[]>
+        clearMetadataOverrides: (trackPaths: string[]) => Promise<{ cleared: number }>
+        saveMetadataEdits: (request: MetadataEditRequest) => Promise<MetadataEditResult>
         getFolders: () => Promise<LibraryFolder[]>
         addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist'
+export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
 
 interface UIStore {
   activeView: AppView
