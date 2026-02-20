@@ -8591,44 +8591,102 @@ body::after {
   gap: 12px;
 }
 
-.metadata-track-table-wrap {
+.metadata-track-list {
+  --metadata-row-height: 38px;
   min-height: 0;
   height: 100%;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--glass-border);
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.2);
+  overflow: hidden;
 }
 
-.metadata-track-table {
-  width: 100%;
-  border-collapse: collapse;
+.metadata-track-list-header {
+  display: flex;
+  flex-shrink: 0;
   font-size: 12px;
 }
 
-.metadata-track-table th,
-.metadata-track-table td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--glass-border);
+.metadata-track-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.metadata-track-table tbody tr {
+.metadata-track-list-virtualized {
+  width: 100%;
+}
+
+.metadata-track-list-item {
+  box-sizing: border-box;
+}
+
+.metadata-track-row {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
   cursor: pointer;
 }
 
-.metadata-track-table tbody tr:hover {
+.metadata-track-row:hover {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.metadata-track-table tbody tr.selected {
+.metadata-track-row.selected {
   background: rgba(var(--accent-rgb), 0.12);
 }
 
-.metadata-track-table th:first-child,
-.metadata-track-table td:first-child {
+.metadata-track-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--glass-border);
+  font-size: 12px;
+}
+
+.metadata-track-list-header .metadata-track-cell {
+  font-weight: 600;
+}
+
+.metadata-track-cell-select {
   width: 34px;
-  text-align: center;
+  flex-shrink: 0;
+  justify-content: center;
+}
+
+.metadata-track-cell-title {
+  flex: 2.1;
+}
+
+.metadata-track-cell-artist {
+  flex: 1.8;
+}
+
+.metadata-track-cell-album {
+  flex: 1.8;
+}
+
+.metadata-track-cell-format {
+  width: 66px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.metadata-track-cell-override {
+  width: 88px;
+  flex-shrink: 0;
+}
+
+.metadata-track-list-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .metadata-col-title {

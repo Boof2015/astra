@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { List, RowComponentProps } from 'react-window'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/metadataEditorStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
@@ -48,6 +49,94 @@ type TrackRecord = {
   disc_number: number | null
   format: string
 }
+
+interface MetadataRowSelectionOptions {
+  shift: boolean
+  additive: boolean
+  fromCheckbox: boolean
+}
+
+interface MetadataTrackRowSharedProps {
+  filteredTracks: TrackRecord[]
+  selectedPaths: Set<string>
+  overridePaths: Set<string>
+  onRowSelection: (trackPath: string, rowIndex: number, options: MetadataRowSelectionOptions) => void
+}
+
+const METADATA_ROW_HEIGHT_FALLBACK_PX = 38
+const METADATA_LIST_OVERSCAN_COUNT = 8
+
+function resolveMetadataRowHeightPx(element: HTMLElement | null): number {
+  if (!element) return METADATA_ROW_HEIGHT_FALLBACK_PX
+
+  const cssValue = getComputedStyle(element).getPropertyValue('--metadata-row-height').trim()
+  const parsed = Number.parseFloat(cssValue)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.round(parsed)
+  }
+
+  return METADATA_ROW_HEIGHT_FALLBACK_PX
+}
+
+function MetadataTrackRowRenderer({
+  ariaAttributes,
+  index,
+  style,
+  filteredTracks,
+  selectedPaths,
+  overridePaths,
+  onRowSelection
+}: RowComponentProps<MetadataTrackRowSharedProps>): ReactElement | null {
+  const track = filteredTracks[index]
+  if (!track) return null
+
+  const isSelected = selectedPaths.has(track.path)
+  const hasOverride = overridePaths.has(track.path)
+
+  return (
+    <div className="metadata-track-list-item" style={style as CSSProperties} {...ariaAttributes}>
+      <div
+        className={`metadata-track-row ${isSelected ? 'selected' : ''}`}
+        onClick={(event) => {
+          onRowSelection(track.path, index, {
+            shift: event.shiftKey,
+            additive: event.metaKey || event.ctrlKey,
+            fromCheckbox: false
+          })
+        }}
+      >
+        <div className="metadata-track-cell metadata-track-cell-select">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onClick={(event) => {
+              event.stopPropagation()
+              event.preventDefault()
+              onRowSelection(track.path, index, {
+                shift: event.shiftKey,
+                additive: event.metaKey || event.ctrlKey,
+                fromCheckbox: true
+              })
+            }}
+            onChange={() => undefined}
+            aria-label={`Select ${track.title}`}
+          />
+        </div>
+        <div className="metadata-track-cell metadata-track-cell-title metadata-col-title">{track.title}</div>
+        <div className="metadata-track-cell metadata-track-cell-artist">{track.artist}</div>
+        <div className="metadata-track-cell metadata-track-cell-album">{track.album}</div>
+        <div className="metadata-track-cell metadata-track-cell-format">{track.format.toUpperCase()}</div>
+        <div className="metadata-track-cell metadata-track-cell-override">
+          {hasOverride ? <span className="metadata-override-badge">virtual</span> : <span className="metadata-override-badge muted">base</span>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const MetadataTrackRow = memo(MetadataTrackRowRenderer) as (
+  props: RowComponentProps<MetadataTrackRowSharedProps>
+) => ReactElement | null
 
 function createDraftFromCommon(common: SelectionCommonState): DraftState {
   return {
@@ -141,6 +230,10 @@ export default function MetadataView() {
   const [validationError, setValidationError] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [showFailureDetails, setShowFailureDetails] = useState(false)
+  const [listViewportHeight, setListViewportHeight] = useState(0)
+  const [metadataRowHeight, setMetadataRowHeight] = useState(METADATA_ROW_HEIGHT_FALLBACK_PX)
+
+  const metadataListBodyRef = useRef<HTMLDivElement | null>(null)
 
   const reloadEditorTracks = useCallback(async (): Promise<TrackRecord[]> => {
     setIsTracksLoading(true)
@@ -177,6 +270,37 @@ export default function MetadataView() {
       )
     })
   }, [normalizedQuery, tracks])
+
+  useLayoutEffect(() => {
+    const element = metadataListBodyRef.current
+    if (!element) return
+
+    const updateMeasurements = () => {
+      const nextHeight = Math.max(0, Math.round(element.clientHeight))
+      const nextRowHeight = resolveMetadataRowHeightPx(element)
+
+      setListViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+      setMetadataRowHeight((previous) => (previous === nextRowHeight ? previous : nextRowHeight))
+    }
+
+    updateMeasurements()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateMeasurements)
+      return () => {
+        window.removeEventListener('resize', updateMeasurements)
+      }
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateMeasurements()
+    })
+    resizeObserver.observe(element)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [])
 
   useEffect(() => {
     setLastSelectionIndex(null)
@@ -235,11 +359,7 @@ export default function MetadataView() {
     }))
   }, [])
 
-  const handleRowSelection = useCallback((trackPath: string, rowIndex: number, options: {
-    shift: boolean
-    additive: boolean
-    fromCheckbox: boolean
-  }) => {
+  const handleRowSelection = useCallback((trackPath: string, rowIndex: number, options: MetadataRowSelectionOptions) => {
     setSelectedPaths((current) => {
       const next = new Set(current)
 
@@ -425,6 +545,13 @@ export default function MetadataView() {
   }, [draft])
 
   const selectedCount = selectedPaths.size
+  const metadataRowProps = useMemo<MetadataTrackRowSharedProps>(() => ({
+    filteredTracks,
+    selectedPaths,
+    overridePaths,
+    onRowSelection: handleRowSelection
+  }), [filteredTracks, selectedPaths, overridePaths, handleRowSelection])
+  const metadataListHeight = listViewportHeight > 0 ? listViewportHeight : metadataRowHeight
 
   return (
     <div className="metadata-view">
@@ -507,80 +634,45 @@ export default function MetadataView() {
       </div>
 
       <div className="metadata-body">
-        <div className="metadata-track-table-wrap">
-          <table className="metadata-track-table">
-            <thead>
-              <tr>
-                <th>
-                  <input
-                    type="checkbox"
-                    checked={allVisibleSelected && filteredTracks.length > 0}
-                    ref={(element) => {
-                      if (element) {
-                        element.indeterminate = anyVisibleSelected && !allVisibleSelected
-                      }
-                    }}
-                    onChange={handleToggleAllVisible}
-                    aria-label="Toggle all visible tracks"
-                  />
-                </th>
-                <th>Title</th>
-                <th>Artist</th>
-                <th>Album</th>
-                <th>Fmt</th>
-                <th>Override</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredTracks.map((track, index) => {
-                const isSelected = selectedPaths.has(track.path)
-                const hasOverride = overridePaths.has(track.path)
-                return (
-                  <tr
-                    key={track.path}
-                    className={isSelected ? 'selected' : ''}
-                    onClick={(event) => {
-                      handleRowSelection(track.path, index, {
-                        shift: event.shiftKey,
-                        additive: event.metaKey || event.ctrlKey,
-                        fromCheckbox: false
-                      })
-                    }}
-                  >
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          event.preventDefault()
-                          handleRowSelection(track.path, index, {
-                            shift: event.shiftKey,
-                            additive: event.metaKey || event.ctrlKey,
-                            fromCheckbox: true
-                          })
-                        }}
-                        onChange={() => undefined}
-                        aria-label={`Select ${track.title}`}
-                      />
-                    </td>
-                    <td className="metadata-col-title">{track.title}</td>
-                    <td>{track.artist}</td>
-                    <td>{track.album}</td>
-                    <td>{track.format.toUpperCase()}</td>
-                    <td>
-                      {hasOverride ? <span className="metadata-override-badge">virtual</span> : <span className="metadata-override-badge muted">base</span>}
-                    </td>
-                  </tr>
-                )
-              })}
-              {filteredTracks.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="metadata-empty-cell">No tracks match your search.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="metadata-track-list">
+          <div className="metadata-track-list-header">
+            <div className="metadata-track-cell metadata-track-cell-select">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected && filteredTracks.length > 0}
+                ref={(element) => {
+                  if (element) {
+                    element.indeterminate = anyVisibleSelected && !allVisibleSelected
+                  }
+                }}
+                onChange={handleToggleAllVisible}
+                aria-label="Toggle all visible tracks"
+              />
+            </div>
+            <div className="metadata-track-cell metadata-track-cell-title">Title</div>
+            <div className="metadata-track-cell metadata-track-cell-artist">Artist</div>
+            <div className="metadata-track-cell metadata-track-cell-album">Album</div>
+            <div className="metadata-track-cell metadata-track-cell-format">Fmt</div>
+            <div className="metadata-track-cell metadata-track-cell-override">Override</div>
+          </div>
+          <div className="metadata-track-list-body" ref={metadataListBodyRef}>
+            {filteredTracks.length === 0 ? (
+              <div className="metadata-track-list-empty">
+                <div className="metadata-empty-cell">No tracks match your search.</div>
+              </div>
+            ) : (
+              <List
+                className="metadata-track-list-virtualized"
+                defaultHeight={METADATA_ROW_HEIGHT_FALLBACK_PX * 8}
+                overscanCount={METADATA_LIST_OVERSCAN_COUNT}
+                rowComponent={MetadataTrackRow}
+                rowCount={filteredTracks.length}
+                rowHeight={metadataRowHeight}
+                rowProps={metadataRowProps}
+                style={{ height: metadataListHeight, width: '100%' }}
+              />
+            )}
+          </div>
         </div>
 
         <div className="metadata-form-panel">
