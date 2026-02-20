@@ -21,6 +21,8 @@ export interface DiscordTrackPresence {
   title: string
   artist?: string
   album?: string
+  albumArtist?: string
+  coverArtUrl?: string
   durationSeconds?: number
   format?: string
   sampleRate?: number
@@ -41,6 +43,7 @@ export interface DiscordPresenceUpdate {
 
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
+  coverArtEnabled?: boolean
 }
 
 export interface DiscordRpcConfigureResult {
@@ -64,6 +67,20 @@ function normalizeNumber(value: unknown): number | undefined {
 
 function normalizeBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined
+}
+
+function normalizeHttpsUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  if (!normalized) return undefined
+
+  try {
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'https:') return undefined
+    return parsed.toString()
+  } catch {
+    return undefined
+  }
 }
 
 function truncate(value: string, maxLength: number): string {
@@ -115,6 +132,7 @@ function buildQualityLine(track: DiscordTrackPresence): string | null {
 
 export class DiscordRpcService {
   private enabled = false
+  private coverArtEnabled = false
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -125,9 +143,11 @@ export class DiscordRpcService {
 
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
+    const nextCoverArtEnabled = Boolean(options.coverArtEnabled)
     const enabledChanged = this.enabled !== nextEnabled
 
     this.enabled = nextEnabled
+    this.coverArtEnabled = nextCoverArtEnabled
 
     if (!this.enabled) {
       this.clearReconnectTimer()
@@ -170,6 +190,8 @@ export class DiscordRpcService {
             title: update.track.title,
             artist: normalizeText(update.track.artist),
             album: normalizeText(update.track.album),
+            albumArtist: normalizeText(update.track.albumArtist),
+            coverArtUrl: normalizeHttpsUrl(update.track.coverArtUrl),
             durationSeconds: normalizeNumber(update.track.durationSeconds),
             format: normalizeText(update.track.format),
             sampleRate: normalizeNumber(update.track.sampleRate),
@@ -414,6 +436,13 @@ export class DiscordRpcService {
         }
       } else {
         activity.timestamps = { start }
+      }
+    }
+
+    const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence.track.coverArtUrl) : undefined
+    if (coverArtUrl) {
+      activity.assets = {
+        large_image: coverArtUrl
       }
     }
 

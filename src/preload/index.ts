@@ -17,6 +17,7 @@ export interface AudioFileResult {
     title?: string
     artist?: string
     album?: string
+    albumArtist?: string
     year?: number
     trackNumber?: number
     duration?: number
@@ -123,6 +124,8 @@ export interface DiscordTrackPresence {
   title: string
   artist?: string
   album?: string
+  albumArtist?: string
+  coverArtUrl?: string
   durationSeconds?: number
   format?: string
   sampleRate?: number
@@ -146,6 +149,17 @@ export interface DiscordRpcConfigureResult {
   connected: boolean
   message: string
 }
+
+export interface DiscordCoverArtLookupQuery {
+  album: string
+  artist?: string
+  albumArtist?: string
+}
+
+export type DiscordCoverArtLookupResult =
+  | { status: 'hit'; url: string }
+  | { status: 'not_found' }
+  | { status: 'transient_error'; code?: string }
 
 export type UpdateCheckStatus = 'up-to-date' | 'update-available' | 'error'
 
@@ -285,10 +299,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Integrations
   discord: {
-    configure: (options: { enabled: boolean }): Promise<DiscordRpcConfigureResult> =>
+    configure: (options: { enabled: boolean; coverArtEnabled: boolean }): Promise<DiscordRpcConfigureResult> =>
       ipcRenderer.invoke('discord:configure', options),
     updatePresence: (update: DiscordPresenceUpdate) => ipcRenderer.send('discord:updatePresence', update),
-    clearPresence: () => ipcRenderer.send('discord:clearPresence')
+    clearPresence: () => ipcRenderer.send('discord:clearPresence'),
+    resolveCoverArt: (query: DiscordCoverArtLookupQuery): Promise<DiscordCoverArtLookupResult> =>
+      ipcRenderer.invoke('discord:resolveCoverArt', query)
   },
 
   // File operations
@@ -401,9 +417,10 @@ declare global {
 
       // Integrations
       discord: {
-        configure: (options: { enabled: boolean }) => Promise<DiscordRpcConfigureResult>
+        configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<DiscordRpcConfigureResult>
         updatePresence: (update: DiscordPresenceUpdate) => void
         clearPresence: () => void
+        resolveCoverArt: (query: DiscordCoverArtLookupQuery) => Promise<DiscordCoverArtLookupResult>
       }
 
       // File operations

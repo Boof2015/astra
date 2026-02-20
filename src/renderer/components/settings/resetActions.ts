@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
@@ -15,6 +16,9 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
   'astra-discord-rpc-enabled',
+  'astra-discord-rpc-cover-art-enabled',
+  'astra-discord-cover-art-cache-v1',
+  'astra-discord-cover-art-cache-v2',
   'astra-updates-auto-check-enabled',
   'astra-eq-custom-presets',
 ] as const
@@ -38,6 +42,11 @@ export async function resetAudioSettings(): Promise<string> {
 export async function resetIntegrationSettings(): Promise<string> {
   await useDiscordSettingsStore.getState().resetToDefaults()
   return 'Integrations reset.'
+}
+
+export async function resetDiscordCoverArtCache(): Promise<string> {
+  clearDiscordCoverArtLookupCache()
+  return 'Discord cover art lookup cache reset.'
 }
 
 export async function resetEqSettings(): Promise<string> {

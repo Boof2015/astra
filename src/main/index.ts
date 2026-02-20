@@ -5,7 +5,12 @@ import { tmpdir } from 'os'
 import { execFile, type ExecFileOptions } from 'child_process'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
-import { discordRpcService, type DiscordPresenceUpdate } from './services/discordRpc'
+import {
+  discordRpcService,
+  type DiscordPresenceUpdate,
+  type DiscordRpcConfigureOptions
+} from './services/discordRpc'
+import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import {
   MINI_WINDOW_MIN_HEIGHT,
@@ -470,7 +475,7 @@ ipcMain.on('theme:setRuntimeIconDataUrl', (_event, dataUrl: unknown) => {
 })
 
 // Discord Rich Presence
-ipcMain.handle('discord:configure', async (_event, options: { enabled: boolean }) => {
+ipcMain.handle('discord:configure', async (_event, options: DiscordRpcConfigureOptions) => {
   return discordRpcService.configure(options)
 })
 
@@ -480,6 +485,18 @@ ipcMain.on('discord:updatePresence', (_event, update: DiscordPresenceUpdate) => 
 
 ipcMain.on('discord:clearPresence', () => {
   discordRpcService.clearPresence()
+})
+
+ipcMain.handle('discord:resolveCoverArt', async (_event, query: unknown) => {
+  if (!query || typeof query !== 'object') return { status: 'not_found' as const }
+  const normalized = query as Record<string, unknown>
+  if (typeof normalized.album !== 'string') return { status: 'not_found' as const }
+
+  return resolveDiscordCoverArtUrl({
+    album: normalized.album,
+    artist: typeof normalized.artist === 'string' ? normalized.artist : undefined,
+    albumArtist: typeof normalized.albumArtist === 'string' ? normalized.albumArtist : undefined
+  })
 })
 
 // ============================================
@@ -826,6 +843,7 @@ interface LoadedAudioMetadata {
   title: string
   artist: string
   album: string
+  albumArtist?: string
   duration?: number
   format: string
   artwork?: string
@@ -1134,6 +1152,7 @@ async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {
         title: common.title || fallbackTitle,
         artist: common.artist || 'Unknown Artist',
         album: common.album || 'Unknown Album',
+        albumArtist: typeof common.albumartist === 'string' ? common.albumartist : undefined,
         duration: mm_metadata.format.duration,
         format,
         artwork: artworkDataUrl,

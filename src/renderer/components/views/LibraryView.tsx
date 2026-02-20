@@ -87,6 +87,7 @@ export default function LibraryView() {
         title: result.metadata?.title ?? result.name,
         artist: result.metadata?.artist ?? 'Unknown Artist',
         album: result.metadata?.album ?? 'Unknown Album',
+        albumArtist: result.metadata?.albumArtist,
         duration: result.metadata?.duration ?? 0,
         format: result.metadata?.format ?? 'unknown',
         artworkData: result.metadata?.artwork,

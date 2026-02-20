@@ -653,6 +653,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           title: result.metadata?.title ?? track.title,
           artist: result.metadata?.artist ?? track.artist,
           album: result.metadata?.album ?? track.album,
+          albumArtist: result.metadata?.albumArtist ?? track.albumArtist,
           duration: result.metadata?.duration ?? track.duration,
           channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
           codec: result.metadata?.codec ?? track.codec,

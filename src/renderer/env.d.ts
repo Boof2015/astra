@@ -53,7 +53,7 @@ declare global {
                 setRuntimeIconDataUrl: (dataUrl: string) => void
             }
             discord: {
-                configure: (options: { enabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
+                configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {
                     playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
                     currentTimeSeconds?: number
@@ -62,6 +62,8 @@ declare global {
                         title: string
                         artist?: string
                         album?: string
+                        albumArtist?: string
+                        coverArtUrl?: string
                         durationSeconds?: number
                         format?: string
                         sampleRate?: number
@@ -74,6 +76,11 @@ declare global {
                     } | null
                 }) => void
                 clearPresence: () => void
+                resolveCoverArt: (query: { album: string; artist?: string; albumArtist?: string }) => Promise<
+                    | { status: 'hit'; url: string }
+                    | { status: 'not_found' }
+                    | { status: 'transient_error'; code?: string }
+                >
             }
             openAudioFile: () => Promise<any>
             openAudioFolder: () => Promise<string | null>

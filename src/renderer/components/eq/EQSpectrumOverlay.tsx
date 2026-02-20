@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
+import { colorToRgbChannels } from '../visualizers/ambientSpectrumMath'
 
 const MIN_FREQ = 20
 const MAX_FREQ = 20000
@@ -10,6 +11,8 @@ const LOG_MAX = Math.log10(MAX_FREQ)
 const SPEC_MIN_DB = -90
 const SPEC_MAX_DB = -10
 const SPEC_DB_RANGE = SPEC_MAX_DB - SPEC_MIN_DB
+const DEFAULT_ACCENT_HEX = '#38bdf8'
+const DEFAULT_ACCENT_CHANNELS = '56, 189, 248'
 
 interface EQSpectrumOverlayProps {
   width: number
@@ -19,6 +22,35 @@ interface EQSpectrumOverlayProps {
 function frequencyAtX(x: number, width: number): number {
   const logFreq = LOG_MIN + (x / width) * (LOG_MAX - LOG_MIN)
   return Math.pow(10, logFreq)
+}
+
+function normalizeAccentRgbChannels(value: string): string | null {
+  const parts = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  if (parts.length !== 3) return null
+
+  const channels = parts.map((part) => Number(part))
+  if (channels.some((channel) => !Number.isFinite(channel))) return null
+
+  const clamped = channels.map((channel) => Math.max(0, Math.min(255, Math.round(channel))))
+  return `${clamped[0]}, ${clamped[1]}, ${clamped[2]}`
+}
+
+function resolveAccentRgbChannels(): string {
+  const styles = window.getComputedStyle(document.documentElement)
+
+  const accentRgbToken = styles.getPropertyValue('--accent-rgb').trim()
+  const accentRgbChannels = normalizeAccentRgbChannels(accentRgbToken)
+  if (accentRgbChannels) return accentRgbChannels
+
+  const accentToken = styles.getPropertyValue('--accent').trim()
+  const accentChannelsFromColor = colorToRgbChannels(accentToken)
+  if (accentChannelsFromColor) return accentChannelsFromColor
+
+  return colorToRgbChannels(DEFAULT_ACCENT_HEX) ?? DEFAULT_ACCENT_CHANNELS
 }
 
 export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayProps) {
@@ -95,11 +127,12 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
       ctx.closePath()
 
       // Gradient fill: transparent at bottom, accent-tinted at top
+      const accentRgbChannels = resolveAccentRgbChannels()
       const gradient = ctx.createLinearGradient(0, height, 0, 0)
-      gradient.addColorStop(0, 'rgba(139, 92, 246, 0)')
-      gradient.addColorStop(0.4, 'rgba(139, 92, 246, 0.06)')
-      gradient.addColorStop(0.7, 'rgba(139, 92, 246, 0.12)')
-      gradient.addColorStop(1, 'rgba(139, 92, 246, 0.18)')
+      gradient.addColorStop(0, `rgba(${accentRgbChannels}, 0)`)
+      gradient.addColorStop(0.4, `rgba(${accentRgbChannels}, 0.06)`)
+      gradient.addColorStop(0.7, `rgba(${accentRgbChannels}, 0.12)`)
+      gradient.addColorStop(1, `rgba(${accentRgbChannels}, 0.18)`)
       ctx.fillStyle = gradient
       ctx.fill()
 

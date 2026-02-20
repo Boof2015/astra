@@ -20,6 +20,7 @@ import {
   factoryResetApplication,
   resetAllSettings,
   resetAudioSettings,
+  resetDiscordCoverArtCache,
   resetEqSettings,
   resetIntegrationSettings,
   resetMappedFolders,
@@ -31,6 +32,7 @@ type ResetActionId =
   | 'reset-theme'
   | 'reset-audio'
   | 'reset-integrations'
+  | 'reset-discord-cover-art-cache'
   | 'reset-eq'
   | 'reset-all'
   | 'reset-folders'
@@ -61,6 +63,7 @@ const RESET_ACTION_IDS: ResetActionId[] = [
   'reset-theme',
   'reset-audio',
   'reset-integrations',
+  'reset-discord-cover-art-cache',
   'reset-eq',
   'reset-all',
   'reset-folders',
@@ -150,8 +153,10 @@ export default function SettingsView() {
   } = useVisualizerSettingsStore()
   const {
     enabled: discordEnabled,
+    coverArtEnabled: discordCoverArtEnabled,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
+    setCoverArtEnabled: setDiscordCoverArtEnabled,
   } = useDiscordSettingsStore()
   const {
     autoCheckEnabled,
@@ -215,6 +220,17 @@ export default function SettingsView() {
       confirmLabel: 'Reset Integrations',
       destructive: false,
       run: resetIntegrationSettings,
+    },
+    {
+      id: 'reset-discord-cover-art-cache',
+      title: 'Reset Discord Cover Art Cache',
+      description: 'Clear saved cover art lookup hits and misses for Discord Rich Presence.',
+      buttonLabel: 'Reset Cover Art Cache',
+      confirmTitle: 'Reset Discord Cover Art Cache',
+      confirmMessage: 'This clears cached Discord cover art lookup results and allows fresh lookups.',
+      confirmLabel: 'Reset Cover Art Cache',
+      destructive: false,
+      run: resetDiscordCoverArtCache,
     },
     {
       id: 'reset-eq',
@@ -729,8 +745,21 @@ export default function SettingsView() {
                   {discordEnabled ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Discord Cover Art (Internet Lookup)</span>
+                <button
+                  className={`settings-toggle ${discordCoverArtEnabled ? 'active' : ''}`}
+                  onClick={() => void setDiscordCoverArtEnabled(!discordCoverArtEnabled)}
+                  disabled={!discordEnabled}
+                >
+                  {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
             </div>
             <p className="settings-note">{discordStatusMessage}</p>
+            <p className="settings-note">
+              Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
+            </p>
           </section>
 
           <section

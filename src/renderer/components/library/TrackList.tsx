@@ -16,6 +16,7 @@ interface DbTrack {
   title: string
   artist: string
   album: string
+  album_artist: string | null
   duration: number
   track_number: number | null
   artwork_hash: string | null
@@ -81,6 +82,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     title: dbTrack.title,
     artist: dbTrack.artist,
     album: dbTrack.album,
+    albumArtist: dbTrack.album_artist ?? undefined,
     duration: dbTrack.duration,
     format: dbTrack.format,
     artworkHash: dbTrack.artwork_hash ?? undefined,
@@ -443,6 +445,7 @@ export default function TrackList({
       title: result.metadata?.title ?? dbTrack.title,
       artist: result.metadata?.artist ?? dbTrack.artist,
       album: result.metadata?.album ?? dbTrack.album,
+      albumArtist: result.metadata?.albumArtist ?? dbTrack.album_artist ?? undefined,
       duration: result.metadata?.duration ?? dbTrack.duration,
       format: dbTrack.format,
       artworkData: result.metadata?.artwork,
