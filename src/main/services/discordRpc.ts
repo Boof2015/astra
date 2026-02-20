@@ -30,6 +30,8 @@ export interface DiscordTrackPresence {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  artworkData?: string
+  artworkHash?: string
 }
 
 export interface DiscordPresenceUpdate {
@@ -152,6 +154,8 @@ export class DiscordRpcService {
       }
     }
 
+    // Always schedule reconnect on failure, even if already waiting
+    this.clearReconnectTimer()
     this.scheduleReconnect()
     return {
       ok: false,
@@ -178,7 +182,9 @@ export class DiscordRpcService {
             channels: normalizeNumber(update.track.channels),
             codec: normalizeText(update.track.codec),
             codecProfile: normalizeText(update.track.codecProfile),
-            isAtmosJoc: normalizeBoolean(update.track.isAtmosJoc)
+            isAtmosJoc: normalizeBoolean(update.track.isAtmosJoc),
+            artworkData: normalizeText(update.track.artworkData),
+            artworkHash: normalizeText(update.track.artworkHash)
           }
         : null
     }
@@ -269,6 +275,7 @@ export class DiscordRpcService {
     this.receiveBuffer = Buffer.alloc(0)
     this.lastPresenceSignature = null
     this.clearReconnectTimer()
+    this.pendingPresence = null
 
     socket.on('data', (chunk: Buffer) => {
       this.handleData(chunk)
@@ -414,6 +421,15 @@ export class DiscordRpcService {
         }
       } else {
         activity.timestamps = { start }
+      }
+    }
+
+    // Add album art if available
+    const artwork = presence.track.artworkData ?? presence.track.artworkHash
+    if (artwork) {
+      activity.assets = {
+        large_image: artwork,
+        large_text: truncate(`${presence.track.title}${presence.track.artist ? ` - ${presence.track.artist}` : ''}`, 128)
       }
     }
 

@@ -48,6 +48,8 @@ function buildPresenceUpdate(state: PlayerSnapshot): {
       codec?: string
       codecProfile?: string
       isAtmosJoc?: boolean
+      artworkData?: string
+      artworkHash?: string
     } | null
   }
 } {
@@ -97,7 +99,9 @@ function buildPresenceUpdate(state: PlayerSnapshot): {
         channels: currentTrack.channels,
         codec: currentTrack.codec,
         codecProfile: currentTrack.codecProfile,
-        isAtmosJoc: currentTrack.isAtmosJoc
+        isAtmosJoc: currentTrack.isAtmosJoc,
+        artworkData: currentTrack.artworkData,
+        artworkHash: currentTrack.artworkHash
       }
     }
   }

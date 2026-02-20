@@ -126,6 +126,8 @@ export interface DiscordTrackPresence {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  artworkData?: string
+  artworkHash?: string
 }
 
 export interface DiscordPresenceUpdate {
