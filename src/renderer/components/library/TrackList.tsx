@@ -8,6 +8,7 @@ import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { Track } from '../../types/audio'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
+import PlaylistCover from '../playlists/PlaylistCover'
 
 interface DbTrack {
   id: number
@@ -32,11 +33,7 @@ interface TrackListProps {
   tracks: DbTrack[]
   showArtist?: boolean
   showAlbum?: boolean
-}
-
-interface PlaylistSummary {
-  id: number
-  name: string
+  playlistSourceId?: number | null
 }
 
 interface TrackListRowSharedProps {
@@ -49,8 +46,7 @@ interface TrackListRowSharedProps {
   isPlaying: boolean
   selectedOutputChannelCount: number | null
   favorites: Set<string>
-  playlists: PlaylistSummary[]
-  playlistDropdownTrack: string | null
+  playlistPopupTrackPath: string | null
   queuedTrackPaths: Set<string>
   nextQueuedTrackPath: string | null
   queueFeedback: Record<string, true>
@@ -60,12 +56,22 @@ interface TrackListRowSharedProps {
   onPlayNext: (event: React.MouseEvent, track: DbTrack) => void
   onAddToQueue: (event: React.MouseEvent, track: DbTrack) => void
   onToggleFavorite: (event: React.MouseEvent, trackPath: string) => void
-  onTogglePlaylistDropdown: (event: React.MouseEvent, trackPath: string) => void
-  onAddTrackToPlaylist: (event: React.MouseEvent, playlistId: number, trackPath: string) => Promise<void>
+  onOpenPlaylistPopup: (event: React.MouseEvent<HTMLButtonElement>, trackPath: string) => void
 }
 
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_LIST_OVERSCAN_COUNT = 8
+
+interface TrackPlaylistPopupState {
+  trackPath: string
+  anchor: {
+    top: number
+    left: number
+    right: number
+    bottom: number
+    height: number
+  }
+}
 
 // Convert DbTrack to Track
 function dbTrackToTrack(dbTrack: DbTrack): Track {
@@ -117,8 +123,7 @@ function TrackListRowRenderer({
   isPlaying,
   selectedOutputChannelCount,
   favorites,
-  playlists,
-  playlistDropdownTrack,
+  playlistPopupTrackPath,
   queuedTrackPaths,
   nextQueuedTrackPath,
   queueFeedback,
@@ -128,8 +133,7 @@ function TrackListRowRenderer({
   onPlayNext,
   onAddToQueue,
   onToggleFavorite,
-  onTogglePlaylistDropdown,
-  onAddTrackToPlaylist
+  onOpenPlaylistPopup
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
   const track = tracks[index]
   if (!track) return null
@@ -243,33 +247,14 @@ function TrackListRowRenderer({
             </button>
             <div className="track-playlist-wrap">
               <button
-                className="track-action-btn"
-                onClick={(event) => onTogglePlaylistDropdown(event, track.path)}
+                className={`track-action-btn ${playlistPopupTrackPath === track.path ? 'track-playlist-trigger-open' : ''}`}
+                onClick={(event) => onOpenPlaylistPopup(event, track.path)}
                 title="Add to playlist"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
                 </svg>
               </button>
-              {playlistDropdownTrack === track.path && (
-                <div className="track-playlist-dropdown" onClick={(event) => event.stopPropagation()}>
-                  {playlists.length > 0 ? (
-                    playlists.map((playlist) => (
-                      <button
-                        key={playlist.id}
-                        className="track-playlist-option"
-                        onClick={(event) => {
-                          void onAddTrackToPlaylist(event, playlist.id, track.path)
-                        }}
-                      >
-                        {playlist.name}
-                      </button>
-                    ))
-                  ) : (
-                    <div className="track-playlist-empty">No playlists</div>
-                  )}
-                </div>
-              )}
             </div>
             <button
               className={`track-action-btn ${showPlayNextCheck ? 'queued' : ''}`}
@@ -312,7 +297,12 @@ const TrackListRow = memo(TrackListRowRenderer) as (
   props: RowComponentProps<TrackListRowSharedProps>
 ) => ReactElement | null
 
-export default function TrackList({ tracks, showArtist = true, showAlbum = true }: TrackListProps) {
+export default function TrackList({
+  tracks,
+  showArtist = true,
+  showAlbum = true,
+  playlistSourceId = null
+}: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const queue = usePlayerStore((state) => state.queue)
@@ -327,15 +317,24 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
+  const removeFromPlaylist = usePlaylistStore((state) => state.removeFromPlaylist)
+  const getPlaylistsContainingTrack = usePlaylistStore((state) => state.getPlaylistsContainingTrack)
   const openArtistInLibrary = useOpenArtistInLibrary()
 
-  const [playlistDropdownTrack, setPlaylistDropdownTrack] = useState<string | null>(null)
+  const [playlistPopup, setPlaylistPopup] = useState<TrackPlaylistPopupState | null>(null)
+  const [playlistPopupSearch, setPlaylistPopupSearch] = useState('')
+  const [playlistMemberships, setPlaylistMemberships] = useState<Set<number>>(new Set())
+  const [isPlaylistMembershipLoading, setIsPlaylistMembershipLoading] = useState(false)
+  const [isPlaylistMembershipMutating, setIsPlaylistMembershipMutating] = useState(false)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const listBodyRef = useRef<HTMLDivElement | null>(null)
+  const playlistPopupRef = useRef<HTMLDivElement | null>(null)
+  const playlistPopupTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const playlistMembershipRequestIdRef = useRef(0)
 
   useEffect(() => {
     return () => {
@@ -347,9 +346,9 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
   }, [])
 
   useEffect(() => {
-    setPlaylistDropdownTrack((current) => {
+    setPlaylistPopup((current) => {
       if (!current) return current
-      return tracks.some((track) => track.path === current) ? current : null
+      return tracks.some((track) => track.path === current.trackPath) ? current : null
     })
   }, [tracks])
 
@@ -433,7 +432,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
   }, [])
 
   const handleTrackClick = useCallback(async (dbTrack: DbTrack, index: number) => {
-    setQueue(queueTracks, index)
+    setQueue(queueTracks, index, { sourcePlaylistId: playlistSourceId })
 
     const result = await window.electronAPI.loadAudioFile(dbTrack.path, { metadataMode: 'none' })
     if (!result) return
@@ -461,7 +460,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     if (loaded) {
       await play()
     }
-  }, [loadTrack, play, queueTracks, setQueue])
+  }, [loadTrack, play, playlistSourceId, queueTracks, setQueue])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
@@ -480,22 +479,176 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     void toggleFavorite(trackPath)
   }, [toggleFavorite])
 
-  const handleTogglePlaylistDropdown = useCallback((event: React.MouseEvent, trackPath: string) => {
-    event.stopPropagation()
-    setPlaylistDropdownTrack((current) => (current === trackPath ? null : trackPath))
+  const closePlaylistPopup = useCallback(() => {
+    playlistMembershipRequestIdRef.current += 1
+    setPlaylistPopup(null)
+    setPlaylistPopupSearch('')
+    setPlaylistMemberships(new Set())
+    setIsPlaylistMembershipLoading(false)
+    setIsPlaylistMembershipMutating(false)
+    playlistPopupTriggerRef.current = null
   }, [])
 
-  const handleAddTrackToPlaylist = useCallback(async (event: React.MouseEvent, playlistId: number, trackPath: string) => {
+  const refreshPlaylistMembership = useCallback(async (trackPath: string) => {
+    const requestId = playlistMembershipRequestIdRef.current + 1
+    playlistMembershipRequestIdRef.current = requestId
+
+    setIsPlaylistMembershipLoading(true)
+    try {
+      const playlistIds = await getPlaylistsContainingTrack(trackPath)
+      if (playlistMembershipRequestIdRef.current !== requestId) return
+      setPlaylistMemberships(new Set(playlistIds))
+    } finally {
+      if (playlistMembershipRequestIdRef.current === requestId) {
+        setIsPlaylistMembershipLoading(false)
+      }
+    }
+  }, [getPlaylistsContainingTrack])
+
+  const handleOpenPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>, trackPath: string) => {
     event.stopPropagation()
-    await addToPlaylist(playlistId, [trackPath])
-    setPlaylistDropdownTrack(null)
-  }, [addToPlaylist])
+
+    if (playlistPopup?.trackPath === trackPath) {
+      closePlaylistPopup()
+      return
+    }
+
+    const trigger = event.currentTarget
+    const rect = trigger.getBoundingClientRect()
+
+    playlistPopupTriggerRef.current = trigger
+    setPlaylistPopupSearch('')
+    setPlaylistMemberships(new Set())
+    setIsPlaylistMembershipMutating(false)
+    setPlaylistPopup({
+      trackPath,
+      anchor: {
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        height: rect.height
+      }
+    })
+    void refreshPlaylistMembership(trackPath)
+  }, [closePlaylistPopup, playlistPopup?.trackPath, refreshPlaylistMembership])
+
+  const handleToggleTrackPlaylistMembership = useCallback(async (event: React.MouseEvent, playlistId: number, trackPath: string) => {
+    event.stopPropagation()
+    if (isPlaylistMembershipMutating) return
+
+    const isMember = playlistMemberships.has(playlistId)
+    setIsPlaylistMembershipMutating(true)
+    try {
+      if (isMember) {
+        await removeFromPlaylist(playlistId, trackPath)
+      } else {
+        await addToPlaylist(playlistId, [trackPath])
+      }
+
+      setPlaylistMemberships((current) => {
+        const next = new Set(current)
+        if (isMember) {
+          next.delete(playlistId)
+        } else {
+          next.add(playlistId)
+        }
+        return next
+      })
+    } finally {
+      setIsPlaylistMembershipMutating(false)
+    }
+  }, [addToPlaylist, isPlaylistMembershipMutating, playlistMemberships, removeFromPlaylist])
 
   const handleListScroll = useCallback(() => {
-    setPlaylistDropdownTrack((current) => (current ? null : current))
-  }, [])
+    closePlaylistPopup()
+  }, [closePlaylistPopup])
+
+  useEffect(() => {
+    if (!playlistPopup) return
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (playlistPopupRef.current?.contains(target)) return
+      if (playlistPopupTriggerRef.current?.contains(target)) return
+      closePlaylistPopup()
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closePlaylistPopup()
+      }
+    }
+
+    const handleResize = () => {
+      const trigger = playlistPopupTriggerRef.current
+      if (!trigger) {
+        closePlaylistPopup()
+        return
+      }
+      const rect = trigger.getBoundingClientRect()
+      setPlaylistPopup((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          anchor: {
+            top: rect.top,
+            left: rect.left,
+            right: rect.right,
+            bottom: rect.bottom,
+            height: rect.height
+          }
+        }
+      })
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [closePlaylistPopup, playlistPopup])
+
+  const filteredPlaylists = useMemo(() => {
+    const query = playlistPopupSearch.trim().toLocaleLowerCase()
+    if (!query) return playlists
+    return playlists.filter((playlist) => playlist.name.toLocaleLowerCase().includes(query))
+  }, [playlistPopupSearch, playlists])
+
+  const playlistPopupStyle = useMemo(() => {
+    if (!playlistPopup) return undefined
+
+    const panelWidth = 268
+    const gap = 8
+    const edgePadding = 10
+    const estimatedHeight = 280
+
+    let left = playlistPopup.anchor.right + gap
+    if (left + panelWidth > window.innerWidth - edgePadding) {
+      left = Math.max(edgePadding, playlistPopup.anchor.left - panelWidth - gap)
+    }
+
+    let top = playlistPopup.anchor.top - 8
+    const maxTop = Math.max(edgePadding, window.innerHeight - edgePadding - estimatedHeight)
+    top = Math.min(Math.max(top, edgePadding), maxTop)
+
+    return {
+      top,
+      left,
+      maxHeight: Math.max(150, window.innerHeight - top - edgePadding)
+    }
+  }, [playlistPopup])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
+  const playlistPopupTrackPath = playlistPopup?.trackPath ?? null
 
   const rowProps = useMemo<TrackListRowSharedProps>(() => ({
     tracks,
@@ -507,8 +660,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     isPlaying,
     selectedOutputChannelCount,
     favorites,
-    playlists,
-    playlistDropdownTrack,
+    playlistPopupTrackPath,
     queuedTrackPaths,
     nextQueuedTrackPath,
     queueFeedback,
@@ -518,8 +670,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     onPlayNext: handlePlayNext,
     onAddToQueue: handleAddToQueue,
     onToggleFavorite: handleToggleFavorite,
-    onTogglePlaylistDropdown: handleTogglePlaylistDropdown,
-    onAddTrackToPlaylist: handleAddTrackToPlaylist
+    onOpenPlaylistPopup: handleOpenPlaylistPopup
   }), [
     tracks,
     showArtist,
@@ -530,8 +681,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     isPlaying,
     selectedOutputChannelCount,
     favorites,
-    playlists,
-    playlistDropdownTrack,
+    playlistPopupTrackPath,
     queuedTrackPaths,
     nextQueuedTrackPath,
     queueFeedback,
@@ -541,8 +691,7 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
     handlePlayNext,
     handleAddToQueue,
     handleToggleFavorite,
-    handleTogglePlaylistDropdown,
-    handleAddTrackToPlaylist
+    handleOpenPlaylistPopup
   ])
 
   if (tracks.length === 0) {
@@ -577,6 +726,60 @@ export default function TrackList({ tracks, showArtist = true, showAlbum = true 
           style={{ height: listHeight, width: '100%' }}
         />
       </div>
+      {playlistPopup && (
+        <div
+          className="track-playlist-popup"
+          style={playlistPopupStyle}
+          ref={playlistPopupRef}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="track-playlist-popup-search">
+            <input
+              type="text"
+              className="track-playlist-popup-search-input"
+              placeholder="Search playlists..."
+              value={playlistPopupSearch}
+              onChange={(event) => setPlaylistPopupSearch(event.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="track-playlist-popup-list">
+            {isPlaylistMembershipLoading ? (
+              <div className="track-playlist-popup-empty">Loading...</div>
+            ) : filteredPlaylists.length > 0 ? (
+              filteredPlaylists.map((playlist) => {
+                const isMember = playlistMemberships.has(playlist.id)
+                return (
+                  <button
+                    key={playlist.id}
+                    className={`track-playlist-popup-item ${isMember ? 'is-member' : ''}`}
+                    onClick={(event) => {
+                      void handleToggleTrackPlaylistMembership(event, playlist.id, playlistPopup.trackPath)
+                    }}
+                    disabled={isPlaylistMembershipMutating}
+                  >
+                    <span className="track-playlist-popup-item-check">
+                      {isMember ? (
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      ) : null}
+                    </span>
+                    <PlaylistCover
+                      hash={playlist.custom_cover_hash ?? playlist.auto_cover_hash}
+                      name={playlist.name}
+                      className="track-playlist-popup-cover"
+                    />
+                    <span className="track-playlist-popup-item-name">{playlist.name}</span>
+                  </button>
+                )
+              })
+            ) : (
+              <div className="track-playlist-popup-empty">No matching playlists</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

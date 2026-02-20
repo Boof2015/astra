@@ -32,6 +32,7 @@ interface PlayerStore {
   // Queue state
   queue: Track[]
   queueIndex: number
+  queueSourcePlaylistId: number | null
   shuffle: boolean
   repeat: 'none' | 'one' | 'all'
   shuffledIndices: number[]
@@ -48,7 +49,7 @@ interface PlayerStore {
   toggleMute: () => void
 
   // Queue actions
-  setQueue: (tracks: Track[], startIndex?: number) => void
+  setQueue: (tracks: Track[], startIndex?: number, options?: { sourcePlaylistId?: number | null }) => void
   addToQueue: (track: Track) => void
   addToQueueNext: (track: Track) => void
   removeFromQueue: (index: number) => void
@@ -141,6 +142,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Queue state
     queue: [],
     queueIndex: -1,
+    queueSourcePlaylistId: null,
     shuffle: false,
     repeat: 'none',
     shuffledIndices: [],
@@ -194,8 +196,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         pendingManualLoadCueTrack = resolvedTrack
 
-        // Record recently played
-        useLibraryStore.getState().recordPlay(track.path)
+        // Record recently played and playlist play attribution when applicable.
+        void useLibraryStore.getState().recordPlay(track.path)
+        const queueState = get()
+        const queuedTrackPath = queueState.queue[queueState.queueIndex]?.path
+        if (queueState.queueSourcePlaylistId !== null && queuedTrackPath === track.path) {
+          void window.electronAPI.library.markPlaylistPlayed(queueState.queueSourcePlaylistId)
+        } else if (queueState.queueSourcePlaylistId !== null && queuedTrackPath !== track.path) {
+          set({ queueSourcePlaylistId: null })
+        }
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
@@ -255,9 +264,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     // Queue actions
-    setQueue: (tracks: Track[], startIndex = 0) => {
+    setQueue: (tracks: Track[], startIndex = 0, options?: { sourcePlaylistId?: number | null }) => {
       const { shuffle } = get()
-      set({ queue: tracks, queueIndex: startIndex })
+      set({
+        queue: tracks,
+        queueIndex: startIndex,
+        queueSourcePlaylistId: options?.sourcePlaylistId ?? null
+      })
 
       if (shuffle) {
         get()._generateShuffleOrder(startIndex)
@@ -405,7 +418,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     clearQueue: () => {
       audioEngine.clearNextBuffer()
-      set({ queue: [], queueIndex: -1, shuffledIndices: [], shufflePosition: 0 })
+      set({ queue: [], queueIndex: -1, queueSourcePlaylistId: null, shuffledIndices: [], shufflePosition: 0 })
     },
 
     // Generate a shuffled playback order with the current track at position 0

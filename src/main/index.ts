@@ -765,6 +765,22 @@ ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, 
   await library.removeFromPlaylist(playlistId, trackPath)
 })
 
+ipcMain.handle('library:markPlaylistPlayed', async (_event, playlistId: number) => {
+  await library.markPlaylistPlayed(playlistId)
+})
+
+ipcMain.handle('library:setPlaylistCustomCoverFromFile', async (_event, playlistId: number, imagePath: string) => {
+  await library.setPlaylistCustomCoverFromFile(playlistId, imagePath)
+})
+
+ipcMain.handle('library:clearPlaylistCustomCover', async (_event, playlistId: number) => {
+  await library.clearPlaylistCustomCover(playlistId)
+})
+
+ipcMain.handle('library:getPlaylistsContainingTrack', (_event, trackPath: string) => {
+  return library.getPlaylistsContainingTrack(trackPath)
+})
+
 // ============================================
 // Helper functions
 // ============================================

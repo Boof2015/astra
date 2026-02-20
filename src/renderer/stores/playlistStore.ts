@@ -1,10 +1,14 @@
 import { create } from 'zustand'
+import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 
-interface Playlist {
+export interface Playlist {
   id: number
   name: string
   created_at: number
   updated_at: number
+  last_played_at: number | null
+  custom_cover_hash: string | null
+  auto_cover_hash: string | null
   track_count: number
 }
 
@@ -43,6 +47,9 @@ interface PlaylistStore {
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+  setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
+  clearPlaylistCustomCover: (playlistId: number) => Promise<void>
+  getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
 }
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
@@ -62,11 +69,13 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   renamePlaylist: async (id: number, name: string) => {
+    if (isSystemFavoritesPlaylistId(id)) return
     await window.electronAPI.library.renamePlaylist(id, name)
     await get().loadPlaylists()
   },
 
   deletePlaylist: async (id: number) => {
+    if (isSystemFavoritesPlaylistId(id)) return
     await window.electronAPI.library.deletePlaylist(id)
     if (get().selectedPlaylistId === id) {
       set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
@@ -75,7 +84,9 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   selectPlaylist: async (id: number) => {
-    const tracks = await window.electronAPI.library.getPlaylistTracks(id)
+    const tracks = id === FAVORITES_PLAYLIST_ID
+      ? await window.electronAPI.library.getFavorites()
+      : await window.electronAPI.library.getPlaylistTracks(id)
     set({ selectedPlaylistId: id, selectedPlaylistTracks: tracks })
   },
 
@@ -101,5 +112,22 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
       const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
       set({ selectedPlaylistTracks: tracks })
     }
+  },
+
+  setPlaylistCustomCoverFromFile: async (playlistId: number, imagePath: string) => {
+    if (isSystemFavoritesPlaylistId(playlistId)) return
+    await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlistId, imagePath)
+    await get().loadPlaylists()
+  },
+
+  clearPlaylistCustomCover: async (playlistId: number) => {
+    if (isSystemFavoritesPlaylistId(playlistId)) return
+    await window.electronAPI.library.clearPlaylistCustomCover(playlistId)
+    await get().loadPlaylists()
+  },
+
+  getPlaylistsContainingTrack: async (trackPath: string) => {
+    if (!trackPath) return []
+    return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
   }
 }))

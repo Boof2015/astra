@@ -48,14 +48,19 @@ export interface Playlist {
   name: string
   created_at: number
   updated_at: number
+  last_played_at: number | null
+  custom_cover_hash: string | null
+  auto_cover_hash: string | null
   track_count: number
 }
 
 let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
+let playlistCoverDir: string = ''
 const BACKFILL_BATCH_SIZE = 5
 const BACKFILL_PAUSE_MS = 25
+const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -85,6 +90,17 @@ async function clearArtworkCacheDirectory(): Promise<void> {
     await mkdir(artworkDir, { recursive: true })
   } catch (error) {
     console.warn('Failed to clear artwork cache directory:', artworkDir, error)
+  }
+}
+
+async function clearPlaylistCoverDirectory(): Promise<void> {
+  if (!playlistCoverDir) return
+
+  try {
+    await rm(playlistCoverDir, { recursive: true, force: true })
+    await mkdir(playlistCoverDir, { recursive: true })
+  } catch (error) {
+    console.warn('Failed to clear playlist cover directory:', playlistCoverDir, error)
   }
 }
 
@@ -307,12 +323,14 @@ export async function initDatabase(): Promise<void> {
   const userDataPath = app.getPath('userData')
   dbPath = join(userDataPath, 'library.db')
   artworkDir = join(userDataPath, 'artwork')
+  playlistCoverDir = join(userDataPath, 'playlist-covers')
 
-  // Create artwork directory
+  // Create artwork and playlist cover directories.
   try {
     await mkdir(artworkDir, { recursive: true })
+    await mkdir(playlistCoverDir, { recursive: true })
   } catch (err) {
-    console.error('Failed to create artwork directory:', artworkDir, err)
+    console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir }, err)
   }
 
   // Initialize sql.js
@@ -415,9 +433,22 @@ export async function initDatabase(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      last_played_at INTEGER,
+      custom_cover_hash TEXT
     )
   `)
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN last_played_at INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN custom_cover_hash TEXT')
+  } catch {
+    // Column already exists.
+  }
+  db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
 
   // Playlist tracks table
   db.run(`
@@ -721,6 +752,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM app_meta')
 
   await clearArtworkCacheDirectory()
+  await clearPlaylistCoverDirectory()
   await saveDatabase()
 }
 
@@ -1318,6 +1350,10 @@ function getImageExtension(mimeType: string): string {
 
 // Get artwork path by hash
 export function getArtworkPath(hash: string): string {
+  if (hash.startsWith(PLAYLIST_COVER_HASH_PREFIX)) {
+    return join(playlistCoverDir, hash.slice(PLAYLIST_COVER_HASH_PREFIX.length))
+  }
+
   // New format: hash includes extension (e.g., "abc123.png")
   // Old format: hash is just the md5, file saved as .jpg
   if (hash.includes('.')) {
@@ -1398,12 +1434,31 @@ export async function addRecentlyPlayed(trackPath: string): Promise<void> {
 export function getPlaylists(): Playlist[] {
   if (!db) return []
   const result = db.exec(`
-    SELECT p.id, p.name, p.created_at, p.updated_at,
-           COUNT(pt.id) as track_count
+    SELECT
+      p.id,
+      p.name,
+      p.created_at,
+      p.updated_at,
+      p.last_played_at,
+      p.custom_cover_hash,
+      (
+        SELECT t.artwork_hash
+        FROM playlist_tracks ptc
+        LEFT JOIN tracks t ON t.path = ptc.track_path
+        WHERE ptc.playlist_id = p.id
+        ORDER BY ptc.position ASC
+        LIMIT 1
+      ) as auto_cover_hash,
+      (
+        SELECT COUNT(*)
+        FROM playlist_tracks pt
+        WHERE pt.playlist_id = p.id
+      ) as track_count
     FROM playlists p
-    LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
-    GROUP BY p.id
-    ORDER BY p.updated_at DESC
+    ORDER BY
+      CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
+      p.last_played_at DESC,
+      p.updated_at DESC
   `)
   if (result.length === 0) return []
   return rowsToObjects<Playlist>(result[0].columns, result[0].values)
@@ -1412,11 +1467,26 @@ export function getPlaylists(): Playlist[] {
 export async function createPlaylist(name: string): Promise<Playlist> {
   if (!db) throw new Error('Database not initialized')
   const now = Date.now()
-  db.run('INSERT INTO playlists (name, created_at, updated_at) VALUES (?, ?, ?)', [name, now, now])
+  db.run('INSERT INTO playlists (name, created_at, updated_at, last_played_at, custom_cover_hash) VALUES (?, ?, ?, ?, ?)', [
+    name,
+    now,
+    now,
+    null,
+    null
+  ])
   const result = db.exec('SELECT last_insert_rowid() as id')
   const id = result[0].values[0][0] as number
   await saveDatabase()
-  return { id, name, created_at: now, updated_at: now, track_count: 0 }
+  return {
+    id,
+    name,
+    created_at: now,
+    updated_at: now,
+    last_played_at: null,
+    custom_cover_hash: null,
+    auto_cover_hash: null,
+    track_count: 0
+  }
 }
 
 export async function renamePlaylist(id: number, name: string): Promise<void> {
@@ -1429,6 +1499,13 @@ export async function deletePlaylist(id: number): Promise<void> {
   if (!db) return
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
   db.run('DELETE FROM playlists WHERE id = ?', [id])
+  await saveDatabase()
+}
+
+export async function markPlaylistPlayed(id: number): Promise<void> {
+  if (!db) return
+  if (id <= 0) return
+  db.run('UPDATE playlists SET last_played_at = ? WHERE id = ?', [Date.now(), id])
   await saveDatabase()
 }
 
@@ -1472,6 +1549,67 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   }
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
   await saveDatabase()
+}
+
+function normalizePlaylistCoverExtension(imagePath: string): string {
+  const rawExtension = extname(imagePath).toLowerCase()
+  if (rawExtension === '.png') return '.png'
+  if (rawExtension === '.webp') return '.webp'
+  if (rawExtension === '.gif') return '.gif'
+  if (rawExtension === '.bmp') return '.bmp'
+  if (rawExtension === '.jpg' || rawExtension === '.jpeg') return '.jpg'
+  return '.jpg'
+}
+
+export async function setPlaylistCustomCoverFromFile(playlistId: number, imagePath: string): Promise<void> {
+  if (!db || playlistId <= 0) return
+
+  const normalizedPath = imagePath.trim()
+  if (!normalizedPath) return
+
+  const imageData = await readFile(normalizedPath)
+  if (imageData.length === 0) return
+
+  const extension = normalizePlaylistCoverExtension(normalizedPath)
+  const contentHash = createHash('sha256').update(imageData).digest('hex')
+  const fileName = `${contentHash}${extension}`
+  const prefixedHash = `${PLAYLIST_COVER_HASH_PREFIX}${fileName}`
+  const targetPath = join(playlistCoverDir, fileName)
+
+  try {
+    await writeFile(targetPath, imageData, { flag: 'wx' })
+  } catch (error: unknown) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) {
+      throw error
+    }
+  }
+
+  db.run('UPDATE playlists SET custom_cover_hash = ?, updated_at = ? WHERE id = ?', [prefixedHash, Date.now(), playlistId])
+  await saveDatabase()
+}
+
+export async function clearPlaylistCustomCover(playlistId: number): Promise<void> {
+  if (!db || playlistId <= 0) return
+  db.run('UPDATE playlists SET custom_cover_hash = NULL, updated_at = ? WHERE id = ?', [Date.now(), playlistId])
+  await saveDatabase()
+}
+
+export function getPlaylistsContainingTrack(trackPath: string): number[] {
+  if (!db) return []
+  const stmt = db.prepare('SELECT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id')
+  stmt.bind([trackPath])
+
+  const ids: number[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as { playlist_id?: unknown }
+    const playlistId = Number(row.playlist_id)
+    if (Number.isFinite(playlistId) && playlistId > 0) {
+      ids.push(playlistId)
+    }
+  }
+
+  stmt.free()
+  return ids
 }
 
 // Remove tracks that no longer exist on disk

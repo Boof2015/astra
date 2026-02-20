@@ -4,7 +4,10 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
+import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
+import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
+import PlaylistCover from '../playlists/PlaylistCover'
 
 interface HomeTrack {
   path: string
@@ -98,8 +101,6 @@ interface WeightedGreetingPool {
 const RECENT_TRACK_LIMIT = 8
 const RECENT_ARTIST_LIMIT = 6
 const RECENT_ALBUM_LIMIT = 6
-const FAVORITE_LIMIT = 8
-const PLAYLIST_LIMIT = 6
 const GREETING_ROTATION_MS = 30 * 60 * 1000
 const SKY_PIXEL_SCALE = 4
 const STAR_GRID_SIZE = 6
@@ -295,13 +296,6 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
     ]
   }
 ]
-
-function formatDuration(seconds: number): string {
-  if (!seconds || !isFinite(seconds)) return '--:--'
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, '0')}`
-}
 
 function artistInitial(artist: string): string {
   return artist.trim().charAt(0).toUpperCase() || '?'
@@ -653,20 +647,20 @@ export default function HomeView() {
   const setLibraryViewMode = useLibraryStore((s) => s.setViewMode)
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
-  const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const play = usePlayerStore((s) => s.play)
   const setQueue = usePlayerStore((s) => s.setQueue)
   const playlists = usePlaylistStore((s) => s.playlists)
+  const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
   const createPlaylist = usePlaylistStore((s) => s.createPlaylist)
+  const setPlaylistCustomCoverFromFile = usePlaylistStore((s) => s.setPlaylistCustomCoverFromFile)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
+  const activeView = useUIStore((s) => s.activeView)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
-  const [showCreateInput, setShowCreateInput] = useState(false)
-  const [showAllPlaylists, setShowAllPlaylists] = useState(false)
-  const [newPlaylistName, setNewPlaylistName] = useState('')
+  const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -684,12 +678,6 @@ export default function HomeView() {
     }, GREETING_ROTATION_MS)
     return () => window.clearInterval(intervalId)
   }, [])
-
-  useEffect(() => {
-    if (playlists.length <= PLAYLIST_LIMIT) {
-      setShowAllPlaylists(false)
-    }
-  }, [playlists.length])
 
   useEffect(() => {
     if (!hasLibraryContent) return
@@ -894,10 +882,12 @@ export default function HomeView() {
     return uniqueAlbums
   }, [recentlyPlayed, albumByKey])
 
-  const favoritePreview = useMemo(() => favoriteTracks.slice(0, FAVORITE_LIMIT), [favoriteTracks])
-  const visiblePlaylists = useMemo(
-    () => (showAllPlaylists ? playlists : playlists.slice(0, PLAYLIST_LIMIT)),
-    [playlists, showAllPlaylists]
+  const homePlaylists = useMemo(
+    () => buildPlaylistDisplaySections(playlists, {
+      trackCount: favoriteTracks.length,
+      topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
+    }, 3).homePlaylists,
+    [playlists, favoriteTracks]
   )
 
   const handlePlayTrack = async (track: HomeTrack) => {
@@ -952,12 +942,11 @@ export default function HomeView() {
     await handlePlayTrack(track)
   }
 
-  const handleCreatePlaylist = async () => {
-    const name = newPlaylistName.trim()
-    if (!name) return
-    await createPlaylist(name)
-    setNewPlaylistName('')
-    setShowCreateInput(false)
+  const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
+    const playlist = await createPlaylist(name)
+    if (coverImagePath && playlist.id > 0) {
+      await setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
+    }
   }
 
   const handleOpenPlaylist = async (playlistId: number) => {
@@ -1139,56 +1128,11 @@ export default function HomeView() {
 
         <section className="home-section">
           <div className="home-section-header">
-            <h2>FAVORITES</h2>
-          </div>
-          {favoritePreview.length > 0 ? (
-            <div className="home-favorites-list">
-              {favoritePreview.map((track) => (
-                <div
-                  key={`${track.path}-favorite`}
-                  className={`home-favorite-row ${currentTrackPath === track.path ? 'active' : ''}`}
-                  onClick={() => handlePlayTrack(track)}
-                >
-                  <button
-                    className="home-favorite-heart active"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void toggleFavorite(track.path)
-                    }}
-                    title="Remove from favorites"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                    </svg>
-                  </button>
-                  <div className="home-favorite-main">
-                    <div className="home-favorite-title">{track.title}</div>
-                    <div className="home-favorite-artist">{track.artist}</div>
-                  </div>
-                  <div className="home-favorite-meta">
-                    <span>{track.format.toUpperCase()}</span>
-                    <span>{formatDuration(track.duration)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="home-empty-strip">No favorites yet. Click the heart icon on a track to add it.</div>
-          )}
-        </section>
-
-        <section className="home-section">
-          <div className="home-section-header">
             <h2>PLAYLISTS</h2>
             <div className="home-section-actions">
-              {playlists.length > PLAYLIST_LIMIT && (
-                <button className="home-playlist-toggle-btn" onClick={() => setShowAllPlaylists((value) => !value)}>
-                  {showAllPlaylists ? 'Show recent' : `Show all (${playlists.length})`}
-                </button>
-              )}
               <button
                 className="home-create-playlist-btn"
-                onClick={() => setShowCreateInput((value) => !value)}
+                onClick={() => setIsCreatePlaylistModalOpen(true)}
                 title="Create playlist"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1199,54 +1143,37 @@ export default function HomeView() {
             </div>
           </div>
 
-          {showCreateInput && (
-            <div className="home-create-playlist-form">
-              <input
-                type="text"
-                className="home-create-playlist-input"
-                placeholder="Playlist name..."
-                value={newPlaylistName}
-                onChange={(event) => setNewPlaylistName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void handleCreatePlaylist()
-                  if (event.key === 'Escape') setShowCreateInput(false)
-                }}
-                autoFocus
-              />
-              <button className="home-create-playlist-confirm" onClick={() => void handleCreatePlaylist()}>
-                Create
-              </button>
-            </div>
-          )}
-
-          {visiblePlaylists.length > 0 ? (
-            <div className="home-playlist-grid">
-              {visiblePlaylists.map((playlist) => (
-                <div
+          {homePlaylists.length > 0 ? (
+            <div className="home-playlist-row">
+              {homePlaylists.map((playlist) => (
+                <article
                   key={playlist.id}
-                  className="home-playlist-card"
+                  className={`home-playlist-rail-card ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                 >
-                  <div className="home-playlist-icon">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="8" y1="6" x2="21" y2="6" />
-                      <line x1="8" y1="12" x2="21" y2="12" />
-                      <line x1="8" y1="18" x2="21" y2="18" />
-                      <line x1="3" y1="6" x2="3.01" y2="6" />
-                      <line x1="3" y1="12" x2="3.01" y2="12" />
-                      <line x1="3" y1="18" x2="3.01" y2="18" />
-                    </svg>
+                  <PlaylistCover
+                    hash={playlist.cover_hash}
+                    name={playlist.name}
+                    isFavorites={playlist.isSystemFavorites}
+                    className="home-playlist-rail-cover"
+                  />
+                  <div className="home-playlist-rail-meta">
+                    <div className="home-playlist-rail-name">{playlist.name}</div>
+                    <div className="home-playlist-rail-count">{playlist.track_count} tracks</div>
                   </div>
-                  <div className="home-playlist-name">{playlist.name}</div>
-                  <div className="home-playlist-count">{playlist.track_count} tracks</div>
-                </div>
+                </article>
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">{showCreateInput ? '' : 'No playlists yet. Click + to create one.'}</div>
+            <div className="home-empty-strip">No playlists yet. Click + to create one.</div>
           )}
         </section>
       </div>
+      <CreatePlaylistModal
+        isOpen={isCreatePlaylistModalOpen}
+        onClose={() => setIsCreatePlaylistModalOpen(false)}
+        onCreate={handleCreatePlaylist}
+      />
     </div>
   )
 }
