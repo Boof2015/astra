@@ -2,9 +2,20 @@ import { useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { useAudioSettingsStore } from '../stores/audioSettingsStore'
-import type { MiniPlayerSnapshot } from '../../types/miniPlayer'
+import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
+import { audioEngine } from '../audio/AudioEngine'
+import type {
+  MiniPlayerSnapshot,
+  MiniPlayerWindowState
+} from '../../types/miniPlayer'
 
 const SNAPSHOT_THROTTLE_MS = 120
+const VISUALIZER_STREAM_INTERVAL_MS = 16
+const DEFAULT_MINI_WINDOW_STATE: MiniPlayerWindowState = {
+  isOpen: false,
+  alwaysOnTop: true,
+  visualizerMode: 'spectrum',
+}
 
 function toSafeTime(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0
@@ -28,14 +39,21 @@ export function useMiniPlayerBridge(): void {
   const getArtwork = useLibraryStore((s) => s.getArtwork)
   const selectedDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
   const availableDevices = useAudioSettingsStore((s) => s.availableDevices)
+  const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
+  const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
+  const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
+  const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
 
   const [resolvedArtwork, setResolvedArtwork] = useState<string | null>(null)
+  const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>(DEFAULT_MINI_WINDOW_STATE)
 
   const publishTimerRef = useRef<number | null>(null)
   const lastPublishRef = useRef(0)
   const latestPendingRef = useRef<MiniPlayerSnapshot | null>(null)
   const previousTrackIdRef = useRef<string | null>(null)
   const previousPlaybackStateRef = useRef(playbackState)
+  const visualizerStreamTimerRef = useRef<number | null>(null)
+  const visualizerResetSentRef = useRef(false)
 
   useEffect(() => {
     let isActive = true
@@ -79,6 +97,10 @@ export function useMiniPlayerBridge(): void {
         window.clearTimeout(publishTimerRef.current)
         publishTimerRef.current = null
       }
+      if (visualizerStreamTimerRef.current !== null) {
+        window.clearInterval(visualizerStreamTimerRef.current)
+        visualizerStreamTimerRef.current = null
+      }
     }
   }, [])
 
@@ -112,6 +134,93 @@ export function useMiniPlayerBridge(): void {
   }, [])
 
   useEffect(() => {
+    let isMounted = true
+
+    void window.electronAPI.miniPlayer.getWindowState().then((state) => {
+      if (!isMounted) return
+      setMiniWindowState(state)
+    })
+
+    const unsubscribe = window.electronAPI.miniPlayer.onWindowState((state) => {
+      setMiniWindowState(state)
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (visualizerStreamTimerRef.current !== null) {
+      window.clearInterval(visualizerStreamTimerRef.current)
+      visualizerStreamTimerRef.current = null
+    }
+
+    const emitReset = () => {
+      window.electronAPI.miniPlayer.publishVisualizerChunk({
+        capturedAt: Date.now(),
+        sampleRate: audioEngine.getSampleRate(),
+        leftChunks: [],
+        monoChunks: [],
+        fftSize,
+        pitchLock,
+        lineColor,
+        reset: true
+      })
+      visualizerResetSentRef.current = true
+    }
+
+    const shouldBridgeToMini = miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
+    if (!shouldBridgeToMini) {
+      audioEngine.flushPendingMiniVisualizerChunks()
+      emitReset()
+      return
+    }
+
+    visualizerStreamTimerRef.current = window.setInterval(() => {
+      const active = playbackState === 'playing' && isVisualizerRunning
+      if (!active) {
+        audioEngine.flushPendingMiniVisualizerChunks()
+        if (!visualizerResetSentRef.current) {
+          emitReset()
+        }
+        return
+      }
+
+      const chunks = audioEngine.flushPendingMiniVisualizerChunks()
+      if (chunks.length === 0) return
+
+      window.electronAPI.miniPlayer.publishVisualizerChunk({
+        capturedAt: Date.now(),
+        sampleRate: audioEngine.getSampleRate(),
+        leftChunks: chunks.map((chunk) => chunk.left),
+        monoChunks: chunks.map((chunk) => chunk.mono),
+        fftSize,
+        pitchLock,
+        lineColor,
+        reset: false
+      })
+      visualizerResetSentRef.current = false
+    }, VISUALIZER_STREAM_INTERVAL_MS)
+
+    return () => {
+      if (visualizerStreamTimerRef.current !== null) {
+        window.clearInterval(visualizerStreamTimerRef.current)
+        visualizerStreamTimerRef.current = null
+      }
+    }
+  }, [
+    miniWindowState.isOpen,
+    miniWindowState.visualizerMode,
+    playbackState,
+    isVisualizerRunning,
+    fftSize,
+    pitchLock,
+    lineColor
+  ])
+
+  useEffect(() => {
     const outputDeviceLabel = selectedDeviceId
       ? availableDevices.find((device) => device.deviceId === selectedDeviceId)?.label ?? null
       : null
@@ -123,6 +232,7 @@ export function useMiniPlayerBridge(): void {
       duration: toSafeTime(duration),
       queueLength,
       outputDeviceLabel,
+      visualizerLineColor: lineColor,
       currentTrack: currentTrack
         ? {
             id: currentTrack.id,
@@ -185,6 +295,7 @@ export function useMiniPlayerBridge(): void {
     selectedDeviceId,
     availableDevices,
     favorites,
-    resolvedArtwork
+    resolvedArtwork,
+    lineColor
   ])
 }

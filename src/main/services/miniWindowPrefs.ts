@@ -1,7 +1,7 @@
 import { app, screen, type Rectangle } from 'electron'
 import { join } from 'path'
 import { readFile, writeFile } from 'fs/promises'
-import type { MiniPlayerWindowPrefs } from '../../types/miniPlayer'
+import type { MiniPlayerVisualizerMode, MiniPlayerWindowPrefs } from '../../types/miniPlayer'
 
 const PREFS_FILE_NAME = 'mini-player-window.json'
 
@@ -12,11 +12,13 @@ export const MINI_WINDOW_DEFAULT_HEIGHT = 220
 
 const MAX_WIDTH = 1600
 const MAX_HEIGHT = 1200
+const DEFAULT_MINI_PLAYER_VISUALIZER_MODE: MiniPlayerVisualizerMode = 'spectrum'
 
 const DEFAULT_PREFS: MiniPlayerWindowPrefs = {
   width: MINI_WINDOW_DEFAULT_WIDTH,
   height: MINI_WINDOW_DEFAULT_HEIGHT,
-  alwaysOnTop: true
+  alwaysOnTop: true,
+  visualizerMode: DEFAULT_MINI_PLAYER_VISUALIZER_MODE
 }
 
 function prefsPath(): string {
@@ -42,6 +44,17 @@ function isOnAnyDisplay(bounds: Rectangle): boolean {
   return screen.getAllDisplays().some((display) => intersects(bounds, display.workArea))
 }
 
+export function normalizeMiniPlayerVisualizerMode(value: unknown): MiniPlayerVisualizerMode {
+  switch (value) {
+    case 'off':
+    case 'oscilloscope':
+    case 'spectrum':
+      return value
+    default:
+      return DEFAULT_MINI_PLAYER_VISUALIZER_MODE
+  }
+}
+
 export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs {
   if (!value || typeof value !== 'object') {
     return { ...DEFAULT_PREFS }
@@ -61,11 +74,12 @@ export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs 
   const alwaysOnTop = typeof raw.alwaysOnTop === 'boolean'
     ? raw.alwaysOnTop
     : DEFAULT_PREFS.alwaysOnTop
+  const visualizerMode = normalizeMiniPlayerVisualizerMode(raw.visualizerMode)
 
   const x = toFiniteNumber(raw.x)
   const y = toFiniteNumber(raw.y)
   if (x === undefined || y === undefined) {
-    return { width, height, alwaysOnTop }
+    return { width, height, alwaysOnTop, visualizerMode }
   }
 
   const bounds: Rectangle = {
@@ -76,7 +90,7 @@ export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs 
   }
 
   if (!isOnAnyDisplay(bounds)) {
-    return { width, height, alwaysOnTop }
+    return { width, height, alwaysOnTop, visualizerMode }
   }
 
   return {
@@ -84,7 +98,8 @@ export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs 
     y: bounds.y,
     width: bounds.width,
     height: bounds.height,
-    alwaysOnTop
+    alwaysOnTop,
+    visualizerMode
   }
 }
 

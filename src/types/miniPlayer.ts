@@ -1,4 +1,5 @@
 export type MiniPlayerPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+export type MiniPlayerVisualizerMode = 'off' | 'oscilloscope' | 'spectrum'
 
 export interface MiniPlayerTrackSnapshot {
   id: string
@@ -17,6 +18,18 @@ export interface MiniPlayerSnapshot {
   queueLength: number
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
+  visualizerLineColor: string
+}
+
+export interface MiniPlayerVisualizerStreamChunk {
+  capturedAt: number
+  sampleRate: number
+  leftChunks: Float32Array[]
+  monoChunks: Float32Array[]
+  fftSize: number
+  pitchLock: boolean
+  lineColor: string
+  reset: boolean
 }
 
 export type MiniPlayerCommand =
@@ -29,6 +42,7 @@ export type MiniPlayerCommand =
 export interface MiniPlayerWindowState {
   isOpen: boolean
   alwaysOnTop: boolean
+  visualizerMode: MiniPlayerVisualizerMode
 }
 
 export interface MiniPlayerWindowPrefs {
@@ -37,4 +51,5 @@ export interface MiniPlayerWindowPrefs {
   width: number
   height: number
   alwaysOnTop: boolean
+  visualizerMode: MiniPlayerVisualizerMode
 }

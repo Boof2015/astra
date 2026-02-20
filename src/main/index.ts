@@ -11,11 +11,13 @@ import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
   loadMiniWindowPrefs,
+  normalizeMiniPlayerVisualizerMode,
   saveMiniWindowPrefs,
 } from './services/miniWindowPrefs'
 import type {
   MiniPlayerCommand,
   MiniPlayerSnapshot,
+  MiniPlayerVisualizerStreamChunk,
   MiniPlayerWindowPrefs,
   MiniPlayerWindowState,
 } from '../types/miniPlayer'
@@ -27,6 +29,7 @@ let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
+let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -50,8 +53,9 @@ function getMiniWindowState(): MiniPlayerWindowState {
   const alwaysOnTop = isOpen
     ? miniWindow!.isAlwaysOnTop()
     : miniWindowPrefs?.alwaysOnTop ?? true
+  const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
-  return { isOpen, alwaysOnTop }
+  return { isOpen, alwaysOnTop, visualizerMode }
 }
 
 function applyRuntimeIconImage(image: Electron.NativeImage): void {
@@ -93,12 +97,14 @@ function broadcastMiniWindowState(): void {
 function captureMiniWindowPrefs(): MiniPlayerWindowPrefs | null {
   if (!miniWindow || miniWindow.isDestroyed()) return null
   const bounds = miniWindow.getBounds()
+  const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
   return {
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
     height: bounds.height,
-    alwaysOnTop: miniWindow.isAlwaysOnTop()
+    alwaysOnTop: miniWindow.isAlwaysOnTop(),
+    visualizerMode
   }
 }
 
@@ -186,6 +192,9 @@ async function createMiniPlayerWindow(): Promise<void> {
   miniWindow.webContents.on('did-finish-load', () => {
     if (latestMiniPlayerSnapshot) {
       miniWindow?.webContents.send('mini-player:snapshot', latestMiniPlayerSnapshot)
+    }
+    if (latestMiniVisualizerChunk) {
+      miniWindow?.webContents.send('mini-player:visualizerChunk', latestMiniVisualizerChunk)
     }
     broadcastMiniWindowState()
   })
@@ -364,6 +373,23 @@ ipcMain.handle('mini-player:getWindowState', () => {
   return getMiniWindowState()
 })
 
+ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) => {
+  const visualizerMode = normalizeMiniPlayerVisualizerMode(mode)
+
+  if (!miniWindowPrefs) {
+    miniWindowPrefs = await loadMiniWindowPrefs()
+  }
+
+  miniWindowPrefs = {
+    ...miniWindowPrefs,
+    visualizerMode,
+  }
+
+  await saveMiniWindowPrefs(miniWindowPrefs)
+  broadcastMiniWindowState()
+  return getMiniWindowState()
+})
+
 ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
   if (!miniWindow || miniWindow.isDestroyed()) {
     await createMiniPlayerWindow()
@@ -387,6 +413,13 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   latestMiniPlayerSnapshot = snapshot
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', snapshot)
+  }
+})
+
+ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisualizerStreamChunk) => {
+  latestMiniVisualizerChunk = chunk
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.webContents.send('mini-player:visualizerChunk', chunk)
   }
 })
 

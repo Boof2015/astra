@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { join } from 'path'
-import type { MiniPlayerCommand, MiniPlayerSnapshot, MiniPlayerWindowState } from '../types/miniPlayer'
+import type {
+  MiniPlayerCommand,
+  MiniPlayerSnapshot,
+  MiniPlayerVisualizerMode,
+  MiniPlayerVisualizerStreamChunk,
+  MiniPlayerWindowState
+} from '../types/miniPlayer'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -235,9 +241,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
     getWindowState: () => ipcRenderer.invoke('mini-player:getWindowState'),
+    setVisualizerMode: (mode: MiniPlayerVisualizerMode) => ipcRenderer.invoke('mini-player:setVisualizerMode', mode),
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
     publishSnapshot: (snapshot: MiniPlayerSnapshot) => ipcRenderer.send('mini-player:publishSnapshot', snapshot),
+    publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => ipcRenderer.send('mini-player:publishVisualizerChunk', chunk),
     sendCommand: (command: MiniPlayerCommand) => ipcRenderer.send('mini-player:sendCommand', command),
     onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: MiniPlayerSnapshot) => callback(snapshot)
@@ -253,6 +261,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, state: MiniPlayerWindowState) => callback(state)
       ipcRenderer.on('mini-player:windowState', handler)
       return () => ipcRenderer.removeListener('mini-player:windowState', handler)
+    },
+    onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, chunk: MiniPlayerVisualizerStreamChunk) => callback(chunk)
+      ipcRenderer.on('mini-player:visualizerChunk', handler)
+      return () => ipcRenderer.removeListener('mini-player:visualizerChunk', handler)
     }
   },
 
@@ -362,13 +375,16 @@ declare global {
         open: () => Promise<void>
         close: () => Promise<void>
         getWindowState: () => Promise<MiniPlayerWindowState>
+        setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>
         publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+        publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => void
         sendCommand: (command: MiniPlayerCommand) => void
         onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
         onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
         onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
+        onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
       }
 
       // Platform

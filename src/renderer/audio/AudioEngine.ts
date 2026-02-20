@@ -151,9 +151,11 @@ export class AudioEngine {
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
   private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
   private static readonly MAX_PENDING_VECTORSCOPE_CHUNKS = 20
+  private static readonly MAX_PENDING_MINI_VISUALIZER_CHUNKS = 160 // ~0.42s at 48k/128
 
   private audioBuffer: AudioBuffer | null = null
   private startTime: number = 0
@@ -207,6 +209,7 @@ export class AudioEngine {
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
     this.pendingVectorscopeSamples = []
+    this.pendingMiniVisualizerChunks = []
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
@@ -450,6 +453,8 @@ export class AudioEngine {
             this.latestLeftChannel = left
             this.latestRightChannel = right
 
+            const leftChunk = new Float32Array(left)
+
             // Queue samples for oscilloscope (prevents sample loss)
             // Memory safety: drop oldest chunks if queue gets too large
             if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
@@ -457,7 +462,7 @@ export class AudioEngine {
                 -AudioEngine.MAX_PENDING_CHUNKS / 2
               )
             }
-            this.pendingOscilloscopeSamples.push(new Float32Array(left))
+            this.pendingOscilloscopeSamples.push(leftChunk)
 
             // Compute mono sum (L+R)/2
             const mono = new Float32Array(left.length)
@@ -473,6 +478,14 @@ export class AudioEngine {
               )
             }
             this.pendingSpectrumSamples.push(mono)
+
+            // Queue chunks for mini-player real-time stream without interfering with main visualizers.
+            if (this.pendingMiniVisualizerChunks.length >= AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS) {
+              this.pendingMiniVisualizerChunks = this.pendingMiniVisualizerChunks.slice(
+                -Math.floor(AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS / 2)
+              )
+            }
+            this.pendingMiniVisualizerChunks.push({ left: leftChunk, mono })
 
             // Queue stereo chunks for vectorscope (prevents sample loss)
             if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
@@ -2181,6 +2194,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending chunks for mini-player real-time visualizer stream.
+  flushPendingMiniVisualizerChunks(): { left: Float32Array; mono: Float32Array }[] {
+    const samples = this.pendingMiniVisualizerChunks
+    this.pendingMiniVisualizerChunks = []
+    return samples
+  }
+
   get hasNextBuffered(): boolean {
     return this.nextBuffer !== null
   }
@@ -2697,6 +2717,7 @@ export class AudioEngine {
     this._normalizationGainDb = 0
     this.clearNextNormalizationCache()
     this.audioBuffer = null
+    this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }
 }

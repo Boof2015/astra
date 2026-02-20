@@ -1,75 +1,18 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
-import { DEFAULT_THEME_ACCENT } from '../../stores/themeStore'
+import {
+  AMBIENT_SPECTRUM_MAX_FREQ,
+  AMBIENT_SPECTRUM_MIN_FREQ,
+  applyTilt,
+  colorWithAlpha,
+  frequencyAtX,
+  tiltOffsetAtFrequency
+} from '../visualizers/ambientSpectrumMath'
 
 export interface FullscreenAmbientSpectrumProps {
   className?: string
   opacityIntent?: 'subtle' | 'soft'
-}
-
-function colorToRgbChannels(color: string): string | null {
-  const normalizedColor = color.trim()
-
-  if (normalizedColor.startsWith('#')) {
-    const hex = normalizedColor.slice(1)
-    const normalizedHex = hex.length === 3
-      ? hex.split('').map((ch) => `${ch}${ch}`).join('')
-      : hex
-
-    if (normalizedHex.length === 6) {
-      const r = parseInt(normalizedHex.slice(0, 2), 16)
-      const g = parseInt(normalizedHex.slice(2, 4), 16)
-      const b = parseInt(normalizedHex.slice(4, 6), 16)
-      return `${r}, ${g}, ${b}`
-    }
-  }
-
-  if (normalizedColor.startsWith('rgb(')) {
-    return normalizedColor.slice(4, -1).trim()
-  }
-
-  if (normalizedColor.startsWith('rgba(')) {
-    return normalizedColor.slice(5, -1).split(',').slice(0, 3).map((value) => value.trim()).join(', ')
-  }
-
-  return null
-}
-
-function colorWithAlpha(color: string, alpha: number, fallbackColor: string): string {
-  const safeAlpha = Math.max(0, Math.min(1, alpha))
-  const channels = colorToRgbChannels(color)
-    ?? colorToRgbChannels(fallbackColor)
-    ?? colorToRgbChannels(DEFAULT_THEME_ACCENT)
-
-  if (!channels) {
-    return `rgba(0, 0, 0, ${safeAlpha})`
-  }
-
-  return `rgba(${channels}, ${safeAlpha})`
-}
-
-const MIN_FREQ = 20
-const MAX_FREQ = 20000
-const TILT_DB_PER_OCTAVE = 2.4
-const TILT_REFERENCE_HZ = 1000
-
-function frequencyAtX(x: number, width: number, minFrequency: number, maxFrequency: number): number {
-  const t = width <= 0 ? 0 : x / width
-  const safeMin = Math.max(1, minFrequency)
-  const safeMax = Math.max(safeMin + 1, maxFrequency)
-  const logMin = Math.log10(safeMin)
-  const logMax = Math.log10(safeMax)
-  return Math.pow(10, logMin + t * (logMax - logMin))
-}
-
-function tiltOffsetAtFrequency(frequency: number): number {
-  const safeFreq = Math.max(1, frequency)
-  return TILT_DB_PER_OCTAVE * Math.log2(safeFreq / TILT_REFERENCE_HZ)
-}
-
-function applyTilt(db: number, frequency: number): number {
-  return db + tiltOffsetAtFrequency(frequency)
 }
 
 export default function FullscreenAmbientSpectrum({
@@ -130,7 +73,7 @@ export default function FullscreenAmbientSpectrum({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     const runtimeAccent = window.getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
-      || DEFAULT_THEME_ACCENT
+      || lineColor
 
     const lineAlpha = opacityIntent === 'soft' ? 0.56 : 0.46
     const fillTopAlpha = opacityIntent === 'soft' ? 0.17 : 0.12
@@ -180,8 +123,8 @@ export default function FullscreenAmbientSpectrum({
       const sampleRate = audioEngine.getSampleRate()
       const nyquist = sampleRate / 2
       const binWidth = nyquist / binCount
-      const maxDisplayFreq = Math.max(MIN_FREQ + 1, Math.min(MAX_FREQ, nyquist))
-      const minTiltOffset = tiltOffsetAtFrequency(MIN_FREQ)
+      const maxDisplayFreq = Math.max(AMBIENT_SPECTRUM_MIN_FREQ + 1, Math.min(AMBIENT_SPECTRUM_MAX_FREQ, nyquist))
+      const minTiltOffset = tiltOffsetAtFrequency(AMBIENT_SPECTRUM_MIN_FREQ)
       const maxTiltOffset = tiltOffsetAtFrequency(maxDisplayFreq)
 
       // Keep the normalization window aligned to analyser limits after tilt is applied.
@@ -193,7 +136,10 @@ export default function FullscreenAmbientSpectrum({
 
       for (let i = 0; i < numPoints; i++) {
         const x = i
-        const freq = Math.max(MIN_FREQ, frequencyAtX(x, width, MIN_FREQ, maxDisplayFreq))
+        const freq = Math.max(
+          AMBIENT_SPECTRUM_MIN_FREQ,
+          frequencyAtX(x, width, AMBIENT_SPECTRUM_MIN_FREQ, maxDisplayFreq)
+        )
         const bin = freq / binWidth
         const low = Math.floor(bin)
         const high = Math.min(low + 1, binCount - 1)

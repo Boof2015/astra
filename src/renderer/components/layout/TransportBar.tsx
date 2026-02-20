@@ -48,7 +48,8 @@ export default function TransportBar() {
   const [showEQPopover, setShowEQPopover] = useState(false)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
     isOpen: false,
-    alwaysOnTop: true
+    alwaysOnTop: true,
+    visualizerMode: 'spectrum'
   })
 
   // Marquee scroll for long titles

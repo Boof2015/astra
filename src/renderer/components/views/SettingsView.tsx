@@ -25,6 +25,7 @@ import {
   resetMappedFolders,
   resetThemeSettings,
 } from '../settings/resetActions'
+import type { MiniPlayerVisualizerMode } from '../../../types/miniPlayer'
 
 type ResetActionId =
   | 'reset-theme'
@@ -165,6 +166,7 @@ export default function SettingsView() {
     openReleasesPage,
   } = useUpdateStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
+  const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
 
   const selectedPreset = useMemo(
     () => THEME_PRESET_LIST.find((preset) => preset.id === presetId) ?? THEME_PRESET_LIST[0],
@@ -314,6 +316,24 @@ export default function SettingsView() {
   }, [])
 
   useEffect(() => {
+    let isMounted = true
+
+    void window.electronAPI.miniPlayer.getWindowState().then((state) => {
+      if (!isMounted) return
+      setMiniPlayerVisualizerMode(state.visualizerMode)
+    })
+
+    const unsubscribe = window.electronAPI.miniPlayer.onWindowState((state) => {
+      setMiniPlayerVisualizerMode(state.visualizerMode)
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
     const rootElement = settingsViewRef.current
     if (!rootElement) return
 
@@ -395,6 +415,13 @@ export default function SettingsView() {
 
   const openExternalLink = (url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleMiniPlayerVisualizerModeChange = (mode: MiniPlayerVisualizerMode) => {
+    setMiniPlayerVisualizerMode(mode)
+    void window.electronAPI.miniPlayer.setVisualizerMode(mode).then((state) => {
+      setMiniPlayerVisualizerMode(state.visualizerMode)
+    })
   }
 
   const renderResetAction = (action: ResetActionDefinition) => {
@@ -627,6 +654,19 @@ export default function SettingsView() {
                   <option value={4096}>4096</option>
                   <option value={8192}>8192</option>
                   <option value={16384}>16384</option>
+                </select>
+              </label>
+
+              <label className="settings-field">
+                <span className="settings-field-label">Mini Player Visualizer</span>
+                <select
+                  className="settings-select"
+                  value={miniPlayerVisualizerMode}
+                  onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
+                >
+                  <option value="off">Off</option>
+                  <option value="oscilloscope">Oscilloscope</option>
+                  <option value="spectrum">Spectrum</option>
                 </select>
               </label>
 

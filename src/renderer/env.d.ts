@@ -1,7 +1,13 @@
 /// <reference types="vite/client" />
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
-import type { MiniPlayerCommand, MiniPlayerSnapshot, MiniPlayerWindowState } from '../types/miniPlayer'
+import type {
+    MiniPlayerCommand,
+    MiniPlayerSnapshot,
+    MiniPlayerVisualizerMode,
+    MiniPlayerVisualizerStreamChunk,
+    MiniPlayerWindowState
+} from '../types/miniPlayer'
 
 declare global {
     interface Window {
@@ -15,13 +21,16 @@ declare global {
                 open: () => Promise<void>
                 close: () => Promise<void>
                 getWindowState: () => Promise<MiniPlayerWindowState>
+                setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
                 toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
                 getSnapshot: () => Promise<MiniPlayerSnapshot | null>
                 publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+                publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => void
                 sendCommand: (command: MiniPlayerCommand) => void
                 onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
                 onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
                 onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
+                onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
             }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>

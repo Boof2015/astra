@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import type { MiniPlayerSnapshot, MiniPlayerWindowState } from '../../../types/miniPlayer'
+import type {
+  MiniPlayerSnapshot,
+  MiniPlayerVisualizerMode,
+  MiniPlayerWindowState
+} from '../../../types/miniPlayer'
+import MiniPlayerBackdropVisualizer from './MiniPlayerBackdropVisualizer'
 import '../../styles/mini-player.css'
 
 const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
@@ -8,12 +13,14 @@ const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   duration: 0,
   queueLength: 0,
   outputDeviceLabel: null,
-  currentTrack: null
+  currentTrack: null,
+  visualizerLineColor: '#38bdf8'
 }
 
 const EMPTY_WINDOW_STATE: MiniPlayerWindowState = {
   isOpen: true,
-  alwaysOnTop: true
+  alwaysOnTop: true,
+  visualizerMode: 'spectrum'
 }
 
 type MiniLayoutMode = 'tiny' | 'compact' | 'wide' | 'hero'
@@ -40,6 +47,21 @@ function resolveLayoutMode(width: number, height: number): MiniLayoutMode {
   if (width >= 460 && height >= 320) return 'hero'
   if (width >= 620 && height >= 170) return 'wide'
   return 'compact'
+}
+
+const MINI_VISUALIZER_MODE_ORDER: MiniPlayerVisualizerMode[] = ['off', 'oscilloscope', 'spectrum']
+
+const MINI_VISUALIZER_MODE_LABELS: Record<MiniPlayerVisualizerMode, string> = {
+  off: 'Off',
+  oscilloscope: 'Oscilloscope',
+  spectrum: 'Spectrum'
+}
+
+function nextMiniVisualizerMode(current: MiniPlayerVisualizerMode): MiniPlayerVisualizerMode {
+  const currentIndex = MINI_VISUALIZER_MODE_ORDER.indexOf(current)
+  if (currentIndex === -1) return 'off'
+  const nextIndex = (currentIndex + 1) % MINI_VISUALIZER_MODE_ORDER.length
+  return MINI_VISUALIZER_MODE_ORDER[nextIndex] ?? 'off'
 }
 
 export default function MiniPlayerApp() {
@@ -133,6 +155,10 @@ export default function MiniPlayerApp() {
   const showSeek = layoutMode === 'wide' || layoutMode === 'hero'
   const showContextLine = layoutMode === 'hero'
   const showPreviousButton = layoutMode !== 'tiny'
+  const visualizerMode = windowState.visualizerMode
+  const nextVisualizerMode = nextMiniVisualizerMode(visualizerMode)
+  const visualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[visualizerMode]
+  const nextVisualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[nextVisualizerMode]
   const secondaryLabel = (snapshot.outputDeviceLabel?.trim() || track?.artist || 'No output selected')
   const contextLine = hasTrack
     ? [track?.artist, track?.album].filter((value): value is string => Boolean(value && value.trim())).join(' • ')
@@ -182,6 +208,10 @@ export default function MiniPlayerApp() {
     })
   }
 
+  const handleCycleVisualizerMode = () => {
+    void window.electronAPI.miniPlayer.setVisualizerMode(nextVisualizerMode).then(setWindowState)
+  }
+
   return (
     <div ref={rootRef} className={`mini-player-root mini-player-mode-${layoutMode}`}>
       <div className="mini-player-backdrop" aria-hidden="true">
@@ -199,6 +229,14 @@ export default function MiniPlayerApp() {
           )}
         </div>
 
+        <MiniPlayerBackdropVisualizer
+          mode={visualizerMode}
+          lineColor={snapshot.visualizerLineColor}
+          isIdle={!track || !isPlaying}
+          artworkDataUrl={activeBackdropArtwork ?? backdropArtwork}
+          layoutMode={layoutMode}
+        />
+
         <div className="mini-player-backdrop-colorwash" />
         <div className="mini-player-backdrop-scrim" />
       </div>
@@ -215,6 +253,31 @@ export default function MiniPlayerApp() {
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M14 3a1 1 0 0 0-1 1v2H8a1 1 0 0 0-.8 1.6L10 11v3.27l-1.6 3.19A1 1 0 0 0 9.3 19h5.4a1 1 0 0 0 .9-1.54L14 14.27V11l2.8-3.4A1 1 0 0 0 16 6h-5V4a1 1 0 0 0-1-1h4z" />
+              </svg>
+            </button>
+            <button
+              className={`mini-header-btn ${visualizerMode !== 'off' ? 'active' : ''}`}
+              title={`Mini visualizer: ${visualizerModeLabel}. Click to switch to ${nextVisualizerModeLabel}`}
+              aria-label={`Mini visualizer: ${visualizerModeLabel}. Click to switch to ${nextVisualizerModeLabel}`}
+              onClick={handleCycleVisualizerMode}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                {visualizerMode === 'spectrum' ? (
+                  <>
+                    <path d="M4 18V12" />
+                    <path d="M8 18V9" />
+                    <path d="M12 18V6" />
+                    <path d="M16 18V10" />
+                    <path d="M20 18V13" />
+                  </>
+                ) : visualizerMode === 'oscilloscope' ? (
+                  <path d="M3 12h3l2-4 4 8 3-6 2 2h4" />
+                ) : (
+                  <>
+                    <circle cx="12" cy="12" r="7" />
+                    <path d="M7 17 17 7" />
+                  </>
+                )}
               </svg>
             </button>
             <button
