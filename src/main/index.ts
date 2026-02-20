@@ -781,6 +781,10 @@ ipcMain.handle('library:getPlaylistsContainingTrack', (_event, trackPath: string
   return library.getPlaylistsContainingTrack(trackPath)
 })
 
+ipcMain.handle('library:importPlaylistFromFile', async (_event, filePath: string) => {
+  return library.importPlaylistFromFile(filePath)
+})
+
 // ============================================
 // Helper functions
 // ============================================

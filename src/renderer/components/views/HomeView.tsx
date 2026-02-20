@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { usePlaylistStore } from '../../stores/playlistStore'
+import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
@@ -98,6 +98,13 @@ interface WeightedGreetingPool {
   weight: number
 }
 
+type PlaylistImportStatusTone = 'success' | 'warning' | 'error'
+
+interface PlaylistImportStatus {
+  tone: PlaylistImportStatusTone
+  message: string
+}
+
 const RECENT_TRACK_LIMIT = 8
 const RECENT_ARTIST_LIMIT = 6
 const RECENT_ALBUM_LIMIT = 6
@@ -107,6 +114,40 @@ const STAR_GRID_SIZE = 6
 const STAR_PIXEL_SIZE = 2
 const STAR_CLUSTER_RATIO = 0.16
 const STAR_OPACITY_SCALE = 0.52
+
+function formatPlaylistImportStatus(result: PlaylistImportResult): PlaylistImportStatus {
+  const detailSegments: string[] = []
+  if (result.matchedByMetadataCount > 0) {
+    detailSegments.push(`${result.matchedByMetadataCount} matched by metadata`)
+  }
+  if (result.ambiguousMetadataCount > 0) {
+    detailSegments.push(`${result.ambiguousMetadataCount} ambiguous`)
+  }
+  if (result.unsupportedEntryCount > 0) {
+    detailSegments.push(`${result.unsupportedEntryCount} unsupported`)
+  }
+  const details = detailSegments.length > 0 ? ` (${detailSegments.join(' · ')})` : ''
+
+  if (result.importedCount <= 0 || result.playlistId === null || !result.playlistName) {
+    return {
+      tone: 'error',
+      message: `No tracks were imported from ${result.entriesTotal} entries.${details}`
+    }
+  }
+
+  const skippedCount = result.entriesTotal - result.importedCount
+  if (skippedCount > 0) {
+    return {
+      tone: 'warning',
+      message: `Imported ${result.importedCount}/${result.entriesTotal} tracks to "${result.playlistName}".${details}`
+    }
+  }
+
+  return {
+    tone: 'success',
+    message: `Imported ${result.importedCount} tracks to "${result.playlistName}".`
+  }
+}
 
 const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
   { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
@@ -657,10 +698,12 @@ export default function HomeView() {
   const createPlaylist = usePlaylistStore((s) => s.createPlaylist)
   const setPlaylistCustomCoverFromFile = usePlaylistStore((s) => s.setPlaylistCustomCoverFromFile)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
+  const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
+  const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -678,6 +721,16 @@ export default function HomeView() {
     }, GREETING_ROTATION_MS)
     return () => window.clearInterval(intervalId)
   }, [])
+
+  useEffect(() => {
+    if (!playlistImportStatus) return
+    const timeoutId = window.setTimeout(() => {
+      setPlaylistImportStatus(null)
+    }, 9000)
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [playlistImportStatus])
 
   useEffect(() => {
     if (!hasLibraryContent) return
@@ -954,6 +1007,24 @@ export default function HomeView() {
     setActiveView('playlist')
   }
 
+  const handleImportPlaylist = async () => {
+    try {
+      const result = await importPlaylistFromFile()
+      if (!result) return
+
+      setPlaylistImportStatus(formatPlaylistImportStatus(result))
+
+      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount > 0) {
+        await selectPlaylist(result.playlistId)
+        setActiveView('playlist')
+      }
+    } catch (error) {
+      console.error('Failed to import playlist:', error)
+      const message = error instanceof Error ? error.message : 'Failed to import playlist.'
+      setPlaylistImportStatus({ tone: 'error', message })
+    }
+  }
+
   const handleOpenArtist = async (artistName: string) => {
     setLibraryViewMode('artists')
     await selectArtist(artistName, 'home')
@@ -1131,6 +1202,13 @@ export default function HomeView() {
             <h2>PLAYLISTS</h2>
             <div className="home-section-actions">
               <button
+                className="home-section-link-btn"
+                onClick={() => void handleImportPlaylist()}
+                title="Import playlist"
+              >
+                Import
+              </button>
+              <button
                 className="home-create-playlist-btn"
                 onClick={() => setIsCreatePlaylistModalOpen(true)}
                 title="Create playlist"
@@ -1142,6 +1220,12 @@ export default function HomeView() {
               </button>
             </div>
           </div>
+
+          {playlistImportStatus && (
+            <div className={`home-playlist-import-status home-playlist-import-status-${playlistImportStatus.tone}`}>
+              {playlistImportStatus.message}
+            </div>
+          )}
 
           {homePlaylists.length > 0 ? (
             <div className="home-playlist-row">

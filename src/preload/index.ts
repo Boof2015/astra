@@ -91,6 +91,23 @@ export interface Playlist {
   track_count: number
 }
 
+export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
+
+export interface PlaylistImportResult {
+  sourceFilePath: string
+  detectedFormat: PlaylistImportDetectedFormat
+  playlistId: number | null
+  playlistName: string | null
+  entriesTotal: number
+  importedCount: number
+  matchedByPathCount: number
+  matchedByMetadataCount: number
+  unmatchedCount: number
+  ambiguousMetadataCount: number
+  unsupportedEntryCount: number
+  warnings: string[]
+}
+
 export interface AppPerformanceStats {
   cpuPercent: number
   memoryMb: number
@@ -325,6 +342,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
     clearPlaylistCustomCover: (playlistId: number) => ipcRenderer.invoke('library:clearPlaylistCustomCover', playlistId),
     getPlaylistsContainingTrack: (trackPath: string) => ipcRenderer.invoke('library:getPlaylistsContainingTrack', trackPath),
+    importPlaylistFromFile: (filePath: string) => ipcRenderer.invoke('library:importPlaylistFromFile', filePath),
   }
 })
 
@@ -426,6 +444,7 @@ declare global {
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
         clearPlaylistCustomCover: (playlistId: number) => Promise<void>
         getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+        importPlaylistFromFile: (filePath: string) => Promise<PlaylistImportResult>
       }
     }
 

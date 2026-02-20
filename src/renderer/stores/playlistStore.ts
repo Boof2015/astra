@@ -12,6 +12,23 @@ export interface Playlist {
   track_count: number
 }
 
+export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
+
+export interface PlaylistImportResult {
+  sourceFilePath: string
+  detectedFormat: PlaylistImportDetectedFormat
+  playlistId: number | null
+  playlistName: string | null
+  entriesTotal: number
+  importedCount: number
+  matchedByPathCount: number
+  matchedByMetadataCount: number
+  unmatchedCount: number
+  ambiguousMetadataCount: number
+  unsupportedEntryCount: number
+  warnings: string[]
+}
+
 interface DbTrack {
   id: number
   path: string
@@ -50,6 +67,7 @@ interface PlaylistStore {
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
   getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+  importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
 }
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
@@ -129,5 +147,23 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   getPlaylistsContainingTrack: async (trackPath: string) => {
     if (!trackPath) return []
     return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
+  },
+
+  importPlaylistFromFile: async () => {
+    const filePath = await window.electronAPI.openFileDialog({
+      title: 'Import Playlist',
+      filters: [
+        { name: 'Playlist Files', extensions: ['csv', 'm3u', 'm3u8', 'xspf', 'xml', 'wpl', 'asx'] },
+        { name: 'CSV Files', extensions: ['csv'] },
+        { name: 'M3U Playlists', extensions: ['m3u', 'm3u8'] },
+        { name: 'XSPF Playlists', extensions: ['xspf'] },
+        { name: 'XML Playlists', extensions: ['xml', 'wpl', 'asx'] }
+      ]
+    })
+    if (!filePath) return null
+
+    const result = await window.electronAPI.library.importPlaylistFromFile(filePath)
+    await get().loadPlaylists()
+    return result
   }
 }))

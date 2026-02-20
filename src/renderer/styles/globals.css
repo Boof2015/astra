@@ -5766,6 +5766,36 @@ body::after {
   color: rgba(255, 255, 255, 0.4);
 }
 
+.home-playlist-import-status {
+  min-height: 36px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.home-playlist-import-status-success {
+  border-color: rgba(95, 201, 132, 0.5);
+  color: rgba(168, 241, 189, 0.92);
+  background: rgba(42, 91, 61, 0.26);
+}
+
+.home-playlist-import-status-warning {
+  border-color: rgba(229, 188, 92, 0.5);
+  color: rgba(255, 226, 156, 0.94);
+  background: rgba(107, 80, 23, 0.28);
+}
+
+.home-playlist-import-status-error {
+  border-color: rgba(224, 103, 103, 0.52);
+  color: rgba(255, 176, 176, 0.95);
+  background: rgba(109, 34, 34, 0.28);
+}
+
 .library-header {
   min-height: 48px;
   padding: 8px 14px;

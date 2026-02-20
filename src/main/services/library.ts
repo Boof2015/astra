@@ -1,10 +1,12 @@
 import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
-import { join, extname, basename } from 'path'
+import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
+import { fileURLToPath } from 'url'
+import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -52,6 +54,21 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+}
+
+export interface PlaylistImportResult {
+  sourceFilePath: string
+  detectedFormat: PlaylistImportDetectedFormat
+  playlistId: number | null
+  playlistName: string | null
+  entriesTotal: number
+  importedCount: number
+  matchedByPathCount: number
+  matchedByMetadataCount: number
+  unmatchedCount: number
+  ambiguousMetadataCount: number
+  unsupportedEntryCount: number
+  warnings: string[]
 }
 
 let db: Database | null = null
@@ -1610,6 +1627,269 @@ export function getPlaylistsContainingTrack(trackPath: string): number[] {
 
   stmt.free()
   return ids
+}
+
+interface PlaylistImportLookupIndex {
+  exactPath: Map<string, string>
+  caseInsensitivePath: Map<string, string | null>
+  metadataByTitleArtistAlbum: Map<string, string | null>
+  metadataByTitleArtist: Map<string, string | null>
+  metadataByTitle: Map<string, string | null>
+}
+
+interface ResolvedPlaylistImportPath {
+  normalizedPath: string
+  caseInsensitivePath: string
+}
+
+type MetadataMatchResult =
+  | { kind: 'matched'; trackPath: string }
+  | { kind: 'ambiguous' }
+  | { kind: 'none' }
+
+function buildPlaylistImportLookupIndex(tracks: DbTrack[]): PlaylistImportLookupIndex {
+  const index: PlaylistImportLookupIndex = {
+    exactPath: new Map(),
+    caseInsensitivePath: new Map(),
+    metadataByTitleArtistAlbum: new Map(),
+    metadataByTitleArtist: new Map(),
+    metadataByTitle: new Map()
+  }
+
+  for (const track of tracks) {
+    const normalizedTrackPath = normalizePathForLookup(track.path)
+    if (normalizedTrackPath) {
+      index.exactPath.set(normalizedTrackPath, track.path)
+      upsertUniqueLookupEntry(index.caseInsensitivePath, normalizedTrackPath.toLocaleLowerCase(), track.path)
+    }
+
+    const titleKey = normalizeKey(track.title)
+    const artistKey = normalizeKey(track.artist)
+    const albumKey = normalizeKey(track.album)
+
+    if (titleKey) {
+      upsertUniqueLookupEntry(index.metadataByTitle, titleKey, track.path)
+    }
+    if (titleKey && artistKey) {
+      upsertUniqueLookupEntry(index.metadataByTitleArtist, `${titleKey}\u0000${artistKey}`, track.path)
+    }
+    if (titleKey && artistKey && albumKey) {
+      upsertUniqueLookupEntry(index.metadataByTitleArtistAlbum, `${titleKey}\u0000${artistKey}\u0000${albumKey}`, track.path)
+    }
+  }
+
+  return index
+}
+
+function upsertUniqueLookupEntry(map: Map<string, string | null>, key: string, value: string): void {
+  if (!key) return
+  const existing = map.get(key)
+  if (existing === undefined) {
+    map.set(key, value)
+    return
+  }
+  if (existing !== value) {
+    map.set(key, null)
+  }
+}
+
+function normalizePathForLookup(inputPath: string): string {
+  const trimmed = inputPath.trim()
+  if (!trimmed) return ''
+
+  const platformAwarePath = process.platform === 'win32'
+    ? trimmed.replace(/\//g, '\\')
+    : trimmed.replace(/\\/g, '/')
+
+  return normalizePath(platformAwarePath)
+}
+
+function stripOuterQuotes(value: string): string {
+  if (value.length < 2) return value
+  const startsWithSingle = value.startsWith("'") && value.endsWith("'")
+  const startsWithDouble = value.startsWith('"') && value.endsWith('"')
+  if (!startsWithSingle && !startsWithDouble) return value
+  return value.slice(1, -1)
+}
+
+function resolveImportedPlaylistEntryPath(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
+  const trimmed = stripOuterQuotes(rawPath.trim())
+  if (!trimmed) return null
+
+  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
+  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
+  let candidatePath = trimmed
+
+  if (schemeMatch && !isWindowsAbsolutePath) {
+    const scheme = schemeMatch[1].toLocaleLowerCase()
+    if (scheme === 'file') {
+      try {
+        candidatePath = fileURLToPath(trimmed)
+      } catch {
+        return null
+      }
+    } else {
+      return null
+    }
+  }
+
+  let absolutePath = candidatePath
+  if (isWindowsAbsolutePath && process.platform !== 'win32') {
+    // Keep explicit Windows absolute paths as-is; these can still match on Windows,
+    // and should not be resolved relative to a POSIX import directory.
+    absolutePath = candidatePath
+  } else {
+    const normalizedSeparators = process.platform === 'win32'
+      ? candidatePath.replace(/\//g, '\\')
+      : candidatePath.replace(/\\/g, '/')
+    absolutePath = isAbsolute(normalizedSeparators)
+      ? normalizedSeparators
+      : resolvePath(dirname(importFilePath), normalizedSeparators)
+  }
+
+  const normalizedPath = normalizePathForLookup(absolutePath)
+  if (!normalizedPath) return null
+
+  return {
+    normalizedPath,
+    caseInsensitivePath: normalizedPath.toLocaleLowerCase()
+  }
+}
+
+function matchPlaylistEntryByMetadata(entry: ParsedPlaylistEntry, index: PlaylistImportLookupIndex): MetadataMatchResult {
+  const titleKey = normalizeKey(entry.title ?? '')
+  if (!titleKey) {
+    return { kind: 'none' }
+  }
+
+  const artistKey = normalizeKey(entry.artist ?? '')
+  const albumKey = normalizeKey(entry.album ?? '')
+
+  if (artistKey && albumKey) {
+    const candidate = index.metadataByTitleArtistAlbum.get(`${titleKey}\u0000${artistKey}\u0000${albumKey}`)
+    if (typeof candidate === 'string') return { kind: 'matched', trackPath: candidate }
+    if (candidate === null) return { kind: 'ambiguous' }
+  }
+
+  if (artistKey) {
+    const candidate = index.metadataByTitleArtist.get(`${titleKey}\u0000${artistKey}`)
+    if (typeof candidate === 'string') return { kind: 'matched', trackPath: candidate }
+    if (candidate === null) return { kind: 'ambiguous' }
+  }
+
+  const titleOnlyCandidate = index.metadataByTitle.get(titleKey)
+  if (typeof titleOnlyCandidate === 'string') return { kind: 'matched', trackPath: titleOnlyCandidate }
+  if (titleOnlyCandidate === null) return { kind: 'ambiguous' }
+
+  return { kind: 'none' }
+}
+
+function deriveImportedPlaylistName(filePath: string): string {
+  const rawName = basename(filePath, extname(filePath)).trim()
+  return rawName.length > 0 ? rawName : 'Imported Playlist'
+}
+
+export async function importPlaylistFromFile(filePath: string): Promise<PlaylistImportResult> {
+  if (!db) throw new Error('Database not initialized')
+
+  const sourceFilePath = filePath.trim()
+  if (!sourceFilePath) {
+    throw new Error('Playlist file path is required.')
+  }
+
+  const content = await readFile(sourceFilePath, 'utf-8')
+  const parsed = parsePlaylistDocument(sourceFilePath, content)
+  const lookup = buildPlaylistImportLookupIndex(readAllTracksUnordered())
+  const matchedTrackPaths: string[] = []
+  const warnings = [...parsed.warnings]
+
+  let matchedByPathCount = 0
+  let matchedByMetadataCount = 0
+  let unmatchedCount = 0
+  let ambiguousMetadataCount = 0
+  let unsupportedEntryCount = 0
+
+  for (const entry of parsed.entries) {
+    let matchedTrackPath: string | null = null
+
+    if (entry.path) {
+      const resolvedPath = resolveImportedPlaylistEntryPath(entry.path, sourceFilePath)
+      if (!resolvedPath) {
+        unsupportedEntryCount += 1
+        continue
+      }
+
+      matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
+        ?? null
+
+      if (!matchedTrackPath) {
+        const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
+        if (typeof caseInsensitiveMatch === 'string') {
+          matchedTrackPath = caseInsensitiveMatch
+        }
+      }
+
+      if (matchedTrackPath) {
+        matchedByPathCount += 1
+      }
+    }
+
+    if (!matchedTrackPath) {
+      const metadataMatch = matchPlaylistEntryByMetadata(entry, lookup)
+      if (metadataMatch.kind === 'matched') {
+        matchedTrackPath = metadataMatch.trackPath
+        matchedByMetadataCount += 1
+      } else if (metadataMatch.kind === 'ambiguous') {
+        ambiguousMetadataCount += 1
+        unmatchedCount += 1
+        continue
+      }
+    }
+
+    if (!matchedTrackPath) {
+      unmatchedCount += 1
+      continue
+    }
+
+    matchedTrackPaths.push(matchedTrackPath)
+  }
+
+  const importedCount = matchedTrackPaths.length
+  let playlistId: number | null = null
+  let playlistName: string | null = null
+
+  if (importedCount > 0) {
+    playlistName = deriveImportedPlaylistName(sourceFilePath)
+    const playlist = await createPlaylist(playlistName)
+    await addToPlaylist(playlist.id, matchedTrackPaths)
+    playlistId = playlist.id
+  }
+
+  if (unsupportedEntryCount > 0) {
+    warnings.push(`${unsupportedEntryCount} entries were skipped due to unsupported path/URI formats.`)
+  }
+  if (ambiguousMetadataCount > 0) {
+    warnings.push(`${ambiguousMetadataCount} entries were skipped due to ambiguous metadata matches.`)
+  }
+  const unmatchedNonAmbiguous = unmatchedCount - ambiguousMetadataCount
+  if (unmatchedNonAmbiguous > 0) {
+    warnings.push(`${unmatchedNonAmbiguous} entries could not be matched to library tracks.`)
+  }
+
+  return {
+    sourceFilePath,
+    detectedFormat: parsed.detectedFormat,
+    playlistId,
+    playlistName,
+    entriesTotal: parsed.entries.length,
+    importedCount,
+    matchedByPathCount,
+    matchedByMetadataCount,
+    unmatchedCount,
+    ambiguousMetadataCount,
+    unsupportedEntryCount,
+    warnings
+  }
 }
 
 // Remove tracks that no longer exist on disk
