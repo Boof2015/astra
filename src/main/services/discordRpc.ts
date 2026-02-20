@@ -30,8 +30,6 @@ export interface DiscordTrackPresence {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
-  artworkData?: string
-  artworkHash?: string
 }
 
 export interface DiscordPresenceUpdate {
@@ -182,9 +180,7 @@ export class DiscordRpcService {
             channels: normalizeNumber(update.track.channels),
             codec: normalizeText(update.track.codec),
             codecProfile: normalizeText(update.track.codecProfile),
-            isAtmosJoc: normalizeBoolean(update.track.isAtmosJoc),
-            artworkData: normalizeText(update.track.artworkData),
-            artworkHash: normalizeText(update.track.artworkHash)
+            isAtmosJoc: normalizeBoolean(update.track.isAtmosJoc)
           }
         : null
     }
@@ -421,15 +417,6 @@ export class DiscordRpcService {
         }
       } else {
         activity.timestamps = { start }
-      }
-    }
-
-    // Add album art if available
-    const artwork = presence.track.artworkData ?? presence.track.artworkHash
-    if (artwork) {
-      activity.assets = {
-        large_image: artwork,
-        large_text: truncate(`${presence.track.title}${presence.track.artist ? ` - ${presence.track.artist}` : ''}`, 128)
       }
     }
 
