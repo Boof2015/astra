@@ -495,7 +495,8 @@ ipcMain.handle('discord:resolveCoverArt', async (_event, query: unknown) => {
   return resolveDiscordCoverArtUrl({
     album: normalized.album,
     artist: typeof normalized.artist === 'string' ? normalized.artist : undefined,
-    albumArtist: typeof normalized.albumArtist === 'string' ? normalized.albumArtist : undefined
+    albumArtist: typeof normalized.albumArtist === 'string' ? normalized.albumArtist : undefined,
+    title: typeof normalized.title === 'string' ? normalized.title : undefined
   })
 })
 

@@ -76,7 +76,7 @@ declare global {
                     } | null
                 }) => void
                 clearPresence: () => void
-                resolveCoverArt: (query: { album: string; artist?: string; albumArtist?: string }) => Promise<
+                resolveCoverArt: (query: { album: string; artist?: string; albumArtist?: string; title?: string }) => Promise<
                     | { status: 'hit'; url: string }
                     | { status: 'not_found' }
                     | { status: 'transient_error'; code?: string }

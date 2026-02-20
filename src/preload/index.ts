@@ -187,6 +187,7 @@ export interface DiscordCoverArtLookupQuery {
   album: string
   artist?: string
   albumArtist?: string
+  title?: string
 }
 
 export type DiscordCoverArtLookupResult =

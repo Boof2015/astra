@@ -18,6 +18,7 @@ interface DiscordCoverArtLookupQuery {
   album: string
   artist?: string
   albumArtist?: string
+  title?: string
 }
 
 type DiscordCoverArtLookupResult =
@@ -406,6 +407,7 @@ function buildCoverArtLookupQuery(track: PlayerSnapshot['currentTrack']): Discor
   const album = normalizeLookupText(track.album)
   const artist = pickPrimaryArtist(normalizeLookupText(track.artist))
   const albumArtist = pickPrimaryArtist(normalizeLookupText(track.albumArtist))
+  const title = normalizeLookupText(track.title)
   const preferredArtist = albumArtist ?? artist
 
   if (!album || !preferredArtist) return null
@@ -415,7 +417,8 @@ function buildCoverArtLookupQuery(track: PlayerSnapshot['currentTrack']): Discor
   return {
     album,
     artist: artist ?? undefined,
-    albumArtist: albumArtist ?? undefined
+    albumArtist: albumArtist ?? undefined,
+    title: title ?? undefined
   }
 }
 

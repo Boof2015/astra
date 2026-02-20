@@ -9,6 +9,7 @@ const RELEASE_SEARCH_LIMIT = 5
 const MAX_RELEASE_CANDIDATES_TO_PROBE = 5
 const MAX_ARTIST_CANDIDATES = 4
 const ITUNES_SEARCH_LIMIT = 8
+const ITUNES_TRACK_SEARCH_LIMIT = 12
 const LOOKUP_LOG_INTERVAL_MS = 5000
 
 interface MusicBrainzArtistCredit {
@@ -51,6 +52,18 @@ interface ItunesSearchResponse {
   results?: ItunesAlbumResult[]
 }
 
+interface ItunesTrackResult {
+  collectionName?: string
+  artistName?: string
+  artworkUrl100?: string
+  artworkUrl60?: string
+  artworkUrl30?: string
+}
+
+interface ItunesTrackSearchResponse {
+  results?: ItunesTrackResult[]
+}
+
 interface TheAudioDbAlbum {
   strAlbum?: string
   strArtist?: string
@@ -85,6 +98,7 @@ export interface DiscordCoverArtLookupQuery {
   album: string
   artist?: string
   albumArtist?: string
+  title?: string
 }
 
 type FetchJsonResult<T> =
@@ -627,6 +641,70 @@ async function resolveCoverArtFromItunesSearch(album: string, artist: string | n
   }
 }
 
+async function resolveCoverArtFromItunesTrackSearch(
+  album: string,
+  artist: string | null,
+  title: string
+): Promise<DiscordCoverArtLookupResult> {
+  const term = artist ? `${title} ${artist}` : title
+  const params = new URLSearchParams({
+    term,
+    media: 'music',
+    entity: 'song',
+    limit: String(ITUNES_TRACK_SEARCH_LIMIT)
+  })
+
+  const response = await fetchJson<ItunesTrackSearchResponse>(
+    `${ITUNES_SEARCH_URL}?${params.toString()}`,
+    {
+      Accept: 'application/json',
+      'User-Agent': MUSICBRAINZ_USER_AGENT
+    }
+  )
+
+  if (response.kind === 'http_error') {
+    if (isTransientHttpStatus(response.status)) {
+      return {
+        status: 'transient_error',
+        code: `itunes_track_http_${response.status}`
+      }
+    }
+    return { status: 'not_found' }
+  }
+
+  if (response.kind !== 'ok') {
+    return {
+      status: 'transient_error',
+      code: resolveTransientCode('itunes_track', response)
+    }
+  }
+
+  const results = Array.isArray(response.payload.results) ? response.payload.results : null
+  if (!results) {
+    return {
+      status: 'transient_error',
+      code: 'itunes_track_invalid_payload'
+    }
+  }
+  if (results.length === 0) return { status: 'not_found' }
+
+  const coverArtUrl = chooseBestCoverCandidate(
+    results.map((entry) => ({
+      album: normalizeText(entry.collectionName),
+      artist: normalizeText(entry.artistName),
+      url: selectItunesCoverUrl(entry)
+    })),
+    album,
+    artist
+  )
+
+  if (!coverArtUrl) return { status: 'not_found' }
+  return {
+    status: 'hit',
+    url: coverArtUrl
+  }
+}
+
 function selectTheAudioDbCoverUrl(entry: TheAudioDbAlbum): string | null {
   const thumbHq = normalizeUrlOrNull(entry.strAlbumThumbHQ)
   if (thumbHq) return thumbHq
@@ -761,7 +839,11 @@ async function resolveCoverArtWithMusicBrainzAndCoverArtArchive(album: string, a
   }
 }
 
-async function resolveCoverArtWithItunes(album: string, artistCandidates: string[]): Promise<ProviderResolutionResult> {
+async function resolveCoverArtWithItunes(
+  album: string,
+  artistCandidates: string[],
+  title: string | null
+): Promise<ProviderResolutionResult> {
   let transientErrorCode: string | undefined
   let queryCount = 0
 
@@ -779,6 +861,24 @@ async function resolveCoverArtWithItunes(album: string, artistCandidates: string
   if (albumOnlyResult.status === 'hit') return { result: albumOnlyResult, candidateCount: queryCount }
   if (albumOnlyResult.status === 'transient_error') {
     transientErrorCode = transientErrorCode ?? albumOnlyResult.code
+  }
+
+  if (title) {
+    for (const artistCandidate of artistCandidates) {
+      queryCount += 1
+      const result = await resolveCoverArtFromItunesTrackSearch(album, artistCandidate, title)
+      if (result.status === 'hit') return { result, candidateCount: queryCount }
+      if (result.status === 'transient_error') {
+        transientErrorCode = transientErrorCode ?? result.code
+      }
+    }
+
+    queryCount += 1
+    const trackOnlyResult = await resolveCoverArtFromItunesTrackSearch(album, null, title)
+    if (trackOnlyResult.status === 'hit') return { result: trackOnlyResult, candidateCount: queryCount }
+    if (trackOnlyResult.status === 'transient_error') {
+      transientErrorCode = transientErrorCode ?? trackOnlyResult.code
+    }
   }
 
   if (transientErrorCode) {
@@ -844,6 +944,7 @@ function pushUniqueReleaseIds(target: string[], source: string[], seen: Set<stri
 export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuery): Promise<DiscordCoverArtLookupResult> {
   const album = normalizeText(query.album)
   const artist = normalizeText(query.albumArtist) ?? normalizeText(query.artist)
+  const title = normalizeText(query.title)
   if (!album || !artist) return { status: 'not_found' }
   if (isUnknownMetadata(album, 'album')) return { status: 'not_found' }
   if (isUnknownMetadata(artist, 'artist')) return { status: 'not_found' }
@@ -854,12 +955,12 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
 
   const providerResolvers = [
     {
-      name: 'musicbrainz_caa',
-      resolve: () => resolveCoverArtWithMusicBrainzAndCoverArtArchive(album, artistCandidates)
+      name: 'itunes',
+      resolve: () => resolveCoverArtWithItunes(album, artistCandidates, title)
     },
     {
-      name: 'itunes',
-      resolve: () => resolveCoverArtWithItunes(album, artistCandidates)
+      name: 'musicbrainz_caa',
+      resolve: () => resolveCoverArtWithMusicBrainzAndCoverArtArchive(album, artistCandidates)
     },
     {
       name: 'theaudiodb',
