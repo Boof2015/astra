@@ -12,6 +12,7 @@ import {
 } from './services/discordRpc'
 import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
+import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
@@ -34,6 +35,12 @@ import {
   type ScopePopoutChunk,
   type ScopePopoutState
 } from '../types/scopePopout'
+import {
+  LOCAL_API_DEFAULT_PORT,
+  LOCAL_API_MAX_PORT,
+  LOCAL_API_MIN_PORT,
+  type LocalApiServiceConfig,
+} from '../types/localApi'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -58,6 +65,32 @@ const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
 const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
+const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
+const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
+const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
+const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
+
+let localApiConfig: LocalApiServiceConfig = {
+  enabled: false,
+  controlsEnabled: false,
+  port: LOCAL_API_DEFAULT_PORT,
+  token: generateLocalApiToken(),
+}
+
+function sendMiniPlayerCommand(command: MiniPlayerCommand): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('mini-player:command', command)
+  }
+}
+
+const localApiService = new LocalApiService({
+  config: localApiConfig,
+  getSnapshot: () => latestMiniPlayerSnapshot,
+  dispatchCommand: sendMiniPlayerCommand,
+  onStatusChange: () => {
+    broadcastLocalApiStatus()
+  }
+})
 
 const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
   title: string
@@ -175,6 +208,81 @@ function broadcastScopePopoutState(): void {
       scopeWindow.webContents.send('scope-popout:state', payload)
     }
   }
+}
+
+function parseMetaBoolean(value: string | null, fallback: boolean): boolean {
+  if (value === '1') return true
+  if (value === '0') return false
+  return fallback
+}
+
+function normalizeLocalApiPort(rawPort: unknown): number {
+  const parsed = typeof rawPort === 'number' ? rawPort : Number(rawPort)
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Port must be an integer between ${LOCAL_API_MIN_PORT} and ${LOCAL_API_MAX_PORT}.`)
+  }
+  if (parsed < LOCAL_API_MIN_PORT || parsed > LOCAL_API_MAX_PORT) {
+    throw new Error(`Port must be between ${LOCAL_API_MIN_PORT} and ${LOCAL_API_MAX_PORT}.`)
+  }
+  return parsed
+}
+
+async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
+  await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
+  await library.setAppMeta(LOCAL_API_PORT_META_KEY, String(config.port))
+  await library.setAppMeta(LOCAL_API_TOKEN_META_KEY, config.token)
+}
+
+async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
+  const enabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_ENABLED_META_KEY), false)
+  const controlsEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY), false)
+  const controlsEnabled = enabled ? controlsEnabledStored : false
+
+  const rawPort = library.getAppMeta(LOCAL_API_PORT_META_KEY)
+  let port = LOCAL_API_DEFAULT_PORT
+  if (rawPort !== null) {
+    try {
+      port = normalizeLocalApiPort(rawPort)
+    } catch {
+      port = LOCAL_API_DEFAULT_PORT
+    }
+  }
+
+  let token = library.getAppMeta(LOCAL_API_TOKEN_META_KEY) ?? ''
+  token = token.trim()
+  if (!token) {
+    token = generateLocalApiToken()
+  }
+
+  const normalized: LocalApiServiceConfig = {
+    enabled,
+    controlsEnabled,
+    port,
+    token
+  }
+
+  const needsPersistence =
+    library.getAppMeta(LOCAL_API_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY) !== (normalized.controlsEnabled ? '1' : '0') ||
+    library.getAppMeta(LOCAL_API_PORT_META_KEY) !== String(normalized.port) ||
+    library.getAppMeta(LOCAL_API_TOKEN_META_KEY) !== normalized.token
+
+  if (needsPersistence) {
+    try {
+      await persistLocalApiConfig(normalized)
+    } catch (error) {
+      console.warn('Failed to persist normalized local API settings:', error)
+    }
+  }
+
+  return normalized
+}
+
+async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<ReturnType<typeof localApiService.getStatus>> {
+  localApiConfig = { ...config }
+  await persistLocalApiConfig(localApiConfig)
+  return localApiService.applyConfig(localApiConfig)
 }
 
 async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
@@ -301,6 +409,14 @@ function broadcastMiniWindowState(): void {
   }
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:windowState', payload)
+  }
+}
+
+function broadcastLocalApiStatus(): void {
+  const payload = localApiService.getStatus()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('local-api:status', payload)
   }
 }
 
@@ -467,6 +583,7 @@ function createWindow(): void {
 
   broadcastMiniWindowState()
   broadcastScopePopoutState()
+  broadcastLocalApiStatus()
 }
 
 async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
@@ -512,6 +629,9 @@ app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
   miniWindowPrefs = await loadMiniWindowPrefs()
+  localApiConfig = await loadLocalApiConfigFromMeta()
+  await localApiService.applyConfig(localApiConfig)
+  localApiService.publishSnapshot(latestMiniPlayerSnapshot)
 
   // Clean up tracks that no longer exist on disk
   const removedCount = await library.cleanupMissingTracks()
@@ -546,6 +666,7 @@ app.on('before-quit', () => {
   }
   void persistMiniWindowPrefs()
   closeAllScopePopoutWindows()
+  void localApiService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
 })
@@ -626,6 +747,7 @@ ipcMain.handle('mini-player:getSnapshot', () => {
 
 ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
   latestMiniPlayerSnapshot = snapshot
+  localApiService.publishSnapshot(snapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', snapshot)
   }
@@ -639,9 +761,7 @@ ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisua
 })
 
 ipcMain.on('mini-player:sendCommand', (_event, command: MiniPlayerCommand) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('mini-player:command', command)
-  }
+  sendMiniPlayerCommand(command)
 })
 
 // Scope popout window controls/state
@@ -746,6 +866,57 @@ ipcMain.handle('discord:resolveCoverArt', async (_event, query: unknown) => {
     albumArtist: typeof normalized.albumArtist === 'string' ? normalized.albumArtist : undefined,
     title: typeof normalized.title === 'string' ? normalized.title : undefined
   })
+})
+
+// Local integration API
+ipcMain.handle('local-api:getStatus', () => {
+  return localApiService.getStatus()
+})
+
+ipcMain.handle('local-api:setEnabled', async (_event, enabled: unknown) => {
+  const nextEnabled = Boolean(enabled)
+  const nextConfig: LocalApiServiceConfig = {
+    ...localApiConfig,
+    enabled: nextEnabled,
+    controlsEnabled: nextEnabled ? localApiConfig.controlsEnabled : false
+  }
+  return applyLocalApiConfig(nextConfig)
+})
+
+ipcMain.handle('local-api:setControlsEnabled', async (_event, controlsEnabled: unknown) => {
+  const nextControlsEnabled = localApiConfig.enabled && Boolean(controlsEnabled)
+  const nextConfig: LocalApiServiceConfig = {
+    ...localApiConfig,
+    controlsEnabled: nextControlsEnabled
+  }
+  return applyLocalApiConfig(nextConfig)
+})
+
+ipcMain.handle('local-api:setPort', async (_event, rawPort: unknown) => {
+  const nextPort = normalizeLocalApiPort(rawPort)
+  const nextConfig: LocalApiServiceConfig = {
+    ...localApiConfig,
+    port: nextPort
+  }
+  return applyLocalApiConfig(nextConfig)
+})
+
+ipcMain.handle('local-api:rotateToken', async () => {
+  const nextConfig: LocalApiServiceConfig = {
+    ...localApiConfig,
+    token: generateLocalApiToken()
+  }
+  return applyLocalApiConfig(nextConfig)
+})
+
+ipcMain.handle('local-api:resetToDefaults', async () => {
+  const nextConfig: LocalApiServiceConfig = {
+    enabled: false,
+    controlsEnabled: false,
+    port: LOCAL_API_DEFAULT_PORT,
+    token: generateLocalApiToken(),
+  }
+  return applyLocalApiConfig(nextConfig)
 })
 
 // ============================================

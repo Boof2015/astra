@@ -33,6 +33,8 @@ export interface MiniPlayerVisualizerStreamChunk {
 }
 
 export type MiniPlayerCommand =
+  | { type: 'play' }
+  | { type: 'pause' }
   | { type: 'togglePlay' }
   | { type: 'playNext' }
   | { type: 'playPrevious' }

@@ -12,6 +12,9 @@ import type {
   ScopePopoutChunk,
   ScopePopoutState
 } from '../types/scopePopout'
+import type {
+  LocalApiStatus
+} from '../types/localApi'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -374,6 +377,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('discord:resolveCoverArt', query)
   },
 
+  localApi: {
+    getStatus: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:getStatus'),
+    setEnabled: (enabled: boolean): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setEnabled', enabled),
+    setControlsEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
+      ipcRenderer.invoke('local-api:setControlsEnabled', enabled),
+    setPort: (port: number): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setPort', port),
+    rotateToken: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:rotateToken'),
+    resetToDefaults: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:resetToDefaults'),
+    onStatus: (callback: (status: LocalApiStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LocalApiStatus) => callback(status)
+      ipcRenderer.on('local-api:status', handler)
+      return () => ipcRenderer.removeListener('local-api:status', handler)
+    }
+  },
+
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
@@ -507,6 +525,15 @@ declare global {
         updatePresence: (update: DiscordPresenceUpdate) => void
         clearPresence: () => void
         resolveCoverArt: (query: DiscordCoverArtLookupQuery) => Promise<DiscordCoverArtLookupResult>
+      }
+      localApi: {
+        getStatus: () => Promise<LocalApiStatus>
+        setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setPort: (port: number) => Promise<LocalApiStatus>
+        rotateToken: () => Promise<LocalApiStatus>
+        resetToDefaults: () => Promise<LocalApiStatus>
+        onStatus: (callback: (status: LocalApiStatus) => void) => () => void
       }
 
       // File operations

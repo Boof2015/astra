@@ -13,6 +13,7 @@ import type {
     ScopePopoutChunk,
     ScopePopoutState
 } from '../types/scopePopout'
+import type { LocalApiStatus } from '../types/localApi'
 
 declare global {
     interface Window {
@@ -94,6 +95,15 @@ declare global {
                     | { status: 'not_found' }
                     | { status: 'transient_error'; code?: string }
                 >
+            }
+            localApi: {
+                getStatus: () => Promise<LocalApiStatus>
+                setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+                setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+                setPort: (port: number) => Promise<LocalApiStatus>
+                rotateToken: () => Promise<LocalApiStatus>
+                resetToDefaults: () => Promise<LocalApiStatus>
+                onStatus: (callback: (status: LocalApiStatus) => void) => () => void
             }
             openAudioFile: () => Promise<any>
             openAudioFolder: () => Promise<string | null>

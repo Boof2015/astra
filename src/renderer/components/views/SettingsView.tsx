@@ -7,6 +7,7 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
+import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import {
   DEFAULT_THEME_ACCENT,
@@ -27,6 +28,11 @@ import {
   resetThemeSettings,
 } from '../settings/resetActions'
 import type { MiniPlayerVisualizerMode } from '../../../types/miniPlayer'
+import {
+  LOCAL_API_DEFAULT_PORT,
+  LOCAL_API_MAX_PORT,
+  LOCAL_API_MIN_PORT
+} from '../../../types/localApi'
 
 type ResetActionId =
   | 'reset-theme'
@@ -145,6 +151,15 @@ export default function SettingsView() {
     setCoverArtEnabled: setDiscordCoverArtEnabled,
   } = useDiscordSettingsStore()
   const {
+    status: localApiStatus,
+    errorMessage: localApiErrorMessage,
+    init: initLocalApi,
+    setEnabled: setLocalApiEnabled,
+    setControlsEnabled: setLocalApiControlsEnabled,
+    setPort: setLocalApiPort,
+    rotateToken: rotateLocalApiToken,
+  } = useLocalApiSettingsStore()
+  const {
     autoCheckEnabled,
     checkState: updateCheckState,
     statusMessage: updateStatusMessage,
@@ -158,6 +173,8 @@ export default function SettingsView() {
   } = useUpdateStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
+  const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
+  const [localApiFeedback, setLocalApiFeedback] = useState('')
 
   const selectedPreset = useMemo(
     () => THEME_PRESET_LIST.find((preset) => preset.id === presetId) ?? THEME_PRESET_LIST[0],
@@ -172,6 +189,23 @@ export default function SettingsView() {
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
   }, [fallbackAccent])
+
+  useEffect(() => {
+    void initLocalApi()
+  }, [initLocalApi])
+
+  useEffect(() => {
+    if (!localApiStatus) return
+    setLocalApiPortInput(String(localApiStatus.port))
+  }, [localApiStatus?.port])
+
+  useEffect(() => {
+    if (!localApiFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setLocalApiFeedback('')
+    }, 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [localApiFeedback])
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -202,7 +236,7 @@ export default function SettingsView() {
       description: 'Disable integrations and clear integration preferences.',
       buttonLabel: 'Reset Integrations',
       confirmTitle: 'Reset Integration Settings',
-      confirmMessage: 'This will disable Discord Rich Presence and clear related preferences.',
+      confirmMessage: 'This will disable Discord and the local integration API, and reset related preferences.',
       confirmLabel: 'Reset Integrations',
       destructive: false,
       run: resetIntegrationSettings,
@@ -292,6 +326,17 @@ export default function SettingsView() {
   const lastCheckedLabel = lastCheckedAt
     ? new Date(lastCheckedAt).toLocaleString()
     : 'No update checks have run yet.'
+  const localApiEnabled = localApiStatus?.enabled ?? false
+  const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
+  const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
+  const localApiToken = localApiStatus?.token ?? ''
+  const localApiStatusLabel = !localApiStatus
+    ? 'Loading local API status...'
+    : localApiStatus.active
+      ? `Local integration API active on ${localApiStatus.baseUrl}.`
+      : localApiStatus.enabled
+        ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
+        : 'Local integration API is disabled.'
 
   useEffect(() => {
     let isMounted = true
@@ -376,6 +421,35 @@ export default function SettingsView() {
     setMiniPlayerVisualizerMode(mode)
     void window.electronAPI.miniPlayer.setVisualizerMode(mode).then((state) => {
       setMiniPlayerVisualizerMode(state.visualizerMode)
+    })
+  }
+
+  const copyToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setLocalApiFeedback(`${label} copied.`)
+    } catch {
+      setLocalApiFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
+  const handleSaveLocalApiPort = () => {
+    const parsedPort = Number(localApiPortInput)
+    if (!Number.isInteger(parsedPort) || parsedPort < LOCAL_API_MIN_PORT || parsedPort > LOCAL_API_MAX_PORT) {
+      setLocalApiFeedback(`Port must be an integer between ${LOCAL_API_MIN_PORT} and ${LOCAL_API_MAX_PORT}.`)
+      return
+    }
+
+    void setLocalApiPort(parsedPort).then((status) => {
+      if (!status) return
+      setLocalApiFeedback(`API port set to ${status.port}.`)
+    })
+  }
+
+  const handleRotateLocalApiToken = () => {
+    void rotateLocalApiToken().then((status) => {
+      if (!status) return
+      setLocalApiFeedback('API key regenerated.')
     })
   }
 
@@ -664,31 +738,127 @@ export default function SettingsView() {
               <h3>Integrations</h3>
               <p>Optional platform integrations.</p>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Discord Rich Presence</span>
-                <button
-                  className={`settings-toggle ${discordEnabled ? 'active' : ''}`}
-                  onClick={() => void setDiscordEnabled(!discordEnabled)}
-                >
-                  {discordEnabled ? 'Enabled' : 'Disabled'}
-                </button>
+            <div className="settings-integration-cards">
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Discord</h4>
+                  <p>Discord Rich Presence integration.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Discord Rich Presence</span>
+                    <button
+                      className={`settings-toggle ${discordEnabled ? 'active' : ''}`}
+                      onClick={() => void setDiscordEnabled(!discordEnabled)}
+                    >
+                      {discordEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Discord Cover Art (Internet Lookup)</span>
+                    <button
+                      className={`settings-toggle ${discordCoverArtEnabled ? 'active' : ''}`}
+                      onClick={() => void setDiscordCoverArtEnabled(!discordCoverArtEnabled)}
+                      disabled={!discordEnabled}
+                    >
+                      {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
+                <p className="settings-note">{discordStatusMessage}</p>
+                <p className="settings-note">
+                  Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
+                </p>
               </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Discord Cover Art (Internet Lookup)</span>
-                <button
-                  className={`settings-toggle ${discordCoverArtEnabled ? 'active' : ''}`}
-                  onClick={() => void setDiscordCoverArtEnabled(!discordCoverArtEnabled)}
-                  disabled={!discordEnabled}
-                >
-                  {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
-                </button>
+
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Local API</h4>
+                  <p>Local-only API for external integrations like editors and tools.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Local Integration API</span>
+                    <button
+                      className={`settings-toggle ${localApiEnabled ? 'active' : ''}`}
+                      onClick={() => void setLocalApiEnabled(!localApiEnabled)}
+                    >
+                      {localApiEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">External Playback Controls</span>
+                    <button
+                      className={`settings-toggle ${localApiControlsEnabled ? 'active' : ''}`}
+                      onClick={() => void setLocalApiControlsEnabled(!localApiControlsEnabled)}
+                      disabled={!localApiEnabled}
+                    >
+                      {localApiControlsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  <div className="settings-field">
+                    <span className="settings-field-label">Local API Port</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={LOCAL_API_MIN_PORT}
+                        max={LOCAL_API_MAX_PORT}
+                        step={1}
+                        value={localApiPortInput}
+                        onChange={(event) => setLocalApiPortInput(event.target.value)}
+                        onBlur={handleSaveLocalApiPort}
+                      />
+                      <button className="settings-btn" onClick={handleSaveLocalApiPort}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-field">
+                    <span className="settings-field-label">Local API Endpoint</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono settings-chip-grow">
+                        {localApiBaseUrl}
+                      </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void copyToClipboard(`${localApiBaseUrl}/v1/now-playing`, 'Endpoint')}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-field">
+                    <span className="settings-field-label">Local API Key</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono settings-chip-grow">
+                        {localApiToken || 'Unavailable'}
+                      </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void copyToClipboard(localApiToken, 'API key')}
+                        disabled={!localApiToken}
+                      >
+                        Copy
+                      </button>
+                      <button className="settings-btn settings-btn-primary" onClick={handleRotateLocalApiToken}>
+                        Regenerate
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="settings-note">{localApiStatusLabel}</p>
+                {localApiFeedback && <p className="settings-note settings-note-success">{localApiFeedback}</p>}
+                {localApiErrorMessage && <p className="settings-note settings-note-error">{localApiErrorMessage}</p>}
+                <p className="settings-note">
+                  The local API is loopback-only, off by default, and read-only unless controls are explicitly enabled.
+                </p>
               </div>
             </div>
-            <p className="settings-note">{discordStatusMessage}</p>
-            <p className="settings-note">
-              Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
-            </p>
           </section>
             )}
 

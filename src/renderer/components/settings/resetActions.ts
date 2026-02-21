@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 
 export const RENDERER_SETTINGS_KEYS = [
@@ -41,7 +42,11 @@ export async function resetAudioSettings(): Promise<string> {
 
 export async function resetIntegrationSettings(): Promise<string> {
   await useDiscordSettingsStore.getState().resetToDefaults()
-  return 'Integrations reset.'
+  const status = await useLocalApiSettingsStore.getState().resetToDefaults()
+  if (!status) {
+    throw new Error('Failed to reset local API settings.')
+  }
+  return 'Integrations reset (Discord and Local API).'
 }
 
 export async function resetDiscordCoverArtCache(): Promise<string> {

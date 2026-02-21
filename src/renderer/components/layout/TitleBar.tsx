@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
@@ -16,8 +17,14 @@ export default function TitleBar() {
   const [fps, setFps] = useState(0)
   const updateAvailable = useUpdateStore((s) => s.updateAvailable)
   const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
+  const localApiStatus = useLocalApiSettingsStore((s) => s.status)
+  const initLocalApi = useLocalApiSettingsStore((s) => s.init)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
+
+  useEffect(() => {
+    void initLocalApi()
+  }, [initLocalApi])
 
   useEffect(() => {
     let isMounted = true
@@ -129,6 +136,14 @@ export default function TitleBar() {
       : `${appStats.memoryMb.toFixed(appStats.memoryMb >= 100 ? 0 : 1)}MB`
     : '\u2014'
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
+  const apiIndicatorLabel = localApiStatus?.active
+    ? localApiStatus.controlsEnabled ? 'API+CTL' : 'API'
+    : null
+  const apiIndicatorTitle = localApiStatus
+    ? localApiStatus.controlsEnabled
+      ? `Local API active with controls on ${localApiStatus.baseUrl}`
+      : `Local API active on ${localApiStatus.baseUrl}`
+    : 'Local API status unavailable'
 
   return (
     <header className="titlebar">
@@ -160,6 +175,13 @@ export default function TitleBar() {
       <div className="titlebar-spacer" />
 
       <div className="titlebar-right">
+        {apiIndicatorLabel && (
+          <span className="titlebar-api-pill" title={apiIndicatorTitle}>
+            <span className="titlebar-api-pill-dot" aria-hidden="true" />
+            <span>{apiIndicatorLabel}</span>
+          </span>
+        )}
+
         <div className="titlebar-stats" aria-label="Astra performance stats">
           <span className="titlebar-stat">
             <span className="titlebar-stat-label">CPU</span>

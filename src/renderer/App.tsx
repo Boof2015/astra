@@ -16,6 +16,7 @@ import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useThemeStore } from './stores/themeStore'
 import { useUpdateStore } from './stores/updateStore'
+import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -42,6 +43,7 @@ function App() {
     useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
+    void useLocalApiSettingsStore.getState().init()
     const updatesStore = useUpdateStore.getState()
     if (updatesStore.autoCheckEnabled) {
       void updatesStore.checkForUpdates()

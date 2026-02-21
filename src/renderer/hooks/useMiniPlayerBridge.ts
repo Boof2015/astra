@@ -110,6 +110,12 @@ export function useMiniPlayerBridge(): void {
       const library = useLibraryStore.getState()
 
       switch (command.type) {
+        case 'play':
+          void player.play()
+          break
+        case 'pause':
+          player.pause()
+          break
         case 'togglePlay':
           void player.togglePlay()
           break

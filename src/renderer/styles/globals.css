@@ -294,6 +294,31 @@ button, .titlebar {
   app-region: no-drag;
 }
 
+.titlebar-api-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.22), rgba(var(--accent-rgb), 0.08));
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.titlebar-api-pill-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.75);
+}
+
 .titlebar-stats {
   display: flex;
   align-items: center;
@@ -4654,6 +4679,17 @@ body::after {
   gap: 6px;
 }
 
+.titlebar-api-pill {
+  height: 17px;
+  padding: 0 7px;
+  font-size: 8px;
+}
+
+.titlebar-api-pill-dot {
+  width: 4px;
+  height: 4px;
+}
+
 .titlebar-stats {
   gap: 6px;
   font-size: 8px;
@@ -7181,6 +7217,39 @@ body::after {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.settings-integration-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-integration-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px;
+}
+
+.settings-integration-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.settings-integration-card-head h4 {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.settings-integration-card-head p {
+  margin: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.54);
+}
+
 .settings-btn {
   display: flex;
   align-items: center;
@@ -7478,6 +7547,44 @@ body::after {
   font-size: 10px;
   letter-spacing: 0.03em;
   color: rgba(255, 255, 255, 0.72);
+}
+
+.settings-shell .settings-chip-mono {
+  font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.settings-shell .settings-chip-grow {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .settings-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-shell .settings-inline-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-shell .settings-inline-input-compact {
+  max-width: 140px;
+}
+
+.settings-shell .settings-note-success {
+  color: rgba(134, 239, 172, 0.85);
+}
+
+.settings-shell .settings-note-error {
+  color: rgba(254, 202, 202, 0.9);
 }
 
 .settings-shell .settings-btn-danger {
@@ -8165,6 +8272,10 @@ body::after {
   }
 
   .settings-actions-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-integration-cards {
     grid-template-columns: 1fr;
   }
 
