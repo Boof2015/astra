@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 
-const SEEK_STEP_SECONDS = 10
+const SEEK_STEP_SECONDS = 5
 const VOLUME_STEP = 0.05
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -37,13 +37,29 @@ export function useKeyboardShortcuts(): void {
 
       if (e.shiftKey && key === 'ArrowRight') {
         e.preventDefault()
-        const nextTime = clamp(player.currentTime + SEEK_STEP_SECONDS, 0, player.duration)
-        void player.seek(nextTime)
+        if (e.repeat) return
+        void player.playNext()
         return
       }
 
       if (e.shiftKey && key === 'ArrowLeft') {
         e.preventDefault()
+        if (e.repeat) return
+        void player.playPrevious()
+        return
+      }
+
+      if (!e.shiftKey && key === 'ArrowRight') {
+        e.preventDefault()
+        if (e.repeat) return
+        const nextTime = clamp(player.currentTime + SEEK_STEP_SECONDS, 0, player.duration)
+        void player.seek(nextTime)
+        return
+      }
+
+      if (!e.shiftKey && key === 'ArrowLeft') {
+        e.preventDefault()
+        if (e.repeat) return
         const nextTime = clamp(player.currentTime - SEEK_STEP_SECONDS, 0, player.duration)
         void player.seek(nextTime)
         return
@@ -74,14 +90,14 @@ export function useKeyboardShortcuts(): void {
         return
       }
 
-      if (key === 'ArrowRight' || normalizedKey === 'n') {
+      if (normalizedKey === 'n') {
         e.preventDefault()
         if (e.repeat) return
         void player.playNext()
         return
       }
 
-      if (key === 'ArrowLeft' || normalizedKey === 'p') {
+      if (normalizedKey === 'p') {
         e.preventDefault()
         if (e.repeat) return
         void player.playPrevious()

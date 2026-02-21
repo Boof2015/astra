@@ -4,6 +4,7 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   isNativeAvailable
 } from '../native'
+import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
 
 export interface OscilloscopeOptions {
   lineColor?: string
@@ -58,7 +59,7 @@ export class Oscilloscope {
       this.lastSampleRate = sampleRate
       nativeOscilloscope.setSampleRate(sampleRate)
       nativeOscilloscope.setPitchLock(this.options.pitchLock)
-      nativeOscilloscope.setDisplaySamples(2048) // ~3-4 cycles for typical bass (increased time window)
+      nativeOscilloscope.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(sampleRate))
       // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
@@ -74,6 +75,7 @@ export class Oscilloscope {
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.lastSampleRate = currentRate
       nativeOscilloscope.setSampleRate(currentRate)
+      nativeOscilloscope.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(currentRate))
       console.log(`Oscilloscope: Sample rate updated to ${currentRate}Hz`)
     }
   }

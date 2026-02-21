@@ -6,6 +6,7 @@ import {
   spectrum as nativeSpectrum,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
+import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
   type ScopeKind,
@@ -15,7 +16,6 @@ import '../../styles/scope-popout.css'
 const SPECTRUM_MIN_DB = -90
 const SPECTRUM_MAX_DB = -10
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
-const OSCILLOSCOPE_DISPLAY_SAMPLES = 2048
 
 function getScopeLabel(scope: ScopeKind): string {
   switch (scope) {
@@ -321,13 +321,14 @@ function OscilloscopeScopeCanvas() {
 
       if (configuredSampleRateRef.current !== sampleRate) {
         nativeOscilloscope.setSampleRate(sampleRate)
+        const displaySamples = getNormalizedOscilloscopeDisplaySamples(sampleRate)
+        nativeOscilloscope.setDisplaySamples(displaySamples)
         configuredSampleRateRef.current = sampleRate
       }
       if (configuredPitchLockRef.current !== pitchLock) {
         nativeOscilloscope.setPitchLock(pitchLock)
         configuredPitchLockRef.current = pitchLock
       }
-      nativeOscilloscope.setDisplaySamples(OSCILLOSCOPE_DISPLAY_SAMPLES)
 
       const pendingChunks = pendingChunksRef.current
       pendingChunksRef.current = []

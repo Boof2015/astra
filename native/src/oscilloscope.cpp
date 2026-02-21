@@ -63,7 +63,7 @@ void Oscilloscope::setPitchLock(bool enabled) {
 }
 
 void Oscilloscope::setDisplaySamples(int samples) {
-    displaySamples_ = samples;
+    displaySamples_ = std::clamp(samples, 64, static_cast<int>(OSCILLOSCOPE_BUFFER_SIZE - 1));
 }
 
 // Push samples into circular buffer (called from AudioWorklet)

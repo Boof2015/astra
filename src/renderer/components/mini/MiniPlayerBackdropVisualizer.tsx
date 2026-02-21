@@ -20,6 +20,7 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   spectrum as nativeSpectrum
 } from '../../audio/native'
+import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 
 interface MiniPlayerBackdropVisualizerProps {
   mode: MiniPlayerVisualizerMode
@@ -30,7 +31,6 @@ interface MiniPlayerBackdropVisualizerProps {
 }
 
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
-const OSCILLOSCOPE_DISPLAY_SAMPLES = 2048
 const SPECTRUM_MIN_DB = -90
 const SPECTRUM_MAX_DB = -10
 const SPECTRUM_SMOOTHING_BASE = 0.9
@@ -397,6 +397,7 @@ export default function MiniPlayerBackdropVisualizer({
       if (configuredSampleRateRef.current !== sampleRate) {
         nativeOscilloscope.setSampleRate(sampleRate)
         nativeSpectrum.setSampleRate(sampleRate)
+        nativeOscilloscope.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(sampleRate))
         configuredSampleRateRef.current = sampleRate
       }
 
@@ -410,8 +411,6 @@ export default function MiniPlayerBackdropVisualizer({
         nativeSpectrum.setSmoothing(getNativeSpectrumSmoothing(fftSize))
         configuredFftSizeRef.current = fftSize
       }
-
-      nativeOscilloscope.setDisplaySamples(OSCILLOSCOPE_DISPLAY_SAMPLES)
     }
 
     const drawSpectrum = (
