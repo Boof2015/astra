@@ -1282,6 +1282,43 @@ ipcMain.handle('library:importPlaylistFromFile', async (_event, filePath: string
 })
 
 // ============================================
+// Localhost REST API for now playing album art
+// ============================================
+
+import { createServer } from 'http'
+
+const LOCAL_API_PORT = 3333
+
+function getCurrentAlbumArtBase64(): string | null {
+  // Use the latestMiniPlayerSnapshot, which is updated by the mini player
+  if (
+    latestMiniPlayerSnapshot &&
+    latestMiniPlayerSnapshot.currentTrack &&
+    typeof latestMiniPlayerSnapshot.currentTrack.artworkData === 'string'
+  ) {
+    return latestMiniPlayerSnapshot.currentTrack.artworkData
+  }
+  return null
+}
+
+const apiServer = createServer((req, res) => {
+  if (req.method === 'GET' && req.url && req.url.startsWith('/api/now-playing/album-art')) {
+    const albumArt = getCurrentAlbumArtBase64()
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Content-Type', 'application/json')
+    res.writeHead(200)
+    res.end(JSON.stringify({ albumArt }))
+    return
+  }
+  res.writeHead(404)
+  res.end('Not found')
+})
+
+apiServer.listen(LOCAL_API_PORT, '127.0.0.1', () => {
+  console.log(`[Astra API] Now playing album art endpoint running at http://127.0.0.1:${LOCAL_API_PORT}/api/now-playing/album-art`)
+})
+
+// ============================================
 // Helper functions
 // ============================================
 
