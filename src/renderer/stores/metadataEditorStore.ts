@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { TrackOverrideSnapshot } from '../../preload/index'
 
 export type MetadataSaveMode = 'virtual' | 'file'
 
@@ -33,7 +34,13 @@ export interface MetadataEditResult {
   failures: MetadataEditFailure[]
 }
 
+interface UndoSnapshot {
+  previousOverrides: Record<string, TrackOverrideSnapshot | null>
+  trackPaths: string[]
+}
+
 const METADATA_SAVE_MODE_STORAGE_KEY = 'astra-metadata-save-mode-v1'
+const MAX_UNDO_STACK_SIZE = 20
 
 function readSavedDefaultMode(): MetadataSaveMode {
   try {
@@ -58,6 +65,8 @@ interface MetadataEditorStore {
   overridePaths: Set<string>
   isSaving: boolean
   lastResult: MetadataEditResult | null
+  undoStack: UndoSnapshot[]
+  redoStack: UndoSnapshot[]
 
   setSaveMode: (mode: MetadataSaveMode) => void
   setDefaultSaveMode: (mode: MetadataSaveMode) => void
@@ -65,16 +74,20 @@ interface MetadataEditorStore {
   clearOverrides: (trackPaths: string[]) => Promise<{ cleared: number }>
   saveEdits: (request: MetadataEditRequest) => Promise<MetadataEditResult>
   clearLastResult: () => void
+  undo: () => Promise<string[]>
+  redo: () => Promise<string[]>
 }
 
 const initialDefaultMode = readSavedDefaultMode()
 
-export const useMetadataEditorStore = create<MetadataEditorStore>((set) => ({
+export const useMetadataEditorStore = create<MetadataEditorStore>((set, get) => ({
   defaultSaveMode: initialDefaultMode,
   saveMode: initialDefaultMode,
   overridePaths: new Set<string>(),
   isSaving: false,
   lastResult: null,
+  undoStack: [],
+  redoStack: [],
 
   setSaveMode: (mode) => {
     set({ saveMode: mode })
@@ -100,9 +113,32 @@ export const useMetadataEditorStore = create<MetadataEditorStore>((set) => ({
   saveEdits: async (request) => {
     set({ isSaving: true })
     try {
+      let undoEntry: UndoSnapshot | undefined
+
+      if (request.mode === 'virtual') {
+        const snapshots = await window.electronAPI.library.getTrackOverrideSnapshots(request.trackPaths)
+        undoEntry = {
+          previousOverrides: snapshots,
+          trackPaths: request.trackPaths
+        }
+      }
+
       const result = await window.electronAPI.library.saveMetadataEdits(request)
       const paths = await window.electronAPI.library.getMetadataOverridePaths()
-      set({ lastResult: result, overridePaths: new Set(paths) })
+
+      set((state) => {
+        const nextUndoStack = undoEntry
+          ? [...state.undoStack, undoEntry].slice(-MAX_UNDO_STACK_SIZE)
+          : state.undoStack
+
+        return {
+          lastResult: result,
+          overridePaths: new Set(paths),
+          undoStack: nextUndoStack,
+          redoStack: undoEntry ? [] : state.redoStack
+        }
+      })
+
       return result
     } finally {
       set({ isSaving: false })
@@ -111,5 +147,69 @@ export const useMetadataEditorStore = create<MetadataEditorStore>((set) => ({
 
   clearLastResult: () => {
     set({ lastResult: null })
+  },
+
+  undo: async () => {
+    const { undoStack } = get()
+    if (undoStack.length === 0) return []
+
+    set({ isSaving: true })
+    try {
+      const entry = undoStack[undoStack.length - 1]
+
+      // Snapshot current state for redo
+      const currentSnapshots = await window.electronAPI.library.getTrackOverrideSnapshots(entry.trackPaths)
+
+      // Restore previous state
+      await window.electronAPI.library.restoreTrackOverrides(entry.previousOverrides)
+      const paths = await window.electronAPI.library.getMetadataOverridePaths()
+
+      const redoEntry: UndoSnapshot = {
+        previousOverrides: currentSnapshots,
+        trackPaths: entry.trackPaths
+      }
+
+      set((state) => ({
+        undoStack: state.undoStack.slice(0, -1),
+        redoStack: [...state.redoStack, redoEntry],
+        overridePaths: new Set(paths)
+      }))
+
+      return entry.trackPaths
+    } finally {
+      set({ isSaving: false })
+    }
+  },
+
+  redo: async () => {
+    const { redoStack } = get()
+    if (redoStack.length === 0) return []
+
+    set({ isSaving: true })
+    try {
+      const entry = redoStack[redoStack.length - 1]
+
+      // Snapshot current state for undo
+      const currentSnapshots = await window.electronAPI.library.getTrackOverrideSnapshots(entry.trackPaths)
+
+      // Restore the redo state
+      await window.electronAPI.library.restoreTrackOverrides(entry.previousOverrides)
+      const paths = await window.electronAPI.library.getMetadataOverridePaths()
+
+      const undoEntry: UndoSnapshot = {
+        previousOverrides: currentSnapshots,
+        trackPaths: entry.trackPaths
+      }
+
+      set((state) => ({
+        redoStack: state.redoStack.slice(0, -1),
+        undoStack: [...state.undoStack, undoEntry],
+        overridePaths: new Set(paths)
+      }))
+
+      return entry.trackPaths
+    } finally {
+      set({ isSaving: false })
+    }
   }
 }))

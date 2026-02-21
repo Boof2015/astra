@@ -8942,6 +8942,244 @@ body::after {
   color: var(--text-tertiary);
 }
 
+.metadata-reorder-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.metadata-reorder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--glass-border);
+  font-size: 12px;
+  cursor: grab;
+  transition: background 100ms ease, opacity 100ms ease;
+}
+
+.metadata-reorder-row:active {
+  cursor: grabbing;
+}
+
+.metadata-reorder-row.dragging {
+  opacity: 0.4;
+}
+
+.metadata-reorder-row.drop-target {
+  border-top: 2px solid var(--accent);
+}
+
+.metadata-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.metadata-reorder-number {
+  width: 28px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-align: center;
+}
+
+.metadata-reorder-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metadata-reorder-artist {
+  flex: 0.6;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.metadata-reorder-actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.metadata-subheader-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.metadata-field-overridden {
+  border-left: 2px solid rgba(var(--accent-rgb), 0.6);
+  padding-left: 8px;
+}
+
+.metadata-field-overridden > span::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.metadata-artwork-section {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 6px;
+}
+
+.metadata-artwork-thumbnail {
+  width: 96px;
+  height: 96px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.metadata-artwork-section .album-artwork-placeholder {
+  width: 96px;
+  height: 96px;
+  border-radius: 8px;
+  font-size: 28px;
+}
+
+.metadata-artwork-stacked {
+  position: relative;
+  width: 96px;
+  height: 96px;
+}
+
+.metadata-artwork-stack-card {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-border);
+}
+
+.metadata-artwork-stack-card:nth-child(1) {
+  transform: rotate(-4deg) translate(-3px, 2px);
+}
+
+.metadata-artwork-stack-card:nth-child(2) {
+  transform: rotate(3deg) translate(3px, -1px);
+}
+
+.metadata-artwork-stack-front {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metadata-artwork-mixed-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.metadata-diff-modal {
+  max-width: 520px;
+}
+
+.metadata-diff-summary {
+  font-size: 13px;
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+}
+
+.metadata-diff-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.metadata-diff-table th {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--glass-border);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.metadata-diff-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.metadata-diff-old {
+  color: #ffb2b2;
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.metadata-diff-new {
+  color: #b8f0c3;
+}
+
+.metadata-diff-arrow {
+  color: var(--text-tertiary);
+  padding: 0 4px;
+  text-align: center;
+}
+
+.metadata-diff-file-warning {
+  background: rgba(201, 58, 58, 0.12);
+  border: 1px solid rgba(201, 58, 58, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #ffb2b2;
+  margin-top: 12px;
+}
+
+.metadata-save-progress {
+  position: relative;
+  height: 24px;
+  min-width: 120px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metadata-save-progress-bar {
+  position: absolute;
+  inset: 0;
+  right: auto;
+  background: rgba(var(--accent-rgb), 0.3);
+  transition: width 150ms ease;
+}
+
+.metadata-save-progress span {
+  position: relative;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
 @media (max-width: 1360px) {
   .metadata-body {
     grid-template-columns: 1fr;

@@ -153,6 +153,17 @@ export interface MetadataEditResult {
   failures: MetadataEditFailure[]
 }
 
+export interface TrackOverrideSnapshot {
+  title: string | null
+  artist: string | null
+  album: string | null
+  album_artist: string | null
+  genre: string | null
+  year: number | null
+  track_number: number | null
+  disc_number: number | null
+}
+
 export interface AppPerformanceStats {
   cpuPercent: number
   memoryMb: number
@@ -388,6 +399,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMetadataOverridePaths: () => ipcRenderer.invoke('library:getMetadataOverridePaths'),
     clearMetadataOverrides: (trackPaths: string[]) => ipcRenderer.invoke('library:clearMetadataOverrides', trackPaths),
     saveMetadataEdits: (request: MetadataEditRequest) => ipcRenderer.invoke('library:saveMetadataEdits', request),
+    getTrackOverrideFields: (trackPaths: string[]) => ipcRenderer.invoke('library:getTrackOverrideFields', trackPaths) as Promise<Record<string, string[]>>,
+    getTrackOverrideSnapshots: (trackPaths: string[]) => ipcRenderer.invoke('library:getTrackOverrideSnapshots', trackPaths) as Promise<Record<string, TrackOverrideSnapshot | null>>,
+    restoreTrackOverrides: (overrides: Record<string, TrackOverrideSnapshot | null>) => ipcRenderer.invoke('library:restoreTrackOverrides', overrides) as Promise<void>,
     getFolders: () => ipcRenderer.invoke('library:getFolders'),
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
@@ -406,6 +420,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
       ipcRenderer.on('library:audioMetadataBackfillComplete', handler)
       return () => ipcRenderer.removeListener('library:audioMetadataBackfillComplete', handler)
+    },
+    onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number; trackPath: string }) => callback(progress)
+      ipcRenderer.on('library:metadataEditProgress', handler)
+      return () => ipcRenderer.removeListener('library:metadataEditProgress', handler)
     },
 
     // Favorites
@@ -513,6 +532,9 @@ declare global {
         getMetadataOverridePaths: () => Promise<string[]>
         clearMetadataOverrides: (trackPaths: string[]) => Promise<{ cleared: number }>
         saveMetadataEdits: (request: MetadataEditRequest) => Promise<MetadataEditResult>
+        getTrackOverrideFields: (trackPaths: string[]) => Promise<Record<string, string[]>>
+        getTrackOverrideSnapshots: (trackPaths: string[]) => Promise<Record<string, TrackOverrideSnapshot | null>>
+        restoreTrackOverrides: (overrides: Record<string, TrackOverrideSnapshot | null>) => Promise<void>
         getFolders: () => Promise<LibraryFolder[]>
         addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
@@ -524,6 +546,7 @@ declare global {
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
+        onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
 
         // Favorites
         getFavorites: () => Promise<DbTrack[]>

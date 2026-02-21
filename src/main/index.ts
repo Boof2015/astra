@@ -881,7 +881,21 @@ ipcMain.handle('library:clearMetadataOverrides', async (_event, trackPaths: stri
 })
 
 ipcMain.handle('library:saveMetadataEdits', async (_event, request: library.MetadataEditRequest) => {
-  return library.saveMetadataEdits(request)
+  return library.saveMetadataEdits(request, (current, total, trackPath) => {
+    mainWindow?.webContents.send('library:metadataEditProgress', { current, total, trackPath })
+  })
+})
+
+ipcMain.handle('library:getTrackOverrideFields', (_event, trackPaths: string[]) => {
+  return library.getTrackOverrideFields(trackPaths)
+})
+
+ipcMain.handle('library:getTrackOverrideSnapshots', (_event, trackPaths: string[]) => {
+  return library.getTrackOverrideSnapshots(trackPaths)
+})
+
+ipcMain.handle('library:restoreTrackOverrides', async (_event, overrides: Record<string, library.TrackOverrideSnapshot | null>) => {
+  return library.restoreTrackOverrides(overrides)
 })
 
 // Get library folders

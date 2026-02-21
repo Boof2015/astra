@@ -1917,7 +1917,10 @@ export async function clearMetadataOverrides(trackPaths: string[]): Promise<{ cl
   return { cleared: Number.isFinite(cleared) ? cleared : 0 }
 }
 
-export async function saveMetadataEdits(request: MetadataEditRequest): Promise<MetadataEditResult> {
+export async function saveMetadataEdits(
+  request: MetadataEditRequest,
+  onProgress?: (current: number, total: number, trackPath: string) => void
+): Promise<MetadataEditResult> {
   if (!db) {
     throw new Error('Database not initialized')
   }
@@ -1939,7 +1942,9 @@ export async function saveMetadataEdits(request: MetadataEditRequest): Promise<M
   const failures: MetadataEditFailure[] = []
   const updatedTrackPaths: string[] = []
 
-  for (const trackPath of normalizedPaths) {
+  for (let i = 0; i < normalizedPaths.length; i += 1) {
+    const trackPath = normalizedPaths[i]
+    onProgress?.(i + 1, normalizedPaths.length, trackPath)
     try {
       const snapshot = getEditableTrackSnapshot(trackPath)
       if (!snapshot) {
@@ -1975,6 +1980,84 @@ export async function saveMetadataEdits(request: MetadataEditRequest): Promise<M
     updatedTrackPaths,
     failures
   }
+}
+
+export interface TrackOverrideSnapshot {
+  title: string | null
+  artist: string | null
+  album: string | null
+  album_artist: string | null
+  genre: string | null
+  year: number | null
+  track_number: number | null
+  disc_number: number | null
+}
+
+export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, TrackOverrideSnapshot | null> {
+  if (!db) return {}
+  const result: Record<string, TrackOverrideSnapshot | null> = {}
+
+  for (const trackPath of trackPaths) {
+    const stmt = db.prepare('SELECT title, artist, album, album_artist, genre, year, track_number, disc_number FROM track_metadata_overrides WHERE track_path = ?')
+    stmt.bind([trackPath])
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>
+      result[trackPath] = {
+        title: row.title as string | null,
+        artist: row.artist as string | null,
+        album: row.album as string | null,
+        album_artist: row.album_artist as string | null,
+        genre: row.genre as string | null,
+        year: row.year as number | null,
+        track_number: row.track_number as number | null,
+        disc_number: row.disc_number as number | null
+      }
+    } else {
+      result[trackPath] = null
+    }
+    stmt.free()
+  }
+
+  return result
+}
+
+export async function restoreTrackOverrides(overrides: Record<string, TrackOverrideSnapshot | null>): Promise<void> {
+  if (!db) return
+
+  for (const [trackPath, row] of Object.entries(overrides)) {
+    if (row === null) {
+      db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
+    } else {
+      upsertTrackMetadataOverride(trackPath, row)
+    }
+  }
+
+  await saveDatabase()
+}
+
+export function getTrackOverrideFields(trackPaths: string[]): Record<string, string[]> {
+  if (!db) return {}
+  const result: Record<string, string[]> = {}
+  const fieldKeys: Array<keyof EditableTrackSnapshot['base']> = [
+    'title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNumber', 'discNumber'
+  ]
+
+  for (const trackPath of trackPaths) {
+    const snapshot = getEditableTrackSnapshot(trackPath)
+    if (!snapshot) continue
+
+    const overriddenFields: string[] = []
+    for (const field of fieldKeys) {
+      if (snapshot.base[field] !== snapshot.effective[field]) {
+        overriddenFields.push(field)
+      }
+    }
+    if (overriddenFields.length > 0) {
+      result[trackPath] = overriddenFields
+    }
+  }
+
+  return result
 }
 
 // ── Favorites ────────────────────────────────────────────

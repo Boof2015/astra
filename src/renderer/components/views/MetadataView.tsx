@@ -1,5 +1,7 @@
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { List, RowComponentProps } from 'react-window'
+import AlbumArtwork from '../library/AlbumArtwork'
+import DiffConfirmModal, { type DiffEntry } from '../metadata/DiffConfirmModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/metadataEditorStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
@@ -48,6 +50,7 @@ type TrackRecord = {
   track_number: number | null
   disc_number: number | null
   format: string
+  artwork_hash: string | null
 }
 
 interface MetadataRowSelectionOptions {
@@ -138,6 +141,56 @@ const MetadataTrackRow = memo(MetadataTrackRowRenderer) as (
   props: RowComponentProps<MetadataTrackRowSharedProps>
 ) => ReactElement | null
 
+interface ReorderRowProps {
+  track: TrackRecord
+  index: number
+  newTrackNumber: number
+  isDragging: boolean
+  isDropTarget: boolean
+  onDragStart: (index: number) => void
+  onDragOver: (index: number) => void
+  onDragEnd: () => void
+}
+
+function ReorderRow({ track, index, newTrackNumber, isDragging, isDropTarget, onDragStart, onDragOver, onDragEnd }: ReorderRowProps) {
+  return (
+    <div
+      className={`metadata-reorder-row ${isDragging ? 'dragging' : ''} ${isDropTarget ? 'drop-target' : ''}`}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move'
+        onDragStart(index)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        onDragOver(index)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        onDragEnd()
+      }}
+      onDragEnd={onDragEnd}
+    >
+      <div className="metadata-drag-handle" aria-label="Drag to reorder">
+        <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+          <circle cx="3" cy="2" r="1.2" />
+          <circle cx="7" cy="2" r="1.2" />
+          <circle cx="3" cy="6" r="1.2" />
+          <circle cx="7" cy="6" r="1.2" />
+          <circle cx="3" cy="10" r="1.2" />
+          <circle cx="7" cy="10" r="1.2" />
+          <circle cx="3" cy="14" r="1.2" />
+          <circle cx="7" cy="14" r="1.2" />
+        </svg>
+      </div>
+      <div className="metadata-reorder-number">{newTrackNumber}</div>
+      <div className="metadata-reorder-title">{track.title}</div>
+      <div className="metadata-reorder-artist">{track.artist}</div>
+    </div>
+  )
+}
+
 function createDraftFromCommon(common: SelectionCommonState): DraftState {
   return {
     title: { value: common.title.value, dirty: false },
@@ -186,6 +239,40 @@ function getSelectionCommonState(tracks: TrackRecord[]): SelectionCommonState {
   }
 }
 
+function getCommonArtworkHash(tracks: TrackRecord[]): { hash: string | null; mixed: boolean } {
+  if (tracks.length === 0) return { hash: null, mixed: false }
+  const first = tracks[0].artwork_hash
+  for (let i = 1; i < tracks.length; i += 1) {
+    if (tracks[i].artwork_hash !== first) return { hash: null, mixed: true }
+  }
+  return { hash: first, mixed: false }
+}
+
+const DIFF_FIELD_MAP: Array<{ key: keyof DraftState; label: string; commonKey: keyof SelectionCommonState }> = [
+  { key: 'title', label: 'Title', commonKey: 'title' },
+  { key: 'artist', label: 'Artist', commonKey: 'artist' },
+  { key: 'album', label: 'Album', commonKey: 'album' },
+  { key: 'albumArtist', label: 'Album Artist', commonKey: 'albumArtist' },
+  { key: 'genre', label: 'Genre', commonKey: 'genre' },
+  { key: 'year', label: 'Year', commonKey: 'year' },
+  { key: 'trackNumber', label: 'Track #', commonKey: 'trackNumber' },
+  { key: 'discNumber', label: 'Disc #', commonKey: 'discNumber' }
+]
+
+function buildDiffEntries(draft: DraftState, common: SelectionCommonState): DiffEntry[] {
+  const entries: DiffEntry[] = []
+  for (const { key, label, commonKey } of DIFF_FIELD_MAP) {
+    if (draft[key].dirty) {
+      entries.push({
+        field: label,
+        oldValue: common[commonKey].mixed ? '(mixed)' : common[commonKey].value || '(empty)',
+        newValue: draft[key].value || '(empty)'
+      })
+    }
+  }
+  return entries
+}
+
 function parseOptionalInteger(value: string, fieldLabel: string): number | null {
   const normalized = value.trim()
   if (!normalized) return null
@@ -215,12 +302,16 @@ export default function MetadataView() {
     overridePaths,
     isSaving,
     lastResult,
+    undoStack,
+    redoStack,
     setSaveMode,
     setDefaultSaveMode,
     loadOverridePaths,
     clearOverrides,
     saveEdits,
-    clearLastResult
+    clearLastResult,
+    undo,
+    redo
   } = useMetadataEditorStore()
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -232,6 +323,13 @@ export default function MetadataView() {
   const [showFailureDetails, setShowFailureDetails] = useState(false)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [metadataRowHeight, setMetadataRowHeight] = useState(METADATA_ROW_HEIGHT_FALLBACK_PX)
+  const [saveProgress, setSaveProgress] = useState<{ current: number; total: number } | null>(null)
+  const [fieldOverrides, setFieldOverrides] = useState<Record<string, string[]>>({})
+  const [showDiffModal, setShowDiffModal] = useState(false)
+  const [isReorderMode, setIsReorderMode] = useState(false)
+  const [reorderedTracks, setReorderedTracks] = useState<TrackRecord[] | null>(null)
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
 
   const metadataListBodyRef = useRef<HTMLDivElement | null>(null)
 
@@ -325,6 +423,7 @@ export default function MetadataView() {
   }, [selectedPaths, tracks])
 
   const selectionCommon = useMemo(() => getSelectionCommonState(selectedTracks), [selectedTracks])
+  const artworkState = useMemo(() => getCommonArtworkHash(selectedTracks), [selectedTracks])
   const selectionKey = useMemo(() => {
     return Array.from(selectedPaths).sort((a, b) => a.localeCompare(b)).join('\\u0000')
   }, [selectedPaths])
@@ -339,6 +438,15 @@ export default function MetadataView() {
     clearLastResult()
     setShowFailureDetails(false)
   }, [clearLastResult, selectionKey])
+
+  useEffect(() => {
+    const paths = Array.from(selectedPaths)
+    if (paths.length === 0) {
+      setFieldOverrides({})
+      return
+    }
+    void window.electronAPI.library.getTrackOverrideFields(paths).then(setFieldOverrides)
+  }, [selectionKey])
 
   const allVisibleSelected = useMemo(() => {
     if (filteredTracks.length === 0) return false
@@ -501,6 +609,11 @@ export default function MetadataView() {
   const handleSave = useCallback(async () => {
     setValidationError(null)
     setStatusMessage(null)
+    setSaveProgress(null)
+
+    const unsubscribe = window.electronAPI.library.onMetadataEditProgress((progress) => {
+      setSaveProgress({ current: progress.current, total: progress.total })
+    })
 
     try {
       const changes = handleBuildChanges()
@@ -519,6 +632,9 @@ export default function MetadataView() {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to save metadata edits.'
       setValidationError(message)
+    } finally {
+      unsubscribe()
+      setSaveProgress(null)
     }
   }, [handleBuildChanges, refreshAfterMutation, saveEdits, saveMode, selectedPaths])
 
@@ -540,9 +656,123 @@ export default function MetadataView() {
     }
   }, [clearOverrides, refreshAfterMutation, selectedPaths])
 
+  const handleReorderDragStart = useCallback((index: number) => {
+    setDragIndex(index)
+  }, [])
+
+  const handleReorderDragOver = useCallback((index: number) => {
+    setDropIndex(index)
+  }, [])
+
+  const handleReorderDragEnd = useCallback(() => {
+    if (dragIndex === null || dropIndex === null || dragIndex === dropIndex || !reorderedTracks) {
+      setDragIndex(null)
+      setDropIndex(null)
+      return
+    }
+
+    const updated = [...reorderedTracks]
+    const [moved] = updated.splice(dragIndex, 1)
+    updated.splice(dropIndex, 0, moved)
+    setReorderedTracks(updated)
+    setDragIndex(null)
+    setDropIndex(null)
+  }, [dragIndex, dropIndex, reorderedTracks])
+
+  const handleReorderSave = useCallback(async () => {
+    if (!reorderedTracks || reorderedTracks.length === 0) return
+
+    setValidationError(null)
+    setStatusMessage(null)
+    setSaveProgress(null)
+
+    const unsubscribe = window.electronAPI.library.onMetadataEditProgress((progress) => {
+      setSaveProgress({ current: progress.current, total: progress.total })
+    })
+
+    try {
+      const allPaths: string[] = []
+      for (let i = 0; i < reorderedTracks.length; i += 1) {
+        const track = reorderedTracks[i]
+        const result = await saveEdits({
+          mode: saveMode,
+          trackPaths: [track.path],
+          changes: { trackNumber: i + 1 }
+        })
+        allPaths.push(...result.updatedTrackPaths)
+      }
+
+      await refreshAfterMutation(allPaths)
+      setStatusMessage(`Reordered ${allPaths.length} tracks in album.`)
+      setIsReorderMode(false)
+      setReorderedTracks(null)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to save track order.'
+      setValidationError(message)
+    } finally {
+      unsubscribe()
+      setSaveProgress(null)
+    }
+  }, [reorderedTracks, saveEdits, saveMode, refreshAfterMutation])
+
+  const handleUndo = useCallback(async () => {
+    const affectedPaths = await undo()
+    if (affectedPaths.length > 0) {
+      await refreshAfterMutation(affectedPaths)
+      setStatusMessage(`Undid changes for ${affectedPaths.length} track(s).`)
+    }
+  }, [undo, refreshAfterMutation])
+
+  const handleRedo = useCallback(async () => {
+    const affectedPaths = await redo()
+    if (affectedPaths.length > 0) {
+      await refreshAfterMutation(affectedPaths)
+      setStatusMessage(`Redid changes for ${affectedPaths.length} track(s).`)
+    }
+  }, [redo, refreshAfterMutation])
+
   const hasDirtyFields = useMemo(() => {
     return Object.values(draft).some((field) => field.dirty)
   }, [draft])
+
+  const reorderAlbum = useMemo(() => {
+    if (selectedTracks.length === 0) return null
+    const album = selectedTracks[0].album
+    if (!selectedTracks.every((t) => t.album === album)) return null
+    return album
+  }, [selectedTracks])
+
+  const canReorder = reorderAlbum !== null
+
+  const albumTracksForReorder = useMemo(() => {
+    if (!reorderAlbum) return []
+    return tracks
+      .filter((t) => t.album === reorderAlbum)
+      .sort((a, b) => (a.disc_number ?? 0) - (b.disc_number ?? 0) || (a.track_number ?? 0) - (b.track_number ?? 0))
+  }, [reorderAlbum, tracks])
+
+  useEffect(() => {
+    if (!canReorder && isReorderMode) {
+      setIsReorderMode(false)
+      setReorderedTracks(null)
+    }
+  }, [canReorder, isReorderMode])
+
+  useEffect(() => {
+    if (isReorderMode) {
+      setReorderedTracks([...albumTracksForReorder])
+    } else {
+      setReorderedTracks(null)
+    }
+  }, [isReorderMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const overriddenFieldSet = useMemo(() => {
+    const set = new Set<string>()
+    for (const fields of Object.values(fieldOverrides)) {
+      for (const f of fields) set.add(f)
+    }
+    return set
+  }, [fieldOverrides])
 
   const selectedCount = selectedPaths.size
   const metadataRowProps = useMemo<MetadataTrackRowSharedProps>(() => ({
@@ -587,11 +817,28 @@ export default function MetadataView() {
 
           <button
             className="settings-btn settings-btn-primary"
-            onClick={() => void handleSave()}
+            onClick={() => {
+              try {
+                handleBuildChanges()
+                setValidationError(null)
+                setShowDiffModal(true)
+              } catch (error) {
+                setValidationError(error instanceof Error ? error.message : 'Validation failed.')
+              }
+            }}
             disabled={isSaving || selectedCount === 0 || !hasDirtyFields}
           >
             {isSaving ? 'Saving...' : 'Save Changes'}
           </button>
+          {isSaving && saveProgress && (
+            <div className="metadata-save-progress">
+              <div
+                className="metadata-save-progress-bar"
+                style={{ width: `${(saveProgress.current / saveProgress.total) * 100}%` }}
+              />
+              <span>{saveProgress.current}/{saveProgress.total}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -624,13 +871,40 @@ export default function MetadataView() {
           )}
         </div>
 
-        <button
-          className="settings-btn"
-          onClick={() => void handleClearOverrides()}
-          disabled={selectedCount === 0 || isSaving}
-        >
-          Clear Overrides
-        </button>
+        <div className="metadata-subheader-actions">
+          <button
+            className="settings-btn"
+            onClick={() => void handleUndo()}
+            disabled={undoStack.length === 0 || isSaving}
+            title="Undo last virtual save"
+          >
+            Undo
+          </button>
+          <button
+            className="settings-btn"
+            onClick={() => void handleRedo()}
+            disabled={redoStack.length === 0 || isSaving}
+            title="Redo"
+          >
+            Redo
+          </button>
+          {canReorder && (
+            <button
+              className={`settings-btn ${isReorderMode ? 'settings-btn-primary' : ''}`}
+              onClick={() => setIsReorderMode(!isReorderMode)}
+              disabled={isSaving}
+            >
+              {isReorderMode ? 'Exit Reorder' : 'Reorder Tracks'}
+            </button>
+          )}
+          <button
+            className="settings-btn"
+            onClick={() => void handleClearOverrides()}
+            disabled={selectedCount === 0 || isSaving}
+          >
+            Clear Overrides
+          </button>
+        </div>
       </div>
 
       <div className="metadata-body">
@@ -656,7 +930,42 @@ export default function MetadataView() {
             <div className="metadata-track-cell metadata-track-cell-override">Override</div>
           </div>
           <div className="metadata-track-list-body" ref={metadataListBodyRef}>
-            {filteredTracks.length === 0 ? (
+            {isReorderMode && reorderedTracks ? (
+              <div className="metadata-reorder-list">
+                {reorderedTracks.map((track, index) => (
+                  <ReorderRow
+                    key={track.path}
+                    track={track}
+                    index={index}
+                    newTrackNumber={index + 1}
+                    isDragging={dragIndex === index}
+                    isDropTarget={dropIndex === index && dragIndex !== index}
+                    onDragStart={handleReorderDragStart}
+                    onDragOver={handleReorderDragOver}
+                    onDragEnd={handleReorderDragEnd}
+                  />
+                ))}
+                <div className="metadata-reorder-actions">
+                  <button
+                    className="settings-btn settings-btn-primary"
+                    onClick={() => void handleReorderSave()}
+                    disabled={isSaving}
+                  >
+                    {isSaving ? 'Saving...' : 'Apply Order'}
+                  </button>
+                  <button
+                    className="settings-btn"
+                    onClick={() => {
+                      setIsReorderMode(false)
+                      setReorderedTracks(null)
+                    }}
+                    disabled={isSaving}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : filteredTracks.length === 0 ? (
               <div className="metadata-track-list-empty">
                 <div className="metadata-empty-cell">No tracks match your search.</div>
               </div>
@@ -676,8 +985,27 @@ export default function MetadataView() {
         </div>
 
         <div className="metadata-form-panel">
+          {selectedCount > 0 && (
+            <div className="metadata-artwork-section">
+              {artworkState.mixed ? (
+                <div className="metadata-artwork-stacked">
+                  <div className="metadata-artwork-stack-card" />
+                  <div className="metadata-artwork-stack-card" />
+                  <div className="metadata-artwork-stack-front">
+                    <span className="metadata-artwork-mixed-label">Multiple covers</span>
+                  </div>
+                </div>
+              ) : (
+                <AlbumArtwork
+                  hash={artworkState.hash}
+                  alt="Selected track artwork"
+                  className="metadata-artwork-thumbnail"
+                />
+              )}
+            </div>
+          )}
           <div className="metadata-form-grid">
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('title') ? 'metadata-field-overridden' : ''}`}>
               <span>Title</span>
               <input
                 className="settings-select"
@@ -689,7 +1017,7 @@ export default function MetadataView() {
               />
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('artist') ? 'metadata-field-overridden' : ''}`}>
               <span>Artist</span>
               <input
                 className="settings-select"
@@ -701,7 +1029,7 @@ export default function MetadataView() {
               />
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('album') ? 'metadata-field-overridden' : ''}`}>
               <span>Album</span>
               <input
                 className="settings-select"
@@ -713,7 +1041,7 @@ export default function MetadataView() {
               />
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('albumArtist') ? 'metadata-field-overridden' : ''}`}>
               <span>Album Artist</span>
               <div className="metadata-field-inline">
                 <input
@@ -735,7 +1063,7 @@ export default function MetadataView() {
               </div>
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('genre') ? 'metadata-field-overridden' : ''}`}>
               <span>Genre</span>
               <div className="metadata-field-inline">
                 <input
@@ -757,7 +1085,7 @@ export default function MetadataView() {
               </div>
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('year') ? 'metadata-field-overridden' : ''}`}>
               <span>Year</span>
               <div className="metadata-field-inline">
                 <input
@@ -780,7 +1108,7 @@ export default function MetadataView() {
               </div>
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('trackNumber') ? 'metadata-field-overridden' : ''}`}>
               <span>Track #</span>
               <div className="metadata-field-inline">
                 <input
@@ -803,7 +1131,7 @@ export default function MetadataView() {
               </div>
             </label>
 
-            <label className="metadata-field">
+            <label className={`metadata-field ${overriddenFieldSet.has('discNumber') ? 'metadata-field-overridden' : ''}`}>
               <span>Disc #</span>
               <div className="metadata-field-inline">
                 <input
@@ -869,6 +1197,18 @@ export default function MetadataView() {
           <div className="metadata-footnote">Default mode: {defaultSaveMode === 'file' ? 'Write file tags' : 'Virtual (DB override)'}</div>
         </div>
       </div>
+
+      <DiffConfirmModal
+        isOpen={showDiffModal}
+        mode={saveMode}
+        trackCount={selectedCount}
+        diffs={buildDiffEntries(draft, selectionCommon)}
+        onConfirm={() => {
+          setShowDiffModal(false)
+          void handleSave()
+        }}
+        onCancel={() => setShowDiffModal(false)}
+      />
     </div>
   )
 }
