@@ -83,9 +83,9 @@
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  opacity: var(--mini-visualizer-opacity, 0.34);
+  opacity: var(--mini-visualizer-opacity, 0.36);
   mix-blend-mode: var(--mini-visualizer-blend, screen);
-  filter: blur(0.12px);
+  filter: none;
   transition: opacity 0.2s ease;
 }
 

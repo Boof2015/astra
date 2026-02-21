@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -86,7 +86,6 @@ const SETTINGS_SECTIONS = [
 ] as const
 
 type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
-const SETTINGS_SECTION_ID_SET = new Set<string>(SETTINGS_SECTIONS.map((section) => section.id))
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -108,20 +107,7 @@ function normalizeHexColor(value: string): string | null {
   return `#${fullMatch[1].toLowerCase()}`
 }
 
-function buildInitialSectionVisibilityMap(): Record<SettingsSectionId, number> {
-  return SETTINGS_SECTIONS.reduce((acc, section) => {
-    acc[section.id] = 0
-    return acc
-  }, {} as Record<SettingsSectionId, number>)
-}
-
-function isSettingsSectionId(value: string): value is SettingsSectionId {
-  return SETTINGS_SECTION_ID_SET.has(value)
-}
-
 export default function SettingsView() {
-  const settingsViewRef = useRef<HTMLDivElement | null>(null)
-  const sectionVisibilityRef = useRef<Record<SettingsSectionId, number>>(buildInitialSectionVisibilityMap())
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
@@ -349,45 +335,6 @@ export default function SettingsView() {
     }
   }, [])
 
-  useEffect(() => {
-    const rootElement = settingsViewRef.current
-    if (!rootElement) return
-
-    const sectionElements = Array.from(
-      rootElement.querySelectorAll<HTMLElement>('[data-settings-section-id]')
-    )
-    if (sectionElements.length === 0) return
-
-    sectionVisibilityRef.current = buildInitialSectionVisibilityMap()
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        const rawSectionId = entry.target.getAttribute('data-settings-section-id')
-        if (!rawSectionId || !isSettingsSectionId(rawSectionId)) continue
-        sectionVisibilityRef.current[rawSectionId] = entry.isIntersecting ? entry.intersectionRatio : 0
-      }
-
-      let nextSectionId: SettingsSectionId = SETTINGS_SECTIONS[0].id
-      let maxRatio = sectionVisibilityRef.current[nextSectionId]
-      for (const section of SETTINGS_SECTIONS) {
-        const ratio = sectionVisibilityRef.current[section.id]
-        if (ratio > maxRatio) {
-          maxRatio = ratio
-          nextSectionId = section.id
-        }
-      }
-
-      if (maxRatio <= 0) return
-      setActiveSectionId((prev) => (prev === nextSectionId ? prev : nextSectionId))
-    }, {
-      root: rootElement,
-      rootMargin: '-28% 0px -56% 0px',
-      threshold: [0, 0.15, 0.35, 0.55, 0.75, 1],
-    })
-
-    sectionElements.forEach((sectionElement) => observer.observe(sectionElement))
-    return () => observer.disconnect()
-  }, [])
-
   const executeResetAction = async (actionId: ResetActionId): Promise<void> => {
     const action = resetActionMap.get(actionId)
     if (!action) return
@@ -419,14 +366,6 @@ export default function SettingsView() {
     const normalized = normalizeHexColor(value)
     if (!normalized) return
     setCustomAccent(normalized)
-  }
-
-  const handleJumpToSection = (sectionId: SettingsSectionId) => {
-    setActiveSectionId(sectionId)
-    const sectionElement = settingsViewRef.current?.querySelector<HTMLElement>(
-      `#settings-section-${sectionId}`
-    )
-    sectionElement?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   const openExternalLink = (url: string) => {
@@ -468,7 +407,7 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="settings-view" ref={settingsViewRef}>
+    <div className="settings-view">
       <div className="settings-shell">
         <div className="settings-header">
           <div>
@@ -484,26 +423,24 @@ export default function SettingsView() {
           )}
         </div>
 
-        <nav className="settings-nav" aria-label="Settings sections">
-          {SETTINGS_SECTIONS.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={`settings-nav-item ${activeSectionId === section.id ? 'active' : ''}`}
-              aria-current={activeSectionId === section.id ? 'true' : undefined}
-              onClick={() => handleJumpToSection(section.id)}
-            >
-              {section.label}
-            </button>
-          ))}
-        </nav>
+        <div className="settings-layout">
+          <nav className="settings-sidebar" aria-label="Settings sections">
+            {SETTINGS_SECTIONS.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                className={`settings-sidebar-item ${activeSectionId === section.id ? 'active' : ''}`}
+                aria-current={activeSectionId === section.id ? 'true' : undefined}
+                onClick={() => setActiveSectionId(section.id)}
+              >
+                {section.label}
+              </button>
+            ))}
+          </nav>
 
-        <div className="settings-content">
-          <section
-            id="settings-section-appearance"
-            data-settings-section-id="appearance"
-            className="settings-section settings-section-panel"
-          >
+          <div className="settings-content">
+            {activeSectionId === 'appearance' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Appearance</h3>
               <p>Theme and accent preferences.</p>
@@ -617,12 +554,10 @@ export default function SettingsView() {
               </p>
             )}
           </section>
+            )}
 
-          <section
-            id="settings-section-library"
-            data-settings-section-id="library"
-            className="settings-section settings-section-panel"
-          >
+            {activeSectionId === 'library' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Library</h3>
               <p>Manage folders and refresh indexed metadata.</p>
@@ -647,12 +582,10 @@ export default function SettingsView() {
             </div>
             <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
           </section>
+            )}
 
-          <section
-            id="settings-section-analyzer"
-            data-settings-section-id="analyzer"
-            className="settings-section settings-section-panel"
-          >
+            {activeSectionId === 'analyzer' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Analyzer</h3>
               <p>FFT and visualizer behavior.</p>
@@ -709,12 +642,10 @@ export default function SettingsView() {
             </div>
             <p className="settings-note">Visualizer line color follows the active theme accent.</p>
           </section>
+            )}
 
-          <section
-            id="settings-section-audio"
-            data-settings-section-id="audio"
-            className="settings-section settings-section-panel"
-          >
+            {activeSectionId === 'audio' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Audio Output</h3>
               <p>Output device, delay compensation, and channel routing.</p>
@@ -725,12 +656,10 @@ export default function SettingsView() {
             <DelayCompensationPanel />
             <ChannelRoutingPanel />
           </section>
+            )}
 
-          <section
-            id="settings-section-integrations"
-            data-settings-section-id="integrations"
-            className="settings-section settings-section-panel"
-          >
+            {activeSectionId === 'integrations' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
               <p>Optional platform integrations.</p>
@@ -761,12 +690,10 @@ export default function SettingsView() {
               Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
             </p>
           </section>
+            )}
 
-          <section
-            id="settings-section-info"
-            data-settings-section-id="info"
-            className="settings-section settings-section-panel"
-          >
+            {activeSectionId === 'info' && (
+            <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Info</h3>
               <p>Version, updates, attribution, and license details.</p>
@@ -863,12 +790,10 @@ export default function SettingsView() {
               </div>
             </div>
           </section>
+            )}
 
-          <section
-            id="settings-section-danger"
-            data-settings-section-id="danger"
-            className="settings-section settings-section-panel settings-danger-zone"
-          >
+            {activeSectionId === 'danger' && (
+            <section className="settings-section settings-section-panel settings-danger-zone">
             <div className="settings-section-head">
               <h3>Danger Zone</h3>
               <p>Use these actions when troubleshooting or intentionally resetting data.</p>
@@ -899,6 +824,8 @@ export default function SettingsView() {
               </p>
             )}
           </section>
+            )}
+          </div>
         </div>
       </div>
       <FolderSettings

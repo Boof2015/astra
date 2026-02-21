@@ -169,8 +169,8 @@ function resolveVisibilityProfile(
 
   const brightConflict = backdropLuminance > 0.72 && lineLuminance > 0.56
   const darkConflict = backdropLuminance < 0.2 && lineLuminance < 0.34
-  const lowDeltaConflict = luminanceDelta < 0.14
-  const blendMode: 'screen' | 'normal' = (mode !== 'off' && (brightConflict || darkConflict || lowDeltaConflict || contrastRisk > 0.66))
+  const lowDeltaConflict = luminanceDelta < 0.16
+  const blendMode: 'screen' | 'normal' = (mode !== 'off' && (brightConflict || darkConflict || lowDeltaConflict || contrastRisk > 0.60))
     ? 'normal'
     : 'screen'
 
@@ -192,22 +192,22 @@ function resolveOpacity(
 
   const isCompactLayout = layoutMode === 'tiny' || layoutMode === 'compact'
   const baseActive = mode === 'oscilloscope'
-    ? (isCompactLayout ? 0.26 : 0.28)
-    : (isCompactLayout ? 0.26 : 0.34)
-  const baseIdle = isCompactLayout ? 0.14 : 0.18
+    ? (isCompactLayout ? 0.28 : 0.30)
+    : (isCompactLayout ? 0.28 : 0.36)
+  const baseIdle = isCompactLayout ? 0.15 : 0.19
   const baseOpacity = idle ? baseIdle : baseActive
 
-  const blendBonus = profile.blendMode === 'normal' ? (idle ? 0.02 : 0.06) : 0
+  const blendBonus = profile.blendMode === 'normal' ? (idle ? 0.03 : 0.07) : 0
   const adaptiveBoost = idle
-    ? lerp(0.02, 0.11, profile.visibilityBoost)
-    : lerp(0.03, 0.22, profile.visibilityBoost)
+    ? lerp(0.03, 0.12, profile.visibilityBoost)
+    : lerp(0.04, 0.24, profile.visibilityBoost)
 
   const minOpacity = isCompactLayout
-    ? (idle ? 0.16 : 0.28)
-    : (idle ? 0.18 : 0.32)
+    ? (idle ? 0.17 : 0.30)
+    : (idle ? 0.19 : 0.34)
   const maxOpacity = isCompactLayout
-    ? (idle ? 0.30 : 0.46)
-    : (idle ? 0.34 : 0.62)
+    ? (idle ? 0.31 : 0.48)
+    : (idle ? 0.35 : 0.64)
 
   return clamp(baseOpacity + blendBonus + adaptiveBoost, minOpacity, maxOpacity)
 }
@@ -472,12 +472,12 @@ export default function MiniPlayerBackdropVisualizer({
 
       if (points.length < 2) return
 
-      const lineAlpha = clamp((idle ? 0.18 : 0.38) + (idle ? 0.12 : 0.24) * profile.visibilityBoost, 0, 0.75)
-      const fillTopAlpha = clamp((idle ? 0.05 : 0.12) + (idle ? 0.05 : 0.10) * profile.visibilityBoost, 0, 0.36)
-      const fillMidAlpha = clamp((idle ? 0.02 : 0.05) + (idle ? 0.04 : 0.08) * profile.visibilityBoost, 0, 0.24)
-      const haloAlpha = clamp((idle ? 0.15 : 0.23) + (0.33 * profile.visibilityBoost), 0.14, 0.7)
-      const haloWidth = 2.2 + (1.4 * profile.visibilityBoost)
-      const lineWidth = 1.7 + (0.35 * profile.visibilityBoost)
+      const lineAlpha = clamp((idle ? 0.22 : 0.44) + (idle ? 0.13 : 0.24) * profile.visibilityBoost, 0, 0.78)
+      const fillTopAlpha = clamp((idle ? 0.06 : 0.14) + (idle ? 0.05 : 0.10) * profile.visibilityBoost, 0, 0.38)
+      const fillMidAlpha = clamp((idle ? 0.03 : 0.06) + (idle ? 0.04 : 0.08) * profile.visibilityBoost, 0, 0.26)
+      const haloAlpha = clamp((idle ? 0.18 : 0.26) + (0.34 * profile.visibilityBoost), 0.16, 0.72)
+      const haloWidth = 2.4 + (1.4 * profile.visibilityBoost)
+      const lineWidth = 1.85 + (0.4 * profile.visibilityBoost)
 
       ctx.beginPath()
       ctx.moveTo(points[0].x, points[0].y)
@@ -552,13 +552,13 @@ export default function MiniPlayerBackdropVisualizer({
       if (!renderData || renderData.length === 0) return
 
       const centerY = height / 2
-      const baselineAccentAlpha = clamp((idle ? 0.15 : 0.24) + (idle ? 0.05 : 0.14) * profile.visibilityBoost, 0, 0.56)
-      const baselineHaloAlpha = clamp((idle ? 0.12 : 0.2) + (0.24 * profile.visibilityBoost), 0.1, 0.52)
-      const waveformAccentAlpha = clamp((idle ? 0.24 : 0.46) + (idle ? 0.08 : 0.2) * profile.visibilityBoost, 0, 0.78)
-      const waveformHaloAlpha = clamp((idle ? 0.14 : 0.24) + (0.3 * profile.visibilityBoost), 0.12, 0.72)
+      const baselineAccentAlpha = clamp((idle ? 0.18 : 0.28) + (idle ? 0.06 : 0.16) * profile.visibilityBoost, 0, 0.60)
+      const baselineHaloAlpha = clamp((idle ? 0.14 : 0.22) + (0.26 * profile.visibilityBoost), 0.12, 0.56)
+      const waveformAccentAlpha = clamp((idle ? 0.28 : 0.50) + (idle ? 0.10 : 0.22) * profile.visibilityBoost, 0, 0.82)
+      const waveformHaloAlpha = clamp((idle ? 0.17 : 0.27) + (0.32 * profile.visibilityBoost), 0.14, 0.76)
 
       ctx.strokeStyle = colorWithAlpha(profile.haloColor, baselineHaloAlpha, profile.haloColor)
-      ctx.lineWidth = 1.8 + (0.8 * profile.visibilityBoost)
+      ctx.lineWidth = 2.0 + (0.9 * profile.visibilityBoost)
       ctx.beginPath()
       ctx.moveTo(0, centerY)
       ctx.lineTo(width, centerY)
@@ -587,11 +587,11 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.strokeStyle = colorWithAlpha(profile.haloColor, waveformHaloAlpha, profile.haloColor)
-      ctx.lineWidth = 2.2 + (1.2 * profile.visibilityBoost)
+      ctx.lineWidth = 2.4 + (1.3 * profile.visibilityBoost)
       ctx.stroke()
 
       ctx.strokeStyle = colorWithAlpha(visualizerColor, waveformAccentAlpha, accentColor)
-      ctx.lineWidth = 1.5 + (0.35 * profile.visibilityBoost)
+      ctx.lineWidth = 1.6 + (0.4 * profile.visibilityBoost)
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.stroke()

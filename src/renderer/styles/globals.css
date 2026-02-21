@@ -7044,7 +7044,8 @@ body::after {
 }
 
 .settings-shell {
-  width: min(980px, 100%);
+  width: 100%;
+  max-width: 1400px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -7090,51 +7091,58 @@ body::after {
   flex-shrink: 0;
 }
 
-.settings-nav {
-  position: sticky;
-  top: 0;
-  z-index: 8;
+.settings-layout {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  background: rgba(8, 11, 18, 0.76);
-  backdrop-filter: blur(8px);
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
-.settings-nav-item {
+.settings-sidebar {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(8, 11, 18, 0.5);
+}
+
+.settings-sidebar-item {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 10px;
+  border: none;
+  border-radius: 7px;
+  padding: 9px 12px;
   color: rgba(255, 255, 255, 0.54);
   background: transparent;
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.settings-nav-item:hover {
-  border-color: rgba(255, 255, 255, 0.16);
+.settings-sidebar-item:hover {
+  background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.88);
 }
 
-.settings-nav-item.active {
-  border-color: rgba(var(--accent-rgb), 0.45);
+.settings-sidebar-item.active {
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent-text-strong);
 }
 
 .settings-content {
-  width: 100%;
-  max-width: none;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
 .settings-section-panel {
@@ -7143,7 +7151,6 @@ body::after {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
   padding: 16px;
-  scroll-margin-top: 110px;
 }
 
 .settings-section-head {
