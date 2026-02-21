@@ -15,6 +15,7 @@ const SSE_HEARTBEAT_INTERVAL_MS = 20_000
 const CONTROL_RATE_LIMIT_WINDOW_MS = 60_000
 const CONTROL_RATE_LIMIT_MAX_REQUESTS = 120
 const CONTROL_MAX_BODY_BYTES = 1_024
+const ARTWORK_MAX_BYTES = 8 * 1024 * 1024
 
 interface LocalApiServiceOptions {
   config: LocalApiServiceConfig
@@ -32,6 +33,17 @@ interface ControlRateLimitState {
   windowStartedAt: number
 }
 
+interface ParsedArtworkData {
+  mimeType: string
+  bytes: Buffer
+}
+
+interface LocalApiArtworkState {
+  currentTrackId: string | null
+  mimeType: string | null
+  bytes: Buffer | null
+}
+
 function toSafeNumber(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0
   return Math.max(0, value)
@@ -43,7 +55,31 @@ function toSafeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
-function sanitizeSnapshot(snapshot: MiniPlayerSnapshot | null): LocalApiNowPlayingSnapshot {
+function parseArtworkDataUrl(artworkData: string | null): ParsedArtworkData | null {
+  if (typeof artworkData !== 'string') return null
+  const normalized = artworkData.trim()
+  const match = /^data:([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(
+    normalized
+  )
+  if (!match) return null
+
+  const mimeType = match[1].toLowerCase()
+  const base64Payload = match[2].replace(/\s+/g, '')
+
+  if (base64Payload.length === 0 || base64Payload.length % 4 !== 0) return null
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64Payload)) return null
+
+  const bytes = Buffer.from(base64Payload, 'base64')
+  if (bytes.length === 0 || bytes.length > ARTWORK_MAX_BYTES) return null
+  if (bytes.toString('base64') !== base64Payload) return null
+
+  return { mimeType, bytes }
+}
+
+function sanitizeSnapshot(
+  snapshot: MiniPlayerSnapshot | null,
+  artworkUrl: string | null
+): LocalApiNowPlayingSnapshot {
   const updatedAt = Date.now()
 
   if (!snapshot) {
@@ -72,7 +108,8 @@ function sanitizeSnapshot(snapshot: MiniPlayerSnapshot | null): LocalApiNowPlayi
           title: String(snapshot.currentTrack.title),
           artist: String(snapshot.currentTrack.artist),
           album: String(snapshot.currentTrack.album),
-          isFavorite: Boolean(snapshot.currentTrack.isFavorite)
+          isFavorite: Boolean(snapshot.currentTrack.isFavorite),
+          artworkUrl
         }
       : null,
     updatedAt
@@ -125,13 +162,21 @@ export class LocalApiService {
 
   private active = false
   private lastError: string | null = null
+  private latestRawSnapshot: MiniPlayerSnapshot | null
+  private latestArtwork: LocalApiArtworkState = {
+    currentTrackId: null,
+    mimeType: null,
+    bytes: null
+  }
   private latestSnapshot: LocalApiNowPlayingSnapshot
 
   constructor(options: LocalApiServiceOptions) {
     this.config = { ...options.config }
     this.dispatchCommand = options.dispatchCommand
     this.onStatusChange = options.onStatusChange
-    this.latestSnapshot = sanitizeSnapshot(options.getSnapshot())
+    this.latestRawSnapshot = options.getSnapshot()
+    this.latestSnapshot = sanitizeSnapshot(this.latestRawSnapshot, null)
+    this.refreshLatestSnapshot(this.latestRawSnapshot)
   }
 
   getStatus(): LocalApiStatus {
@@ -155,6 +200,7 @@ export class LocalApiService {
     const restartNeeded = previous.port !== config.port || previous.enabled !== config.enabled
 
     this.config = { ...config }
+    this.refreshLatestSnapshot(this.latestRawSnapshot)
 
     if (!this.config.enabled) {
       await this.stopServer()
@@ -179,7 +225,7 @@ export class LocalApiService {
   }
 
   publishSnapshot(snapshot: MiniPlayerSnapshot | null): void {
-    this.latestSnapshot = sanitizeSnapshot(snapshot)
+    this.refreshLatestSnapshot(snapshot)
     if (!this.active) return
     this.broadcastSseEvent('now-playing', this.latestSnapshot)
   }
@@ -190,6 +236,44 @@ export class LocalApiService {
 
   private emitStatus(): void {
     this.onStatusChange?.(this.getStatus())
+  }
+
+  private buildArtworkUrl(trackId: string): string {
+    const baseUrl = `http://${LOCAL_API_HOST}:${this.config.port}`
+    return `${baseUrl}/v1/artwork/current?trackId=${encodeURIComponent(trackId)}`
+  }
+
+  private refreshLatestSnapshot(snapshot: MiniPlayerSnapshot | null): void {
+    this.latestRawSnapshot = snapshot
+    const currentTrack = snapshot?.currentTrack
+    if (!currentTrack) {
+      this.latestArtwork = {
+        currentTrackId: null,
+        mimeType: null,
+        bytes: null
+      }
+      this.latestSnapshot = sanitizeSnapshot(snapshot, null)
+      return
+    }
+
+    const trackId = String(currentTrack.id)
+    const parsedArtwork = parseArtworkDataUrl(currentTrack.artworkData)
+    if (!parsedArtwork) {
+      this.latestArtwork = {
+        currentTrackId: trackId,
+        mimeType: null,
+        bytes: null
+      }
+      this.latestSnapshot = sanitizeSnapshot(snapshot, null)
+      return
+    }
+
+    this.latestArtwork = {
+      currentTrackId: trackId,
+      mimeType: parsedArtwork.mimeType,
+      bytes: parsedArtwork.bytes
+    }
+    this.latestSnapshot = sanitizeSnapshot(snapshot, this.buildArtworkUrl(trackId))
   }
 
   private async startServer(): Promise<void> {
@@ -438,15 +522,45 @@ export class LocalApiService {
     this.respondJson(res, 200, { ok: true, command: controlBody.command })
   }
 
+  private handleArtwork(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>,
+    requestUrl: URL
+  ): void {
+    if (!this.isAuthorized(req)) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+
+    const requestedTrackId = toSafeOptionalString(requestUrl.searchParams.get('trackId'))
+    if (requestedTrackId && requestedTrackId !== this.latestArtwork.currentTrackId) {
+      this.respondJson(res, 404, { error: 'Artwork not found for requested track.' })
+      return
+    }
+
+    if (!this.latestArtwork.currentTrackId || !this.latestArtwork.mimeType || !this.latestArtwork.bytes) {
+      this.respondJson(res, 404, { error: 'Artwork not available.' })
+      return
+    }
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', this.latestArtwork.mimeType)
+    res.setHeader('Content-Length', this.latestArtwork.bytes.length.toString())
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.end(this.latestArtwork.bytes)
+  }
+
   private async handleRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
     const method = req.method ?? 'GET'
-    let path = '/'
+    let requestUrl: URL
     try {
-      path = new URL(req.url ?? '/', `http://${LOCAL_API_HOST}`).pathname
+      requestUrl = new URL(req.url ?? '/', `http://${LOCAL_API_HOST}`)
     } catch {
       this.respondJson(res, 400, { error: 'Invalid request URL.' })
       return
     }
+    const path = requestUrl.pathname
 
     if (method === 'GET' && path === '/v1/now-playing') {
       if (!this.isAuthorized(req)) {
@@ -460,6 +574,11 @@ export class LocalApiService {
 
     if (method === 'GET' && path === '/v1/events') {
       this.handleSse(req, res)
+      return
+    }
+
+    if (method === 'GET' && path === '/v1/artwork/current') {
+      this.handleArtwork(req, res, requestUrl)
       return
     }
 

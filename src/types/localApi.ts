@@ -13,6 +13,7 @@ export interface LocalApiTrackSnapshot {
   artist: string
   album: string
   isFavorite: boolean
+  artworkUrl: string | null
 }
 
 export interface LocalApiNowPlayingSnapshot {

@@ -72,8 +72,6 @@ function useHiDpiCanvasSize(
     const height = Math.max(1, Math.floor(rect.height))
     const dpr = window.devicePixelRatio || 1
 
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${height}px`
     canvas.width = Math.max(1, Math.floor(width * dpr))
     canvas.height = Math.max(1, Math.floor(height * dpr))
 
