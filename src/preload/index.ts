@@ -7,6 +7,11 @@ import type {
   MiniPlayerVisualizerStreamChunk,
   MiniPlayerWindowState
 } from '../types/miniPlayer'
+import type {
+  ScopeKind,
+  ScopePopoutChunk,
+  ScopePopoutState
+} from '../types/scopePopout'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -317,6 +322,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  scopePopout: {
+    open: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:open', scope),
+    recall: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:recall', scope),
+    getState: () => ipcRenderer.invoke('scope-popout:getState'),
+    publishChunk: (chunk: ScopePopoutChunk) => ipcRenderer.send('scope-popout:publishChunk', chunk),
+    onState: (callback: (state: ScopePopoutState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: ScopePopoutState) => callback(state)
+      ipcRenderer.on('scope-popout:state', handler)
+      return () => ipcRenderer.removeListener('scope-popout:state', handler)
+    },
+    onChunk: (callback: (chunk: ScopePopoutChunk) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, chunk: ScopePopoutChunk) => callback(chunk)
+      ipcRenderer.on('scope-popout:chunk', handler)
+      return () => ipcRenderer.removeListener('scope-popout:chunk', handler)
+    }
+  },
+
   // Platform info
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -438,6 +460,14 @@ declare global {
         onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
         onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
         onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
+      }
+      scopePopout: {
+        open: (scope: ScopeKind) => Promise<ScopePopoutState>
+        recall: (scope: ScopeKind) => Promise<ScopePopoutState>
+        getState: () => Promise<ScopePopoutState>
+        publishChunk: (chunk: ScopePopoutChunk) => void
+        onState: (callback: (state: ScopePopoutState) => void) => () => void
+        onChunk: (callback: (chunk: ScopePopoutChunk) => void) => () => void
       }
 
       // Platform

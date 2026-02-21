@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -26,15 +26,30 @@ import type {
   MiniPlayerWindowPrefs,
   MiniPlayerWindowState,
 } from '../types/miniPlayer'
+import {
+  DEFAULT_SCOPE_POPOUT_STATE,
+  SCOPE_KINDS,
+  isScopeKind,
+  type ScopeKind,
+  type ScopePopoutChunk,
+  type ScopePopoutState
+} from '../types/scopePopout'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
+const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
+  spectrum: null,
+  oscilloscope: null,
+  vectorscope: null,
+}
+let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
+const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -43,6 +58,36 @@ const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
 const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
+
+const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
+  title: string
+  width: number
+  height: number
+  minWidth: number
+  minHeight: number
+}> = {
+  spectrum: {
+    title: 'Astra Spectrum',
+    width: 760,
+    height: 320,
+    minWidth: 420,
+    minHeight: 220,
+  },
+  oscilloscope: {
+    title: 'Astra Oscilloscope',
+    width: 760,
+    height: 320,
+    minWidth: 420,
+    minHeight: 220,
+  },
+  vectorscope: {
+    title: 'Astra Vectorscope',
+    width: 440,
+    height: 440,
+    minWidth: 300,
+    minHeight: 300,
+  },
+}
 
 // Supported audio formats
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff']
@@ -63,6 +108,159 @@ function getMiniWindowState(): MiniPlayerWindowState {
   return { isOpen, alwaysOnTop, visualizerMode }
 }
 
+function normalizeScopeKind(value: unknown): ScopeKind | null {
+  return isScopeKind(value) ? value : null
+}
+
+function getScopePopoutWindow(scope: ScopeKind): BrowserWindow | null {
+  const candidate = scopePopoutWindows[scope]
+  if (!candidate || candidate.isDestroyed()) {
+    return null
+  }
+  return candidate
+}
+
+function getScopePopoutState(): ScopePopoutState {
+  return { ...scopePopoutState }
+}
+
+function setScopePopoutOpenState(scope: ScopeKind, isOpen: boolean): void {
+  if (scopePopoutState[scope] === isOpen) return
+  scopePopoutState = {
+    ...scopePopoutState,
+    [scope]: isOpen
+  }
+  broadcastScopePopoutState()
+}
+
+function resolveScopePopoutPosition(scope: ScopeKind): Pick<Electron.BrowserWindowConstructorOptions, 'x' | 'y'> {
+  const main = mainWindow
+  if (!main || main.isDestroyed()) {
+    return {}
+  }
+
+  const defaults = SCOPE_POPOUT_DEFAULTS[scope]
+  const bounds = main.getBounds()
+  const offsets: Record<ScopeKind, { x: number; y: number }> = {
+    spectrum: { x: 52, y: 56 },
+    oscilloscope: { x: 88, y: 88 },
+    vectorscope: { x: 120, y: 120 },
+  }
+
+  const targetX = bounds.x + offsets[scope].x
+  const targetY = bounds.y + offsets[scope].y
+  const matchingDisplay = screen.getDisplayMatching({
+    x: targetX,
+    y: targetY,
+    width: defaults.width,
+    height: defaults.height,
+  })
+  const workArea = matchingDisplay.workArea
+
+  return {
+    x: Math.max(workArea.x, Math.min(targetX, workArea.x + workArea.width - defaults.width)),
+    y: Math.max(workArea.y, Math.min(targetY, workArea.y + workArea.height - defaults.height)),
+  }
+}
+
+function broadcastScopePopoutState(): void {
+  const payload = getScopePopoutState()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('scope-popout:state', payload)
+  }
+
+  for (const scope of SCOPE_KINDS) {
+    const scopeWindow = getScopePopoutWindow(scope)
+    if (scopeWindow) {
+      scopeWindow.webContents.send('scope-popout:state', payload)
+    }
+  }
+}
+
+async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
+  const existing = getScopePopoutWindow(scope)
+  if (existing) {
+    if (existing.isMinimized()) {
+      existing.restore()
+    }
+    existing.focus()
+    setScopePopoutOpenState(scope, true)
+    return
+  }
+
+  const defaults = SCOPE_POPOUT_DEFAULTS[scope]
+  const position = resolveScopePopoutPosition(scope)
+
+  const scopeWindow = new BrowserWindow({
+    width: defaults.width,
+    height: defaults.height,
+    minWidth: defaults.minWidth,
+    minHeight: defaults.minHeight,
+    frame: false,
+    transparent: false,
+    backgroundColor: '#05070c',
+    autoHideMenuBar: true,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    title: defaults.title,
+    ...position,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  scopePopoutWindows[scope] = scopeWindow
+  setScopePopoutOpenState(scope, true)
+
+  scopeWindow.on('ready-to-show', () => {
+    scopeWindow.show()
+  })
+
+  scopeWindow.on('closed', () => {
+    scopePopoutWindows[scope] = null
+    setScopePopoutOpenState(scope, false)
+  })
+
+  scopeWindow.webContents.on('did-finish-load', () => {
+    const latestChunk = latestScopePopoutChunks[scope]
+    if (latestChunk) {
+      scopeWindow.webContents.send('scope-popout:chunk', latestChunk)
+    }
+    broadcastScopePopoutState()
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    await scopeWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=scope-popout&scope=${scope}`)
+  } else {
+    await scopeWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+      query: { window: 'scope-popout', scope }
+    })
+  }
+}
+
+function recallScopePopoutWindow(scope: ScopeKind): void {
+  const scopeWindow = getScopePopoutWindow(scope)
+  if (scopeWindow) {
+    scopeWindow.close()
+    return
+  }
+
+  setScopePopoutOpenState(scope, false)
+}
+
+function closeAllScopePopoutWindows(): void {
+  for (const scope of SCOPE_KINDS) {
+    const scopeWindow = getScopePopoutWindow(scope)
+    if (scopeWindow) {
+      scopeWindow.close()
+    }
+  }
+}
+
 function applyRuntimeIconImage(image: Electron.NativeImage): void {
   if (process.platform === 'darwin') {
     app.dock?.setIcon(image)
@@ -75,6 +273,13 @@ function applyRuntimeIconImage(image: Electron.NativeImage): void {
 
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.setIcon(image)
+  }
+
+  for (const scope of SCOPE_KINDS) {
+    const scopeWindow = getScopePopoutWindow(scope)
+    if (scopeWindow) {
+      scopeWindow.setIcon(image)
+    }
   }
 }
 
@@ -168,7 +373,8 @@ async function createMiniPlayerWindow(): Promise<void> {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   })
 
@@ -231,7 +437,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   })
 
@@ -244,6 +451,7 @@ function createWindow(): void {
     if (miniWindow && !miniWindow.isDestroyed()) {
       miniWindow.close()
     }
+    closeAllScopePopoutWindows()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -258,6 +466,7 @@ function createWindow(): void {
   }
 
   broadcastMiniWindowState()
+  broadcastScopePopoutState()
 }
 
 async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
@@ -336,6 +545,7 @@ app.on('before-quit', () => {
     audioMetadataBackfillTimer = null
   }
   void persistMiniWindowPrefs()
+  closeAllScopePopoutWindows()
   discordRpcService.shutdown()
   library.closeDatabase()
 })
@@ -431,6 +641,44 @@ ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisua
 ipcMain.on('mini-player:sendCommand', (_event, command: MiniPlayerCommand) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('mini-player:command', command)
+  }
+})
+
+// Scope popout window controls/state
+ipcMain.handle('scope-popout:open', async (_event, rawScope: unknown) => {
+  const scope = normalizeScopeKind(rawScope)
+  if (!scope) {
+    return getScopePopoutState()
+  }
+
+  await createScopePopoutWindow(scope)
+  return getScopePopoutState()
+})
+
+ipcMain.handle('scope-popout:recall', async (_event, rawScope: unknown) => {
+  const scope = normalizeScopeKind(rawScope)
+  if (!scope) {
+    return getScopePopoutState()
+  }
+
+  recallScopePopoutWindow(scope)
+  return getScopePopoutState()
+})
+
+ipcMain.handle('scope-popout:getState', () => {
+  return getScopePopoutState()
+})
+
+ipcMain.on('scope-popout:publishChunk', (_event, rawChunk: unknown) => {
+  if (!rawChunk || typeof rawChunk !== 'object') return
+  const chunk = rawChunk as ScopePopoutChunk
+  if (!isScopeKind(chunk.scope)) return
+
+  latestScopePopoutChunks[chunk.scope] = chunk
+
+  const scopeWindow = getScopePopoutWindow(chunk.scope)
+  if (scopeWindow) {
+    scopeWindow.webContents.send('scope-popout:chunk', chunk)
   }
 })
 

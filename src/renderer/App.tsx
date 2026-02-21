@@ -20,6 +20,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
+import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 
@@ -28,6 +29,7 @@ function App() {
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
+  useScopePopoutBridge()
   useCoverArtAccent()
   useRuntimeAppIconSync()
 

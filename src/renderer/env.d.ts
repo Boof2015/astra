@@ -8,6 +8,11 @@ import type {
     MiniPlayerVisualizerStreamChunk,
     MiniPlayerWindowState
 } from '../types/miniPlayer'
+import type {
+    ScopeKind,
+    ScopePopoutChunk,
+    ScopePopoutState
+} from '../types/scopePopout'
 
 declare global {
     interface Window {
@@ -31,6 +36,14 @@ declare global {
                 onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
                 onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
                 onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
+            }
+            scopePopout: {
+                open: (scope: ScopeKind) => Promise<ScopePopoutState>
+                recall: (scope: ScopeKind) => Promise<ScopePopoutState>
+                getState: () => Promise<ScopePopoutState>
+                publishChunk: (chunk: ScopePopoutChunk) => void
+                onState: (callback: (state: ScopePopoutState) => void) => () => void
+                onChunk: (callback: (chunk: ScopePopoutChunk) => void) => () => void
             }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
