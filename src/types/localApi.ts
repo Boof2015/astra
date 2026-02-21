@@ -5,7 +5,7 @@ export const LOCAL_API_MAX_PORT = 65535
 
 export type LocalApiPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type LocalApiMode = 'off' | 'api' | 'api-control'
-export type LocalApiControlCommand = 'play' | 'pause' | 'next' | 'previous'
+export type LocalApiControlCommand = 'play' | 'pause' | 'next' | 'previous' | 'toggle-favorite'
 
 export interface LocalApiTrackSnapshot {
   id: string

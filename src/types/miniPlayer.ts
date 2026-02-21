@@ -38,6 +38,7 @@ export type MiniPlayerCommand =
   | { type: 'togglePlay' }
   | { type: 'playNext' }
   | { type: 'playPrevious' }
+  | { type: 'toggleFavoriteCurrent' }
   | { type: 'seek'; time: number }
   | { type: 'toggleFavorite'; trackPath: string }
 

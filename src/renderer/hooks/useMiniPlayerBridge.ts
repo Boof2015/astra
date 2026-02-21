@@ -125,6 +125,12 @@ export function useMiniPlayerBridge(): void {
         case 'playPrevious':
           void player.playPrevious()
           break
+        case 'toggleFavoriteCurrent': {
+          const currentTrackPath = player.currentTrack?.path
+          if (!currentTrackPath) break
+          void library.toggleFavorite(currentTrackPath)
+          break
+        }
         case 'seek': {
           const seekTarget = clampSeekTime(command.time, player.duration)
           void player.seek(seekTarget)

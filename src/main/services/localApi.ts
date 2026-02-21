@@ -96,6 +96,8 @@ function mapControlCommand(command: LocalApiControlCommand): MiniPlayerCommand {
       return { type: 'playNext' }
     case 'previous':
       return { type: 'playPrevious' }
+    case 'toggle-favorite':
+      return { type: 'toggleFavoriteCurrent' }
   }
 }
 
@@ -352,7 +354,13 @@ export class LocalApiService {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
     const command = candidate.command
-    if (command !== 'play' && command !== 'pause' && command !== 'next' && command !== 'previous') {
+    if (
+      command !== 'play'
+      && command !== 'pause'
+      && command !== 'next'
+      && command !== 'previous'
+      && command !== 'toggle-favorite'
+    ) {
       return null
     }
     return { command }
