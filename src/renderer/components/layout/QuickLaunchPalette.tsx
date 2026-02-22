@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { SETTINGS_SECTIONS } from '../../constants/settingsSections'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { NAV_ENTRIES, SETTINGS_SECTIONS } from '../../constants/settingsSections'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -12,12 +12,14 @@ import type {
   QuickLaunchTrackAction,
   QuickLaunchTrackRecord
 } from '../../types/quickLaunch'
-import { fuzzyScore } from '../../utils/fuzzySearch'
+import { multiFieldScore, MIN_SCORE_THRESHOLD } from '../../utils/fuzzySearch'
 
-const SETTINGS_RESULT_LIMIT = 5
+const SETTINGS_RESULT_LIMIT = 3
+const NAV_RESULT_LIMIT = 3
 const TRACK_RESULT_LIMIT = 5
 const ALBUM_RESULT_LIMIT = 4
 const ARTIST_RESULT_LIMIT = 4
+const RECENT_TRACKS_LIMIT = 5
 
 interface ResultGroup {
   id: string
@@ -101,6 +103,80 @@ function compareScoredResults<T extends { score: number; id: string }>(a: T, b: 
   return a.id.localeCompare(b.id)
 }
 
+// Match highlighting: prefer contiguous substring, fallback to sequential chars
+function highlightMatch(text: string, query: string): ReactNode {
+  if (!query) return text
+  const normalizedText = text.toLowerCase()
+  const normalizedQuery = query.toLowerCase().trim()
+  if (!normalizedQuery) return text
+
+  // Try contiguous substring first
+  const substringIndex = normalizedText.indexOf(normalizedQuery)
+  if (substringIndex >= 0) {
+    return (
+      <>
+        {text.slice(0, substringIndex)}
+        <mark className="ql-highlight">{text.slice(substringIndex, substringIndex + normalizedQuery.length)}</mark>
+        {text.slice(substringIndex + normalizedQuery.length)}
+      </>
+    )
+  }
+
+  // Fallback: highlight sequential matched characters
+  const parts: ReactNode[] = []
+  let qi = 0
+  let lastPushed = 0
+  for (let i = 0; i < text.length && qi < normalizedQuery.length; i++) {
+    if (text[i].toLowerCase() === normalizedQuery[qi]) {
+      if (i > lastPushed) {
+        parts.push(text.slice(lastPushed, i))
+      }
+      parts.push(<mark key={i} className="ql-highlight">{text[i]}</mark>)
+      qi++
+      lastPushed = i + 1
+    }
+  }
+  if (lastPushed < text.length) {
+    parts.push(text.slice(lastPushed))
+  }
+  return <>{parts}</>
+}
+
+// Artwork thumbnail component
+function ResultThumbnail({ hash, fallback }: { hash: string | null | undefined; fallback: ReactNode }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const getArtwork = useLibraryStore((state) => state.getArtwork)
+
+  useEffect(() => {
+    if (!hash) { setUrl(null); return }
+    let cancelled = false
+    void getArtwork(hash).then((u) => { if (!cancelled) setUrl(u ?? null) })
+    return () => { cancelled = true }
+  }, [hash, getArtwork])
+
+  if (url) {
+    return <img src={url} className="ql-thumb" alt="" loading="lazy" decoding="async" />
+  }
+  return <div className="ql-thumb ql-thumb-placeholder">{fallback}</div>
+}
+
+// SVG icons for result types
+const IconNote = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M12 2v8.5a2.5 2.5 0 1 1-1-2V4H7v7.5a2.5 2.5 0 1 1-1-2V2h6z" fill="currentColor" /></svg>
+)
+const IconDisc = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2" /><circle cx="8" cy="8" r="2" fill="currentColor" /></svg>
+)
+const IconPerson = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="2.5" fill="currentColor" /><path d="M3.5 13.5c0-2.5 2-4.5 4.5-4.5s4.5 2 4.5 4.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+)
+const IconGear = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6.7 1.5h2.6l.4 1.8.9.4 1.6-.9 1.8 1.8-.9 1.6.4.9 1.8.4v2.6l-1.8.4-.4.9.9 1.6-1.8 1.8-1.6-.9-.9.4-.4 1.8H6.7l-.4-1.8-.9-.4-1.6.9-1.8-1.8.9-1.6-.4-.9-1.8-.4V6.5l1.8-.4.4-.9-.9-1.6 1.8-1.8 1.6.9.9-.4.4-1.8z" stroke="currentColor" strokeWidth="1" /><circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1" /></svg>
+)
+const IconNav = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M2.5 8h11M2.5 12h7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+)
+
 export default function QuickLaunchPalette() {
   const isQuickLaunchOpen = useUIStore((state) => state.isQuickLaunchOpen)
   const closeQuickLaunch = useUIStore((state) => state.closeQuickLaunch)
@@ -110,6 +186,7 @@ export default function QuickLaunchPalette() {
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
+  const recentlyPlayed = useLibraryStore((state) => state.recentlyPlayed)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
@@ -127,10 +204,7 @@ export default function QuickLaunchPalette() {
   const [isTrackCorpusLoading, setIsTrackCorpusLoading] = useState(false)
   const [trackCorpus, setTrackCorpus] = useState<QuickLaunchTrackRecord[]>([])
   const [isExecuting, setIsExecuting] = useState(false)
-  const [trackActionSelection, setTrackActionSelection] = useState<{
-    trackPath: string
-    action: QuickLaunchTrackAction
-  } | null>(null)
+  const [trackAction, setTrackAction] = useState<QuickLaunchTrackAction>('play-now')
 
   const inputRef = useRef<HTMLInputElement | null>(null)
   const selectedRowRef = useRef<HTMLElement | null>(null)
@@ -143,7 +217,7 @@ export default function QuickLaunchPalette() {
 
     setQuery('')
     setSelectedResultIndex(0)
-    setTrackActionSelection(null)
+    setTrackAction('play-now')
 
     requestAnimationFrame(() => {
       inputRef.current?.focus()
@@ -178,27 +252,46 @@ export default function QuickLaunchPalette() {
     }
   }, [isQuickLaunchOpen])
 
+  // Reset track action when selection or query changes
+  useEffect(() => {
+    setTrackAction('play-now')
+  }, [selectedResultIndex, trimmedQuery])
+
+  const navResults = useMemo(() => {
+    if (!hasQuery) return []
+
+    const scored = NAV_ENTRIES.map((entry) => {
+      const result = multiFieldScore(trimmedQuery, [
+        { value: entry.label, weight: 1.5 },
+        { value: entry.keywords.join(' '), weight: 1.0 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      return {
+        kind: 'nav' as const,
+        id: entry.id,
+        score: result,
+        label: entry.label,
+        view: entry.view
+      }
+    }).filter((r): r is NonNullable<typeof r> => r !== null)
+
+    return scored.sort(compareScoredResults).slice(0, NAV_RESULT_LIMIT)
+  }, [hasQuery, trimmedQuery])
+
   const settingResults = useMemo(() => {
-    if (!hasQuery) {
-      return SETTINGS_SECTIONS.map((section) => ({
-        kind: 'setting' as const,
-        id: `setting:${section.id}`,
-        score: 0,
-        sectionId: section.id,
-        label: section.label,
-        subtitle: section.keywords.join(' · ')
-      }))
-    }
+    if (!hasQuery) return []
 
     const scored = SETTINGS_SECTIONS.map((section) => {
-      const candidate = `${section.label} ${section.keywords.join(' ')}`
-      const score = fuzzyScore(trimmedQuery, candidate)
-      if (score === null) return null
+      const result = multiFieldScore(trimmedQuery, [
+        { value: section.label, weight: 1.4 },
+        { value: section.keywords.join(' '), weight: 1.0 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
 
       return {
         kind: 'setting' as const,
         id: `setting:${section.id}`,
-        score,
+        score: result,
         sectionId: section.id,
         label: section.label,
         subtitle: section.keywords.join(' · ')
@@ -212,13 +305,16 @@ export default function QuickLaunchPalette() {
     if (!hasQuery) return []
 
     const scored = trackCorpus.map((track) => {
-      const candidate = `${track.title} ${track.artist} ${track.album}`
-      const score = fuzzyScore(trimmedQuery, candidate)
-      if (score === null) return null
+      const result = multiFieldScore(trimmedQuery, [
+        { value: track.title, weight: 1.5 },
+        { value: track.artist, weight: 1.2 },
+        { value: track.album, weight: 1.0 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
       return {
         kind: 'track' as const,
         id: `track:${track.path}`,
-        score,
+        score: result,
         track
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
@@ -230,14 +326,16 @@ export default function QuickLaunchPalette() {
     if (!hasQuery) return []
 
     const scored = albums.map((album) => {
-      const candidate = `${album.album} ${album.artist}`
-      const score = fuzzyScore(trimmedQuery, candidate)
-      if (score === null) return null
+      const result = multiFieldScore(trimmedQuery, [
+        { value: album.album, weight: 1.4 },
+        { value: album.artist, weight: 1.1 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
 
       return {
         kind: 'album' as const,
         id: `album:${album.album}::${album.artist}`,
-        score,
+        score: result,
         album
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
@@ -249,19 +347,32 @@ export default function QuickLaunchPalette() {
     if (!hasQuery) return []
 
     const scored = artists.map((artist) => {
-      const score = fuzzyScore(trimmedQuery, artist.artist)
-      if (score === null) return null
+      const result = multiFieldScore(trimmedQuery, [
+        { value: artist.artist, weight: 1.5 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
 
       return {
         kind: 'artist' as const,
         id: `artist:${artist.artist}`,
-        score,
+        score: result,
         artist
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
 
     return scored.sort(compareScoredResults).slice(0, ARTIST_RESULT_LIMIT)
   }, [artists, hasQuery, trimmedQuery])
+
+  // Recently played tracks for empty-query state
+  const recentTrackResults = useMemo(() => {
+    if (hasQuery) return []
+    return recentlyPlayed.slice(0, RECENT_TRACKS_LIMIT).map((track) => ({
+      kind: 'track' as const,
+      id: `track:${track.path}`,
+      score: 0,
+      track: track as unknown as QuickLaunchTrackRecord
+    }))
+  }, [hasQuery, recentlyPlayed])
 
   const seeAllResult = useMemo<QuickLaunchSeeAllResult | null>(() => {
     if (!hasQuery) return null
@@ -273,42 +384,61 @@ export default function QuickLaunchPalette() {
   }, [hasQuery, trimmedQuery])
 
   const resultGroups = useMemo<ResultGroup[]>(() => {
-    const groups: ResultGroup[] = []
+    if (!hasQuery) {
+      // Empty query: show recently played
+      const groups: ResultGroup[] = []
+      if (recentTrackResults.length > 0) {
+        groups.push({
+          id: 'recent',
+          label: 'Recently Played',
+          results: recentTrackResults
+        })
+      }
+      return groups
+    }
 
-    if (settingResults.length > 0) {
-      groups.push({
-        id: 'settings',
-        label: 'Settings',
-        results: settingResults
+    // Nav always pinned at top
+    const pinned: ResultGroup[] = []
+    if (navResults.length > 0) {
+      pinned.push({
+        id: 'nav',
+        label: 'Go to',
+        results: navResults
       })
     }
+
+    // Remaining groups sorted by their top result's score
+    const scored: { group: ResultGroup; topScore: number }[] = []
 
     if (trackResults.length > 0) {
-      groups.push({
-        id: 'tracks',
-        label: 'Tracks',
-        results: trackResults
+      scored.push({
+        group: { id: 'tracks', label: 'Tracks', results: trackResults },
+        topScore: trackResults[0].score
       })
     }
-
     if (albumResults.length > 0) {
-      groups.push({
-        id: 'albums',
-        label: 'Albums',
-        results: albumResults
+      scored.push({
+        group: { id: 'albums', label: 'Albums', results: albumResults },
+        topScore: albumResults[0].score
       })
     }
-
     if (artistResults.length > 0) {
-      groups.push({
-        id: 'artists',
-        label: 'Artists',
-        results: artistResults
+      scored.push({
+        group: { id: 'artists', label: 'Artists', results: artistResults },
+        topScore: artistResults[0].score
+      })
+    }
+    if (settingResults.length > 0) {
+      scored.push({
+        group: { id: 'settings', label: 'Settings', results: settingResults },
+        topScore: settingResults[0].score
       })
     }
 
-    return groups
-  }, [albumResults, artistResults, settingResults, trackResults])
+    scored.sort((a, b) => b.topScore - a.topScore)
+
+    return [...pinned, ...scored.map((s) => s.group)]
+  }, [albumResults, artistResults, hasQuery, navResults, recentTrackResults, settingResults, trackResults])
 
   const flatResults = useMemo<QuickLaunchResult[]>(() => {
     const results: QuickLaunchResult[] = []
@@ -324,16 +454,10 @@ export default function QuickLaunchPalette() {
   }, [resultGroups, seeAllResult])
 
   const selectedResult = flatResults[selectedResultIndex] ?? null
-  const isTrackActionPickerOpen = Boolean(
-    selectedResult?.kind === 'track'
-    && trackActionSelection
-    && trackActionSelection.trackPath === selectedResult.track.path
-  )
 
   useEffect(() => {
     if (flatResults.length === 0) {
       setSelectedResultIndex(0)
-      setTrackActionSelection(null)
       return
     }
 
@@ -341,26 +465,9 @@ export default function QuickLaunchPalette() {
   }, [flatResults.length])
 
   useEffect(() => {
-    if (!trackActionSelection) return
-    if (!selectedResult || selectedResult.kind !== 'track' || selectedResult.track.path !== trackActionSelection.trackPath) {
-      setTrackActionSelection(null)
-    }
-  }, [selectedResult, trackActionSelection])
-
-  useEffect(() => {
     if (!isQuickLaunchOpen) return
     selectedRowRef.current?.scrollIntoView({ block: 'nearest' })
   }, [isQuickLaunchOpen, selectedResultIndex])
-
-  const toggleSelectedTrackAction = useCallback(() => {
-    setTrackActionSelection((current) => {
-      if (!current) return current
-      return {
-        ...current,
-        action: current.action === 'play-now' ? 'queue-next' : 'play-now'
-      }
-    })
-  }, [])
 
   const setSelectedRowRef = useCallback((element: HTMLElement | null) => {
     selectedRowRef.current = element
@@ -377,6 +484,12 @@ export default function QuickLaunchPalette() {
       if (result.kind === 'setting') {
         setPendingSettingsSection(result.sectionId)
         setActiveView('settings')
+        closeQuickLaunch()
+        return
+      }
+
+      if (result.kind === 'nav') {
+        setActiveView(result.view as Parameters<typeof setActiveView>[0])
         closeQuickLaunch()
         return
       }
@@ -409,9 +522,9 @@ export default function QuickLaunchPalette() {
         return
       }
 
-      const trackAction = requestedTrackAction ?? 'play-now'
+      const action = requestedTrackAction ?? 'play-now'
 
-      if (trackAction === 'queue-next') {
+      if (action === 'queue-next') {
         addToQueueNext(toQueueTrack(result.track))
         closeQuickLaunch()
         return
@@ -462,11 +575,7 @@ export default function QuickLaunchPalette() {
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault()
-      if (isTrackActionPickerOpen) {
-        setTrackActionSelection(null)
-      } else {
-        closeQuickLaunch()
-      }
+      closeQuickLaunch()
       return
     }
 
@@ -475,11 +584,6 @@ export default function QuickLaunchPalette() {
 
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault()
-
-      if (isTrackActionPickerOpen) {
-        toggleSelectedTrackAction()
-        return
-      }
 
       setSelectedResultIndex((current) => {
         if (event.key === 'ArrowUp') {
@@ -490,9 +594,10 @@ export default function QuickLaunchPalette() {
       return
     }
 
-    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && isTrackActionPickerOpen) {
+    // Tab toggles track action between play-now and queue-next
+    if (event.key === 'Tab' && selectedResult.kind === 'track') {
       event.preventDefault()
-      toggleSelectedTrackAction()
+      setTrackAction((current) => current === 'play-now' ? 'queue-next' : 'play-now')
       return
     }
 
@@ -500,51 +605,29 @@ export default function QuickLaunchPalette() {
 
     event.preventDefault()
     if (selectedResult.kind === 'track') {
-      if (!isTrackActionPickerOpen) {
-        setTrackActionSelection({
-          trackPath: selectedResult.track.path,
-          action: 'play-now'
-        })
-        return
-      }
-
-      void executeResult(selectedResult, trackActionSelection?.action ?? 'play-now')
+      void executeResult(selectedResult, trackAction)
       return
     }
 
     void executeResult(selectedResult)
   }
 
-  const handleTrackRowClick = (result: QuickLaunchResult, index: number) => {
-    if (result.kind !== 'track') return
-    setSelectedResultIndex(index)
-    setTrackActionSelection({
-      trackPath: result.track.path,
-      action: 'play-now'
-    })
-  }
-
   const handleResultClick = (result: QuickLaunchResult, index: number) => {
     setSelectedResultIndex(index)
     if (result.kind === 'track') {
-      handleTrackRowClick(result, index)
+      void executeResult(result, 'play-now')
       return
     }
     void executeResult(result)
   }
 
-  const handleActionClick = (
+  const handleQueueClick = (
     event: ReactMouseEvent<HTMLButtonElement>,
-    result: QuickLaunchResult,
-    action: QuickLaunchTrackAction
+    result: QuickLaunchResult
   ) => {
     event.stopPropagation()
     if (result.kind !== 'track') return
-    setTrackActionSelection({
-      trackPath: result.track.path,
-      action
-    })
-    void executeResult(result, action)
+    void executeResult(result, 'queue-next')
   }
 
   if (!isQuickLaunchOpen) return null
@@ -574,10 +657,9 @@ export default function QuickLaunchPalette() {
             value={query}
             onChange={(event) => {
               setQuery(event.target.value)
-              setTrackActionSelection(null)
             }}
             onKeyDown={handleInputKeyDown}
-            placeholder="Search settings, tracks, albums, artists..."
+            placeholder="Search tracks, albums, artists, settings..."
             spellCheck={false}
             disabled={isExecuting}
           />
@@ -589,6 +671,16 @@ export default function QuickLaunchPalette() {
         )}
 
         <div className="quick-launch-results">
+          {/* Empty query hint */}
+          {!hasQuery && recentTrackResults.length === 0 && (
+            <div className="ql-idle-hint">Type to search tracks, albums, artists, or settings</div>
+          )}
+
+          {/* No results */}
+          {hasQuery && resultGroups.length === 0 && !isTrackCorpusLoading && (
+            <div className="ql-empty">No results for &ldquo;{trimmedQuery}&rdquo;</div>
+          )}
+
           {resultGroups.map((group) => (
             <div key={group.id} className="quick-launch-group">
               <div className="quick-launch-group-label">{group.label}</div>
@@ -598,12 +690,7 @@ export default function QuickLaunchPalette() {
                   const currentIndex = rowIndex
                   const isSelected = selectedResultIndex === currentIndex
                   const isTrack = result.kind === 'track'
-                  const showTrackActions = Boolean(
-                    isTrack
-                    && isSelected
-                    && trackActionSelection
-                    && trackActionSelection.trackPath === result.track.path
-                  )
+                  const showQueueAction = isTrack && isSelected && trackAction === 'queue-next'
 
                   return (
                     <div
@@ -616,35 +703,58 @@ export default function QuickLaunchPalette() {
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => handleResultClick(result, currentIndex)}
                     >
-                      <span className="quick-launch-result-label">
-                        {result.kind === 'setting' && result.label}
-                        {result.kind === 'track' && result.track.title}
-                        {result.kind === 'album' && result.album.album}
-                        {result.kind === 'artist' && result.artist.artist}
-                      </span>
-                      <span className="quick-launch-result-subtitle">
-                        {result.kind === 'setting' && result.subtitle}
-                        {result.kind === 'track' && `${result.track.artist} · ${result.track.album}`}
-                        {result.kind === 'album' && `by ${result.album.artist}`}
-                        {result.kind === 'artist' && `${result.artist.track_count} tracks`}
-                      </span>
-                      {showTrackActions && (
-                        <span className="quick-launch-track-actions">
-                          <button
-                            type="button"
-                            className={`quick-launch-track-action ${trackActionSelection?.action === 'play-now' ? 'active' : ''}`}
-                            onClick={(event) => handleActionClick(event, result, 'play-now')}
-                          >
-                            Play now
-                          </button>
-                          <button
-                            type="button"
-                            className={`quick-launch-track-action ${trackActionSelection?.action === 'queue-next' ? 'active' : ''}`}
-                            onClick={(event) => handleActionClick(event, result, 'queue-next')}
-                          >
-                            Queue next
-                          </button>
+                      {/* Thumbnail / Icon */}
+                      {result.kind === 'track' && (
+                        <ResultThumbnail hash={result.track.artwork_hash} fallback={<IconNote />} />
+                      )}
+                      {result.kind === 'album' && (
+                        <ResultThumbnail hash={result.album.artwork_hash} fallback={<IconDisc />} />
+                      )}
+                      {result.kind === 'artist' && (
+                        <ResultThumbnail hash={result.artist.artwork_hash} fallback={<IconPerson />} />
+                      )}
+                      {result.kind === 'setting' && (
+                        <div className="ql-icon"><IconGear /></div>
+                      )}
+                      {result.kind === 'nav' && (
+                        <div className="ql-icon"><IconNav /></div>
+                      )}
+
+                      {/* Text */}
+                      <div className="quick-launch-result-text">
+                        <span className="quick-launch-result-label">
+                          {result.kind === 'setting' && highlightMatch(result.label, trimmedQuery)}
+                          {result.kind === 'nav' && highlightMatch(result.label, trimmedQuery)}
+                          {result.kind === 'track' && highlightMatch(result.track.title, trimmedQuery)}
+                          {result.kind === 'album' && highlightMatch(result.album.album, trimmedQuery)}
+                          {result.kind === 'artist' && highlightMatch(result.artist.artist, trimmedQuery)}
                         </span>
+                        <span className="quick-launch-result-subtitle">
+                          {result.kind === 'setting' && result.subtitle}
+                          {result.kind === 'nav' && 'Navigate'}
+                          {result.kind === 'track' && `${result.track.artist} · ${result.track.album}`}
+                          {result.kind === 'album' && `by ${result.album.artist}`}
+                          {result.kind === 'artist' && `${result.artist.track_count} tracks`}
+                        </span>
+                      </div>
+
+                      {/* Track action indicator + queue button */}
+                      {isTrack && isSelected && (
+                        <div className="ql-track-actions">
+                          {showQueueAction ? (
+                            <span className="ql-action-badge">Queue</span>
+                          ) : (
+                            <span className="ql-tab-hint"><kbd>Tab</kbd> queue</span>
+                          )}
+                          <button
+                            type="button"
+                            className="quick-launch-queue-btn"
+                            onClick={(event) => handleQueueClick(event, result)}
+                            title="Queue next"
+                          >
+                            +
+                          </button>
+                        </div>
                       )}
                     </div>
                   )
@@ -662,7 +772,7 @@ export default function QuickLaunchPalette() {
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => void executeResult(seeAllResult)}
             >
-              <span className="quick-launch-result-label">See all in Library →</span>
+              <span className="quick-launch-result-label">See all in Library &rarr;</span>
               <span className="quick-launch-result-subtitle">{seeAllResult.query}</span>
             </button>
           )}

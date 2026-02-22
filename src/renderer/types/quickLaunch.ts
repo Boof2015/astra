@@ -66,6 +66,12 @@ export interface QuickLaunchArtistResult extends QuickLaunchBaseResult {
   artist: QuickLaunchArtistRecord
 }
 
+export interface QuickLaunchNavResult extends QuickLaunchBaseResult {
+  kind: 'nav'
+  label: string
+  view: string
+}
+
 export interface QuickLaunchSeeAllResult {
   kind: 'see-all'
   id: 'see-all-in-library'
@@ -77,5 +83,6 @@ export type QuickLaunchResult =
   | QuickLaunchTrackResult
   | QuickLaunchAlbumResult
   | QuickLaunchArtistResult
+  | QuickLaunchNavResult
   | QuickLaunchSeeAllResult
 

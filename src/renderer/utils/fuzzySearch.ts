@@ -66,3 +66,70 @@ export function fuzzyScore(queryInput: string, candidateInput: string): number |
   return score
 }
 
+export interface FieldDef {
+  value: string
+  weight: number
+}
+
+export const MIN_SCORE_THRESHOLD = 25
+
+export function multiFieldScore(
+  queryInput: string,
+  fields: FieldDef[]
+): number | null {
+  const normalizedQuery = normalizeSearchValue(queryInput)
+  if (!normalizedQuery) return null
+
+  let bestScore: number | null = null
+
+  for (const field of fields) {
+    const normalizedValue = normalizeSearchValue(field.value)
+    if (!normalizedValue) continue
+
+    let fieldScore = fuzzyScore(queryInput, field.value)
+    if (fieldScore === null) continue
+
+    // Exact full match bonus (query ≈ entire field value)
+    if (normalizedValue === normalizedQuery) {
+      fieldScore += 60
+    }
+
+    // Exact substring bonus
+    if (normalizedValue.includes(normalizedQuery)) {
+      fieldScore += 30
+    }
+
+    // Prefix bonus
+    if (normalizedValue.startsWith(normalizedQuery)) {
+      fieldScore += 20
+    }
+
+    // Word-start bonus
+    const words = normalizedValue.split(/\s+/)
+    if (words.some((w) => w.startsWith(normalizedQuery))) {
+      fieldScore += 15
+    }
+
+    // Apply field weight
+    fieldScore = Math.round(fieldScore * field.weight)
+
+    if (bestScore === null || fieldScore > bestScore) {
+      bestScore = fieldScore
+    }
+  }
+
+  if (bestScore === null) return null
+
+  // Short query strictness: 1-2 char queries must match a prefix or word-start
+  if (normalizedQuery.length <= 2) {
+    const hasStrictMatch = fields.some((f) => {
+      const nv = normalizeSearchValue(f.value)
+      if (!nv) return false
+      if (nv.startsWith(normalizedQuery)) return true
+      return nv.split(/\s+/).some((w) => w.startsWith(normalizedQuery))
+    })
+    if (!hasStrictMatch) return null
+  }
+
+  return bestScore
+}
