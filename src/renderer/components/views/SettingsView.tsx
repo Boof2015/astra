@@ -5,10 +5,19 @@ import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { usePlayerStore } from '../../stores/playerStore'
+import { useUIStore } from '../../stores/uiStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import {
+  SLEEP_TIMER_MAX_MINUTES,
+  SLEEP_TIMER_MIN_MINUTES,
+  SLEEP_TIMER_PRESET_MINUTES,
+  useSleepTimerStore
+} from '../../stores/sleepTimerStore'
+import { SETTINGS_SECTIONS, type SettingsSectionId } from '../../constants/settingsSections'
 import {
   DEFAULT_THEME_ACCENT,
   THEME_PRESET_LIST,
@@ -81,18 +90,6 @@ const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
 
-const SETTINGS_SECTIONS = [
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'library', label: 'Library' },
-  { id: 'analyzer', label: 'Analyzer' },
-  { id: 'audio', label: 'Audio Output' },
-  { id: 'integrations', label: 'Integrations' },
-  { id: 'info', label: 'Info' },
-  { id: 'danger', label: 'Danger Zone' },
-] as const
-
-type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
-
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
     acc[actionId] = { state: 'idle', message: '' }
@@ -111,6 +108,24 @@ function normalizeHexColor(value: string): string | null {
   const fullMatch = /^#([0-9a-fA-F]{6})$/.exec(trimmed)
   if (!fullMatch) return null
   return `#${fullMatch[1].toLowerCase()}`
+}
+
+function formatSleepTimerRemaining(remainingMs: number): string {
+  const safeMs = Number.isFinite(remainingMs) ? Math.max(0, remainingMs) : 0
+  const totalSeconds = Math.max(0, Math.ceil(safeMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+function parseSleepTimerMinutesInput(input: string): number | null {
+  const trimmed = input.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed)) return null
+  if (parsed < SLEEP_TIMER_MIN_MINUTES || parsed > SLEEP_TIMER_MAX_MINUTES) return null
+  return parsed
 }
 
 export default function SettingsView() {
@@ -177,6 +192,21 @@ export default function SettingsView() {
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [localApiFeedback, setLocalApiFeedback] = useState('')
+  const [sleepTimerCustomMinutesInput, setSleepTimerCustomMinutesInput] = useState(
+    String(SLEEP_TIMER_PRESET_MINUTES[1] ?? SLEEP_TIMER_PRESET_MINUTES[0] ?? 30)
+  )
+  const [sleepTimerFeedback, setSleepTimerFeedback] = useState('')
+  const [sleepTimerFeedbackTone, setSleepTimerFeedbackTone] = useState<'success' | 'error'>('success')
+  const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
+  const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
+  const currentTrack = usePlayerStore((state) => state.currentTrack)
+  const playbackState = usePlayerStore((state) => state.playbackState)
+  const sleepTimerIsActive = useSleepTimerStore((state) => state.isActive)
+  const sleepTimerExpiresAtMs = useSleepTimerStore((state) => state.expiresAtMs)
+  const sleepTimerRemainingMs = useSleepTimerStore((state) => state.remainingMs)
+  const startSleepTimer = useSleepTimerStore((state) => state.startTimer)
+  const replaceSleepTimer = useSleepTimerStore((state) => state.replaceTimer)
+  const cancelSleepTimer = useSleepTimerStore((state) => state.cancelTimer)
 
   const selectedPreset = useMemo(
     () => THEME_PRESET_LIST.find((preset) => preset.id === presetId) ?? THEME_PRESET_LIST[0],
@@ -187,6 +217,30 @@ export default function SettingsView() {
     []
   )
   const fallbackAccent = customAccent ?? selectedPreset.accent
+  const canStartSleepTimer = Boolean(
+    currentTrack &&
+    (playbackState === 'playing' || playbackState === 'paused')
+  )
+  const sleepTimerRemainingLabel = useMemo(
+    () => formatSleepTimerRemaining(sleepTimerRemainingMs),
+    [sleepTimerRemainingMs]
+  )
+  const sleepTimerEndsAtLabel = useMemo(() => {
+    if (sleepTimerExpiresAtMs == null) return null
+    return new Date(sleepTimerExpiresAtMs).toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit'
+    })
+  }, [sleepTimerExpiresAtMs])
+  const sleepTimerStatusLabel = useMemo(() => {
+    if (!sleepTimerIsActive) {
+      return 'No active sleep timer.'
+    }
+    if (sleepTimerEndsAtLabel) {
+      return `Sleep timer active • ${sleepTimerRemainingLabel} remaining • ends at ${sleepTimerEndsAtLabel}`
+    }
+    return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
+  }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -208,6 +262,23 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [localApiFeedback])
+
+  useEffect(() => {
+    if (!sleepTimerFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setSleepTimerFeedback('')
+    }, 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [sleepTimerFeedback])
+
+  useEffect(() => {
+    if (pendingSettingsSection === null) return
+
+    const pendingSection = consumePendingSettingsSection()
+    if (pendingSection) {
+      setActiveSectionId(pendingSection)
+    }
+  }, [consumePendingSettingsSection, pendingSettingsSection])
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -453,6 +524,59 @@ export default function SettingsView() {
       if (!status) return
       setLocalApiFeedback('API key regenerated.')
     })
+  }
+
+  const handleSleepTimerStartResult = (
+    result: ReturnType<typeof startSleepTimer>,
+    successMessage: string
+  ) => {
+    if (result.ok) {
+      setSleepTimerFeedbackTone('success')
+      setSleepTimerFeedback(successMessage)
+      return
+    }
+
+    setSleepTimerFeedbackTone('error')
+    if (result.reason === 'invalid-duration') {
+      setSleepTimerFeedback(
+        `Minutes must be an integer between ${SLEEP_TIMER_MIN_MINUTES} and ${SLEEP_TIMER_MAX_MINUTES}.`
+      )
+      return
+    }
+
+    setSleepTimerFeedback('Load a track and keep playback in playing or paused state before starting a sleep timer.')
+  }
+
+  const handleSleepTimerPreset = (minutes: number) => {
+    const result = sleepTimerIsActive
+      ? replaceSleepTimer(minutes)
+      : startSleepTimer(minutes)
+    handleSleepTimerStartResult(result, `Sleep timer set for ${minutes} minute${minutes === 1 ? '' : 's'}.`)
+  }
+
+  const handleSleepTimerCustomStart = () => {
+    const parsedMinutes = parseSleepTimerMinutesInput(sleepTimerCustomMinutesInput)
+    if (parsedMinutes == null) {
+      setSleepTimerFeedbackTone('error')
+      setSleepTimerFeedback(
+        `Minutes must be an integer between ${SLEEP_TIMER_MIN_MINUTES} and ${SLEEP_TIMER_MAX_MINUTES}.`
+      )
+      return
+    }
+
+    const result = sleepTimerIsActive
+      ? replaceSleepTimer(parsedMinutes)
+      : startSleepTimer(parsedMinutes)
+    handleSleepTimerStartResult(
+      result,
+      `Sleep timer set for ${parsedMinutes} minute${parsedMinutes === 1 ? '' : 's'}.`
+    )
+  }
+
+  const handleSleepTimerCancel = () => {
+    cancelSleepTimer()
+    setSleepTimerFeedbackTone('success')
+    setSleepTimerFeedback('Sleep timer canceled.')
   }
 
   const renderResetAction = (action: ResetActionDefinition) => {
@@ -740,6 +864,79 @@ export default function SettingsView() {
             </div>
             <DelayCompensationPanel />
             <ChannelRoutingPanel />
+          </section>
+            )}
+
+            {activeSectionId === 'playback' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Playback</h3>
+              <p>Session-level playback behavior and sleep timer controls.</p>
+            </div>
+            <div className="settings-sleep-controls">
+              <div className="settings-sleep-presets">
+                {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
+                  <button
+                    key={minutes}
+                    type="button"
+                    className="settings-btn"
+                    onClick={() => handleSleepTimerPreset(minutes)}
+                    disabled={!canStartSleepTimer}
+                  >
+                    {minutes} min
+                  </button>
+                ))}
+              </div>
+              <div className="settings-sleep-custom-row">
+                <input
+                  className="settings-select"
+                  type="number"
+                  min={SLEEP_TIMER_MIN_MINUTES}
+                  max={SLEEP_TIMER_MAX_MINUTES}
+                  step={1}
+                  value={sleepTimerCustomMinutesInput}
+                  onChange={(event) => setSleepTimerCustomMinutesInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return
+                    event.preventDefault()
+                    handleSleepTimerCustomStart()
+                  }}
+                />
+                <button
+                  type="button"
+                  className="settings-btn settings-btn-primary"
+                  onClick={handleSleepTimerCustomStart}
+                  disabled={!canStartSleepTimer}
+                >
+                  {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
+                </button>
+                {sleepTimerIsActive && (
+                  <button
+                    type="button"
+                    className="settings-btn"
+                    onClick={handleSleepTimerCancel}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className={`settings-note settings-sleep-status${sleepTimerIsActive ? ' settings-sleep-status-active' : ''}`}>
+              {sleepTimerStatusLabel}
+            </p>
+            {sleepTimerFeedback && (
+              <p className={`settings-note ${sleepTimerFeedbackTone === 'error' ? 'settings-note-error' : 'settings-note-success'}`}>
+                {sleepTimerFeedback}
+              </p>
+            )}
+            {!canStartSleepTimer && (
+              <p className="settings-note">
+                Load a track and keep playback in playing or paused state to start a sleep timer.
+              </p>
+            )}
+            <p className="settings-note">
+              Sleep timer counts down in real time, pauses playback when it expires, and does not persist after restart.
+            </p>
           </section>
             )}
 

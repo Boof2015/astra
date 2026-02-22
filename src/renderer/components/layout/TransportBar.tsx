@@ -36,7 +36,17 @@ export default function TransportBar() {
     waveformData,
   } = usePlayerStore()
 
-  const { showQueue, toggleQueue, showInfoSidebar, toggleInfoSidebar, showPipelineShelf, togglePipelineShelf, setFullscreen } = useUIStore()
+  const {
+    showQueue,
+    toggleQueue,
+    showInfoSidebar,
+    toggleInfoSidebar,
+    showPipelineShelf,
+    togglePipelineShelf,
+    setFullscreen,
+    waveformTimeDisplayMode,
+    toggleWaveformTimeDisplayMode
+  } = useUIStore()
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
@@ -137,6 +147,9 @@ export default function TransportBar() {
     : 0
   const progress = duration > 0 ? (compensatedTime / duration) * 100 : 0
   const remaining = duration > 0 ? duration - compensatedTime : 0
+  const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
+  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
+  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
@@ -346,7 +359,15 @@ export default function TransportBar() {
         {/* Waveform with floating time labels */}
         <div className="transport-waveform-wrap">
           <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
-          <span className="waveform-time waveform-time-remaining">-{formatTime(remaining)}</span>
+          <button
+            type="button"
+            className="waveform-time waveform-time-remaining waveform-time-toggle"
+            onClick={toggleWaveformTimeDisplayMode}
+            aria-label={rightTimeToggleLabel}
+            title={rightTimeToggleLabel}
+          >
+            {rightTimeLabel}
+          </button>
           <WaveformSeekBar
             waveformData={waveformData}
             progress={progress}

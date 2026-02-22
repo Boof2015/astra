@@ -7,6 +7,7 @@ import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
+import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
@@ -74,6 +75,7 @@ function App() {
       <DecodeFallbackCue />
       <OutputDelayCue />
       <UpdateAvailableCue />
+      <QuickLaunchPalette />
       {isFullscreen && <FullscreenMode />}
     </div>
   )

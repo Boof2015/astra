@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
 import TrackList from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -24,13 +25,27 @@ export default function LibraryView() {
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
+  const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
+  const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
+  const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
+  const jumpToNowPlaying = useJumpToNowPlaying()
   const [searchQuery, setSearchQuery] = useState('')
   const previousInDetailViewRef = useRef(false)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
+
+  useEffect(() => {
+    if (pendingLibrarySearchQuery === null) return
+
+    const pendingQuery = consumePendingLibrarySearchQuery()
+    if (pendingQuery !== null) {
+      setSearchQuery(pendingQuery)
+    }
+  }, [consumePendingLibrarySearchQuery, pendingLibrarySearchQuery])
 
   useEffect(() => {
     if (!previousInDetailViewRef.current && inDetailView) {
@@ -210,7 +225,14 @@ export default function LibraryView() {
     }
 
     // Tracks
-    return <TrackList tracks={filteredTracks} showArtist={!selectedArtist} showAlbum={!selectedAlbum} />
+    return (
+      <TrackList
+        tracks={filteredTracks}
+        showArtist={!selectedArtist}
+        showAlbum={!selectedAlbum}
+        jumpToTrackRequest={libraryTrackRevealRequest}
+      />
+    )
   }
 
   return (
@@ -262,6 +284,7 @@ export default function LibraryView() {
             <input
               type="text"
               className="search-input"
+              data-shortcut-search="true"
               placeholder={searchPlaceholder}
               aria-label={searchPlaceholder}
               value={searchQuery}
@@ -279,6 +302,24 @@ export default function LibraryView() {
               </button>
             )}
           </div>
+          <button
+            className="icon-btn"
+            onClick={() => {
+              jumpToNowPlaying()
+            }}
+            title="Jump to now playing (J)"
+            aria-label="Jump to now playing (J)"
+            disabled={!currentTrackPath}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <circle cx="12" cy="12" r="7" />
+              <circle cx="12" cy="12" r="2.5" />
+              <path d="M12 2v3" />
+              <path d="M12 19v3" />
+              <path d="M2 12h3" />
+              <path d="M19 12h3" />
+            </svg>
+          </button>
           <button className="icon-btn" onClick={handleOpenFile} title="Open File">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>

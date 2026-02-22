@@ -1,9 +1,10 @@
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { List, RowComponentProps } from 'react-window'
+import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import type { LibraryTrackRevealRequest } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
@@ -36,6 +37,7 @@ interface TrackListProps {
   showArtist?: boolean
   showAlbum?: boolean
   playlistSourceId?: number | null
+  jumpToTrackRequest?: LibraryTrackRevealRequest | null
 }
 
 interface TrackListRowSharedProps {
@@ -320,7 +322,8 @@ export default function TrackList({
   tracks,
   showArtist = true,
   showAlbum = true,
-  playlistSourceId = null
+  playlistSourceId = null,
+  jumpToTrackRequest = null
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
@@ -352,9 +355,11 @@ export default function TrackList({
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const listBodyRef = useRef<HTMLDivElement | null>(null)
+  const listRef = useRef<ListImperativeAPI>(null)
   const playlistPopupRef = useRef<HTMLDivElement | null>(null)
   const playlistPopupTriggerRef = useRef<HTMLButtonElement | null>(null)
   const playlistMembershipRequestIdRef = useRef(0)
+  const consumedJumpRequestIdRef = useRef<number | null>(null)
 
   useEffect(() => {
     return () => {
@@ -371,6 +376,21 @@ export default function TrackList({
       return tracks.some((track) => track.path === current.trackPath) ? current : null
     })
   }, [tracks])
+
+  useEffect(() => {
+    if (!jumpToTrackRequest) return
+    if (consumedJumpRequestIdRef.current === jumpToTrackRequest.id) return
+
+    const targetIndex = tracks.findIndex((track) => track.path === jumpToTrackRequest.trackPath)
+    if (targetIndex < 0) return
+
+    listRef.current?.scrollToRow({
+      index: targetIndex,
+      align: 'center',
+      behavior: 'smooth'
+    })
+    consumedJumpRequestIdRef.current = jumpToTrackRequest.id
+  }, [jumpToTrackRequest, tracks])
 
   useLayoutEffect(() => {
     const element = listBodyRef.current
@@ -740,6 +760,7 @@ export default function TrackList({
         <List
           className="track-list-virtualized"
           defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
+          listRef={listRef}
           onScroll={handleListScroll}
           overscanCount={TRACK_LIST_OVERSCAN_COUNT}
           rowComponent={TrackListRow}

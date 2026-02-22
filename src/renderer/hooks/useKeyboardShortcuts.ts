@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
+import { useUIStore } from '../stores/uiStore'
+import { useJumpToNowPlaying } from './useJumpToNowPlaying'
 
 const SEEK_STEP_SECONDS = 5
 const VOLUME_STEP = 0.05
@@ -20,9 +22,49 @@ const isShortcutBlockedTarget = (target: EventTarget | null): boolean => {
   )
 }
 
+const isVisibleShortcutInput = (input: HTMLInputElement): boolean => {
+  if (input.disabled || input.readOnly) return false
+  if (!input.isConnected) return false
+  if (input.type !== 'text' && input.type !== 'search') return false
+
+  const style = window.getComputedStyle(input)
+  if (style.display === 'none' || style.visibility === 'hidden') return false
+  if (input.offsetParent === null && style.position !== 'fixed') return false
+
+  return true
+}
+
+const focusShortcutSearchInput = (): boolean => {
+  const candidateInputs = Array.from(
+    document.querySelectorAll<HTMLInputElement>('input[data-shortcut-search="true"]')
+  )
+  const shortcutSearchInput = candidateInputs.find(isVisibleShortcutInput)
+  if (!shortcutSearchInput) return false
+
+  shortcutSearchInput.focus()
+  const caretPosition = shortcutSearchInput.value.length
+  shortcutSearchInput.setSelectionRange(caretPosition, caretPosition)
+  return true
+}
+
 export function useKeyboardShortcuts(): void {
+  const jumpToNowPlaying = useJumpToNowPlaying()
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
+      const key = e.key
+      const normalizedKey = key.toLowerCase()
+      const ui = useUIStore.getState()
+
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && normalizedKey === 'k') {
+        e.preventDefault()
+        if (e.repeat) return
+        ui.toggleQuickLaunch()
+        return
+      }
+
+      if (ui.isQuickLaunchOpen) return
+
       // Don't intercept when modifier keys are held (e.g. Cmd+Space = Spotlight)
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
@@ -32,8 +74,13 @@ export function useKeyboardShortcuts(): void {
       }
 
       const player = usePlayerStore.getState()
-      const key = e.key
-      const normalizedKey = key.toLowerCase()
+
+      if (key === '/') {
+        if (focusShortcutSearchInput()) {
+          e.preventDefault()
+        }
+        return
+      }
 
       if (e.shiftKey && key === 'ArrowRight') {
         e.preventDefault()
@@ -104,6 +151,13 @@ export function useKeyboardShortcuts(): void {
         return
       }
 
+      if (!e.shiftKey && normalizedKey === 'j') {
+        e.preventDefault()
+        if (e.repeat) return
+        jumpToNowPlaying()
+        return
+      }
+
       if (normalizedKey === 'm') {
         e.preventDefault()
         if (e.repeat) return
@@ -127,5 +181,5 @@ export function useKeyboardShortcuts(): void {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [jumpToNowPlaying])
 }

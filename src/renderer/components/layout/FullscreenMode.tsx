@@ -57,6 +57,8 @@ function usePrefersReducedMotion(): boolean {
 
 export default function FullscreenMode() {
   const setFullscreen = useUIStore((s) => s.setFullscreen)
+  const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
+  const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
   const {
     currentTrack,
     playbackState,
@@ -119,6 +121,9 @@ export default function FullscreenMode() {
     : 0
   const remaining = duration > 0 ? Math.max(0, duration - compensatedTime) : 0
   const progress = duration > 0 ? Math.max(0, Math.min(100, (compensatedTime / duration) * 100)) : 0
+  const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
+  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
+  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
 
   const nextQueueIndex = useMemo(() => {
     if (queue.length === 0 || queueIndex < 0 || repeat === 'one') return -1
@@ -496,7 +501,15 @@ export default function FullscreenMode() {
 
           <div className="fullscreen-waveform-wrap">
             <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
-            <span className="fullscreen-time fullscreen-time-remaining">-{formatTime(remaining)}</span>
+            <button
+              type="button"
+              className="fullscreen-time fullscreen-time-remaining fullscreen-time-toggle"
+              onClick={toggleWaveformTimeDisplayMode}
+              aria-label={rightTimeToggleLabel}
+              title={rightTimeToggleLabel}
+            >
+              {rightTimeLabel}
+            </button>
             <WaveformSeekBar
               waveformData={waveformData}
               progress={progress}

@@ -853,6 +853,7 @@ export default function MetadataView() {
           <input
             type="text"
             className="search-input"
+            data-shortcut-search="true"
             placeholder="Search tracks..."
             aria-label="Search tracks"
             value={searchQuery}
