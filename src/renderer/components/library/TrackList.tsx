@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
+import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
@@ -52,6 +53,7 @@ interface TrackListRowSharedProps {
   nextQueuedTrackPath: string | null
   queueFeedback: Record<string, true>
   openArtistInLibrary: (artist: string) => void | Promise<void>
+  openAlbumInLibrary: (albumName: string, trackArtist: string, albumArtist?: string | null) => void | Promise<void>
   formatDuration: (seconds: number) => string
   onTrackClick: (track: DbTrack, index: number) => Promise<void>
   onPlayNext: (event: React.MouseEvent, track: DbTrack) => void
@@ -130,6 +132,7 @@ function TrackListRowRenderer({
   nextQueuedTrackPath,
   queueFeedback,
   openArtistInLibrary,
+  openAlbumInLibrary,
   formatDuration,
   onTrackClick,
   onPlayNext,
@@ -221,7 +224,21 @@ function TrackListRowRenderer({
         )}
         {showAlbum && (
           <div className="track-col track-col-album">
-            <span className="track-album">{track.album}</span>
+            {track.album.trim().length > 0 ? (
+              <button
+                type="button"
+                className="track-album track-album-link"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void openAlbumInLibrary(track.album, track.artist, track.album_artist)
+                }}
+                title={`Show album ${track.album}`}
+              >
+                {track.album}
+              </button>
+            ) : (
+              <span className="track-album">{'\u2014'}</span>
+            )}
           </div>
         )}
         <div className="track-col track-col-codec">
@@ -322,6 +339,7 @@ export default function TrackList({
   const removeFromPlaylist = usePlaylistStore((state) => state.removeFromPlaylist)
   const getPlaylistsContainingTrack = usePlaylistStore((state) => state.getPlaylistsContainingTrack)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const openAlbumInLibrary = useOpenAlbumInLibrary()
 
   const [playlistPopup, setPlaylistPopup] = useState<TrackPlaylistPopupState | null>(null)
   const [playlistPopupSearch, setPlaylistPopupSearch] = useState('')
@@ -668,6 +686,7 @@ export default function TrackList({
     nextQueuedTrackPath,
     queueFeedback,
     openArtistInLibrary,
+    openAlbumInLibrary,
     formatDuration,
     onTrackClick: handleTrackClick,
     onPlayNext: handlePlayNext,
@@ -689,6 +708,7 @@ export default function TrackList({
     nextQueuedTrackPath,
     queueFeedback,
     openArtistInLibrary,
+    openAlbumInLibrary,
     formatDuration,
     handleTrackClick,
     handlePlayNext,

@@ -36,6 +36,7 @@ export interface ScopePopoutOscilloscopeChunk extends ScopePopoutChunkBase {
   scope: 'oscilloscope'
   leftChunks: Float32Array[]
   pitchLock: boolean
+  oscilloscopeUnderfillEnabled: boolean
 }
 
 export interface ScopePopoutVectorscopeChunk extends ScopePopoutChunkBase {

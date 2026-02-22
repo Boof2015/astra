@@ -17,6 +17,67 @@ const SPECTRUM_MIN_DB = -90
 const SPECTRUM_MAX_DB = -10
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
 
+function parseRgbChannels(color: string): string | null {
+  const normalized = color.trim()
+
+  if (normalized.startsWith('#')) {
+    const hex = normalized.slice(1)
+    const expanded = hex.length === 3
+      ? hex.split('').map((ch) => `${ch}${ch}`).join('')
+      : hex
+
+    if (expanded.length === 6) {
+      const r = Number.parseInt(expanded.slice(0, 2), 16)
+      const g = Number.parseInt(expanded.slice(2, 4), 16)
+      const b = Number.parseInt(expanded.slice(4, 6), 16)
+      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+        return `${r}, ${g}, ${b}`
+      }
+    }
+  }
+
+  const rgbMatch = /^rgba?\((.*)\)$/i.exec(normalized)
+  if (!rgbMatch) return null
+
+  const tokens = rgbMatch[1]
+    ?.split(',')
+    .map((token) => token.trim())
+    .filter(Boolean) ?? []
+  if (tokens.length < 3) return null
+
+  const r = Number.parseFloat(tokens[0])
+  const g = Number.parseFloat(tokens[1])
+  const b = Number.parseFloat(tokens[2])
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null
+
+  return `${Math.max(0, Math.min(255, Math.round(r)))}, ${Math.max(0, Math.min(255, Math.round(g)))}, ${Math.max(0, Math.min(255, Math.round(b)))}`
+}
+
+function highContrastUnderfillColor(accentColor: string, alpha: number): string {
+  const safeAlpha = Math.max(0, Math.min(1, alpha))
+  const channels = parseRgbChannels(accentColor)
+  const nearWhite = { r: 245, g: 248, b: 252 }
+  const tintAmount = 0.18
+
+  if (!channels) {
+    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
+  }
+
+  const [accentR, accentG, accentB] = channels
+    .split(',')
+    .map((token) => Number.parseFloat(token.trim()))
+
+  if (!Number.isFinite(accentR) || !Number.isFinite(accentG) || !Number.isFinite(accentB)) {
+    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
+  }
+
+  const mix = (base: number, tint: number): number => Math.round((base * (1 - tintAmount)) + (tint * tintAmount))
+  const r = mix(nearWhite.r, accentR)
+  const g = mix(nearWhite.g, accentG)
+  const b = mix(nearWhite.b, accentB)
+  return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`
+}
+
 function getScopeLabel(scope: ScopeKind): string {
   switch (scope) {
     case 'spectrum':
@@ -268,6 +329,7 @@ function OscilloscopeScopeCanvas() {
   const pendingChunksRef = useRef<Float32Array[]>([])
   const sampleRateRef = useRef(48000)
   const pitchLockRef = useRef(true)
+  const underfillEnabledRef = useRef(false)
   const lineColorRef = useRef('#38bdf8')
   const samplesReceivedRef = useRef(0)
   const configuredSampleRateRef = useRef(0)
@@ -278,6 +340,8 @@ function OscilloscopeScopeCanvas() {
       if (chunk.scope !== 'oscilloscope') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       pitchLockRef.current = chunk.pitchLock
+      const rawUnderfillEnabled = (chunk as { oscilloscopeUnderfillEnabled?: unknown }).oscilloscopeUnderfillEnabled
+      underfillEnabledRef.current = typeof rawUnderfillEnabled === 'boolean' ? rawUnderfillEnabled : false
       lineColorRef.current = chunk.lineColor
 
       if (chunk.reset) {
@@ -361,16 +425,48 @@ function OscilloscopeScopeCanvas() {
       }
 
       const lineColor = lineColorRef.current
-      ctx.beginPath()
+      const underfillEnabled = underfillEnabledRef.current
       const sliceWidth = width / result.samplesToShow
+      const centerY = height / 2
+      const points: Array<{ x: number; y: number }> = []
       for (let i = 0; i < result.samplesToShow && i < renderData.length; i++) {
         const x = i * sliceWidth
         const y = ((1 - renderData[i] * 1.8) / 2) * height
-        if (i === 0) {
-          ctx.moveTo(x, y)
-        } else {
-          ctx.lineTo(x, y)
+        points.push({ x, y })
+      }
+
+      if (points.length < 2) {
+        animationRef.current = window.requestAnimationFrame(draw)
+        return
+      }
+
+      if (underfillEnabled) {
+        ctx.beginPath()
+        ctx.moveTo(points[0].x, centerY)
+        for (const point of points) {
+          ctx.lineTo(point.x, point.y)
         }
+        ctx.lineTo(points[points.length - 1].x, centerY)
+        ctx.closePath()
+        const peakAlpha = 0.26
+        const shoulderAlpha = peakAlpha * 0.74
+        const centerlineAlpha = 0.08
+        const fillGradient = ctx.createLinearGradient(0, 0, 0, height)
+        fillGradient.addColorStop(0, highContrastUnderfillColor(lineColor, peakAlpha))
+        fillGradient.addColorStop(0.44, highContrastUnderfillColor(lineColor, peakAlpha * 0.94))
+        fillGradient.addColorStop(0.48, highContrastUnderfillColor(lineColor, shoulderAlpha))
+        fillGradient.addColorStop(0.5, highContrastUnderfillColor(lineColor, centerlineAlpha))
+        fillGradient.addColorStop(0.52, highContrastUnderfillColor(lineColor, shoulderAlpha))
+        fillGradient.addColorStop(0.56, highContrastUnderfillColor(lineColor, peakAlpha * 0.94))
+        fillGradient.addColorStop(1, highContrastUnderfillColor(lineColor, peakAlpha))
+        ctx.fillStyle = fillGradient
+        ctx.fill()
+      }
+
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y)
       }
       ctx.lineWidth = 1.8
       ctx.strokeStyle = lineColor
@@ -395,6 +491,7 @@ function OscilloscopeScopeCanvas() {
       samplesReceivedRef.current = 0
       configuredSampleRateRef.current = 0
       configuredPitchLockRef.current = null
+      underfillEnabledRef.current = false
     }
   }, [canvasSizeRef])
 

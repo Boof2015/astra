@@ -77,7 +77,7 @@ interface LibraryStore {
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
-  selectAlbum: (album: string, artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
+  selectAlbum: (album: string, artist?: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   clearSelection: () => void
   search: (query: string) => Promise<void>
@@ -220,9 +220,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   // Select album
-  selectAlbum: async (album: string, artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
+  selectAlbum: async (album: string, artist?: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
     const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist)
-    set({ selectedAlbum: { album, artist }, tracks, selectedArtist: null, selectionOrigin: origin })
+    set({ selectedAlbum: { album, artist: artist ?? '' }, tracks, selectedArtist: null, selectionOrigin: origin })
   },
 
   // Select artist

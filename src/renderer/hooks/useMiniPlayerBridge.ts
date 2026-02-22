@@ -42,6 +42,7 @@ export function useMiniPlayerBridge(): void {
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
+  const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
 
   const [resolvedArtwork, setResolvedArtwork] = useState<string | null>(null)
@@ -177,6 +178,7 @@ export function useMiniPlayerBridge(): void {
         monoChunks: [],
         fftSize,
         pitchLock,
+        oscilloscopeUnderfillEnabled,
         lineColor,
         reset: true
       })
@@ -210,6 +212,7 @@ export function useMiniPlayerBridge(): void {
         monoChunks: chunks.map((chunk) => chunk.mono),
         fftSize,
         pitchLock,
+        oscilloscopeUnderfillEnabled,
         lineColor,
         reset: false
       })
@@ -229,6 +232,7 @@ export function useMiniPlayerBridge(): void {
     isVisualizerRunning,
     fftSize,
     pitchLock,
+    oscilloscopeUnderfillEnabled,
     lineColor
   ])
 

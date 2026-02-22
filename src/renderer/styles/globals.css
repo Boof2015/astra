@@ -2669,6 +2669,34 @@ button, .titlebar {
   font-size: 13px;
 }
 
+.track-album-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-album-link:hover {
+  text-decoration: underline;
+}
+
+.track-album-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .track-codec,
 .track-duration {
   font-family: var(--font-mono);

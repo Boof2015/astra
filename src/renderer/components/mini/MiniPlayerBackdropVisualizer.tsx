@@ -49,6 +49,7 @@ interface BackdropMetrics {
 interface VisibilityProfile {
   visibilityBoost: number
   contrastRisk: number
+  backdropLuminance: number
   haloColor: string
   blendMode: 'screen' | 'normal'
 }
@@ -177,9 +178,39 @@ function resolveVisibilityProfile(
   return {
     visibilityBoost,
     contrastRisk,
+    backdropLuminance,
     haloColor: neutralHaloColorForLuminance(backdropLuminance),
     blendMode
   }
+}
+
+function mixRgb(
+  base: { r: number; g: number; b: number },
+  tint: { r: number; g: number; b: number },
+  amount: number
+): { r: number; g: number; b: number } {
+  const safeAmount = clamp(amount, 0, 1)
+  const mixChannel = (from: number, to: number) => Math.round((from * (1 - safeAmount)) + (to * safeAmount))
+  return {
+    r: mixChannel(base.r, tint.r),
+    g: mixChannel(base.g, tint.g),
+    b: mixChannel(base.b, tint.b),
+  }
+}
+
+function adaptiveMiniUnderfillColor(
+  accentColor: string,
+  backdropLuminance: number,
+  tintAmount: number,
+  alpha: number
+): string {
+  const safeAlpha = clamp(alpha, 0, 1)
+  const accent = parseColorToRgb(accentColor) ?? { r: 56, g: 189, b: 248 }
+  const neutral = backdropLuminance < 0.56
+    ? { r: 246, g: 248, b: 252 }
+    : { r: 20, g: 24, b: 30 }
+  const mixed = mixRgb(neutral, accent, tintAmount)
+  return `rgba(${mixed.r}, ${mixed.g}, ${mixed.b}, ${safeAlpha})`
 }
 
 function resolveOpacity(
@@ -237,6 +268,7 @@ export default function MiniPlayerBackdropVisualizer({
   const pendingMonoChunksRef = useRef<Float32Array[]>([])
   const sampleRateRef = useRef(48000)
   const pitchLockRef = useRef(true)
+  const oscilloscopeUnderfillEnabledRef = useRef(false)
   const fftSizeRef = useRef(2048)
   const samplesReceivedRef = useRef(0)
   const spectrumDataRef = useRef<Float32Array | null>(null)
@@ -358,6 +390,8 @@ export default function MiniPlayerBackdropVisualizer({
     const unsubscribe = window.electronAPI.miniPlayer.onVisualizerChunk((chunk) => {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       pitchLockRef.current = chunk.pitchLock
+      const rawUnderfillEnabled = (chunk as { oscilloscopeUnderfillEnabled?: unknown }).oscilloscopeUnderfillEnabled
+      oscilloscopeUnderfillEnabledRef.current = typeof rawUnderfillEnabled === 'boolean' ? rawUnderfillEnabled : false
       fftSizeRef.current = Math.max(1024, chunk.fftSize)
       lineColorRef.current = chunk.lineColor
 
@@ -555,6 +589,9 @@ export default function MiniPlayerBackdropVisualizer({
       const baselineHaloAlpha = clamp((idle ? 0.14 : 0.22) + (0.26 * profile.visibilityBoost), 0.12, 0.56)
       const waveformAccentAlpha = clamp((idle ? 0.28 : 0.50) + (idle ? 0.10 : 0.22) * profile.visibilityBoost, 0, 0.82)
       const waveformHaloAlpha = clamp((idle ? 0.17 : 0.27) + (0.32 * profile.visibilityBoost), 0.14, 0.76)
+      const underfillPeakAlpha = clamp((idle ? 0.12 : 0.24) + (idle ? 0.05 : 0.10) * profile.visibilityBoost, 0.12, 0.38)
+      const underfillTintAmount = clamp((idle ? 0.12 : 0.18) + (0.08 * profile.visibilityBoost), 0.10, 0.30)
+      const underfillEnabled = oscilloscopeUnderfillEnabledRef.current
 
       ctx.strokeStyle = colorWithAlpha(profile.haloColor, baselineHaloAlpha, profile.haloColor)
       ctx.lineWidth = 2.0 + (0.9 * profile.visibilityBoost)
@@ -570,18 +607,100 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.lineTo(width, centerY)
       ctx.stroke()
 
-      ctx.beginPath()
       const sliceWidth = width / samplesToShow
       const visualGain = idle ? 1.35 : 1.8
+      const points: Array<{ x: number; y: number }> = []
       for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
         const sample = renderData[i]
         const y = ((1 - sample * visualGain) / 2) * height
         const x = i * sliceWidth
-        if (i === 0) {
-          ctx.moveTo(x, y)
-        } else {
-          ctx.lineTo(x, y)
+        points.push({ x, y })
+      }
+
+      if (points.length < 2) return
+
+      if (underfillEnabled) {
+        ctx.beginPath()
+        ctx.moveTo(points[0].x, centerY)
+        for (const point of points) {
+          ctx.lineTo(point.x, point.y)
         }
+        ctx.lineTo(points[points.length - 1].x, centerY)
+        ctx.closePath()
+        const underfillShoulderAlpha = clamp(underfillPeakAlpha * 0.72, 0.09, 0.32)
+        const underfillCenterlineAlpha = clamp(underfillPeakAlpha * 0.30, 0.06, 0.14)
+        const underfillGradient = ctx.createLinearGradient(0, 0, 0, height)
+        underfillGradient.addColorStop(
+          0,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillPeakAlpha
+          )
+        )
+        underfillGradient.addColorStop(
+          0.44,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillPeakAlpha * 0.94
+          )
+        )
+        underfillGradient.addColorStop(
+          0.48,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillShoulderAlpha
+          )
+        )
+        underfillGradient.addColorStop(
+          0.5,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillCenterlineAlpha
+          )
+        )
+        underfillGradient.addColorStop(
+          0.52,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillShoulderAlpha
+          )
+        )
+        underfillGradient.addColorStop(
+          0.56,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillPeakAlpha * 0.94
+          )
+        )
+        underfillGradient.addColorStop(
+          1,
+          adaptiveMiniUnderfillColor(
+            visualizerColor,
+            profile.backdropLuminance,
+            underfillTintAmount,
+            underfillPeakAlpha
+          )
+        )
+        ctx.fillStyle = underfillGradient
+        ctx.fill()
+      }
+
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y)
       }
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
@@ -589,6 +708,11 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.lineWidth = 2.4 + (1.3 * profile.visibilityBoost)
       ctx.stroke()
 
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y)
+      }
       ctx.strokeStyle = colorWithAlpha(visualizerColor, waveformAccentAlpha, accentColor)
       ctx.lineWidth = 1.6 + (0.4 * profile.visibilityBoost)
       ctx.lineCap = 'round'
@@ -649,6 +773,7 @@ export default function MiniPlayerBackdropVisualizer({
       configuredSampleRateRef.current = 0
       configuredFftSizeRef.current = 0
       configuredPitchLockRef.current = null
+      oscilloscopeUnderfillEnabledRef.current = false
     }
   }, [])
 

@@ -1,10 +1,13 @@
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
-import { useEQStore } from '../../stores/eqStore'
+import { EQ_DEVICE_PROFILE_STORAGE_KEY, EQ_STORAGE_KEY, useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
-import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import {
+  OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
+  useVisualizerSettingsStore
+} from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 
@@ -20,8 +23,10 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-discord-rpc-cover-art-enabled',
   'astra-discord-cover-art-cache-v1',
   'astra-discord-cover-art-cache-v2',
+  OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
-  'astra-eq-custom-presets',
+  EQ_STORAGE_KEY,
+  EQ_DEVICE_PROFILE_STORAGE_KEY,
 ] as const
 
 function clearRendererSettingsKeys(): void {

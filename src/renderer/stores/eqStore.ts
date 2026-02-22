@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { EQBand, EQPreset } from '../types/audio'
 import { audioEngine } from '../audio/AudioEngine'
 import { parseAutoEQ } from '../utils/autoEQParser'
+import { useAudioSettingsStore } from './audioSettingsStore'
 
 let bandIdCounter = 0
 const genId = (): string => `band-${++bandIdCounter}`
@@ -10,7 +11,23 @@ const genId = (): string => `band-${++bandIdCounter}`
 // Persistence helpers
 // ============================================
 
-const EQ_STORAGE_KEY = 'astra-eq-custom-presets'
+export const EQ_STORAGE_KEY = 'astra-eq-custom-presets'
+export const EQ_DEVICE_PROFILE_STORAGE_KEY = 'astra-eq-device-profiles-v1'
+const EQ_DEVICE_PROFILE_STORAGE_VERSION = 1
+const DEFAULT_OUTPUT_PROFILE_KEY = 'default'
+
+interface PersistedEQDeviceProfile {
+  presetId: string
+  enabled: boolean
+  updatedAt: number
+}
+
+interface PersistedEQDeviceProfileEnvelope {
+  version: number
+  profiles: Record<string, PersistedEQDeviceProfile>
+}
+
+type EQDeviceProfileMap = Record<string, PersistedEQDeviceProfile>
 
 function loadCustomPresets(): EQPreset[] {
   try {
@@ -37,8 +54,169 @@ function persistCustomPresets(presets: EQPreset[]): void {
       isCustom: true,
       bands: p.bands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
     }))
-  localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(serializable))
+  try {
+    localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(serializable))
+  } catch (error) {
+    console.warn('Failed to persist custom EQ presets:', error)
+  }
 }
+
+function normalizeOutputProfileKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim()
+  if (normalized.length === 0) return null
+  return normalized
+}
+
+function resolveActiveOutputProfileKey(): string {
+  return normalizeOutputProfileKey(useAudioSettingsStore.getState().activeDelayProfileKey)
+    ?? DEFAULT_OUTPUT_PROFILE_KEY
+}
+
+function normalizePersistedEQDeviceProfile(value: unknown): PersistedEQDeviceProfile | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const raw = value as Partial<PersistedEQDeviceProfile>
+  if (typeof raw.presetId !== 'string' || raw.presetId.trim().length === 0) {
+    return null
+  }
+
+  const updatedAt = Number.isFinite(raw.updatedAt)
+    ? Math.max(0, Math.trunc(Number(raw.updatedAt)))
+    : Date.now()
+
+  return {
+    presetId: raw.presetId.trim(),
+    enabled: Boolean(raw.enabled),
+    updatedAt,
+  }
+}
+
+function parsePersistedEQDeviceProfiles(value: unknown): EQDeviceProfileMap {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const out: EQDeviceProfileMap = {}
+  for (const [rawKey, rawProfile] of Object.entries(value)) {
+    const key = normalizeOutputProfileKey(rawKey)
+    if (!key) continue
+    const profile = normalizePersistedEQDeviceProfile(rawProfile)
+    if (!profile) continue
+    out[key] = profile
+  }
+
+  return out
+}
+
+function loadEQDeviceProfiles(): EQDeviceProfileMap {
+  try {
+    const raw = localStorage.getItem(EQ_DEVICE_PROFILE_STORAGE_KEY)
+    if (!raw) return {}
+
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const envelope = parsed as Partial<PersistedEQDeviceProfileEnvelope>
+    if (envelope.profiles && typeof envelope.profiles === 'object') {
+      return parsePersistedEQDeviceProfiles(envelope.profiles)
+    }
+
+    // Recovery path for any legacy/non-enveloped shape.
+    return parsePersistedEQDeviceProfiles(parsed)
+  } catch {
+    return {}
+  }
+}
+
+let eqDeviceProfilesByOutputKey: EQDeviceProfileMap = loadEQDeviceProfiles()
+
+function persistEQDeviceProfiles(): void {
+  try {
+    const payload: PersistedEQDeviceProfileEnvelope = {
+      version: EQ_DEVICE_PROFILE_STORAGE_VERSION,
+      profiles: eqDeviceProfilesByOutputKey,
+    }
+    localStorage.setItem(EQ_DEVICE_PROFILE_STORAGE_KEY, JSON.stringify(payload))
+  } catch (error) {
+    console.warn('Failed to persist EQ device profiles:', error)
+  }
+}
+
+function setEQDeviceProfileForOutputKey(outputProfileKey: string, presetId: string, enabled: boolean): void {
+  const key = normalizeOutputProfileKey(outputProfileKey)
+  if (!key) return
+
+  eqDeviceProfilesByOutputKey = {
+    ...eqDeviceProfilesByOutputKey,
+    [key]: {
+      presetId,
+      enabled,
+      updatedAt: Date.now(),
+    },
+  }
+  persistEQDeviceProfiles()
+}
+
+function updateEQDeviceProfileEnabledForOutputKey(outputProfileKey: string, enabled: boolean): void {
+  const key = normalizeOutputProfileKey(outputProfileKey)
+  if (!key) return
+
+  const existing = eqDeviceProfilesByOutputKey[key]
+  if (!existing) return
+
+  eqDeviceProfilesByOutputKey = {
+    ...eqDeviceProfilesByOutputKey,
+    [key]: {
+      ...existing,
+      enabled,
+      updatedAt: Date.now(),
+    },
+  }
+  persistEQDeviceProfiles()
+}
+
+function removeEQDeviceProfileForOutputKey(outputProfileKey: string): void {
+  const key = normalizeOutputProfileKey(outputProfileKey)
+  if (!key) return
+  if (!eqDeviceProfilesByOutputKey[key]) return
+
+  const { [key]: _removed, ...rest } = eqDeviceProfilesByOutputKey
+  eqDeviceProfilesByOutputKey = rest
+  persistEQDeviceProfiles()
+}
+
+function removeEQDeviceProfilesByPresetId(presetId: string): void {
+  let changed = false
+  const nextProfiles: EQDeviceProfileMap = {}
+
+  for (const [key, profile] of Object.entries(eqDeviceProfilesByOutputKey)) {
+    if (profile.presetId === presetId) {
+      changed = true
+      continue
+    }
+    nextProfiles[key] = profile
+  }
+
+  if (!changed) return
+  eqDeviceProfilesByOutputKey = nextProfiles
+  persistEQDeviceProfiles()
+}
+
+function clearAllEQDeviceProfiles(): void {
+  eqDeviceProfilesByOutputKey = {}
+  try {
+    localStorage.removeItem(EQ_DEVICE_PROFILE_STORAGE_KEY)
+  } catch (error) {
+    console.warn('Failed to clear EQ device profiles:', error)
+  }
+}
+
+let isApplyingDeviceProfileRestore = false
 
 // ============================================
 // Default bands & built-in presets
@@ -130,9 +308,17 @@ interface EQStore {
   _syncToEngine: () => void
 }
 
+function createDefaultBands(): EQBand[] {
+  return DEFAULT_BANDS.map((band) => ({ ...band, id: genId(), gain: 0 }))
+}
+
+function buildBandsFromPreset(preset: EQPreset): EQBand[] {
+  return preset.bands.map((band) => ({ ...band, id: genId() }))
+}
+
 export const useEQStore = create<EQStore>((set, get) => ({
   enabled: false,
-  bands: DEFAULT_BANDS.map(b => ({ ...b, id: genId() })),
+  bands: createDefaultBands(),
   preamp: 0,
   presets: [...BUILT_IN_PRESETS, ...loadCustomPresets()],
   activePresetId: null,
@@ -141,17 +327,26 @@ export const useEQStore = create<EQStore>((set, get) => ({
   setEnabled: (enabled: boolean) => {
     set({ enabled })
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      updateEQDeviceProfileEnabledForOutputKey(resolveActiveOutputProfileKey(), enabled)
+    }
   },
 
   toggleEnabled: () => {
-    set(s => ({ enabled: !s.enabled }))
+    set((state) => ({ enabled: !state.enabled }))
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      updateEQDeviceProfileEnabledForOutputKey(resolveActiveOutputProfileKey(), get().enabled)
+    }
   },
 
   setPreamp: (dB: number) => {
     const clamped = Math.max(-12, Math.min(12, dB))
     set({ preamp: clamped, activePresetId: null })
     audioEngine.updatePreamp(clamped)
+    if (!isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   addBand: (partial?: Partial<EQBand>) => {
@@ -188,6 +383,9 @@ export const useEQStore = create<EQStore>((set, get) => ({
     const newBands = [...bands, newBand].sort((a, b) => a.frequency - b.frequency)
     set({ bands: newBands, activePresetId: null })
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   removeBand: (index: number) => {
@@ -196,6 +394,9 @@ export const useEQStore = create<EQStore>((set, get) => ({
     const newBands = bands.filter((_, i) => i !== index)
     set({ bands: newBands, activePresetId: null })
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   updateBand: (index: number, updates: Partial<EQBand>) => {
@@ -210,18 +411,28 @@ export const useEQStore = create<EQStore>((set, get) => ({
     if (enabled) {
       audioEngine.updateEQBand(index, updated)
     }
+
+    if (!isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   applyPreset: (preset: EQPreset) => {
-    const newBands = preset.bands.map(b => ({ ...b, id: genId() }))
+    const newBands = buildBandsFromPreset(preset)
     set({ bands: newBands, preamp: preset.preamp, activePresetId: preset.id })
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      setEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey(), preset.id, get().enabled)
+    }
   },
 
   resetEQ: () => {
-    const newBands = DEFAULT_BANDS.map(b => ({ ...b, id: genId(), gain: 0 }))
+    const newBands = createDefaultBands()
     set({ bands: newBands, preamp: 0, activePresetId: null })
     get()._syncToEngine()
+    if (!isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   toggleEQPanel: () => set(s => ({ showEQPanel: !s.showEQPanel })),
@@ -247,6 +458,9 @@ export const useEQStore = create<EQStore>((set, get) => ({
     const updated = [...presets, newPreset]
     set({ presets: updated, activePresetId: id })
     persistCustomPresets(updated)
+    if (!isApplyingDeviceProfileRestore) {
+      setEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey(), id, get().enabled)
+    }
   },
 
   deleteCustomPreset: (presetId: string) => {
@@ -260,6 +474,10 @@ export const useEQStore = create<EQStore>((set, get) => ({
       activePresetId: activePresetId === presetId ? null : activePresetId,
     })
     persistCustomPresets(updated)
+    removeEQDeviceProfilesByPresetId(presetId)
+    if (activePresetId === presetId && !isApplyingDeviceProfileRestore) {
+      removeEQDeviceProfileForOutputKey(resolveActiveOutputProfileKey())
+    }
   },
 
   importPreset: (preset: EQPreset) => {
@@ -350,8 +568,13 @@ export const useEQStore = create<EQStore>((set, get) => ({
   },
 
   resetToDefaults: () => {
-    localStorage.removeItem(EQ_STORAGE_KEY)
-    const newBands = DEFAULT_BANDS.map((band) => ({ ...band, id: genId(), gain: 0 }))
+    try {
+      localStorage.removeItem(EQ_STORAGE_KEY)
+    } catch (error) {
+      console.warn('Failed to clear custom EQ presets:', error)
+    }
+    clearAllEQDeviceProfiles()
+    const newBands = createDefaultBands()
     set({
       enabled: false,
       bands: newBands,
@@ -368,3 +591,77 @@ export const useEQStore = create<EQStore>((set, get) => ({
     audioEngine.updateEQ(bands, preamp, enabled)
   },
 }))
+
+function persistCurrentEQProfileForOutputKey(outputProfileKey: string): void {
+  const normalizedKey = normalizeOutputProfileKey(outputProfileKey) ?? DEFAULT_OUTPUT_PROFILE_KEY
+  const state = useEQStore.getState()
+  const activePresetId = state.activePresetId
+  if (!activePresetId) {
+    removeEQDeviceProfileForOutputKey(normalizedKey)
+    return
+  }
+
+  const presetExists = state.presets.some((preset) => preset.id === activePresetId)
+  if (!presetExists) {
+    removeEQDeviceProfileForOutputKey(normalizedKey)
+    return
+  }
+
+  setEQDeviceProfileForOutputKey(normalizedKey, activePresetId, state.enabled)
+}
+
+function applyFallbackEQForOutput(): void {
+  isApplyingDeviceProfileRestore = true
+  useEQStore.setState({
+    enabled: false,
+    bands: createDefaultBands(),
+    preamp: 0,
+    activePresetId: null,
+  })
+  isApplyingDeviceProfileRestore = false
+  useEQStore.getState()._syncToEngine()
+}
+
+function applyDeviceEQProfileForOutputKey(outputProfileKey: string): void {
+  const normalizedKey = normalizeOutputProfileKey(outputProfileKey) ?? DEFAULT_OUTPUT_PROFILE_KEY
+  const profile = eqDeviceProfilesByOutputKey[normalizedKey]
+  if (!profile) {
+    applyFallbackEQForOutput()
+    return
+  }
+
+  const { presets } = useEQStore.getState()
+  const preset = presets.find((candidate) => candidate.id === profile.presetId)
+  if (!preset) {
+    removeEQDeviceProfileForOutputKey(normalizedKey)
+    applyFallbackEQForOutput()
+    return
+  }
+
+  isApplyingDeviceProfileRestore = true
+  useEQStore.setState({
+    enabled: profile.enabled,
+    bands: buildBandsFromPreset(preset),
+    preamp: preset.preamp,
+    activePresetId: preset.id,
+  })
+  isApplyingDeviceProfileRestore = false
+  useEQStore.getState()._syncToEngine()
+}
+
+function initializeDeviceAwareEQPersistence(): void {
+  let previousOutputProfileKey = resolveActiveOutputProfileKey()
+  applyDeviceEQProfileForOutputKey(previousOutputProfileKey)
+
+  useAudioSettingsStore.subscribe((nextState, prevState) => {
+    const nextOutputProfileKey = normalizeOutputProfileKey(nextState.activeDelayProfileKey) ?? DEFAULT_OUTPUT_PROFILE_KEY
+    const prevOutputProfileKey = normalizeOutputProfileKey(prevState.activeDelayProfileKey) ?? previousOutputProfileKey
+    if (nextOutputProfileKey === prevOutputProfileKey) return
+
+    persistCurrentEQProfileForOutputKey(prevOutputProfileKey)
+    previousOutputProfileKey = nextOutputProfileKey
+    applyDeviceEQProfileForOutputKey(nextOutputProfileKey)
+  })
+}
+
+initializeDeviceAwareEQPersistence()

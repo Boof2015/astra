@@ -138,9 +138,11 @@ export default function SettingsView() {
   const {
     fftSize,
     pitchLock,
+    oscilloscopeUnderfillEnabled,
     isRunning,
     setFftSize,
     setPitchLock,
+    setOscilloscopeUnderfillEnabled,
     setIsRunning,
   } = useVisualizerSettingsStore()
   const {
@@ -596,6 +598,15 @@ export default function SettingsView() {
                   </select>
                 </label>
               )}
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Oscilloscope Underfill</span>
+                <button
+                  className={`settings-toggle ${oscilloscopeUnderfillEnabled ? 'active' : ''}`}
+                  onClick={() => setOscilloscopeUnderfillEnabled(!oscilloscopeUnderfillEnabled)}
+                >
+                  {oscilloscopeUnderfillEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
               <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">
                   {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}

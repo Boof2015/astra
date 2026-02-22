@@ -1021,6 +1021,7 @@ export class AudioEngine {
 
     let btContext: AudioContext | null = null
     let refContext: AudioContext | null = null
+    let btWarmupSource: AudioBufferSourceNode | null = null
 
     try {
       btContext = new AudioContext()
@@ -1096,6 +1097,21 @@ export class AudioEngine {
           code: 'not-supported',
           message: 'Audio outputs are not active for differential calibration.'
         }
+      }
+
+      try {
+        const warmupBuffer = btContext.createBuffer(
+          1,
+          Math.max(1, Math.round(btContext.sampleRate * 0.25)),
+          btContext.sampleRate
+        )
+        btWarmupSource = btContext.createBufferSource()
+        btWarmupSource.buffer = warmupBuffer
+        btWarmupSource.loop = true
+        btWarmupSource.connect(btContext.destination)
+        btWarmupSource.start()
+      } catch (error) {
+        console.warn('Failed to start differential Bluetooth warmup audio:', error)
       }
 
       try {
@@ -1283,6 +1299,18 @@ export class AudioEngine {
         message: 'Differential calibration failed unexpectedly.'
       }
     } finally {
+      if (btWarmupSource) {
+        try {
+          btWarmupSource.stop()
+        } catch {
+          // Ignore warmup stop failures.
+        }
+        try {
+          btWarmupSource.disconnect()
+        } catch {
+          // Ignore warmup disconnect failures.
+        }
+      }
       stream.getTracks().forEach((track) => track.stop())
       if (btContext) {
         try {

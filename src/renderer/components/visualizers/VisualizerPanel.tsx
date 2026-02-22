@@ -112,10 +112,12 @@ function DockedSpectrumTile({
 function DockedOscilloscopeTile({
   lineColor,
   pitchLock,
+  underfillEnabled,
   isRunning
 }: {
   lineColor: string
   pitchLock: boolean
+  underfillEnabled: boolean
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -135,6 +137,7 @@ function DockedOscilloscopeTile({
         lineColor,
         lineWidth: 2,
         pitchLock,
+        underfillEnabled,
         showGrid: true
       })
     }
@@ -150,8 +153,8 @@ function DockedOscilloscopeTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, pitchLock })
-  }, [lineColor, pitchLock])
+    visualizerRef.current?.setOptions({ lineColor, pitchLock, underfillEnabled })
+  }, [lineColor, pitchLock, underfillEnabled])
 
   useEffect(() => {
     if (isRunning) {
@@ -290,6 +293,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
+  const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
 
@@ -351,6 +355,7 @@ export default function VisualizerPanel({ className = '' }: VisualizerPanelProps
             <DockedOscilloscopeTile
               lineColor={lineColor}
               pitchLock={pitchLock}
+              underfillEnabled={oscilloscopeUnderfillEnabled}
               isRunning={isRunning}
             />
           )}

@@ -13,6 +13,7 @@ export interface OscilloscopeOptions {
   showGrid?: boolean
   gridColor?: string
   pitchLock?: boolean
+  underfillEnabled?: boolean
 }
 
 const defaultOptions: Required<OscilloscopeOptions> = {
@@ -21,7 +22,69 @@ const defaultOptions: Required<OscilloscopeOptions> = {
   backgroundColor: 'transparent',
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
-  pitchLock: true
+  pitchLock: true,
+  underfillEnabled: false
+}
+
+function parseRgbChannels(color: string): string | null {
+  const normalized = color.trim()
+
+  if (normalized.startsWith('#')) {
+    const hex = normalized.slice(1)
+    const expanded = hex.length === 3
+      ? hex.split('').map((ch) => `${ch}${ch}`).join('')
+      : hex
+
+    if (expanded.length === 6) {
+      const r = Number.parseInt(expanded.slice(0, 2), 16)
+      const g = Number.parseInt(expanded.slice(2, 4), 16)
+      const b = Number.parseInt(expanded.slice(4, 6), 16)
+      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+        return `${r}, ${g}, ${b}`
+      }
+    }
+  }
+
+  const rgbMatch = /^rgba?\((.*)\)$/i.exec(normalized)
+  if (!rgbMatch) return null
+
+  const tokens = rgbMatch[1]
+    ?.split(',')
+    .map((token) => token.trim())
+    .filter(Boolean) ?? []
+  if (tokens.length < 3) return null
+
+  const r = Number.parseFloat(tokens[0])
+  const g = Number.parseFloat(tokens[1])
+  const b = Number.parseFloat(tokens[2])
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null
+
+  return `${Math.max(0, Math.min(255, Math.round(r)))}, ${Math.max(0, Math.min(255, Math.round(g)))}, ${Math.max(0, Math.min(255, Math.round(b)))}`
+}
+
+function highContrastUnderfillColor(accentColor: string, alpha: number): string {
+  const safeAlpha = Math.max(0, Math.min(1, alpha))
+  const channels = parseRgbChannels(accentColor)
+  const nearWhite = { r: 245, g: 248, b: 252 }
+  const tintAmount = 0.18
+
+  if (!channels) {
+    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
+  }
+
+  const [accentR, accentG, accentB] = channels
+    .split(',')
+    .map((token) => Number.parseFloat(token.trim()))
+
+  if (!Number.isFinite(accentR) || !Number.isFinite(accentG) || !Number.isFinite(accentB)) {
+    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
+  }
+
+  const mix = (base: number, tint: number): number => Math.round((base * (1 - tintAmount)) + (tint * tintAmount))
+  const r = mix(nearWhite.r, accentR)
+  const g = mix(nearWhite.g, accentG)
+  const b = mix(nearWhite.b, accentB)
+  return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`
 }
 
 export class Oscilloscope {
@@ -175,27 +238,55 @@ export class Oscilloscope {
     }
 
     // Draw waveform (data already starts at trigger point)
+    const sliceWidth = width / samplesToShow
+    const centerY = height / 2
+    const VISUAL_GAIN = 1.8
+    const points: Array<{ x: number; y: number }> = []
+
+    for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
+      const sample = renderData[i]
+      const y = ((1 - sample * VISUAL_GAIN) / 2) * height
+      const x = i * sliceWidth
+      points.push({ x, y })
+    }
+
+    if (points.length < 2) {
+      this.animationId = requestAnimationFrame(this.draw)
+      return
+    }
+
+    if (options.underfillEnabled) {
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, centerY)
+      for (const point of points) {
+        ctx.lineTo(point.x, point.y)
+      }
+      ctx.lineTo(points[points.length - 1].x, centerY)
+      ctx.closePath()
+      const peakAlpha = 0.28
+      const shoulderAlpha = peakAlpha * 0.74
+      const centerlineAlpha = 0.09
+      const fillGradient = ctx.createLinearGradient(0, 0, 0, height)
+      fillGradient.addColorStop(0, highContrastUnderfillColor(options.lineColor, peakAlpha))
+      fillGradient.addColorStop(0.44, highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+      fillGradient.addColorStop(0.48, highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+      fillGradient.addColorStop(0.5, highContrastUnderfillColor(options.lineColor, centerlineAlpha))
+      fillGradient.addColorStop(0.52, highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+      fillGradient.addColorStop(0.56, highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+      fillGradient.addColorStop(1, highContrastUnderfillColor(options.lineColor, peakAlpha))
+      ctx.fillStyle = fillGradient
+      ctx.fill()
+    }
+
     ctx.lineWidth = options.lineWidth * dpr
     ctx.strokeStyle = options.lineColor
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.beginPath()
-
-    const sliceWidth = width / samplesToShow
-
-    for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
-      const sample = renderData[i]
-      const VISUAL_GAIN = 1.8
-      const y = ((1 - sample * VISUAL_GAIN) / 2) * height
-      const x = i * sliceWidth
-
-      if (i === 0) {
-        ctx.moveTo(x, y)
-      } else {
-        ctx.lineTo(x, y)
-      }
+    ctx.moveTo(points[0].x, points[0].y)
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y)
     }
-
     ctx.stroke()
     this.animationId = requestAnimationFrame(this.draw)
   }

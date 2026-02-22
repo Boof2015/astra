@@ -28,6 +28,7 @@ export interface MiniPlayerVisualizerStreamChunk {
   monoChunks: Float32Array[]
   fftSize: number
   pitchLock: boolean
+  oscilloscopeUnderfillEnabled: boolean
   lineColor: string
   reset: boolean
 }
