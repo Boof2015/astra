@@ -3,9 +3,9 @@ import {
   isNativeAvailable,
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
-  spectrum as nativeSpectrum,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
+import { SpectrumAnalyzer } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
@@ -13,9 +13,9 @@ import {
 } from '../../../types/scopePopout'
 import '../../styles/scope-popout.css'
 
-const SPECTRUM_MIN_DB = -90
-const SPECTRUM_MAX_DB = -10
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
+const DEFAULT_SPECTRUM_LINE_COLOR = '#38bdf8'
+const DEFAULT_SPECTRUM_FFT_SIZE = 4096
 
 function parseRgbChannels(color: string): string | null {
   const normalized = color.trim()
@@ -89,12 +89,6 @@ function getScopeLabel(scope: ScopeKind): string {
   }
 }
 
-function getNativeSpectrumSmoothing(fftSize: number): number {
-  const base = 0.9
-  const fftRatio = Math.max(0.5, fftSize / 2048)
-  return Math.min(0.99, Math.max(0, Math.pow(base, fftRatio)))
-}
-
 function drawUnavailableMessage(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   ctx.fillStyle = 'rgba(255, 255, 255, 0.62)'
   ctx.font = '12px "JetBrains Mono", monospace'
@@ -115,6 +109,22 @@ function drawScopeGrid(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.moveTo(width / 2, 0)
   ctx.lineTo(width / 2, height)
   ctx.stroke()
+}
+
+function getSpectrumGradientColors(lineColor: string): string[] {
+  return ['rgba(0, 255, 255, 0)', `${lineColor}33`, `${lineColor}66`]
+}
+
+function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivElement): void {
+  const rect = container.getBoundingClientRect()
+  const width = Math.max(1, Math.floor(rect.width))
+  const height = Math.max(1, Math.floor(rect.height))
+  const dpr = window.devicePixelRatio || 1
+
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+  canvas.width = Math.max(1, Math.floor(width * dpr))
+  canvas.height = Math.max(1, Math.floor(height * dpr))
 }
 
 function useHiDpiCanvasSize(
@@ -165,35 +175,46 @@ function useHiDpiCanvasSize(
 function SpectrumScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const canvasSizeRef = useHiDpiCanvasSize(containerRef, canvasRef)
-  const animationRef = useRef<number | null>(null)
+  const visualizerRef = useRef<SpectrumAnalyzer | null>(null)
 
   const pendingChunksRef = useRef<Float32Array[]>([])
   const sampleRateRef = useRef(48000)
-  const fftSizeRef = useRef(4096)
-  const lineColorRef = useRef('#38bdf8')
-  const spectrumDataRef = useRef<Float32Array | null>(null)
-  const configuredSampleRateRef = useRef(0)
-  const configuredFftSizeRef = useRef(0)
+  const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+  }, [])
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
       if (chunk.scope !== 'spectrum') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
-      fftSizeRef.current = Math.max(1024, chunk.fftSize)
-      lineColorRef.current = chunk.lineColor
+      const nextFftSize = Math.max(1024, chunk.fftSize)
+      const nextLineColor = chunk.lineColor
+      const optionsChanged =
+        nextFftSize !== fftSizeRef.current ||
+        nextLineColor !== lineColorRef.current
+
+      fftSizeRef.current = nextFftSize
+      lineColorRef.current = nextLineColor
 
       if (chunk.reset) {
         pendingChunksRef.current = []
-        spectrumDataRef.current = null
-        if (isNativeAvailable()) {
-          nativeSpectrum.reset()
-        }
-        return
+        isPlayingRef.current = false
+      } else if (chunk.monoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.monoChunks)
+        isPlayingRef.current = true
       }
 
-      if (chunk.monoChunks.length > 0) {
-        pendingChunksRef.current.push(...chunk.monoChunks)
+      if (optionsChanged) {
+        visualizerRef.current?.setOptions({
+          lineColor: nextLineColor,
+          fftSize: nextFftSize,
+          gradientColors: getSpectrumGradientColors(nextLineColor),
+        })
       }
     })
 
@@ -201,117 +222,53 @@ function SpectrumScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    handleResize()
 
-    const draw = () => {
-      const { width, height } = canvasSizeRef.current
-      ctx.clearRect(0, 0, width, height)
-      drawScopeGrid(ctx, width, height)
-
-      if (!isNativeAvailable()) {
-        drawUnavailableMessage(ctx, width, height)
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      const sampleRate = sampleRateRef.current
-      const fftSize = fftSizeRef.current
-      if (configuredSampleRateRef.current !== sampleRate) {
-        nativeSpectrum.setSampleRate(sampleRate)
-        configuredSampleRateRef.current = sampleRate
-      }
-      if (configuredFftSizeRef.current !== fftSize) {
-        nativeSpectrum.setFFTSize(fftSize)
-        nativeSpectrum.setSmoothing(getNativeSpectrumSmoothing(fftSize))
-        configuredFftSizeRef.current = fftSize
-      }
-
-      const pendingChunks = pendingChunksRef.current
-      pendingChunksRef.current = []
-      for (const chunk of pendingChunks) {
-        const result = nativeSpectrum.process(chunk)
-        if (result && result.length > 0) {
-          spectrumDataRef.current = result
-        }
-      }
-
-      const frequencyData = spectrumDataRef.current
-      if (!frequencyData || frequencyData.length === 0) {
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      const nyquist = sampleRate / 2
-      const minFrequency = 20
-      const maxFrequency = Math.max(minFrequency + 1, Math.min(20000, nyquist))
-      const binWidth = nyquist / frequencyData.length
-      const pointCount = Math.max(2, Math.floor(width))
-      const points: Array<{ x: number; y: number }> = []
-
-      for (let i = 0; i < pointCount; i++) {
-        const t = i / (pointCount - 1)
-        const frequency = minFrequency * Math.pow(maxFrequency / minFrequency, t)
-        const bin = frequency / binWidth
-        const low = Math.floor(bin)
-        const high = Math.min(low + 1, frequencyData.length - 1)
-        const frac = bin - low
-
-        const dbLow = frequencyData[low] ?? SPECTRUM_MIN_DB
-        const dbHigh = frequencyData[high] ?? SPECTRUM_MIN_DB
-        const db = dbLow + (dbHigh - dbLow) * frac
-        const normalized = (db - SPECTRUM_MIN_DB) / (SPECTRUM_MAX_DB - SPECTRUM_MIN_DB)
-        const clamped = Math.max(0, Math.min(1, normalized))
-        const y = height - Math.pow(clamped, 0.85) * height
-        points.push({ x: t * width, y })
-      }
-
-      const lineColor = lineColorRef.current
-      ctx.beginPath()
-      ctx.moveTo(points[0].x, points[0].y)
-      for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].x, points[i].y)
-      }
-      ctx.lineTo(width, height)
-      ctx.lineTo(0, height)
-      ctx.closePath()
-      ctx.globalAlpha = 0.18
-      ctx.fillStyle = lineColor
-      ctx.fill()
-      ctx.globalAlpha = 1
-
-      ctx.beginPath()
-      ctx.moveTo(points[0].x, points[0].y)
-      for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].x, points[i].y)
-      }
-      ctx.lineWidth = 1.7
-      ctx.strokeStyle = lineColor
-      ctx.lineJoin = 'round'
-      ctx.lineCap = 'round'
-      ctx.stroke()
-
-      animationRef.current = window.requestAnimationFrame(draw)
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        lineWidth: 2,
+        fillGradient: true,
+        fftSize: fftSizeRef.current,
+        gradientColors: getSpectrumGradientColors(lineColorRef.current),
+        scaleType: 'log',
+        showGrid: true,
+        dataSource: {
+          getPendingSpectrumSamples: () => {
+            const pendingChunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return pendingChunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
     }
 
-    animationRef.current = window.requestAnimationFrame(draw)
+    visualizerRef.current?.start()
 
     return () => {
-      if (animationRef.current !== null) {
-        window.cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-      if (isNativeAvailable()) {
-        nativeSpectrum.reset()
-      }
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
       pendingChunksRef.current = []
-      spectrumDataRef.current = null
-      configuredSampleRateRef.current = 0
-      configuredFftSizeRef.current = 0
+      isPlayingRef.current = false
     }
-  }, [canvasSizeRef])
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">

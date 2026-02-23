@@ -1,6 +1,12 @@
 import { audioEngine } from '../AudioEngine'
 import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
 
+export interface SpectrumAnalyzerDataSource {
+  getPendingSpectrumSamples: () => Float32Array[]
+  getSampleRate: () => number
+  isPlaying: () => boolean
+}
+
 export interface SpectrumAnalyzerOptions {
   lineColor?: string
   lineWidth?: number
@@ -18,9 +24,12 @@ export interface SpectrumAnalyzerOptions {
   tiltDbPerOctave?: number
   tiltReferenceHz?: number
   fftSize?: number
+  dataSource?: SpectrumAnalyzerDataSource
 }
 
-const defaultOptions: Required<SpectrumAnalyzerOptions> = {
+type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource'>>
+
+const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   lineColor: '#00ffff',
   lineWidth: 2,
   fillGradient: true,
@@ -39,10 +48,17 @@ const defaultOptions: Required<SpectrumAnalyzerOptions> = {
   fftSize: 2048
 }
 
+const defaultSpectrumDataSource: SpectrumAnalyzerDataSource = {
+  getPendingSpectrumSamples: () => audioEngine.flushPendingSpectrumSamples(),
+  getSampleRate: () => audioEngine.getSampleRate(),
+  isPlaying: () => audioEngine.playbackState === 'playing',
+}
+
 export class SpectrumAnalyzer {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
-  private options: Required<SpectrumAnalyzerOptions>
+  private options: ResolvedSpectrumAnalyzerOptions
+  private dataSource: SpectrumAnalyzerDataSource
   private animationId: number | null = null
   private isRunning: boolean = false
   private nativeInitialized: boolean = false
@@ -54,7 +70,9 @@ export class SpectrumAnalyzer {
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    this.options = { ...defaultOptions, ...options }
+    const { dataSource, ...optionOverrides } = options
+    this.options = { ...defaultOptions, ...optionOverrides }
+    this.dataSource = dataSource ?? defaultSpectrumDataSource
 
     // Initialize native module
     this.initNative()
@@ -62,7 +80,7 @@ export class SpectrumAnalyzer {
 
   private initNative(): void {
     if (isNativeAvailable() && !this.nativeInitialized) {
-      this.sampleRate = audioEngine.getSampleRate()
+      this.sampleRate = Math.max(1, this.dataSource.getSampleRate())
       this.lastSampleRate = this.sampleRate
       nativeSpectrum.setFFTSize(this.options.fftSize)
       nativeSpectrum.setSampleRate(this.sampleRate)
@@ -76,7 +94,7 @@ export class SpectrumAnalyzer {
 
   private updateSampleRateIfNeeded(): void {
     if (!isNativeAvailable()) return
-    const currentRate = audioEngine.getSampleRate()
+    const currentRate = Math.max(1, this.dataSource.getSampleRate())
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.sampleRate = currentRate
       this.lastSampleRate = currentRate
@@ -92,7 +110,11 @@ export class SpectrumAnalyzer {
   }
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
-    this.options = { ...this.options, ...options }
+    const { dataSource, ...optionUpdates } = options
+    this.options = { ...this.options, ...optionUpdates }
+    if (dataSource) {
+      this.dataSource = dataSource
+    }
 
     // Update native module settings
     if (isNativeAvailable()) {
@@ -174,6 +196,23 @@ export class SpectrumAnalyzer {
     return db + this.options.tiltDbPerOctave * octaves
   }
 
+  private mergePendingSpectrumChunks(pendingSpectrum: Float32Array[]): Float32Array | null {
+    if (pendingSpectrum.length === 0) return null
+    if (pendingSpectrum.length === 1) return pendingSpectrum[0]
+
+    let totalLength = 0
+    for (const chunk of pendingSpectrum) totalLength += chunk.length
+
+    const monoData = new Float32Array(totalLength)
+    let offset = 0
+    for (const chunk of pendingSpectrum) {
+      monoData.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    return monoData
+  }
+
   private draw = (): void => {
     if (!this.isRunning) return
 
@@ -195,8 +234,8 @@ export class SpectrumAnalyzer {
 
     this.updateSampleRateIfNeeded()
 
-    if (audioEngine.playbackState !== 'playing') {
-      audioEngine.flushPendingSpectrumSamples()
+    if (!this.dataSource.isPlaying()) {
+      this.dataSource.getPendingSpectrumSamples()
       nativeSpectrum.reset()
 
       ctx.clearRect(0, 0, width, height)
@@ -216,24 +255,11 @@ export class SpectrumAnalyzer {
       return
     }
 
-    const pendingSpectrum = audioEngine.flushPendingSpectrumSamples()
-    if (pendingSpectrum.length === 0) {
+    const pendingSpectrum = this.dataSource.getPendingSpectrumSamples()
+    const monoData = this.mergePendingSpectrumChunks(pendingSpectrum)
+    if (!monoData) {
       this.animationId = requestAnimationFrame(this.draw)
       return
-    }
-
-    let monoData: Float32Array
-    if (pendingSpectrum.length === 1) {
-      monoData = pendingSpectrum[0]
-    } else {
-      let totalLength = 0
-      for (const chunk of pendingSpectrum) totalLength += chunk.length
-      monoData = new Float32Array(totalLength)
-      let offset = 0
-      for (const chunk of pendingSpectrum) {
-        monoData.set(chunk, offset)
-        offset += chunk.length
-      }
     }
 
     const nativeResult = nativeSpectrum.process(monoData)
