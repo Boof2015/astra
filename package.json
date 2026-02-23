@@ -107,7 +107,10 @@
         "zip"
       ],
       "icon": "resources/icon.icns",
-      "category": "public.app-category.music"
+      "category": "public.app-category.music",
+      "hardenedRuntime": true,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.inherit.plist"
     },
     "linux": {
       "target": [
