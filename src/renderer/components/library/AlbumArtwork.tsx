@@ -1,13 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
+import type { ArtworkVariant } from '../../stores/libraryStore'
 
 interface AlbumArtworkProps {
   hash: string | null
   alt?: string
   className?: string
+  variant?: ArtworkVariant
 }
 
-export default function AlbumArtwork({ hash, alt = 'Album artwork', className = '' }: AlbumArtworkProps) {
+export default function AlbumArtwork({
+  hash,
+  alt = 'Album artwork',
+  className = '',
+  variant = 'full'
+}: AlbumArtworkProps) {
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null)
   const [isVisible, setIsVisible] = useState(false)
   const placeholderRef = useRef<HTMLDivElement | null>(null)
@@ -16,7 +23,7 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
   useEffect(() => {
     setArtworkUrl(null)
     setIsVisible(false)
-  }, [hash])
+  }, [hash, variant])
 
   useEffect(() => {
     if (!hash) {
@@ -57,7 +64,7 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
       return
     }
 
-    void getArtwork(hash)
+    void getArtwork(hash, { variant })
       .then((url) => {
         if (isCancelled) return
         setArtworkUrl(url)
@@ -70,7 +77,7 @@ export default function AlbumArtwork({ hash, alt = 'Album artwork', className = 
     return () => {
       isCancelled = true
     }
-  }, [hash, getArtwork, isVisible])
+  }, [getArtwork, hash, isVisible, variant])
 
   if (!hash || !artworkUrl) {
     return (

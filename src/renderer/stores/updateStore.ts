@@ -10,6 +10,7 @@ export interface UpdateCueNotice {
   latestVersion: string | null
   currentVersion: string
   releaseName: string | null
+  releaseUrl: string | null
 }
 
 interface UpdateStore {
@@ -26,7 +27,7 @@ interface UpdateStore {
   cueNotice: UpdateCueNotice | null
   setAutoCheckEnabled: (enabled: boolean) => void
   checkForUpdates: () => Promise<void>
-  openReleasesPage: () => Promise<void>
+  openReleasesPage: (releaseUrl?: string | null) => Promise<void>
   clearCueNotice: () => void
 }
 
@@ -98,6 +99,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
           latestVersion: result.latestVersion,
           currentVersion: result.currentVersion,
           releaseName: result.releaseName,
+          releaseUrl,
         }
       }
 
@@ -124,9 +126,12 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     }
   },
 
-  openReleasesPage: async () => {
+  openReleasesPage: async (releaseUrl?: string | null) => {
     try {
-      await window.electronAPI.updates.openReleasesPage()
+      const targetReleaseUrl = typeof releaseUrl === 'string' && releaseUrl.trim().length > 0
+        ? releaseUrl
+        : get().releaseUrl
+      await window.electronAPI.updates.openReleasesPage(targetReleaseUrl ?? undefined)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       set({

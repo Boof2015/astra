@@ -360,7 +360,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   updates: {
     checkForUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
-    openReleasesPage: () => ipcRenderer.invoke('updates:openReleasesPage')
+    openReleasesPage: (releaseUrl?: string) => ipcRenderer.invoke('updates:openReleasesPage', releaseUrl)
   },
 
   theme: {
@@ -429,6 +429,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
+    getArtworkThumbnailDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkThumbnailDataUrl', hash),
     onScanProgress: (callback: (progress: ScanProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
@@ -513,7 +514,7 @@ declare global {
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
-        openReleasesPage: () => Promise<boolean>
+        openReleasesPage: (releaseUrl?: string) => Promise<boolean>
       }
       theme: {
         setRuntimeIconDataUrl: (dataUrl: string) => void
@@ -571,6 +572,7 @@ declare global {
         getTrackCount: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
+        getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void

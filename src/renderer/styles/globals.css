@@ -1624,16 +1624,48 @@ button, .titlebar {
   bottom: clamp(18px, 3.6vh, 36px);
 }
 
+.update-available-cue-artwork {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.update-available-cue-icon {
+  width: 100%;
+  height: 100%;
+}
+
 .update-available-cue-badge {
+  appearance: none;
+  -webkit-appearance: none;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
+  line-height: 1;
   color: rgba(255, 255, 255, 0.94);
   padding: 5px 8px;
   border-radius: 999px;
   border: 1px solid rgba(34, 197, 94, 0.4);
   background: rgba(34, 197, 94, 0.2);
   flex-shrink: 0;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+}
+
+.update-available-cue-badge:hover {
+  border-color: rgba(34, 197, 94, 0.64);
+  background: rgba(34, 197, 94, 0.3);
+}
+
+.update-available-cue-badge:focus-visible {
+  outline: none;
+  border-color: rgba(187, 247, 208, 0.9);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.34);
+}
+
+.update-available-cue-badge:active {
+  background: rgba(34, 197, 94, 0.36);
 }
 
 .update-available-cue-fill {

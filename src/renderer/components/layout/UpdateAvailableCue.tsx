@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import AstraLogo from '../icons/AstraLogo'
 
 type CueVisibility = 'hidden' | 'visible'
 
@@ -10,6 +11,7 @@ const UPDATE_CUE_CLEAR_MS = 5600
 export default function UpdateAvailableCue() {
   const notice = useUpdateStore((s) => s.cueNotice)
   const clearCueNotice = useUpdateStore((s) => s.clearCueNotice)
+  const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const [visibility, setVisibility] = useState<CueVisibility>('hidden')
 
@@ -36,6 +38,10 @@ export default function UpdateAvailableCue() {
   const releaseSummary = notice.releaseName?.trim().length
     ? notice.releaseName
     : `Current version v${notice.currentVersion}`
+  const handleOpenDownload = () => {
+    void openReleasesPage(notice.releaseUrl)
+    clearCueNotice()
+  }
 
   return (
     <aside
@@ -44,8 +50,8 @@ export default function UpdateAvailableCue() {
       aria-hidden={visibility === 'hidden'}
     >
       <div className="fullscreen-next-cue-card">
-        <div className="fullscreen-next-cue-artwork">
-          <div className="fullscreen-next-cue-placeholder">UP</div>
+        <div className="fullscreen-next-cue-artwork update-available-cue-artwork" aria-hidden="true">
+          <AstraLogo size={52} includeBackground className="update-available-cue-icon" />
         </div>
 
         <div className="fullscreen-next-cue-meta">
@@ -54,7 +60,15 @@ export default function UpdateAvailableCue() {
           <div className="fullscreen-next-cue-artist">{releaseSummary}</div>
         </div>
 
-        <div className="update-available-cue-badge">Download</div>
+        <button
+          type="button"
+          className="update-available-cue-badge"
+          onClick={handleOpenDownload}
+          aria-label={`Download update ${notice.latestTag}`}
+          title={`Download ${notice.latestTag}`}
+        >
+          Download
+        </button>
       </div>
 
       <div className="fullscreen-next-cue-progress">

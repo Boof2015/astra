@@ -195,7 +195,7 @@ function TrackListRowRenderer({
         <div className="track-col track-col-title">
           <div className="track-title-cell">
             <div className="track-artwork-thumb">
-              <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} />
+              <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
             </div>
             <span className="track-title">{track.title}</span>
             {showAtmosBadge && (

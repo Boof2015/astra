@@ -45,6 +45,11 @@ interface LibraryFolder {
 
 type ViewMode = 'tracks' | 'albums' | 'artists'
 type SelectionOrigin = 'home' | 'library' | null
+export type ArtworkVariant = 'full' | 'thumbnail'
+
+export interface ArtworkRequestOptions {
+  variant?: ArtworkVariant
+}
 
 interface LibraryStore {
   // State
@@ -84,7 +89,7 @@ interface LibraryStore {
   clearSelection: () => void
   search: (query: string) => Promise<void>
   clearSearch: () => void
-  getArtwork: (hash: string | null) => Promise<string | null>
+  getArtwork: (hash: string | null, options?: ArtworkRequestOptions) => Promise<string | null>
   loadFavorites: () => Promise<void>
   toggleFavorite: (trackPath: string) => Promise<void>
   isFavorite: (trackPath: string) => boolean
@@ -93,8 +98,36 @@ interface LibraryStore {
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
+const MAX_THUMBNAIL_CACHE_ENTRIES = 512
 const artworkCache = new Map<string, string>()
+const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+
+function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
+  return `${variant === 'thumbnail' ? 'thumb' : 'full'}:${hash}`
+}
+
+function setThumbnailCacheEntry(cacheKey: string, dataUrl: string): void {
+  if (thumbnailArtworkCache.has(cacheKey)) {
+    thumbnailArtworkCache.delete(cacheKey)
+  }
+  thumbnailArtworkCache.set(cacheKey, dataUrl)
+
+  while (thumbnailArtworkCache.size > MAX_THUMBNAIL_CACHE_ENTRIES) {
+    const oldestKey = thumbnailArtworkCache.keys().next().value
+    if (!oldestKey) return
+    thumbnailArtworkCache.delete(oldestKey)
+  }
+}
+
+function getThumbnailCacheEntry(cacheKey: string): string | undefined {
+  const cached = thumbnailArtworkCache.get(cacheKey)
+  if (!cached) return undefined
+  // Touch entry to keep LRU order.
+  thumbnailArtworkCache.delete(cacheKey)
+  thumbnailArtworkCache.set(cacheKey, cached)
+  return cached
+}
 
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
@@ -271,32 +304,46 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   // Get artwork data URL (with caching)
-  getArtwork: async (hash: string | null) => {
+  getArtwork: async (hash: string | null, options?: ArtworkRequestOptions) => {
     if (!hash) return null
+    const variant: ArtworkVariant = options?.variant ?? 'full'
+    const cacheKey = getArtworkCacheKey(hash, variant)
 
     // Check cache first
-    if (artworkCache.has(hash)) {
-      return artworkCache.get(hash)!
+    if (variant === 'thumbnail') {
+      const thumbnailCached = getThumbnailCacheEntry(cacheKey)
+      if (thumbnailCached) {
+        return thumbnailCached
+      }
+    } else if (artworkCache.has(cacheKey)) {
+      return artworkCache.get(cacheKey)!
     }
 
-    // Deduplicate concurrent requests for the same artwork hash.
-    if (artworkRequestCache.has(hash)) {
-      return artworkRequestCache.get(hash)!
+    // Deduplicate concurrent requests for the same artwork hash + variant.
+    if (artworkRequestCache.has(cacheKey)) {
+      return artworkRequestCache.get(cacheKey)!
     }
 
-    const request = window.electronAPI.library.getArtworkDataUrl(hash)
+    const request = (variant === 'thumbnail'
+      ? window.electronAPI.library.getArtworkThumbnailDataUrl(hash)
+      : window.electronAPI.library.getArtworkDataUrl(hash)
+    )
       .then((dataUrl) => {
         if (dataUrl) {
-          artworkCache.set(hash, dataUrl)
+          if (variant === 'thumbnail') {
+            setThumbnailCacheEntry(cacheKey, dataUrl)
+          } else {
+            artworkCache.set(cacheKey, dataUrl)
+          }
         }
         return dataUrl
       })
       .catch(() => null)
       .finally(() => {
-        artworkRequestCache.delete(hash)
+        artworkRequestCache.delete(cacheKey)
       })
 
-    artworkRequestCache.set(hash, request)
+    artworkRequestCache.set(cacheKey, request)
     return request
   },
 

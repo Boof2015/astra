@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen } from 'electron'
 import { join, basename, extname } from 'path'
-import { readFile, writeFile, mkdtemp, rm, access } from 'fs/promises'
+import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { tmpdir } from 'os'
 import { execFile, type ExecFileOptions } from 'child_process'
+import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import {
@@ -69,12 +70,54 @@ const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
+const TRACKLIST_THUMB_MAX_EDGE_PX = 96
+const TRACKLIST_THUMB_JPEG_QUALITY = 78
+const TRACKLIST_THUMB_CACHE_VERSION = 'v1'
+const RELEASES_URL_HOSTNAME = 'github.com'
+const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
+
+let artworkThumbnailCacheDir = ''
+const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
 
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
   controlsEnabled: false,
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
+}
+
+function resolveSafeReleaseUrl(candidateUrl: unknown): string {
+  if (typeof candidateUrl !== 'string') {
+    return RELEASES_PAGE_URL
+  }
+
+  const trimmed = candidateUrl.trim()
+  if (trimmed.length === 0) {
+    return RELEASES_PAGE_URL
+  }
+
+  try {
+    const parsedUrl = new URL(trimmed)
+    const normalizedPath = parsedUrl.pathname.replace(/\/+$/, '').toLowerCase()
+    const isPathAllowed = normalizedPath === RELEASES_URL_PATH_PREFIX
+      || normalizedPath.startsWith(`${RELEASES_URL_PATH_PREFIX}/`)
+
+    if (parsedUrl.protocol !== 'https:') {
+      return RELEASES_PAGE_URL
+    }
+    if (parsedUrl.hostname.toLowerCase() !== RELEASES_URL_HOSTNAME) {
+      return RELEASES_PAGE_URL
+    }
+    if (parsedUrl.port.length > 0) {
+      return RELEASES_PAGE_URL
+    }
+    if (!isPathAllowed) {
+      return RELEASES_PAGE_URL
+    }
+    return parsedUrl.toString()
+  } catch {
+    return RELEASES_PAGE_URL
+  }
 }
 
 function sendMiniPlayerCommand(command: MiniPlayerCommand): void {
@@ -625,9 +668,140 @@ function scheduleAudioMetadataBackfillMigration(): void {
   }, AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS)
 }
 
+function detectArtworkMimeType(hash: string, data: Buffer): string {
+  if (hash.endsWith('.png')) return 'image/png'
+  if (hash.endsWith('.gif')) return 'image/gif'
+  if (hash.endsWith('.webp')) return 'image/webp'
+  if (hash.endsWith('.bmp')) return 'image/bmp'
+
+  // Backward compatibility: detect format from magic bytes for legacy hashes.
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) {
+    return 'image/png'
+  }
+  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) {
+    return 'image/gif'
+  }
+  if (data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46) {
+    return 'image/webp'
+  }
+  return 'image/jpeg'
+}
+
+function toDataUrl(mimeType: string, data: Buffer): string {
+  return `data:${mimeType};base64,${data.toString('base64')}`
+}
+
+function getArtworkThumbnailCacheKey(hash: string): string {
+  return createHash('md5')
+    .update(`${TRACKLIST_THUMB_CACHE_VERSION}:${hash}:${TRACKLIST_THUMB_MAX_EDGE_PX}`)
+    .digest('hex')
+}
+
+function getErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object' || !('code' in error)) return null
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : null
+}
+
+async function ensureArtworkThumbnailCacheDirectory(): Promise<void> {
+  if (!artworkThumbnailCacheDir) {
+    artworkThumbnailCacheDir = join(app.getPath('userData'), 'artwork-thumbs')
+  }
+  await mkdir(artworkThumbnailCacheDir, { recursive: true })
+}
+
+async function clearArtworkThumbnailCacheDirectory(): Promise<void> {
+  if (!artworkThumbnailCacheDir) {
+    artworkThumbnailCacheDir = join(app.getPath('userData'), 'artwork-thumbs')
+  }
+  try {
+    await rm(artworkThumbnailCacheDir, { recursive: true, force: true })
+    await mkdir(artworkThumbnailCacheDir, { recursive: true })
+  } catch (error) {
+    console.warn('Failed to clear artwork thumbnail cache directory:', artworkThumbnailCacheDir, error)
+  }
+}
+
+function resizeForTracklistThumbnail(sourceImage: Electron.NativeImage): Electron.NativeImage {
+  const { width, height } = sourceImage.getSize()
+  if (width <= 0 || height <= 0) return sourceImage
+
+  const longestEdge = Math.max(width, height)
+  if (longestEdge <= TRACKLIST_THUMB_MAX_EDGE_PX) {
+    return sourceImage
+  }
+
+  const scale = TRACKLIST_THUMB_MAX_EDGE_PX / longestEdge
+  return sourceImage.resize({
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    quality: 'good'
+  })
+}
+
+async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
+  if (!hash) return null
+  try {
+    const artworkPath = library.getArtworkPath(hash)
+    const data = await readFile(artworkPath)
+    return toDataUrl(detectArtworkMimeType(hash, data), data)
+  } catch {
+    return null
+  }
+}
+
+async function getArtworkThumbnailDataUrlByHash(hash: string): Promise<string | null> {
+  if (!hash) return null
+
+  try {
+    await ensureArtworkThumbnailCacheDirectory()
+    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash)}.jpg`)
+
+    try {
+      const cached = await readFile(thumbnailPath)
+      if (cached.length > 0) {
+        return toDataUrl('image/jpeg', cached)
+      }
+    } catch {
+      // Cache miss: generate and persist below.
+    }
+
+    const artworkPath = library.getArtworkPath(hash)
+    const sourceBuffer = await readFile(artworkPath)
+    const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
+    if (sourceImage.isEmpty()) {
+      return getArtworkDataUrlByHash(hash)
+    }
+
+    const resized = resizeForTracklistThumbnail(sourceImage)
+    const thumbnailBuffer = resized.toJPEG(TRACKLIST_THUMB_JPEG_QUALITY)
+    if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
+      return getArtworkDataUrlByHash(hash)
+    }
+
+    try {
+      await writeFile(thumbnailPath, thumbnailBuffer, { flag: 'wx' })
+    } catch (error) {
+      if (getErrorCode(error) !== 'EEXIST') {
+        console.warn('Failed to persist artwork thumbnail cache file:', thumbnailPath, error)
+      }
+    }
+
+    return toDataUrl('image/jpeg', thumbnailBuffer)
+  } catch (error) {
+    console.warn('Failed to resolve artwork thumbnail data URL:', hash, error)
+    return getArtworkDataUrlByHash(hash)
+  }
+}
+
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
+  try {
+    await ensureArtworkThumbnailCacheDirectory()
+  } catch (error) {
+    console.warn('Failed to initialize artwork thumbnail cache directory:', error)
+  }
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   await localApiService.applyConfig(localApiConfig)
@@ -822,8 +996,9 @@ ipcMain.handle('updates:check', async () => {
   return checkForUpdates(app.getVersion())
 })
 
-ipcMain.handle('updates:openReleasesPage', async () => {
-  await shell.openExternal(RELEASES_PAGE_URL)
+ipcMain.handle('updates:openReleasesPage', async (_event, releaseUrl: unknown) => {
+  const targetUrl = resolveSafeReleaseUrl(releaseUrl)
+  await shell.openExternal(targetUrl)
   return true
 })
 
@@ -1105,11 +1280,15 @@ ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
 
 ipcMain.handle('library:resetMappedFolders', async () => {
   const result = await library.resetMappedFoldersData()
+  await clearArtworkThumbnailCacheDirectory()
+  artworkThumbnailRequestCache.clear()
   return { success: true, ...result }
 })
 
 ipcMain.handle('library:factoryReset', async () => {
   await library.factoryResetLibraryData()
+  await clearArtworkThumbnailCacheDirectory()
+  artworkThumbnailRequestCache.clear()
   return { success: true }
 })
 
@@ -1170,31 +1349,25 @@ ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
 
 // Get artwork as data URL
 ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
+  return getArtworkDataUrlByHash(hash)
+})
+
+// Get tracklist-sized artwork thumbnail as data URL
+ipcMain.handle('library:getArtworkThumbnailDataUrl', async (_event, hash: string) => {
   if (!hash) return null
-  try {
-    const artworkPath = library.getArtworkPath(hash)
-    const data = await readFile(artworkPath)
-    const base64 = data.toString('base64')
-    // Determine mime type from file extension in hash, or detect from magic bytes
-    let mimeType = 'image/jpeg'
-    if (hash.endsWith('.png')) mimeType = 'image/png'
-    else if (hash.endsWith('.gif')) mimeType = 'image/gif'
-    else if (hash.endsWith('.webp')) mimeType = 'image/webp'
-    else if (hash.endsWith('.bmp')) mimeType = 'image/bmp'
-    else {
-      // Backward compatibility: detect from magic bytes for old .jpg files
-      if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) {
-        mimeType = 'image/png'
-      } else if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) {
-        mimeType = 'image/gif'
-      } else if (data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46) {
-        mimeType = 'image/webp'
-      }
-    }
-    return `data:${mimeType};base64,${base64}`
-  } catch {
-    return null
+
+  const requestKey = getArtworkThumbnailCacheKey(hash)
+  if (artworkThumbnailRequestCache.has(requestKey)) {
+    return artworkThumbnailRequestCache.get(requestKey)!
   }
+
+  const request = getArtworkThumbnailDataUrlByHash(hash)
+    .finally(() => {
+      artworkThumbnailRequestCache.delete(requestKey)
+    })
+
+  artworkThumbnailRequestCache.set(requestKey, request)
+  return request
 })
 
 // ============================================

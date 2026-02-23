@@ -61,7 +61,7 @@ declare global {
                     checkedAt: number
                     message: string
                 }>
-                openReleasesPage: () => Promise<boolean>
+                openReleasesPage: (releaseUrl?: string) => Promise<boolean>
             }
             theme: {
                 setRuntimeIconDataUrl: (dataUrl: string) => void
