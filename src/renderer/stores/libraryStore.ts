@@ -49,6 +49,7 @@ type SelectionOrigin = 'home' | 'library' | null
 interface LibraryStore {
   // State
   tracks: DbTrack[]
+  totalTrackCount: number
   albums: Album[]
   artists: Artist[]
   folders: LibraryFolder[]
@@ -70,6 +71,7 @@ interface LibraryStore {
   // Actions
   loadLibrary: () => Promise<void>
   loadTracks: () => Promise<void>
+  loadTrackCount: () => Promise<void>
   loadAlbums: () => Promise<void>
   loadArtists: () => Promise<void>
   loadFolders: () => Promise<void>
@@ -97,6 +99,7 @@ const artworkRequestCache = new Map<string, Promise<string | null>>()
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
   tracks: [],
+  totalTrackCount: 0,
   albums: [],
   artists: [],
   folders: [],
@@ -120,6 +123,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ isLoading: true })
     await Promise.all([
       get().loadTracks(),
+      get().loadTrackCount(),
       get().loadAlbums(),
       get().loadArtists(),
       get().loadFolders(),
@@ -137,6 +141,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       if (state.selectedAlbum || state.selectedArtist) return {}
       return { tracks }
     })
+  },
+
+  // Load full-library track count (independent of active selection/filter state)
+  loadTrackCount: async () => {
+    try {
+      const totalTrackCount = await window.electronAPI.library.getTrackCount()
+      if (typeof totalTrackCount !== 'number' || !Number.isFinite(totalTrackCount) || totalTrackCount < 0) {
+        return
+      }
+      set({ totalTrackCount })
+    } catch (error) {
+      console.error('Failed to load library track count:', error)
+    }
   },
 
   // Load albums

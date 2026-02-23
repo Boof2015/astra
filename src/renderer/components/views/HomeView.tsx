@@ -783,7 +783,7 @@ function drawStarField(
 }
 
 export default function HomeView() {
-  const tracks = useLibraryStore((s) => s.tracks as HomeTrack[])
+  const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const recentlyPlayed = useLibraryStore((s) => s.recentlyPlayed as HomeTrack[])
@@ -811,7 +811,7 @@ export default function HomeView() {
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  const hasLibraryContent = tracks.length > 0 || albums.length > 0 || artists.length > 0
+  const hasLibraryContent = totalTrackCount > 0 || albums.length > 0 || artists.length > 0
 
   useEffect(() => {
     void loadPlaylists()
@@ -1184,7 +1184,7 @@ export default function HomeView() {
           <div className="home-greeting-stats">
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Tracks</span>
-              <span className="home-greeting-stat-value">{tracks.length}</span>
+              <span className="home-greeting-stat-value">{totalTrackCount}</span>
             </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Albums</span>
