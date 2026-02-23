@@ -114,6 +114,9 @@ const STAR_GRID_SIZE = 6
 const STAR_PIXEL_SIZE = 2
 const STAR_CLUSTER_RATIO = 0.16
 const STAR_OPACITY_SCALE = 0.52
+const GREETING_WEIGHT_TIME_AWARE = 0.4
+const GREETING_WEIGHT_DAY_AWARE = 0.28
+const GREETING_WEIGHT_PLAYFUL = 0.32
 
 function formatPlaylistImportStatus(result: PlaylistImportResult): PlaylistImportStatus {
   const detailSegments: string[] = []
@@ -176,7 +179,7 @@ const PLAYFUL_GREETINGS: GreetingCopy[] = [
   {
     id: 'playful-back-again',
     primary: 'Back again.',
-    subline: 'Good taste.'
+    subline: 'Your music, my liege.'
   },
   {
     id: 'playful-silence',
@@ -186,7 +189,7 @@ const PLAYFUL_GREETINGS: GreetingCopy[] = [
   {
     id: 'playful-missed-you',
     primary: 'Missed you!',
-    subline: ''
+    subline: 'Don\'t look behind you'
   },
   {
     id: 'playful-no-algo',
@@ -197,6 +200,96 @@ const PLAYFUL_GREETINGS: GreetingCopy[] = [
     id: 'playful-aux',
     primary: 'The aux is yours.',
     subline: ''
+  },
+  {
+    id: 'playful-video',
+    primary: 'Now a video player!',
+    subline: 'Just kidding'
+  },
+  {
+    id: 'playful-japanese',
+    primary: '何か日本語で',
+    subline: 'It\'s something in Japanese'
+  },
+  {
+    id: 'playful-quote',
+    primary: 'To know your enemy is to listen to their bad music',
+    subline: '- Sun Tzu, The Art of War ...maybe (idk tho)'
+  },
+  {
+    id: 'playful-test',
+    primary: 'test1_funny_dialogue',
+    subline: 'i ran out of ideas please laugh'
+  },
+  {
+    id: 'playful-hey',
+    primary: 'hey...',
+    subline: 'does anyone even read these?'
+  },
+  {
+    id: 'playful-ranked',
+    primary: 'New feature:',
+    subline: 'Astra ranked'
+  },
+  {
+    id: 'playful-mistake',
+    primary: 'Here is the AUX',
+    subline: 'DO NOT MESS THIS UP'
+  },
+  {
+    id: 'playful-claude',
+    primary: 'Claude Flibbergibbeted this',
+    subline: 'If anything\'s broken, blame Claude'
+  },
+  {
+    id: 'playful-cable',
+    primary: 'Now featuring interdimensional cable',
+    subline: 'This plumbus thing is really cool'
+  },
+  {
+    id: 'playful-train',
+    primary: 'I like trains',
+    subline: ''
+  },
+  {
+    id: 'playful-chips',
+    primary: 'You call these things chips?',
+    subline: 'Instead of Crispity Cruncy Munchie Crackerjack Snacker Nibbler Snap Crack N Pop Westpoolchestershireshire Queen\'s Lovely Jubily Delight?'
+  },
+  {
+    id: 'playful-yikes',
+    primary: 'hey...',
+    subline: 'I just saw your play history... yikes...'
+  },
+  {
+    id: 'playful-combust',
+    primary: 'feeling cute',
+    subline: 'might spontaniously combust later'
+  },
+  {
+    id: 'playful-hunger',
+    primary: 'Feeling hungry...',
+    subline: 'Got any spare RAM?'
+  },
+  {
+    id: 'playful-break',
+    primary: 'Let me break it down for you...',
+    subline: '*breakdances*'
+  },
+  {
+    id: 'playful-sad',
+    primary: '"Not everything has to be funny"',
+    subline: '- The guy next to me when writing these'
+  },
+  {
+    id: 'playful-silenceno',
+    primary: 'Silence?',
+    subline: 'nuh uh'
+  },
+  {
+    id: 'playful-yilongma',
+    primary: 'I AM YILONGMA',
+    subline: 'I LOVE YOU'
   }
 ]
 
@@ -208,7 +301,7 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
       {
         id: 'late-still-up',
         primary: 'Still up?',
-        subline: 'Astra never sleeps either.'
+        subline: 'Go to sleep.'
       },
       {
         id: 'late-same',
@@ -234,7 +327,17 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
       {
         id: 'late-still-up',
         primary: 'Still up?',
-        subline: 'Astra never sleeps either.'
+        subline: 'Go to sleep.'
+      },
+      {
+        id: 'late-walls',
+        primary: '3 AM...',
+        subline: 'THEY ARE IN YOUR WALLS'
+      },
+      {
+        id: 'late-british',
+        primary: 'You still awake?',
+        subline: 'That\'s a bit cringe innit bruv?'
       }
     ]
   },
@@ -245,7 +348,7 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
       {
         id: 'morning-easy',
         primary: 'Morning.',
-        subline: "Let's start easy."
+        subline: "It's too early."
       }
     ]
   },
@@ -255,13 +358,13 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
     messages: [
       {
         id: 'morning-good',
-        primary: 'Good morning.',
-        subline: ''
+        primary: 'Good morning!',
+        subline: 'Conquer the day'
       },
       {
-        id: 'morning-easy',
+        id: 'morning-easytwo',
         primary: 'Morning.',
-        subline: "Let's start easy."
+        subline: "Time to break your eardrums."
       }
     ]
   },
@@ -272,7 +375,7 @@ const TIME_AWARE_GREETINGS: TimeGreetingWindow[] = [
       {
         id: 'late-morning',
         primary: 'Late morning.',
-        subline: 'Ease into it.'
+        subline: 'Have you gotten your coffee yet?'
       }
     ]
   },
@@ -483,13 +586,13 @@ function chooseGreeting(previousId: string | null, now: Date): GreetingSelection
 
   const pools: WeightedGreetingPool[] = []
   if (timeAware.length > 0) {
-    pools.push({ messages: timeAware, weight: 0.5 })
+    pools.push({ messages: timeAware, weight: GREETING_WEIGHT_TIME_AWARE })
   }
   if (dayAware.length > 0) {
-    pools.push({ messages: dayAware, weight: 0.3 })
+    pools.push({ messages: dayAware, weight: GREETING_WEIGHT_DAY_AWARE })
   }
   if (playful.length > 0) {
-    pools.push({ messages: playful, weight: 0.2 })
+    pools.push({ messages: playful, weight: GREETING_WEIGHT_PLAYFUL })
   }
 
   const fallbackMessages = timeAware.length > 0 ? timeAware : dayAware.length > 0 ? dayAware : playful
