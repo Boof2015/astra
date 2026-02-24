@@ -163,11 +163,17 @@ export default function AudioPipelineShelf() {
 
     // Normalization
     if (audioEngine.normalizationEnabled) {
+      const gainMode = audioEngine.getNormalizationMode()
       const gainDb = audioEngine.getNormalizationGainDb()
       const rounded = Math.round(gainDb * 10) / 10
       const displayDb = Math.abs(rounded) < 0.05 ? 0 : rounded
       const sign = displayDb > 0 ? '+' : ''
-      result.push({ id: 'norm', icon: NormIcon, label: 'Normalization', detail: `${sign}${displayDb.toFixed(1)} dB` })
+      result.push({
+        id: 'norm',
+        icon: NormIcon,
+        label: gainMode === 'replaygain' ? 'ReplayGain' : 'Normalization',
+        detail: `${sign}${displayDb.toFixed(1)} dB`
+      })
     }
 
     // EQ

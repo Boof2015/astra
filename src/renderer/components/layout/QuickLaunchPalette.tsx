@@ -38,6 +38,8 @@ interface AudioLoadMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  replayGainTrackDb?: number
+  replayGainAlbumDb?: number
 }
 
 interface AudioLoadResult {
@@ -66,7 +68,9 @@ function toQueueTrack(track: QuickLaunchTrackRecord): Track {
     channels: track.channels ?? undefined,
     codec: track.codec ?? undefined,
     codecProfile: track.codec_profile ?? undefined,
-    isAtmosJoc: track.is_atmos_joc === 1
+    isAtmosJoc: track.is_atmos_joc === 1,
+    replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
+    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined
   }
 }
 
@@ -92,7 +96,9 @@ function toLoadedTrack(track: QuickLaunchTrackRecord, metadata?: AudioLoadMetada
     channels: metadata?.channels ?? track.channels ?? undefined,
     codec: metadata?.codec ?? track.codec ?? undefined,
     codecProfile: metadata?.codecProfile ?? track.codec_profile ?? undefined,
-    isAtmosJoc: metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1)
+    isAtmosJoc: metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1),
+    replayGainTrackDb: metadata?.replayGainTrackDb ?? track.replaygain_track_gain_db ?? undefined,
+    replayGainAlbumDb: metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined
   }
 }
 

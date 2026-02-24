@@ -35,6 +35,8 @@ export interface AudioFileResult {
     codec?: string
     codecProfile?: string
     isAtmosJoc?: boolean
+    replayGainTrackDb?: number
+    replayGainAlbumDb?: number
     artwork?: string  // Base64 data URL
   }
 }
@@ -65,6 +67,8 @@ export interface DbTrack {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
   added_at: number
   modified_at: number
 }
@@ -397,6 +401,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  getReplayGainScanEnabled: () => ipcRenderer.invoke('audio:getReplayGainScanEnabled') as Promise<boolean>,
+  setReplayGainScanEnabled: (enabled: boolean) => ipcRenderer.invoke('audio:setReplayGainScanEnabled', enabled) as Promise<boolean>,
 
   // Generic file dialogs & I/O
   showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
@@ -542,6 +548,8 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      getReplayGainScanEnabled: () => Promise<boolean>
+      setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>

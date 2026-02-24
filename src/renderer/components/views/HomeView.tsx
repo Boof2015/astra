@@ -22,6 +22,8 @@ interface HomeTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
@@ -1067,7 +1069,9 @@ export default function HomeView() {
       channels: result.metadata?.channels ?? track.channels ?? undefined,
       codec: result.metadata?.codec ?? track.codec ?? undefined,
       codecProfile: result.metadata?.codecProfile ?? track.codec_profile ?? undefined,
-      isAtmosJoc: result.metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1)
+      isAtmosJoc: result.metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1),
+      replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replaygain_track_gain_db ?? undefined,
+      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined
     }
 
     const loaded = await loadTrack(playerTrack, result.data)
@@ -1093,7 +1097,9 @@ export default function HomeView() {
       channels: recentTrack.channels ?? undefined,
       codec: recentTrack.codec ?? undefined,
       codecProfile: recentTrack.codec_profile ?? undefined,
-      isAtmosJoc: recentTrack.is_atmos_joc === 1
+      isAtmosJoc: recentTrack.is_atmos_joc === 1,
+      replayGainTrackDb: recentTrack.replaygain_track_gain_db ?? undefined,
+      replayGainAlbumDb: recentTrack.replaygain_album_gain_db ?? undefined
     }))
 
     setQueue(queueTracks, index)

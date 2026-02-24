@@ -162,18 +162,23 @@ export default function TransportBar() {
     currentCodec.includes('joc')
   )
   const normalizationReadout = (() => {
+    const gainMode = audioEngine.getNormalizationMode()
     if (!currentTrack) {
-      return { value: '\u2014', dim: true }
+      return { value: '\u2014', dim: true, accent: false }
     }
     if (!audioEngine.normalizationEnabled) {
-      return { value: 'OFF', dim: true }
+      return { value: 'OFF', dim: true, accent: false }
     }
 
     const gainDb = audioEngine.getNormalizationGainDb()
     const rounded = Math.round(gainDb * 10) / 10
     const displayDb = Math.abs(rounded) < 0.05 ? 0 : rounded
     const sign = displayDb > 0 ? '+' : ''
-    return { value: `${sign}${displayDb.toFixed(1)}dB`, dim: false }
+    return {
+      value: `${sign}${displayDb.toFixed(1)}dB`,
+      dim: false,
+      accent: gainMode === 'replaygain'
+    }
   })()
 
   return (
@@ -484,7 +489,9 @@ export default function TransportBar() {
           </div>
           <div className="readout-cell">
             <span className="readout-label">NORM</span>
-            <span className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}`}>
+            <span
+              className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}${normalizationReadout.accent ? ' readout-value-replaygain' : ''}`}
+            >
               {normalizationReadout.value}
             </span>
           </div>

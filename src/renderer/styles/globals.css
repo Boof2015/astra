@@ -840,6 +840,11 @@ button, .titlebar {
   color: var(--text-tertiary);
 }
 
+.readout-value-replaygain {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ============================================
    Info Sidebar
    ============================================ */

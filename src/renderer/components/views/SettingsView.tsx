@@ -7,6 +7,7 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
@@ -160,6 +161,8 @@ export default function SettingsView() {
     setOscilloscopeUnderfillEnabled,
     setIsRunning,
   } = useVisualizerSettingsStore()
+  const replayGainScanEnabled = useAudioSettingsStore((state) => state.replayGainScanEnabled)
+  const setReplayGainScanEnabled = useAudioSettingsStore((state) => state.setReplayGainScanEnabled)
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
@@ -789,7 +792,21 @@ export default function SettingsView() {
                 Rescan Library
               </button>
             </div>
+            <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">ReplayGain Scanning</span>
+                <button
+                  className={`settings-toggle ${replayGainScanEnabled ? 'active' : ''}`}
+                  onClick={() => void setReplayGainScanEnabled(!replayGainScanEnabled)}
+                >
+                  {replayGainScanEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+            </div>
             <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
+            <p className="settings-note">
+              Experimental: when enabled, ReplayGain tags are scanned and used for playback gain when present; otherwise Astra falls back to normalization. This can make scope visuals look undesirable on some tracks.
+            </p>
           </section>
             )}
 

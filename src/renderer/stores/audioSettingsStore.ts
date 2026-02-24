@@ -49,6 +49,7 @@ interface AudioSettingsStore {
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
   channelRoutingMap: number[] | null
+  replayGainScanEnabled: boolean
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
   inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -65,6 +66,7 @@ interface AudioSettingsStore {
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
+  setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
@@ -749,6 +751,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectedOutputChannelCount: null,
     multichannelEnabled: false,
     channelRoutingMap: null,
+    replayGainScanEnabled: false,
 
     delayProfilesByDeviceKey: {},
     inputBaselinesByKey: {},
@@ -855,6 +858,26 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     resetChannelRoutingMap: async () => {
       await get().setChannelRoutingMap(null)
+    },
+
+    setReplayGainScanEnabled: async (enabled: boolean) => {
+      const previous = get().replayGainScanEnabled
+      const normalized = Boolean(enabled)
+      set({ replayGainScanEnabled: normalized })
+      audioEngine.setReplayGainEnabled(normalized)
+
+      try {
+        const persisted = await window.electronAPI.setReplayGainScanEnabled(normalized)
+        const resolved = Boolean(persisted)
+        if (resolved !== normalized) {
+          set({ replayGainScanEnabled: resolved })
+          audioEngine.setReplayGainEnabled(resolved)
+        }
+      } catch (error) {
+        console.error('Failed to persist ReplayGain scan setting:', error)
+        set({ replayGainScanEnabled: previous })
+        audioEngine.setReplayGainEnabled(previous)
+      }
     },
 
     setDelayCompensationEnabled: async (enabled: boolean) => {
@@ -1287,6 +1310,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
       }
 
+      try {
+        await window.electronAPI.setReplayGainScanEnabled(false)
+      } catch (error) {
+        console.warn('Failed to reset ReplayGain scan setting to default:', error)
+      }
+      audioEngine.setReplayGainEnabled(false)
+
       let availableDevices = get().availableDevices
       let availableInputDevices = get().availableInputDevices
 
@@ -1318,6 +1348,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         selectedOutputChannelCount,
         multichannelEnabled: false,
         channelRoutingMap: null,
+        replayGainScanEnabled: false,
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
         activeDelayProfileKey: 'default',
@@ -1329,6 +1360,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     initFromSaved: async () => {
+      let replayGainEnabled = false
+      try {
+        replayGainEnabled = await window.electronAPI.getReplayGainScanEnabled()
+      } catch (error) {
+        console.warn('Failed to load ReplayGain scan setting; defaulting to disabled.', error)
+      }
+      audioEngine.setReplayGainEnabled(replayGainEnabled)
+
       const rawDelaySettingsV2 = localStorage.getItem(DELAY_PROFILE_STORAGE_KEY_V2)
       let savedProfiles: Record<string, DelayCompensationProfile> = {}
       let savedInputBaselines: Record<string, InputDelayBaseline> = {}
@@ -1347,7 +1386,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       set({
         delayProfilesByDeviceKey: savedProfiles,
-        inputBaselinesByKey: savedInputBaselines
+        inputBaselinesByKey: savedInputBaselines,
+        replayGainScanEnabled: replayGainEnabled
       })
 
       await get().refreshDevices()

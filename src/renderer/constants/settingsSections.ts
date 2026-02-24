@@ -7,7 +7,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'library',
     label: 'Library',
-    keywords: ['folders', 'rescan', 'scan', 'music', 'metadata', 'import', 'path']
+    keywords: ['folders', 'rescan', 'scan', 'music', 'metadata', 'import', 'path', 'replaygain', 'normalization', 'loudness', 'gain']
   },
   {
     id: 'analyzer',

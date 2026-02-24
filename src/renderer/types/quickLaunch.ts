@@ -20,6 +20,8 @@ export interface QuickLaunchTrackRecord {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
@@ -85,4 +87,3 @@ export type QuickLaunchResult =
   | QuickLaunchArtistResult
   | QuickLaunchNavResult
   | QuickLaunchSeeAllResult
-

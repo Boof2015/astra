@@ -110,6 +110,8 @@ export default function LibraryView() {
         codec: result.metadata?.codec,
         codecProfile: result.metadata?.codecProfile,
         isAtmosJoc: result.metadata?.isAtmosJoc,
+        replayGainTrackDb: result.metadata?.replayGainTrackDb,
+        replayGainAlbumDb: result.metadata?.replayGainAlbumDb,
       }
       await loadTrack(track, result.data)
     }

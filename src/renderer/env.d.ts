@@ -105,10 +105,59 @@ declare global {
                 resetToDefaults: () => Promise<LocalApiStatus>
                 onStatus: (callback: (status: LocalApiStatus) => void) => () => void
             }
-            openAudioFile: () => Promise<any>
+            openAudioFile: () => Promise<{
+                path: string
+                name: string
+                data: ArrayBuffer
+                metadata?: {
+                    title?: string
+                    artist?: string
+                    album?: string
+                    albumArtist?: string
+                    year?: number
+                    trackNumber?: number
+                    duration?: number
+                    format?: string
+                    sampleRate?: number
+                    channels?: number
+                    codec?: string
+                    codecProfile?: string
+                    isAtmosJoc?: boolean
+                    replayGainTrackDb?: number
+                    replayGainAlbumDb?: number
+                    artwork?: string
+                }
+            } | null>
             openAudioFolder: () => Promise<string | null>
-            loadAudioFile: (filePath: string) => Promise<any>
+            loadAudioFile: (
+                filePath: string,
+                options?: { metadataMode?: 'full' | 'none' }
+            ) => Promise<{
+                path: string
+                name: string
+                data: ArrayBuffer
+                metadata?: {
+                    title?: string
+                    artist?: string
+                    album?: string
+                    albumArtist?: string
+                    year?: number
+                    trackNumber?: number
+                    duration?: number
+                    format?: string
+                    sampleRate?: number
+                    channels?: number
+                    codec?: string
+                    codecProfile?: string
+                    isAtmosJoc?: boolean
+                    replayGainTrackDb?: number
+                    replayGainAlbumDb?: number
+                    artwork?: string
+                }
+            } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+            getReplayGainScanEnabled: () => Promise<boolean>
+            setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
             library: any
         }
     }

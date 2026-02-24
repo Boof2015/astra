@@ -21,6 +21,8 @@ export interface Track {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  replayGainTrackDb?: number
+  replayGainAlbumDb?: number
 }
 
 // Playback state

@@ -27,6 +27,8 @@ interface DbTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
@@ -96,7 +98,9 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     channels: dbTrack.channels ?? undefined,
     codec: dbTrack.codec ?? undefined,
     codecProfile: dbTrack.codec_profile ?? undefined,
-    isAtmosJoc: dbTrack.is_atmos_joc === 1
+    isAtmosJoc: dbTrack.is_atmos_joc === 1,
+    replayGainTrackDb: dbTrack.replaygain_track_gain_db ?? undefined,
+    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined
   }
 }
 
@@ -494,7 +498,9 @@ export default function TrackList({
       channels: result.metadata?.channels ?? dbTrack.channels ?? undefined,
       codec: result.metadata?.codec ?? dbTrack.codec ?? undefined,
       codecProfile: result.metadata?.codecProfile ?? dbTrack.codec_profile ?? undefined,
-      isAtmosJoc: result.metadata?.isAtmosJoc ?? (dbTrack.is_atmos_joc === 1)
+      isAtmosJoc: result.metadata?.isAtmosJoc ?? (dbTrack.is_atmos_joc === 1),
+      replayGainTrackDb: result.metadata?.replayGainTrackDb ?? dbTrack.replaygain_track_gain_db ?? undefined,
+      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? dbTrack.replaygain_album_gain_db ?? undefined
     }
 
     const loaded = await loadTrack(track, result.data)

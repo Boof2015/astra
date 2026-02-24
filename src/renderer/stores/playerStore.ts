@@ -86,6 +86,27 @@ function logSlowPath(label: string, startTime: number, details: Record<string, u
   console.warn(`[perf] ${label} slow path (${Math.round(elapsed)}ms)`, details)
 }
 
+function getReplayGainCandidateDb(track: Track | null | undefined): number | null {
+  if (!track) return null
+  const trackGainDb = (
+    typeof track.replayGainTrackDb === 'number'
+      ? track.replayGainTrackDb
+      : (typeof track.replayGainTrackDb === 'string' ? Number(track.replayGainTrackDb) : NaN)
+  )
+  if (Number.isFinite(trackGainDb)) {
+    return trackGainDb
+  }
+  const albumGainDb = (
+    typeof track.replayGainAlbumDb === 'number'
+      ? track.replayGainAlbumDb
+      : (typeof track.replayGainAlbumDb === 'string' ? Number(track.replayGainAlbumDb) : NaN)
+  )
+  if (Number.isFinite(albumGainDb)) {
+    return albumGainDb
+  }
+  return null
+}
+
 export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
@@ -167,9 +188,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         let usedFfmpegFallback = false
+        const replayGainDb = getReplayGainCandidateDb(track)
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(audioData)
+          await audioEngine.loadAudioData(audioData, { replayGainDb })
         } catch (primaryDecodeError) {
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           if (!fallbackData) {
@@ -178,7 +200,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData)
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb })
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -633,9 +655,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         let usedFfmpegFallback = false
+        const replayGainDb = getReplayGainCandidateDb(track)
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(result.data)
+          await audioEngine.loadAudioData(result.data, { replayGainDb })
         } catch (primaryDecodeError) {
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           if (!fallbackData) {
@@ -644,7 +667,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData)
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb })
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -658,7 +681,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
           codec: result.metadata?.codec ?? track.codec,
           codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
-          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc
+          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+          replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
+          replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }
         set({
           duration: audioEngine.duration,
@@ -715,7 +740,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return
         }
         if (result) {
-          await audioEngine.preBufferNext(result.data)
+          await audioEngine.preBufferNext(result.data, {
+            replayGainDb: getReplayGainCandidateDb(nextTrack)
+          })
         }
         logSlowPath('preBufferNextTrack', bufferStart, {
           trackPath: nextTrack.path,

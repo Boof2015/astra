@@ -60,10 +60,15 @@ let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
 const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let replayGainScanEnabled: boolean = false
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
+const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
+const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
+const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
 const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
 const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
@@ -257,6 +262,22 @@ function parseMetaBoolean(value: string | null, fallback: boolean): boolean {
   if (value === '1') return true
   if (value === '0') return false
   return fallback
+}
+
+async function loadReplayGainScanEnabledFromMeta(): Promise<boolean> {
+  const enabled = parseMetaBoolean(library.getAppMeta(REPLAYGAIN_SCAN_ENABLED_META_KEY), false)
+  library.setReplayGainScanEnabled(enabled)
+
+  const normalizedStoredValue = enabled ? '1' : '0'
+  if (library.getAppMeta(REPLAYGAIN_SCAN_ENABLED_META_KEY) !== normalizedStoredValue) {
+    try {
+      await library.setAppMeta(REPLAYGAIN_SCAN_ENABLED_META_KEY, normalizedStoredValue)
+    } catch (error) {
+      console.warn('Failed to persist normalized ReplayGain scan setting:', error)
+    }
+  }
+
+  return enabled
 }
 
 function normalizeLocalApiPort(rawPort: unknown): number {
@@ -668,6 +689,52 @@ function scheduleAudioMetadataBackfillMigration(): void {
   }, AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS)
 }
 
+async function maybeRunReplayGainBackfillOnce(): Promise<void> {
+  if (!replayGainScanEnabled) {
+    return
+  }
+
+  if (library.getAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingReplayGainMetadata()
+    if (scanned > 0) {
+      console.log(`ReplayGain metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+  } catch (err) {
+    console.warn('ReplayGain metadata backfill failed:', err)
+  } finally {
+    try {
+      await library.setAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY, '1')
+    } catch (err) {
+      console.warn('Failed to persist ReplayGain metadata backfill migration flag:', err)
+    }
+  }
+}
+
+function scheduleReplayGainBackfillMigration(): void {
+  if (!replayGainScanEnabled) {
+    return
+  }
+  if (library.getAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (replayGainBackfillTimer !== null) {
+    clearTimeout(replayGainBackfillTimer)
+  }
+
+  replayGainBackfillTimer = setTimeout(() => {
+    replayGainBackfillTimer = null
+    void maybeRunReplayGainBackfillOnce()
+  }, REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS)
+}
+
 function detectArtworkMimeType(hash: string, data: Buffer): string {
   if (hash.endsWith('.png')) return 'image/png'
   if (hash.endsWith('.gif')) return 'image/gif'
@@ -797,6 +864,7 @@ async function getArtworkThumbnailDataUrlByHash(hash: string): Promise<string | 
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
+  replayGainScanEnabled = await loadReplayGainScanEnabledFromMeta()
   try {
     await ensureArtworkThumbnailCacheDirectory()
   } catch (error) {
@@ -815,6 +883,7 @@ app.whenReady().then(async () => {
 
   createWindow()
   scheduleAudioMetadataBackfillMigration()
+  scheduleReplayGainBackfillMigration()
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -837,6 +906,10 @@ app.on('before-quit', () => {
   if (audioMetadataBackfillTimer !== null) {
     clearTimeout(audioMetadataBackfillTimer)
     audioMetadataBackfillTimer = null
+  }
+  if (replayGainBackfillTimer !== null) {
+    clearTimeout(replayGainBackfillTimer)
+    replayGainBackfillTimer = null
   }
   void persistMiniWindowPrefs()
   closeAllScopePopoutWindows()
@@ -1140,6 +1213,37 @@ ipcMain.handle('audio:loadFile', async (_event, filePath: string, options?: Load
 // Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
 ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
+})
+
+ipcMain.handle('audio:getReplayGainScanEnabled', () => {
+  return replayGainScanEnabled
+})
+
+ipcMain.handle('audio:setReplayGainScanEnabled', async (_event, enabledValue: unknown) => {
+  replayGainScanEnabled = Boolean(enabledValue)
+  library.setReplayGainScanEnabled(replayGainScanEnabled)
+
+  try {
+    await library.setAppMeta(REPLAYGAIN_SCAN_ENABLED_META_KEY, replayGainScanEnabled ? '1' : '0')
+  } catch (error) {
+    console.warn('Failed to persist ReplayGain scan setting:', error)
+  }
+
+  if (!replayGainScanEnabled) {
+    if (replayGainBackfillTimer !== null) {
+      clearTimeout(replayGainBackfillTimer)
+      replayGainBackfillTimer = null
+    }
+    try {
+      await library.setAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY, '0')
+    } catch (error) {
+      console.warn('Failed to reset ReplayGain backfill migration flag:', error)
+    }
+  } else {
+    scheduleReplayGainBackfillMigration()
+  }
+
+  return replayGainScanEnabled
 })
 
 // ============================================
@@ -1470,6 +1574,8 @@ interface LoadedAudioMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  replayGainTrackDb?: number
+  replayGainAlbumDb?: number
 }
 
 interface LoadAudioFileOptions {
@@ -1594,6 +1700,110 @@ function toNumberOrUndefined(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined
   }
   return undefined
+}
+
+function normalizeReplayGainTagId(id: string): string {
+  return id.trim().toLowerCase().replace(/[\s-]+/g, '_')
+}
+
+function isTrackReplayGainTagId(id: string): boolean {
+  const normalized = normalizeReplayGainTagId(id)
+  return normalized.includes('replaygain_track_gain') || normalized.includes('rg_track_gain')
+}
+
+function isAlbumReplayGainTagId(id: string): boolean {
+  const normalized = normalizeReplayGainTagId(id)
+  return normalized.includes('replaygain_album_gain') || normalized.includes('rg_album_gain')
+}
+
+function toReplayGainNumberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const parsed = toReplayGainNumberOrUndefined(entry)
+      if (parsed != null) return parsed
+    }
+    return undefined
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+
+    const parsed = Number(trimmed)
+    if (Number.isFinite(parsed)) return parsed
+
+    const withDbSuffix = trimmed.replace(/\s*dB\s*$/i, '').trim()
+    const parsedWithDbSuffix = Number(withDbSuffix)
+    if (Number.isFinite(parsedWithDbSuffix)) return parsedWithDbSuffix
+
+    const match = trimmed.match(/[+-]?\d+(?:[.,]\d+)?/)
+    if (!match) return undefined
+    const parsedFromMatch = Number(match[0].replace(',', '.'))
+    return Number.isFinite(parsedFromMatch) ? parsedFromMatch : undefined
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const candidates: unknown[] = [record.dB, record.db, record.gain, record.value, record.text]
+    for (const candidate of candidates) {
+      const parsed = toReplayGainNumberOrUndefined(candidate)
+      if (parsed != null) return parsed
+    }
+  }
+  return undefined
+}
+
+function extractReplayGainDb(metadata: mm.IAudioMetadata): {
+  trackGainDb?: number
+  albumGainDb?: number
+} {
+  const common = metadata.common as unknown as Record<string, unknown>
+  let trackGainDb = toReplayGainNumberOrUndefined(common.replaygain_track_gain)
+  let albumGainDb = toReplayGainNumberOrUndefined(common.replaygain_album_gain)
+
+  for (const [key, rawValue] of Object.entries(common)) {
+    if (trackGainDb == null && isTrackReplayGainTagId(key)) {
+      trackGainDb = toReplayGainNumberOrUndefined(rawValue)
+    }
+    if (albumGainDb == null && isAlbumReplayGainTagId(key)) {
+      albumGainDb = toReplayGainNumberOrUndefined(rawValue)
+    }
+    if (trackGainDb != null && albumGainDb != null) {
+      break
+    }
+  }
+
+  if (trackGainDb == null || albumGainDb == null) {
+    const nativeCollections = Object.values(metadata.native ?? {})
+    for (const tags of nativeCollections) {
+      if (!Array.isArray(tags)) continue
+      for (const rawTag of tags) {
+        if (!rawTag || typeof rawTag !== 'object') continue
+        const tag = rawTag as { id?: unknown; value?: unknown }
+        const id = typeof tag.id === 'string' ? tag.id : ''
+        if (!id) continue
+
+        if (trackGainDb == null && isTrackReplayGainTagId(id)) {
+          trackGainDb = toReplayGainNumberOrUndefined(tag.value)
+        }
+        if (albumGainDb == null && isAlbumReplayGainTagId(id)) {
+          albumGainDb = toReplayGainNumberOrUndefined(tag.value)
+        }
+        if (trackGainDb != null && albumGainDb != null) {
+          break
+        }
+      }
+      if (trackGainDb != null && albumGainDb != null) {
+        break
+      }
+    }
+  }
+
+  return {
+    trackGainDb: trackGainDb ?? toReplayGainNumberOrUndefined(metadata.format.trackGain),
+    albumGainDb: albumGainDb ?? toReplayGainNumberOrUndefined(metadata.format.albumGain)
+  }
 }
 
 function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
@@ -1758,6 +1968,7 @@ async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {
     try {
       const mm_metadata = await mm.parseFile(filePath)
       const common = mm_metadata.common
+      const replayGain = extractReplayGainDb(mm_metadata)
 
       // Convert artwork to base64 data URL
       let artworkDataUrl: string | undefined
@@ -1778,7 +1989,13 @@ async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {
         channels: mm_metadata.format.numberOfChannels,
         codec: mm_metadata.format.codec,
         codecProfile: mm_metadata.format.codecProfile,
-        isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile)
+        isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile),
+        replayGainTrackDb: replayGainScanEnabled
+          ? replayGain.trackGainDb
+          : undefined,
+        replayGainAlbumDb: replayGainScanEnabled
+          ? replayGain.albumGainDb
+          : undefined
       }
     } catch {
       // Keep default metadata when parser fails.
