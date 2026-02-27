@@ -405,11 +405,17 @@ interface CountedDisplayVariant {
   count: number
 }
 
+type AlbumGroupingMode = 'explicit-album-artist' | 'artwork-hash' | 'track-artist'
+
 interface AlbumGroupAccumulator {
+  identityKey: string
+  groupingMode: AlbumGroupingMode
   albumKey: string
   artistKey: string
   albumVariants: Map<string, CountedDisplayVariant>
   artistVariants: Map<string, CountedDisplayVariant>
+  primaryArtistKeys: Set<string>
+  aliasArtistKeys: Set<string>
   artworkCounts: Map<string, number>
   firstArtworkHash: string | null
   year: number | null
@@ -420,6 +426,7 @@ interface AlbumGroupAccumulator {
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
 const UNKNOWN_ALBUM_KEY = UNKNOWN_ALBUM_NAME.toLocaleLowerCase()
 const MIN_TRACKS_FOR_ALBUM = 2
+const VARIOUS_ARTISTS_NAME = 'Various Artists'
 
 function normalizeDisplay(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
@@ -469,12 +476,6 @@ function splitCollaborators(rawArtist: string): string[] {
 function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   const contributors = splitCollaborators(trackArtist)
   return contributors[0] ?? 'Unknown Artist'
-}
-
-function getAlbumIdentityArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
-  const albumArtist = normalizeDisplay(track.album_artist ?? '')
-  if (albumArtist) return albumArtist
-  return getPrimaryArtistFromTrackArtist(track.artist)
 }
 
 function incrementDisplayVariant(map: Map<string, CountedDisplayVariant>, display: string): void {
@@ -557,47 +558,155 @@ function compareTracksByAlbumDiscTrackTitle(a: DbTrack, b: DbTrack): number {
   return compareTracksByDiscTrackTitle(a, b)
 }
 
+function normalizeArtworkHash(hash: string | null): string | null {
+  const normalized = normalizeDisplay(hash ?? '')
+  return normalized ? normalized.toLocaleLowerCase() : null
+}
+
+function buildAlbumIdentityKey(albumKey: string, discriminator: string): string {
+  return `album:${albumKey}::${discriminator}`
+}
+
+function addAliasArtistKey(aliasArtistKeys: Set<string>, rawValue: string): void {
+  const key = normalizeKey(rawValue)
+  if (!key) return
+  aliasArtistKeys.add(key)
+}
+
+function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrack, primaryArtist: string): void {
+  addAliasArtistKey(group.aliasArtistKeys, primaryArtist)
+  addAliasArtistKey(group.aliasArtistKeys, track.artist)
+
+  for (const collaborator of splitCollaborators(track.artist)) {
+    addAliasArtistKey(group.aliasArtistKeys, collaborator)
+  }
+
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) {
+    addAliasArtistKey(group.aliasArtistKeys, normalizedAlbumArtist)
+  }
+}
+
+function createAlbumGroupAccumulator(
+  identityKey: string,
+  groupingMode: AlbumGroupingMode,
+  albumKey: string,
+  initialArtist: string
+): AlbumGroupAccumulator {
+  const artistKey = normalizeKey(initialArtist) || normalizeKey('Unknown Artist')
+  const aliasArtistKeys = new Set<string>()
+  if (artistKey) {
+    aliasArtistKeys.add(artistKey)
+  }
+
+  return {
+    identityKey,
+    groupingMode,
+    albumKey,
+    artistKey,
+    albumVariants: new Map(),
+    artistVariants: new Map(),
+    primaryArtistKeys: new Set(),
+    aliasArtistKeys,
+    artworkCounts: new Map(),
+    firstArtworkHash: null,
+    year: null,
+    trackCount: 0,
+    tracks: []
+  }
+}
+
+function addTrackToAlbumGroup(
+  group: AlbumGroupAccumulator,
+  track: DbTrack,
+  albumName: string,
+  displayArtist: string,
+  primaryArtist: string
+): void {
+  incrementDisplayVariant(group.albumVariants, albumName)
+  incrementDisplayVariant(group.artistVariants, displayArtist)
+  group.trackCount += 1
+  group.tracks.push(track)
+
+  const primaryArtistKey = normalizeKey(primaryArtist)
+  if (primaryArtistKey) {
+    group.primaryArtistKeys.add(primaryArtistKey)
+  }
+
+  addTrackArtistAliases(group, track, primaryArtist)
+
+  if (track.year !== null && (group.year === null || track.year > group.year)) {
+    group.year = track.year
+  }
+
+  if (track.artwork_hash) {
+    if (group.firstArtworkHash === null) {
+      group.firstArtworkHash = track.artwork_hash
+    }
+    group.artworkCounts.set(track.artwork_hash, (group.artworkCounts.get(track.artwork_hash) ?? 0) + 1)
+  }
+}
+
+function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
+  if (
+    group.groupingMode === 'artwork-hash'
+    && group.trackCount >= MIN_TRACKS_FOR_ALBUM
+    && group.primaryArtistKeys.size > 1
+  ) {
+    group.artistVariants = new Map()
+    incrementDisplayVariant(group.artistVariants, VARIOUS_ARTISTS_NAME)
+    group.artistKey = normalizeKey(VARIOUS_ARTISTS_NAME)
+  } else {
+    const displayArtist = pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist')
+    group.artistKey = normalizeKey(displayArtist) || normalizeKey('Unknown Artist')
+  }
+
+  if (group.artistKey) {
+    group.aliasArtistKeys.add(group.artistKey)
+  }
+}
+
 function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator> {
   const groups = new Map<string, AlbumGroupAccumulator>()
 
   for (const track of tracks) {
     const albumName = normalizeAlbumName(track.album)
-    const identityArtist = normalizeDisplay(getAlbumIdentityArtist(track)) || 'Unknown Artist'
     const albumKey = normalizeKey(albumName)
-    const artistKey = normalizeKey(identityArtist)
-    const groupKey = `${albumKey}\u0000${artistKey}`
+    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || 'Unknown Artist'
+    const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey('Unknown Artist')
+    const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+    const normalizedArtworkHash = normalizeArtworkHash(track.artwork_hash)
 
-    let group = groups.get(groupKey)
+    let identityKey: string
+    let groupingMode: AlbumGroupingMode
+    let displayArtist: string
+
+    if (normalizedAlbumArtist) {
+      const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey('Unknown Artist')
+      identityKey = buildAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`)
+      groupingMode = 'explicit-album-artist'
+      displayArtist = normalizedAlbumArtist
+    } else if (normalizedArtworkHash) {
+      identityKey = buildAlbumIdentityKey(albumKey, `ah:${normalizedArtworkHash}`)
+      groupingMode = 'artwork-hash'
+      displayArtist = primaryArtist
+    } else {
+      identityKey = buildAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`)
+      groupingMode = 'track-artist'
+      displayArtist = primaryArtist
+    }
+
+    let group = groups.get(identityKey)
     if (!group) {
-      group = {
-        albumKey,
-        artistKey,
-        albumVariants: new Map(),
-        artistVariants: new Map(),
-        artworkCounts: new Map(),
-        firstArtworkHash: null,
-        year: null,
-        trackCount: 0,
-        tracks: []
-      }
-      groups.set(groupKey, group)
+      group = createAlbumGroupAccumulator(identityKey, groupingMode, albumKey, displayArtist)
+      groups.set(identityKey, group)
     }
 
-    incrementDisplayVariant(group.albumVariants, albumName)
-    incrementDisplayVariant(group.artistVariants, identityArtist)
-    group.trackCount += 1
-    group.tracks.push(track)
+    addTrackToAlbumGroup(group, track, albumName, displayArtist, primaryArtist)
+  }
 
-    if (track.year !== null && (group.year === null || track.year > group.year)) {
-      group.year = track.year
-    }
-
-    if (track.artwork_hash) {
-      if (group.firstArtworkHash === null) {
-        group.firstArtworkHash = track.artwork_hash
-      }
-      group.artworkCounts.set(track.artwork_hash, (group.artworkCounts.get(track.artwork_hash) ?? 0) + 1)
-    }
+  for (const group of groups.values()) {
+    finalizeAlbumGroup(group)
   }
 
   return groups
@@ -873,11 +982,20 @@ export function getTracksByArtist(artist: string): DbTrack[] {
 }
 
 // Get tracks by album
-export function getTracksByAlbum(album: string, artist?: string): DbTrack[] {
+export function getTracksByAlbum(album: string, artist?: string, identityKey?: string): DbTrack[] {
   if (!db) return []
   const albumKey = normalizeKey(normalizeAlbumName(album))
   const tracks = readAllTracksUnordered()
   if (tracks.length === 0) return []
+  const groups = buildAlbumGroups(tracks)
+
+  const normalizedIdentityKey = normalizeDisplay(identityKey ?? '')
+  if (normalizedIdentityKey) {
+    const directGroup = groups.get(normalizedIdentityKey)
+    if (directGroup && directGroup.albumKey === albumKey) {
+      return [...directGroup.tracks].sort(compareTracksByDiscTrackTitle)
+    }
+  }
 
   if (!artist || !normalizeDisplay(artist)) {
     const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
@@ -885,11 +1003,21 @@ export function getTracksByAlbum(album: string, artist?: string): DbTrack[] {
   }
 
   const artistKey = normalizeKey(artist)
-  const groups = buildAlbumGroups(tracks)
-  for (const group of groups.values()) {
-    if (group.albumKey === albumKey && group.artistKey === artistKey) {
+  if (!artistKey) {
+    const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
+    return matched.sort(compareTracksByDiscTrackTitle)
+  }
+
+  const albumGroups = Array.from(groups.values()).filter((group) => group.albumKey === albumKey)
+  for (const group of albumGroups) {
+    if (group.artistKey === artistKey) {
       return [...group.tracks].sort(compareTracksByDiscTrackTitle)
     }
+  }
+
+  const aliasMatches = albumGroups.filter((group) => group.aliasArtistKeys.has(artistKey))
+  if (aliasMatches.length === 1) {
+    return [...aliasMatches[0].tracks].sort(compareTracksByDiscTrackTitle)
   }
 
   // Defensive fallback if canonical grouping misses a case.
@@ -977,7 +1105,14 @@ export function getArtists(): { artist: string; track_count: number; artwork_has
 }
 
 // Get unique albums
-export function getAlbums(): { album: string; artist: string; year: number | null; artwork_hash: string | null; track_count: number }[] {
+export function getAlbums(): {
+  identity_key: string
+  album: string
+  artist: string
+  year: number | null
+  artwork_hash: string | null
+  track_count: number
+}[] {
   if (!db) return []
   const tracks = readAllTracksUnordered()
   if (tracks.length === 0) return []
@@ -986,6 +1121,7 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
   const albums = Array.from(groups.values())
     .filter(isEligibleAlbumGroup)
     .map((group) => ({
+      identity_key: group.identityKey,
       album: pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album'),
       artist: pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist'),
       year: group.year,
@@ -996,7 +1132,9 @@ export function getAlbums(): { album: string; artist: string; year: number | nul
   return albums.sort((a, b) => {
     const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
     if (albumCompare !== 0) return albumCompare
-    return a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+    const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+    if (artistCompare !== 0) return artistCompare
+    return a.identity_key.localeCompare(b.identity_key)
   })
 }
 

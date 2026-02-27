@@ -30,6 +30,7 @@ interface HomeTrack {
 }
 
 interface HomeAlbum {
+  identity_key: string
   album: string
   artist: string
   year: number | null
@@ -289,9 +290,9 @@ const PLAYFUL_GREETINGS: GreetingCopy[] = [
     subline: 'nuh uh'
   },
   {
-    id: 'playful-yilongma',
-    primary: 'I AM YILONGMA',
-    subline: 'I LOVE YOU'
+    id: 'playful-helldivers',
+    primary: 'All for Super Earth!',
+    subline: '...and a good cup of libertea'
   }
 ]
 
@@ -496,6 +497,29 @@ function getAlbumIdentityArtist(track: Pick<HomeTrack, 'artist' | 'album_artist'
 function buildAlbumKey(album: string, artist: string): string {
   const normalizedArtist = normalizeDisplay(artist) || 'Unknown Artist'
   return `${normalizeKey(normalizeAlbumName(album))}::${normalizeKey(normalizedArtist)}`
+}
+
+function normalizeArtworkHash(hash: string | null): string | null {
+  const normalized = normalizeDisplay(hash ?? '')
+  return normalized ? normalized.toLocaleLowerCase() : null
+}
+
+function buildCanonicalAlbumIdentityKey(album: string, discriminator: string): string {
+  return `album:${normalizeKey(normalizeAlbumName(album))}::${discriminator}`
+}
+
+function buildAlbumIdentityKeyFromTrack(track: Pick<HomeTrack, 'album' | 'artist' | 'album_artist' | 'artwork_hash'>): string {
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) {
+    return buildCanonicalAlbumIdentityKey(track.album, `aa:${normalizeKey(normalizedAlbumArtist)}`)
+  }
+
+  const artworkHash = normalizeArtworkHash(track.artwork_hash)
+  if (artworkHash) {
+    return buildCanonicalAlbumIdentityKey(track.album, `ah:${artworkHash}`)
+  }
+
+  return buildCanonicalAlbumIdentityKey(track.album, `ta:${normalizeKey(getPrimaryArtist(track.artist))}`)
 }
 
 function getTimeBucket(date: Date): TimeBucket {
@@ -972,6 +996,15 @@ export default function HomeView() {
     return map
   }, [albums])
 
+  const albumByIdentityKey = useMemo(() => {
+    const map = new Map<string, HomeAlbum>()
+    for (const album of albums) {
+      if (map.has(album.identity_key)) continue
+      map.set(album.identity_key, album)
+    }
+    return map
+  }, [albums])
+
   const recentTracks = useMemo(() => {
     const seenTrackPaths = new Set<string>()
     const uniqueTracks: HomeTrack[] = []
@@ -1014,19 +1047,20 @@ export default function HomeView() {
   }, [recentlyPlayed, artistByKey])
 
   const recentAlbums = useMemo(() => {
-    const seenAlbumKeys = new Set<string>()
+    const seenAlbumIdentityKeys = new Set<string>()
     const uniqueAlbums: HomeAlbum[] = []
 
     for (const track of recentlyPlayed) {
+      const identityKey = buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
-      const albumKey = buildAlbumKey(track.album, identityArtist)
-      if (seenAlbumKeys.has(albumKey)) continue
-
-      const metadata = albumByKey.get(albumKey)
+      const fallbackKey = buildAlbumKey(track.album, identityArtist)
+      const metadata = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
       if (!metadata) continue
 
-      seenAlbumKeys.add(albumKey)
+      if (seenAlbumIdentityKeys.has(metadata.identity_key)) continue
+      seenAlbumIdentityKeys.add(metadata.identity_key)
       uniqueAlbums.push({
+        identity_key: metadata.identity_key,
         album: metadata.album,
         artist: metadata.artist,
         year: metadata.year,
@@ -1038,7 +1072,7 @@ export default function HomeView() {
     }
 
     return uniqueAlbums
-  }, [recentlyPlayed, albumByKey])
+  }, [recentlyPlayed, albumByIdentityKey, albumByKey])
 
   const homePlaylists = useMemo(
     () => buildPlaylistDisplaySections(playlists, {
@@ -1144,7 +1178,7 @@ export default function HomeView() {
 
   const handleOpenAlbum = async (album: HomeAlbum) => {
     setLibraryViewMode('albums')
-    await selectAlbum(album.album, album.artist, 'home')
+    await selectAlbum(album.album, album.artist, 'home', album.identity_key)
     setActiveView('library')
   }
 
@@ -1283,7 +1317,7 @@ export default function HomeView() {
             <div className="home-album-grid">
               {recentAlbums.map((album) => (
                 <article
-                  key={`${album.album}-${album.artist}`}
+                  key={album.identity_key}
                   className="home-album-card"
                   onClick={() => handleOpenAlbum(album)}
                 >

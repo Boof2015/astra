@@ -340,7 +340,7 @@ export default function QuickLaunchPalette() {
 
       return {
         kind: 'album' as const,
-        id: `album:${album.album}::${album.artist}`,
+        id: `album:${album.identity_key}`,
         score: result,
         album
       }
@@ -503,7 +503,12 @@ export default function QuickLaunchPalette() {
       if (result.kind === 'album') {
         const albumArtist = result.album.artist.trim()
         setViewMode('tracks')
-        await selectAlbum(result.album.album, albumArtist.length > 0 ? albumArtist : undefined, 'library')
+        await selectAlbum(
+          result.album.album,
+          albumArtist.length > 0 ? albumArtist : undefined,
+          'library',
+          result.album.identity_key
+        )
         setActiveView('library')
         closeQuickLaunch()
         return

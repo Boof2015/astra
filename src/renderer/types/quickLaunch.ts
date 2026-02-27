@@ -28,6 +28,7 @@ export interface QuickLaunchTrackRecord {
 }
 
 export interface QuickLaunchAlbumRecord {
+  identity_key: string
   album: string
   artist: string
   year: number | null

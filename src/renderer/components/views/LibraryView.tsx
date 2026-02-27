@@ -240,9 +240,9 @@ export default function LibraryView() {
         <div className="album-grid">
           {filteredAlbums.map((album) => (
             <div
-              key={`${album.album}-${album.artist}`}
+              key={album.identity_key}
               className="album-card"
-              onClick={() => selectAlbum(album.album, album.artist)}
+              onClick={() => selectAlbum(album.album, album.artist, 'library', album.identity_key)}
             >
               <div className="album-artwork">
                 <AlbumArtwork hash={album.artwork_hash} alt={album.album} />

@@ -1303,8 +1303,8 @@ ipcMain.handle('library:getTracksByArtist', (_event, artist: string) => {
 })
 
 // Get tracks by album
-ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string) => {
-  return library.getTracksByAlbum(album, artist)
+ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string, identityKey?: string) => {
+  return library.getTracksByAlbum(album, artist, identityKey)
 })
 
 // Get all artists
