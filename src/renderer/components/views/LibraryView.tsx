@@ -272,6 +272,7 @@ export default function LibraryView() {
     return (
       <TrackList
         tracks={filteredTracks}
+        queueSeedTracks={tracks}
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
         jumpToTrackRequest={libraryTrackRevealRequest}

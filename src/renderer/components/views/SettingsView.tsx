@@ -87,6 +87,7 @@ const RESET_ACTION_IDS: ResetActionId[] = [
 ]
 
 const ASTRA_REPOSITORY_URL = 'https://github.com/Boof2015/astra'
+const ASTRA_DISCORD_URL = 'https://discord.gg/hsKK8Kr9Nj'
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
@@ -1166,6 +1167,13 @@ export default function SettingsView() {
                     onClick={() => openExternalLink(ASTRA_REPOSITORY_URL)}
                   >
                     GitHub Repository
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_DISCORD_URL)}
+                  >
+                    Discord
                   </button>
                   <button
                     type="button"

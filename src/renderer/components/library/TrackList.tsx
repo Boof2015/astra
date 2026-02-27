@@ -36,6 +36,7 @@ interface DbTrack {
 
 interface TrackListProps {
   tracks: DbTrack[]
+  queueSeedTracks?: DbTrack[]
   showArtist?: boolean
   showAlbum?: boolean
   playlistSourceId?: number | null
@@ -324,6 +325,7 @@ const TrackListRow = memo(TrackListRowRenderer) as (
 
 export default function TrackList({
   tracks,
+  queueSeedTracks = tracks,
   showArtist = true,
   showAlbum = true,
   playlistSourceId = null,
@@ -428,7 +430,15 @@ export default function TrackList({
   }, [])
 
   const queuedTrackPaths = useMemo(() => new Set(queue.map((queuedTrack) => queuedTrack.path)), [queue])
-  const queueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
+  const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
+  const queueSeedQueueTracks = useMemo(() => queueSeedTracks.map(dbTrackToTrack), [queueSeedTracks])
+  const queueSeedTrackPathToIndex = useMemo(() => {
+    const indexByPath = new Map<string, number>()
+    queueSeedTracks.forEach((track, index) => {
+      indexByPath.set(track.path, index)
+    })
+    return indexByPath
+  }, [queueSeedTracks])
   const nextQueueIndex = queueIndex >= 0 ? queueIndex + 1 : 0
   const nextQueuedTrackPath = queue[nextQueueIndex]?.path ?? null
 
@@ -476,7 +486,13 @@ export default function TrackList({
   }, [])
 
   const handleTrackClick = useCallback(async (dbTrack: DbTrack, index: number) => {
-    setQueue(queueTracks, index, { sourcePlaylistId: playlistSourceId })
+    const queueSeedIndex = queueSeedTrackPathToIndex.get(dbTrack.path)
+    if (queueSeedIndex !== undefined) {
+      setQueue(queueSeedQueueTracks, queueSeedIndex, { sourcePlaylistId: playlistSourceId })
+    } else {
+      // Fallback to the rendered list if the clicked row path is missing from queue seed tracks.
+      setQueue(renderedQueueTracks, index, { sourcePlaylistId: playlistSourceId })
+    }
 
     const result = await window.electronAPI.loadAudioFile(dbTrack.path, { metadataMode: 'none' })
     if (!result) return
@@ -507,7 +523,7 @@ export default function TrackList({
     if (loaded) {
       await play()
     }
-  }, [loadTrack, play, playlistSourceId, queueTracks, setQueue])
+  }, [loadTrack, play, playlistSourceId, queueSeedQueueTracks, queueSeedTrackPathToIndex, renderedQueueTracks, setQueue])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
