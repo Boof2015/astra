@@ -1,12 +1,81 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
-import TrackList from '../library/TrackList'
+import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList from '../library/ArtistList'
+
+type SortDirection = 'asc' | 'desc'
+
+function normalizeSortText(value: string | null | undefined): string {
+  return (value ?? '').trim()
+}
+
+function compareTextValue(a: string | null | undefined, b: string | null | undefined): number {
+  return normalizeSortText(a).localeCompare(normalizeSortText(b), undefined, { sensitivity: 'base' })
+}
+
+function compareWithDirection(value: number, direction: SortDirection): number {
+  return direction === 'asc' ? value : -value
+}
+
+function toSortableBpm(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  return value
+}
+
+function compareNullableBpm(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
+  const aValue = toSortableBpm(a)
+  const bValue = toSortableBpm(b)
+  const aMissing = aValue === null
+  const bMissing = bValue === null
+
+  if (aMissing && bMissing) return 0
+  if (aMissing) return 1
+  if (bMissing) return -1
+
+  return compareWithDirection(aValue - bValue, direction)
+}
+
+function compareNullableKey(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  direction: SortDirection
+): number {
+  const aValue = normalizeSortText(a)
+  const bValue = normalizeSortText(b)
+  const aMissing = aValue.length === 0
+  const bMissing = bValue.length === 0
+
+  if (aMissing && bMissing) return 0
+  if (aMissing) return 1
+  if (bMissing) return -1
+
+  return compareWithDirection(aValue.localeCompare(bValue, undefined, { sensitivity: 'base' }), direction)
+}
+
+function comparePath(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: 'base' })
+}
+
+function compareAlbumSequence(
+  a: { disc_number: number | null; track_number: number | null; title: string; path: string },
+  b: { disc_number: number | null; track_number: number | null; title: string; path: string }
+): number {
+  const discComparison = (a.disc_number ?? 0) - (b.disc_number ?? 0)
+  if (discComparison !== 0) return discComparison
+
+  const trackComparison = (a.track_number ?? 0) - (b.track_number ?? 0)
+  if (trackComparison !== 0) return trackComparison
+
+  const titleComparison = compareTextValue(a.title, b.title)
+  if (titleComparison !== 0) return titleComparison
+
+  return comparePath(a.path, b.path)
+}
 
 export default function LibraryView() {
   const tracks = useLibraryStore((state) => state.tracks)
@@ -26,6 +95,7 @@ export default function LibraryView() {
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
+  const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
@@ -35,11 +105,23 @@ export default function LibraryView() {
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
   const jumpToNowPlaying = useJumpToNowPlaying()
   const [searchQuery, setSearchQuery] = useState('')
+  const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const previousInDetailViewRef = useRef(false)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
+  const sortContextKey = useMemo(() => {
+    if (selectedAlbum) {
+      const identityKey = selectedAlbum.identity_key?.trim()
+      if (identityKey) return `album:${identityKey}`
+      return `album:${selectedAlbum.album.trim().toLocaleLowerCase()}::${selectedAlbum.artist.trim().toLocaleLowerCase()}`
+    }
+    if (selectedArtist) {
+      return `artist:${selectedArtist.trim().toLocaleLowerCase()}`
+    }
+    return 'library-root'
+  }, [selectedAlbum, selectedArtist])
 
   useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
@@ -70,14 +152,74 @@ export default function LibraryView() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [cancelScan, isScanning])
 
-  const filteredTracks = useMemo(() => {
-    if (!hasSearchQuery) return tracks
-    return tracks.filter((track) =>
+  useLayoutEffect(() => {
+    if (selectedAlbum) {
+      setSortState(null)
+      return
+    }
+    setSortState({ key: 'title', direction: 'asc' })
+  }, [sortContextKey, selectedAlbum])
+
+  useEffect(() => {
+    if (showTracklistBpmKey) return
+    if (!sortState) return
+    if (sortState.key !== 'bpm' && sortState.key !== 'musical_key') return
+    setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
+  }, [selectedAlbum, showTracklistBpmKey, sortState])
+
+  const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
+    setSortState((current) => {
+      if (current?.key === key) {
+        return {
+          key,
+          direction: current.direction === 'asc' ? 'desc' : 'asc'
+        }
+      }
+      return {
+        key,
+        direction: 'asc'
+      }
+    })
+  }, [])
+
+  const handleResetToDefaultOrder = useCallback(() => {
+    setSortState(null)
+  }, [])
+
+  const queueSeedSortedTracks = useMemo(() => {
+    const sorted = [...tracks]
+
+    sorted.sort((a, b) => {
+      if (!sortState) {
+        return compareAlbumSequence(a, b)
+      }
+
+      let comparison = 0
+      if (sortState.key === 'title') {
+        comparison = compareWithDirection(compareTextValue(a.title, b.title), sortState.direction)
+      } else if (sortState.key === 'artist') {
+        comparison = compareWithDirection(compareTextValue(a.artist, b.artist), sortState.direction)
+      } else if (sortState.key === 'bpm') {
+        comparison = compareNullableBpm(a.bpm, b.bpm, sortState.direction)
+      } else {
+        comparison = compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
+      }
+
+      if (comparison !== 0) return comparison
+      return comparePath(a.path, b.path)
+    })
+
+    return sorted
+  }, [sortState, tracks])
+
+  const displayTracks = useMemo(() => {
+    if (!hasSearchQuery) return queueSeedSortedTracks
+    return queueSeedSortedTracks.filter((track) =>
       track.title.toLowerCase().includes(normalizedQuery)
       || track.artist.toLowerCase().includes(normalizedQuery)
       || track.album.toLowerCase().includes(normalizedQuery)
     )
-  }, [tracks, hasSearchQuery, normalizedQuery])
+  }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
 
   const filteredAlbums = useMemo(() => {
     if (!hasSearchQuery) return albums
@@ -136,8 +278,8 @@ export default function LibraryView() {
   // Header
   let title = 'Library'
   let showViewTabs = true
-  let itemCount = filteredTracks.length
-  let itemLabel = filteredTracks.length === 1 ? 'track' : 'tracks'
+  let itemCount = displayTracks.length
+  let itemLabel = displayTracks.length === 1 ? 'track' : 'tracks'
 
   if (selectedAlbum) {
     title = selectedAlbum.album
@@ -221,7 +363,7 @@ export default function LibraryView() {
       )
     }
 
-    if (hasSearchQuery && filteredTracks.length === 0 && (selectedAlbum || selectedArtist || viewMode === 'tracks')) {
+    if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedArtist || viewMode === 'tracks')) {
       return (
         <div className="library-empty">
           <p>No tracks found for "{trimmedQueryForMessage}"</p>
@@ -271,10 +413,15 @@ export default function LibraryView() {
     // Tracks
     return (
       <TrackList
-        tracks={filteredTracks}
-        queueSeedTracks={tracks}
+        tracks={displayTracks}
+        queueSeedTracks={queueSeedSortedTracks}
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
+        enableColumnSorting
+        sortState={sortState}
+        onSortColumnToggle={handleSortColumnToggle}
+        enableDefaultOrderReset={Boolean(selectedAlbum)}
+        onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
       />
     )

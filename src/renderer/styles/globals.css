@@ -2618,6 +2618,85 @@ button, .titlebar {
   color: var(--text-tertiary);
 }
 
+.track-col-sort-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.track-col-sort-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.track-col-sort-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-col-bpm .track-col-sort-btn,
+.track-col-key .track-col-sort-btn {
+  justify-content: flex-end;
+}
+
+.track-col-sort-btn:hover .track-col-sort-label,
+.track-col-sort-btn.active .track-col-sort-label {
+  color: var(--text-secondary);
+}
+
+.track-col-sort-indicator {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid currentColor;
+  opacity: 0.18;
+  transform: translateY(-1px);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.track-col-sort-btn:hover .track-col-sort-indicator {
+  opacity: 0.45;
+}
+
+.track-col-sort-btn.active .track-col-sort-indicator {
+  opacity: 0.9;
+  color: var(--text-secondary);
+}
+
+.track-col-sort-btn.active .track-col-sort-indicator.desc {
+  border-bottom: 0;
+  border-top: 6px solid currentColor;
+  transform: translateY(1px);
+}
+
+.track-col-default-sort-btn {
+  justify-content: center;
+  gap: 0;
+}
+
+.track-col-default-sort-btn .track-col-sort-label {
+  overflow: visible;
+}
+
 .track-list-body {
   flex: 1;
   overflow: hidden;

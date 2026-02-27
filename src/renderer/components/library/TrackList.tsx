@@ -36,6 +36,13 @@ interface DbTrack {
   is_atmos_joc?: number | null
 }
 
+export type TrackListSortKey = 'title' | 'artist' | 'bpm' | 'musical_key'
+
+export interface TrackListSortState {
+  key: TrackListSortKey
+  direction: 'asc' | 'desc'
+}
+
 interface TrackListProps {
   tracks: DbTrack[]
   queueSeedTracks?: DbTrack[]
@@ -43,6 +50,11 @@ interface TrackListProps {
   showAlbum?: boolean
   playlistSourceId?: number | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | null
+  enableColumnSorting?: boolean
+  sortState?: TrackListSortState | null
+  onSortColumnToggle?: (key: TrackListSortKey) => void
+  enableDefaultOrderReset?: boolean
+  onDefaultOrderReset?: () => void
 }
 
 interface TrackListRowSharedProps {
@@ -353,7 +365,12 @@ export default function TrackList({
   showArtist = true,
   showAlbum = true,
   playlistSourceId = null,
-  jumpToTrackRequest = null
+  jumpToTrackRequest = null,
+  enableColumnSorting = false,
+  sortState = null,
+  onSortColumnToggle,
+  enableDefaultOrderReset = false,
+  onDefaultOrderReset
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
@@ -737,6 +754,41 @@ export default function TrackList({
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const playlistPopupTrackPath = playlistPopup?.trackPath ?? null
+  const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
+  const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
+
+  const getAriaSort = (key: TrackListSortKey): 'none' | 'ascending' | 'descending' => {
+    if (!isColumnSortingEnabled || !sortState || sortState.key !== key) return 'none'
+    return sortState.direction === 'asc' ? 'ascending' : 'descending'
+  }
+
+  const renderSortableHeader = (key: TrackListSortKey, label: string, className: string): ReactElement => {
+    const isActive = Boolean(sortState && sortState.key === key)
+    const direction = isActive ? sortState!.direction : 'asc'
+    const currentDirectionLabel = isActive ? (direction === 'asc' ? 'ascending' : 'descending') : 'not sorted'
+    const nextDirectionLabel = isActive && direction === 'asc' ? 'descending' : 'ascending'
+
+    if (!isColumnSortingEnabled || !onSortColumnToggle) {
+      return <div className={`track-col ${className}`}>{label}</div>
+    }
+
+    return (
+      <div className={`track-col ${className}`} role="columnheader" aria-sort={getAriaSort(key)}>
+        <button
+          type="button"
+          className={`track-col-sort-btn ${isActive ? 'active' : ''}`}
+          onClick={() => onSortColumnToggle(key)}
+          aria-label={`${label}: ${currentDirectionLabel}. Activate to sort ${nextDirectionLabel}.`}
+        >
+          <span className="track-col-sort-label">{label}</span>
+          <span
+            aria-hidden="true"
+            className={`track-col-sort-indicator ${isActive ? 'active' : ''} ${direction === 'desc' ? 'desc' : ''}`}
+          />
+        </button>
+      </div>
+    )
+  }
 
   const rowProps = useMemo<TrackListRowSharedProps>(() => ({
     tracks,
@@ -799,12 +851,25 @@ export default function TrackList({
   return (
     <div className="track-list">
       <div className="track-list-header">
-        <div className="track-col track-col-num">#</div>
-        <div className="track-col track-col-title">Title</div>
-        {showArtist && <div className="track-col track-col-artist">Artist</div>}
+        {canResetDefaultOrder ? (
+          <div className="track-col track-col-num">
+            <button
+              type="button"
+              className={`track-col-sort-btn track-col-default-sort-btn ${sortState === null ? 'active' : ''}`}
+              onClick={() => onDefaultOrderReset()}
+              aria-label={sortState === null ? 'Default album order active.' : 'Restore default album order.'}
+            >
+              <span className="track-col-sort-label">#</span>
+            </button>
+          </div>
+        ) : (
+          <div className="track-col track-col-num">#</div>
+        )}
+        {renderSortableHeader('title', 'Title', 'track-col-title')}
+        {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}
         {showAlbum && <div className="track-col track-col-album">Album</div>}
-        {showTracklistBpmKey && <div className="track-col track-col-bpm">BPM</div>}
-        {showTracklistBpmKey && <div className="track-col track-col-key">Key</div>}
+        {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
+        {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
         <div className="track-col track-col-codec">Codec</div>
         <div className="track-col track-col-duration">Length</div>
         <div className="track-col track-col-actions" />
