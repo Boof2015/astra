@@ -1218,7 +1218,21 @@ button, .titlebar {
   line-height: 1.05;
   color: #fff;
   margin-bottom: 12px;
-  text-wrap: balance;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fullscreen-title-inner {
+  display: inline-block;
+}
+
+.fullscreen-title.marquee-active {
+  text-overflow: clip;
+}
+
+.fullscreen-title.marquee-active .fullscreen-title-inner {
+  animation: marquee-scroll 16s linear infinite;
 }
 
 .fullscreen-artist {

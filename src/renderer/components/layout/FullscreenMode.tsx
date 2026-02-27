@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -93,12 +93,15 @@ export default function FullscreenMode() {
   const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
   const [cueState, setCueState] = useState<CueState>('hidden')
   const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
+  const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
 
   const backdropRequestTokenRef = useRef(0)
   const previousTrackIdRef = useRef<string | null>(null)
   const enterResetTimeoutRef = useRef<number | null>(null)
   const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
   const heroEnterRafRef = useRef<number | null>(null)
+  const fullscreenTitleOuterRef = useRef<HTMLHeadingElement>(null)
+  const fullscreenTitleInnerRef = useRef<HTMLSpanElement>(null)
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -124,6 +127,22 @@ export default function FullscreenMode() {
   const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
   const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
   const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
+
+  const checkFullscreenTitleOverflow = useCallback(() => {
+    const outer = fullscreenTitleOuterRef.current
+    const inner = fullscreenTitleInnerRef.current
+    if (!outer || !inner) return
+
+    const overflows = inner.scrollWidth > outer.clientWidth
+    setFullscreenTitleOverflows(overflows)
+
+    if (overflows) {
+      outer.style.setProperty('--marquee-offset', `${outer.clientWidth - inner.scrollWidth}px`)
+      return
+    }
+
+    outer.style.removeProperty('--marquee-offset')
+  }, [])
 
   const nextQueueIndex = useMemo(() => {
     if (queue.length === 0 || queueIndex < 0 || repeat === 'one') return -1
@@ -167,6 +186,19 @@ export default function FullscreenMode() {
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [setFullscreen])
+
+  useEffect(() => {
+    checkFullscreenTitleOverflow()
+  }, [currentTrack?.title, checkFullscreenTitleOverflow])
+
+  useEffect(() => {
+    const outer = fullscreenTitleOuterRef.current
+    if (!outer) return
+
+    const resizeObserver = new ResizeObserver(checkFullscreenTitleOverflow)
+    resizeObserver.observe(outer)
+    return () => resizeObserver.disconnect()
+  }, [checkFullscreenTitleOverflow])
 
   useEffect(() => {
     return () => {
@@ -390,7 +422,14 @@ export default function FullscreenMode() {
             </div>
 
             <div className="fullscreen-track-info">
-              <h1 className="fullscreen-title">{currentTrack?.title ?? 'No track playing'}</h1>
+              <h1
+                ref={fullscreenTitleOuterRef}
+                className={`fullscreen-title${fullscreenTitleOverflows ? ' marquee-active' : ''}`}
+              >
+                <span ref={fullscreenTitleInnerRef} className="fullscreen-title-inner">
+                  {currentTrack?.title ?? 'No track playing'}
+                </span>
+              </h1>
               <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
               <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
               {(showAtmosBadge || isMultichannel) && (
