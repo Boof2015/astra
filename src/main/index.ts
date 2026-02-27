@@ -1353,6 +1353,23 @@ ipcMain.handle('library:getFolders', () => {
   return library.getLibraryFolders()
 })
 
+ipcMain.handle('library:getFolderSubfolderSummary', async (_event, folderPath: string) => {
+  return library.getFolderSubfolderSummary(folderPath)
+})
+
+ipcMain.handle('library:listFolderSubdirectories', async (_event, folderPath: string, parentRelativePath?: string) => {
+  return library.listFolderSubdirectories(folderPath, parentRelativePath ?? '')
+})
+
+ipcMain.handle('library:addFolderWithoutScan', async (_event, folderPath: string) => {
+  const folder = await library.addLibraryFolder(folderPath)
+  if (!folder) {
+    return { success: false, error: 'Folder already in library' }
+  }
+  const summary = await library.getFolderSubfolderSummary(folderPath)
+  return { success: true, folder, summary }
+})
+
 // Add library folder and scan
 ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
   const folder = await library.addLibraryFolder(folderPath)
@@ -1381,6 +1398,44 @@ ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
   await library.removeLibraryFolder(folderPath)
   return { success: true }
 })
+
+ipcMain.handle(
+  'library:setFolderSubfolderExcluded',
+  async (_event, folderPath: string, relativePath: string, excluded: boolean) => {
+    const updated = await library.setFolderSubfolderExcluded(folderPath, relativePath, excluded)
+    if (!updated) {
+      return { success: false, error: 'Invalid folder or subfolder path.' }
+    }
+
+    const summary = await library.getFolderSubfolderSummary(folderPath)
+
+    return { success: true, summary }
+  }
+)
+
+ipcMain.handle(
+  'library:rescanFolder',
+  async (_event, folderPath: string) => {
+    const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+      mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+    })
+
+    const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath)
+    if (metadataBackfill.scanned > 0) {
+      console.log(
+        `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
+      )
+    }
+    if (metadataBackfill.updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
+    }
+
+    const removed = await library.cleanupMissingTracks()
+    const summary = await library.getFolderSubfolderSummary(folderPath)
+
+    return { success: true, ...scanResult, removed, summary }
+  }
+)
 
 ipcMain.handle('library:resetMappedFolders', async () => {
   const result = await library.resetMappedFoldersData()

@@ -1,7 +1,7 @@
 import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app } from 'electron'
-import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath } from 'path'
+import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
@@ -46,6 +46,19 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+}
+
+export interface FolderSubfolderSummary {
+  totalSubfolders: number
+  excludedSubfolders: number
+}
+
+export interface FolderSubdirectoryEntry {
+  name: string
+  relativePath: string
+  excluded: boolean
+  hasChildren: boolean
+  missing: boolean
 }
 
 export interface Playlist {
@@ -603,6 +616,18 @@ export async function initDatabase(): Promise<void> {
     )
   `)
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS folder_exclusions (
+      folder_id INTEGER NOT NULL,
+      relative_path TEXT NOT NULL,
+      absolute_path TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(folder_id, relative_path)
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_folder_exclusions_folder ON folder_exclusions(folder_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_folder_exclusions_absolute ON folder_exclusions(absolute_path)')
+
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
@@ -1037,12 +1062,171 @@ function upsertTrackMetadataOverride(trackPath: string, row: TrackMetadataOverri
   )
 }
 
+interface FolderExclusionRow {
+  relative_path: string
+  absolute_path: string
+}
+
+function normalizeComparableFsPath(pathValue: string): string {
+  const normalized = normalizePath(resolvePath(pathValue))
+  return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized
+}
+
+function isSameOrDescendantPath(candidatePath: string, ancestorPath: string): boolean {
+  const normalizedCandidate = normalizeComparableFsPath(candidatePath)
+  const normalizedAncestor = normalizeComparableFsPath(ancestorPath)
+  if (normalizedCandidate === normalizedAncestor) return true
+  const ancestorWithSeparator = normalizedAncestor.endsWith(pathSep)
+    ? normalizedAncestor
+    : `${normalizedAncestor}${pathSep}`
+  return normalizedCandidate.startsWith(ancestorWithSeparator)
+}
+
+function normalizeRelativeSubfolderPath(relativeSubfolderPath: string): string | null {
+  const normalized = relativeSubfolderPath
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0 && segment !== '.')
+    .join('/')
+
+  if (!normalized || normalized === '..') return null
+  if (normalized.split('/').some((segment) => segment === '..')) return null
+  return normalized
+}
+
+function getRelativeParentPath(relativeSubfolderPath: string): string {
+  const separatorIndex = relativeSubfolderPath.lastIndexOf('/')
+  if (separatorIndex === -1) return ''
+  return relativeSubfolderPath.slice(0, separatorIndex)
+}
+
 // Get library folders
 export function getLibraryFolders(): LibraryFolder[] {
   if (!db) return []
   const result = db.exec('SELECT * FROM folders ORDER BY path')
   if (result.length === 0) return []
   return rowsToObjects<LibraryFolder>(result[0].columns, result[0].values)
+}
+
+function getLibraryFolderByPath(folderPath: string): LibraryFolder | null {
+  const normalizedTargetPath = normalizeComparableFsPath(folderPath)
+  return getLibraryFolders().find((folder) => normalizeComparableFsPath(folder.path) === normalizedTargetPath) ?? null
+}
+
+function getFolderExclusionRows(folderId: number): FolderExclusionRow[] {
+  if (!db) return []
+
+  const stmt = db.prepare('SELECT relative_path, absolute_path FROM folder_exclusions WHERE folder_id = ? ORDER BY relative_path')
+  stmt.bind([folderId])
+
+  const rows: FolderExclusionRow[] = []
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as FolderExclusionRow
+    if (typeof row.relative_path === 'string' && typeof row.absolute_path === 'string') {
+      rows.push(row)
+    }
+  }
+  stmt.free()
+  return rows
+}
+
+function getFolderExcludedRelativePathSet(folderId: number): Set<string> {
+  const excludedRelativePaths = new Set<string>()
+  for (const row of getFolderExclusionRows(folderId)) {
+    const normalizedRelativePath = normalizeRelativeSubfolderPath(row.relative_path)
+    if (normalizedRelativePath) {
+      excludedRelativePaths.add(normalizedRelativePath)
+    }
+  }
+  return excludedRelativePaths
+}
+
+function isRelativeSubfolderExcluded(relativeSubfolderPath: string, excludedRelativePaths: Set<string>): boolean {
+  const normalizedRelativePath = normalizeRelativeSubfolderPath(relativeSubfolderPath)
+  if (!normalizedRelativePath) return false
+
+  if (excludedRelativePaths.has(normalizedRelativePath)) {
+    return true
+  }
+
+  let cursor = normalizedRelativePath
+  while (cursor.includes('/')) {
+    cursor = getRelativeParentPath(cursor)
+    if (excludedRelativePaths.has(cursor)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function resolveRelativeSubfolder(
+  folderPath: string,
+  relativeSubfolderPath: string
+): { relativePath: string; absolutePath: string } | null {
+  const normalizedRelativePath = normalizeRelativeSubfolderPath(relativeSubfolderPath)
+  if (!normalizedRelativePath) return null
+
+  const absolutePath = resolvePath(folderPath, normalizedRelativePath)
+  if (!isSameOrDescendantPath(absolutePath, folderPath)) return null
+  if (normalizeComparableFsPath(absolutePath) === normalizeComparableFsPath(folderPath)) return null
+
+  const canonicalRelativePath = normalizeRelativeSubfolderPath(relativePath(folderPath, absolutePath))
+  if (!canonicalRelativePath) return null
+
+  return {
+    relativePath: canonicalRelativePath,
+    absolutePath: normalizePath(absolutePath),
+  }
+}
+
+function getExcludedAbsolutePathsForFolder(folderPath: string): string[] {
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return []
+
+  const rows = getFolderExclusionRows(folder.id)
+  const uniquePaths = new Set<string>()
+  for (const row of rows) {
+    if (typeof row.absolute_path !== 'string' || row.absolute_path.trim().length === 0) continue
+    uniquePaths.add(normalizePath(row.absolute_path))
+  }
+  return Array.from(uniquePaths)
+}
+
+function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
+  if (!db || absolutePrefixes.length === 0) return 0
+
+  const normalizedPrefixes = Array.from(new Set(
+    absolutePrefixes
+      .map((prefix) => prefix.trim())
+      .filter((prefix) => prefix.length > 0)
+      .map((prefix) => normalizeComparableFsPath(prefix))
+  ))
+  if (normalizedPrefixes.length === 0) return 0
+
+  const result = db.exec('SELECT id, path FROM tracks')
+  if (result.length === 0) return 0
+
+  const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)
+  let removedCount = 0
+
+  for (const track of tracks) {
+    const normalizedTrackPath = normalizeComparableFsPath(track.path)
+    const matchesExcludedPrefix = normalizedPrefixes.some((normalizedPrefix) => {
+      if (normalizedTrackPath === normalizedPrefix) return true
+      const prefixWithSeparator = normalizedPrefix.endsWith(pathSep)
+        ? normalizedPrefix
+        : `${normalizedPrefix}${pathSep}`
+      return normalizedTrackPath.startsWith(prefixWithSeparator)
+    })
+    if (!matchesExcludedPrefix) continue
+
+    db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+    removedCount += 1
+  }
+
+  return removedCount
 }
 
 // Add library folder
@@ -1060,11 +1244,192 @@ export async function addLibraryFolder(folderPath: string): Promise<LibraryFolde
   }
 }
 
+async function collectDiscoveredSubdirectories(folderPath: string): Promise<Set<string>> {
+  const discovered = new Set<string>()
+
+  async function walk(currentAbsolutePath: string, currentRelativePath: string): Promise<void> {
+    let entries
+    try {
+      entries = await readdir(currentAbsolutePath, { withFileTypes: true })
+    } catch (error: unknown) {
+      if (
+        error
+        && typeof error === 'object'
+        && 'code' in error
+        && (error.code === 'EACCES' || error.code === 'EPERM')
+      ) {
+        return
+      }
+      throw error
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+
+      const childRelativePath = normalizeRelativeSubfolderPath(
+        currentRelativePath ? `${currentRelativePath}/${entry.name}` : entry.name
+      )
+      if (!childRelativePath) continue
+
+      discovered.add(childRelativePath)
+      await walk(join(currentAbsolutePath, entry.name), childRelativePath)
+    }
+  }
+
+  await walk(folderPath, '')
+  return discovered
+}
+
+async function directoryHasSubdirectories(directoryPath: string): Promise<boolean> {
+  try {
+    const entries = await readdir(directoryPath, { withFileTypes: true })
+    return entries.some((entry) => entry.isDirectory())
+  } catch {
+    return false
+  }
+}
+
+export async function listFolderSubdirectories(
+  folderPath: string,
+  parentRelativePath: string = ''
+): Promise<FolderSubdirectoryEntry[]> {
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return []
+
+  let currentRelativePath = ''
+  let currentAbsolutePath = folder.path
+  if (parentRelativePath.trim().length > 0) {
+    const resolved = resolveRelativeSubfolder(folder.path, parentRelativePath)
+    if (!resolved) return []
+    currentRelativePath = resolved.relativePath
+    currentAbsolutePath = resolved.absolutePath
+  }
+
+  const excludedRelativePaths = getFolderExcludedRelativePathSet(folder.id)
+  const directChildren = new Map<string, FolderSubdirectoryEntry>()
+
+  try {
+    const entries = await readdir(currentAbsolutePath, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+
+      const childRelativePath = normalizeRelativeSubfolderPath(
+        currentRelativePath ? `${currentRelativePath}/${entry.name}` : entry.name
+      )
+      if (!childRelativePath) continue
+
+      const childAbsolutePath = join(currentAbsolutePath, entry.name)
+      directChildren.set(childRelativePath, {
+        name: entry.name,
+        relativePath: childRelativePath,
+        excluded: isRelativeSubfolderExcluded(childRelativePath, excludedRelativePaths),
+        hasChildren: await directoryHasSubdirectories(childAbsolutePath),
+        missing: false,
+      })
+    }
+  } catch (error: unknown) {
+    if (
+      !(
+        error
+        && typeof error === 'object'
+        && 'code' in error
+        && (error.code === 'EACCES' || error.code === 'EPERM')
+      )
+    ) {
+      throw error
+    }
+  }
+
+  for (const excludedRelativePath of excludedRelativePaths.values()) {
+    if (getRelativeParentPath(excludedRelativePath) !== currentRelativePath) continue
+    if (directChildren.has(excludedRelativePath)) continue
+
+    const pathParts = excludedRelativePath.split('/')
+    const pathName = pathParts[pathParts.length - 1] ?? excludedRelativePath
+    directChildren.set(excludedRelativePath, {
+      name: pathName,
+      relativePath: excludedRelativePath,
+      excluded: true,
+      hasChildren: Array.from(excludedRelativePaths.values())
+        .some((candidatePath) => candidatePath !== excludedRelativePath && candidatePath.startsWith(`${excludedRelativePath}/`)),
+      missing: true,
+    })
+  }
+
+  return Array.from(directChildren.values()).sort((a, b) => {
+    const nameCompare = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    if (nameCompare !== 0) return nameCompare
+    return a.relativePath.localeCompare(b.relativePath, undefined, { sensitivity: 'base' })
+  })
+}
+
+export async function getFolderSubfolderSummary(folderPath: string): Promise<FolderSubfolderSummary> {
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) {
+    return { totalSubfolders: 0, excludedSubfolders: 0 }
+  }
+
+  const discoveredSubfolders = await collectDiscoveredSubdirectories(folder.path)
+  const excludedRelativePaths = getFolderExcludedRelativePathSet(folder.id)
+  const pathsForExclusionCount = new Set<string>([
+    ...discoveredSubfolders,
+    ...excludedRelativePaths,
+  ])
+
+  let excludedSubfolderCount = 0
+  for (const relativeSubfolderPath of pathsForExclusionCount.values()) {
+    if (isRelativeSubfolderExcluded(relativeSubfolderPath, excludedRelativePaths)) {
+      excludedSubfolderCount += 1
+    }
+  }
+
+  return {
+    totalSubfolders: discoveredSubfolders.size,
+    excludedSubfolders: excludedSubfolderCount,
+  }
+}
+
+export async function setFolderSubfolderExcluded(
+  folderPath: string,
+  relativeSubfolderPath: string,
+  excluded: boolean
+): Promise<boolean> {
+  if (!db) return false
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return false
+
+  const resolvedSubfolder = resolveRelativeSubfolder(folder.path, relativeSubfolderPath)
+  if (!resolvedSubfolder) return false
+
+  if (excluded) {
+    const now = Date.now()
+    db.run(
+      `INSERT INTO folder_exclusions (folder_id, relative_path, absolute_path, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(folder_id, relative_path)
+       DO UPDATE SET absolute_path = excluded.absolute_path, created_at = excluded.created_at`,
+      [folder.id, resolvedSubfolder.relativePath, resolvedSubfolder.absolutePath, now]
+    )
+  } else {
+    db.run('DELETE FROM folder_exclusions WHERE folder_id = ? AND relative_path = ?', [
+      folder.id,
+      resolvedSubfolder.relativePath
+    ])
+  }
+
+  await saveDatabase()
+  return true
+}
+
 // Remove library folder
 export async function removeLibraryFolder(folderPath: string): Promise<void> {
   if (!db) return
-  db.run('DELETE FROM folders WHERE path = ?', [folderPath])
-  db.run('DELETE FROM tracks WHERE path LIKE ?', [`${folderPath}%`])
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return
+
+  deleteTracksByAbsolutePrefixes([folder.path])
+  db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
+  db.run('DELETE FROM folders WHERE id = ?', [folder.id])
   await saveDatabase()
 }
 
@@ -1080,6 +1445,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM tracks')
+  db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
 
   await clearArtworkCacheDirectory()
@@ -1096,6 +1462,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM tracks')
+  db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
   db.run('DELETE FROM app_meta')
 
@@ -1111,7 +1478,12 @@ export async function scanFolder(
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
 
-  const { files, skippedDirs } = await collectAudioFiles(folderPath)
+  const excludedAbsolutePaths = getExcludedAbsolutePathsForFolder(folderPath)
+  if (excludedAbsolutePaths.length > 0) {
+    deleteTracksByAbsolutePrefixes(excludedAbsolutePaths)
+  }
+
+  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths)
   let added = 0
   let updated = 0
   let errors = 0
@@ -1200,12 +1572,36 @@ export async function scanFolder(
   return { added, updated, errors, skippedDirs }
 }
 
+function isDirectoryExcludedPath(directoryPath: string, excludedDirectories: string[]): boolean {
+  const normalizedDirectoryPath = normalizeComparableFsPath(directoryPath)
+  return excludedDirectories.some((excludedDirectoryPath) => {
+    if (normalizedDirectoryPath === excludedDirectoryPath) return true
+    const prefixWithSeparator = excludedDirectoryPath.endsWith(pathSep)
+      ? excludedDirectoryPath
+      : `${excludedDirectoryPath}${pathSep}`
+    return normalizedDirectoryPath.startsWith(prefixWithSeparator)
+  })
+}
+
 // Collect all audio files in a directory recursively
-async function collectAudioFiles(dir: string): Promise<{ files: string[]; skippedDirs: string[] }> {
+async function collectAudioFiles(
+  dir: string,
+  excludedAbsoluteDirs: string[] = []
+): Promise<{ files: string[]; skippedDirs: string[] }> {
   const files: string[] = []
   const skippedDirs: string[] = []
+  const normalizedExcludedDirectories = Array.from(new Set(
+    excludedAbsoluteDirs
+      .map((excludedPath) => excludedPath.trim())
+      .filter((excludedPath) => excludedPath.length > 0)
+      .map((excludedPath) => normalizeComparableFsPath(excludedPath))
+  ))
 
   async function walk(currentDir: string): Promise<void> {
+    if (isDirectoryExcludedPath(currentDir, normalizedExcludedDirectories)) {
+      return
+    }
+
     let entries
     try {
       entries = await readdir(currentDir, { withFileTypes: true })
@@ -1222,6 +1618,9 @@ async function collectAudioFiles(dir: string): Promise<{ files: string[]; skippe
       const fullPath = join(currentDir, entry.name)
 
       if (entry.isDirectory()) {
+        if (isDirectoryExcludedPath(fullPath, normalizedExcludedDirectories)) {
+          continue
+        }
         await walk(fullPath)
       } else if (entry.isFile()) {
         const ext = extname(entry.name).toLowerCase()

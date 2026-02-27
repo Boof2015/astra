@@ -79,6 +79,19 @@ export interface LibraryFolder {
   added_at: number
 }
 
+export interface FolderSubfolderSummary {
+  totalSubfolders: number
+  excludedSubfolders: number
+}
+
+export interface FolderSubdirectoryEntry {
+  name: string
+  relativePath: string
+  excluded: boolean
+  hasChildren: boolean
+  missing: boolean
+}
+
 export interface Album {
   album: string
   artist: string
@@ -427,6 +440,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTrackOverrideSnapshots: (trackPaths: string[]) => ipcRenderer.invoke('library:getTrackOverrideSnapshots', trackPaths) as Promise<Record<string, TrackOverrideSnapshot | null>>,
     restoreTrackOverrides: (overrides: Record<string, TrackOverrideSnapshot | null>) => ipcRenderer.invoke('library:restoreTrackOverrides', overrides) as Promise<void>,
     getFolders: () => ipcRenderer.invoke('library:getFolders'),
+    getFolderSubfolderSummary: (folderPath: string) => ipcRenderer.invoke('library:getFolderSubfolderSummary', folderPath) as Promise<FolderSubfolderSummary>,
+    listFolderSubdirectories: (folderPath: string, parentRelativePath?: string) =>
+      ipcRenderer.invoke('library:listFolderSubdirectories', folderPath, parentRelativePath) as Promise<FolderSubdirectoryEntry[]>,
+    addFolderWithoutScan: (folderPath: string) => ipcRenderer.invoke('library:addFolderWithoutScan', folderPath) as Promise<{
+      success: boolean
+      folder?: LibraryFolder
+      summary?: FolderSubfolderSummary
+      error?: string
+    }>,
+    setFolderSubfolderExcluded: (folderPath: string, relativePath: string, excluded: boolean) =>
+      ipcRenderer.invoke('library:setFolderSubfolderExcluded', folderPath, relativePath, excluded) as Promise<{
+        success: boolean
+        summary?: FolderSubfolderSummary
+        error?: string
+      }>,
+    rescanFolder: (folderPath: string) => ipcRenderer.invoke('library:rescanFolder', folderPath) as Promise<{
+      success: boolean
+      added?: number
+      updated?: number
+      errors?: number
+      removed?: number
+      skippedDirs?: string[]
+      summary?: FolderSubfolderSummary
+    }>,
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
@@ -572,6 +609,32 @@ declare global {
         getTrackOverrideSnapshots: (trackPaths: string[]) => Promise<Record<string, TrackOverrideSnapshot | null>>
         restoreTrackOverrides: (overrides: Record<string, TrackOverrideSnapshot | null>) => Promise<void>
         getFolders: () => Promise<LibraryFolder[]>
+        getFolderSubfolderSummary: (folderPath: string) => Promise<FolderSubfolderSummary>
+        listFolderSubdirectories: (folderPath: string, parentRelativePath?: string) => Promise<FolderSubdirectoryEntry[]>
+        addFolderWithoutScan: (folderPath: string) => Promise<{
+          success: boolean
+          folder?: LibraryFolder
+          summary?: FolderSubfolderSummary
+          error?: string
+        }>
+        setFolderSubfolderExcluded: (
+          folderPath: string,
+          relativePath: string,
+          excluded: boolean
+        ) => Promise<{
+          success: boolean
+          summary?: FolderSubfolderSummary
+          error?: string
+        }>
+        rescanFolder: (folderPath: string) => Promise<{
+          success: boolean
+          added?: number
+          updated?: number
+          errors?: number
+          removed?: number
+          skippedDirs?: string[]
+          summary?: FolderSubfolderSummary
+        }>
         addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>

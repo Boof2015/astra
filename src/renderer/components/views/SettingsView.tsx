@@ -137,7 +137,7 @@ export default function SettingsView() {
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
-  const { addFolder, rescan, isScanning, scanProgress } = useLibraryStore()
+  const { rescan, isScanning, scanProgress } = useLibraryStore()
   const {
     presetId,
     customAccent,
@@ -780,10 +780,6 @@ export default function SettingsView() {
                   <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                 </svg>
                 Manage Folders
-              </button>
-              <button className="settings-btn" onClick={addFolder} disabled={isScanning}>
-                <span>+</span>
-                Add Folder
               </button>
               <button className="settings-btn" onClick={rescan} disabled={isScanning}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">

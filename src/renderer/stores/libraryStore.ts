@@ -45,6 +45,19 @@ interface LibraryFolder {
   added_at: number
 }
 
+export interface FolderSubfolderSummary {
+  totalSubfolders: number
+  excludedSubfolders: number
+}
+
+export interface FolderSubdirectoryEntry {
+  name: string
+  relativePath: string
+  excluded: boolean
+  hasChildren: boolean
+  missing: boolean
+}
+
 type ViewMode = 'tracks' | 'albums' | 'artists'
 type SelectionOrigin = 'home' | 'library' | null
 export type ArtworkVariant = 'full' | 'thumbnail'
@@ -70,6 +83,7 @@ interface LibraryStore {
   isScanning: boolean
   scanProgress: { current: number; total: number; file: string } | null
   folderWarnings: Record<string, string[]>
+  folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
   artworkCache: Map<string, string>
   favorites: Set<string>
   favoriteTracks: DbTrack[]
@@ -82,7 +96,17 @@ interface LibraryStore {
   loadAlbums: () => Promise<void>
   loadArtists: () => Promise<void>
   loadFolders: () => Promise<void>
+  loadFolderSubfolderSummary: (folderPath: string) => Promise<FolderSubfolderSummary>
+  listFolderSubdirectories: (folderPath: string, parentRelativePath?: string) => Promise<FolderSubdirectoryEntry[]>
+  setFolderSubfolderExcluded: (
+    folderPath: string,
+    relativePath: string,
+    excluded: boolean
+  ) => Promise<FolderSubfolderSummary | null>
+  rescanFolder: (folderPath: string) => Promise<FolderSubfolderSummary | null>
+  scanFolders: (folderPaths: string[]) => Promise<number>
   addFolder: () => Promise<void>
+  addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
@@ -148,6 +172,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   isScanning: false,
   scanProgress: null,
   folderWarnings: {},
+  folderSubfolderSummaries: {},
   artworkCache,
   favorites: new Set<string>(),
   favoriteTracks: [],
@@ -206,7 +231,158 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Load folders
   loadFolders: async () => {
     const folders = await window.electronAPI.library.getFolders()
-    set({ folders })
+    const folderPathSet = new Set(folders.map((folder) => folder.path))
+    set((state) => {
+      const nextSummaries: Record<string, FolderSubfolderSummary> = {}
+      for (const [folderPath, summary] of Object.entries(state.folderSubfolderSummaries)) {
+        if (folderPathSet.has(folderPath)) {
+          nextSummaries[folderPath] = summary
+        }
+      }
+      return { folders, folderSubfolderSummaries: nextSummaries }
+    })
+  },
+
+  // Load a folder subfolder summary
+  loadFolderSubfolderSummary: async (folderPath: string) => {
+    const summary = await window.electronAPI.library.getFolderSubfolderSummary(folderPath)
+    set((state) => ({
+      folderSubfolderSummaries: {
+        ...state.folderSubfolderSummaries,
+        [folderPath]: summary
+      }
+    }))
+    return summary
+  },
+
+  // List direct subdirectories under a folder path branch
+  listFolderSubdirectories: async (folderPath: string, parentRelativePath: string = '') => {
+    return window.electronAPI.library.listFolderSubdirectories(folderPath, parentRelativePath)
+  },
+
+  // Exclude/include a subfolder path without triggering a scan yet.
+  setFolderSubfolderExcluded: async (folderPath: string, relativePath: string, excluded: boolean) => {
+    const result = await window.electronAPI.library.setFolderSubfolderExcluded(folderPath, relativePath, excluded)
+    if (!result.success) {
+      return null
+    }
+
+    if (result.summary) {
+      set((state) => ({
+        folderSubfolderSummaries: {
+          ...state.folderSubfolderSummaries,
+          [folderPath]: result.summary!,
+        }
+      }))
+    }
+
+    return result.summary ?? null
+  },
+
+  // Rescan one folder after a batch of subfolder inclusion/exclusion changes.
+  rescanFolder: async (folderPath: string) => {
+    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+
+    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+      set({ scanProgress: progress })
+    })
+
+    try {
+      const result = await window.electronAPI.library.rescanFolder(folderPath)
+      if (!result.success) {
+        return null
+      }
+
+      if (result.skippedDirs && result.skippedDirs.length > 0) {
+        set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
+      } else {
+        const { [folderPath]: _, ...remainingWarnings } = get().folderWarnings
+        set({ folderWarnings: remainingWarnings })
+      }
+
+      if (result.summary) {
+        set((state) => ({
+          folderSubfolderSummaries: {
+            ...state.folderSubfolderSummaries,
+            [folderPath]: result.summary!,
+          }
+        }))
+      }
+
+      await get().loadLibrary()
+      return result.summary ?? null
+    } finally {
+      unsubscribe()
+      set({ isScanning: false, scanProgress: null })
+    }
+  },
+
+  // Rescan an explicit set of folders in one operation and reload once.
+  scanFolders: async (folderPaths: string[]) => {
+    const uniqueFolderPaths = Array.from(new Set(folderPaths.filter((folderPath) => folderPath.trim().length > 0)))
+    if (uniqueFolderPaths.length === 0) return 0
+
+    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+
+    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+      set({ scanProgress: progress })
+    })
+
+    try {
+      const nextWarnings = { ...get().folderWarnings }
+      const nextSummaries = { ...get().folderSubfolderSummaries }
+
+      for (const folderPath of uniqueFolderPaths) {
+        const result = await window.electronAPI.library.rescanFolder(folderPath)
+        if (!result.success) {
+          throw new Error(`Failed to scan folder: ${folderPath}`)
+        }
+
+        if (result.skippedDirs && result.skippedDirs.length > 0) {
+          nextWarnings[folderPath] = result.skippedDirs
+        } else {
+          delete nextWarnings[folderPath]
+        }
+
+        if (result.summary) {
+          nextSummaries[folderPath] = result.summary
+        }
+      }
+
+      set({
+        folderWarnings: nextWarnings,
+        folderSubfolderSummaries: nextSummaries,
+      })
+
+      await get().loadLibrary()
+      return uniqueFolderPaths.length
+    } finally {
+      unsubscribe()
+      set({ isScanning: false, scanProgress: null })
+    }
+  },
+
+  // Add folder mapping without scanning tracks yet.
+  addFolderWithoutScan: async () => {
+    const folderPath = await window.electronAPI.openAudioFolder()
+    if (!folderPath) return null
+
+    const result = await window.electronAPI.library.addFolderWithoutScan(folderPath)
+    if (!result.success) return null
+
+    await get().loadFolders()
+    if (result.summary) {
+      set((state) => ({
+        folderSubfolderSummaries: {
+          ...state.folderSubfolderSummaries,
+          [folderPath]: result.summary!,
+        }
+      }))
+    } else {
+      await get().loadFolderSubfolderSummary(folderPath)
+    }
+
+    return folderPath
   },
 
   // Add folder
@@ -236,12 +412,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
   },
 
-  // Remove folder and rescan remaining
+  // Remove folder and reload library state without rescanning all folders.
   removeFolder: async (path: string) => {
     await window.electronAPI.library.removeFolder(path)
     const { [path]: _, ...remaining } = get().folderWarnings
-    set({ folderWarnings: remaining })
-    await get().rescan()
+    const { [path]: __, ...remainingSummaries } = get().folderSubfolderSummaries
+    set({ folderWarnings: remaining, folderSubfolderSummaries: remainingSummaries })
+    await get().loadLibrary()
   },
 
   // Rescan all folders
