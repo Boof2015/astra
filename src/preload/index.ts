@@ -112,6 +112,13 @@ export interface ScanProgress {
   file: string
 }
 
+export type ScanStage = 'scanning' | 'backfill' | 'cleanup'
+
+export interface ScanStageProgress {
+  stage: ScanStage
+  message: string
+}
+
 export interface Playlist {
   id: number
   name: string
@@ -457,6 +464,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>,
     rescanFolder: (folderPath: string) => ipcRenderer.invoke('library:rescanFolder', folderPath) as Promise<{
       success: boolean
+      canceled?: boolean
       added?: number
       updated?: number
       errors?: number
@@ -466,6 +474,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    cancelScan: () => ipcRenderer.invoke('library:cancelScan') as Promise<{ canceled: boolean }>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan'),
@@ -477,6 +486,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
       return () => ipcRenderer.removeListener('library:scanProgress', handler)
+    },
+    onScanStage: (callback: (progress: ScanStageProgress) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: ScanStageProgress) => callback(progress)
+      ipcRenderer.on('library:scanStage', handler)
+      return () => ipcRenderer.removeListener('library:scanStage', handler)
     },
     onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
@@ -628,6 +642,7 @@ declare global {
         }>
         rescanFolder: (folderPath: string) => Promise<{
           success: boolean
+          canceled?: boolean
           added?: number
           updated?: number
           errors?: number
@@ -635,16 +650,33 @@ declare global {
           skippedDirs?: string[]
           summary?: FolderSubfolderSummary
         }>
-        addFolder: (folderPath: string) => Promise<{ success: boolean; added?: number; updated?: number; errors?: number; skippedDirs?: string[]; error?: string }>
+        addFolder: (folderPath: string) => Promise<{
+          success: boolean
+          canceled?: boolean
+          added?: number
+          updated?: number
+          errors?: number
+          skippedDirs?: string[]
+          error?: string
+        }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        cancelScan: () => Promise<{ canceled: boolean }>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
-        rescan: () => Promise<{ added: number; updated: number; errors: number; folderWarnings?: Record<string, string[]> }>
+        rescan: () => Promise<{
+          added: number
+          updated: number
+          errors: number
+          removed?: number
+          folderWarnings?: Record<string, string[]>
+          canceled?: boolean
+        }>
         getTrackCount: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+        onScanStage: (callback: (progress: ScanStageProgress) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
 

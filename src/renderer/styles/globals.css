@@ -3006,12 +3006,40 @@ button, .titlebar {
 }
 
 .scan-progress {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
   padding: 24px;
   text-align: center;
+}
+
+.scan-cancel-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+}
+
+.scan-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+}
+
+.scan-cancel-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .scan-title {
@@ -3046,6 +3074,11 @@ button, .titlebar {
   height: 100%;
   background: var(--accent);
   transition: width 0.2s ease;
+}
+
+.scan-cancel-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 /* ============================================
@@ -7828,6 +7861,9 @@ body::after {
 }
 
 .settings-scan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 1px solid rgba(var(--accent-rgb), 0.4);
   border-radius: 999px;
   background: rgba(var(--accent-rgb), 0.12);
@@ -7838,6 +7874,29 @@ body::after {
   text-transform: uppercase;
   padding: 6px 10px;
   flex-shrink: 0;
+}
+
+.settings-scan-badge-cancel {
+  border: none;
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--accent-text);
+  cursor: pointer;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.settings-scan-badge-cancel:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.settings-scan-badge-cancel:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .settings-layout {

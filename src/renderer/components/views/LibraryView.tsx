@@ -18,7 +18,10 @@ export default function LibraryView() {
   const selectionOrigin = useLibraryStore((state) => state.selectionOrigin)
   const isLoading = useLibraryStore((state) => state.isLoading)
   const isScanning = useLibraryStore((state) => state.isScanning)
+  const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
   const scanProgress = useLibraryStore((state) => state.scanProgress)
+  const scanStage = useLibraryStore((state) => state.scanStage)
+  const cancelScan = useLibraryStore((state) => state.cancelScan)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
@@ -53,6 +56,19 @@ export default function LibraryView() {
     }
     previousInDetailViewRef.current = inDetailView
   }, [inDetailView])
+
+  useEffect(() => {
+    if (!isScanning) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      void cancelScan()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [cancelScan, isScanning])
 
   const filteredTracks = useMemo(() => {
     if (!hasSearchQuery) return tracks
@@ -140,18 +156,44 @@ export default function LibraryView() {
   // Scan progress overlay
   const renderScanProgress = () => {
     if (!isScanning || !scanProgress) return null
+    const stage = scanStage?.stage ?? 'scanning'
     const percent = scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : 0
+    const isCleanupStage = stage === 'cleanup'
+    const displayPercent = isCleanupStage ? 100 : percent
+    const scanTitle = stage === 'backfill'
+      ? 'Processing Metadata'
+      : stage === 'cleanup'
+        ? 'Finalizing Library'
+        : 'Scanning Library'
+    const countUnit = stage === 'backfill' ? 'tracks' : 'files'
     const fileName = scanProgress.file ? scanProgress.file.split('/').pop() || scanProgress.file.split('\\').pop() : ''
+    const scanMessage = scanStage?.message
+      ?? (!isCleanupStage ? 'Processing...' : 'Finalizing library...')
+    const scanDetail = isCleanupStage ? scanMessage : (fileName || scanMessage)
+    const showCount = !isCleanupStage && scanProgress.total > 0
+
     return (
       <div className="scan-overlay">
         <div className="scan-progress">
+          <button
+            className="scan-cancel-btn"
+            onClick={() => void cancelScan()}
+            disabled={isCancelingScan}
+            aria-label="Cancel scan"
+            title="Cancel scan (Esc)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+            </svg>
+          </button>
           <div className="loading-spinner" />
-          <div className="scan-title">Scanning Library</div>
-          <div className="scan-count">{scanProgress.current} / {scanProgress.total} files</div>
+          <div className="scan-title">{scanTitle}</div>
+          {showCount && <div className="scan-count">{scanProgress.current} / {scanProgress.total} {countUnit}</div>}
           <div className="scan-bar">
-            <div className="scan-bar-fill" style={{ width: `${percent}%` }} />
+            <div className="scan-bar-fill" style={{ width: `${displayPercent}%` }} />
           </div>
-          {fileName && <div className="scan-file">{fileName}</div>}
+          {scanDetail && <div className="scan-file">{scanDetail}</div>}
+          <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
         </div>
       </div>
     )

@@ -137,7 +137,7 @@ export default function SettingsView() {
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
-  const { rescan, isScanning, scanProgress } = useLibraryStore()
+  const { rescan, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
   const {
     presetId,
     customAccent,
@@ -620,8 +620,25 @@ export default function SettingsView() {
           </div>
           {isScanning && (
             <div className="settings-scan-badge">
-              Scanning
-              {scanProgress ? ` ${scanProgress.current}/${scanProgress.total}` : '...'}
+              <span>
+                {scanStage?.stage === 'backfill'
+                  ? 'Metadata'
+                  : scanStage?.stage === 'cleanup'
+                    ? 'Finalizing'
+                    : 'Scanning'}
+                {scanProgress ? ` ${scanProgress.current}/${scanProgress.total}` : '...'}
+              </span>
+              <button
+                className="settings-scan-badge-cancel"
+                onClick={() => void cancelScan()}
+                disabled={isCancelingScan}
+                aria-label="Cancel scan"
+                title="Cancel scan"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
             </div>
           )}
         </div>

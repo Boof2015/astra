@@ -66,6 +66,13 @@ export interface ArtworkRequestOptions {
   variant?: ArtworkVariant
 }
 
+type ScanStage = 'scanning' | 'backfill' | 'cleanup'
+
+interface ScanStageProgress {
+  stage: ScanStage
+  message: string
+}
+
 interface LibraryStore {
   // State
   tracks: DbTrack[]
@@ -81,7 +88,9 @@ interface LibraryStore {
   searchResults: DbTrack[]
   isLoading: boolean
   isScanning: boolean
+  isCancelingScan: boolean
   scanProgress: { current: number; total: number; file: string } | null
+  scanStage: ScanStageProgress | null
   folderWarnings: Record<string, string[]>
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
   artworkCache: Map<string, string>
@@ -104,7 +113,8 @@ interface LibraryStore {
     excluded: boolean
   ) => Promise<FolderSubfolderSummary | null>
   rescanFolder: (folderPath: string) => Promise<FolderSubfolderSummary | null>
-  scanFolders: (folderPaths: string[]) => Promise<number>
+  scanFolders: (folderPaths: string[]) => Promise<{ scannedFolders: number; canceled: boolean }>
+  cancelScan: () => Promise<boolean>
   addFolder: () => Promise<void>
   addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
@@ -170,7 +180,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   searchResults: [],
   isLoading: false,
   isScanning: false,
+  isCancelingScan: false,
   scanProgress: null,
+  scanStage: null,
   folderWarnings: {},
   folderSubfolderSummaries: {},
   artworkCache,
@@ -281,14 +293,25 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Rescan one folder after a batch of subfolder inclusion/exclusion changes.
   rescanFolder: async (folderPath: string) => {
-    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+    })
 
-    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
       set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
     })
 
     try {
       const result = await window.electronAPI.library.rescanFolder(folderPath)
+      if (result.canceled) {
+        return null
+      }
       if (!result.success) {
         return null
       }
@@ -312,28 +335,45 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       await get().loadLibrary()
       return result.summary ?? null
     } finally {
-      unsubscribe()
-      set({ isScanning: false, scanProgress: null })
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
     }
   },
 
   // Rescan an explicit set of folders in one operation and reload once.
   scanFolders: async (folderPaths: string[]) => {
     const uniqueFolderPaths = Array.from(new Set(folderPaths.filter((folderPath) => folderPath.trim().length > 0)))
-    if (uniqueFolderPaths.length === 0) return 0
+    if (uniqueFolderPaths.length === 0) {
+      return { scannedFolders: 0, canceled: false }
+    }
 
-    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+    })
 
-    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
       set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
     })
 
     try {
       const nextWarnings = { ...get().folderWarnings }
       const nextSummaries = { ...get().folderSubfolderSummaries }
+      let scannedFolders = 0
+      let canceled = false
 
       for (const folderPath of uniqueFolderPaths) {
         const result = await window.electronAPI.library.rescanFolder(folderPath)
+        if (result.canceled) {
+          canceled = true
+          break
+        }
         if (!result.success) {
           throw new Error(`Failed to scan folder: ${folderPath}`)
         }
@@ -347,6 +387,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (result.summary) {
           nextSummaries[folderPath] = result.summary
         }
+        scannedFolders += 1
       }
 
       set({
@@ -354,11 +395,42 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         folderSubfolderSummaries: nextSummaries,
       })
 
-      await get().loadLibrary()
-      return uniqueFolderPaths.length
+      if (scannedFolders > 0) {
+        await get().loadLibrary()
+      }
+
+      return { scannedFolders, canceled }
     } finally {
-      unsubscribe()
-      set({ isScanning: false, scanProgress: null })
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
+    }
+  },
+
+  cancelScan: async () => {
+    if (!get().isScanning || get().isCancelingScan) return false
+
+    set({ isCancelingScan: true })
+    let cancelAccepted = false
+
+    try {
+      const result = await window.electronAPI.library.cancelScan()
+      cancelAccepted = Boolean(result.canceled)
+      if (cancelAccepted) {
+        set((state) => ({
+          scanStage: state.scanStage
+            ? { ...state.scanStage, message: 'Canceling scan...' }
+            : { stage: 'scanning', message: 'Canceling scan...' }
+        }))
+      }
+      return cancelAccepted
+    } catch (error) {
+      console.error('Failed to cancel library scan:', error)
+      return false
+    } finally {
+      if (!cancelAccepted) {
+        set({ isCancelingScan: false })
+      }
     }
   },
 
@@ -390,15 +462,27 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const folderPath = await window.electronAPI.openAudioFolder()
     if (!folderPath) return
 
-    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+    })
 
     // Subscribe to scan progress
-    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
       set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
     })
 
     try {
       const result = await window.electronAPI.library.addFolder(folderPath)
+      if (result.canceled) {
+        await get().loadFolders()
+        return
+      }
       if (result.success) {
         if (result.skippedDirs && result.skippedDirs.length > 0) {
           set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
@@ -407,8 +491,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         await get().loadLibrary()
       }
     } finally {
-      unsubscribe()
-      set({ isScanning: false, scanProgress: null })
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
     }
   },
 
@@ -423,14 +508,25 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Rescan all folders
   rescan: async () => {
-    set({ isScanning: true, scanProgress: { current: 0, total: 0, file: '' } })
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+    })
 
-    const unsubscribe = window.electronAPI.library.onScanProgress((progress) => {
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
       set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
     })
 
     try {
       const result = await window.electronAPI.library.rescan()
+      if (result.canceled) {
+        return
+      }
       if (result.folderWarnings) {
         set({ folderWarnings: result.folderWarnings })
       } else {
@@ -438,8 +534,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       }
       await get().loadLibrary()
     } finally {
-      unsubscribe()
-      set({ isScanning: false, scanProgress: null })
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
     }
   },
 

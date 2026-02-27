@@ -38,13 +38,16 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     addFolderWithoutScan,
     removeFolder,
     isScanning,
+    isCancelingScan,
     scanProgress,
+    scanStage,
     folderWarnings,
     folderSubfolderSummaries,
     loadFolderSubfolderSummary,
     listFolderSubdirectories,
     setFolderSubfolderExcluded,
     scanFolders,
+    cancelScan,
   } = useLibraryStore()
 
   const [removingPath, setRemovingPath] = useState<string | null>(null)
@@ -126,6 +129,19 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     setRemovingPath(null)
   }, [isOpen])
 
+  useEffect(() => {
+    if (!isOpen || !isScanning) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      void cancelScan()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [cancelScan, isOpen, isScanning])
+
   const breadcrumbSegments = useMemo(
     () => currentRelativePath.split('/').filter((segment) => segment.length > 0),
     [currentRelativePath]
@@ -160,13 +176,26 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
   const hasPendingChanges = pendingScanCount > 0
   const canClose = !isScanning && !isSavingChanges
 
+  const stage = scanStage?.stage ?? 'scanning'
+  const isCleanupStage = stage === 'cleanup'
   const scanPercent = scanProgress && scanProgress.total > 0
     ? (scanProgress.current / scanProgress.total) * 100
     : 0
+  const displayScanPercent = isCleanupStage ? 100 : scanPercent
 
   const scanFileName = scanProgress?.file
     ? scanProgress.file.split('/').pop() || scanProgress.file.split('\\').pop() || scanProgress.file
     : ''
+  const scanTitle = stage === 'backfill'
+    ? 'Processing Metadata'
+    : stage === 'cleanup'
+      ? 'Finalizing Library'
+      : 'Scanning Library'
+  const countUnit = stage === 'backfill' ? 'tracks' : 'files'
+  const scanMessage = scanStage?.message
+    ?? (!isCleanupStage ? 'Processing...' : 'Finalizing library...')
+  const scanDetail = isCleanupStage ? scanMessage : (scanFileName || scanMessage)
+  const showCount = !isCleanupStage && (scanProgress?.total ?? 0) > 0
 
   const queueFolderForScan = (folderPath: string) => {
     setPendingFolderScans((current) => {
@@ -312,21 +341,43 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
       }
 
       const folderPathsToScan = Array.from(scanTargets)
+      let scannedFolders = 0
+      let canceled = false
       if (folderPathsToScan.length > 0) {
-        await scanFolders(folderPathsToScan)
+        const scanResult = await scanFolders(folderPathsToScan)
+        scannedFolders = scanResult.scannedFolders
+        canceled = scanResult.canceled
       }
 
       setPendingExclusionChangesByFolder({})
-      setPendingFolderScans([])
+      setPendingFolderScans((current) => {
+        const completedFolderSet = new Set(folderPathsToScan.slice(0, scannedFolders))
+        const remainingFolderPaths = folderPathsToScan.slice(scannedFolders)
+        const next = current.filter((folderPath) => !completedFolderSet.has(folderPath))
+        for (const folderPath of remainingFolderPaths) {
+          if (!next.includes(folderPath)) {
+            next.push(folderPath)
+          }
+        }
+        return next
+      })
 
       if (activeFolderPath) {
         await loadSubdirectoryBranch(activeFolderPath, currentRelativePath)
       }
 
-      setSaveStatus({
-        tone: 'success',
-        message: `Saved and scanned ${folderPathsToScan.length} folder${folderPathsToScan.length === 1 ? '' : 's'}.`
-      })
+      if (canceled) {
+        const remainingFolders = Math.max(0, folderPathsToScan.length - scannedFolders)
+        setSaveStatus({
+          tone: 'info',
+          message: `Scan canceled. ${scannedFolders} folder${scannedFolders === 1 ? '' : 's'} completed, ${remainingFolders} still queued.`
+        })
+      } else {
+        setSaveStatus({
+          tone: 'success',
+          message: `Saved and scanned ${folderPathsToScan.length} folder${folderPathsToScan.length === 1 ? '' : 's'}.`
+        })
+      }
     } catch (error) {
       console.error('Failed to save and scan library changes:', error)
       setSaveStatus({ tone: 'error', message: 'Could not save changes. Please try again.' })
@@ -604,13 +655,25 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         {isScanning && scanProgress && (
           <div className="scan-overlay folder-settings-scan-overlay">
             <div className="scan-progress">
+              <button
+                className="scan-cancel-btn"
+                onClick={() => void cancelScan()}
+                disabled={isCancelingScan}
+                aria-label="Cancel scan"
+                title="Cancel scan (Esc)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
               <div className="loading-spinner" />
-              <div className="scan-title">Scanning Library</div>
-              <div className="scan-count">{scanProgress.current} / {scanProgress.total} files</div>
+              <div className="scan-title">{scanTitle}</div>
+              {showCount && <div className="scan-count">{scanProgress.current} / {scanProgress.total} {countUnit}</div>}
               <div className="scan-bar">
-                <div className="scan-bar-fill" style={{ width: `${scanPercent}%` }} />
+                <div className="scan-bar-fill" style={{ width: `${displayScanPercent}%` }} />
               </div>
-              {scanFileName && <div className="scan-file">{scanFileName}</div>}
+              {scanDetail && <div className="scan-file">{scanDetail}</div>}
+              <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
             </div>
           </div>
         )}

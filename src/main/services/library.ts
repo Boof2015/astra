@@ -1,12 +1,12 @@
 import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
-import { app } from 'electron'
+import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { fileURLToPath } from 'url'
-import { tmpdir } from 'os'
+import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 
 // Supported audio extensions
@@ -120,13 +120,42 @@ export interface MetadataEditResult {
   failures: MetadataEditFailure[]
 }
 
+interface ScanControlOptions {
+  signal?: AbortSignal
+}
+
+interface ScanWriteOptions extends ScanControlOptions {
+  persist?: boolean
+}
+
+export class LibraryScanCancelledError extends Error {
+  constructor(message = 'Library scan canceled') {
+    super(message)
+    this.name = 'LibraryScanCancelledError'
+  }
+}
+
+function throwIfScanCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new LibraryScanCancelledError()
+  }
+}
+
+export function isLibraryScanCancelledError(error: unknown): error is LibraryScanCancelledError {
+  return error instanceof LibraryScanCancelledError
+}
+
 let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
 let replayGainScanEnabled: boolean = true
-const BACKFILL_BATCH_SIZE = 5
-const BACKFILL_PAUSE_MS = 25
+const SCAN_PARALLEL_MIN_FILES = 250
+const SCAN_PARALLEL_MIN_WORKERS = 2
+const SCAN_PARALLEL_MAX_WORKERS = 4
+const BACKFILL_PARALLEL_MIN_FILES = 80
+const BACKFILL_PARALLEL_MIN_WORKERS = 2
+const BACKFILL_PARALLEL_MAX_WORKERS = 3
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
@@ -194,8 +223,71 @@ interface EditableTrackSnapshot {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function isRunningOnBatteryPower(): boolean {
+  if (!app.isReady()) return false
+  try {
+    return powerMonitor.isOnBatteryPower()
+  } catch {
+    return false
+  }
+}
+
+function resolveScanWorkerCount(fileCount: number): number {
+  if (fileCount <= 0) return 1
+  if (fileCount < SCAN_PARALLEL_MIN_FILES) return 1
+  if (isRunningOnBatteryPower()) return 1
+
+  const cpuCount = cpus().length
+  if (!Number.isFinite(cpuCount) || cpuCount <= 1) {
+    return 1
+  }
+
+  const adaptiveConcurrency = Math.floor(cpuCount / 2)
+  return Math.max(
+    SCAN_PARALLEL_MIN_WORKERS,
+    Math.min(SCAN_PARALLEL_MAX_WORKERS, adaptiveConcurrency)
+  )
+}
+
+function resolveBackfillWorkerCount(fileCount: number): number {
+  if (fileCount <= 0) return 1
+  if (fileCount < BACKFILL_PARALLEL_MIN_FILES) return 1
+  if (isRunningOnBatteryPower()) return 1
+
+  const cpuCount = cpus().length
+  if (!Number.isFinite(cpuCount) || cpuCount <= 1) {
+    return 1
+  }
+
+  const adaptiveConcurrency = Math.max(1, Math.floor(cpuCount / 3))
+  return Math.max(
+    BACKFILL_PARALLEL_MIN_WORKERS,
+    Math.min(BACKFILL_PARALLEL_MAX_WORKERS, adaptiveConcurrency)
+  )
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+  options: ScanControlOptions = {}
+): Promise<void> {
+  if (items.length === 0) return
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length))
+  let nextIndex = 0
+
+  async function runWorker(): Promise<void> {
+    while (true) {
+      throwIfScanCancelled(options.signal)
+      const currentIndex = nextIndex
+      nextIndex += 1
+      if (currentIndex >= items.length) return
+      await worker(items[currentIndex], currentIndex)
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()))
 }
 
 // Save database to file
@@ -204,6 +296,25 @@ async function saveDatabase(): Promise<void> {
   const data = db.export()
   const buffer = Buffer.from(data)
   await writeFile(dbPath, buffer)
+}
+
+export function beginLibraryWriteTransaction(): void {
+  if (!db) return
+  db.run('BEGIN IMMEDIATE TRANSACTION')
+}
+
+export function commitLibraryWriteTransaction(): void {
+  if (!db) return
+  db.run('COMMIT')
+}
+
+export function rollbackLibraryWriteTransaction(): void {
+  if (!db) return
+  db.run('ROLLBACK')
+}
+
+export async function persistLibraryDatabase(): Promise<void> {
+  await saveDatabase()
 }
 
 function readCount(sql: string): number {
@@ -1474,49 +1585,50 @@ export async function factoryResetLibraryData(): Promise<void> {
 // Scan a folder for audio files
 export async function scanFolder(
   folderPath: string,
-  onProgress?: (current: number, total: number, file: string) => void
+  onProgress?: (current: number, total: number, file: string) => void,
+  options: ScanWriteOptions = {}
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
+  const { persist = true, signal } = options
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
+  throwIfScanCancelled(signal)
 
   const excludedAbsolutePaths = getExcludedAbsolutePathsForFolder(folderPath)
   if (excludedAbsolutePaths.length > 0) {
     deleteTracksByAbsolutePrefixes(excludedAbsolutePaths)
   }
 
-  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths)
+  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal })
   let added = 0
   let updated = 0
   let errors = 0
+  let processed = 0
 
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i]
-    onProgress?.(i + 1, files.length, filePath)
+  interface ExistingTrackScanState {
+    id: number
+    modified_at: number
+    replaygain_track_gain_db: number | null
+    replaygain_album_gain_db: number | null
+  }
 
+  const scanWorkerCount = resolveScanWorkerCount(files.length)
+
+  await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
     try {
+      throwIfScanCancelled(signal)
+      if (!db) return
+
       const fileStat = await stat(filePath)
 
-      // Check if track exists
       const checkStmt = db.prepare(
         'SELECT id, modified_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?'
       )
       checkStmt.bind([filePath])
-      let existing: {
-        id: number
-        modified_at: number
-        replaygain_track_gain_db: number | null
-        replaygain_album_gain_db: number | null
-      } | undefined
+      let existing: ExistingTrackScanState | undefined
       if (checkStmt.step()) {
-        existing = checkStmt.getAsObject() as {
-          id: number
-          modified_at: number
-          replaygain_track_gain_db: number | null
-          replaygain_album_gain_db: number | null
-        }
+        existing = checkStmt.getAsObject() as ExistingTrackScanState
       }
       checkStmt.free()
 
-      // Skip if file hasn't changed
       const replayGainMissing = Boolean(
         replayGainScanEnabled
         && existing
@@ -1526,7 +1638,7 @@ export async function scanFolder(
         )
       )
       if (existing && existing.modified_at >= fileStat.mtimeMs && !replayGainMissing) {
-        continue
+        return
       }
 
       const metadata = await extractMetadata(filePath)
@@ -1558,17 +1670,23 @@ export async function scanFolder(
         added++
       }
     } catch (err: unknown) {
-      // If file doesn't exist (deleted between scan and processing), skip silently
-      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
-        // File was deleted, will be cleaned up by cleanupMissingTracks
-        continue
+      if (isLibraryScanCancelledError(err)) {
+        throw err
       }
-      console.error(`Error processing ${filePath}:`, err)
-      errors++
+      if (!(err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT')) {
+        console.error(`Error processing ${filePath}:`, err)
+        errors++
+      }
+    } finally {
+      processed += 1
+      onProgress?.(processed, files.length, filePath)
     }
-  }
+  }, { signal })
 
-  await saveDatabase()
+  throwIfScanCancelled(signal)
+  if (persist) {
+    await saveDatabase()
+  }
   return { added, updated, errors, skippedDirs }
 }
 
@@ -1586,7 +1704,8 @@ function isDirectoryExcludedPath(directoryPath: string, excludedDirectories: str
 // Collect all audio files in a directory recursively
 async function collectAudioFiles(
   dir: string,
-  excludedAbsoluteDirs: string[] = []
+  excludedAbsoluteDirs: string[] = [],
+  options: ScanControlOptions = {}
 ): Promise<{ files: string[]; skippedDirs: string[] }> {
   const files: string[] = []
   const skippedDirs: string[] = []
@@ -1598,6 +1717,7 @@ async function collectAudioFiles(
   ))
 
   async function walk(currentDir: string): Promise<void> {
+    throwIfScanCancelled(options.signal)
     if (isDirectoryExcludedPath(currentDir, normalizedExcludedDirectories)) {
       return
     }
@@ -1615,6 +1735,7 @@ async function collectAudioFiles(
     }
 
     for (const entry of entries) {
+      throwIfScanCancelled(options.signal)
       const fullPath = join(currentDir, entry.name)
 
       if (entry.isDirectory()) {
@@ -1631,6 +1752,7 @@ async function collectAudioFiles(
     }
   }
 
+  throwIfScanCancelled(options.signal)
   await walk(dir)
   return { files, skippedDirs }
 }
@@ -2293,44 +2415,63 @@ async function backfillTrackReplayGainMetadata(path: string): Promise<void> {
   )
 }
 
-async function backfillPaths(paths: string[]): Promise<{ scanned: number; updated: number; errors: number }> {
+type BackfillProgressCallback = (current: number, total: number, path: string) => void
+
+async function backfillPaths(
+  paths: string[],
+  onProgress?: BackfillProgressCallback,
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
+  const { persist = true, signal } = options
   if (!db || paths.length === 0) {
+    onProgress?.(0, 0, '')
     return { scanned: 0, updated: 0, errors: 0 }
   }
 
   let updated = 0
   let errors = 0
+  let processed = 0
+  const workerCount = resolveBackfillWorkerCount(paths.length)
+  onProgress?.(0, paths.length, '')
 
-  for (let i = 0; i < paths.length; i++) {
-    const path = paths[i]
+  await runWithConcurrency(paths, workerCount, async (path) => {
     try {
+      throwIfScanCancelled(signal)
       await backfillTrackAudioMetadata(path)
       updated++
     } catch (err) {
+      if (isLibraryScanCancelledError(err)) {
+        throw err
+      }
       console.warn(`Failed to backfill audio metadata for ${path}:`, err)
       errors++
+    } finally {
+      processed += 1
+      onProgress?.(processed, paths.length, path)
     }
+  }, { signal })
 
-    if ((i + 1) % BACKFILL_BATCH_SIZE === 0 && i < paths.length - 1) {
-      await sleep(BACKFILL_PAUSE_MS)
-    }
-  }
-
-  if (updated > 0) {
+  throwIfScanCancelled(signal)
+  if (persist && updated > 0) {
     await saveDatabase()
   }
 
   return { scanned: paths.length, updated, errors }
 }
 
-export async function backfillMissingChannelCounts(): Promise<{ scanned: number; updated: number; errors: number }> {
+export async function backfillMissingChannelCounts(
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
   const paths = getBackfillCandidatePaths({
     includeLegacyAtmosHeuristic: true
   })
-  return backfillPaths(paths)
+  return backfillPaths(paths, undefined, options)
 }
 
-export async function backfillMissingReplayGainMetadata(): Promise<{ scanned: number; updated: number; errors: number }> {
+export async function backfillMissingReplayGainMetadata(
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
+  const { persist = true, signal } = options
   if (!replayGainScanEnabled) {
     return { scanned: 0, updated: 0, errors: 0 }
   }
@@ -2342,30 +2483,35 @@ export async function backfillMissingReplayGainMetadata(): Promise<{ scanned: nu
 
   let updated = 0
   let errors = 0
+  const workerCount = resolveBackfillWorkerCount(paths.length)
 
-  for (let i = 0; i < paths.length; i++) {
-    const path = paths[i]
+  await runWithConcurrency(paths, workerCount, async (path) => {
     try {
+      throwIfScanCancelled(signal)
       await backfillTrackReplayGainMetadata(path)
       updated++
     } catch (err) {
+      if (isLibraryScanCancelledError(err)) {
+        throw err
+      }
       console.warn(`Failed to backfill ReplayGain metadata for ${path}:`, err)
       errors++
     }
+  }, { signal })
 
-    if ((i + 1) % BACKFILL_BATCH_SIZE === 0 && i < paths.length - 1) {
-      await sleep(BACKFILL_PAUSE_MS)
-    }
-  }
-
-  if (updated > 0) {
+  throwIfScanCancelled(signal)
+  if (persist && updated > 0) {
     await saveDatabase()
   }
 
   return { scanned: paths.length, updated, errors }
 }
 
-export async function backfillIncompleteAudioMetadataForFolder(folderPath: string): Promise<{ scanned: number; updated: number; errors: number }> {
+export async function backfillIncompleteAudioMetadataForFolder(
+  folderPath: string,
+  onProgress?: BackfillProgressCallback,
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
   const normalizedPath = folderPath.trim()
   if (!normalizedPath) return { scanned: 0, updated: 0, errors: 0 }
 
@@ -2373,7 +2519,7 @@ export async function backfillIncompleteAudioMetadataForFolder(folderPath: strin
     folderPath: normalizedPath,
     includeLegacyAtmosHeuristic: false
   })
-  return backfillPaths(paths)
+  return backfillPaths(paths, onProgress, options)
 }
 
 // Get image extension from mime type
@@ -3216,7 +3362,8 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
 }
 
 // Remove tracks that no longer exist on disk
-export async function cleanupMissingTracks(): Promise<number> {
+export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Promise<number> {
+  const { persist = true, signal } = options
   if (!db) return 0
 
   const result = db.exec('SELECT id, path FROM tracks')
@@ -3226,6 +3373,7 @@ export async function cleanupMissingTracks(): Promise<number> {
   let removed = 0
 
   for (const track of tracks) {
+    throwIfScanCancelled(signal)
     try {
       await stat(track.path)
     } catch {
@@ -3234,7 +3382,8 @@ export async function cleanupMissingTracks(): Promise<number> {
     }
   }
 
-  if (removed > 0) {
+  throwIfScanCancelled(signal)
+  if (persist && removed > 0) {
     await saveDatabase()
   }
 

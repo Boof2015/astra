@@ -1370,6 +1370,67 @@ ipcMain.handle('library:addFolderWithoutScan', async (_event, folderPath: string
   return { success: true, folder, summary }
 })
 
+type LibraryScanStage = 'scanning' | 'backfill' | 'cleanup'
+let activeLibraryScanAbortController: AbortController | null = null
+let activeLibraryScanStage: LibraryScanStage | null = null
+
+function sendLibraryScanStage(stage: LibraryScanStage, message: string): void {
+  activeLibraryScanStage = stage
+  mainWindow?.webContents.send('library:scanStage', { stage, message })
+}
+
+function createLibraryScanAbortController(): AbortController {
+  if (activeLibraryScanAbortController && !activeLibraryScanAbortController.signal.aborted) {
+    throw new Error('A library scan is already in progress.')
+  }
+
+  const controller = new AbortController()
+  activeLibraryScanAbortController = controller
+  return controller
+}
+
+async function runLibraryScanOperation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = createLibraryScanAbortController()
+  let transactionStarted = false
+
+  try {
+    library.beginLibraryWriteTransaction()
+    transactionStarted = true
+
+    const result = await operation(controller.signal)
+
+    library.commitLibraryWriteTransaction()
+    transactionStarted = false
+    await library.persistLibraryDatabase()
+
+    return result
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        library.rollbackLibraryWriteTransaction()
+      } catch (rollbackError) {
+        console.warn('Failed to roll back canceled library scan transaction:', rollbackError)
+      }
+    }
+    throw error
+  } finally {
+    if (activeLibraryScanAbortController === controller) {
+      activeLibraryScanAbortController = null
+    }
+    activeLibraryScanStage = null
+  }
+}
+
+ipcMain.handle('library:cancelScan', () => {
+  if (!activeLibraryScanAbortController || activeLibraryScanAbortController.signal.aborted) {
+    return { canceled: false }
+  }
+
+  activeLibraryScanAbortController.abort()
+  sendLibraryScanStage(activeLibraryScanStage ?? 'scanning', 'Canceling scan...')
+  return { canceled: true }
+})
+
 // Add library folder and scan
 ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
   const folder = await library.addLibraryFolder(folderPath)
@@ -1377,20 +1438,39 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
     return { success: false, error: 'Folder already in library' }
   }
 
-  // Scan folder
-  const result = await library.scanFolder(folderPath, (current, total, file) => {
-    mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-  })
+  const folderLabel = basename(folderPath) || folderPath
 
-  const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath)
-  if (metadataBackfill.scanned > 0) {
-    console.log(`Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`)
-  }
-  if (metadataBackfill.updated > 0) {
-    mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
-  }
+  try {
+    const result = await runLibraryScanOperation(async (signal) => {
+      sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
+      const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+      }, { signal, persist: false })
 
-  return { success: true, folder, ...result }
+      sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
+      const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
+        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+      }, { signal, persist: false })
+
+      if (metadataBackfill.scanned > 0) {
+        console.log(
+          `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
+        )
+      }
+      if (metadataBackfill.updated > 0) {
+        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
+      }
+
+      return scanResult
+    })
+
+    return { success: true, canceled: false, folder, ...result }
+  } catch (error) {
+    if (library.isLibraryScanCancelledError(error)) {
+      return { success: false, canceled: true, folder }
+    }
+    throw error
+  }
 })
 
 // Remove library folder
@@ -1416,24 +1496,41 @@ ipcMain.handle(
 ipcMain.handle(
   'library:rescanFolder',
   async (_event, folderPath: string) => {
-    const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
-      mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-    })
+    const folderLabel = basename(folderPath) || folderPath
+    try {
+      const result = await runLibraryScanOperation(async (signal) => {
+        sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
+        const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false })
 
-    const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath)
-    if (metadataBackfill.scanned > 0) {
-      console.log(
-        `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
-      )
+        sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
+        const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false })
+        if (metadataBackfill.scanned > 0) {
+          console.log(
+            `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
+          )
+        }
+        if (metadataBackfill.updated > 0) {
+          mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
+        }
+
+        sendLibraryScanStage('cleanup', `Finalizing ${folderLabel}...`)
+        const removed = await library.cleanupMissingTracks({ signal, persist: false })
+        const summary = await library.getFolderSubfolderSummary(folderPath)
+
+        return { ...scanResult, removed, summary }
+      })
+
+      return { success: true, canceled: false, ...result }
+    } catch (error) {
+      if (library.isLibraryScanCancelledError(error)) {
+        return { success: false, canceled: true }
+      }
+      throw error
     }
-    if (metadataBackfill.updated > 0) {
-      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
-    }
-
-    const removed = await library.cleanupMissingTracks()
-    const summary = await library.getFolderSubfolderSummary(folderPath)
-
-    return { success: true, ...scanResult, removed, summary }
   }
 )
 
@@ -1453,47 +1550,76 @@ ipcMain.handle('library:factoryReset', async () => {
 
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
-  const folders = library.getLibraryFolders()
-  let totalAdded = 0
-  let totalUpdated = 0
-  let totalErrors = 0
-  let metadataBackfillScanned = 0
-  let metadataBackfillUpdated = 0
-  let metadataBackfillErrors = 0
-  const folderWarnings: Record<string, string[]> = {}
+  try {
+    const result = await runLibraryScanOperation(async (signal) => {
+      const folders = library.getLibraryFolders()
+      let totalAdded = 0
+      let totalUpdated = 0
+      let totalErrors = 0
+      let metadataBackfillScanned = 0
+      let metadataBackfillUpdated = 0
+      let metadataBackfillErrors = 0
+      const folderWarnings: Record<string, string[]> = {}
+      const totalFolders = folders.length
 
-  for (const folder of folders) {
-    const result = await library.scanFolder(folder.path, (current, total, file) => {
-      mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+      for (let folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+        const folder = folders[folderIndex]
+        const folderLabel = basename(folder.path) || folder.path
+        sendLibraryScanStage('scanning', `Scanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
+
+        const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false })
+        totalAdded += scanResult.added
+        totalUpdated += scanResult.updated
+        totalErrors += scanResult.errors
+        if (scanResult.skippedDirs.length > 0) {
+          folderWarnings[folder.path] = scanResult.skippedDirs
+        }
+
+        sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
+        const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false })
+        metadataBackfillScanned += metadataBackfill.scanned
+        metadataBackfillUpdated += metadataBackfill.updated
+        metadataBackfillErrors += metadataBackfill.errors
+      }
+
+      if (metadataBackfillScanned > 0) {
+        console.log(
+          `Rescan metadata backfill: scanned=${metadataBackfillScanned}, updated=${metadataBackfillUpdated}, errors=${metadataBackfillErrors}`
+        )
+      }
+      if (metadataBackfillUpdated > 0) {
+        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', {
+          scanned: metadataBackfillScanned,
+          updated: metadataBackfillUpdated,
+          errors: metadataBackfillErrors
+        })
+      }
+
+      // Clean up tracks that no longer exist on disk
+      sendLibraryScanStage('cleanup', 'Finalizing library...')
+      const removed = await library.cleanupMissingTracks({ signal, persist: false })
+
+      return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed, folderWarnings }
     })
-    totalAdded += result.added
-    totalUpdated += result.updated
-    totalErrors += result.errors
-    if (result.skippedDirs.length > 0) {
-      folderWarnings[folder.path] = result.skippedDirs
+
+    return { ...result, canceled: false }
+  } catch (error) {
+    if (library.isLibraryScanCancelledError(error)) {
+      return {
+        added: 0,
+        updated: 0,
+        errors: 0,
+        removed: 0,
+        folderWarnings: {},
+        canceled: true
+      }
     }
-
-    const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path)
-    metadataBackfillScanned += metadataBackfill.scanned
-    metadataBackfillUpdated += metadataBackfill.updated
-    metadataBackfillErrors += metadataBackfill.errors
+    throw error
   }
-
-  if (metadataBackfillScanned > 0) {
-    console.log(`Rescan metadata backfill: scanned=${metadataBackfillScanned}, updated=${metadataBackfillUpdated}, errors=${metadataBackfillErrors}`)
-  }
-  if (metadataBackfillUpdated > 0) {
-    mainWindow?.webContents.send('library:audioMetadataBackfillComplete', {
-      scanned: metadataBackfillScanned,
-      updated: metadataBackfillUpdated,
-      errors: metadataBackfillErrors
-    })
-  }
-
-  // Clean up tracks that no longer exist on disk
-  const removed = await library.cleanupMissingTracks()
-
-  return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed, folderWarnings }
 })
 
 // Get track count
