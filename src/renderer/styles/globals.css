@@ -2693,6 +2693,23 @@ button, .titlebar {
   color: var(--text-secondary);
 }
 
+.track-col-bpm {
+  width: 62px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.track-col-key {
+  width: 66px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 12px;
+  color: var(--text-tertiary);
+}
+
 .track-col-codec {
   width: 72px;
   flex-shrink: 0;
@@ -2773,7 +2790,9 @@ button, .titlebar {
 }
 
 .track-codec,
-.track-duration {
+.track-duration,
+.track-bpm,
+.track-key {
   font-family: var(--font-mono);
   font-size: 13px;
 }
@@ -6899,6 +6918,12 @@ body::after {
   font-size: 11px;
 }
 
+.track-col-bpm,
+.track-col-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .track-col-codec {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -7375,6 +7400,11 @@ body::after {
   }
 
   .track-col-codec {
+    display: none;
+  }
+
+  .track-col-bpm,
+  .track-col-key {
     display: none;
   }
 

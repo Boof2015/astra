@@ -65,7 +65,7 @@ let replayGainScanEnabled: boolean = false
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
-const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v1_done'
+const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'

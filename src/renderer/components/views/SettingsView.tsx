@@ -164,6 +164,8 @@ export default function SettingsView() {
   } = useVisualizerSettingsStore()
   const replayGainScanEnabled = useAudioSettingsStore((state) => state.replayGainScanEnabled)
   const setReplayGainScanEnabled = useAudioSettingsStore((state) => state.setReplayGainScanEnabled)
+  const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
+  const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
@@ -814,6 +816,15 @@ export default function SettingsView() {
                   onClick={() => void setReplayGainScanEnabled(!replayGainScanEnabled)}
                 >
                   {replayGainScanEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Tracklist BPM/Key Columns</span>
+                <button
+                  className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
+                  onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
+                >
+                  {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
             </div>

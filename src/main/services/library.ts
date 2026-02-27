@@ -38,6 +38,8 @@ export interface DbTrack {
   is_atmos_joc: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
+  bpm: number | null
+  musical_key: string | null
   added_at: number
   modified_at: number
 }
@@ -180,6 +182,8 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.is_atmos_joc AS is_atmos_joc,
   t.replaygain_track_gain_db AS replaygain_track_gain_db,
   t.replaygain_album_gain_db AS replaygain_album_gain_db,
+  t.bpm AS bpm,
+  t.musical_key AS musical_key,
   t.added_at AS added_at,
   t.modified_at AS modified_at
 `
@@ -764,6 +768,8 @@ export async function initDatabase(): Promise<void> {
       is_atmos_joc INTEGER,
       replaygain_track_gain_db REAL,
       replaygain_album_gain_db REAL,
+      bpm REAL,
+      musical_key TEXT,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
@@ -824,6 +830,16 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN replaygain_album_gain_db REAL')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN bpm REAL')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN musical_key TEXT')
   } catch {
     // Column already exists.
   }
@@ -1784,26 +1800,26 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, now, filePath
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, now, now
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, now
         ])
         added++
       }
@@ -2201,6 +2217,175 @@ function extractReplayGainDb(metadata: mm.IAudioMetadata): {
   }
 }
 
+function normalizeBpm(value: unknown): number | null {
+  const normalizeParsedValue = (candidate: number): number | null => {
+    if (!Number.isFinite(candidate)) return null
+    if (candidate <= 0 || candidate > 400) return null
+    return Math.round(candidate * 1000) / 1000
+  }
+
+  if (typeof value === 'number') {
+    return normalizeParsedValue(value)
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const parsed = normalizeBpm(entry)
+      if (parsed != null) return parsed
+    }
+    return null
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+
+    const parsed = Number(trimmed)
+    if (Number.isFinite(parsed)) {
+      return normalizeParsedValue(parsed)
+    }
+
+    const match = trimmed.match(/[+-]?\d+(?:[.,]\d+)?/)
+    if (!match) return null
+    const parsedFromMatch = Number(match[0].replace(',', '.'))
+    return normalizeParsedValue(parsedFromMatch)
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const objectCandidates: unknown[] = [
+      record.bpm,
+      record.value,
+      record.text
+    ]
+    for (const candidate of objectCandidates) {
+      const parsed = normalizeBpm(candidate)
+      if (parsed != null) return parsed
+    }
+  }
+
+  return null
+}
+
+function normalizeKeyTagId(id: string): string {
+  return id.trim().toLowerCase().replace(/[\s-]+/g, '_')
+}
+
+function isBpmTagId(id: string): boolean {
+  const normalized = normalizeKeyTagId(id)
+  return normalized === 'bpm'
+    || normalized === 'tbpm'
+    || normalized.endsWith('_bpm')
+    || normalized.includes('beats_per_minute')
+}
+
+function normalizeMusicalKey(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    return normalized.length > 0 ? normalized : null
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const parsed = normalizeMusicalKey(entry)
+      if (parsed) return parsed
+    }
+    return null
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const objectCandidates: unknown[] = [
+      record.key,
+      record.value,
+      record.text,
+      record.name
+    ]
+    for (const candidate of objectCandidates) {
+      const parsed = normalizeMusicalKey(candidate)
+      if (parsed) return parsed
+    }
+  }
+
+  return null
+}
+
+function isMusicalKeyTagId(id: string): boolean {
+  const normalized = normalizeKeyTagId(id)
+  return normalized === 'key'
+    || normalized === 'tkey'
+    || normalized === 'initialkey'
+    || normalized === 'initial_key'
+    || normalized === 'musical_key'
+}
+
+function extractBpmFromCommon(metadata: mm.IAudioMetadata): number | null {
+  const common = metadata.common as unknown as Record<string, unknown>
+  let bpm = normalizeBpm(common.bpm)
+  if (bpm != null) return bpm
+
+  for (const [key, rawValue] of Object.entries(common)) {
+    if (!isBpmTagId(key)) continue
+    bpm = normalizeBpm(rawValue)
+    if (bpm != null) return bpm
+  }
+
+  return null
+}
+
+function extractBpmFromNative(metadata: mm.IAudioMetadata): number | null {
+  const nativeCollections = Object.values(metadata.native ?? {})
+  for (const tags of nativeCollections) {
+    if (!Array.isArray(tags)) continue
+    for (const rawTag of tags) {
+      if (!rawTag || typeof rawTag !== 'object') continue
+      const tag = rawTag as { id?: unknown; value?: unknown }
+      const id = typeof tag.id === 'string' ? tag.id : ''
+      if (!id || !isBpmTagId(id)) continue
+
+      const parsed = normalizeBpm(tag.value)
+      if (parsed != null) return parsed
+    }
+  }
+
+  return null
+}
+
+function extractBpm(metadata: mm.IAudioMetadata): number | null {
+  return extractBpmFromCommon(metadata) ?? extractBpmFromNative(metadata)
+}
+
+function extractMusicalKeyFromCommon(metadata: mm.IAudioMetadata): string | null {
+  const common = metadata.common as unknown as Record<string, unknown>
+  let musicalKey = normalizeMusicalKey(common.key)
+  if (musicalKey) return musicalKey
+
+  for (const [key, rawValue] of Object.entries(common)) {
+    if (!isMusicalKeyTagId(key)) continue
+    musicalKey = normalizeMusicalKey(rawValue)
+    if (musicalKey) return musicalKey
+  }
+
+  return null
+}
+
+function extractMusicalKeyFromNative(metadata: mm.IAudioMetadata): string | null {
+  const nativeCollections = Object.values(metadata.native ?? {})
+  for (const tags of nativeCollections) {
+    if (!Array.isArray(tags)) continue
+    for (const rawTag of tags) {
+      if (!rawTag || typeof rawTag !== 'object') continue
+      const tag = rawTag as { id?: unknown; value?: unknown }
+      const id = typeof tag.id === 'string' ? tag.id : ''
+      if (!id || !isMusicalKeyTagId(id)) continue
+
+      const parsed = normalizeMusicalKey(tag.value)
+      if (parsed) return parsed
+    }
+  }
+
+  return null
+}
+
+function extractMusicalKey(metadata: mm.IAudioMetadata): string | null {
+  return extractMusicalKeyFromCommon(metadata) ?? extractMusicalKeyFromNative(metadata)
+}
+
 function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
   const hints: string[] = []
   const push = (value: unknown) => {
@@ -2367,6 +2552,8 @@ async function extractMetadata(filePath: string): Promise<{
   isAtmosJoc: number
   replayGainTrackDb: number | null
   replayGainAlbumDb: number | null
+  bpm: number | null
+  musicalKey: string | null
 }> {
   const metadata = await mm.parseFile(filePath)
   const common = metadata.common
@@ -2379,6 +2566,8 @@ async function extractMetadata(filePath: string): Promise<{
   const replayGain = replayGainScanEnabled
     ? extractReplayGainDb(metadata)
     : { trackGainDb: null, albumGainDb: null }
+  const bpm = extractBpm(metadata)
+  const musicalKey = extractMusicalKey(metadata)
 
   // Extract and save artwork using selectCover for best image selection
   let artworkHash: string | null = null
@@ -2432,7 +2621,9 @@ async function extractMetadata(filePath: string): Promise<{
     codecProfile: resolvedCodecMetadata.codecProfile,
     isAtmosJoc: resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
     replayGainTrackDb: replayGain.trackGainDb,
-    replayGainAlbumDb: replayGain.albumGainDb
+    replayGainAlbumDb: replayGain.albumGainDb,
+    bpm,
+    musicalKey
   }
 }
 
@@ -2447,6 +2638,8 @@ function getBackfillCandidatePaths(options: {
     OR codec IS NULL
     OR codec_profile IS NULL
     OR is_atmos_joc IS NULL
+    OR bpm IS NULL
+    OR musical_key IS NULL
   `
   const legacyAtmosClause = `
     LOWER(format) IN ('m4a', 'mp4', 'm4b', 'm4p', 'aac')
@@ -2502,12 +2695,16 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
   let baseChannels: number | null = null
   let baseCodec: string | null = null
   let baseCodecProfile: string | null = null
+  let bpm: number | null = null
+  let musicalKey: string | null = null
 
   try {
     const metadata = await mm.parseFile(path)
     baseChannels = metadata.format.numberOfChannels || null
     baseCodec = toText(metadata.format.codec)
     baseCodecProfile = toText(metadata.format.codecProfile)
+    bpm = extractBpm(metadata)
+    musicalKey = extractMusicalKey(metadata)
   } catch {
     // We'll still attempt ffprobe-only resolution below.
   }
@@ -2519,12 +2716,14 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
   })
 
   db.run(
-    'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ? WHERE path = ?',
+    'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ?, bpm = ?, musical_key = ? WHERE path = ?',
     [
       resolvedCodecMetadata.channels,
       resolvedCodecMetadata.codec,
       resolvedCodecMetadata.codecProfile,
       resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
+      bpm,
+      musicalKey,
       path
     ]
   )
@@ -2807,14 +3006,14 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, now, trackPath
+    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, trackPath
   ])
 }
 

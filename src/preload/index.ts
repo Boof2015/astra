@@ -69,6 +69,8 @@ export interface DbTrack {
   is_atmos_joc: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
+  bpm: number | null
+  musical_key: string | null
   added_at: number
   modified_at: number
 }

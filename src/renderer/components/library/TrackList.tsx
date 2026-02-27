@@ -27,6 +27,8 @@ interface DbTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  bpm: number | null
+  musical_key: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   codec?: string | null
@@ -47,6 +49,7 @@ interface TrackListRowSharedProps {
   tracks: DbTrack[]
   showArtist: boolean
   showAlbum: boolean
+  showTracklistBpmKey: boolean
   currentTrackPath: string | null
   currentTrackChannels: number | undefined
   currentTrackIsAtmosJoc: boolean
@@ -59,6 +62,7 @@ interface TrackListRowSharedProps {
   queueFeedback: Record<string, true>
   openArtistInLibrary: (artist: string) => void | Promise<void>
   openAlbumInLibrary: (albumName: string, trackArtist: string, albumArtist?: string | null) => void | Promise<void>
+  formatBpm: (bpm: number | null | undefined) => string
   formatDuration: (seconds: number) => string
   onTrackClick: (track: DbTrack, index: number) => Promise<void>
   onPlayNext: (event: React.MouseEvent, track: DbTrack) => void
@@ -121,6 +125,14 @@ function resolveTrackRowHeightPx(element: HTMLElement | null): number {
   return TRACK_ROW_HEIGHT_FALLBACK_PX
 }
 
+function formatTrackBpm(bpm: number | null | undefined): string {
+  if (typeof bpm !== 'number' || !Number.isFinite(bpm) || bpm <= 0) return '--'
+
+  const rounded = Math.round(bpm * 10) / 10
+  if (!Number.isFinite(rounded) || rounded <= 0) return '--'
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
 function TrackListRowRenderer({
   ariaAttributes,
   index,
@@ -128,6 +140,7 @@ function TrackListRowRenderer({
   tracks,
   showArtist,
   showAlbum,
+  showTracklistBpmKey,
   currentTrackPath,
   currentTrackChannels,
   currentTrackIsAtmosJoc,
@@ -140,6 +153,7 @@ function TrackListRowRenderer({
   queueFeedback,
   openArtistInLibrary,
   openAlbumInLibrary,
+  formatBpm,
   formatDuration,
   onTrackClick,
   onPlayNext,
@@ -248,6 +262,16 @@ function TrackListRowRenderer({
             )}
           </div>
         )}
+        {showTracklistBpmKey && (
+          <div className="track-col track-col-bpm">
+            <span className="track-bpm">{formatBpm(track.bpm)}</span>
+          </div>
+        )}
+        {showTracklistBpmKey && (
+          <div className="track-col track-col-key">
+            <span className="track-key">{track.musical_key?.trim() || '--'}</span>
+          </div>
+        )}
         <div className="track-col track-col-codec">
           <span className="track-codec">{track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
@@ -343,6 +367,7 @@ export default function TrackList({
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
   const favorites = useLibraryStore((state) => state.favorites)
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
+  const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
   const removeFromPlaylist = usePlaylistStore((state) => state.removeFromPlaylist)
@@ -717,6 +742,7 @@ export default function TrackList({
     tracks,
     showArtist,
     showAlbum,
+    showTracklistBpmKey,
     currentTrackPath,
     currentTrackChannels,
     currentTrackIsAtmosJoc,
@@ -729,6 +755,7 @@ export default function TrackList({
     queueFeedback,
     openArtistInLibrary,
     openAlbumInLibrary,
+    formatBpm: formatTrackBpm,
     formatDuration,
     onTrackClick: handleTrackClick,
     onPlayNext: handlePlayNext,
@@ -739,6 +766,7 @@ export default function TrackList({
     tracks,
     showArtist,
     showAlbum,
+    showTracklistBpmKey,
     currentTrackPath,
     currentTrackChannels,
     currentTrackIsAtmosJoc,
@@ -751,6 +779,7 @@ export default function TrackList({
     queueFeedback,
     openArtistInLibrary,
     openAlbumInLibrary,
+    formatTrackBpm,
     formatDuration,
     handleTrackClick,
     handlePlayNext,
@@ -774,6 +803,8 @@ export default function TrackList({
         <div className="track-col track-col-title">Title</div>
         {showArtist && <div className="track-col track-col-artist">Artist</div>}
         {showAlbum && <div className="track-col track-col-album">Album</div>}
+        {showTracklistBpmKey && <div className="track-col track-col-bpm">BPM</div>}
+        {showTracklistBpmKey && <div className="track-col track-col-key">Key</div>}
         <div className="track-col track-col-codec">Codec</div>
         <div className="track-col track-col-duration">Length</div>
         <div className="track-col track-col-actions" />

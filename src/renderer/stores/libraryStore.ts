@@ -19,6 +19,8 @@ interface DbTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  bpm: number | null
+  musical_key: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number
@@ -98,6 +100,7 @@ interface LibraryStore {
   favorites: Set<string>
   favoriteTracks: DbTrack[]
   recentlyPlayed: DbTrack[]
+  showTracklistBpmKey: boolean
 
   // Actions
   loadLibrary: () => Promise<void>
@@ -137,13 +140,23 @@ interface LibraryStore {
   isFavorite: (trackPath: string) => boolean
   loadRecentlyPlayed: () => Promise<void>
   recordPlay: (trackPath: string) => Promise<void>
+  setShowTracklistBpmKey: (enabled: boolean) => void
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
+const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const artworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+
+function loadTracklistBpmKeyVisibilitySetting(): boolean {
+  try {
+    return localStorage.getItem(TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
   return `${variant === 'thumbnail' ? 'thumb' : 'full'}:${hash}`
@@ -195,6 +208,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   favorites: new Set<string>(),
   favoriteTracks: [],
   recentlyPlayed: [],
+  showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
 
   // Load entire library
   loadLibrary: async () => {
@@ -684,5 +698,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     // Reload recently played list
     const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(50)
     set({ recentlyPlayed })
+  },
+
+  setShowTracklistBpmKey: (enabled: boolean) => {
+    const normalized = Boolean(enabled)
+    set({ showTracklistBpmKey: normalized })
+
+    try {
+      localStorage.setItem(TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
   }
 }))
