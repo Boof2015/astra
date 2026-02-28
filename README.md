@@ -69,6 +69,8 @@ npm run dist:win         # Windows (NSIS + Portable)
 npm run dist:linux       # Linux (AppImage + DEB)
 ```
 
+During packaging, Astra prunes `ffprobe-static` binaries in `afterPack` so each artifact only contains the target platform/arch binary instead of every platform variant.
+
 ## Documentation
 
 For detailed technical documentation, see the [Wiki](https://github.com/Boof2015/astra/wiki).
