@@ -34,33 +34,69 @@ async function pathExists(targetPath) {
   }
 }
 
-exports.default = async function afterPackPruneFfprobe(context) {
-  const platform = context.electronPlatformName
-  const targetArch = normalizeArch(context.arch)
-
-  if (!platform || !targetArch) {
-    console.warn('[afterPack:ffprobe-prune] Missing platform/arch in context. Skipping prune.')
-    return
-  }
-
-  const binRoot = path.join(
-    context.appOutDir,
-    'resources',
+function getBinRootFromResourcesDir(resourcesDir) {
+  return path.join(
+    resourcesDir,
     'app.asar.unpacked',
     'node_modules',
     'ffprobe-static',
     'bin'
   )
+}
 
-  if (!(await pathExists(binRoot))) {
-    console.warn(`[afterPack:ffprobe-prune] ffprobe bin directory not found at ${binRoot}. Skipping prune.`)
-    return
+async function collectExistingBinRoots(context) {
+  const appOutDir = context.appOutDir
+  const candidates = new Set([
+    getBinRootFromResourcesDir(path.join(appOutDir, 'resources')),
+    getBinRootFromResourcesDir(path.join(appOutDir, 'Resources')),
+    getBinRootFromResourcesDir(path.join(appOutDir, 'Contents', 'Resources'))
+  ])
+
+  const productFilename = context.packager?.appInfo?.productFilename
+  if (typeof productFilename === 'string' && productFilename.length > 0) {
+    candidates.add(
+      getBinRootFromResourcesDir(path.join(appOutDir, `${productFilename}.app`, 'Contents', 'Resources'))
+    )
   }
 
+  try {
+    const topLevelEntries = await fs.readdir(appOutDir, { withFileTypes: true })
+    for (const entry of topLevelEntries) {
+      if (!entry.isDirectory() || !entry.name.endsWith('.app')) continue
+      candidates.add(
+        getBinRootFromResourcesDir(path.join(appOutDir, entry.name, 'Contents', 'Resources'))
+      )
+    }
+  } catch {
+    // Ignore candidate discovery failures and rely on existing static candidates.
+  }
+
+  const existingRoots = []
+  const seenCanonicalRoots = new Set()
+  for (const candidate of candidates) {
+    if (!(await pathExists(candidate))) continue
+    let canonical = candidate
+    try {
+      canonical = await fs.realpath(candidate)
+    } catch {
+      // Fall back to the raw candidate path.
+    }
+    if (seenCanonicalRoots.has(canonical)) continue
+    seenCanonicalRoots.add(canonical)
+    existingRoots.push(candidate)
+  }
+
+  return {
+    existingRoots,
+    attemptedRoots: Array.from(candidates)
+  }
+}
+
+async function pruneSingleBinRoot(binRoot, platform, targetArch) {
   const platformDir = path.join(binRoot, platform)
   if (!(await pathExists(platformDir))) {
     console.warn(
-      `[afterPack:ffprobe-prune] Target platform directory "${platform}" is missing at ${platformDir}. Skipping prune.`
+      `[afterPack:ffprobe-prune] Target platform directory "${platform}" is missing at ${platformDir}. Skipping prune for this root.`
     )
     return
   }
@@ -91,6 +127,28 @@ exports.default = async function afterPackPruneFfprobe(context) {
   }
 
   console.log(
-    `[afterPack:ffprobe-prune] Kept ffprobe-static bin/${platform}/${keepArch}; removed other platform/arch directories.`
+    `[afterPack:ffprobe-prune] Kept ffprobe-static ${platform}/${keepArch} at ${binRoot}; removed other platform/arch directories.`
   )
+}
+
+exports.default = async function afterPackPruneFfprobe(context) {
+  const platform = context.electronPlatformName
+  const targetArch = normalizeArch(context.arch)
+
+  if (!platform || !targetArch) {
+    console.warn('[afterPack:ffprobe-prune] Missing platform/arch in context. Skipping prune.')
+    return
+  }
+
+  const { existingRoots, attemptedRoots } = await collectExistingBinRoots(context)
+  if (existingRoots.length === 0) {
+    console.warn(
+      `[afterPack:ffprobe-prune] ffprobe bin directory not found under appOutDir=${context.appOutDir}. Attempted: ${attemptedRoots.join(' | ')}`
+    )
+    return
+  }
+
+  for (const binRoot of existingRoots) {
+    await pruneSingleBinRoot(binRoot, platform, targetArch)
+  }
 }
