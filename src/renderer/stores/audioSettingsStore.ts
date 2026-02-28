@@ -49,6 +49,8 @@ interface AudioSettingsStore {
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
   channelRoutingMap: number[] | null
+  normalizationEnabled: boolean
+  normalizationTargetLufs: number
   replayGainScanEnabled: boolean
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
@@ -66,6 +68,8 @@ interface AudioSettingsStore {
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
+  setNormalizationEnabled: (enabled: boolean) => void
+  setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
@@ -84,9 +88,12 @@ const STORAGE_KEY = 'astra-audio-output-device'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
+const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
+const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
+export const DEFAULT_NORMALIZATION_TARGET_LUFS = audioEngine.targetLufs
 
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
@@ -751,6 +758,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectedOutputChannelCount: null,
     multichannelEnabled: false,
     channelRoutingMap: null,
+    normalizationEnabled: true,
+    normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
 
     delayProfilesByDeviceKey: {},
@@ -858,6 +867,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     resetChannelRoutingMap: async () => {
       await get().setChannelRoutingMap(null)
+    },
+
+    setNormalizationEnabled: (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      set({ normalizationEnabled: normalized })
+      audioEngine.normalizationEnabled = normalized
+      localStorage.setItem(NORMALIZATION_ENABLED_STORAGE_KEY, normalized ? '1' : '0')
+    },
+
+    setNormalizationTargetLufs: (targetLufs: number) => {
+      if (!Number.isFinite(targetLufs)) return
+      const rounded = Math.round(targetLufs * 10) / 10
+      set({ normalizationTargetLufs: rounded })
+      audioEngine.targetLufs = rounded
+      localStorage.setItem(NORMALIZATION_TARGET_STORAGE_KEY, String(rounded))
     },
 
     setReplayGainScanEnabled: async (enabled: boolean) => {
@@ -1277,6 +1301,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(ROUTING_STORAGE_KEY)
+      localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V2)
 
@@ -1316,6 +1342,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         console.warn('Failed to reset ReplayGain scan setting to default:', error)
       }
       audioEngine.setReplayGainEnabled(false)
+      audioEngine.normalizationEnabled = true
+      audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
 
       let availableDevices = get().availableDevices
       let availableInputDevices = get().availableInputDevices
@@ -1348,6 +1376,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         selectedOutputChannelCount,
         multichannelEnabled: false,
         channelRoutingMap: null,
+        normalizationEnabled: true,
+        normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
@@ -1360,6 +1390,20 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     initFromSaved: async () => {
+      const savedNormalizationEnabled = localStorage.getItem(NORMALIZATION_ENABLED_STORAGE_KEY)
+      const normalizationEnabled = savedNormalizationEnabled == null
+        ? true
+        : savedNormalizationEnabled === '1'
+      const savedNormalizationTargetRaw = localStorage.getItem(NORMALIZATION_TARGET_STORAGE_KEY)
+      const parsedNormalizationTarget = savedNormalizationTargetRaw == null
+        ? Number.NaN
+        : Number(savedNormalizationTargetRaw)
+      const normalizationTargetLufs = Number.isFinite(parsedNormalizationTarget)
+        ? Math.round(parsedNormalizationTarget * 10) / 10
+        : DEFAULT_NORMALIZATION_TARGET_LUFS
+      audioEngine.normalizationEnabled = normalizationEnabled
+      audioEngine.targetLufs = normalizationTargetLufs
+
       let replayGainEnabled = false
       try {
         replayGainEnabled = await window.electronAPI.getReplayGainScanEnabled()
@@ -1387,6 +1431,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       set({
         delayProfilesByDeviceKey: savedProfiles,
         inputBaselinesByKey: savedInputBaselines,
+        normalizationEnabled,
+        normalizationTargetLufs,
         replayGainScanEnabled: replayGainEnabled
       })
 

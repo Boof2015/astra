@@ -122,6 +122,9 @@ export default function AudioPipelineShelf() {
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const multichannelEnabled = useAudioSettingsStore((s) => s.multichannelEnabled)
   const channelRoutingMap = useAudioSettingsStore((s) => s.channelRoutingMap)
+  const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
+  const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
+  const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -162,7 +165,7 @@ export default function AudioPipelineShelf() {
     }
 
     // Normalization
-    if (audioEngine.normalizationEnabled) {
+    if (normalizationEnabled && Number.isFinite(normalizationTargetLufs)) {
       const gainMode = audioEngine.getNormalizationMode()
       const gainDb = audioEngine.getNormalizationGainDb()
       const rounded = Math.round(gainDb * 10) / 10
@@ -171,7 +174,7 @@ export default function AudioPipelineShelf() {
       result.push({
         id: 'norm',
         icon: NormIcon,
-        label: gainMode === 'replaygain' ? 'ReplayGain' : 'Normalization',
+        label: replayGainScanEnabled && gainMode === 'replaygain' ? 'ReplayGain' : 'Normalization',
         detail: `${sign}${displayDb.toFixed(1)} dB`
       })
     }
@@ -202,6 +205,9 @@ export default function AudioPipelineShelf() {
     effectiveDelayMs,
     multichannelEnabled,
     channelRoutingMap,
+    normalizationEnabled,
+    normalizationTargetLufs,
+    replayGainScanEnabled,
   ])
 
   return (

@@ -52,6 +52,8 @@ export default function TransportBar() {
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
+  const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
+  const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
 
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
 
@@ -164,10 +166,10 @@ export default function TransportBar() {
   const normalizationReadout = (() => {
     const gainMode = audioEngine.getNormalizationMode()
     if (!currentTrack) {
-      return { value: '\u2014', dim: true, accent: false }
+      return { value: '\u2014', dim: true, accent: false, off: false }
     }
-    if (!audioEngine.normalizationEnabled) {
-      return { value: 'OFF', dim: true, accent: false }
+    if (!normalizationEnabled) {
+      return { value: 'OFF', dim: false, accent: false, off: true }
     }
 
     const gainDb = audioEngine.getNormalizationGainDb()
@@ -177,7 +179,8 @@ export default function TransportBar() {
     return {
       value: `${sign}${displayDb.toFixed(1)}dB`,
       dim: false,
-      accent: gainMode === 'replaygain'
+      accent: replayGainScanEnabled && gainMode === 'replaygain',
+      off: false
     }
   })()
 
@@ -490,7 +493,7 @@ export default function TransportBar() {
           <div className="readout-cell">
             <span className="readout-label">NORM</span>
             <span
-              className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}${normalizationReadout.accent ? ' readout-value-replaygain' : ''}`}
+              className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}${normalizationReadout.accent ? ' readout-value-replaygain' : ''}${normalizationReadout.off ? ' readout-value-off' : ''}`}
             >
               {normalizationReadout.value}
             </span>

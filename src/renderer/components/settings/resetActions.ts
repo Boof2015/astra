@@ -17,6 +17,8 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-calibration-input-device',
   'astra-audio-multichannel-enabled',
   'astra-audio-channel-routing-map',
+  'astra-audio-normalization-enabled-v1',
+  'astra-audio-normalization-target-lufs-v1',
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
   'astra-discord-rpc-enabled',

@@ -7,7 +7,10 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
-import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  DEFAULT_NORMALIZATION_TARGET_LUFS,
+  useAudioSettingsStore
+} from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
@@ -55,6 +58,9 @@ type ResetActionId =
   | 'factory-reset'
 
 type ResetActionState = 'idle' | 'running' | 'success' | 'error'
+type NormalizationDisableStep = 'warning' | 'final' | null
+const NORMALIZATION_TARGET_MIN_LUFS = -30
+const NORMALIZATION_TARGET_MAX_LUFS = 0
 
 interface ResetActionStatus {
   state: ResetActionState
@@ -130,6 +136,20 @@ function parseSleepTimerMinutesInput(input: string): number | null {
   return parsed
 }
 
+function formatNormalizationTargetLufs(value: number): string {
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+function parseNormalizationTargetLufsInput(input: string): number | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed)) return null
+  if (parsed < NORMALIZATION_TARGET_MIN_LUFS || parsed > NORMALIZATION_TARGET_MAX_LUFS) return null
+  return Math.round(parsed * 10) / 10
+}
+
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
@@ -164,6 +184,10 @@ export default function SettingsView() {
   } = useVisualizerSettingsStore()
   const replayGainScanEnabled = useAudioSettingsStore((state) => state.replayGainScanEnabled)
   const setReplayGainScanEnabled = useAudioSettingsStore((state) => state.setReplayGainScanEnabled)
+  const normalizationEnabled = useAudioSettingsStore((state) => state.normalizationEnabled)
+  const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
+  const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
+  const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const {
@@ -203,6 +227,9 @@ export default function SettingsView() {
   )
   const [sleepTimerFeedback, setSleepTimerFeedback] = useState('')
   const [sleepTimerFeedbackTone, setSleepTimerFeedbackTone] = useState<'success' | 'error'>('success')
+  const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
+  const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
+  const [normalizationTargetError, setNormalizationTargetError] = useState('')
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -276,6 +303,10 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [sleepTimerFeedback])
+
+  useEffect(() => {
+    setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
+  }, [normalizationTargetLufs])
 
   useEffect(() => {
     if (pendingSettingsSection === null) return
@@ -585,6 +616,45 @@ export default function SettingsView() {
     setSleepTimerFeedback('Sleep timer canceled.')
   }
 
+  const handleNormalizationToggle = () => {
+    if (normalizationEnabled) {
+      setNormalizationDisableStep('warning')
+      return
+    }
+    setNormalizationEnabled(true)
+  }
+
+  const handleConfirmDisableNormalization = () => {
+    if (normalizationDisableStep === 'warning') {
+      setNormalizationDisableStep('final')
+      return
+    }
+    if (normalizationDisableStep === 'final') {
+      setNormalizationEnabled(false)
+      setNormalizationDisableStep(null)
+    }
+  }
+
+  const commitNormalizationTarget = () => {
+    const parsed = parseNormalizationTargetLufsInput(normalizationTargetInput)
+    if (parsed == null) {
+      setNormalizationTargetError(
+        `Enter a value between ${NORMALIZATION_TARGET_MIN_LUFS} and ${NORMALIZATION_TARGET_MAX_LUFS} LUFS.`
+      )
+      setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
+      return
+    }
+    setNormalizationTargetError('')
+    setNormalizationTargetLufs(parsed)
+    setNormalizationTargetInput(formatNormalizationTargetLufs(parsed))
+  }
+
+  const resetNormalizationTarget = () => {
+    setNormalizationTargetError('')
+    setNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS)
+    setNormalizationTargetInput(formatNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS))
+  }
+
   const renderResetAction = (action: ResetActionDefinition) => {
     const status = resetStatuses[action.id]
     return (
@@ -794,7 +864,7 @@ export default function SettingsView() {
               <h3>Library</h3>
               <p>Manage folders and refresh indexed metadata.</p>
             </div>
-            <div className="settings-actions settings-actions-grid">
+            <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
               <button className="settings-btn settings-btn-primary" onClick={() => setShowFolderSettings(true)}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
@@ -809,6 +879,50 @@ export default function SettingsView() {
               </button>
             </div>
             <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Normalization</span>
+                <button
+                  className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
+                  onClick={handleNormalizationToggle}
+                >
+                  {normalizationEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+              <label className="settings-field">
+                <span className="settings-field-label">Normalization Target</span>
+                <div className="settings-inline-row">
+                  <input
+                    className="settings-select settings-inline-input settings-inline-input-compact"
+                    type="number"
+                    min={NORMALIZATION_TARGET_MIN_LUFS}
+                    max={NORMALIZATION_TARGET_MAX_LUFS}
+                    step={0.5}
+                    value={normalizationTargetInput}
+                    disabled={!normalizationEnabled}
+                    onChange={(event) => {
+                      setNormalizationTargetInput(event.target.value)
+                      if (normalizationTargetError) {
+                        setNormalizationTargetError('')
+                      }
+                    }}
+                    onBlur={commitNormalizationTarget}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter') return
+                      event.preventDefault()
+                      commitNormalizationTarget()
+                    }}
+                  />
+                  <span className="settings-chip settings-chip-mono">LUFS</span>
+                  <button
+                    type="button"
+                    className="settings-chip settings-chip-mono settings-chip-danger"
+                    disabled={!normalizationEnabled}
+                    onClick={resetNormalizationTarget}
+                  >
+                    RESET
+                  </button>
+                </div>
+              </label>
               <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">ReplayGain Scanning</span>
                 <button
@@ -830,8 +944,19 @@ export default function SettingsView() {
             </div>
             <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
             <p className="settings-note">
-              Experimental: when enabled, ReplayGain tags are scanned and used for playback gain when present; otherwise Astra falls back to normalization. This can make scope visuals look undesirable on some tracks.
+              Normalization Target applies to built-in normalization. ReplayGain values override it on tagged tracks when ReplayGain is active.
             </p>
+            <p className="settings-note">
+              Experimental: when enabled, ReplayGain tags are scanned and used for playback gain when present; otherwise Astra falls back to built-in normalization. This can make scope visuals look undesirable on some tracks.
+            </p>
+            {normalizationTargetError && (
+              <p className="settings-note settings-note-error">{normalizationTargetError}</p>
+            )}
+            {!normalizationEnabled && (
+              <p className="settings-note settings-note-error">
+                Normalization is disabled. ReplayGain scanning can stay enabled, but playback gain is bypassed until normalization is re-enabled.
+              </p>
+            )}
           </section>
             )}
 
@@ -1275,6 +1400,17 @@ export default function SettingsView() {
           if (!pendingReset) return
           void executeResetAction(pendingReset.id)
         }}
+      />
+      <ConfirmActionModal
+        isOpen={normalizationDisableStep != null}
+        title={normalizationDisableStep === 'warning' ? 'Disable Normalization?' : 'Final Safety Check'}
+        message={normalizationDisableStep === 'warning'
+          ? 'Disabling normalization removes automatic loudness protection. Tracks can jump to unsafe levels and may cause hearing damage.'
+          : 'You are about to disable all playback normalization (including ReplayGain gain application). Continue only if you understand the risks and control output volume carefully.'}
+        confirmLabel={normalizationDisableStep === 'warning' ? 'Continue' : 'Disable Normalization'}
+        isDestructive
+        onCancel={() => setNormalizationDisableStep(null)}
+        onConfirm={handleConfirmDisableNormalization}
       />
     </div>
   )

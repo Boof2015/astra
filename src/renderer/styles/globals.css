@@ -845,6 +845,11 @@ button, .titlebar {
   font-weight: 600;
 }
 
+.readout-value-off {
+  color: #f87171;
+  font-weight: 600;
+}
+
 /* ============================================
    Info Sidebar
    ============================================ */
@@ -8112,6 +8117,10 @@ body::after {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.settings-actions-grid-spaced {
+  margin-bottom: 10px;
+}
+
 .settings-integration-cards {
   display: grid;
   grid-template-columns: 1fr;
@@ -8444,10 +8453,32 @@ body::after {
   color: rgba(255, 255, 255, 0.72);
 }
 
+.settings-shell button.settings-chip {
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-shell button.settings-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .settings-shell .settings-chip-mono {
   font-family: var(--font-mono);
   text-transform: none;
   letter-spacing: 0.02em;
+}
+
+.settings-shell .settings-chip-danger {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+
+.settings-shell .settings-chip-danger:hover {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecaca;
 }
 
 .settings-shell .settings-chip-grow {
