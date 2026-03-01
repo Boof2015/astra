@@ -1,0 +1,9 @@
+dist/
+node_modules/
+.electron/
+.electron-builder/
+
+*.AppImage
+*.deb
+*.dmg
+*.exe
