@@ -3545,6 +3545,31 @@ button, .titlebar {
   color: var(--text-primary);
 }
 
+.library-header-right .library-shuffle-btn {
+  width: auto;
+  min-width: 36px;
+  padding: 0 10px;
+  gap: 6px;
+}
+
+.library-shuffle-btn-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.library-shuffle-btn.active {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.library-shuffle-btn.active:hover {
+  background: rgba(var(--accent-rgb), 0.2);
+}
+
 .icon-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;

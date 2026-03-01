@@ -79,6 +79,41 @@ function compareAlbumSequence(
   return comparePath(a.path, b.path)
 }
 
+function toQueueTrack(track: {
+  path: string
+  title: string
+  artist: string
+  album: string
+  album_artist: string | null
+  duration: number
+  format: string
+  artwork_hash: string | null
+  sample_rate: number | null
+  bit_depth: number | null
+  bitrate: number | null
+  channels: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
+}): Track {
+  return {
+    id: track.path,
+    path: track.path,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    albumArtist: track.album_artist ?? undefined,
+    duration: track.duration,
+    format: track.format,
+    artworkHash: track.artwork_hash ?? undefined,
+    sampleRate: track.sample_rate ?? undefined,
+    bitDepth: track.bit_depth ?? undefined,
+    bitrate: track.bitrate ?? undefined,
+    channels: track.channels ?? undefined,
+    replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
+    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined
+  }
+}
+
 export default function LibraryView() {
   const tracks = useLibraryStore((state) => state.tracks)
   const albums = useLibraryStore((state) => state.albums)
@@ -102,6 +137,11 @@ export default function LibraryView() {
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
+  const queue = usePlayerStore((s) => s.queue)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const setQueue = usePlayerStore((s) => s.setQueue)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
+  const playTrackAt = usePlayerStore((s) => s.playTrackAt)
   const setActiveView = useUIStore((s) => s.setActiveView)
   const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
@@ -110,11 +150,14 @@ export default function LibraryView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
+  const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const previousInDetailViewRef = useRef(false)
+  const shufflePlayPendingRef = useRef(false)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
+  const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
   const sortContextKey = useMemo(() => {
     if (selectedAlbum) {
       const identityKey = selectedAlbum.identity_key?.trim()
@@ -219,6 +262,45 @@ export default function LibraryView() {
 
     return sorted
   }, [sortState, tracks])
+  const isShufflePlayDisabled = isShufflePlayPending || queueSeedSortedTracks.length === 0
+  const isShufflePlayActive = useMemo(() => {
+    if (!shuffle) return false
+    if (queue.length === 0) return false
+    if (queue.length !== queueSeedSortedTracks.length) return false
+
+    for (let index = 0; index < queue.length; index += 1) {
+      if (queue[index]?.path !== queueSeedSortedTracks[index]?.path) {
+        return false
+      }
+    }
+
+    return true
+  }, [queue, queueSeedSortedTracks, shuffle])
+
+  const handleShufflePlayTracklist = useCallback(async () => {
+    if (shufflePlayPendingRef.current) return
+    if (queueSeedSortedTracks.length === 0) return
+
+    shufflePlayPendingRef.current = true
+    setIsShufflePlayPending(true)
+
+    try {
+      const queueTracks = queueSeedSortedTracks.map(toQueueTrack)
+      const randomStartIndex = Math.floor(Math.random() * queueTracks.length)
+
+      setQueue(queueTracks, randomStartIndex)
+      if (!shuffle) {
+        toggleShuffle()
+      }
+
+      await playTrackAt(randomStartIndex)
+    } catch (error) {
+      console.error('Failed to shuffle play tracklist:', error)
+    } finally {
+      shufflePlayPendingRef.current = false
+      setIsShufflePlayPending(false)
+    }
+  }, [playTrackAt, queueSeedSortedTracks, setQueue, shuffle, toggleShuffle])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
@@ -612,6 +694,27 @@ export default function LibraryView() {
           </span>
         </div>
         <div className="library-header-right">
+          {isTracklistContext && (
+            <button
+              type="button"
+              className={`icon-btn library-shuffle-btn ${isShufflePlayActive ? 'active' : ''}`}
+              onClick={() => {
+                void handleShufflePlayTracklist()
+              }}
+              title="Shuffle play tracklist"
+              aria-label="Shuffle play tracklist"
+              disabled={isShufflePlayDisabled}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 3h5v5" />
+                <path d="M4 20 21 3" />
+                <path d="M21 16v5h-5" />
+                <path d="M15 15 21 21" />
+                <path d="M4 4 9 9" />
+              </svg>
+              <span className="library-shuffle-btn-label">Shuffle all</span>
+            </button>
+          )}
           <div className="search-container">
             <span className="search-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
