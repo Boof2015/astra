@@ -97,6 +97,7 @@ export default function LibraryView() {
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
+  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
@@ -308,6 +309,9 @@ export default function LibraryView() {
         : 'Search tracks...'
 
   const handleBack = async () => {
+    const restored = await goBackSelection()
+    if (restored) return
+
     const shouldReturnHome = selectionOrigin === 'home'
     if (shouldReturnHome) {
       setActiveView('home')
@@ -540,6 +544,7 @@ export default function LibraryView() {
             queueSeedTracks={queueSeedSortedTracks}
             showArtist={false}
             showAlbum={!selectedAlbum}
+            externalScroll
             enableColumnSorting
             sortState={sortState}
             onSortColumnToggle={handleSortColumnToggle}

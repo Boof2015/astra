@@ -48,6 +48,7 @@ interface TrackListProps {
   queueSeedTracks?: DbTrack[]
   showArtist?: boolean
   showAlbum?: boolean
+  externalScroll?: boolean
   playlistSourceId?: number | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | null
   enableColumnSorting?: boolean
@@ -364,6 +365,7 @@ export default function TrackList({
   queueSeedTracks = tracks,
   showArtist = true,
   showAlbum = true,
+  externalScroll = false,
   playlistSourceId = null,
   jumpToTrackRequest = null,
   enableColumnSorting = false,
@@ -753,6 +755,9 @@ export default function TrackList({
   }, [playlistPopup])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
+  const resolvedListHeight = externalScroll
+    ? Math.max(trackRowHeight, trackRowHeight * tracks.length)
+    : listHeight
   const playlistPopupTrackPath = playlistPopup?.trackPath ?? null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
@@ -849,7 +854,7 @@ export default function TrackList({
   }
 
   return (
-    <div className="track-list">
+    <div className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''}`}>
       <div className="track-list-header">
         {canResetDefaultOrder ? (
           <div className="track-col track-col-num">
@@ -874,18 +879,18 @@ export default function TrackList({
         <div className="track-col track-col-duration">Length</div>
         <div className="track-col track-col-actions" />
       </div>
-      <div className="track-list-body" ref={listBodyRef}>
+      <div className={`track-list-body ${externalScroll ? 'track-list-body-external-scroll' : ''}`} ref={listBodyRef}>
         <List
           className="track-list-virtualized"
           defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
           listRef={listRef}
-          onScroll={handleListScroll}
+          onScroll={externalScroll ? undefined : handleListScroll}
           overscanCount={TRACK_LIST_OVERSCAN_COUNT}
           rowComponent={TrackListRow}
           rowCount={tracks.length}
           rowHeight={trackRowHeight}
           rowProps={rowProps}
-          style={{ height: listHeight, width: '100%' }}
+          style={{ height: resolvedListHeight, width: '100%' }}
         />
       </div>
       {playlistPopup && (

@@ -49,6 +49,13 @@ interface LibraryFolder {
   added_at: number
 }
 
+interface LibrarySelectionSnapshot {
+  selectedAlbum: { identity_key?: string; album: string; artist: string } | null
+  selectedArtist: string | null
+  selectionOrigin: SelectionOrigin
+  tracks: DbTrack[]
+}
+
 export interface FolderSubfolderSummary {
   totalSubfolders: number
   excludedSubfolders: number
@@ -105,6 +112,7 @@ interface LibraryStore {
   selectedAlbum: { identity_key?: string; album: string; artist: string } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
+  selectionHistory: LibrarySelectionSnapshot[]
   searchQuery: string
   searchResults: DbTrack[]
   isLoading: boolean
@@ -151,6 +159,7 @@ interface LibraryStore {
   ) => Promise<void>
   selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   clearSelection: () => void
+  goBackSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
   clearSearch: () => void
   getArtwork: (hash: string | null, options?: ArtworkRequestOptions) => Promise<string | null>
@@ -166,10 +175,33 @@ interface LibraryStore {
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
+const MAX_SELECTION_HISTORY_ENTRIES = 40
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const artworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+
+function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectionOrigin' | 'tracks'>): LibrarySelectionSnapshot | null {
+  if (!state.selectedAlbum && !state.selectedArtist) return null
+
+  return {
+    selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
+    selectedArtist: state.selectedArtist,
+    selectionOrigin: state.selectionOrigin,
+    tracks: state.tracks
+  }
+}
+
+function appendSelectionHistory(
+  history: LibrarySelectionSnapshot[],
+  snapshot: LibrarySelectionSnapshot | null
+): LibrarySelectionSnapshot[] {
+  if (!snapshot) return history
+
+  const next = history.concat(snapshot)
+  if (next.length <= MAX_SELECTION_HISTORY_ENTRIES) return next
+  return next.slice(next.length - MAX_SELECTION_HISTORY_ENTRIES)
+}
 
 function loadTracklistBpmKeyVisibilitySetting(): boolean {
   try {
@@ -252,6 +284,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   selectedAlbum: null,
   selectedArtist: null,
   selectionOrigin: null,
+  selectionHistory: [],
   searchQuery: '',
   searchResults: [],
   isLoading: false,
@@ -632,7 +665,20 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Set view mode
   setViewMode: (mode: ViewMode) => {
-    set({ viewMode: mode, selectedAlbum: null, selectedArtist: null, selectionOrigin: null })
+    set((state) => {
+      // Allow detail navigation helpers to switch base mode to tracks without discarding active detail selection.
+      if ((state.selectedAlbum || state.selectedArtist) && mode === 'tracks') {
+        return { viewMode: mode }
+      }
+
+      return {
+        viewMode: mode,
+        selectedAlbum: null,
+        selectedArtist: null,
+        selectionOrigin: null,
+        selectionHistory: []
+      }
+    })
   },
 
   // Select album
@@ -643,24 +689,55 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     identityKey?: string
   ) => {
     const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist, identityKey)
-    set({
+    set((state) => ({
       selectedAlbum: { identity_key: identityKey, album, artist: artist ?? '' },
       tracks,
       selectedArtist: null,
-      selectionOrigin: origin
-    })
+      selectionOrigin: origin,
+      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
+    }))
   },
 
   // Select artist
   selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
     const tracks = await window.electronAPI.library.getTracksByArtist(artist)
-    set({ selectedArtist: artist, tracks, selectedAlbum: null, selectionOrigin: origin })
+    set((state) => ({
+      selectedArtist: artist,
+      tracks,
+      selectedAlbum: null,
+      selectionOrigin: origin,
+      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
+    }))
   },
 
   // Clear selection
   clearSelection: async () => {
-    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null })
+    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null, selectionHistory: [] })
     await get().loadTracks()
+  },
+
+  // Restore previous detail selection when available.
+  goBackSelection: async () => {
+    let didRestore = false
+
+    set((state) => {
+      const historyLength = state.selectionHistory.length
+      if (historyLength === 0) return {}
+
+      const previous = state.selectionHistory[historyLength - 1]
+      if (!previous) return {}
+
+      didRestore = true
+      return {
+        selectedAlbum: previous.selectedAlbum ? { ...previous.selectedAlbum } : null,
+        selectedArtist: previous.selectedArtist,
+        selectionOrigin: previous.selectionOrigin,
+        tracks: previous.tracks,
+        selectionHistory: state.selectionHistory.slice(0, -1)
+      }
+    })
+
+    return didRestore
   },
 
   // Search
