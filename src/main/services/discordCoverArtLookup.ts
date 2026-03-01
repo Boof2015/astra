@@ -127,6 +127,7 @@ interface CandidateScore {
   album: number
   artist: number
   albumExact: boolean
+  albumSuffixStripped: boolean
   artistMatched: boolean
 }
 
@@ -159,6 +160,71 @@ function normalizeMatchKey(value: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+// Patterns operate on normalizeMatchKey output (lowercase, no punctuation, spaces only).
+// Parentheses/brackets/dashes are already stripped, so "(Deluxe Edition)" becomes "deluxe edition".
+// Order matters: longer/more specific patterns first to avoid partial stripping.
+const EDITION_SUFFIX_PATTERNS: RegExp[] = [
+  // Release type suffixes (iTunes: "- Single", "- EP")
+  /\s+single$/,
+  /\s+ep$/,
+  /\s+lp$/,
+  // Deluxe variants
+  /\s+super deluxe edition$/,
+  /\s+super deluxe$/,
+  /\s+deluxe edition$/,
+  /\s+deluxe version$/,
+  /\s+deluxe$/,
+  // Expanded/extended variants
+  /\s+expanded edition$/,
+  /\s+expanded version$/,
+  /\s+extended version$/,
+  /\s+extended mix$/,
+  // Bonus/special variants
+  /\s+bonus digital booklet version$/,
+  /\s+bonus video version$/,
+  /\s+bonus track version$/,
+  /\s+bonus track edition$/,
+  /\s+bonus tracks$/,
+  /\s+bonus track$/,
+  // Anniversary/collector/special/platinum
+  /\s+anniversary edition$/,
+  /\s+collector s edition$/,
+  /\s+platinum edition$/,
+  /\s+special edition$/,
+  // Remastered variants
+  /\s+remastered \d{4}$/,
+  /\s+remastered$/,
+  /\s+remaster$/,
+  // Live/remix/soundtrack
+  /\s+the original soundtrack$/,
+  /\s+original soundtrack$/,
+  /\s+live$/,
+  /\s+remix$/,
+  // Content markers
+  /\s+explicit$/,
+  /\s+clean$/,
+  // MusicBrainz-specific ETI
+  /\s+album version$/,
+  /\s+new song$/
+]
+
+function stripEditionSuffixes(normalized: string): string {
+  let current = normalized
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const pattern of EDITION_SUFFIX_PATTERNS) {
+      const stripped = current.replace(pattern, '')
+      if (stripped !== current) {
+        current = stripped.trim()
+        changed = true
+        break
+      }
+    }
+  }
+  return current
 }
 
 function toLogKey(album: string, artist: string | null): string {
@@ -295,6 +361,14 @@ function isExactAlbumFieldMatch(candidateAlbum: string | null, album: string): b
   return normalizedCandidate === targetAlbum
 }
 
+function isStrippedAlbumFieldMatch(candidateAlbum: string | null, album: string): boolean {
+  const targetAlbum = normalizeMatchKey(album)
+  const normalizedCandidate = normalizeMatchKey(candidateAlbum ?? '')
+  if (!targetAlbum || !normalizedCandidate) return false
+  if (normalizedCandidate === targetAlbum) return false
+  return stripEditionSuffixes(normalizedCandidate) === stripEditionSuffixes(targetAlbum)
+}
+
 function scoreArtistField(candidateArtist: string | null, artists: readonly string[]): number {
   if (artists.length === 0) return 0
   const normalizedCandidate = normalizeMatchKey(candidateArtist ?? '')
@@ -325,6 +399,7 @@ function scoreAlbumArtistMatch(
   const albumScore = scoreAlbumField(candidateAlbum, album)
   const artistScore = scoreArtistField(candidateArtist, artists)
   const albumExact = isExactAlbumFieldMatch(candidateAlbum, album)
+  const albumSuffixStripped = !albumExact && isStrippedAlbumFieldMatch(candidateAlbum, album)
   const artistMatched = artists.length === 0 ? false : artistScore > 0
 
   return {
@@ -332,8 +407,23 @@ function scoreAlbumArtistMatch(
     album: albumScore,
     artist: artistScore,
     albumExact,
+    albumSuffixStripped,
     artistMatched
   }
+}
+
+function pickBetterCandidate(
+  current: { url: string; score: CandidateScore } | null,
+  candidate: { url: string; score: CandidateScore }
+): { url: string; score: CandidateScore } {
+  if (!current || candidate.score.total > current.score.total) return candidate
+  if (
+    candidate.score.total === current.score.total
+    && candidate.score.artist === current.score.artist
+    && candidate.score.album > current.score.album
+  ) return candidate
+  if (candidate.score.total === current.score.total && candidate.score.artist > current.score.artist) return candidate
+  return current
 }
 
 function chooseBestCoverCandidate(
@@ -342,43 +432,33 @@ function chooseBestCoverCandidate(
   artists: string[],
   options: {
     requireArtistMatch: boolean
+    allowSuffixStrippedMatch: boolean
   }
 ): string | null {
+  // Pass 1 (strict): require exact album match + artist match (when required)
   let best: { url: string; score: CandidateScore } | null = null
 
   for (const candidate of candidates) {
     if (!candidate.url) continue
-
     const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, album, artists)
     if (!score.albumExact) continue
     if (options.requireArtistMatch && !score.artistMatched) continue
+    best = pickBetterCandidate(best, { url: candidate.url, score })
+  }
 
-    if (!best || score.total > best.score.total) {
-      best = {
-        url: candidate.url,
-        score
-      }
-      continue
-    }
+  if (best) return best.url
 
-    if (
-      score.total === best.score.total
-      && score.artist === best.score.artist
-      && score.album > best.score.album
-    ) {
-      best = {
-        url: candidate.url,
-        score
-      }
-      continue
-    }
+  // Pass 2 (relaxed album): accept suffix-stripped album matches, but still
+  // enforce the artist gate. This only helps with edition mismatches like
+  // "Album (Deluxe)" vs "Album (Deluxe Edition)", not artist mismatches.
+  if (!options.allowSuffixStrippedMatch) return null
 
-    if (score.total === best.score.total && score.artist > best.score.artist) {
-      best = {
-        url: candidate.url,
-        score
-      }
-    }
+  for (const candidate of candidates) {
+    if (!candidate.url) continue
+    const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, album, artists)
+    if (!score.albumSuffixStripped) continue
+    if (options.requireArtistMatch && !score.artistMatched) continue
+    best = pickBetterCandidate(best, { url: candidate.url, score })
   }
 
   return best?.url ?? null
@@ -731,7 +811,8 @@ async function resolveCoverArtFromItunesSearch(album: string, artist: string | n
     album,
     targetArtists,
     {
-      requireArtistMatch: targetArtists.length > 0
+      requireArtistMatch: targetArtists.length > 0,
+      allowSuffixStrippedMatch: true
     }
   )
 
@@ -799,7 +880,8 @@ async function resolveCoverArtFromItunesTrackSearch(
     album,
     targetArtists,
     {
-      requireArtistMatch: targetArtists.length > 0
+      requireArtistMatch: targetArtists.length > 0,
+      allowSuffixStrippedMatch: true
     }
   )
 
@@ -869,7 +951,8 @@ async function resolveCoverArtFromTheAudioDbSearch(album: string, artist: string
     album,
     targetArtists,
     {
-      requireArtistMatch: targetArtists.length > 0
+      requireArtistMatch: targetArtists.length > 0,
+      allowSuffixStrippedMatch: true
     }
   )
 
@@ -1095,6 +1178,32 @@ function hasKnownArtistHint(trackArtist: string | null, albumArtist: string | nu
   return false
 }
 
+const GENERIC_ALBUM_KEYS = new Set([
+  'greatest hits',
+  'best of',
+  'the best of',
+  'greatest hits vol 1',
+  'greatest hits vol 2',
+  'untitled',
+  'self titled',
+  'debut',
+  'compilation',
+  'singles',
+  'remixes',
+  'live',
+  'the collection',
+  'hits',
+  'gold'
+])
+
+function isSpecificEnoughAlbumForArtistlessLookup(album: string): boolean {
+  const normalized = normalizeMatchKey(album)
+  if (!normalized) return false
+  const wordCount = normalized.split(' ').filter(Boolean).length
+  if (wordCount < 2) return false
+  return !GENERIC_ALBUM_KEYS.has(normalized)
+}
+
 export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuery): Promise<DiscordCoverArtLookupResult> {
   const album = normalizeText(query.album)
   const trackArtist = normalizeText(query.artist)
@@ -1102,7 +1211,8 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
   const title = normalizeText(query.title)
   if (!album) return { status: 'not_found' }
   if (isUnknownMetadata(album, 'album')) return { status: 'not_found' }
-  if (!hasKnownArtistHint(trackArtist, albumArtist)) return { status: 'not_found' }
+  const knownArtistHint = hasKnownArtistHint(trackArtist, albumArtist)
+  if (!knownArtistHint && !isSpecificEnoughAlbumForArtistlessLookup(album)) return { status: 'not_found' }
 
   const artistCandidates = resolveLookupArtistCandidates(trackArtist, albumArtist)
   const logArtist = pickLookupLogArtist(trackArtist, albumArtist, artistCandidates)
