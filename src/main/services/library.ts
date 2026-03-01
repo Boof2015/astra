@@ -28,6 +28,7 @@ export interface DbTrack {
   year: number | null
   genre: string | null
   artwork_hash: string | null
+  base_artwork_hash?: string | null
   format: string
   sample_rate: number | null
   bit_depth: number | null
@@ -100,6 +101,7 @@ export interface MetadataEditChanges {
   year?: number | null
   trackNumber?: number | null
   discNumber?: number | null
+  artworkPath?: string | null
 }
 
 export interface MetadataEditRequest {
@@ -205,7 +207,11 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   COALESCE(o.disc_number, t.disc_number) AS disc_number,
   COALESCE(o.year, t.year) AS year,
   COALESCE(o.genre, t.genre) AS genre,
-  t.artwork_hash AS artwork_hash,
+  CASE
+    WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
+    ELSE COALESCE(o.artwork_hash, t.artwork_hash)
+  END AS artwork_hash,
+  t.artwork_hash AS base_artwork_hash,
   t.format AS format,
   t.sample_rate AS sample_rate,
   t.bit_depth AS bit_depth,
@@ -235,6 +241,8 @@ interface TrackMetadataOverrideRow {
   year: number | null
   track_number: number | null
   disc_number: number | null
+  artwork_hash: string | null
+  artwork_cleared: number | null
 }
 
 interface EditableTrackSnapshot {
@@ -248,6 +256,7 @@ interface EditableTrackSnapshot {
     year: number | null
     trackNumber: number | null
     discNumber: number | null
+    artworkHash: string | null
   }
   effective: {
     title: string
@@ -258,8 +267,14 @@ interface EditableTrackSnapshot {
     year: number | null
     trackNumber: number | null
     discNumber: number | null
+    artworkHash: string | null
   }
 }
+
+type ResolvedMetadataArtworkChange =
+  | { kind: 'unchanged' }
+  | { kind: 'remove' }
+  | { kind: 'replace'; imagePath: string; artworkHash: string }
 
 function isRunningOnBatteryPower(): boolean {
   if (!app.isReady()) return false
@@ -434,7 +449,9 @@ function hasOverrideValues(row: TrackMetadataOverrideRow): boolean {
     row.genre !== null ||
     row.year !== null ||
     row.track_number !== null ||
-    row.disc_number !== null
+    row.disc_number !== null ||
+    row.artwork_hash !== null ||
+    row.artwork_cleared === 1
   )
 }
 
@@ -713,7 +730,7 @@ function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator>
     const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || 'Unknown Artist'
     const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey('Unknown Artist')
     const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
-    const normalizedArtworkHash = normalizeArtworkHash(track.artwork_hash)
+    const artworkIdentityHash = normalizeArtworkHash(track.base_artwork_hash ?? track.artwork_hash)
 
     let identityKey: string
     let groupingMode: AlbumGroupingMode
@@ -724,8 +741,8 @@ function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator>
       identityKey = buildAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`)
       groupingMode = 'explicit-album-artist'
       displayArtist = normalizedAlbumArtist
-    } else if (normalizedArtworkHash) {
-      identityKey = buildAlbumIdentityKey(albumKey, `ah:${normalizedArtworkHash}`)
+    } else if (artworkIdentityHash) {
+      identityKey = buildAlbumIdentityKey(albumKey, `ah:${artworkIdentityHash}`)
       groupingMode = 'artwork-hash'
       displayArtist = primaryArtist
     } else {
@@ -820,6 +837,8 @@ export async function initDatabase(): Promise<void> {
       year INTEGER,
       track_number INTEGER,
       disc_number INTEGER,
+      artwork_hash TEXT,
+      artwork_cleared INTEGER,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY (track_path) REFERENCES tracks(path) ON DELETE CASCADE
     )
@@ -874,6 +893,16 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN musical_key TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_cleared INTEGER')
   } catch {
     // Column already exists.
   }
@@ -1228,6 +1257,7 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       t.year AS base_year,
       t.track_number AS base_track_number,
       t.disc_number AS base_disc_number,
+      t.artwork_hash AS base_artwork_hash,
       COALESCE(o.title, t.title) AS effective_title,
       COALESCE(o.artist, t.artist) AS effective_artist,
       COALESCE(o.album, t.album) AS effective_album,
@@ -1235,7 +1265,11 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       COALESCE(o.genre, t.genre) AS effective_genre,
       COALESCE(o.year, t.year) AS effective_year,
       COALESCE(o.track_number, t.track_number) AS effective_track_number,
-      COALESCE(o.disc_number, t.disc_number) AS effective_disc_number
+      COALESCE(o.disc_number, t.disc_number) AS effective_disc_number,
+      CASE
+        WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
+        ELSE COALESCE(o.artwork_hash, t.artwork_hash)
+      END AS effective_artwork_hash
     FROM tracks t
     LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
     WHERE t.path = ?
@@ -1272,7 +1306,8 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       genre: toText(row.base_genre),
       year: toNumber(row.base_year),
       trackNumber: toNumber(row.base_track_number),
-      discNumber: toNumber(row.base_disc_number)
+      discNumber: toNumber(row.base_disc_number),
+      artworkHash: toText(row.base_artwork_hash)
     },
     effective: {
       title: effectiveTitle,
@@ -1282,12 +1317,70 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       genre: toText(row.effective_genre),
       year: toNumber(row.effective_year),
       trackNumber: toNumber(row.effective_track_number),
-      discNumber: toNumber(row.effective_disc_number)
+      discNumber: toNumber(row.effective_disc_number),
+      artworkHash: toText(row.effective_artwork_hash)
     }
   }
 }
 
-function buildNextOverrideRow(snapshot: EditableTrackSnapshot, changes: MetadataEditChanges): TrackMetadataOverrideRow {
+function normalizeMetadataArtworkPath(value: string): string {
+  const normalized = value.trim()
+  if (!normalized) {
+    throw new Error('artworkPath cannot be empty.')
+  }
+  return normalized
+}
+
+function normalizeArtworkOverrideImageExtension(imagePath: string): string {
+  const rawExtension = extname(imagePath).toLowerCase()
+  if (rawExtension === '.png') return '.png'
+  if (rawExtension === '.webp') return '.webp'
+  if (rawExtension === '.gif') return '.gif'
+  if (rawExtension === '.bmp') return '.bmp'
+  if (rawExtension === '.jpg' || rawExtension === '.jpeg') return '.jpg'
+  return '.jpg'
+}
+
+async function resolveMetadataArtworkChange(
+  mode: MetadataSaveMode,
+  changes: MetadataEditChanges
+): Promise<ResolvedMetadataArtworkChange> {
+  if (changes.artworkPath === undefined) {
+    return { kind: 'unchanged' }
+  }
+
+  if (changes.artworkPath === null) {
+    return { kind: 'remove' }
+  }
+
+  const imagePath = normalizeMetadataArtworkPath(changes.artworkPath)
+  const imageData = await readFile(imagePath)
+  if (imageData.length === 0) {
+    throw new Error('Selected artwork image is empty.')
+  }
+
+  const extension = normalizeArtworkOverrideImageExtension(imagePath)
+  const artworkHash = `${createHash('md5').update(imageData).digest('hex')}${extension}`
+
+  if (mode === 'virtual') {
+    const artworkPath = join(artworkDir, artworkHash)
+    try {
+      await writeFile(artworkPath, imageData, { flag: 'wx' })
+    } catch (error: unknown) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) {
+        throw error
+      }
+    }
+  }
+
+  return { kind: 'replace', imagePath, artworkHash }
+}
+
+function buildNextOverrideRow(
+  snapshot: EditableTrackSnapshot,
+  changes: MetadataEditChanges,
+  artworkChange: ResolvedMetadataArtworkChange
+): TrackMetadataOverrideRow {
   const nextTitle = changes.title === undefined
     ? snapshot.effective.title
     : normalizeRequiredTextField(changes.title, 'title')
@@ -1312,6 +1405,12 @@ function buildNextOverrideRow(snapshot: EditableTrackSnapshot, changes: Metadata
   const nextDiscNumber = changes.discNumber === undefined
     ? snapshot.effective.discNumber
     : normalizeOptionalIntegerField(changes.discNumber, 'discNumber')
+  let nextArtworkHash = snapshot.effective.artworkHash
+  if (artworkChange.kind === 'remove') {
+    nextArtworkHash = null
+  } else if (artworkChange.kind === 'replace') {
+    nextArtworkHash = artworkChange.artworkHash
+  }
 
   return {
     title: nextTitle !== snapshot.base.title ? nextTitle : null,
@@ -1321,7 +1420,9 @@ function buildNextOverrideRow(snapshot: EditableTrackSnapshot, changes: Metadata
     genre: nextGenre !== snapshot.base.genre ? nextGenre : null,
     year: nextYear !== snapshot.base.year ? nextYear : null,
     track_number: nextTrackNumber !== snapshot.base.trackNumber ? nextTrackNumber : null,
-    disc_number: nextDiscNumber !== snapshot.base.discNumber ? nextDiscNumber : null
+    disc_number: nextDiscNumber !== snapshot.base.discNumber ? nextDiscNumber : null,
+    artwork_hash: nextArtworkHash !== snapshot.base.artworkHash && nextArtworkHash !== null ? nextArtworkHash : null,
+    artwork_cleared: nextArtworkHash === null && snapshot.base.artworkHash !== null ? 1 : null
   }
 }
 
@@ -1334,8 +1435,8 @@ function upsertTrackMetadataOverride(trackPath: string, row: TrackMetadataOverri
 
   db.run(
     `INSERT INTO track_metadata_overrides (
-      track_path, title, artist, album, album_artist, genre, year, track_number, disc_number, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      track_path, title, artist, album, album_artist, genre, year, track_number, disc_number, artwork_hash, artwork_cleared, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(track_path) DO UPDATE SET
       title = excluded.title,
       artist = excluded.artist,
@@ -1345,6 +1446,8 @@ function upsertTrackMetadataOverride(trackPath: string, row: TrackMetadataOverri
       year = excluded.year,
       track_number = excluded.track_number,
       disc_number = excluded.disc_number,
+      artwork_hash = excluded.artwork_hash,
+      artwork_cleared = excluded.artwork_cleared,
       updated_at = excluded.updated_at`,
     [
       trackPath,
@@ -1356,6 +1459,8 @@ function upsertTrackMetadataOverride(trackPath: string, row: TrackMetadataOverri
       row.year,
       row.track_number,
       row.disc_number,
+      row.artwork_hash,
+      row.artwork_cleared,
       Date.now()
     ]
   )
@@ -3004,6 +3109,24 @@ function buildFfmpegMetadataArgs(values: {
   return args
 }
 
+function buildFfmpegArtworkArgs(artworkChange: ResolvedMetadataArtworkChange): string[] {
+  if (artworkChange.kind === 'unchanged') {
+    return ['-map', '0']
+  }
+  if (artworkChange.kind === 'remove') {
+    return ['-map', '0', '-map', '-0:v']
+  }
+
+  return [
+    '-map', '0',
+    '-map', '-0:v',
+    '-map', '1:v:0',
+    '-disposition:v:0', 'attached_pic',
+    '-metadata:s:v:0', 'title=Cover',
+    '-metadata:s:v:0', 'comment=Cover (front)'
+  ]
+}
+
 async function writeTrackMetadataToFile(
   trackPath: string,
   values: {
@@ -3015,7 +3138,8 @@ async function writeTrackMetadataToFile(
     year: number | null
     trackNumber: number | null
     discNumber: number | null
-  }
+  },
+  artworkChange: ResolvedMetadataArtworkChange
 ): Promise<void> {
   const ffmpegPath = await resolveFfmpegBinaryPath()
   if (!ffmpegPath) {
@@ -3027,17 +3151,33 @@ async function writeTrackMetadataToFile(
   const outputPath = join(tempDir, `updated${extension || '.media'}`)
 
   try {
+    const ffmpegArgs: string[] = [
+      '-v', 'error',
+      '-y',
+      '-i', trackPath
+    ]
+
+    if (artworkChange.kind === 'replace') {
+      ffmpegArgs.push('-i', artworkChange.imagePath)
+    }
+
+    ffmpegArgs.push(
+      ...buildFfmpegArtworkArgs(artworkChange),
+      '-c', 'copy'
+    )
+
+    if (artworkChange.kind === 'replace') {
+      ffmpegArgs.push('-c:v', 'mjpeg')
+    }
+
+    ffmpegArgs.push(
+      ...buildFfmpegMetadataArgs(values),
+      outputPath
+    )
+
     await execFileAsync(
       ffmpegPath,
-      [
-        '-v', 'error',
-        '-y',
-        '-i', trackPath,
-        '-map', '0',
-        '-c', 'copy',
-        ...buildFfmpegMetadataArgs(values),
-        outputPath
-      ],
+      ffmpegArgs,
       { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }
     )
 
@@ -3074,6 +3214,11 @@ function normalizeMetadataEditChanges(changes: MetadataEditChanges): MetadataEdi
   if (changes.year !== undefined) normalized.year = changes.year
   if (changes.trackNumber !== undefined) normalized.trackNumber = changes.trackNumber
   if (changes.discNumber !== undefined) normalized.discNumber = changes.discNumber
+  if (changes.artworkPath !== undefined) {
+    normalized.artworkPath = changes.artworkPath === null
+      ? null
+      : normalizeMetadataArtworkPath(changes.artworkPath)
+  }
   return normalized
 }
 
@@ -3126,6 +3271,7 @@ export async function saveMetadataEdits(
     throw new Error('No metadata changes were provided.')
   }
 
+  const artworkChange = await resolveMetadataArtworkChange(mode, normalizedChanges)
   const failures: MetadataEditFailure[] = []
   const updatedTrackPaths: string[] = []
 
@@ -3139,11 +3285,11 @@ export async function saveMetadataEdits(
       }
 
       if (mode === 'virtual') {
-        const row = buildNextOverrideRow(snapshot, normalizedChanges)
+        const row = buildNextOverrideRow(snapshot, normalizedChanges, artworkChange)
         upsertTrackMetadataOverride(trackPath, row)
       } else {
         const resolvedValues = resolveEditableValuesForSave(snapshot, normalizedChanges)
-        await writeTrackMetadataToFile(trackPath, resolvedValues)
+        await writeTrackMetadataToFile(trackPath, resolvedValues, artworkChange)
         await updateTrackRowFromFileMetadata(trackPath)
         db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
       }
@@ -3178,6 +3324,8 @@ export interface TrackOverrideSnapshot {
   year: number | null
   track_number: number | null
   disc_number: number | null
+  artwork_hash: string | null
+  artwork_cleared: number | null
 }
 
 export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, TrackOverrideSnapshot | null> {
@@ -3185,7 +3333,7 @@ export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, 
   const result: Record<string, TrackOverrideSnapshot | null> = {}
 
   for (const trackPath of trackPaths) {
-    const stmt = db.prepare('SELECT title, artist, album, album_artist, genre, year, track_number, disc_number FROM track_metadata_overrides WHERE track_path = ?')
+    const stmt = db.prepare('SELECT title, artist, album, album_artist, genre, year, track_number, disc_number, artwork_hash, artwork_cleared FROM track_metadata_overrides WHERE track_path = ?')
     stmt.bind([trackPath])
     if (stmt.step()) {
       const row = stmt.getAsObject() as Record<string, unknown>
@@ -3197,7 +3345,9 @@ export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, 
         genre: row.genre as string | null,
         year: row.year as number | null,
         track_number: row.track_number as number | null,
-        disc_number: row.disc_number as number | null
+        disc_number: row.disc_number as number | null,
+        artwork_hash: row.artwork_hash as string | null,
+        artwork_cleared: row.artwork_cleared as number | null
       }
     } else {
       result[trackPath] = null
@@ -3226,7 +3376,7 @@ export function getTrackOverrideFields(trackPaths: string[]): Record<string, str
   if (!db) return {}
   const result: Record<string, string[]> = {}
   const fieldKeys: Array<keyof EditableTrackSnapshot['base']> = [
-    'title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNumber', 'discNumber'
+    'title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'trackNumber', 'discNumber', 'artworkHash'
   ]
 
   for (const trackPath of trackPaths) {

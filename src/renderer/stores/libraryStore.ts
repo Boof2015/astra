@@ -14,6 +14,7 @@ interface DbTrack {
   year: number | null
   genre: string | null
   artwork_hash: string | null
+  base_artwork_hash: string | null
   format: string
   sample_rate: number | null
   bit_depth: number | null

@@ -1283,6 +1283,12 @@ ipcMain.handle('fs:readTextFile', async (_event, filePath: string) => {
   return readFile(filePath, 'utf-8')
 })
 
+ipcMain.handle('fs:readDataUrl', async (_event, filePath: string) => {
+  const data = await readFile(filePath)
+  if (data.length === 0) return null
+  return toDataUrl(detectArtworkMimeType(filePath.toLowerCase(), data), data)
+})
+
 ipcMain.handle('fs:writeTextFile', async (_event, filePath: string, content: string) => {
   await writeFile(filePath, content, 'utf-8')
   return true

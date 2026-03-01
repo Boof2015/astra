@@ -158,6 +158,11 @@ declare global {
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
             getReplayGainScanEnabled: () => Promise<boolean>
             setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
+            showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
+            openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
+            readTextFile: (filePath: string) => Promise<string>
+            readFileAsDataUrl: (filePath: string) => Promise<string | null>
+            writeFile: (filePath: string, content: string) => Promise<boolean>
             library: any
         }
     }

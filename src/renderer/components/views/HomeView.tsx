@@ -18,6 +18,7 @@ interface HomeTrack {
   duration: number
   format: string
   artwork_hash: string | null
+  base_artwork_hash: string | null
   sample_rate: number | null
   bit_depth: number | null
   bitrate: number | null
@@ -508,13 +509,15 @@ function buildCanonicalAlbumIdentityKey(album: string, discriminator: string): s
   return `album:${normalizeKey(normalizeAlbumName(album))}::${discriminator}`
 }
 
-function buildAlbumIdentityKeyFromTrack(track: Pick<HomeTrack, 'album' | 'artist' | 'album_artist' | 'artwork_hash'>): string {
+function buildAlbumIdentityKeyFromTrack(
+  track: Pick<HomeTrack, 'album' | 'artist' | 'album_artist' | 'artwork_hash' | 'base_artwork_hash'>
+): string {
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
     return buildCanonicalAlbumIdentityKey(track.album, `aa:${normalizeKey(normalizedAlbumArtist)}`)
   }
 
-  const artworkHash = normalizeArtworkHash(track.artwork_hash)
+  const artworkHash = normalizeArtworkHash(track.base_artwork_hash ?? track.artwork_hash)
   if (artworkHash) {
     return buildCanonicalAlbumIdentityKey(track.album, `ah:${artworkHash}`)
   }

@@ -59,6 +59,7 @@ export interface DbTrack {
   year: number | null
   genre: string | null
   artwork_hash: string | null
+  base_artwork_hash: string | null
   format: string
   sample_rate: number | null
   bit_depth: number | null
@@ -178,6 +179,7 @@ export interface MetadataEditChanges {
   year?: number | null
   trackNumber?: number | null
   discNumber?: number | null
+  artworkPath?: string | null
 }
 
 export interface MetadataEditRequest {
@@ -209,6 +211,8 @@ export interface TrackOverrideSnapshot {
   year: number | null
   track_number: number | null
   disc_number: number | null
+  artwork_hash: string | null
+  artwork_cleared: number | null
 }
 
 export interface AppPerformanceStats {
@@ -450,6 +454,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) =>
     ipcRenderer.invoke('dialog:openFile', options),
   readTextFile: (filePath: string) => ipcRenderer.invoke('fs:readTextFile', filePath),
+  readFileAsDataUrl: (filePath: string) => ipcRenderer.invoke('fs:readDataUrl', filePath) as Promise<string | null>,
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeTextFile', filePath, content),
 
   // Library operations
@@ -645,6 +650,7 @@ declare global {
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
       openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
       readTextFile: (filePath: string) => Promise<string>
+      readFileAsDataUrl: (filePath: string) => Promise<string | null>
       writeFile: (filePath: string, content: string) => Promise<boolean>
 
       // Library operations

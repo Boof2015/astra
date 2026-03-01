@@ -12,6 +12,7 @@ export interface MetadataEditChanges {
   year?: number | null
   trackNumber?: number | null
   discNumber?: number | null
+  artworkPath?: string | null
 }
 
 export interface MetadataEditRequest {

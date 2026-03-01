@@ -39,6 +39,11 @@ interface SelectionCommonState {
   discNumber: CommonFieldState
 }
 
+type ArtworkDraft =
+  | { mode: 'unchanged' }
+  | { mode: 'remove' }
+  | { mode: 'replace'; imagePath: string }
+
 type TrackRecord = {
   path: string
   title: string
@@ -248,6 +253,12 @@ function getCommonArtworkHash(tracks: TrackRecord[]): { hash: string | null; mix
   return { hash: first, mixed: false }
 }
 
+function getFileNameFromPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  const segments = normalized.split('/')
+  return segments[segments.length - 1] || filePath
+}
+
 const DIFF_FIELD_MAP: Array<{ key: keyof DraftState; label: string; commonKey: keyof SelectionCommonState }> = [
   { key: 'title', label: 'Title', commonKey: 'title' },
   { key: 'artist', label: 'Artist', commonKey: 'artist' },
@@ -259,7 +270,12 @@ const DIFF_FIELD_MAP: Array<{ key: keyof DraftState; label: string; commonKey: k
   { key: 'discNumber', label: 'Disc #', commonKey: 'discNumber' }
 ]
 
-function buildDiffEntries(draft: DraftState, common: SelectionCommonState): DiffEntry[] {
+function buildDiffEntries(
+  draft: DraftState,
+  common: SelectionCommonState,
+  artworkState: { hash: string | null; mixed: boolean },
+  artworkDraft: ArtworkDraft
+): DiffEntry[] {
   const entries: DiffEntry[] = []
   for (const { key, label, commonKey } of DIFF_FIELD_MAP) {
     if (draft[key].dirty) {
@@ -270,6 +286,23 @@ function buildDiffEntries(draft: DraftState, common: SelectionCommonState): Diff
       })
     }
   }
+
+  if (artworkDraft.mode !== 'unchanged') {
+    const previous = artworkState.mixed
+      ? '(mixed)'
+      : (artworkState.hash ? 'Present' : '(none)')
+
+    const next = artworkDraft.mode === 'remove'
+      ? '(none)'
+      : `Replace (${getFileNameFromPath(artworkDraft.imagePath)})`
+
+    entries.push({
+      field: 'Cover Art',
+      oldValue: previous,
+      newValue: next
+    })
+  }
+
   return entries
 }
 
@@ -318,6 +351,8 @@ export default function MetadataView() {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const [lastSelectionIndex, setLastSelectionIndex] = useState<number | null>(null)
   const [draft, setDraft] = useState<DraftState>(() => createDraftFromCommon(getSelectionCommonState([])))
+  const [artworkDraft, setArtworkDraft] = useState<ArtworkDraft>({ mode: 'unchanged' })
+  const [artworkDraftPreview, setArtworkDraftPreview] = useState<string | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [showFailureDetails, setShowFailureDetails] = useState(false)
@@ -433,6 +468,35 @@ export default function MetadataView() {
   }, [selectionCommon])
 
   useEffect(() => {
+    setArtworkDraft({ mode: 'unchanged' })
+  }, [selectionKey])
+
+  useEffect(() => {
+    let isCancelled = false
+    if (artworkDraft.mode !== 'replace') {
+      setArtworkDraftPreview(null)
+      return () => {
+        isCancelled = true
+      }
+    }
+
+    setArtworkDraftPreview(null)
+    void window.electronAPI.readFileAsDataUrl(artworkDraft.imagePath)
+      .then((dataUrl) => {
+        if (isCancelled) return
+        setArtworkDraftPreview(dataUrl)
+      })
+      .catch(() => {
+        if (isCancelled) return
+        setArtworkDraftPreview(null)
+      })
+
+    return () => {
+      isCancelled = true
+    }
+  }, [artworkDraft])
+
+  useEffect(() => {
     setValidationError(null)
     setStatusMessage(null)
     clearLastResult()
@@ -465,6 +529,19 @@ export default function MetadataView() {
         dirty: true
       }
     }))
+  }, [])
+
+  const handleChooseArtwork = useCallback(async () => {
+    const imagePath = await window.electronAPI.openFileDialog({
+      title: 'Choose track cover art',
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+    })
+    if (!imagePath) return
+    setArtworkDraft({ mode: 'replace', imagePath })
+  }, [])
+
+  const handleRemoveArtwork = useCallback(() => {
+    setArtworkDraft((current) => (current.mode === 'remove' ? { mode: 'unchanged' } : { mode: 'remove' }))
   }, [])
 
   const handleRowSelection = useCallback((trackPath: string, rowIndex: number, options: MetadataRowSelectionOptions) => {
@@ -561,12 +638,18 @@ export default function MetadataView() {
       changes.discNumber = parseOptionalInteger(draft.discNumber.value, 'Disc number')
     }
 
+    if (artworkDraft.mode === 'replace') {
+      changes.artworkPath = artworkDraft.imagePath
+    } else if (artworkDraft.mode === 'remove') {
+      changes.artworkPath = null
+    }
+
     if (Object.keys(changes).length === 0) {
       throw new Error('No changes to save.')
     }
 
     return changes
-  }, [draft])
+  }, [artworkDraft, draft])
 
   const refreshAfterMutation = useCallback(async (updatedTrackPaths: string[]) => {
     await loadLibrary()
@@ -600,7 +683,9 @@ export default function MetadataView() {
           genre: refreshed.genre ?? undefined,
           year: refreshed.year ?? undefined,
           trackNumber: refreshed.track_number ?? undefined,
-          discNumber: refreshed.disc_number ?? undefined
+          discNumber: refreshed.disc_number ?? undefined,
+          artworkHash: refreshed.artwork_hash ?? undefined,
+          artworkData: undefined
         }
       }
     })
@@ -624,6 +709,7 @@ export default function MetadataView() {
       })
 
       await refreshAfterMutation(result.updatedTrackPaths)
+      setArtworkDraft({ mode: 'unchanged' })
       if (result.failed === 0) {
         setStatusMessage(`Saved metadata for ${result.succeeded}/${result.requested} tracks.`)
       } else {
@@ -732,8 +818,8 @@ export default function MetadataView() {
   }, [redo, refreshAfterMutation])
 
   const hasDirtyFields = useMemo(() => {
-    return Object.values(draft).some((field) => field.dirty)
-  }, [draft])
+    return Object.values(draft).some((field) => field.dirty) || artworkDraft.mode !== 'unchanged'
+  }, [artworkDraft.mode, draft])
 
   const reorderAlbum = useMemo(() => {
     if (selectedTracks.length === 0) return null
@@ -987,21 +1073,71 @@ export default function MetadataView() {
 
         <div className="metadata-form-panel">
           {selectedCount > 0 && (
-            <div className="metadata-artwork-section">
-              {artworkState.mixed ? (
-                <div className="metadata-artwork-stacked">
-                  <div className="metadata-artwork-stack-card" />
-                  <div className="metadata-artwork-stack-card" />
-                  <div className="metadata-artwork-stack-front">
-                    <span className="metadata-artwork-mixed-label">Multiple covers</span>
+            <div className={`metadata-artwork-section ${overriddenFieldSet.has('artworkHash') ? 'metadata-artwork-section-overridden' : ''}`}>
+              <div className="metadata-artwork-preview">
+                {artworkDraft.mode === 'replace' && artworkDraftPreview ? (
+                  <img
+                    src={artworkDraftPreview}
+                    alt="Selected artwork preview"
+                    className="metadata-artwork-thumbnail"
+                  />
+                ) : artworkDraft.mode === 'replace' ? (
+                  <div className="metadata-artwork-remove-preview">
+                    <span className="metadata-artwork-mixed-label">Loading preview...</span>
                   </div>
+                ) : artworkDraft.mode === 'remove' ? (
+                  <div className="metadata-artwork-remove-preview">
+                    <span className="metadata-artwork-mixed-label">Cover will be removed</span>
+                  </div>
+                ) : artworkState.mixed ? (
+                  <div className="metadata-artwork-stacked">
+                    <div className="metadata-artwork-stack-card" />
+                    <div className="metadata-artwork-stack-card" />
+                    <div className="metadata-artwork-stack-front">
+                      <span className="metadata-artwork-mixed-label">Multiple covers</span>
+                    </div>
+                  </div>
+                ) : (
+                  <AlbumArtwork
+                    hash={artworkState.hash}
+                    alt="Selected track artwork"
+                    className="metadata-artwork-thumbnail"
+                  />
+                )}
+
+                <div className="metadata-artwork-overlay">
+                  <button
+                    type="button"
+                    className={`metadata-artwork-icon-btn ${artworkDraft.mode === 'replace' ? 'active' : ''}`}
+                    onClick={() => void handleChooseArtwork()}
+                    disabled={selectedCount === 0 || isSaving}
+                    aria-label="Choose cover image"
+                    title={artworkDraft.mode === 'replace' ? 'Change cover image' : 'Choose cover image'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                      <path d="m18 2 4 4-10 10H8v-4L18 2z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`metadata-artwork-icon-btn ${artworkDraft.mode === 'remove' ? 'active danger' : ''}`}
+                    onClick={handleRemoveArtwork}
+                    disabled={selectedCount === 0 || isSaving}
+                    aria-label={artworkDraft.mode === 'remove' ? 'Keep current cover' : 'Remove cover'}
+                    title={artworkDraft.mode === 'remove' ? 'Keep current cover' : 'Remove cover'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M5 19 19 5" />
+                    </svg>
+                  </button>
                 </div>
-              ) : (
-                <AlbumArtwork
-                  hash={artworkState.hash}
-                  alt="Selected track artwork"
-                  className="metadata-artwork-thumbnail"
-                />
+              </div>
+              {artworkDraft.mode === 'replace' && (
+                <div className="metadata-artwork-selected-file" title={artworkDraft.imagePath}>
+                  {getFileNameFromPath(artworkDraft.imagePath)}
+                </div>
               )}
             </div>
           )}
@@ -1203,7 +1339,7 @@ export default function MetadataView() {
         isOpen={showDiffModal}
         mode={saveMode}
         trackCount={selectedCount}
-        diffs={buildDiffEntries(draft, selectionCommon)}
+        diffs={buildDiffEntries(draft, selectionCommon, artworkState, artworkDraft)}
         onConfirm={() => {
           setShowDiffModal(false)
           void handleSave()
