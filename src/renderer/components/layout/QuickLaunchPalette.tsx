@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { NAV_ENTRIES, SETTINGS_SECTIONS } from '../../constants/settingsSections'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { Track } from '../../types/audio'
 import type {
   QuickLaunchAlbumRecord,
   QuickLaunchArtistRecord,
+  QuickLaunchPlaylistRecord,
   QuickLaunchResult,
   QuickLaunchSeeAllResult,
   QuickLaunchTrackAction,
@@ -19,7 +21,10 @@ const NAV_RESULT_LIMIT = 3
 const TRACK_RESULT_LIMIT = 5
 const ALBUM_RESULT_LIMIT = 4
 const ARTIST_RESULT_LIMIT = 4
-const RECENT_TRACKS_LIMIT = 5
+const PLAYLIST_RESULT_LIMIT = 4
+const EMPTY_RECENT_TRACKS_LIMIT = 3
+const EMPTY_SHORTCUT_NAV_IDS = ['nav:eq', 'nav:library'] as const
+const EMPTY_SHORTCUT_SETTING_IDS = ['library', 'playback'] as const
 
 interface ResultGroup {
   id: string
@@ -205,6 +210,9 @@ export default function QuickLaunchPalette() {
   const loadTrack = usePlayerStore((state) => state.loadTrack)
   const play = usePlayerStore((state) => state.play)
 
+  const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
+  const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
+
   const [query, setQuery] = useState('')
   const [selectedResultIndex, setSelectedResultIndex] = useState(0)
   const [isTrackCorpusLoading, setIsTrackCorpusLoading] = useState(false)
@@ -369,16 +377,83 @@ export default function QuickLaunchPalette() {
     return scored.sort(compareScoredResults).slice(0, ARTIST_RESULT_LIMIT)
   }, [artists, hasQuery, trimmedQuery])
 
+  const playlistResults = useMemo(() => {
+    if (!hasQuery) return []
+
+    const scored = playlists.map((playlist) => {
+      const result = multiFieldScore(trimmedQuery, [
+        { value: playlist.name, weight: 1.5 }
+      ])
+      if (!result || result < MIN_SCORE_THRESHOLD) return null
+
+      return {
+        kind: 'playlist' as const,
+        id: `playlist:${playlist.id}`,
+        score: result,
+        playlist
+      }
+    }).filter((result): result is NonNullable<typeof result> => result !== null)
+
+    return scored.sort(compareScoredResults).slice(0, PLAYLIST_RESULT_LIMIT)
+  }, [hasQuery, playlists, trimmedQuery])
+
   // Recently played tracks for empty-query state
   const recentTrackResults = useMemo(() => {
     if (hasQuery) return []
-    return recentlyPlayed.slice(0, RECENT_TRACKS_LIMIT).map((track) => ({
-      kind: 'track' as const,
-      id: `track:${track.path}`,
-      score: 0,
-      track: track as unknown as QuickLaunchTrackRecord
-    }))
+
+    const seenTrackPaths = new Set<string>()
+    const uniqueTracks: Array<{
+      kind: 'track'
+      id: string
+      score: number
+      track: QuickLaunchTrackRecord
+    }> = []
+
+    for (const track of recentlyPlayed) {
+      if (seenTrackPaths.has(track.path)) continue
+      seenTrackPaths.add(track.path)
+      uniqueTracks.push({
+        kind: 'track',
+        id: `track:${track.path}`,
+        score: 0,
+        track: track as unknown as QuickLaunchTrackRecord
+      })
+      if (uniqueTracks.length >= EMPTY_RECENT_TRACKS_LIMIT) break
+    }
+
+    return uniqueTracks
   }, [hasQuery, recentlyPlayed])
+
+  const quickShortcutResults = useMemo(() => {
+    if (hasQuery) return []
+
+    const navResults = EMPTY_SHORTCUT_NAV_IDS.map((id) => {
+      const entry = NAV_ENTRIES.find((candidate) => candidate.id === id)
+      if (!entry) return null
+      return {
+        kind: 'nav' as const,
+        id: entry.id,
+        score: 0,
+        label: entry.label,
+        view: entry.view
+      }
+    }).filter((result): result is NonNullable<typeof result> => result !== null)
+
+    const settingResults = EMPTY_SHORTCUT_SETTING_IDS.map((id) => {
+      const section = SETTINGS_SECTIONS.find((candidate) => candidate.id === id)
+      if (!section) return null
+      return {
+        kind: 'setting' as const,
+        id: `setting:${section.id}`,
+        score: 0,
+        sectionId: section.id,
+        label: section.label,
+        subtitle: section.keywords.join(' · ')
+      }
+    }).filter((result): result is NonNullable<typeof result> => result !== null)
+
+    return [...navResults, ...settingResults]
+  }, [hasQuery])
 
   const seeAllResult = useMemo<QuickLaunchSeeAllResult | null>(() => {
     if (!hasQuery) return null
@@ -391,13 +466,20 @@ export default function QuickLaunchPalette() {
 
   const resultGroups = useMemo<ResultGroup[]>(() => {
     if (!hasQuery) {
-      // Empty query: show recently played
+      // Empty query: brief overview with recents + high-value shortcuts.
       const groups: ResultGroup[] = []
       if (recentTrackResults.length > 0) {
         groups.push({
           id: 'recent',
           label: 'Recently Played',
           results: recentTrackResults
+        })
+      }
+      if (quickShortcutResults.length > 0) {
+        groups.push({
+          id: 'shortcuts',
+          label: 'Shortcuts',
+          results: quickShortcutResults
         })
       }
       return groups
@@ -434,6 +516,12 @@ export default function QuickLaunchPalette() {
         topScore: artistResults[0].score
       })
     }
+    if (playlistResults.length > 0) {
+      scored.push({
+        group: { id: 'playlists', label: 'Playlists', results: playlistResults },
+        topScore: playlistResults[0].score
+      })
+    }
     if (settingResults.length > 0) {
       scored.push({
         group: { id: 'settings', label: 'Settings', results: settingResults },
@@ -444,7 +532,7 @@ export default function QuickLaunchPalette() {
     scored.sort((a, b) => b.topScore - a.topScore)
 
     return [...pinned, ...scored.map((s) => s.group)]
-  }, [albumResults, artistResults, hasQuery, navResults, recentTrackResults, settingResults, trackResults])
+  }, [albumResults, artistResults, hasQuery, navResults, playlistResults, quickShortcutResults, recentTrackResults, settingResults, trackResults])
 
   const flatResults = useMemo<QuickLaunchResult[]>(() => {
     const results: QuickLaunchResult[] = []
@@ -522,6 +610,13 @@ export default function QuickLaunchPalette() {
         return
       }
 
+      if (result.kind === 'playlist') {
+        await selectPlaylist(result.playlist.id)
+        setActiveView('playlist')
+        closeQuickLaunch()
+        return
+      }
+
       if (result.kind === 'see-all') {
         setViewMode('tracks')
         if (selectedAlbum || selectedArtist) {
@@ -573,6 +668,7 @@ export default function QuickLaunchPalette() {
     play,
     selectAlbum,
     selectArtist,
+    selectPlaylist,
     selectedAlbum,
     selectedArtist,
     setActiveView,
@@ -670,7 +766,7 @@ export default function QuickLaunchPalette() {
               setQuery(event.target.value)
             }}
             onKeyDown={handleInputKeyDown}
-            placeholder="Search tracks, albums, artists, settings..."
+            placeholder="Search tracks, albums, artists, playlists, settings..."
             spellCheck={false}
             disabled={isExecuting}
           />
@@ -683,8 +779,8 @@ export default function QuickLaunchPalette() {
 
         <div className="quick-launch-results">
           {/* Empty query hint */}
-          {!hasQuery && recentTrackResults.length === 0 && (
-            <div className="ql-idle-hint">Type to search tracks, albums, artists, or settings</div>
+          {!hasQuery && recentTrackResults.length === 0 && quickShortcutResults.length === 0 && (
+            <div className="ql-idle-hint">Type to search tracks, albums, artists, playlists, or settings</div>
           )}
 
           {/* No results */}
@@ -724,6 +820,9 @@ export default function QuickLaunchPalette() {
                       {result.kind === 'artist' && (
                         <ResultThumbnail hash={result.artist.artwork_hash} fallback={<IconPerson />} />
                       )}
+                      {result.kind === 'playlist' && (
+                        <ResultThumbnail hash={result.playlist.custom_cover_hash ?? result.playlist.auto_cover_hash} fallback={<IconDisc />} />
+                      )}
                       {result.kind === 'setting' && (
                         <div className="ql-icon"><IconGear /></div>
                       )}
@@ -739,6 +838,7 @@ export default function QuickLaunchPalette() {
                           {result.kind === 'track' && highlightMatch(result.track.title, trimmedQuery)}
                           {result.kind === 'album' && highlightMatch(result.album.album, trimmedQuery)}
                           {result.kind === 'artist' && highlightMatch(result.artist.artist, trimmedQuery)}
+                          {result.kind === 'playlist' && highlightMatch(result.playlist.name, trimmedQuery)}
                         </span>
                         <span className="quick-launch-result-subtitle">
                           {result.kind === 'setting' && result.subtitle}
@@ -746,6 +846,7 @@ export default function QuickLaunchPalette() {
                           {result.kind === 'track' && `${result.track.artist} · ${result.track.album}`}
                           {result.kind === 'album' && `by ${result.album.artist}`}
                           {result.kind === 'artist' && `${result.artist.track_count} tracks`}
+                          {result.kind === 'playlist' && `${result.playlist.track_count} ${result.playlist.track_count === 1 ? 'track' : 'tracks'}`}
                         </span>
                       </div>
 

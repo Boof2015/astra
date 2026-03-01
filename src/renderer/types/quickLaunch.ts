@@ -42,6 +42,14 @@ export interface QuickLaunchArtistRecord {
   artwork_hash: string | null
 }
 
+export interface QuickLaunchPlaylistRecord {
+  id: number
+  name: string
+  track_count: number
+  custom_cover_hash: string | null
+  auto_cover_hash: string | null
+}
+
 interface QuickLaunchBaseResult {
   id: string
   score: number
@@ -69,6 +77,11 @@ export interface QuickLaunchArtistResult extends QuickLaunchBaseResult {
   artist: QuickLaunchArtistRecord
 }
 
+export interface QuickLaunchPlaylistResult extends QuickLaunchBaseResult {
+  kind: 'playlist'
+  playlist: QuickLaunchPlaylistRecord
+}
+
 export interface QuickLaunchNavResult extends QuickLaunchBaseResult {
   kind: 'nav'
   label: string
@@ -86,5 +99,6 @@ export type QuickLaunchResult =
   | QuickLaunchTrackResult
   | QuickLaunchAlbumResult
   | QuickLaunchArtistResult
+  | QuickLaunchPlaylistResult
   | QuickLaunchNavResult
   | QuickLaunchSeeAllResult
