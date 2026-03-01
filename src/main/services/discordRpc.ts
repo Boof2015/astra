@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { readdirSync } from 'fs'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -17,6 +18,14 @@ const OPCODE_CLOSE = 2
 const OPCODE_PING = 3
 const OPCODE_PONG = 4
 const DISCORD_ACTIVITY_NAME = 'Astra'
+const DISCORD_LINUX_SOCKET_PREFIXES = ['discord-ipc', 'vesktop-ipc'] as const
+const DISCORD_LINUX_RUNTIME_APP_DIR_HINTS = [
+  'app/com.discordapp.Discord',
+  'app/com.discordapp.DiscordCanary',
+  'app/com.discordapp.DiscordPTB',
+  'app/com.vesktop.Vesktop',
+  'app/dev.vencord.Vesktop'
+] as const
 
 export type DiscordPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 
@@ -135,6 +144,16 @@ function buildQualityLine(track: DiscordTrackPresence): string | null {
 
   if (parts.length === 0) return null
   return parts.join(' - ')
+}
+
+function listDirectories(path: string): string[] {
+  try {
+    return readdirSync(path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
 }
 
 export class DiscordRpcService {
@@ -361,30 +380,54 @@ export class DiscordRpcService {
     }
 
     const endpointDirectories = new Set<string>()
+    const linuxRuntimeRoots = new Set<string>()
     const addEndpointDirectory = (rawPath: string | undefined): void => {
       if (!rawPath) return
       const normalized = rawPath.trim()
       if (!normalized) return
       endpointDirectories.add(normalized)
     }
+    const addLinuxRuntimeRoot = (rawPath: string | undefined): void => {
+      if (!rawPath) return
+      const normalized = rawPath.trim()
+      if (!normalized) return
+      linuxRuntimeRoots.add(normalized)
+      endpointDirectories.add(normalized)
+    }
 
     if (process.platform === 'linux') {
       // AppImage builds often need XDG runtime sockets before /tmp fallbacks.
-      addEndpointDirectory(process.env.XDG_RUNTIME_DIR)
+      addLinuxRuntimeRoot(process.env.XDG_RUNTIME_DIR)
 
       const readUid = process.getuid
       if (typeof readUid === 'function') {
-        addEndpointDirectory(join('/run/user', String(readUid())))
+        addLinuxRuntimeRoot(join('/run/user', String(readUid())))
+      }
+
+      for (const runtimeRoot of linuxRuntimeRoots) {
+        for (const candidate of DISCORD_LINUX_RUNTIME_APP_DIR_HINTS) {
+          addEndpointDirectory(join(runtimeRoot, candidate))
+        }
+
+        for (const appDirName of listDirectories(join(runtimeRoot, 'app'))) {
+          addEndpointDirectory(join(runtimeRoot, 'app', appDirName))
+        }
       }
     }
 
     addEndpointDirectory('/tmp')
     addEndpointDirectory(tmpdir())
 
+    const socketPrefixes = process.platform === 'linux'
+      ? DISCORD_LINUX_SOCKET_PREFIXES
+      : ['discord-ipc']
+
     const endpoints: string[] = []
     for (const directory of endpointDirectories) {
-      for (let index = 0; index < DISCORD_IPC_ENDPOINTS; index += 1) {
-        endpoints.push(join(directory, `discord-ipc-${index}`))
+      for (const socketPrefix of socketPrefixes) {
+        for (let index = 0; index < DISCORD_IPC_ENDPOINTS; index += 1) {
+          endpoints.push(join(directory, `${socketPrefix}-${index}`))
+        }
       }
     }
     return endpoints
