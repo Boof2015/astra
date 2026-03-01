@@ -122,6 +122,23 @@ export interface ScanStageProgress {
   message: string
 }
 
+export type ScanIssuePhase = 'discovery' | 'scan' | 'backfill' | 'cleanup'
+
+export interface ScanIssueEntry {
+  phase: ScanIssuePhase
+  path: string
+  message: string
+  code?: string
+  folderPath?: string
+}
+
+export interface ScanIssueLog {
+  total: number
+  shown: number
+  truncated: boolean
+  entries: ScanIssueEntry[]
+}
+
 export interface Playlist {
   id: number
   name: string
@@ -475,13 +492,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
       removed?: number
       skippedDirs?: string[]
       summary?: FolderSubfolderSummary
+      scanIssueLog?: ScanIssueLog
     }>,
-    addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath),
+    addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath) as Promise<{
+      success: boolean
+      canceled?: boolean
+      added?: number
+      updated?: number
+      errors?: number
+      skippedDirs?: string[]
+      scanIssueLog?: ScanIssueLog
+      error?: string
+    }>,
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
     cancelScan: () => ipcRenderer.invoke('library:cancelScan') as Promise<{ canceled: boolean }>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
-    rescan: () => ipcRenderer.invoke('library:rescan'),
+    rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
+      added: number
+      updated: number
+      errors: number
+      removed?: number
+      folderWarnings?: Record<string, string[]>
+      scanIssueLog?: ScanIssueLog
+      canceled?: boolean
+    }>,
     getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
@@ -653,6 +688,7 @@ declare global {
           removed?: number
           skippedDirs?: string[]
           summary?: FolderSubfolderSummary
+          scanIssueLog?: ScanIssueLog
         }>
         addFolder: (folderPath: string) => Promise<{
           success: boolean
@@ -661,6 +697,7 @@ declare global {
           updated?: number
           errors?: number
           skippedDirs?: string[]
+          scanIssueLog?: ScanIssueLog
           error?: string
         }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
@@ -673,6 +710,7 @@ declare global {
           errors: number
           removed?: number
           folderWarnings?: Record<string, string[]>
+          scanIssueLog?: ScanIssueLog
           canceled?: boolean
         }>
         getTrackCount: () => Promise<number>

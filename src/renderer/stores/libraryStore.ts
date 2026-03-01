@@ -76,6 +76,23 @@ interface ScanStageProgress {
   message: string
 }
 
+export type ScanIssuePhase = 'discovery' | 'scan' | 'backfill' | 'cleanup'
+
+export interface ScanIssueEntry {
+  phase: ScanIssuePhase
+  path: string
+  message: string
+  code?: string
+  folderPath?: string
+}
+
+export interface ScanIssueLog {
+  total: number
+  shown: number
+  truncated: boolean
+  entries: ScanIssueEntry[]
+}
+
 interface LibraryStore {
   // State
   tracks: DbTrack[]
@@ -95,6 +112,7 @@ interface LibraryStore {
   scanProgress: { current: number; total: number; file: string } | null
   scanStage: ScanStageProgress | null
   folderWarnings: Record<string, string[]>
+  lastScanIssueLog: ScanIssueLog | null
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
   artworkCache: Map<string, string>
   favorites: Set<string>
@@ -145,6 +163,7 @@ interface LibraryStore {
 
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
+const MAX_SCAN_ISSUE_ENTRIES = 200
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const artworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
@@ -184,6 +203,42 @@ function getThumbnailCacheEntry(cacheKey: string): string | undefined {
   return cached
 }
 
+function normalizeScanIssueLog(scanIssueLog: ScanIssueLog | null | undefined): ScanIssueLog | null {
+  if (!scanIssueLog || scanIssueLog.total <= 0) return null
+
+  const entries = scanIssueLog.entries.slice(0, MAX_SCAN_ISSUE_ENTRIES)
+  const shown = entries.length
+  const truncated = scanIssueLog.truncated || scanIssueLog.total > shown
+
+  return {
+    total: scanIssueLog.total,
+    shown,
+    truncated,
+    entries,
+  }
+}
+
+function mergeScanIssueLogs(
+  current: ScanIssueLog | null,
+  incoming: ScanIssueLog | null | undefined
+): ScanIssueLog | null {
+  const next = normalizeScanIssueLog(incoming)
+  if (!next) return current
+  if (!current) return next
+
+  const combinedEntries = current.entries.length >= MAX_SCAN_ISSUE_ENTRIES
+    ? current.entries
+    : current.entries.concat(next.entries).slice(0, MAX_SCAN_ISSUE_ENTRIES)
+  const total = current.total + next.total
+
+  return {
+    total,
+    shown: combinedEntries.length,
+    truncated: current.truncated || next.truncated || total > combinedEntries.length,
+    entries: combinedEntries,
+  }
+}
+
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
   tracks: [],
@@ -203,6 +258,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   scanProgress: null,
   scanStage: null,
   folderWarnings: {},
+  lastScanIssueLog: null,
   folderSubfolderSummaries: {},
   artworkCache,
   favorites: new Set<string>(),
@@ -317,7 +373,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       isScanning: true,
       isCancelingScan: false,
       scanProgress: { current: 0, total: 0, file: '' },
-      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+      scanStage: { stage: 'scanning', message: 'Scanning files...' },
+      lastScanIssueLog: null
     })
 
     const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
@@ -335,6 +392,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       if (!result.success) {
         return null
       }
+
+      set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
 
       if (result.skippedDirs && result.skippedDirs.length > 0) {
         set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
@@ -372,7 +431,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       isScanning: true,
       isCancelingScan: false,
       scanProgress: { current: 0, total: 0, file: '' },
-      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+      scanStage: { stage: 'scanning', message: 'Scanning files...' },
+      lastScanIssueLog: null
     })
 
     const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
@@ -385,6 +445,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     try {
       const nextWarnings = { ...get().folderWarnings }
       const nextSummaries = { ...get().folderSubfolderSummaries }
+      let aggregatedScanIssueLog: ScanIssueLog | null = null
       let scannedFolders = 0
       let canceled = false
 
@@ -397,6 +458,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (!result.success) {
           throw new Error(`Failed to scan folder: ${folderPath}`)
         }
+
+        aggregatedScanIssueLog = mergeScanIssueLogs(aggregatedScanIssueLog, result.scanIssueLog)
 
         if (result.skippedDirs && result.skippedDirs.length > 0) {
           nextWarnings[folderPath] = result.skippedDirs
@@ -413,6 +476,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       set({
         folderWarnings: nextWarnings,
         folderSubfolderSummaries: nextSummaries,
+        lastScanIssueLog: aggregatedScanIssueLog,
       })
 
       if (scannedFolders > 0) {
@@ -486,7 +550,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       isScanning: true,
       isCancelingScan: false,
       scanProgress: { current: 0, total: 0, file: '' },
-      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+      scanStage: { stage: 'scanning', message: 'Scanning files...' },
+      lastScanIssueLog: null
     })
 
     // Subscribe to scan progress
@@ -504,6 +569,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         return
       }
       if (result.success) {
+        set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
         if (result.skippedDirs && result.skippedDirs.length > 0) {
           set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
         }
@@ -532,7 +598,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       isScanning: true,
       isCancelingScan: false,
       scanProgress: { current: 0, total: 0, file: '' },
-      scanStage: { stage: 'scanning', message: 'Scanning files...' }
+      scanStage: { stage: 'scanning', message: 'Scanning files...' },
+      lastScanIssueLog: null
     })
 
     const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
@@ -552,6 +619,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       } else {
         set({ folderWarnings: {} })
       }
+      set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
       await get().loadLibrary()
     } finally {
       unsubscribeProgress()

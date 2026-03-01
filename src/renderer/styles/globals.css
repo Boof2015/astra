@@ -4028,9 +4028,37 @@ button, .titlebar {
 /* ============================================
    Folder Settings
    ============================================ */
+.folder-settings-shell {
+  width: min(1180px, 98vw);
+  max-width: min(1180px, 98vw);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 14px;
+}
+
 .folder-settings {
   position: relative;
   overflow: hidden;
+  width: min(760px, 95vw);
+  max-width: min(760px, 95vw);
+  max-height: 86vh;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-settings.has-detached-issues {
+  width: min(720px, 64vw);
+  max-width: min(720px, 64vw);
+}
+
+.folder-settings-main {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .folder-settings-pending-overview {
@@ -4480,6 +4508,137 @@ button, .titlebar {
 
 .folder-settings-scan-overlay {
   z-index: 110;
+}
+
+.folder-scan-issues-window {
+  width: 360px;
+  min-width: 320px;
+  max-width: min(360px, 32vw);
+  max-height: 86vh;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.folder-scan-issues-header {
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.folder-scan-issues-header h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.folder-scan-issues-header p {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.folder-scan-issues-subtle {
+  color: var(--text-tertiary) !important;
+}
+
+.folder-scan-issues-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.folder-scan-issue-item {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.folder-scan-issue-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.folder-scan-issue-phase {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+}
+
+.folder-scan-issue-phase.phase-discovery {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.14);
+  color: #fcd34d;
+}
+
+.folder-scan-issue-phase.phase-backfill {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+}
+
+.folder-scan-issue-phase.phase-cleanup {
+  border-color: rgba(134, 239, 172, 0.45);
+  background: rgba(134, 239, 172, 0.14);
+  color: #86efac;
+}
+
+.folder-scan-issue-code {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.folder-scan-issue-path {
+  font-size: 11px;
+  color: var(--text-primary);
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.folder-scan-issue-message {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  line-height: 1.35;
+}
+
+@media (max-width: 980px) {
+  .folder-settings-shell {
+    width: min(760px, 95vw);
+    max-width: min(760px, 95vw);
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .folder-settings.has-detached-issues {
+    width: min(760px, 95vw);
+    max-width: min(760px, 95vw);
+  }
+
+  .folder-scan-issues-window {
+    width: min(760px, 95vw);
+    min-width: 0;
+    max-width: min(760px, 95vw);
+    max-height: 240px;
+  }
 }
 
 /* ============================================

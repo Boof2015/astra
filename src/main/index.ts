@@ -1371,12 +1371,83 @@ ipcMain.handle('library:addFolderWithoutScan', async (_event, folderPath: string
 })
 
 type LibraryScanStage = 'scanning' | 'backfill' | 'cleanup'
+type LibraryScanIssueLogEntry = library.LibraryScanIssue & { folderPath?: string }
+
+interface LibraryScanIssueLog {
+  total: number
+  shown: number
+  truncated: boolean
+  entries: LibraryScanIssueLogEntry[]
+}
+
 let activeLibraryScanAbortController: AbortController | null = null
 let activeLibraryScanStage: LibraryScanStage | null = null
+const LIBRARY_SCAN_ISSUE_LOG_LIMIT = 200
 
 function sendLibraryScanStage(stage: LibraryScanStage, message: string): void {
   activeLibraryScanStage = stage
   mainWindow?.webContents.send('library:scanStage', { stage, message })
+}
+
+function getScanErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined
+  return typeof error.code === 'string' ? error.code : undefined
+}
+
+function getScanErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim().length > 0) return error
+  return 'Unknown error'
+}
+
+function createLibraryScanIssueFromError(
+  phase: library.LibraryScanIssuePhase,
+  path: string,
+  error: unknown
+): library.LibraryScanIssue {
+  const code = getScanErrorCode(error)
+  return {
+    phase,
+    path,
+    code,
+    message: getScanErrorMessage(error),
+  }
+}
+
+function createLibraryScanIssueCollector(limit = LIBRARY_SCAN_ISSUE_LOG_LIMIT): {
+  record: (issue: library.LibraryScanIssue, folderPath?: string) => void
+  recordError: (phase: library.LibraryScanIssuePhase, path: string, error: unknown, folderPath?: string) => void
+  build: () => LibraryScanIssueLog | undefined
+} {
+  const entries: LibraryScanIssueLogEntry[] = []
+  let total = 0
+
+  const record = (issue: library.LibraryScanIssue, folderPath?: string): void => {
+    total += 1
+    if (entries.length >= limit) return
+    entries.push(folderPath ? { ...issue, folderPath } : issue)
+  }
+
+  const recordError = (
+    phase: library.LibraryScanIssuePhase,
+    path: string,
+    error: unknown,
+    folderPath?: string
+  ): void => {
+    record(createLibraryScanIssueFromError(phase, path, error), folderPath)
+  }
+
+  const build = (): LibraryScanIssueLog | undefined => {
+    if (total <= 0) return undefined
+    return {
+      total,
+      shown: entries.length,
+      truncated: total > entries.length,
+      entries,
+    }
+  }
+
+  return { record, recordError, build }
 }
 
 function createLibraryScanAbortController(): AbortController {
@@ -1439,18 +1510,48 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
   }
 
   const folderLabel = basename(folderPath) || folderPath
+  const issueCollector = createLibraryScanIssueCollector()
 
   try {
     const result = await runLibraryScanOperation(async (signal) => {
+      const onIssue = (issue: library.LibraryScanIssue) => {
+        issueCollector.record(issue, folderPath)
+      }
+
+      let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+        added: 0,
+        updated: 0,
+        errors: 0,
+        skippedDirs: [],
+      }
       sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
-      const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
-        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-      }, { signal, persist: false })
+      try {
+        scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false, onIssue })
+      } catch (error) {
+        if (library.isLibraryScanCancelledError(error)) {
+          throw error
+        }
+        issueCollector.recordError('scan', folderPath, error, folderPath)
+        scanResult.errors += 1
+        console.error(`Folder scan failed for ${folderPath}:`, error)
+      }
 
       sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
-      const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
-        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-      }, { signal, persist: false })
+      let metadataBackfill: { scanned: number; updated: number; errors: number } = { scanned: 0, updated: 0, errors: 0 }
+      try {
+        metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
+          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+        }, { signal, persist: false, onIssue })
+      } catch (error) {
+        if (library.isLibraryScanCancelledError(error)) {
+          throw error
+        }
+        issueCollector.recordError('backfill', folderPath, error, folderPath)
+        metadataBackfill.errors += 1
+        console.error(`Folder metadata backfill failed for ${folderPath}:`, error)
+      }
 
       if (metadataBackfill.scanned > 0) {
         console.log(
@@ -1461,13 +1562,13 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
         mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
       }
 
-      return scanResult
+      return { ...scanResult, scanIssueLog: issueCollector.build() }
     })
 
     return { success: true, canceled: false, folder, ...result }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
-      return { success: false, canceled: true, folder }
+      return { success: false, canceled: true, folder, scanIssueLog: issueCollector.build() }
     }
     throw error
   }
@@ -1497,17 +1598,47 @@ ipcMain.handle(
   'library:rescanFolder',
   async (_event, folderPath: string) => {
     const folderLabel = basename(folderPath) || folderPath
+    const issueCollector = createLibraryScanIssueCollector()
     try {
       const result = await runLibraryScanOperation(async (signal) => {
+        const onIssue = (issue: library.LibraryScanIssue) => {
+          issueCollector.record(issue, folderPath)
+        }
+
+        let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+          added: 0,
+          updated: 0,
+          errors: 0,
+          skippedDirs: [],
+        }
         sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
-        const scanResult = await library.scanFolder(folderPath, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false })
+        try {
+          scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+          }, { signal, persist: false, onIssue })
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('scan', folderPath, error, folderPath)
+          scanResult.errors += 1
+          console.error(`Folder scan failed for ${folderPath}:`, error)
+        }
 
         sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
-        const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false })
+        let metadataBackfill: { scanned: number; updated: number; errors: number } = { scanned: 0, updated: 0, errors: 0 }
+        try {
+          metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
+            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+          }, { signal, persist: false, onIssue })
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('backfill', folderPath, error, folderPath)
+          metadataBackfill.errors += 1
+          console.error(`Folder metadata backfill failed for ${folderPath}:`, error)
+        }
         if (metadataBackfill.scanned > 0) {
           console.log(
             `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
@@ -1518,16 +1649,32 @@ ipcMain.handle(
         }
 
         sendLibraryScanStage('cleanup', `Finalizing ${folderLabel}...`)
-        const removed = await library.cleanupMissingTracks({ signal, persist: false })
-        const summary = await library.getFolderSubfolderSummary(folderPath)
+        let removed = 0
+        try {
+          removed = await library.cleanupMissingTracks({ signal, persist: false, onIssue })
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('cleanup', folderPath, error, folderPath)
+          console.error(`Folder cleanup failed for ${folderPath}:`, error)
+        }
 
-        return { ...scanResult, removed, summary }
+        let summary: library.FolderSubfolderSummary | undefined
+        try {
+          summary = await library.getFolderSubfolderSummary(folderPath)
+        } catch (error) {
+          issueCollector.recordError('cleanup', folderPath, error, folderPath)
+          console.error(`Failed to refresh folder summary for ${folderPath}:`, error)
+        }
+
+        return { ...scanResult, removed, summary, scanIssueLog: issueCollector.build() }
       })
 
       return { success: true, canceled: false, ...result }
     } catch (error) {
       if (library.isLibraryScanCancelledError(error)) {
-        return { success: false, canceled: true }
+        return { success: false, canceled: true, scanIssueLog: issueCollector.build() }
       }
       throw error
     }
@@ -1550,6 +1697,7 @@ ipcMain.handle('library:factoryReset', async () => {
 
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
+  const issueCollector = createLibraryScanIssueCollector()
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       const folders = library.getLibraryFolders()
@@ -1565,25 +1713,47 @@ ipcMain.handle('library:rescan', async () => {
       for (let folderIndex = 0; folderIndex < folders.length; folderIndex++) {
         const folder = folders[folderIndex]
         const folderLabel = basename(folder.path) || folder.path
+        const onFolderIssue = (issue: library.LibraryScanIssue) => {
+          issueCollector.record(issue, folder.path)
+        }
         sendLibraryScanStage('scanning', `Scanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
-        const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false })
-        totalAdded += scanResult.added
-        totalUpdated += scanResult.updated
-        totalErrors += scanResult.errors
-        if (scanResult.skippedDirs.length > 0) {
-          folderWarnings[folder.path] = scanResult.skippedDirs
+        try {
+          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
+            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+          }, { signal, persist: false, onIssue: onFolderIssue })
+          totalAdded += scanResult.added
+          totalUpdated += scanResult.updated
+          totalErrors += scanResult.errors
+          if (scanResult.skippedDirs.length > 0) {
+            folderWarnings[folder.path] = scanResult.skippedDirs
+          }
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('scan', folder.path, error, folder.path)
+          totalErrors += 1
+          console.error(`Failed to scan folder ${folder.path}:`, error)
+          continue
         }
 
         sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
-        const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false })
-        metadataBackfillScanned += metadataBackfill.scanned
-        metadataBackfillUpdated += metadataBackfill.updated
-        metadataBackfillErrors += metadataBackfill.errors
+        try {
+          const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path, (current, total, file) => {
+            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+          }, { signal, persist: false, onIssue: onFolderIssue })
+          metadataBackfillScanned += metadataBackfill.scanned
+          metadataBackfillUpdated += metadataBackfill.updated
+          metadataBackfillErrors += metadataBackfill.errors
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('backfill', folder.path, error, folder.path)
+          metadataBackfillErrors += 1
+          console.error(`Failed to backfill folder ${folder.path}:`, error)
+        }
       }
 
       if (metadataBackfillScanned > 0) {
@@ -1601,9 +1771,30 @@ ipcMain.handle('library:rescan', async () => {
 
       // Clean up tracks that no longer exist on disk
       sendLibraryScanStage('cleanup', 'Finalizing library...')
-      const removed = await library.cleanupMissingTracks({ signal, persist: false })
+      let removed = 0
+      try {
+        removed = await library.cleanupMissingTracks({
+          signal,
+          persist: false,
+          onIssue: (issue) => issueCollector.record(issue)
+        })
+      } catch (error) {
+        if (library.isLibraryScanCancelledError(error)) {
+          throw error
+        }
+        issueCollector.recordError('cleanup', '(library)', error)
+        totalErrors += 1
+        console.error('Failed to finalize library cleanup:', error)
+      }
 
-      return { added: totalAdded, updated: totalUpdated, errors: totalErrors, removed, folderWarnings }
+      return {
+        added: totalAdded,
+        updated: totalUpdated,
+        errors: totalErrors,
+        removed,
+        folderWarnings,
+        scanIssueLog: issueCollector.build()
+      }
     })
 
     return { ...result, canceled: false }
@@ -1615,6 +1806,7 @@ ipcMain.handle('library:rescan', async () => {
         errors: 0,
         removed: 0,
         folderWarnings: {},
+        scanIssueLog: issueCollector.build(),
         canceled: true
       }
     }

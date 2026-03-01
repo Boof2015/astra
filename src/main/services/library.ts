@@ -122,7 +122,20 @@ export interface MetadataEditResult {
   failures: MetadataEditFailure[]
 }
 
-interface ScanControlOptions {
+export type LibraryScanIssuePhase = 'discovery' | 'scan' | 'backfill' | 'cleanup'
+
+export interface LibraryScanIssue {
+  phase: LibraryScanIssuePhase
+  path: string
+  message: string
+  code?: string
+}
+
+interface ScanIssueOptions {
+  onIssue?: (issue: LibraryScanIssue) => void
+}
+
+interface ScanControlOptions extends ScanIssueOptions {
   signal?: AbortSignal
 }
 
@@ -145,6 +158,27 @@ function throwIfScanCancelled(signal?: AbortSignal): void {
 
 export function isLibraryScanCancelledError(error: unknown): error is LibraryScanCancelledError {
   return error instanceof LibraryScanCancelledError
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined
+  return typeof error.code === 'string' ? error.code : undefined
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim().length > 0) return error
+  return 'Unknown error'
+}
+
+function createLibraryScanIssue(phase: LibraryScanIssuePhase, path: string, error: unknown): LibraryScanIssue {
+  const code = getErrorCode(error)
+  return {
+    phase,
+    path,
+    code,
+    message: getErrorMessage(error),
+  }
 }
 
 let db: Database | null = null
@@ -1742,7 +1776,7 @@ export async function scanFolder(
   onProgress?: (current: number, total: number, file: string) => void,
   options: ScanWriteOptions = {}
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
-  const { persist = true, signal } = options
+  const { persist = true, signal, onIssue } = options
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
   throwIfScanCancelled(signal)
 
@@ -1751,7 +1785,7 @@ export async function scanFolder(
     deleteTracksByAbsolutePrefixes(excludedAbsolutePaths)
   }
 
-  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal })
+  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal, onIssue })
   let added = 0
   let updated = 0
   let errors = 0
@@ -1827,10 +1861,12 @@ export async function scanFolder(
       if (isLibraryScanCancelledError(err)) {
         throw err
       }
-      if (!(err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT')) {
+      const issue = createLibraryScanIssue('scan', filePath, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
         console.error(`Error processing ${filePath}:`, err)
-        errors++
       }
+      errors++
     } finally {
       processed += 1
       onProgress?.(processed, files.length, filePath)
@@ -1880,12 +1916,15 @@ async function collectAudioFiles(
     try {
       entries = await readdir(currentDir, { withFileTypes: true })
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'code' in err &&
-          (err.code === 'EACCES' || err.code === 'EPERM')) {
+      const issue = createLibraryScanIssue('discovery', currentDir, err)
+      options.onIssue?.(issue)
+
+      if (issue.code === 'EACCES' || issue.code === 'EPERM') {
         skippedDirs.push(currentDir)
-        return
+      } else if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Skipping unreadable directory during scan: ${currentDir}`, err)
       }
-      throw err
+      return
     }
 
     for (const entry of entries) {
@@ -2759,7 +2798,7 @@ async function backfillPaths(
   onProgress?: BackfillProgressCallback,
   options: ScanWriteOptions = {}
 ): Promise<{ scanned: number; updated: number; errors: number }> {
-  const { persist = true, signal } = options
+  const { persist = true, signal, onIssue } = options
   if (!db || paths.length === 0) {
     onProgress?.(0, 0, '')
     return { scanned: 0, updated: 0, errors: 0 }
@@ -2780,7 +2819,11 @@ async function backfillPaths(
       if (isLibraryScanCancelledError(err)) {
         throw err
       }
-      console.warn(`Failed to backfill audio metadata for ${path}:`, err)
+      const issue = createLibraryScanIssue('backfill', path, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Failed to backfill audio metadata for ${path}:`, err)
+      }
       errors++
     } finally {
       processed += 1
@@ -2808,7 +2851,7 @@ export async function backfillMissingChannelCounts(
 export async function backfillMissingReplayGainMetadata(
   options: ScanWriteOptions = {}
 ): Promise<{ scanned: number; updated: number; errors: number }> {
-  const { persist = true, signal } = options
+  const { persist = true, signal, onIssue } = options
   if (!replayGainScanEnabled) {
     return { scanned: 0, updated: 0, errors: 0 }
   }
@@ -2831,7 +2874,11 @@ export async function backfillMissingReplayGainMetadata(
       if (isLibraryScanCancelledError(err)) {
         throw err
       }
-      console.warn(`Failed to backfill ReplayGain metadata for ${path}:`, err)
+      const issue = createLibraryScanIssue('backfill', path, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Failed to backfill ReplayGain metadata for ${path}:`, err)
+      }
       errors++
     }
   }, { signal })
@@ -3700,7 +3747,7 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
 
 // Remove tracks that no longer exist on disk
 export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Promise<number> {
-  const { persist = true, signal } = options
+  const { persist = true, signal, onIssue } = options
   if (!db) return 0
 
   const result = db.exec('SELECT id, path FROM tracks')
@@ -3713,9 +3760,15 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     throwIfScanCancelled(signal)
     try {
       await stat(track.path)
-    } catch {
-      db.run('DELETE FROM tracks WHERE id = ?', [track.id])
-      removed++
+    } catch (err: unknown) {
+      const code = getErrorCode(err)
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+        removed++
+      } else {
+        onIssue?.(createLibraryScanIssue('cleanup', track.path, err))
+        console.warn(`Failed to validate track during cleanup for ${track.path}:`, err)
+      }
     }
   }
 
