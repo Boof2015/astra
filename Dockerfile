@@ -1,5 +1,5 @@
 # -----------------------------------------------
-FROM node:25 AS deps
+FROM node:25 AS os_deps
 
 RUN dpkg --add-architecture i386 \
     && apt update \
@@ -7,6 +7,9 @@ RUN dpkg --add-architecture i386 \
         p7zip-full fuse wine wine32 build-essential \
     && apt clean \
     && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------
+FROM os_deps AS deps
 
 WORKDIR /app
 
