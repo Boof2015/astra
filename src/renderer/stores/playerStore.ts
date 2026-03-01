@@ -78,6 +78,14 @@ interface PlayerStore {
 const waveformCache = new Map<string, Float32Array>()
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
+const RECENT_PLAY_MIN_SECONDS = 10
+
+interface RecentPlaySession {
+  trackPath: string
+  thresholdSeconds: number
+  counted: boolean
+  sourcePlaylistId: number | null
+}
 
 function logSlowPath(label: string, startTime: number, details: Record<string, unknown>): void {
   if (!import.meta.env.DEV) return
@@ -113,6 +121,66 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
   let pendingManualLoadCueTrack: Track | null = null
+  let recentPlaySession: RecentPlaySession | null = null
+
+  const getRecentPlayThresholdSeconds = (track: Track | null): number => {
+    if (!track || !Number.isFinite(track.duration) || track.duration <= 0) {
+      return RECENT_PLAY_MIN_SECONDS
+    }
+    return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, track.duration))
+  }
+
+  const resolveSourcePlaylistIdForTrack = (trackPath: string): number | null => {
+    const { queue, queueIndex, queueSourcePlaylistId } = get()
+    if (queueSourcePlaylistId === null) return null
+    const queuedTrackPath = queue[queueIndex]?.path
+    if (queuedTrackPath === trackPath) {
+      return queueSourcePlaylistId
+    }
+    return null
+  }
+
+  const clearQueueSourceIfMismatched = (trackPath: string): void => {
+    const { queue, queueIndex, queueSourcePlaylistId } = get()
+    if (queueSourcePlaylistId === null) return
+    const queuedTrackPath = queue[queueIndex]?.path
+    if (queuedTrackPath !== trackPath) {
+      set({ queueSourcePlaylistId: null })
+    }
+  }
+
+  const commitRecentPlay = (session: RecentPlaySession): void => {
+    if (session.counted) return
+    session.counted = true
+    void useLibraryStore.getState().recordPlay(session.trackPath)
+    if (session.sourcePlaylistId !== null) {
+      void window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
+    }
+  }
+
+  const commitRecentPlayNow = (): void => {
+    if (!recentPlaySession || recentPlaySession.counted) return
+    commitRecentPlay(recentPlaySession)
+  }
+
+  const maybeCommitRecentPlay = (time: number): void => {
+    if (!recentPlaySession || recentPlaySession.counted) return
+    if (time >= recentPlaySession.thresholdSeconds) {
+      commitRecentPlay(recentPlaySession)
+    }
+  }
+
+  const startRecentPlaySession = (trackPath: string): void => {
+    const track = get().currentTrack
+    const thresholdSeconds = getRecentPlayThresholdSeconds(track)
+    recentPlaySession = {
+      trackPath,
+      thresholdSeconds,
+      counted: false,
+      sourcePlaylistId: resolveSourcePlaylistIdForTrack(trackPath)
+    }
+    clearQueueSourceIfMismatched(trackPath)
+  }
 
   const showFfmpegFallbackNotice = (track: Track) => {
     ffmpegFallbackNoticeId += 1
@@ -218,15 +286,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         pendingManualLoadCueTrack = resolvedTrack
 
-        // Record recently played and playlist play attribution when applicable.
-        void useLibraryStore.getState().recordPlay(track.path)
-        const queueState = get()
-        const queuedTrackPath = queueState.queue[queueState.queueIndex]?.path
-        if (queueState.queueSourcePlaylistId !== null && queuedTrackPath === track.path) {
-          void window.electronAPI.library.markPlaylistPlayed(queueState.queueSourcePlaylistId)
-        } else if (queueState.queueSourcePlaylistId !== null && queuedTrackPath !== track.path) {
-          set({ queueSourcePlaylistId: null })
-        }
+        clearQueueSourceIfMismatched(track.path)
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
@@ -250,11 +310,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Playback controls
     play: async () => {
+      const previousPlaybackState = get().playbackState
       if (pendingManualLoadCueTrack) {
         showOutputDelayNotice(pendingManualLoadCueTrack)
         pendingManualLoadCueTrack = null
       }
       await audioEngine.play()
+      const currentTrack = get().currentTrack
+      if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
+        startRecentPlaySession(currentTrack.path)
+      }
     },
 
     pause: () => {
@@ -267,6 +332,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     stop: () => {
       pendingManualLoadCueTrack = null
+      recentPlaySession = null
       audioEngine.stop()
     },
 
@@ -440,6 +506,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     clearQueue: () => {
       audioEngine.clearNextBuffer()
+      recentPlaySession = null
       set({ queue: [], queueIndex: -1, queueSourcePlaylistId: null, shuffledIndices: [], shufflePosition: 0 })
     },
 
@@ -697,9 +764,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         await audioEngine.play()
-
-        // Record recently played
-        useLibraryStore.getState().recordPlay(track.path)
+        startRecentPlaySession(resolvedTrack.path)
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
@@ -767,7 +832,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       audioEngine.on('timeUpdate', (time) => {
-        set({ currentTime: time as number })
+        const normalizedTime = time as number
+        set({ currentTime: normalizedTime })
+        maybeCommitRecentPlay(normalizedTime)
       })
 
       audioEngine.on('durationChange', (duration) => {
@@ -791,6 +858,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
+        commitRecentPlayNow()
         const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
 
         let nextIndex: number
@@ -839,6 +907,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             currentTime: 0,
             shufflePosition: newShufflePosition
           })
+          startRecentPlaySession(nextTrack.path)
 
           // Pre-buffer the NEXT next track
           get()._preBufferNextTrack()
@@ -847,6 +916,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
+        commitRecentPlayNow()
+        recentPlaySession = null
         set({ currentTime: 0 })
         // Auto-play next track (non-gapless fallback)
         get().playNext()

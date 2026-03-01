@@ -165,6 +165,7 @@ interface LibraryStore {
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
 const MAX_SCAN_ISSUE_ENTRIES = 200
+const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const artworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
@@ -757,7 +758,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Load recently played tracks
   loadRecentlyPlayed: async () => {
-    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(50)
+    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
     set({ recentlyPlayed })
   },
 
@@ -765,7 +766,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   recordPlay: async (trackPath: string) => {
     await window.electronAPI.library.addRecentlyPlayed(trackPath)
     // Reload recently played list
-    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(50)
+    const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
     set({ recentlyPlayed })
   },
 

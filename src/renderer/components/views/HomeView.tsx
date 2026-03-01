@@ -110,9 +110,17 @@ interface PlaylistImportStatus {
   message: string
 }
 
-const RECENT_TRACK_LIMIT = 8
-const RECENT_ARTIST_LIMIT = 6
-const RECENT_ALBUM_LIMIT = 6
+interface HomeRecentLimits {
+  track: number
+  artist: number
+  album: number
+}
+
+const HOME_RECENT_MEDIUM_BREAKPOINT_PX = 1200
+const HOME_RECENT_LARGE_BREAKPOINT_PX = 1440
+const HOME_RECENT_LIMITS_SMALL: HomeRecentLimits = { track: 8, artist: 6, album: 6 }
+const HOME_RECENT_LIMITS_MEDIUM: HomeRecentLimits = { track: 10, artist: 8, album: 8 }
+const HOME_RECENT_LIMITS_LARGE: HomeRecentLimits = { track: 12, artist: 10, album: 10 }
 const GREETING_ROTATION_MS = 30 * 60 * 1000
 const SKY_PIXEL_SCALE = 4
 const STAR_GRID_SIZE = 6
@@ -122,6 +130,7 @@ const STAR_OPACITY_SCALE = 0.52
 const GREETING_WEIGHT_TIME_AWARE = 0.4
 const GREETING_WEIGHT_DAY_AWARE = 0.28
 const GREETING_WEIGHT_PLAYFUL = 0.32
+const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
 
 function formatPlaylistImportStatus(result: PlaylistImportResult): PlaylistImportStatus {
   const detailSegments: string[] = []
@@ -736,6 +745,32 @@ function drawStarField(
   }
 }
 
+function getHomeRecentLimits(viewportWidth: number): HomeRecentLimits {
+  if (viewportWidth >= HOME_RECENT_LARGE_BREAKPOINT_PX) {
+    return HOME_RECENT_LIMITS_LARGE
+  }
+  if (viewportWidth >= HOME_RECENT_MEDIUM_BREAKPOINT_PX) {
+    return HOME_RECENT_LIMITS_MEDIUM
+  }
+  return HOME_RECENT_LIMITS_SMALL
+}
+
+function getPrimaryContributor(rawArtist: string): string {
+  const contributors = splitCollaborators(rawArtist)
+  return contributors[0] ?? 'Unknown Artist'
+}
+
+function getRecentArtistCandidate(track: Pick<HomeTrack, 'artist' | 'album_artist'>): string {
+  const albumArtist = (track.album_artist ?? '').replace(/\s+/g, ' ').trim()
+  const albumArtistKey = normalizeKey(albumArtist)
+
+  if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
+    return getPrimaryContributor(albumArtist)
+  }
+
+  return getPrimaryContributor(track.artist)
+}
+
 export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
@@ -762,10 +797,16 @@ export default function HomeView() {
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
+  const [viewportWidth, setViewportWidth] = useState(() => (
+    typeof window === 'undefined'
+      ? HOME_RECENT_MEDIUM_BREAKPOINT_PX
+      : window.innerWidth
+  ))
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const hasLibraryContent = totalTrackCount > 0 || albums.length > 0 || artists.length > 0
+  const recentLimits = useMemo(() => getHomeRecentLimits(viewportWidth), [viewportWidth])
 
   useEffect(() => {
     void loadPlaylists()
@@ -777,6 +818,19 @@ export default function HomeView() {
       setGreeting((current) => chooseGreeting(current.id, now))
     }, GREETING_ROTATION_MS)
     return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const handleResize = () => {
+      setViewportWidth(window.innerWidth)
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
   }, [])
 
   useEffect(() => {
@@ -940,39 +994,35 @@ export default function HomeView() {
       if (seenTrackPaths.has(track.path)) continue
       seenTrackPaths.add(track.path)
       uniqueTracks.push(track)
-      if (uniqueTracks.length >= RECENT_TRACK_LIMIT) break
+      if (uniqueTracks.length >= recentLimits.track) break
     }
     return uniqueTracks
-  }, [recentlyPlayed])
+  }, [recentlyPlayed, recentLimits])
 
   const recentArtists = useMemo(() => {
     const seenArtistKeys = new Set<string>()
     const uniqueArtists: HomeArtist[] = []
 
     for (const track of recentlyPlayed) {
-      const contributors = splitCollaborators(track.artist)
-      const candidates = contributors.length > 0 ? contributors : ['Unknown Artist']
+      const candidateArtist = getRecentArtistCandidate(track) || 'Unknown Artist'
+      const key = normalizeKey(candidateArtist)
+      if (!key || seenArtistKeys.has(key)) continue
+      seenArtistKeys.add(key)
 
-      for (const contributor of candidates) {
-        const key = normalizeKey(contributor)
-        if (!key || seenArtistKeys.has(key)) continue
-        seenArtistKeys.add(key)
+      const metadata = artistByKey.get(key)
+      uniqueArtists.push({
+        artist: metadata?.artist ?? candidateArtist,
+        track_count: metadata?.track_count ?? 0,
+        artwork_hash: metadata?.artwork_hash ?? track.artwork_hash
+      })
 
-        const metadata = artistByKey.get(key)
-        uniqueArtists.push({
-          artist: metadata?.artist ?? contributor,
-          track_count: metadata?.track_count ?? 0,
-          artwork_hash: metadata?.artwork_hash ?? track.artwork_hash
-        })
-
-        if (uniqueArtists.length >= RECENT_ARTIST_LIMIT) {
-          return uniqueArtists
-        }
+      if (uniqueArtists.length >= recentLimits.artist) {
+        break
       }
     }
 
     return uniqueArtists
-  }, [recentlyPlayed, artistByKey])
+  }, [recentlyPlayed, artistByKey, recentLimits])
 
   const recentAlbums = useMemo(() => {
     const seenAlbumIdentityKeys = new Set<string>()
@@ -996,11 +1046,11 @@ export default function HomeView() {
         track_count: metadata.track_count
       })
 
-      if (uniqueAlbums.length >= RECENT_ALBUM_LIMIT) break
+      if (uniqueAlbums.length >= recentLimits.album) break
     }
 
     return uniqueAlbums
-  }, [recentlyPlayed, albumByIdentityKey, albumByKey])
+  }, [recentlyPlayed, albumByIdentityKey, albumByKey, recentLimits])
 
   const homePlaylists = useMemo(
     () => buildPlaylistDisplaySections(playlists, {
