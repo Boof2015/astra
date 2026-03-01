@@ -360,13 +360,34 @@ export class DiscordRpcService {
       return Array.from({ length: DISCORD_IPC_ENDPOINTS }, (_, index) => `\\\\.\\pipe\\discord-ipc-${index}`)
     }
 
-    const endpoints = new Set<string>()
-    const tempPath = tmpdir()
-    for (let index = 0; index < DISCORD_IPC_ENDPOINTS; index += 1) {
-      endpoints.add(join('/tmp', `discord-ipc-${index}`))
-      endpoints.add(join(tempPath, `discord-ipc-${index}`))
+    const endpointDirectories = new Set<string>()
+    const addEndpointDirectory = (rawPath: string | undefined): void => {
+      if (!rawPath) return
+      const normalized = rawPath.trim()
+      if (!normalized) return
+      endpointDirectories.add(normalized)
     }
-    return Array.from(endpoints)
+
+    if (process.platform === 'linux') {
+      // AppImage builds often need XDG runtime sockets before /tmp fallbacks.
+      addEndpointDirectory(process.env.XDG_RUNTIME_DIR)
+
+      const readUid = process.getuid
+      if (typeof readUid === 'function') {
+        addEndpointDirectory(join('/run/user', String(readUid())))
+      }
+    }
+
+    addEndpointDirectory('/tmp')
+    addEndpointDirectory(tmpdir())
+
+    const endpoints: string[] = []
+    for (const directory of endpointDirectories) {
+      for (let index = 0; index < DISCORD_IPC_ENDPOINTS; index += 1) {
+        endpoints.push(join(directory, `discord-ipc-${index}`))
+      }
+    }
+    return endpoints
   }
 
   private sendHandshake(): void {
