@@ -25,6 +25,8 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-discord-rpc-cover-art-enabled',
   'astra-discord-cover-art-cache-v1',
   'astra-discord-cover-art-cache-v2',
+  'astra-discord-cover-art-cache-v3',
+  'astra-discord-cover-art-cache-v4',
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   'astra-library-tracklist-bpm-key-visible-v1',

@@ -14,6 +14,8 @@ const ENABLED_STORAGE_KEY = 'astra-discord-rpc-enabled'
 const COVER_ART_ENABLED_STORAGE_KEY = 'astra-discord-rpc-cover-art-enabled'
 const COVER_ART_CACHE_STORAGE_KEY_V1 = 'astra-discord-cover-art-cache-v1'
 const COVER_ART_CACHE_STORAGE_KEY_V2 = 'astra-discord-cover-art-cache-v2'
+const COVER_ART_CACHE_STORAGE_KEY_V3 = 'astra-discord-cover-art-cache-v3'
+const COVER_ART_CACHE_STORAGE_KEY_V4 = 'astra-discord-cover-art-cache-v4'
 const LEGACY_CLIENT_ID_STORAGE_KEY = 'astra-discord-rpc-client-id'
 
 export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) => {
@@ -67,6 +69,8 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
       localStorage.removeItem(COVER_ART_ENABLED_STORAGE_KEY)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V2)
+      localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V3)
+      localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V4)
       clearLegacyClientId()
       await applyDiscordConfig()
     },

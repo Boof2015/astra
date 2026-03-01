@@ -6,6 +6,8 @@ type PlayerSnapshot = ReturnType<typeof usePlayerStore.getState>
 
 const PLAYING_PROGRESS_BUCKET_SECONDS = 15
 const IDLE_PROGRESS_BUCKET_SECONDS = 1
+const COVER_ART_CACHE_STORAGE_KEY_V4 = 'astra-discord-cover-art-cache-v4'
+const COVER_ART_CACHE_STORAGE_KEY_V3 = 'astra-discord-cover-art-cache-v3'
 const COVER_ART_CACHE_STORAGE_KEY_V2 = 'astra-discord-cover-art-cache-v2'
 const COVER_ART_CACHE_STORAGE_KEY_V1 = 'astra-discord-cover-art-cache-v1'
 const COVER_ART_CACHE_MAX_ENTRIES = 500
@@ -35,14 +37,7 @@ interface CachedCoverArtEntry {
   expiresAt: number
 }
 
-interface LegacyCachedCoverArtEntry {
-  url: string | null
-  updatedAt: number
-  expiresAt: number
-}
-
 type CachedCoverArtStore = Record<string, CachedCoverArtEntry>
-type LegacyCachedCoverArtStore = Record<string, LegacyCachedCoverArtEntry>
 
 interface DiscordTrackPayload {
   title: string
@@ -88,6 +83,8 @@ export function clearDiscordCoverArtLookupCache(): void {
   try {
     localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
     localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V2)
+    localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V3)
+    localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V4)
   } catch {
     // Ignore storage failures when resetting cache.
   }
@@ -124,6 +121,14 @@ function isUnknownLookupValue(value: string, type: 'artist' | 'album'): boolean 
   return normalized === 'unknown album'
 }
 
+function isGenericArtistLookupValue(value: string): boolean {
+  const normalized = normalizeLookupKey(value)
+  return normalized === 'various artists'
+    || normalized === 'various artist'
+    || normalized === 'va'
+    || normalized === 'v a'
+}
+
 function splitArtistCandidates(value: string): string[] {
   const normalized = normalizeLookupText(value)
   if (!normalized) return []
@@ -147,10 +152,26 @@ function splitArtistCandidates(value: string): string[] {
   return candidates
 }
 
-function pickPrimaryArtist(value: string | null): string | null {
-  if (!value) return null
-  const candidates = splitArtistCandidates(value)
-  return candidates[0] ?? value
+function pickPreferredLookupArtist(artist: string | null, albumArtist: string | null): string | null {
+  if (artist) {
+    for (const candidate of splitArtistCandidates(artist)) {
+      if (isUnknownLookupValue(candidate, 'artist')) continue
+      if (isGenericArtistLookupValue(candidate)) continue
+      return candidate
+    }
+  }
+
+  if (albumArtist) {
+    for (const candidate of splitArtistCandidates(albumArtist)) {
+      if (isUnknownLookupValue(candidate, 'artist')) continue
+      if (isGenericArtistLookupValue(candidate)) continue
+      return candidate
+    }
+  }
+
+  if (artist && !isUnknownLookupValue(artist, 'artist')) return artist
+  if (albumArtist && !isUnknownLookupValue(albumArtist, 'artist')) return albumArtist
+  return null
 }
 
 function isValidHttpsUrl(value: unknown): value is string {
@@ -193,43 +214,9 @@ function logCoverArtLookup(event: string, lookupKey: string, details: Record<str
   console.debug(`[discord-cover-art] ${event}`, details)
 }
 
-function readLegacyCoverArtStore(): LegacyCachedCoverArtStore {
-  try {
-    const raw = localStorage.getItem(COVER_ART_CACHE_STORAGE_KEY_V1)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return parsed as LegacyCachedCoverArtStore
-  } catch {
-    return {}
-  }
-}
-
-function migrateLegacyCoverArtStore(): CachedCoverArtStore {
-  const migrated: CachedCoverArtStore = {}
-  const now = Date.now()
-  const legacyStore = readLegacyCoverArtStore()
-
-  for (const [key, entry] of Object.entries(legacyStore)) {
-    if (!entry || typeof entry !== 'object') continue
-    if (!Number.isFinite(entry.updatedAt)) continue
-    if (!Number.isFinite(entry.expiresAt) || entry.expiresAt <= now) continue
-    if (!isValidHttpsUrl(entry.url)) continue
-
-    migrated[key] = {
-      status: 'hit',
-      url: entry.url,
-      updatedAt: entry.updatedAt,
-      expiresAt: entry.expiresAt
-    }
-  }
-
-  return migrated
-}
-
 function persistCoverArtStore(store: CachedCoverArtStore): void {
   try {
-    localStorage.setItem(COVER_ART_CACHE_STORAGE_KEY_V2, JSON.stringify(store))
+    localStorage.setItem(COVER_ART_CACHE_STORAGE_KEY_V4, JSON.stringify(store))
   } catch {
     // Ignore persistence failures and continue with in-memory cache.
   }
@@ -288,23 +275,23 @@ function loadCoverArtStore(): CachedCoverArtStore {
 
   let store: CachedCoverArtStore = {}
   try {
-    const raw = localStorage.getItem(COVER_ART_CACHE_STORAGE_KEY_V2)
+    const raw = localStorage.getItem(COVER_ART_CACHE_STORAGE_KEY_V4)
     if (raw) {
       const parsed: unknown = JSON.parse(raw)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         store = parsed as CachedCoverArtStore
       }
-    } else {
-      store = migrateLegacyCoverArtStore()
     }
   } catch {
-    store = migrateLegacyCoverArtStore()
+    store = {}
   }
 
   pruneCoverArtStore(store)
   persistCoverArtStore(store)
   try {
     localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
+    localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V2)
+    localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V3)
   } catch {
     // Ignore storage failures.
   }
@@ -401,18 +388,23 @@ function normalizeLookupResult(value: unknown): DiscordCoverArtLookupResult {
   }
 }
 
+function hasKnownArtistHint(artist: string | null, albumArtist: string | null): boolean {
+  if (artist && !isUnknownLookupValue(artist, 'artist')) return true
+  if (albumArtist && !isUnknownLookupValue(albumArtist, 'artist')) return true
+  return false
+}
+
 function buildCoverArtLookupQuery(track: PlayerSnapshot['currentTrack']): DiscordCoverArtLookupQuery | null {
   if (!track) return null
 
   const album = normalizeLookupText(track.album)
-  const artist = pickPrimaryArtist(normalizeLookupText(track.artist))
-  const albumArtist = pickPrimaryArtist(normalizeLookupText(track.albumArtist))
+  const artist = normalizeLookupText(track.artist)
+  const albumArtist = normalizeLookupText(track.albumArtist)
   const title = normalizeLookupText(track.title)
-  const preferredArtist = albumArtist ?? artist
 
-  if (!album || !preferredArtist) return null
+  if (!album) return null
   if (isUnknownLookupValue(album, 'album')) return null
-  if (isUnknownLookupValue(preferredArtist, 'artist')) return null
+  if (!hasKnownArtistHint(artist, albumArtist)) return null
 
   return {
     album,
@@ -425,7 +417,10 @@ function buildCoverArtLookupQuery(track: PlayerSnapshot['currentTrack']): Discor
 function buildCoverArtLookupKey(query: DiscordCoverArtLookupQuery | null): string | null {
   if (!query) return null
   const albumKey = normalizeLookupKey(query.album)
-  const preferredArtist = normalizeLookupText(query.albumArtist) ?? normalizeLookupText(query.artist)
+  const preferredArtist = pickPreferredLookupArtist(
+    normalizeLookupText(query.artist),
+    normalizeLookupText(query.albumArtist)
+  )
   if (!albumKey || !preferredArtist) return null
 
   const artistKey = normalizeLookupKey(preferredArtist)
