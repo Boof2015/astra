@@ -71,6 +71,27 @@ npm run dist:linux       # Linux (AppImage + DEB)
 
 During packaging, Astra prunes `ffprobe-static` binaries in `afterPack` so each artifact only contains the target platform/arch binary instead of every platform variant.
 
+### via Docker
+
+> _This only builds releases for linux and win._
+
+First, build the Docker image:
+
+```bash
+docker build -t Boof2015/astra:build .
+```
+
+Then, run the container to build a dist release (linux/win):
+
+```bash
+docker run -it \
+  -v $PWD/dist:/app/dist \
+  -v $PWD/.electron:/root/.cache/electron \
+  -v $PWD/.electron-builder:/root/.cache/electron-builder \
+  Boof2015/astra:build \
+  npm run dist:linux
+```
+
 ## Documentation
 
 For detailed technical documentation, see the [Wiki](https://github.com/Boof2015/astra/wiki).
