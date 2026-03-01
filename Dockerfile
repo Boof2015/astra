@@ -25,5 +25,13 @@ COPY . .
 ENV DEBUG=electron-builder
 ENV ELECTRON_CACHE=/root/.cache/electron
 ENV ELECTRON_BUILDER_CACHE=/root/.cache/electron-builder
+
+# Rebuild native addon now that the native/ dir is present
+RUN --mount=type=cache,target=/root/.cache/electron \
+    --mount=type=cache,target=/root/.cache/electron-builder \
+    npm run rebuild:native
+
 RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/root/.cache/electron \
+    --mount=type=cache,target=/root/.cache/electron-builder \
     npm run build
