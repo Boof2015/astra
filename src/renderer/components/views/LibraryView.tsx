@@ -4,11 +4,13 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
+import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey } from '../../utils/albumIdentity'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList from '../library/ArtistList'
 
 type SortDirection = 'asc' | 'desc'
+type ArtistAlbumRailMode = 'albums' | 'featured'
 
 function normalizeSortText(value: string | null | undefined): string {
   return (value ?? '').trim()
@@ -106,6 +108,7 @@ export default function LibraryView() {
   const jumpToNowPlaying = useJumpToNowPlaying()
   const [searchQuery, setSearchQuery] = useState('')
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
+  const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const previousInDetailViewRef = useRef(false)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
@@ -138,6 +141,10 @@ export default function LibraryView() {
     }
     previousInDetailViewRef.current = inDetailView
   }, [inDetailView])
+
+  useEffect(() => {
+    setArtistAlbumRailMode('albums')
+  }, [selectedArtist])
 
   useEffect(() => {
     if (!isScanning) return
@@ -233,6 +240,63 @@ export default function LibraryView() {
     if (!hasSearchQuery) return artists
     return artists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
   }, [artists, hasSearchQuery, normalizedQuery])
+
+  const albumByKey = useMemo(() => {
+    const map = new Map<string, (typeof albums)[number]>()
+    for (const album of albums) {
+      const key = buildAlbumKey(album.album, album.artist)
+      if (map.has(key)) continue
+      map.set(key, album)
+    }
+    return map
+  }, [albums])
+
+  const albumByIdentityKey = useMemo(() => {
+    const map = new Map<string, (typeof albums)[number]>()
+    for (const album of albums) {
+      if (map.has(album.identity_key)) continue
+      map.set(album.identity_key, album)
+    }
+    return map
+  }, [albums])
+
+  const { primaryArtistAlbums, featuredArtistAlbums } = useMemo(() => {
+    if (!selectedArtist) {
+      return {
+        primaryArtistAlbums: [] as (typeof albums)[number][],
+        featuredArtistAlbums: [] as (typeof albums)[number][]
+      }
+    }
+
+    const matchedIdentityKeys = new Set<string>()
+    for (const track of tracks) {
+      const identityKey = buildAlbumIdentityKeyFromTrack(track)
+      const identityArtist = getAlbumIdentityArtist(track)
+      const fallbackKey = buildAlbumKey(track.album, identityArtist)
+      const match = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
+      if (!match) continue
+      matchedIdentityKeys.add(match.identity_key)
+    }
+
+    const selectedArtistKey = normalizeKey(selectedArtist)
+    const primary: (typeof albums)[number][] = []
+    const featured: (typeof albums)[number][] = []
+
+    for (const album of albums) {
+      if (!matchedIdentityKeys.has(album.identity_key)) continue
+
+      if (normalizeKey(album.artist) === selectedArtistKey) {
+        primary.push(album)
+      } else {
+        featured.push(album)
+      }
+    }
+
+    return {
+      primaryArtistAlbums: primary,
+      featuredArtistAlbums: featured
+    }
+  }, [albumByIdentityKey, albumByKey, albums, selectedArtist, tracks])
 
   const trimmedQueryForMessage = searchQuery.trim()
   const searchPlaceholder = inDetailView
@@ -363,7 +427,7 @@ export default function LibraryView() {
       )
     }
 
-    if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedArtist || viewMode === 'tracks')) {
+    if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || viewMode === 'tracks') && !selectedArtist) {
       return (
         <div className="library-empty">
           <p>No tracks found for "{trimmedQueryForMessage}"</p>
@@ -408,6 +472,83 @@ export default function LibraryView() {
           : <div className="library-empty"><p>No artists found</p></div>
       }
       return <ArtistList artists={filteredArtists} onSelectArtist={selectArtist} />
+    }
+
+    if (selectedArtist) {
+      const showingFeaturedAlbums = artistAlbumRailMode === 'featured'
+      const visibleArtistAlbums = showingFeaturedAlbums ? featuredArtistAlbums : primaryArtistAlbums
+      const railEmptyMessage = showingFeaturedAlbums
+        ? 'No featured appearances found in indexed albums.'
+        : 'No primary albums found in indexed albums.'
+
+      return (
+        <div className="library-artist-detail">
+          <section className="library-artist-rail">
+            <div className="library-artist-rail-header">
+              <h3>Albums</h3>
+              <div className="library-artist-rail-actions">
+                <button
+                  type="button"
+                  className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'albums' ? 'active' : ''}`}
+                  onClick={() => setArtistAlbumRailMode('albums')}
+                  aria-pressed={artistAlbumRailMode === 'albums'}
+                >
+                  Albums
+                </button>
+                <button
+                  type="button"
+                  className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'featured' ? 'active' : ''}`}
+                  onClick={() => setArtistAlbumRailMode('featured')}
+                  aria-pressed={artistAlbumRailMode === 'featured'}
+                >
+                  Featured In
+                </button>
+              </div>
+            </div>
+
+            {visibleArtistAlbums.length > 0 ? (
+              <div className="library-artist-rail-row">
+                {visibleArtistAlbums.map((album) => (
+                  <button
+                    key={album.identity_key}
+                    type="button"
+                    className="library-artist-rail-card"
+                    onClick={() => void selectAlbum(album.album, album.artist, 'library', album.identity_key)}
+                  >
+                    <div className="library-artist-rail-artwork">
+                      {album.artwork_hash ? (
+                        <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
+                      ) : (
+                        <span>&#9835;</span>
+                      )}
+                    </div>
+                    <div className="library-artist-rail-title">{album.album}</div>
+                    <div className="library-artist-rail-artist">{album.artist}</div>
+                    <div className="library-artist-rail-meta">
+                      {album.track_count} tracks{album.year ? ` \u00b7 ${album.year}` : ''}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="library-artist-rail-empty">{railEmptyMessage}</div>
+            )}
+          </section>
+
+          <TrackList
+            tracks={displayTracks}
+            queueSeedTracks={queueSeedSortedTracks}
+            showArtist={false}
+            showAlbum={!selectedAlbum}
+            enableColumnSorting
+            sortState={sortState}
+            onSortColumnToggle={handleSortColumnToggle}
+            enableDefaultOrderReset={Boolean(selectedAlbum)}
+            onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
+            jumpToTrackRequest={libraryTrackRevealRequest}
+          />
+        </div>
+      )
     }
 
     // Tracks

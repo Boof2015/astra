@@ -3030,6 +3030,169 @@ button, .titlebar {
 }
 
 /* ============================================
+   Artist Detail Albums Rail
+   ============================================ */
+.library-artist-detail {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.library-artist-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.library-artist-rail-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.library-artist-rail-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.library-artist-rail-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.library-artist-rail-toggle-btn {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.library-artist-rail-toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+.library-artist-rail-toggle-btn.active {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.library-artist-rail-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.library-artist-rail-card {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0;
+  width: 168px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.library-artist-rail-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
+}
+
+.library-artist-rail-card:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.8);
+  outline-offset: 2px;
+}
+
+.library-artist-rail-artwork {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #090909;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 21px;
+  margin-bottom: 8px;
+}
+
+.library-artist-rail-artwork img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.library-artist-rail-artwork .album-artwork-placeholder {
+  font-size: 20px;
+  color: rgba(255, 255, 255, 0.3);
+  background: transparent;
+}
+
+.library-artist-rail-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-artist-rail-artist {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-artist-rail-meta {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.library-artist-rail-empty {
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ============================================
    Artist List
    ============================================ */
 .artist-list {
@@ -7708,6 +7871,10 @@ body::after {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   }
 
+  .library-artist-rail-card {
+    width: 146px;
+  }
+
   .eq-response-area {
     height: 200px;
   }
@@ -7895,6 +8062,15 @@ body::after {
     justify-content: flex-end;
   }
 
+  .library-artist-rail-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-artist-rail-actions {
+    align-self: flex-end;
+  }
+
   .home-section-link-btn,
   .home-playlist-toggle-btn {
     min-height: 22px;
@@ -7908,6 +8084,10 @@ body::after {
 
   .home-playlist-rail-card {
     width: 140px;
+  }
+
+  .library-artist-rail-card {
+    width: 132px;
   }
 
   .fullscreen-close {
