@@ -163,6 +163,7 @@ declare global {
             readTextFile: (filePath: string) => Promise<string>
             readFileAsDataUrl: (filePath: string) => Promise<string | null>
             writeFile: (filePath: string, content: string) => Promise<boolean>
+            revealFileInFolder: (filePath: string) => Promise<boolean>
             library: any
         }
     }

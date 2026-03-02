@@ -987,6 +987,43 @@ button, .titlebar {
   border: 1px solid var(--glass-border);
 }
 
+.info-path-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.info-path-header .info-tech-label {
+  margin-bottom: 0;
+}
+
+.info-path-reveal-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.info-path-reveal-btn:hover {
+  color: var(--text-primary);
+  border-color: rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+.info-path-reveal-btn:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.55);
+  outline-offset: 1px;
+}
+
 .info-path-value {
   font-family: var(--font-mono);
   font-size: 10px;

@@ -1294,6 +1294,25 @@ ipcMain.handle('fs:writeTextFile', async (_event, filePath: string, content: str
   return true
 })
 
+ipcMain.handle('fs:revealFileInFolder', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string') {
+    return false
+  }
+
+  const normalizedPath = filePath.trim()
+  if (normalizedPath.length === 0) {
+    return false
+  }
+
+  try {
+    shell.showItemInFolder(normalizedPath)
+    return true
+  } catch (error) {
+    console.warn('Failed to reveal file in folder:', error)
+    return false
+  }
+})
+
 // ============================================
 // Library IPC handlers
 // ============================================

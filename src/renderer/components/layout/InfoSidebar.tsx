@@ -8,6 +8,10 @@ export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const revealTrackInFolder = () => {
+    if (!currentTrack) return
+    void window.electronAPI.revealFileInFolder(currentTrack.path)
+  }
 
   return (
     <aside className="info-sidebar">
@@ -109,7 +113,20 @@ export default function InfoSidebar() {
           </div>
 
           <div className="info-sidebar-path">
-            <div className="info-tech-label">File Path</div>
+            <div className="info-path-header">
+              <div className="info-tech-label">File Path</div>
+              <button
+                type="button"
+                className="info-path-reveal-btn"
+                onClick={revealTrackInFolder}
+                title="Show in Folder"
+                aria-label="Show in Folder"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                </svg>
+              </button>
+            </div>
             <div className="info-path-value">{currentTrack.path}</div>
           </div>
         </>

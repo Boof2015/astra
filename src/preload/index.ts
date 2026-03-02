@@ -456,6 +456,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readTextFile: (filePath: string) => ipcRenderer.invoke('fs:readTextFile', filePath),
   readFileAsDataUrl: (filePath: string) => ipcRenderer.invoke('fs:readDataUrl', filePath) as Promise<string | null>,
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeTextFile', filePath, content),
+  revealFileInFolder: (filePath: string) => ipcRenderer.invoke('fs:revealFileInFolder', filePath) as Promise<boolean>,
 
   // Library operations
   library: {
@@ -652,6 +653,7 @@ declare global {
       readTextFile: (filePath: string) => Promise<string>
       readFileAsDataUrl: (filePath: string) => Promise<string | null>
       writeFile: (filePath: string, content: string) => Promise<boolean>
+      revealFileInFolder: (filePath: string) => Promise<boolean>
 
       // Library operations
       library: {
