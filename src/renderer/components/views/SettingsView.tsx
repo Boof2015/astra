@@ -336,10 +336,10 @@ export default function SettingsView() {
     {
       id: 'reset-audio',
       title: 'Reset Audio Settings',
-      description: 'Clear output device, routing, delay, and calibration settings.',
+      description: 'Clear output device, routing, delay, calibration settings, and saved volume.',
       buttonLabel: 'Reset Audio',
       confirmTitle: 'Reset Audio Settings',
-      confirmMessage: 'This will clear custom output routing and delay calibration profiles.',
+      confirmMessage: 'This will clear custom output routing, delay calibration profiles, and saved volume.',
       confirmLabel: 'Reset Audio',
       destructive: false,
       run: resetAudioSettings,

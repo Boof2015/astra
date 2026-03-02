@@ -10,6 +10,7 @@ import {
 } from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
+import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerStore'
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
@@ -21,6 +22,7 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-normalization-target-lufs-v1',
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
+  PLAYER_VOLUME_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
   'astra-discord-cover-art-cache-v1',
@@ -47,6 +49,7 @@ export async function resetThemeSettings(): Promise<string> {
 
 export async function resetAudioSettings(): Promise<string> {
   await useAudioSettingsStore.getState().resetToDefaults()
+  usePlayerStore.getState().resetAudioPreferences()
   return 'Audio settings reset.'
 }
 
@@ -72,6 +75,7 @@ export async function resetEqSettings(): Promise<string> {
 export async function resetAllSettings(): Promise<string> {
   useThemeStore.getState().resetToDefault()
   await useAudioSettingsStore.getState().resetToDefaults()
+  usePlayerStore.getState().resetAudioPreferences()
   await useDiscordSettingsStore.getState().resetToDefaults()
   useEQStore.getState().resetToDefaults()
   useVisualizerSettingsStore.getState().resetToDefaults()

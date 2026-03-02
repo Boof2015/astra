@@ -47,6 +47,7 @@ interface PlayerStore {
   seek: (time: number) => Promise<void>
   setVolume: (volume: number) => void
   toggleMute: () => void
+  resetAudioPreferences: () => void
 
   // Queue actions
   setQueue: (tracks: Track[], startIndex?: number, options?: { sourcePlaylistId?: number | null }) => void
@@ -79,6 +80,8 @@ const waveformCache = new Map<string, Float32Array>()
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
+const DEFAULT_PLAYER_VOLUME = 0.7
+export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 
 interface RecentPlaySession {
   trackPath: string
@@ -86,6 +89,40 @@ interface RecentPlaySession {
   counted: boolean
   sourcePlaylistId: number | null
 }
+
+function clampPlayerVolume(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_PLAYER_VOLUME
+  return Math.max(0, Math.min(1, value))
+}
+
+function readSavedPlayerVolume(): number {
+  try {
+    const raw = localStorage.getItem(PLAYER_VOLUME_STORAGE_KEY)
+    if (raw == null) return DEFAULT_PLAYER_VOLUME
+    return clampPlayerVolume(Number(raw))
+  } catch {
+    return DEFAULT_PLAYER_VOLUME
+  }
+}
+
+function persistPlayerVolume(volume: number): void {
+  try {
+    localStorage.setItem(PLAYER_VOLUME_STORAGE_KEY, String(clampPlayerVolume(volume)))
+  } catch {
+    // Ignore storage failures and continue with in-memory volume.
+  }
+}
+
+function clearSavedPlayerVolume(): void {
+  try {
+    localStorage.removeItem(PLAYER_VOLUME_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures and continue with in-memory volume.
+  }
+}
+
+const initialPlayerVolume = readSavedPlayerVolume()
+audioEngine.setVolume(initialPlayerVolume)
 
 function logSlowPath(label: string, startTime: number, details: Record<string, unknown>): void {
   if (!import.meta.env.DEV) return
@@ -230,7 +267,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     playbackState: 'stopped',
     currentTime: 0,
     duration: 0,
-    volume: 0.7,
+    volume: initialPlayerVolume,
     isMuted: false,
     waveformData: null,
     ffmpegFallbackNotice: null,
@@ -350,13 +387,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Volume controls
     setVolume: (volume: number) => {
-      audioEngine.setVolume(volume)
-      set({ volume, isMuted: false })
+      const normalized = clampPlayerVolume(volume)
+      audioEngine.setMuted(false)
+      audioEngine.setVolume(normalized)
+      set({ volume: normalized, isMuted: false })
+      persistPlayerVolume(normalized)
     },
 
     toggleMute: () => {
       audioEngine.toggleMute()
       set({ isMuted: audioEngine.isMuted })
+    },
+
+    resetAudioPreferences: () => {
+      clearSavedPlayerVolume()
+      audioEngine.setVolume(DEFAULT_PLAYER_VOLUME)
+      audioEngine.setMuted(false)
+      set({ volume: DEFAULT_PLAYER_VOLUME, isMuted: false })
     },
 
     // Queue actions
