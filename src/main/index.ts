@@ -698,21 +698,27 @@ async function maybeRunReplayGainBackfillOnce(): Promise<void> {
     return
   }
 
+  let completed = false
   try {
-    const { scanned, updated, errors } = await library.backfillMissingReplayGainMetadata()
+    const { scanned, updated, errors } = await runLibraryScanOperation(async (signal) => {
+      return library.backfillMissingReplayGainMetadata(undefined, { signal, persist: false })
+    })
     if (scanned > 0) {
       console.log(`ReplayGain metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
     }
     if (updated > 0) {
       mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
     }
+    completed = true
   } catch (err) {
     console.warn('ReplayGain metadata backfill failed:', err)
   } finally {
-    try {
-      await library.setAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY, '1')
-    } catch (err) {
-      console.warn('Failed to persist ReplayGain metadata backfill migration flag:', err)
+    if (completed) {
+      try {
+        await library.setAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY, '1')
+      } catch (err) {
+        console.warn('Failed to persist ReplayGain metadata backfill migration flag:', err)
+      }
     }
   }
 }
@@ -1525,6 +1531,54 @@ ipcMain.handle('library:cancelScan', () => {
   activeLibraryScanAbortController.abort()
   sendLibraryScanStage(activeLibraryScanStage ?? 'scanning', 'Canceling scan...')
   return { canceled: true }
+})
+
+ipcMain.handle('library:backfillReplayGainMetadata', async () => {
+  const issueCollector = createLibraryScanIssueCollector()
+  try {
+    const result = await runLibraryScanOperation(async (signal) => {
+      sendLibraryScanStage('backfill', 'Processing ReplayGain metadata...')
+      return library.backfillMissingReplayGainMetadata((current, total, file) => {
+        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+      }, {
+        signal,
+        persist: false,
+        onIssue: (issue) => issueCollector.record(issue)
+      })
+    })
+
+    if (result.scanned > 0) {
+      console.log(
+        `ReplayGain metadata backfill (manual): scanned=${result.scanned}, updated=${result.updated}, errors=${result.errors}`
+      )
+    }
+    if (result.updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', result)
+    }
+
+    try {
+      await library.setAppMeta(REPLAYGAIN_BACKFILL_MIGRATION_KEY, '1')
+    } catch (error) {
+      console.warn('Failed to persist ReplayGain metadata backfill migration flag:', error)
+    }
+
+    return {
+      ...result,
+      canceled: false,
+      scanIssueLog: issueCollector.build()
+    }
+  } catch (error) {
+    if (library.isLibraryScanCancelledError(error)) {
+      return {
+        scanned: 0,
+        updated: 0,
+        errors: 0,
+        canceled: true,
+        scanIssueLog: issueCollector.build()
+      }
+    }
+    throw error
+  }
 })
 
 // Add library folder and scan

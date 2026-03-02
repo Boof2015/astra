@@ -2954,21 +2954,26 @@ export async function backfillMissingChannelCounts(
 }
 
 export async function backfillMissingReplayGainMetadata(
+  onProgress?: BackfillProgressCallback,
   options: ScanWriteOptions = {}
 ): Promise<{ scanned: number; updated: number; errors: number }> {
   const { persist = true, signal, onIssue } = options
   if (!replayGainScanEnabled) {
+    onProgress?.(0, 0, '')
     return { scanned: 0, updated: 0, errors: 0 }
   }
 
   const paths = getReplayGainBackfillCandidatePaths()
   if (paths.length === 0) {
+    onProgress?.(0, 0, '')
     return { scanned: 0, updated: 0, errors: 0 }
   }
 
   let updated = 0
   let errors = 0
+  let processed = 0
   const workerCount = resolveBackfillWorkerCount(paths.length)
+  onProgress?.(0, paths.length, '')
 
   await runWithConcurrency(paths, workerCount, async (path) => {
     try {
@@ -2985,6 +2990,9 @@ export async function backfillMissingReplayGainMetadata(
         console.warn(`Failed to backfill ReplayGain metadata for ${path}:`, err)
       }
       errors++
+    } finally {
+      processed += 1
+      onProgress?.(processed, paths.length, path)
     }
   }, { signal })
 

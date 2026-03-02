@@ -9,7 +9,8 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import {
   DEFAULT_NORMALIZATION_TARGET_LUFS,
-  useAudioSettingsStore
+  useAudioSettingsStore,
+  type ReplayGainMode
 } from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
@@ -59,6 +60,7 @@ type ResetActionId =
 
 type ResetActionState = 'idle' | 'running' | 'success' | 'error'
 type NormalizationDisableStep = 'warning' | 'final' | null
+type ReplayGainSelectorValue = ReplayGainMode | 'disabled'
 const NORMALIZATION_TARGET_MIN_LUFS = -30
 const NORMALIZATION_TARGET_MAX_LUFS = 0
 
@@ -158,7 +160,7 @@ export default function SettingsView() {
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
-  const { rescan, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
+  const { rescan, backfillReplayGainMetadata, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
   const {
     presetId,
     customAccent,
@@ -184,6 +186,8 @@ export default function SettingsView() {
   } = useVisualizerSettingsStore()
   const replayGainScanEnabled = useAudioSettingsStore((state) => state.replayGainScanEnabled)
   const setReplayGainScanEnabled = useAudioSettingsStore((state) => state.setReplayGainScanEnabled)
+  const replayGainMode = useAudioSettingsStore((state) => state.replayGainMode)
+  const setReplayGainMode = useAudioSettingsStore((state) => state.setReplayGainMode)
   const normalizationEnabled = useAudioSettingsStore((state) => state.normalizationEnabled)
   const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
@@ -655,6 +659,23 @@ export default function SettingsView() {
     setNormalizationTargetInput(formatNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS))
   }
 
+  const replayGainSelectorValue: ReplayGainSelectorValue = replayGainScanEnabled
+    ? replayGainMode
+    : 'disabled'
+
+  const handleReplayGainSelectorChange = async (value: ReplayGainSelectorValue): Promise<void> => {
+    if (value === 'disabled') {
+      await setReplayGainScanEnabled(false)
+      return
+    }
+
+    setReplayGainMode(value)
+    if (!replayGainScanEnabled) {
+      await setReplayGainScanEnabled(true)
+      await backfillReplayGainMetadata()
+    }
+  }
+
   const renderResetAction = (action: ResetActionDefinition) => {
     const status = resetStatuses[action.id]
     return (
@@ -923,15 +944,19 @@ export default function SettingsView() {
                   </button>
                 </div>
               </label>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">ReplayGain Scanning</span>
-                <button
-                  className={`settings-toggle ${replayGainScanEnabled ? 'active' : ''}`}
-                  onClick={() => void setReplayGainScanEnabled(!replayGainScanEnabled)}
+              <label className="settings-field">
+                <span className="settings-field-label">ReplayGain</span>
+                <select
+                  className="settings-select"
+                  value={replayGainSelectorValue}
+                  onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
                 >
-                  {replayGainScanEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
+                  <option value="disabled">Disabled</option>
+                  <option value="auto">Auto</option>
+                  <option value="track">Track</option>
+                  <option value="album">Album</option>
+                </select>
+              </label>
               <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">Tracklist BPM/Key Columns</span>
                 <button
@@ -947,14 +972,14 @@ export default function SettingsView() {
               Normalization Target applies to built-in normalization. ReplayGain values override it on tagged tracks when ReplayGain is active.
             </p>
             <p className="settings-note">
-              Experimental: when enabled, ReplayGain tags are scanned and used for playback gain when present; otherwise Astra falls back to built-in normalization. This can make scope visuals look undesirable on some tracks.
+              Experimental.
             </p>
             {normalizationTargetError && (
               <p className="settings-note settings-note-error">{normalizationTargetError}</p>
             )}
             {!normalizationEnabled && (
               <p className="settings-note settings-note-error">
-                Normalization is disabled. ReplayGain scanning can stay enabled, but playback gain is bypassed until normalization is re-enabled.
+                Normalization is disabled. ReplayGain can stay configured, but playback gain is bypassed until normalization is re-enabled.
               </p>
             )}
           </section>

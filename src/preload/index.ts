@@ -511,6 +511,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       error?: string
     }>,
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    backfillReplayGainMetadata: () => ipcRenderer.invoke('library:backfillReplayGainMetadata') as Promise<{
+      scanned: number
+      updated: number
+      errors: number
+      canceled?: boolean
+      scanIssueLog?: ScanIssueLog
+    }>,
     cancelScan: () => ipcRenderer.invoke('library:cancelScan') as Promise<{ canceled: boolean }>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
@@ -709,6 +716,13 @@ declare global {
           error?: string
         }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        backfillReplayGainMetadata: () => Promise<{
+          scanned: number
+          updated: number
+          errors: number
+          canceled?: boolean
+          scanIssueLog?: ScanIssueLog
+        }>
         cancelScan: () => Promise<{ canceled: boolean }>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>

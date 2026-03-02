@@ -150,6 +150,7 @@ interface LibraryStore {
   addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
+  backfillReplayGainMetadata: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
   selectAlbum: (
     album: string,
@@ -653,6 +654,38 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         set({ folderWarnings: result.folderWarnings })
       } else {
         set({ folderWarnings: {} })
+      }
+      set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
+      await get().loadLibrary()
+    } finally {
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
+    }
+  },
+
+  backfillReplayGainMetadata: async () => {
+    if (get().isScanning) return
+
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'backfill', message: 'Processing ReplayGain metadata...' },
+      lastScanIssueLog: null
+    })
+
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
+      set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
+    })
+
+    try {
+      const result = await window.electronAPI.library.backfillReplayGainMetadata()
+      if (result.canceled) {
+        return
       }
       set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
       await get().loadLibrary()

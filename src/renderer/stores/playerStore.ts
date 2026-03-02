@@ -3,7 +3,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
-import { useAudioSettingsStore } from './audioSettingsStore'
+import { useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 
 interface PlayerStore {
   // State
@@ -94,25 +94,33 @@ function logSlowPath(label: string, startTime: number, details: Record<string, u
   console.warn(`[perf] ${label} slow path (${Math.round(elapsed)}ms)`, details)
 }
 
-function getReplayGainCandidateDb(track: Track | null | undefined): number | null {
-  if (!track) return null
-  const trackGainDb = (
-    typeof track.replayGainTrackDb === 'number'
-      ? track.replayGainTrackDb
-      : (typeof track.replayGainTrackDb === 'string' ? Number(track.replayGainTrackDb) : NaN)
-  )
-  if (Number.isFinite(trackGainDb)) {
-    return trackGainDb
-  }
-  const albumGainDb = (
-    typeof track.replayGainAlbumDb === 'number'
-      ? track.replayGainAlbumDb
-      : (typeof track.replayGainAlbumDb === 'string' ? Number(track.replayGainAlbumDb) : NaN)
-  )
-  if (Number.isFinite(albumGainDb)) {
-    return albumGainDb
+function toReplayGainDb(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
   }
   return null
+}
+
+function getReplayGainCandidateDb(
+  track: Track | null | undefined,
+  replayGainMode: ReplayGainMode
+): number | null {
+  if (!track) return null
+
+  const trackGainDb = toReplayGainDb(track.replayGainTrackDb)
+  const albumGainDb = toReplayGainDb(track.replayGainAlbumDb)
+
+  if (replayGainMode === 'track') {
+    return trackGainDb
+  }
+
+  if (replayGainMode === 'album') {
+    return albumGainDb
+  }
+
+  return trackGainDb ?? albumGainDb
 }
 
 export const usePlayerStore = create<PlayerStore>((set, get) => {
@@ -256,7 +264,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         let usedFfmpegFallback = false
-        const replayGainDb = getReplayGainCandidateDb(track)
+        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(audioData, { replayGainDb })
@@ -722,7 +730,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         let usedFfmpegFallback = false
-        const replayGainDb = getReplayGainCandidateDb(track)
+        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(result.data, { replayGainDb })
@@ -806,7 +814,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         if (result) {
           await audioEngine.preBufferNext(result.data, {
-            replayGainDb: getReplayGainCandidateDb(nextTrack)
+            replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
           })
         }
         logSlowPath('preBufferNextTrack', bufferStart, {
@@ -937,4 +945,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       listenersInitialized = false
     }
   }
+})
+
+useAudioSettingsStore.subscribe((nextState, prevState) => {
+  if (nextState.replayGainMode === prevState.replayGainMode) return
+
+  const playerState = usePlayerStore.getState()
+  const replayGainDb = getReplayGainCandidateDb(playerState.currentTrack, nextState.replayGainMode)
+  audioEngine.setCurrentReplayGainDb(replayGainDb)
+  audioEngine.clearNextBuffer()
+  void playerState._preBufferNextTrack()
 })

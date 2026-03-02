@@ -759,6 +759,28 @@ export class AudioEngine {
     return this._normalizationMode
   }
 
+  setCurrentReplayGainDb(replayGainDb: number | null): void {
+    const normalized = this.normalizeReplayGainCandidate(replayGainDb)
+    if (this.currentReplayGainDb === normalized) return
+
+    this.currentReplayGainDb = normalized
+
+    if (this.audioBuffer) {
+      this.applyNormalization(this.audioBuffer)
+    } else if (!this._normalizationEnabled) {
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
+    }
+
+    this.updateNextNormalizationCache()
+    if (this._playbackState === 'playing' && this.nextBuffer) {
+      this.scheduleGaplessTransition()
+    }
+  }
+
   setReplayGainEnabled(enabled: boolean): void {
     const normalized = Boolean(enabled)
     if (this._replayGainEnabled === normalized) return

@@ -17,6 +17,7 @@ export interface CalibrationInputDevice {
 
 export type DelayCompensationMode = 'manual' | 'auto'
 export type DelayCalibrationMethod = 'legacy' | 'differential'
+export type ReplayGainMode = 'auto' | 'track' | 'album'
 
 type DelayCalibrationState = 'idle' | 'running' | 'success' | 'error'
 
@@ -52,6 +53,7 @@ interface AudioSettingsStore {
   normalizationEnabled: boolean
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
+  replayGainMode: ReplayGainMode
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
   inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -71,6 +73,7 @@ interface AudioSettingsStore {
   setNormalizationEnabled: (enabled: boolean) => void
   setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
+  setReplayGainMode: (mode: ReplayGainMode) => void
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
@@ -90,6 +93,7 @@ const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
+const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'
 const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
@@ -163,6 +167,12 @@ function normalizeDelayMode(value: unknown): DelayCompensationMode {
 
 function normalizeCalibrationMethod(value: unknown): DelayCalibrationMethod {
   return value === 'differential' ? 'differential' : 'legacy'
+}
+
+function normalizeReplayGainMode(value: unknown): ReplayGainMode {
+  if (value === 'track') return 'track'
+  if (value === 'album') return 'album'
+  return 'auto'
 }
 
 function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
@@ -761,6 +771,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
+    replayGainMode: 'auto',
 
     delayProfilesByDeviceKey: {},
     inputBaselinesByKey: {},
@@ -902,6 +913,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         set({ replayGainScanEnabled: previous })
         audioEngine.setReplayGainEnabled(previous)
       }
+    },
+
+    setReplayGainMode: (mode: ReplayGainMode) => {
+      const normalized = normalizeReplayGainMode(mode)
+      set({ replayGainMode: normalized })
+      localStorage.setItem(REPLAYGAIN_MODE_STORAGE_KEY, normalized)
     },
 
     setDelayCompensationEnabled: async (enabled: boolean) => {
@@ -1303,6 +1320,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(ROUTING_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
+      localStorage.removeItem(REPLAYGAIN_MODE_STORAGE_KEY)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V2)
 
@@ -1379,6 +1397,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
+        replayGainMode: 'auto',
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
         activeDelayProfileKey: 'default',
@@ -1411,6 +1430,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         console.warn('Failed to load ReplayGain scan setting; defaulting to disabled.', error)
       }
       audioEngine.setReplayGainEnabled(replayGainEnabled)
+      const replayGainMode = normalizeReplayGainMode(localStorage.getItem(REPLAYGAIN_MODE_STORAGE_KEY))
 
       const rawDelaySettingsV2 = localStorage.getItem(DELAY_PROFILE_STORAGE_KEY_V2)
       let savedProfiles: Record<string, DelayCompensationProfile> = {}
@@ -1433,7 +1453,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         inputBaselinesByKey: savedInputBaselines,
         normalizationEnabled,
         normalizationTargetLufs,
-        replayGainScanEnabled: replayGainEnabled
+        replayGainScanEnabled: replayGainEnabled,
+        replayGainMode
       })
 
       await get().refreshDevices()
