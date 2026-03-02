@@ -6,7 +6,8 @@ A desktop music player for people who still have a music library.
 ![GitHub Release](https://img.shields.io/github/v/release/Boof2015/astra?include_prereleases)
 ![GitHub License](https://img.shields.io/github/license/Boof2015/astra)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Boof2015/astra/main.yml)
-![Discord](https://img.shields.io/discord/1474647789148573950)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/boof2015/astra/total)
+
 
 ![Astra home page](assets/home.png)
 
