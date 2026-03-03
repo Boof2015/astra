@@ -458,7 +458,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
             </button>
           </div>
 
-          <div className="modal-body">
+          <div className={`modal-body folder-settings-body ${activeFolderPath ? 'is-subfolder-view' : ''}`}>
             {hasPendingChanges && (
               <div className="folder-settings-pending-overview">
                 {pendingScanCount} folder{pendingScanCount === 1 ? '' : 's'} queued for scan.
