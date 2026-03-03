@@ -626,6 +626,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
+    reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => ipcRenderer.invoke('library:reorderPlaylistTracks', playlistId, orderedTrackPaths),
     markPlaylistPlayed: (playlistId: number) => ipcRenderer.invoke('library:markPlaylistPlayed', playlistId),
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
     clearPlaylistCustomCover: (playlistId: number) => ipcRenderer.invoke('library:clearPlaylistCustomCover', playlistId),
@@ -836,6 +837,7 @@ declare global {
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+        reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
         markPlaylistPlayed: (playlistId: number) => Promise<void>
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
         clearPlaylistCustomCover: (playlistId: number) => Promise<void>

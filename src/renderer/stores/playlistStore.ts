@@ -68,6 +68,7 @@ interface PlaylistStore {
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+  reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
   getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
@@ -130,6 +131,19 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
     await window.electronAPI.library.removeFromPlaylist(playlistId, trackPath)
     await get().loadPlaylists()
     // Refresh tracks if this playlist is currently selected
+    if (get().selectedPlaylistId === playlistId) {
+      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
+      set({ selectedPlaylistTracks: tracks })
+    }
+  },
+
+  reorderPlaylistTracks: async (playlistId: number, orderedTrackPaths: string[]) => {
+    if (isSystemFavoritesPlaylistId(playlistId)) return
+    if (playlistId <= 0) return
+    if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
+
+    await window.electronAPI.library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+    await get().loadPlaylists()
     if (get().selectedPlaylistId === playlistId) {
       const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
       set({ selectedPlaylistTracks: tracks })

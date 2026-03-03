@@ -4082,6 +4082,80 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   await saveDatabase()
 }
 
+export async function reorderPlaylistTracks(playlistId: number, orderedTrackPaths: string[]): Promise<void> {
+  if (!db) return
+  if (!Number.isInteger(playlistId) || playlistId <= 0) return
+  if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
+
+  const rowStmt = db.prepare('SELECT id, track_path FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC')
+  const existingRows: Array<{ id: number; track_path: string }> = []
+
+  try {
+    rowStmt.bind([playlistId])
+    while (rowStmt.step()) {
+      const row = rowStmt.getAsObject() as { id?: unknown; track_path?: unknown }
+      const rowId = Number(row.id)
+      const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
+      if (!Number.isFinite(rowId) || rowId <= 0 || !trackPath) {
+        throw new Error('Invalid playlist track rows for reorder operation.')
+      }
+      existingRows.push({ id: rowId, track_path: trackPath })
+    }
+  } finally {
+    rowStmt.free()
+  }
+
+  if (existingRows.length === 0) {
+    throw new Error('Cannot reorder an empty playlist.')
+  }
+
+  if (orderedTrackPaths.length !== existingRows.length) {
+    throw new Error('Playlist reorder payload length does not match current playlist tracks.')
+  }
+
+  const rowIdsByPath = new Map<string, number[]>()
+  for (const row of existingRows) {
+    const ids = rowIdsByPath.get(row.track_path)
+    if (ids) {
+      ids.push(row.id)
+    } else {
+      rowIdsByPath.set(row.track_path, [row.id])
+    }
+  }
+
+  const resolvedRowOrder: number[] = []
+  for (const path of orderedTrackPaths) {
+    if (typeof path !== 'string' || path.length === 0) {
+      throw new Error('Playlist reorder payload contains an invalid track path.')
+    }
+
+    const idsForPath = rowIdsByPath.get(path)
+    if (!idsForPath || idsForPath.length === 0) {
+      throw new Error('Playlist reorder payload does not match current playlist content.')
+    }
+
+    const nextRowId = idsForPath.shift()
+    if (!nextRowId) {
+      throw new Error('Playlist reorder payload could not be resolved.')
+    }
+    resolvedRowOrder.push(nextRowId)
+  }
+
+  for (const idsForPath of rowIdsByPath.values()) {
+    if (idsForPath.length > 0) {
+      throw new Error('Playlist reorder payload does not include all current playlist tracks.')
+    }
+  }
+
+  const now = Date.now()
+  for (let index = 0; index < resolvedRowOrder.length; index += 1) {
+    db.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, resolvedRowOrder[index]])
+  }
+  db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
+
+  await saveDatabase()
+}
+
 function normalizePlaylistCoverExtension(imagePath: string): string {
   const rawExtension = extname(imagePath).toLowerCase()
   if (rawExtension === '.png') return '.png'

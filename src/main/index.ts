@@ -2419,6 +2419,10 @@ ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, 
   await library.removeFromPlaylist(playlistId, trackPath)
 })
 
+ipcMain.handle('library:reorderPlaylistTracks', async (_event, playlistId: number, orderedTrackPaths: string[]) => {
+  await library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+})
+
 ipcMain.handle('library:markPlaylistPlayed', async (_event, playlistId: number) => {
   await library.markPlaylistPlayed(playlistId)
 })

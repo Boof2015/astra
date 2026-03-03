@@ -8658,6 +8658,114 @@ body::after {
   overflow: hidden;
 }
 
+.playlist-reorder-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+
+.playlist-reorder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--glass-border);
+  border-radius: 6px;
+  cursor: grab;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.playlist-reorder-row:hover {
+  background: var(--glass-highlight);
+}
+
+.playlist-reorder-row:active {
+  cursor: grabbing;
+}
+
+.playlist-reorder-row.dragging {
+  opacity: 0.4;
+}
+
+.playlist-reorder-row.drop-target {
+  border-top: 2px solid var(--accent);
+}
+
+.playlist-reorder-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.playlist-reorder-cover {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.playlist-reorder-cover-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.playlist-reorder-cover-image.album-artwork-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 12px;
+}
+
+.playlist-reorder-index {
+  width: 34px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+.playlist-reorder-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlist-reorder-artist {
+  flex: 0.7;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.playlist-reorder-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.playlist-reorder-error {
+  margin-right: auto;
+  color: #ff7f7f;
+  font-size: 12px;
+}
+
 @media (max-width: 1320px) {
   .track-col-album {
     display: none;
