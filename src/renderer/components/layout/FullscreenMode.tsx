@@ -3,12 +3,22 @@ import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { useLyricsStore } from '../../stores/lyricsStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
+import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
+const FULLSCREEN_SYNC_LINE_HEIGHT_PX = 46
+const FULLSCREEN_SYNC_RENDER_RADIUS = 4
+
+function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
+  if (source === 'embedded') return 'Embedded'
+  if (source === 'manual') return 'Manual'
+  return 'LRCLIB'
+}
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
@@ -55,6 +65,48 @@ function usePrefersReducedMotion(): boolean {
   return prefersReducedMotion
 }
 
+function buildLyricsQuery(
+  track: {
+    path: string
+    title: string
+    artist: string
+    album: string
+    duration: number
+  } | null
+): LyricsTrackQuery | null {
+  if (!track) return null
+  return {
+    path: track.path,
+    title: track.title,
+    artist: track.artist,
+    album: track.album || undefined,
+    durationSeconds: Number.isFinite(track.duration) ? track.duration : undefined
+  }
+}
+
+function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
+  if (lines.length === 0) return -1
+  const currentTimeMs = Number.isFinite(currentTimeSeconds)
+    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
+    : 0
+
+  let low = 0
+  let high = lines.length - 1
+  let best = -1
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    if (lines[mid].timestampMs <= currentTimeMs) {
+      best = mid
+      low = mid + 1
+      continue
+    }
+    high = mid - 1
+  }
+
+  return best
+}
+
 export default function FullscreenMode() {
   const setFullscreen = useUIStore((s) => s.setFullscreen)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
@@ -83,6 +135,10 @@ export default function FullscreenMode() {
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const getArtwork = useLibraryStore((s) => s.getArtwork)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
+  const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
+  const lyricsResult = useLyricsStore((s) => s.currentResult)
+  const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
+  const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
 
   const prefersReducedMotion = usePrefersReducedMotion()
 
@@ -94,12 +150,14 @@ export default function FullscreenMode() {
   const [cueState, setCueState] = useState<CueState>('hidden')
   const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
   const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
+  const [showLyricsDock, setShowLyricsDock] = useState(false)
 
   const backdropRequestTokenRef = useRef(0)
   const previousTrackIdRef = useRef<string | null>(null)
   const enterResetTimeoutRef = useRef<number | null>(null)
   const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
   const heroEnterRafRef = useRef<number | null>(null)
+  const lastLyricsRequestKeyRef = useRef<string | null>(null)
   const fullscreenTitleOuterRef = useRef<HTMLHeadingElement>(null)
   const fullscreenTitleInnerRef = useRef<HTMLSpanElement>(null)
 
@@ -127,6 +185,44 @@ export default function FullscreenMode() {
   const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
   const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
   const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
+  const lyricsQuery = useMemo(
+    () => buildLyricsQuery(currentTrack),
+    [
+      currentTrack?.path,
+      currentTrack?.title,
+      currentTrack?.artist,
+      currentTrack?.album,
+      currentTrack?.duration
+    ]
+  )
+  const activeLyricsResult = useMemo(() => {
+    if (!currentTrack) return null
+    if (lyricsTrackPath !== currentTrack.path) return null
+    return lyricsResult
+  }, [currentTrack, lyricsResult, lyricsTrackPath])
+  const syncedLines = useMemo(() => {
+    if (activeLyricsResult?.status !== 'hit') return []
+    return activeLyricsResult.lyrics.syncedLines
+  }, [activeLyricsResult])
+  const activeSyncedLineIndex = useMemo(
+    () => findActiveSyncedLineIndex(syncedLines, compensatedTime),
+    [compensatedTime, syncedLines]
+  )
+  const hasSyncedLyrics = syncedLines.length > 0
+  const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
+  const syncedRenderStartIndex = useMemo(() => {
+    if (syncedLines.length === 0) return 0
+    const windowSize = (FULLSCREEN_SYNC_RENDER_RADIUS * 2) + 1
+    const maxStart = Math.max(0, syncedLines.length - windowSize)
+    return Math.max(0, Math.min(effectiveSyncedLineIndex - FULLSCREEN_SYNC_RENDER_RADIUS, maxStart))
+  }, [effectiveSyncedLineIndex, syncedLines.length])
+  const renderedSyncedLines = useMemo(() => {
+    if (syncedLines.length === 0) return []
+    const windowSize = (FULLSCREEN_SYNC_RENDER_RADIUS * 2) + 1
+    return syncedLines.slice(syncedRenderStartIndex, syncedRenderStartIndex + windowSize)
+  }, [syncedLines, syncedRenderStartIndex])
+  const effectiveSyncedLineIndexWithinWindow = effectiveSyncedLineIndex - syncedRenderStartIndex
+  const syncedLyricsTrackOffsetY = (1 - effectiveSyncedLineIndexWithinWindow) * FULLSCREEN_SYNC_LINE_HEIGHT_PX
 
   const checkFullscreenTitleOverflow = useCallback(() => {
     const outer = fullscreenTitleOuterRef.current
@@ -178,9 +274,25 @@ export default function FullscreenMode() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      setFullscreen(false)
+      const target = e.target
+      const isEditableTarget = target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT'
+      )
+      if (isEditableTarget) return
+
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setFullscreen(false)
+        return
+      }
+
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault()
+        setShowLyricsDock((visible) => !visible)
+      }
     }
 
     document.addEventListener('keydown', handleKeyDown)
@@ -190,6 +302,20 @@ export default function FullscreenMode() {
   useEffect(() => {
     checkFullscreenTitleOverflow()
   }, [currentTrack?.title, checkFullscreenTitleOverflow])
+
+  useEffect(() => {
+    if (!showLyricsDock) {
+      lastLyricsRequestKeyRef.current = null
+      return
+    }
+
+    const requestKey = lyricsQuery
+      ? `${lyricsQuery.path}\u0000${lyricsQuery.title}\u0000${lyricsQuery.artist}\u0000${lyricsQuery.album ?? ''}\u0000${lyricsQuery.durationSeconds ?? ''}`
+      : '__none__'
+    if (lastLyricsRequestKeyRef.current === requestKey) return
+    lastLyricsRequestKeyRef.current = requestKey
+    void loadLyricsForTrack(lyricsQuery)
+  }, [loadLyricsForTrack, lyricsQuery, showLyricsDock])
 
   useEffect(() => {
     const outer = fullscreenTitleOuterRef.current
@@ -403,194 +529,264 @@ export default function FullscreenMode() {
       </button>
 
       <div className="fullscreen-content">
-        <div
-          className={`fullscreen-hero fullscreen-hero-${heroPhase}`}
-        >
-          <span className="fullscreen-status-label">
-            {isLoadingTrack ? 'Loading' : isPlaying ? 'Now Playing' : currentTrack ? 'Paused' : 'Ready'}
-          </span>
-
-          <div className="fullscreen-main-row">
-            <div className="fullscreen-artwork">
-              {currentTrack?.artworkHash ? (
-                <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
-              ) : currentTrack?.artworkData ? (
-                <img src={currentTrack.artworkData} alt="Album art" />
-              ) : (
-                <div className="fullscreen-artwork-placeholder">&#9835;</div>
-              )}
-            </div>
-
-            <div className="fullscreen-track-info">
-              <h1
-                ref={fullscreenTitleOuterRef}
-                className={`fullscreen-title${fullscreenTitleOverflows ? ' marquee-active' : ''}`}
-              >
-                <span ref={fullscreenTitleInnerRef} className="fullscreen-title-inner">
-                  {currentTrack?.title ?? 'No track playing'}
-                </span>
-              </h1>
-              <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
-              <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
-              {(showAtmosBadge || isMultichannel) && (
-                <div className="fullscreen-audio-badges">
-                  {showAtmosBadge && (
-                    <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
-                      ATMOS
-                    </span>
-                  )}
-                  {isMultichannel && (
-                    <span className="fullscreen-audio-badge fullscreen-audio-badge-ch">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
-                      </svg>
-                      <span>{resolvedChannelCount}CH</span>
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="fullscreen-controls">
-            <button
-              className={`fullscreen-control-btn ${shuffle ? 'active' : ''}`}
-              aria-label="Shuffle"
-              title={shuffle ? 'Shuffle on' : 'Shuffle off'}
-              onClick={toggleShuffle}
-              disabled={queue.length === 0}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 3h5v5" />
-                <path d="M4 20 21 3" />
-                <path d="M21 16v5h-5" />
-                <path d="M15 15 21 21" />
-                <path d="M4 4 9 9" />
-              </svg>
-            </button>
-
-            <button
-              className="fullscreen-control-btn"
-              aria-label="Previous"
-              onClick={() => void playPrevious()}
-              disabled={queue.length === 0}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="5" x2="6" y2="19" />
-                <polygon points="18,5 8,12 18,19" />
-              </svg>
-            </button>
-
-            <button
-              className="fullscreen-control-btn fullscreen-control-btn-play"
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-              onClick={() => void togglePlay()}
-              disabled={!currentTrack || isLoadingTrack}
-            >
-              {isLoadingTrack ? (
-                <div className="loading-spinner" />
-              ) : isPlaying ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-                </svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-            </button>
-
-            <button
-              className="fullscreen-control-btn"
-              aria-label="Next"
-              onClick={() => void playNext()}
-              disabled={queue.length === 0}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="5" x2="18" y2="19" />
-                <polygon points="6,5 16,12 6,19" />
-              </svg>
-            </button>
-
-            <button
-              className={`fullscreen-control-btn ${repeat !== 'none' ? 'active' : ''}`}
-              aria-label="Repeat"
-              title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
-              onClick={toggleRepeat}
-              disabled={queue.length === 0}
-            >
-              {repeat === 'one' ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 7h13a4 4 0 0 1 4 4v1" />
-                  <polyline points="17 4 20 7 17 10" />
-                  <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
-                  <polyline points="7 20 4 17 7 14" />
-                  <path d="M12 8v8" />
-                </svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 7h13a4 4 0 0 1 4 4v1" />
-                  <polyline points="17 4 20 7 17 10" />
-                  <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
-                  <polyline points="7 20 4 17 7 14" />
-                </svg>
-              )}
-            </button>
-          </div>
-
-          <div className="fullscreen-waveform-wrap">
-            <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
-            <button
-              type="button"
-              className="fullscreen-time fullscreen-time-remaining fullscreen-time-toggle"
-              onClick={toggleWaveformTimeDisplayMode}
-              aria-label={rightTimeToggleLabel}
-              title={rightTimeToggleLabel}
-            >
-              {rightTimeLabel}
-            </button>
-            <WaveformSeekBar
-              waveformData={waveformData}
-              progress={progress}
-              duration={duration}
-              currentTime={compensatedTime}
-              onSeek={(time) => {
-                const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
-                void seek(rawSeekTime)
-              }}
-            />
-          </div>
-
-          <div className="fullscreen-footer">
-            <button
-              className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
-              aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-              title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-              onClick={() => currentTrack && void toggleFavorite(currentTrack.path)}
-              disabled={!currentTrack}
-            >
-              {isFavorite ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                </svg>
-              )}
-              <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
-            </button>
-
-            <div className="fullscreen-file-readout" aria-hidden={!currentTrack}>
-              <span>{currentTrack?.format?.toUpperCase() ?? '—'}</span>
-              <span>{currentTrack?.bitDepth ? `${currentTrack.bitDepth}-bit` : '—'}</span>
-              <span>
-                {currentTrack?.sampleRate
-                  ? `${(currentTrack.sampleRate / 1000).toFixed(1)} kHz`
-                  : '—'}
+        <div className={`fullscreen-stage ${showLyricsDock ? 'lyrics-open' : ''}`}>
+          <div
+            className={`fullscreen-hero fullscreen-hero-${heroPhase}`}
+          >
+            <div className="fullscreen-hero-topbar">
+              <span className="fullscreen-status-label">
+                {isLoadingTrack ? 'Loading' : isPlaying ? 'Now Playing' : currentTrack ? 'Paused' : 'Ready'}
               </span>
+              <button
+                type="button"
+                className={`fullscreen-lyrics-toggle ${showLyricsDock ? 'active' : ''}`}
+                onClick={() => setShowLyricsDock((visible) => !visible)}
+                title={showLyricsDock ? 'Hide lyrics (L)' : 'Show lyrics (L)'}
+                aria-label={showLyricsDock ? 'Hide lyrics' : 'Show lyrics'}
+                aria-pressed={showLyricsDock}
+              >
+                Lyrics
+              </button>
+            </div>
+
+            <div className="fullscreen-main-row">
+              <div className="fullscreen-artwork">
+                {currentTrack?.artworkHash ? (
+                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+                ) : currentTrack?.artworkData ? (
+                  <img src={currentTrack.artworkData} alt="Album art" />
+                ) : (
+                  <div className="fullscreen-artwork-placeholder">&#9835;</div>
+                )}
+              </div>
+
+              <div className="fullscreen-track-info">
+                <h1
+                  ref={fullscreenTitleOuterRef}
+                  className={`fullscreen-title${fullscreenTitleOverflows ? ' marquee-active' : ''}`}
+                >
+                  <span ref={fullscreenTitleInnerRef} className="fullscreen-title-inner">
+                    {currentTrack?.title ?? 'No track playing'}
+                  </span>
+                </h1>
+                <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
+                <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
+                {(showAtmosBadge || isMultichannel) && (
+                  <div className="fullscreen-audio-badges">
+                    {showAtmosBadge && (
+                      <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
+                        ATMOS
+                      </span>
+                    )}
+                    {isMultichannel && (
+                      <span className="fullscreen-audio-badge fullscreen-audio-badge-ch">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
+                        </svg>
+                        <span>{resolvedChannelCount}CH</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="fullscreen-controls">
+              <button
+                className={`fullscreen-control-btn ${shuffle ? 'active' : ''}`}
+                aria-label="Shuffle"
+                title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+                onClick={toggleShuffle}
+                disabled={queue.length === 0}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M16 3h5v5" />
+                  <path d="M4 20 21 3" />
+                  <path d="M21 16v5h-5" />
+                  <path d="M15 15 21 21" />
+                  <path d="M4 4 9 9" />
+                </svg>
+              </button>
+
+              <button
+                className="fullscreen-control-btn"
+                aria-label="Previous"
+                onClick={() => void playPrevious()}
+                disabled={queue.length === 0}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="6" y1="5" x2="6" y2="19" />
+                  <polygon points="18,5 8,12 18,19" />
+                </svg>
+              </button>
+
+              <button
+                className="fullscreen-control-btn fullscreen-control-btn-play"
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                onClick={() => void togglePlay()}
+                disabled={!currentTrack || isLoadingTrack}
+              >
+                {isLoadingTrack ? (
+                  <div className="loading-spinner" />
+                ) : isPlaying ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+              </button>
+
+              <button
+                className="fullscreen-control-btn"
+                aria-label="Next"
+                onClick={() => void playNext()}
+                disabled={queue.length === 0}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="5" x2="18" y2="19" />
+                  <polygon points="6,5 16,12 6,19" />
+                </svg>
+              </button>
+
+              <button
+                className={`fullscreen-control-btn ${repeat !== 'none' ? 'active' : ''}`}
+                aria-label="Repeat"
+                title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+                onClick={toggleRepeat}
+                disabled={queue.length === 0}
+              >
+                {repeat === 'one' ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 7h13a4 4 0 0 1 4 4v1" />
+                    <polyline points="17 4 20 7 17 10" />
+                    <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
+                    <polyline points="7 20 4 17 7 14" />
+                    <path d="M12 8v8" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 7h13a4 4 0 0 1 4 4v1" />
+                    <polyline points="17 4 20 7 17 10" />
+                    <path d="M21 17H8a4 4 0 0 1-4-4v-1" />
+                    <polyline points="7 20 4 17 7 14" />
+                  </svg>
+                )}
+              </button>
+            </div>
+
+            <div className="fullscreen-waveform-wrap">
+              <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
+              <button
+                type="button"
+                className="fullscreen-time fullscreen-time-remaining fullscreen-time-toggle"
+                onClick={toggleWaveformTimeDisplayMode}
+                aria-label={rightTimeToggleLabel}
+                title={rightTimeToggleLabel}
+              >
+                {rightTimeLabel}
+              </button>
+              <WaveformSeekBar
+                waveformData={waveformData}
+                progress={progress}
+                duration={duration}
+                currentTime={compensatedTime}
+                onSeek={(time) => {
+                  const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
+                  void seek(rawSeekTime)
+                }}
+              />
+            </div>
+
+            <div className="fullscreen-footer">
+              <button
+                className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
+                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                onClick={() => currentTrack && void toggleFavorite(currentTrack.path)}
+                disabled={!currentTrack}
+              >
+                {isFavorite ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                  </svg>
+                )}
+                <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
+              </button>
+
+              <div className="fullscreen-file-readout" aria-hidden={!currentTrack}>
+                <span>{currentTrack?.format?.toUpperCase() ?? '—'}</span>
+                <span>{currentTrack?.bitDepth ? `${currentTrack.bitDepth}-bit` : '—'}</span>
+                <span>
+                  {currentTrack?.sampleRate
+                    ? `${(currentTrack.sampleRate / 1000).toFixed(1)} kHz`
+                    : '—'}
+                </span>
+              </div>
             </div>
           </div>
+
+          <section
+            className={`fullscreen-lyrics-dock ${showLyricsDock ? 'is-open' : ''}`}
+            aria-hidden={!showLyricsDock}
+          >
+            <div className="fullscreen-lyrics-dock-glass">
+              <div className="fullscreen-lyrics-dock-head">
+                <span className="fullscreen-lyrics-dock-label">Lyrics</span>
+                {activeLyricsResult?.status === 'hit' && (
+                  <span className="fullscreen-lyrics-dock-source">
+                    {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
+                    {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
+                    {activeLyricsResult.cached ? ' • Cached' : ''}
+                  </span>
+                )}
+              </div>
+
+              {!currentTrack ? (
+                <p className="fullscreen-lyrics-dock-state">No track selected.</p>
+              ) : lyricsIsLoading && !activeLyricsResult ? (
+                <p className="fullscreen-lyrics-dock-state">Loading lyrics...</p>
+              ) : activeLyricsResult?.status === 'hit' && hasSyncedLyrics ? (
+                <div className="fullscreen-lyrics-dock-window" aria-live="polite">
+                  <div
+                    className="fullscreen-lyrics-dock-track"
+                    style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
+                  >
+                    {renderedSyncedLines.map((line, index) => {
+                      const absoluteIndex = syncedRenderStartIndex + index
+                      const distance = absoluteIndex - effectiveSyncedLineIndex
+                      const lineClassName = [
+                        'fullscreen-lyrics-dock-line',
+                        distance === 0
+                          ? 'is-active'
+                          : Math.abs(distance) === 1
+                            ? 'is-near'
+                            : Math.abs(distance) === 2
+                              ? 'is-far'
+                              : 'is-distant'
+                      ].join(' ')
+
+                      return (
+                        <p key={`${line.timestampMs}:${absoluteIndex}`} className={lineClassName}>
+                          {line.text}
+                        </p>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <p className="fullscreen-lyrics-dock-state fullscreen-lyrics-dock-state-not-found">
+                  Lyrics not synced or not found.
+                </p>
+              )}
+            </div>
+          </section>
         </div>
       </div>
 

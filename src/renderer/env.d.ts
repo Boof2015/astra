@@ -19,6 +19,15 @@ import type {
     LastFmAuthStartResult,
     LastFmStatus
 } from '../types/lastFm'
+import type {
+    LyricsManualClearResult,
+    LyricsManualImportResult,
+    LyricsLookupResult,
+    LyricsOffsetSetResult,
+    LyricsStatus,
+    LyricsTrackOverride,
+    LyricsTrackQuery
+} from '../types/lyrics'
 
 declare global {
     interface Window {
@@ -118,6 +127,18 @@ declare global {
                 disconnect: () => Promise<LastFmStatus>
                 resetToDefaults: () => Promise<LastFmStatus>
                 onStatus: (callback: (status: LastFmStatus) => void) => () => void
+            }
+            lyrics: {
+                getStatus: () => Promise<LyricsStatus>
+                setEnabled: (enabled: boolean) => Promise<LyricsStatus>
+                getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+                refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+                getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>
+                importManualLyrics: (trackPaths: string[], lyricsText: string) => Promise<LyricsManualImportResult>
+                clearManualLyrics: (trackPaths: string[]) => Promise<LyricsManualClearResult>
+                setTrackOffset: (trackPaths: string[], offsetMs: number) => Promise<LyricsOffsetSetResult>
+                resetToDefaults: () => Promise<LyricsStatus>
+                onStatus: (callback: (status: LyricsStatus) => void) => () => void
             }
             openAudioFile: () => Promise<{
                 path: string
