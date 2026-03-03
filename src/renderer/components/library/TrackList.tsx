@@ -36,7 +36,7 @@ interface DbTrack {
   is_atmos_joc?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'bpm' | 'musical_key'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key'
 
 export interface TrackListSortState {
   key: TrackListSortKey
@@ -872,11 +872,11 @@ export default function TrackList({
         )}
         {renderSortableHeader('title', 'Title', 'track-col-title')}
         {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}
-        {showAlbum && <div className="track-col track-col-album">Album</div>}
+        {showAlbum && renderSortableHeader('album', 'Album', 'track-col-album')}
         {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
         {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
         <div className="track-col track-col-codec">Codec</div>
-        <div className="track-col track-col-duration">Length</div>
+        {renderSortableHeader('duration', 'Length', 'track-col-duration')}
         <div className="track-col track-col-actions" />
       </div>
       <div className={`track-list-body ${externalScroll ? 'track-list-body-external-scroll' : ''}`} ref={listBodyRef}>

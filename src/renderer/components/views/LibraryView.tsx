@@ -29,9 +29,27 @@ function toSortableBpm(value: number | null | undefined): number | null {
   return value
 }
 
+function toSortableDuration(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  return value
+}
+
 function compareNullableBpm(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
   const aValue = toSortableBpm(a)
   const bValue = toSortableBpm(b)
+  const aMissing = aValue === null
+  const bMissing = bValue === null
+
+  if (aMissing && bMissing) return 0
+  if (aMissing) return 1
+  if (bMissing) return -1
+
+  return compareWithDirection(aValue - bValue, direction)
+}
+
+function compareNullableDuration(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
+  const aValue = toSortableDuration(a)
+  const bValue = toSortableDuration(b)
   const aMissing = aValue === null
   const bMissing = bValue === null
 
@@ -250,6 +268,13 @@ export default function LibraryView() {
         comparison = compareWithDirection(compareTextValue(a.title, b.title), sortState.direction)
       } else if (sortState.key === 'artist') {
         comparison = compareWithDirection(compareTextValue(a.artist, b.artist), sortState.direction)
+      } else if (sortState.key === 'album') {
+        comparison = compareWithDirection(compareTextValue(a.album, b.album), sortState.direction)
+        if (comparison === 0) {
+          comparison = compareAlbumSequence(a, b)
+        }
+      } else if (sortState.key === 'duration') {
+        comparison = compareNullableDuration(a.duration, b.duration, sortState.direction)
       } else if (sortState.key === 'bpm') {
         comparison = compareNullableBpm(a.bpm, b.bpm, sortState.direction)
       } else {

@@ -3413,7 +3413,8 @@ button, .titlebar {
 }
 
 .track-col-bpm .track-col-sort-btn,
-.track-col-key .track-col-sort-btn {
+.track-col-key .track-col-sort-btn,
+.track-col-duration .track-col-sort-btn {
   justify-content: flex-end;
 }
 
