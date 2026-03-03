@@ -1492,6 +1492,8 @@ button, .titlebar {
 
 .fullscreen-lyrics-dock {
   --fullscreen-lyrics-line-height: 46px;
+  --fullscreen-lyrics-visible-lines: 3;
+  --fullscreen-lyrics-open-height: 196px;
   max-height: 0;
   margin-top: 0;
   opacity: 0;
@@ -1508,7 +1510,7 @@ button, .titlebar {
 }
 
 .fullscreen-lyrics-dock.is-open {
-  max-height: 196px;
+  max-height: var(--fullscreen-lyrics-open-height);
   margin-top: 12px;
   opacity: 1;
   pointer-events: auto;
@@ -1585,10 +1587,10 @@ button, .titlebar {
 }
 
 .fullscreen-lyrics-dock-window {
-  height: calc(var(--fullscreen-lyrics-line-height) * 3);
+  height: calc(var(--fullscreen-lyrics-line-height) * var(--fullscreen-lyrics-visible-lines));
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
 }
 
 .fullscreen-lyrics-dock-track {
@@ -1607,10 +1609,10 @@ button, .titlebar {
   text-align: center;
   line-height: 1.24;
   word-break: break-word;
-  color: rgba(255, 255, 255, 0.26);
-  opacity: 0.2;
-  filter: blur(1.9px);
-  transform: scale(0.944);
+  color: rgba(255, 255, 255, 0.4);
+  opacity: 0.38;
+  filter: blur(1.08px);
+  transform: scale(0.982);
   transition:
     color 240ms ease,
     opacity 240ms ease,
@@ -1620,20 +1622,20 @@ button, .titlebar {
 }
 
 .fullscreen-lyrics-dock-line.is-near {
-  color: rgba(255, 255, 255, 0.54);
-  opacity: 0.74;
-  filter: blur(0.9px);
-  transform: scale(0.976);
-  font-size: clamp(15px, 1.75vw, 21px);
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0.82;
+  filter: blur(0.32px);
+  transform: scale(0.992);
+  font-size: clamp(18px, 2.2vw, 27px);
   font-weight: 520;
 }
 
 .fullscreen-lyrics-dock-line.is-far {
-  color: rgba(255, 255, 255, 0.36);
-  opacity: 0.46;
-  filter: blur(1.4px);
-  transform: scale(0.96);
-  font-size: clamp(12px, 1.3vw, 16px);
+  color: rgba(255, 255, 255, 0.58);
+  opacity: 0.68;
+  filter: blur(0.58px);
+  transform: scale(0.986);
+  font-size: clamp(16px, 1.9vw, 23px);
 }
 
 .fullscreen-lyrics-dock-line.is-active {
@@ -1647,7 +1649,7 @@ button, .titlebar {
 }
 
 .fullscreen-lyrics-dock-line.is-distant {
-  font-size: clamp(11px, 1.1vw, 14px);
+  font-size: clamp(14px, 1.6vw, 20px);
 }
 
 .fullscreen-lyrics-dock-state,
@@ -8379,7 +8381,7 @@ body::after {
   }
 
   .fullscreen-lyrics-dock.is-open {
-    max-height: 178px;
+    max-height: var(--fullscreen-lyrics-open-height);
     margin-top: 10px;
   }
 
@@ -8388,7 +8390,7 @@ body::after {
   }
 
   .fullscreen-lyrics-dock-line.is-near {
-    font-size: clamp(14px, 1.95vw, 18px);
+    font-size: clamp(16px, 2.2vw, 21px);
   }
 
   .fullscreen-lyrics-dock-state-not-found {
@@ -8649,7 +8651,7 @@ body::after {
   }
 
   .fullscreen-lyrics-dock.is-open {
-    max-height: 146px;
+    max-height: var(--fullscreen-lyrics-open-height);
     margin-top: 8px;
   }
 
@@ -8667,12 +8669,12 @@ body::after {
   }
 
   .fullscreen-lyrics-dock-line.is-near {
-    font-size: clamp(12px, 3.2vw, 15px);
-    filter: blur(0.75px);
+    font-size: clamp(14px, 3.6vw, 18px);
+    filter: blur(0.26px);
   }
 
   .fullscreen-lyrics-dock-line.is-far {
-    font-size: clamp(10px, 2.3vw, 12px);
+    font-size: clamp(12px, 2.8vw, 15px);
   }
 
   .fullscreen-lyrics-dock-state-not-found {

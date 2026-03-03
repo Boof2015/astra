@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -11,8 +11,15 @@ import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
-const FULLSCREEN_SYNC_LINE_HEIGHT_PX = 46
-const FULLSCREEN_SYNC_RENDER_RADIUS = 4
+const FULLSCREEN_DOCK_CHROME_HEIGHT_PX = 58
+
+interface LyricsDockLayout {
+  lineHeightPx: number
+  visibleLines: number
+  activeAnchorIndex: number
+  renderPadding: number
+  openHeightPx: number
+}
 
 function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
   if (source === 'embedded') return 'Embedded'
@@ -63,6 +70,75 @@ function usePrefersReducedMotion(): boolean {
   }, [])
 
   return prefersReducedMotion
+}
+
+function useViewportSize(): { width: number; height: number } {
+  const [size, setSize] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight
+  }))
+
+  useEffect(() => {
+    const handleResize = () => {
+      setSize({
+        width: window.innerWidth,
+        height: window.innerHeight
+      })
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  return size
+}
+
+function resolveLyricsDockLayout(viewport: { width: number; height: number }): LyricsDockLayout {
+  if (viewport.width <= 860 || viewport.height <= 660) {
+    const lineHeightPx = 34
+    const visibleLines = 3
+    return {
+      lineHeightPx,
+      visibleLines,
+      activeAnchorIndex: 1,
+      renderPadding: 2,
+      openHeightPx: (visibleLines * lineHeightPx) + FULLSCREEN_DOCK_CHROME_HEIGHT_PX
+    }
+  }
+
+  if (viewport.width >= 1480 && viewport.height >= 980) {
+    const lineHeightPx = 48
+    const visibleLines = 7
+    return {
+      lineHeightPx,
+      visibleLines,
+      activeAnchorIndex: 2,
+      renderPadding: 4,
+      openHeightPx: (visibleLines * lineHeightPx) + FULLSCREEN_DOCK_CHROME_HEIGHT_PX
+    }
+  }
+
+  if (viewport.width >= 1180 && viewport.height >= 820) {
+    const lineHeightPx = 44
+    const visibleLines = 5
+    return {
+      lineHeightPx,
+      visibleLines,
+      activeAnchorIndex: 1,
+      renderPadding: 3,
+      openHeightPx: (visibleLines * lineHeightPx) + FULLSCREEN_DOCK_CHROME_HEIGHT_PX
+    }
+  }
+
+  const lineHeightPx = 42
+  const visibleLines = 3
+  return {
+    lineHeightPx,
+    visibleLines,
+    activeAnchorIndex: 1,
+    renderPadding: 3,
+    openHeightPx: (visibleLines * lineHeightPx) + FULLSCREEN_DOCK_CHROME_HEIGHT_PX
+  }
 }
 
 function buildLyricsQuery(
@@ -141,6 +217,11 @@ export default function FullscreenMode() {
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
 
   const prefersReducedMotion = usePrefersReducedMotion()
+  const viewportSize = useViewportSize()
+  const lyricsDockLayout = useMemo(
+    () => resolveLyricsDockLayout(viewportSize),
+    [viewportSize.height, viewportSize.width]
+  )
 
   const [resolvedBackdropArtwork, setResolvedBackdropArtwork] = useState<string | null>(null)
   const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
@@ -210,19 +291,39 @@ export default function FullscreenMode() {
   )
   const hasSyncedLyrics = syncedLines.length > 0
   const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
-  const syncedRenderStartIndex = useMemo(() => {
+  const syncedRenderWindowSize = useMemo(() => {
     if (syncedLines.length === 0) return 0
-    const windowSize = (FULLSCREEN_SYNC_RENDER_RADIUS * 2) + 1
-    const maxStart = Math.max(0, syncedLines.length - windowSize)
-    return Math.max(0, Math.min(effectiveSyncedLineIndex - FULLSCREEN_SYNC_RENDER_RADIUS, maxStart))
-  }, [effectiveSyncedLineIndex, syncedLines.length])
+    return Math.min(
+      syncedLines.length,
+      lyricsDockLayout.visibleLines + (lyricsDockLayout.renderPadding * 2)
+    )
+  }, [lyricsDockLayout.renderPadding, lyricsDockLayout.visibleLines, syncedLines.length])
+  const syncedRenderStartIndex = useMemo(() => {
+    if (syncedLines.length === 0 || syncedRenderWindowSize === 0) return 0
+    const desiredStart = effectiveSyncedLineIndex - lyricsDockLayout.activeAnchorIndex
+    const preferredStart = desiredStart - lyricsDockLayout.renderPadding
+    const maxStart = Math.max(0, syncedLines.length - syncedRenderWindowSize)
+    return Math.max(0, Math.min(preferredStart, maxStart))
+  }, [
+    effectiveSyncedLineIndex,
+    lyricsDockLayout.activeAnchorIndex,
+    lyricsDockLayout.renderPadding,
+    syncedLines.length,
+    syncedRenderWindowSize
+  ])
   const renderedSyncedLines = useMemo(() => {
-    if (syncedLines.length === 0) return []
-    const windowSize = (FULLSCREEN_SYNC_RENDER_RADIUS * 2) + 1
-    return syncedLines.slice(syncedRenderStartIndex, syncedRenderStartIndex + windowSize)
-  }, [syncedLines, syncedRenderStartIndex])
+    if (syncedLines.length === 0 || syncedRenderWindowSize === 0) return []
+    return syncedLines.slice(syncedRenderStartIndex, syncedRenderStartIndex + syncedRenderWindowSize)
+  }, [syncedLines, syncedRenderStartIndex, syncedRenderWindowSize])
   const effectiveSyncedLineIndexWithinWindow = effectiveSyncedLineIndex - syncedRenderStartIndex
-  const syncedLyricsTrackOffsetY = (1 - effectiveSyncedLineIndexWithinWindow) * FULLSCREEN_SYNC_LINE_HEIGHT_PX
+  const syncedLyricsTrackOffsetY = (
+    lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndexWithinWindow
+  ) * lyricsDockLayout.lineHeightPx
+  const lyricsDockStyle = useMemo(() => ({
+    '--fullscreen-lyrics-line-height': `${lyricsDockLayout.lineHeightPx}px`,
+    '--fullscreen-lyrics-visible-lines': String(lyricsDockLayout.visibleLines),
+    '--fullscreen-lyrics-open-height': `${lyricsDockLayout.openHeightPx}px`
+  } as CSSProperties), [lyricsDockLayout.lineHeightPx, lyricsDockLayout.openHeightPx, lyricsDockLayout.visibleLines])
 
   const checkFullscreenTitleOverflow = useCallback(() => {
     const outer = fullscreenTitleOuterRef.current
@@ -734,6 +835,7 @@ export default function FullscreenMode() {
 
           <section
             className={`fullscreen-lyrics-dock ${showLyricsDock ? 'is-open' : ''}`}
+            style={lyricsDockStyle}
             aria-hidden={!showLyricsDock}
           >
             <div className="fullscreen-lyrics-dock-glass">
