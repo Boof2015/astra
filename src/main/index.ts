@@ -24,6 +24,15 @@ import {
   normalizeMiniPlayerVisualizerMode,
   saveMiniWindowPrefs,
 } from './services/miniWindowPrefs'
+import {
+  MAIN_WINDOW_DEFAULT_HEIGHT,
+  MAIN_WINDOW_DEFAULT_WIDTH,
+  MAIN_WINDOW_MIN_HEIGHT,
+  MAIN_WINDOW_MIN_WIDTH,
+  loadMainWindowPrefs,
+  saveMainWindowPrefs,
+  type MainWindowPrefs
+} from './services/mainWindowPrefs'
 import type {
   MiniPlayerCommand,
   MiniPlayerSnapshot,
@@ -59,16 +68,19 @@ const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   vectorscope: null,
 }
 let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
+let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
 const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
+let mainWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainScanEnabled: boolean = false
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
+const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
@@ -739,6 +751,40 @@ function broadcastLyricsStatus(): void {
   }
 }
 
+function captureMainWindowPrefs(): MainWindowPrefs | null {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  const bounds = mainWindow.getNormalBounds()
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: mainWindow.isMaximized()
+  }
+}
+
+async function persistMainWindowPrefs(): Promise<void> {
+  const captured = captureMainWindowPrefs()
+  if (!captured) return
+
+  mainWindowPrefs = captured
+  try {
+    await saveMainWindowPrefs(captured)
+  } catch (error) {
+    console.warn('Failed to persist main window prefs:', error)
+  }
+}
+
+function schedulePersistMainWindowPrefs(): void {
+  if (mainWindowPersistTimer !== null) {
+    clearTimeout(mainWindowPersistTimer)
+  }
+  mainWindowPersistTimer = setTimeout(() => {
+    mainWindowPersistTimer = null
+    void persistMainWindowPrefs()
+  }, MAIN_WINDOW_PERSIST_DEBOUNCE_MS)
+}
+
 function captureMiniWindowPrefs(): MiniPlayerWindowPrefs | null {
   if (!miniWindow || miniWindow.isDestroyed()) return null
   const bounds = miniWindow.getBounds()
@@ -857,11 +903,20 @@ async function createMiniPlayerWindow(): Promise<void> {
 }
 
 function createWindow(): void {
+  const prefs = mainWindowPrefs ?? {
+    width: MAIN_WINDOW_DEFAULT_WIDTH,
+    height: MAIN_WINDOW_DEFAULT_HEIGHT,
+    maximized: false
+  }
+  mainWindowPrefs = prefs
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
+    width: prefs.width,
+    height: prefs.height,
+    x: prefs.x,
+    y: prefs.y,
+    minWidth: MAIN_WINDOW_MIN_WIDTH,
+    minHeight: MAIN_WINDOW_MIN_HEIGHT,
     frame: false,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 16, y: 16 },
@@ -877,10 +932,25 @@ function createWindow(): void {
     }
   })
 
+  if (prefs.maximized) {
+    mainWindow.maximize()
+  }
+
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
 
+  mainWindow.on('move', schedulePersistMainWindowPrefs)
+  mainWindow.on('resize', schedulePersistMainWindowPrefs)
+  mainWindow.on('maximize', schedulePersistMainWindowPrefs)
+  mainWindow.on('unmaximize', schedulePersistMainWindowPrefs)
+  mainWindow.on('close', () => {
+    if (mainWindowPersistTimer !== null) {
+      clearTimeout(mainWindowPersistTimer)
+      mainWindowPersistTimer = null
+    }
+    void persistMainWindowPrefs()
+  })
   mainWindow.on('closed', () => {
     mainWindow = null
     if (miniWindow && !miniWindow.isDestroyed()) {
@@ -1132,6 +1202,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('Failed to initialize artwork thumbnail cache directory:', error)
   }
+  mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   await localApiService.applyConfig(localApiConfig)
@@ -1165,6 +1236,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  if (mainWindowPersistTimer !== null) {
+    clearTimeout(mainWindowPersistTimer)
+    mainWindowPersistTimer = null
+  }
   if (miniWindowPersistTimer !== null) {
     clearTimeout(miniWindowPersistTimer)
     miniWindowPersistTimer = null
@@ -1177,6 +1252,7 @@ app.on('before-quit', () => {
     clearTimeout(replayGainBackfillTimer)
     replayGainBackfillTimer = null
   }
+  void persistMainWindowPrefs()
   void persistMiniWindowPrefs()
   closeAllScopePopoutWindows()
   void localApiService.stop()
