@@ -291,33 +291,8 @@ export default function FullscreenMode() {
   )
   const hasSyncedLyrics = syncedLines.length > 0
   const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
-  const syncedRenderWindowSize = useMemo(() => {
-    if (syncedLines.length === 0) return 0
-    return Math.min(
-      syncedLines.length,
-      lyricsDockLayout.visibleLines + (lyricsDockLayout.renderPadding * 2)
-    )
-  }, [lyricsDockLayout.renderPadding, lyricsDockLayout.visibleLines, syncedLines.length])
-  const syncedRenderStartIndex = useMemo(() => {
-    if (syncedLines.length === 0 || syncedRenderWindowSize === 0) return 0
-    const desiredStart = effectiveSyncedLineIndex - lyricsDockLayout.activeAnchorIndex
-    const preferredStart = desiredStart - lyricsDockLayout.renderPadding
-    const maxStart = Math.max(0, syncedLines.length - syncedRenderWindowSize)
-    return Math.max(0, Math.min(preferredStart, maxStart))
-  }, [
-    effectiveSyncedLineIndex,
-    lyricsDockLayout.activeAnchorIndex,
-    lyricsDockLayout.renderPadding,
-    syncedLines.length,
-    syncedRenderWindowSize
-  ])
-  const renderedSyncedLines = useMemo(() => {
-    if (syncedLines.length === 0 || syncedRenderWindowSize === 0) return []
-    return syncedLines.slice(syncedRenderStartIndex, syncedRenderStartIndex + syncedRenderWindowSize)
-  }, [syncedLines, syncedRenderStartIndex, syncedRenderWindowSize])
-  const effectiveSyncedLineIndexWithinWindow = effectiveSyncedLineIndex - syncedRenderStartIndex
   const syncedLyricsTrackOffsetY = (
-    lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndexWithinWindow
+    lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndex
   ) * lyricsDockLayout.lineHeightPx
   const lyricsDockStyle = useMemo(() => ({
     '--fullscreen-lyrics-line-height': `${lyricsDockLayout.lineHeightPx}px`,
@@ -860,9 +835,8 @@ export default function FullscreenMode() {
                     className="fullscreen-lyrics-dock-track"
                     style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
                   >
-                    {renderedSyncedLines.map((line, index) => {
-                      const absoluteIndex = syncedRenderStartIndex + index
-                      const distance = absoluteIndex - effectiveSyncedLineIndex
+                    {syncedLines.map((line, index) => {
+                      const distance = index - effectiveSyncedLineIndex
                       const lineClassName = [
                         'fullscreen-lyrics-dock-line',
                         distance === 0
@@ -875,7 +849,7 @@ export default function FullscreenMode() {
                       ].join(' ')
 
                       return (
-                        <p key={`${line.timestampMs}:${absoluteIndex}`} className={lineClassName}>
+                        <p key={`${line.timestampMs}:${index}`} className={lineClassName}>
                           {line.text}
                         </p>
                       )

@@ -214,7 +214,7 @@ export default function InfoSidebar() {
   }
 
   return (
-    <aside className="info-sidebar">
+    <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
         <span className="info-sidebar-label">NOW PLAYING</span>
         <button className="info-sidebar-close" onClick={toggleInfoSidebar} title="Close">
