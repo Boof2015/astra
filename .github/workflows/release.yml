@@ -64,6 +64,14 @@ jobs:
           fi
           echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
 
+      - name: Write Last.fm credentials file
+        shell: bash
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SHARED_SECRET: ${{ secrets.LASTFM_SHARED_SECRET }}
+        run: |
+          node -e 'const fs=require("fs"); const key=process.env.LASTFM_API_KEY ?? ""; const secret=process.env.LASTFM_SHARED_SECRET ?? ""; fs.writeFileSync(".env.local", `LASTFM_API_KEY=${key}\nLASTFM_SHARED_SECRET=${secret}\n`, "utf8")'
+
       - name: Build distributable
         run: npm run ${{ matrix.dist_cmd }}
 

@@ -74,6 +74,7 @@
     ],
     "files": [
       "out/**/*",
+      ".env.local",
       "native/build/Release/*.node"
     ],
     "extraResources": [

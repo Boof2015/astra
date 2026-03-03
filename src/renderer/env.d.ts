@@ -14,6 +14,11 @@ import type {
     ScopePopoutState
 } from '../types/scopePopout'
 import type { LocalApiStatus } from '../types/localApi'
+import type {
+    LastFmAuthFinishResult,
+    LastFmAuthStartResult,
+    LastFmStatus
+} from '../types/lastFm'
 
 declare global {
     interface Window {
@@ -104,6 +109,15 @@ declare global {
                 rotateToken: () => Promise<LocalApiStatus>
                 resetToDefaults: () => Promise<LocalApiStatus>
                 onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+            }
+            lastFm: {
+                getStatus: () => Promise<LastFmStatus>
+                setEnabled: (enabled: boolean) => Promise<LastFmStatus>
+                beginAuth: () => Promise<LastFmAuthStartResult>
+                finishAuth: () => Promise<LastFmAuthFinishResult>
+                disconnect: () => Promise<LastFmStatus>
+                resetToDefaults: () => Promise<LastFmStatus>
+                onStatus: (callback: (status: LastFmStatus) => void) => () => void
             }
             openAudioFile: () => Promise<{
                 path: string

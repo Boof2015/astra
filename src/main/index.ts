@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
+import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { createHash } from 'crypto'
@@ -14,6 +15,7 @@ import {
 import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
+import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
@@ -42,6 +44,7 @@ import {
   LOCAL_API_MIN_PORT,
   type LocalApiServiceConfig,
 } from '../types/localApi'
+import type { LastFmServiceConfig } from '../types/lastFm'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -75,6 +78,10 @@ const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
+const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
+const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
+const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
+const LASTFM_PENDING_SCROBBLES_META_KEY = 'lastfm_pending_scrobbles_v1'
 const TRACKLIST_THUMB_MAX_EDGE_PX = 96
 const TRACKLIST_THUMB_JPEG_QUALITY = 78
 const TRACKLIST_THUMB_CACHE_VERSION = 'v1'
@@ -90,6 +97,86 @@ let localApiConfig: LocalApiServiceConfig = {
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
 }
+let lastFmConfig: LastFmServiceConfig = {
+  enabled: false,
+  sessionKey: null,
+  username: null,
+  pendingScrobbles: []
+}
+
+function stripEnvQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0]
+    const last = value[value.length - 1]
+    if ((first === '"' && last === '"') || (first === '\'' && last === '\'')) {
+      return value.slice(1, -1)
+    }
+  }
+  return value
+}
+
+function stripInlineEnvComment(value: string): string {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '#') continue
+    if (index === 0) return ''
+    if (/\s/.test(value[index - 1])) {
+      return value.slice(0, index).trimEnd()
+    }
+  }
+  return value
+}
+
+function parseEnvFile(content: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const lines = content.split(/\r?\n/)
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const equalsIndex = line.indexOf('=')
+    if (equalsIndex <= 0) continue
+
+    const key = line.slice(0, equalsIndex).trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
+
+    const rawValue = line.slice(equalsIndex + 1).trim()
+    const unquotedValue = stripEnvQuotes(rawValue)
+    const value = rawValue === unquotedValue
+      ? stripInlineEnvComment(unquotedValue)
+      : unquotedValue
+    out[key] = value
+  }
+
+  return out
+}
+
+function loadMainProcessEnvLocal(): void {
+  const candidates = [
+    join(process.cwd(), '.env.local'),
+    join(__dirname, '../../.env.local')
+  ]
+
+  for (const envPath of candidates) {
+    if (!existsSync(envPath)) continue
+
+    try {
+      const parsed = parseEnvFile(readFileSync(envPath, 'utf8'))
+      for (const [key, value] of Object.entries(parsed)) {
+        if (process.env[key] == null) {
+          process.env[key] = value
+        }
+      }
+      return
+    } catch (error) {
+      console.warn(`Failed to parse env file at ${envPath}:`, error)
+    }
+  }
+}
+
+loadMainProcessEnvLocal()
+const LASTFM_API_KEY = (process.env.LASTFM_API_KEY ?? '').trim()
+const LASTFM_SHARED_SECRET = (process.env.LASTFM_SHARED_SECRET ?? '').trim()
 
 function resolveSafeReleaseUrl(candidateUrl: unknown): string {
   if (typeof candidateUrl !== 'string') {
@@ -137,6 +224,25 @@ const localApiService = new LocalApiService({
   dispatchCommand: sendMiniPlayerCommand,
   onStatusChange: () => {
     broadcastLocalApiStatus()
+  }
+})
+
+const lastFmService = new LastFmService({
+  config: lastFmConfig,
+  apiKey: LASTFM_API_KEY,
+  sharedSecret: LASTFM_SHARED_SECRET,
+  openExternal: async (url: string) => {
+    await shell.openExternal(url)
+  },
+  onConfigChange: async (config) => {
+    lastFmConfig = {
+      ...config,
+      pendingScrobbles: [...config.pendingScrobbles]
+    }
+    await persistLastFmConfig(lastFmConfig)
+  },
+  onStatusChange: () => {
+    broadcastLastFmStatus()
   }
 })
 
@@ -349,6 +455,73 @@ async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<Retur
   return localApiService.applyConfig(localApiConfig)
 }
 
+function normalizeOptionalMetaText(value: string | null): string | null {
+  if (value == null) return null
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+async function persistLastFmConfig(config: LastFmServiceConfig): Promise<void> {
+  await library.setAppMeta(LASTFM_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(LASTFM_SESSION_KEY_META_KEY, config.sessionKey ?? '')
+  await library.setAppMeta(LASTFM_SESSION_USERNAME_META_KEY, config.username ?? '')
+  await library.setAppMeta(
+    LASTFM_PENDING_SCROBBLES_META_KEY,
+    JSON.stringify(config.pendingScrobbles)
+  )
+}
+
+async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
+  const sessionKey = normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_KEY_META_KEY))
+  const username = normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_USERNAME_META_KEY))
+  const connected = Boolean(sessionKey && username)
+  const enabledStored = parseMetaBoolean(library.getAppMeta(LASTFM_ENABLED_META_KEY), false)
+  const enabled = connected && enabledStored
+
+  let pendingScrobbles = sanitizePendingScrobbles([])
+  const rawPendingScrobbles = library.getAppMeta(LASTFM_PENDING_SCROBBLES_META_KEY)
+  if (rawPendingScrobbles) {
+    try {
+      pendingScrobbles = sanitizePendingScrobbles(JSON.parse(rawPendingScrobbles))
+    } catch {
+      pendingScrobbles = sanitizePendingScrobbles([])
+    }
+  }
+
+  const normalized: LastFmServiceConfig = {
+    enabled,
+    sessionKey: connected ? sessionKey : null,
+    username: connected ? username : null,
+    pendingScrobbles
+  }
+
+  const needsPersistence =
+    library.getAppMeta(LASTFM_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(LASTFM_SESSION_KEY_META_KEY) !== (normalized.sessionKey ?? '') ||
+    library.getAppMeta(LASTFM_SESSION_USERNAME_META_KEY) !== (normalized.username ?? '') ||
+    library.getAppMeta(LASTFM_PENDING_SCROBBLES_META_KEY) !== JSON.stringify(normalized.pendingScrobbles)
+
+  if (needsPersistence) {
+    try {
+      await persistLastFmConfig(normalized)
+    } catch (error) {
+      console.warn('Failed to persist normalized Last.fm settings:', error)
+    }
+  }
+
+  return normalized
+}
+
+async function applyLastFmConfig(config: LastFmServiceConfig): Promise<ReturnType<typeof lastFmService.getStatus>> {
+  const normalized: LastFmServiceConfig = {
+    ...config,
+    pendingScrobbles: [...config.pendingScrobbles]
+  }
+  lastFmConfig = normalized
+  await persistLastFmConfig(lastFmConfig)
+  return lastFmService.applyConfig(lastFmConfig)
+}
+
 async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   const existing = getScopePopoutWindow(scope)
   if (existing) {
@@ -481,6 +654,14 @@ function broadcastLocalApiStatus(): void {
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('local-api:status', payload)
+  }
+}
+
+function broadcastLastFmStatus(): void {
+  const payload = lastFmService.getStatus()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('lastfm:status', payload)
   }
 }
 
@@ -879,6 +1060,8 @@ app.whenReady().then(async () => {
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   await localApiService.applyConfig(localApiConfig)
+  lastFmConfig = await loadLastFmConfigFromMeta()
+  await lastFmService.applyConfig(lastFmConfig)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
 
   // Clean up tracks that no longer exist on disk
@@ -920,6 +1103,7 @@ app.on('before-quit', () => {
   void persistMiniWindowPrefs()
   closeAllScopePopoutWindows()
   void localApiService.stop()
+  lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
 })
@@ -1001,6 +1185,7 @@ ipcMain.handle('mini-player:getSnapshot', () => {
 ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
   latestMiniPlayerSnapshot = snapshot
   localApiService.publishSnapshot(snapshot)
+  lastFmService.publishSnapshot(snapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', snapshot)
   }
@@ -1120,6 +1305,36 @@ ipcMain.handle('discord:resolveCoverArt', async (_event, query: unknown) => {
     albumArtist: typeof normalized.albumArtist === 'string' ? normalized.albumArtist : undefined,
     title: typeof normalized.title === 'string' ? normalized.title : undefined
   })
+})
+
+// Last.fm scrobbling
+ipcMain.handle('lastfm:getStatus', () => {
+  return lastFmService.getStatus()
+})
+
+ipcMain.handle('lastfm:setEnabled', async (_event, enabled: unknown) => {
+  const nextEnabled = Boolean(enabled) && Boolean(lastFmConfig.sessionKey && lastFmConfig.username)
+  const nextConfig: LastFmServiceConfig = {
+    ...lastFmConfig,
+    enabled: nextEnabled
+  }
+  return applyLastFmConfig(nextConfig)
+})
+
+ipcMain.handle('lastfm:beginAuth', async () => {
+  return lastFmService.beginAuth()
+})
+
+ipcMain.handle('lastfm:finishAuth', async () => {
+  return lastFmService.finishAuth()
+})
+
+ipcMain.handle('lastfm:disconnect', async () => {
+  return lastFmService.disconnect()
+})
+
+ipcMain.handle('lastfm:resetToDefaults', async () => {
+  return lastFmService.resetToDefaults()
 })
 
 // Local integration API

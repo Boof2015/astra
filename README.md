@@ -39,11 +39,11 @@ Output device selection, loudness normalization, per-channel remapping for multi
 
 ## The Rest
 
-Fullscreen mode with an album art backdrop and ambient spectrum, a miniplayer for when you want it out of the way, and a home page with a sky that shifts with the time of day. The interface pulls its accent color from whatever's playing, or you can pick from a handful of dark themes and set your own. There's an info sidebar for track technical details, and Discord Rich Presence with cover art support if you want to share what you're listening to.
+Fullscreen mode with an album art backdrop and ambient spectrum, a miniplayer for when you want it out of the way, and a home page with a sky that shifts with the time of day. The interface pulls its accent color from whatever's playing, or you can pick from a handful of dark themes and set your own. There's an info sidebar for track technical details, Discord Rich Presence with cover art support, and optional Last.fm scrobbling.
 
 ## Astra API
 
-Astra exposes an optional opt-in local API so you can build integrations with other software, read the current track, playback position, and cover art from outside the player. Playback control over the API is available too. Everything that touches the network in Astra is optional and off by default.
+Astra exposes an optional opt-in local API so you can build integrations with other software, read the current track, playback position, and cover art from outside the player. Playback control over the API is available too. Everything that touches the network in Astra (including Discord cover art lookups and Last.fm scrobbling) is optional and off by default.
 
 ## Download
 

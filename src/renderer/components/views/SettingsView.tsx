@@ -15,6 +15,7 @@ import {
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -210,6 +211,15 @@ export default function SettingsView() {
     setPort: setLocalApiPort,
     rotateToken: rotateLocalApiToken,
   } = useLocalApiSettingsStore()
+  const {
+    status: lastFmStatus,
+    isAuthorizing: lastFmIsAuthorizing,
+    errorMessage: lastFmErrorMessage,
+    authHint: lastFmAuthHint,
+    setEnabled: setLastFmEnabled,
+    beginAuth: beginLastFmAuth,
+    disconnect: disconnectLastFm,
+  } = useLastFmSettingsStore()
   const {
     autoCheckEnabled,
     checkState: updateCheckState,
@@ -451,6 +461,16 @@ export default function SettingsView() {
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
+  const lastFmConnected = lastFmStatus?.connected ?? false
+  const lastFmEnabled = lastFmStatus?.enabled ?? false
+  const lastFmAuthPending = lastFmStatus?.authPending ?? false
+  const lastFmHasApiCredentials = lastFmStatus?.hasApiCredentials ?? true
+  const lastFmUsername = lastFmStatus?.username
+  const lastFmPendingScrobbles = lastFmStatus?.pendingScrobbles ?? 0
+  const lastFmStatusLabel = lastFmStatus?.statusMessage ?? 'Loading Last.fm status...'
+  const lastFmQueueLabel = `Pending scrobbles: ${lastFmPendingScrobbles}.`
+  const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
+  const lastFmCanConnect = lastFmHasApiCredentials && !lastFmConnected && !lastFmIsAuthorizing
 
   useEffect(() => {
     let isMounted = true
@@ -1139,6 +1159,62 @@ export default function SettingsView() {
               <p>Optional platform integrations.</p>
             </div>
             <div className="settings-integration-cards">
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Last.fm</h4>
+                  <p>Now Playing updates and scrobbling for your Last.fm profile.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Last.fm Scrobbling</span>
+                    <button
+                      className={`settings-toggle ${lastFmEnabled ? 'active' : ''}`}
+                      onClick={() => void setLastFmEnabled(!lastFmEnabled)}
+                      disabled={!lastFmConnected || !lastFmHasApiCredentials}
+                    >
+                      {lastFmEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  <div className="settings-field">
+                    <span className="settings-field-label">Last.fm Account</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono settings-chip-grow">
+                        {lastFmConnected
+                          ? `Connected as ${lastFmUsername ?? 'Unknown User'}`
+                          : 'Not connected'}
+                      </span>
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        onClick={() => void beginLastFmAuth()}
+                        disabled={!lastFmCanConnect}
+                      >
+                        {lastFmIsAuthorizing ? 'Waiting...' : lastFmAuthPending ? 'Check Again' : 'Connect'}
+                      </button>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void disconnectLastFm()}
+                        disabled={!lastFmConnected && !lastFmAuthPending}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="settings-note">{lastFmStatusLabel}</p>
+                <p className="settings-note">{lastFmQueueLabel}</p>
+                {lastFmAuthHint && <p className="settings-note settings-note-success">{lastFmAuthHint}</p>}
+                {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
+                <p className="settings-note">
+                  Last.fm is optional, disabled by default, and only submits listening data when connected and enabled.
+                </p>
+                {!lastFmHasApiCredentials && (
+                  <p className="settings-note settings-note-error">
+                    Last.fm API credentials are missing in this build.
+                  </p>
+                )}
+              </div>
+
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Discord</h4>

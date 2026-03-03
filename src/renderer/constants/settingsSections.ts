@@ -27,7 +27,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'integrations',
     label: 'Integrations',
-    keywords: ['discord', 'local api', 'api key', 'port', 'controls', 'remote', 'webhook']
+    keywords: ['discord', 'local api', 'api key', 'port', 'controls', 'remote', 'webhook', 'last.fm', 'lastfm', 'scrobble', 'scrobbling']
   },
   {
     id: 'info',

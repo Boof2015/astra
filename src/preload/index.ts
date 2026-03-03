@@ -15,6 +15,11 @@ import type {
 import type {
   LocalApiStatus
 } from '../types/localApi'
+import type {
+  LastFmAuthFinishResult,
+  LastFmAuthStartResult,
+  LastFmStatus
+} from '../types/lastFm'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -440,6 +445,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  lastFm: {
+    getStatus: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:getStatus'),
+    setEnabled: (enabled: boolean): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:setEnabled', enabled),
+    beginAuth: (): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth'),
+    finishAuth: (): Promise<LastFmAuthFinishResult> => ipcRenderer.invoke('lastfm:finishAuth'),
+    disconnect: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:disconnect'),
+    resetToDefaults: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:resetToDefaults'),
+    onStatus: (callback: (status: LastFmStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LastFmStatus) => callback(status)
+      ipcRenderer.on('lastfm:status', handler)
+      return () => ipcRenderer.removeListener('lastfm:status', handler)
+    }
+  },
+
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
@@ -644,6 +663,15 @@ declare global {
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+      }
+      lastFm: {
+        getStatus: () => Promise<LastFmStatus>
+        setEnabled: (enabled: boolean) => Promise<LastFmStatus>
+        beginAuth: () => Promise<LastFmAuthStartResult>
+        finishAuth: () => Promise<LastFmAuthFinishResult>
+        disconnect: () => Promise<LastFmStatus>
+        resetToDefaults: () => Promise<LastFmStatus>
+        onStatus: (callback: (status: LastFmStatus) => void) => () => void
       }
 
       // File operations
