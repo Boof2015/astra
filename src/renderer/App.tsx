@@ -19,6 +19,7 @@ import { useThemeStore } from './stores/themeStore'
 import { useUpdateStore } from './stores/updateStore'
 import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
+import { useLyricsStore } from './stores/lyricsStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -47,6 +48,7 @@ function App() {
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
     void useLastFmSettingsStore.getState().init()
+    void useLyricsStore.getState().init()
     const updatesStore = useUpdateStore.getState()
     if (updatesStore.autoCheckEnabled) {
       void updatesStore.checkForUpdates()

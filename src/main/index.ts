@@ -16,6 +16,7 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
+import { LyricsService } from './services/lyrics'
 import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
@@ -45,6 +46,7 @@ import {
   type LocalApiServiceConfig,
 } from '../types/localApi'
 import type { LastFmServiceConfig } from '../types/lastFm'
+import type { LyricsTrackQuery } from '../types/lyrics'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -82,6 +84,7 @@ const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
 const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
 const LASTFM_PENDING_SCROBBLES_META_KEY = 'lastfm_pending_scrobbles_v1'
+const LYRICS_ONLINE_ENABLED_META_KEY = 'lyrics_online_enabled_v1'
 const TRACKLIST_THUMB_MAX_EDGE_PX = 96
 const TRACKLIST_THUMB_JPEG_QUALITY = 78
 const TRACKLIST_THUMB_CACHE_VERSION = 'v1'
@@ -103,6 +106,7 @@ let lastFmConfig: LastFmServiceConfig = {
   username: null,
   pendingScrobbles: []
 }
+let lyricsOnlineEnabled = false
 
 function stripEnvQuotes(value: string): string {
   if (value.length >= 2) {
@@ -243,6 +247,13 @@ const lastFmService = new LastFmService({
   },
   onStatusChange: () => {
     broadcastLastFmStatus()
+  }
+})
+
+const lyricsService = new LyricsService({
+  enabled: lyricsOnlineEnabled,
+  onStatusChange: () => {
+    broadcastLyricsStatus()
   }
 })
 
@@ -522,6 +533,61 @@ async function applyLastFmConfig(config: LastFmServiceConfig): Promise<ReturnTyp
   return lastFmService.applyConfig(lastFmConfig)
 }
 
+async function persistLyricsConfig(enabled: boolean): Promise<void> {
+  await library.setAppMeta(LYRICS_ONLINE_ENABLED_META_KEY, enabled ? '1' : '0')
+}
+
+async function loadLyricsConfigFromMeta(): Promise<boolean> {
+  const enabled = parseMetaBoolean(library.getAppMeta(LYRICS_ONLINE_ENABLED_META_KEY), false)
+
+  const normalizedStoredValue = enabled ? '1' : '0'
+  if (library.getAppMeta(LYRICS_ONLINE_ENABLED_META_KEY) !== normalizedStoredValue) {
+    try {
+      await persistLyricsConfig(enabled)
+    } catch (error) {
+      console.warn('Failed to persist normalized lyrics integration setting:', error)
+    }
+  }
+
+  return enabled
+}
+
+async function applyLyricsConfig(enabled: boolean): Promise<ReturnType<typeof lyricsService.getStatus>> {
+  lyricsOnlineEnabled = Boolean(enabled)
+  await persistLyricsConfig(lyricsOnlineEnabled)
+  return lyricsService.applyConfig(lyricsOnlineEnabled)
+}
+
+function normalizeLyricsTrackQuery(rawQuery: unknown): LyricsTrackQuery | null {
+  if (!rawQuery || typeof rawQuery !== 'object' || Array.isArray(rawQuery)) return null
+  const record = rawQuery as Record<string, unknown>
+
+  if (typeof record.path !== 'string') return null
+  if (typeof record.title !== 'string') return null
+  if (typeof record.artist !== 'string') return null
+
+  return {
+    path: record.path,
+    title: record.title,
+    artist: record.artist,
+    album: typeof record.album === 'string' ? record.album : undefined,
+    durationSeconds: typeof record.durationSeconds === 'number' ? record.durationSeconds : undefined
+  }
+}
+
+function normalizeLyricsTrackPaths(rawTrackPaths: unknown): string[] {
+  if (!Array.isArray(rawTrackPaths)) return []
+  const normalized = rawTrackPaths
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter((value) => value.length > 0)
+  return Array.from(new Set(normalized))
+}
+
+function normalizeLyricsOffsetMs(rawOffsetMs: unknown): number | null {
+  if (typeof rawOffsetMs !== 'number' || !Number.isFinite(rawOffsetMs)) return null
+  return Math.trunc(rawOffsetMs)
+}
+
 async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   const existing = getScopePopoutWindow(scope)
   if (existing) {
@@ -662,6 +728,14 @@ function broadcastLastFmStatus(): void {
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('lastfm:status', payload)
+  }
+}
+
+function broadcastLyricsStatus(): void {
+  const payload = lyricsService.getStatus()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('lyrics:status', payload)
   }
 }
 
@@ -829,6 +903,7 @@ function createWindow(): void {
   broadcastMiniWindowState()
   broadcastScopePopoutState()
   broadcastLocalApiStatus()
+  broadcastLyricsStatus()
 }
 
 async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
@@ -1062,6 +1137,8 @@ app.whenReady().then(async () => {
   await localApiService.applyConfig(localApiConfig)
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
+  lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
+  lyricsService.applyConfig(lyricsOnlineEnabled)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
 
   // Clean up tracks that no longer exist on disk
@@ -1335,6 +1412,67 @@ ipcMain.handle('lastfm:disconnect', async () => {
 
 ipcMain.handle('lastfm:resetToDefaults', async () => {
   return lastFmService.resetToDefaults()
+})
+
+// Lyrics
+ipcMain.handle('lyrics:getStatus', () => {
+  return lyricsService.getStatus()
+})
+
+ipcMain.handle('lyrics:setEnabled', async (_event, enabled: unknown) => {
+  return applyLyricsConfig(Boolean(enabled))
+})
+
+ipcMain.handle('lyrics:getForTrack', async (_event, rawQuery: unknown) => {
+  const query = normalizeLyricsTrackQuery(rawQuery)
+  if (!query) {
+    return {
+      status: 'not_found' as const,
+      reason: 'embedded-missing' as const
+    }
+  }
+  return lyricsService.getForTrack(query)
+})
+
+ipcMain.handle('lyrics:refreshForTrack', async (_event, rawQuery: unknown) => {
+  const query = normalizeLyricsTrackQuery(rawQuery)
+  if (!query) {
+    return {
+      status: 'not_found' as const,
+      reason: 'embedded-missing' as const
+    }
+  }
+  return lyricsService.getForTrack(query, { forceRefresh: true })
+})
+
+ipcMain.handle('lyrics:getTrackOverride', (_event, rawTrackPath: unknown) => {
+  const trackPath = typeof rawTrackPath === 'string' ? rawTrackPath.trim() : ''
+  return lyricsService.getTrackOverride(trackPath)
+})
+
+ipcMain.handle('lyrics:importManualLyrics', async (_event, rawTrackPaths: unknown, rawLyricsText: unknown) => {
+  const trackPaths = normalizeLyricsTrackPaths(rawTrackPaths)
+  const lyricsText = typeof rawLyricsText === 'string' ? rawLyricsText : ''
+  return lyricsService.importManualLyrics(trackPaths, lyricsText)
+})
+
+ipcMain.handle('lyrics:clearManualLyrics', async (_event, rawTrackPaths: unknown) => {
+  const trackPaths = normalizeLyricsTrackPaths(rawTrackPaths)
+  return lyricsService.clearManualLyrics(trackPaths)
+})
+
+ipcMain.handle('lyrics:setTrackOffset', async (_event, rawTrackPaths: unknown, rawOffsetMs: unknown) => {
+  const trackPaths = normalizeLyricsTrackPaths(rawTrackPaths)
+  const offsetMs = normalizeLyricsOffsetMs(rawOffsetMs)
+  if (offsetMs === null) {
+    throw new Error('Invalid sync offset.')
+  }
+  return lyricsService.setTrackOffset(trackPaths, offsetMs)
+})
+
+ipcMain.handle('lyrics:resetToDefaults', async () => {
+  await library.clearLyricsCache()
+  return applyLyricsConfig(false)
 })
 
 // Local integration API

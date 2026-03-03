@@ -8,6 +8,7 @@ import { execFile, type ExecFileOptions } from 'child_process'
 import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
+import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -62,6 +63,48 @@ export interface FolderSubdirectoryEntry {
   excluded: boolean
   hasChildren: boolean
   missing: boolean
+}
+
+export type LyricsCacheStatus = 'hit' | 'not_found'
+export type LyricsCacheSource = 'embedded' | 'lrclib'
+
+export interface LyricsCacheEntry {
+  trackPath: string
+  metadataSignature: string
+  status: LyricsCacheStatus
+  source: LyricsCacheSource
+  provider: LyricsProvider | null
+  plainLyrics: string | null
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
+  updatedAt: number
+}
+
+export interface LyricsCacheUpsertInput {
+  trackPath: string
+  metadataSignature: string
+  status: LyricsCacheStatus
+  source: LyricsCacheSource
+  provider: LyricsProvider | null
+  plainLyrics: string | null
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
+  updatedAt?: number
+}
+
+export interface LyricsTrackOverrideEntry {
+  trackPath: string
+  plainLyrics: string | null
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
+  syncOffsetMs: number
+  updatedAt: number
+}
+
+export interface LyricsTrackManualInput {
+  plainLyrics: string | null
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
 }
 
 export interface Playlist {
@@ -853,6 +896,50 @@ export async function initDatabase(): Promise<void> {
     END;
   `)
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS lyrics_cache (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      metadata_signature TEXT NOT NULL,
+      status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      provider TEXT,
+      plain_lyrics TEXT,
+      synced_lyrics TEXT,
+      synced_lines_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_lyrics_cache_cleanup
+    AFTER DELETE ON tracks
+    FOR EACH ROW
+    BEGIN
+      DELETE FROM lyrics_cache WHERE track_path = OLD.path;
+    END;
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS lyrics_track_overrides (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      plain_lyrics TEXT,
+      synced_lyrics TEXT,
+      synced_lines_json TEXT NOT NULL,
+      sync_offset_ms INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (track_path) REFERENCES tracks(path) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_lyrics_track_overrides_cleanup
+    AFTER DELETE ON tracks
+    FOR EACH ROW
+    BEGIN
+      DELETE FROM lyrics_track_overrides WHERE track_path = OLD.path;
+    END;
+  `)
+
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
@@ -906,6 +993,11 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try {
+    db.run('ALTER TABLE lyrics_track_overrides ADD COLUMN sync_offset_ms INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS folders (
@@ -930,6 +1022,8 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_cache_updated_at ON lyrics_cache(updated_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_track_overrides_updated_at ON lyrics_track_overrides(updated_at)')
 
   // Favorites table
   db.run(`
@@ -1028,6 +1122,351 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
     [key, value, now]
   )
   await saveDatabase()
+}
+
+function normalizeLyricsCacheStatus(value: unknown): LyricsCacheStatus | null {
+  if (value === 'hit' || value === 'not_found') return value
+  return null
+}
+
+function normalizeLyricsCacheSource(value: unknown): LyricsCacheSource | null {
+  if (value === 'embedded' || value === 'lrclib') return value
+  return null
+}
+
+function normalizeLyricsCacheProvider(value: unknown): LyricsProvider | null {
+  if (value === 'lrclib') return 'lrclib'
+  return null
+}
+
+function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
+  if (!Array.isArray(rawValue)) return []
+
+  const lines: LyricsLine[] = []
+  for (const entry of rawValue) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const line = entry as { timestampMs?: unknown; text?: unknown }
+    if (typeof line.text !== 'string') continue
+
+    const text = line.text.trim()
+    if (!text) continue
+
+    const timestamp = typeof line.timestampMs === 'number' && Number.isFinite(line.timestampMs)
+      ? Math.max(0, Math.floor(line.timestampMs))
+      : null
+    if (timestamp === null) continue
+
+    lines.push({
+      timestampMs: timestamp,
+      text
+    })
+  }
+
+  lines.sort((left, right) => left.timestampMs - right.timestampMs)
+  return lines
+}
+
+function parseLyricsLinesJson(value: string | null): LyricsLine[] {
+  if (value == null) return []
+  const normalized = value.trim()
+  if (!normalized) return []
+
+  try {
+    return sanitizeLyricsLines(JSON.parse(normalized))
+  } catch {
+    return []
+  }
+}
+
+function normalizeLyricsTrackPath(trackPath: string): string {
+  return trackPath.trim()
+}
+
+function hasManualLyricsOverride(entry: {
+  plainLyrics: string | null
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
+}): boolean {
+  return (
+    entry.plainLyrics !== null
+    || entry.syncedLyrics !== null
+    || entry.syncedLines.length > 0
+  )
+}
+
+export function getLyricsCache(trackPath: string, metadataSignature: string): LyricsCacheEntry | null {
+  if (!db) return null
+
+  const stmt = db.prepare(`
+    SELECT
+      track_path,
+      metadata_signature,
+      status,
+      source,
+      provider,
+      plain_lyrics,
+      synced_lyrics,
+      synced_lines_json,
+      updated_at
+    FROM lyrics_cache
+    WHERE track_path = ? AND metadata_signature = ?
+    LIMIT 1
+  `)
+  stmt.bind([trackPath, metadataSignature])
+  if (!stmt.step()) {
+    stmt.free()
+    return null
+  }
+
+  const row = stmt.getAsObject() as Record<string, unknown>
+  stmt.free()
+
+  const normalizedPath = toText(row.track_path)
+  const normalizedSignature = toText(row.metadata_signature)
+  const normalizedStatus = normalizeLyricsCacheStatus(row.status)
+  const normalizedSource = normalizeLyricsCacheSource(row.source)
+  if (!normalizedPath || !normalizedSignature || !normalizedStatus || !normalizedSource) {
+    return null
+  }
+
+  return {
+    trackPath: normalizedPath,
+    metadataSignature: normalizedSignature,
+    status: normalizedStatus,
+    source: normalizedSource,
+    provider: normalizeLyricsCacheProvider(row.provider),
+    plainLyrics: toText(row.plain_lyrics),
+    syncedLyrics: toText(row.synced_lyrics),
+    syncedLines: parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null),
+    updatedAt: toNumber(row.updated_at) ?? Date.now()
+  }
+}
+
+export async function upsertLyricsCache(entry: LyricsCacheUpsertInput): Promise<void> {
+  if (!db) return
+
+  db.run(
+    `INSERT INTO lyrics_cache (
+      track_path,
+      metadata_signature,
+      status,
+      source,
+      provider,
+      plain_lyrics,
+      synced_lyrics,
+      synced_lines_json,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(track_path) DO UPDATE SET
+      metadata_signature = excluded.metadata_signature,
+      status = excluded.status,
+      source = excluded.source,
+      provider = excluded.provider,
+      plain_lyrics = excluded.plain_lyrics,
+      synced_lyrics = excluded.synced_lyrics,
+      synced_lines_json = excluded.synced_lines_json,
+      updated_at = excluded.updated_at`,
+    [
+      entry.trackPath,
+      entry.metadataSignature,
+      entry.status,
+      entry.source,
+      entry.provider,
+      entry.plainLyrics,
+      entry.syncedLyrics,
+      JSON.stringify(sanitizeLyricsLines(entry.syncedLines)),
+      entry.updatedAt ?? Date.now()
+    ]
+  )
+  await saveDatabase()
+}
+
+export async function deleteLyricsCache(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM lyrics_cache WHERE track_path = ?', [trackPath])
+  await saveDatabase()
+}
+
+export async function clearLyricsCache(): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM lyrics_cache')
+  await saveDatabase()
+}
+
+export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEntry | null {
+  if (!db) return null
+
+  const normalizedTrackPath = normalizeLyricsTrackPath(trackPath)
+  if (!normalizedTrackPath) return null
+
+  const stmt = db.prepare(`
+    SELECT
+      track_path,
+      plain_lyrics,
+      synced_lyrics,
+      synced_lines_json,
+      sync_offset_ms,
+      updated_at
+    FROM lyrics_track_overrides
+    WHERE track_path = ?
+    LIMIT 1
+  `)
+  stmt.bind([normalizedTrackPath])
+  if (!stmt.step()) {
+    stmt.free()
+    return null
+  }
+
+  const row = stmt.getAsObject() as Record<string, unknown>
+  stmt.free()
+
+  const resolvedTrackPath = toText(row.track_path)
+  if (!resolvedTrackPath) return null
+
+  return {
+    trackPath: resolvedTrackPath,
+    plainLyrics: toText(row.plain_lyrics),
+    syncedLyrics: toText(row.synced_lyrics),
+    syncedLines: parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null),
+    syncOffsetMs: toNumber(row.sync_offset_ms) ?? 0,
+    updatedAt: toNumber(row.updated_at) ?? Date.now()
+  }
+}
+
+export async function upsertLyricsTrackManual(
+  trackPaths: string[],
+  input: LyricsTrackManualInput
+): Promise<number> {
+  if (!db) return 0
+
+  const normalizedTrackPaths = normalizeMetadataEditTrackPaths(trackPaths)
+  if (normalizedTrackPaths.length === 0) return 0
+
+  const syncedLines = sanitizeLyricsLines(input.syncedLines)
+  const syncedLinesJson = JSON.stringify(syncedLines)
+  const now = Date.now()
+
+  let updated = 0
+  for (const trackPath of normalizedTrackPaths) {
+    const existing = getLyricsTrackOverride(trackPath)
+    const preservedOffset = existing?.syncOffsetMs ?? 0
+    db.run(
+      `INSERT INTO lyrics_track_overrides (
+        track_path,
+        plain_lyrics,
+        synced_lyrics,
+        synced_lines_json,
+        sync_offset_ms,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(track_path) DO UPDATE SET
+        plain_lyrics = excluded.plain_lyrics,
+        synced_lyrics = excluded.synced_lyrics,
+        synced_lines_json = excluded.synced_lines_json,
+        sync_offset_ms = excluded.sync_offset_ms,
+        updated_at = excluded.updated_at`,
+      [
+        trackPath,
+        input.plainLyrics,
+        input.syncedLyrics,
+        syncedLinesJson,
+        preservedOffset,
+        now
+      ]
+    )
+    updated += 1
+  }
+
+  await saveDatabase()
+  return updated
+}
+
+export async function clearLyricsTrackManual(trackPaths: string[]): Promise<number> {
+  if (!db) return 0
+
+  const normalizedTrackPaths = normalizeMetadataEditTrackPaths(trackPaths)
+  if (normalizedTrackPaths.length === 0) return 0
+
+  let cleared = 0
+  const now = Date.now()
+  for (const trackPath of normalizedTrackPaths) {
+    const existing = getLyricsTrackOverride(trackPath)
+    if (!existing || !hasManualLyricsOverride(existing)) {
+      continue
+    }
+
+    if (existing.syncOffsetMs === 0) {
+      db.run('DELETE FROM lyrics_track_overrides WHERE track_path = ?', [trackPath])
+    } else {
+      db.run(
+        `UPDATE lyrics_track_overrides
+         SET plain_lyrics = NULL,
+             synced_lyrics = NULL,
+             synced_lines_json = ?,
+             updated_at = ?
+         WHERE track_path = ?`,
+        ['[]', now, trackPath]
+      )
+    }
+    cleared += 1
+  }
+
+  if (cleared > 0) {
+    await saveDatabase()
+  }
+  return cleared
+}
+
+export async function setLyricsTrackSyncOffset(trackPaths: string[], offsetMs: number): Promise<number> {
+  if (!db) return 0
+
+  const normalizedTrackPaths = normalizeMetadataEditTrackPaths(trackPaths)
+  if (normalizedTrackPaths.length === 0) return 0
+
+  const resolvedOffset = Number.isFinite(offsetMs) ? Math.trunc(offsetMs) : 0
+  const now = Date.now()
+  let updated = 0
+
+  for (const trackPath of normalizedTrackPaths) {
+    const existing = getLyricsTrackOverride(trackPath)
+    if (!existing) {
+      if (resolvedOffset === 0) continue
+      db.run(
+        `INSERT INTO lyrics_track_overrides (
+          track_path,
+          plain_lyrics,
+          synced_lyrics,
+          synced_lines_json,
+          sync_offset_ms,
+          updated_at
+        ) VALUES (?, NULL, NULL, ?, ?, ?)`,
+        [trackPath, '[]', resolvedOffset, now]
+      )
+      updated += 1
+      continue
+    }
+
+    if (existing.syncOffsetMs === resolvedOffset) continue
+
+    if (resolvedOffset === 0 && !hasManualLyricsOverride(existing)) {
+      db.run('DELETE FROM lyrics_track_overrides WHERE track_path = ?', [trackPath])
+    } else {
+      db.run(
+        `UPDATE lyrics_track_overrides
+         SET sync_offset_ms = ?,
+             updated_at = ?
+         WHERE track_path = ?`,
+        [resolvedOffset, now, trackPath]
+      )
+    }
+
+    updated += 1
+  }
+
+  if (updated > 0) {
+    await saveDatabase()
+  }
+  return updated
 }
 
 // Get all tracks
@@ -1848,6 +2287,8 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM playlist_tracks')
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
+  db.run('DELETE FROM lyrics_cache')
+  db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
@@ -1865,6 +2306,8 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM playlists')
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
+  db.run('DELETE FROM lyrics_cache')
+  db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')

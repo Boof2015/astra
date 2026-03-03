@@ -1,20 +1,220 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
+import { useLyricsStore } from '../../stores/lyricsStore'
+import type { Track } from '../../types/audio'
+import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
+
+type InfoSidebarTab = 'info' | 'lyrics'
+
+function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
+  if (source === 'embedded') return 'Embedded'
+  if (source === 'manual') return 'Manual'
+  return 'LRCLIB'
+}
+
+function buildLyricsQuery(track: Track | null): LyricsTrackQuery | null {
+  if (!track) return null
+  return {
+    path: track.path,
+    title: track.title,
+    artist: track.artist,
+    album: track.album || undefined,
+    durationSeconds: Number.isFinite(track.duration) ? track.duration : undefined
+  }
+}
+
+function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
+  if (lines.length === 0) return -1
+  const currentTimeMs = Number.isFinite(currentTimeSeconds)
+    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
+    : 0
+
+  let low = 0
+  let high = lines.length - 1
+  let best = -1
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    if (lines[mid].timestampMs <= currentTimeMs) {
+      best = mid
+      low = mid + 1
+      continue
+    }
+    high = mid - 1
+  }
+
+  return best
+}
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const currentTime = usePlayerStore((s) => s.currentTime)
+  const playbackState = usePlayerStore((s) => s.playbackState)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
+  const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
+  const lyricsResult = useLyricsStore((s) => s.currentResult)
+  const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
+  const lyricsStoreError = useLyricsStore((s) => s.errorMessage)
+  const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
+  const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
+  const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
+
+  const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
+  const activeLyricsResult = useMemo(() => {
+    if (!currentTrack) return null
+    if (lyricsTrackPath !== currentTrack.path) return null
+    return lyricsResult
+  }, [currentTrack, lyricsResult, lyricsTrackPath])
+
+  const syncedLines = useMemo(() => {
+    if (activeLyricsResult?.status !== 'hit') return []
+    return activeLyricsResult.lyrics.syncedLines
+  }, [activeLyricsResult])
+  const activeSyncedLineIndex = useMemo(
+    () => findActiveSyncedLineIndex(syncedLines, currentTime),
+    [currentTime, syncedLines]
+  )
+
+  useEffect(() => {
+    if (activeTab !== 'lyrics') return
+    void loadLyricsForTrack(lyricsQuery)
+  }, [activeTab, lyricsQuery, loadLyricsForTrack])
+
+  useEffect(() => {
+    if (activeTab !== 'lyrics') return
+    if (playbackState !== 'playing') return
+    if (activeSyncedLineIndex < 0) return
+    const node = syncedLineRefs.current.get(activeSyncedLineIndex)
+    if (!node) return
+    node.scrollIntoView({
+      block: 'center',
+      behavior: 'smooth'
+    })
+  }, [activeSyncedLineIndex, activeTab, playbackState])
+
+  const setSyncedLineRef = (index: number) => (node: HTMLParagraphElement | null) => {
+    if (node) {
+      syncedLineRefs.current.set(index, node)
+      return
+    }
+    syncedLineRefs.current.delete(index)
+  }
+
   const revealTrackInFolder = () => {
     if (!currentTrack) return
     void window.electronAPI.revealFileInFolder(currentTrack.path)
   }
 
+  const refreshLyrics = () => {
+    if (!lyricsQuery) return
+    void refreshLyricsForTrack(lyricsQuery)
+  }
+
+  const renderLyricsContent = () => {
+    if (!currentTrack) {
+      return (
+        <div className="info-lyrics-state">
+          No track selected.
+        </div>
+      )
+    }
+
+    if (lyricsIsLoading && !activeLyricsResult) {
+      return (
+        <div className="info-lyrics-state">
+          Loading lyrics...
+        </div>
+      )
+    }
+
+    if (activeLyricsResult?.status === 'transient_error') {
+      return (
+        <div className="info-lyrics-state info-lyrics-state-error">
+          {activeLyricsResult.message}
+        </div>
+      )
+    }
+
+    if (activeLyricsResult?.status === 'not_found') {
+      if (activeLyricsResult.reason === 'online-disabled') {
+        return (
+          <div className="info-lyrics-state">
+            No embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.
+          </div>
+        )
+      }
+      if (activeLyricsResult.reason === 'provider-not-found') {
+        return (
+          <div className="info-lyrics-state">
+            No lyrics found on LRCLIB for this track.
+          </div>
+        )
+      }
+      return (
+        <div className="info-lyrics-state">
+          No embedded lyrics found for this track.
+        </div>
+      )
+    }
+
+    if (activeLyricsResult?.status === 'hit') {
+      const plainLyrics = activeLyricsResult.lyrics.plainLyrics?.trim() ?? ''
+      const hasSyncedLyrics = syncedLines.length > 0
+
+      return (
+        <>
+          <p className="info-lyrics-meta">
+            Source: {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
+            {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
+            {activeLyricsResult.cached ? ' (cached)' : ''}
+          </p>
+
+          {hasSyncedLyrics ? (
+            <div className="info-lyrics-lines">
+              {syncedLines.map((line, index) => (
+                <p
+                  key={`${line.timestampMs}:${index}`}
+                  ref={setSyncedLineRef(index)}
+                  className={`info-lyrics-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
+                >
+                  {line.text}
+                </p>
+              ))}
+            </div>
+          ) : plainLyrics ? (
+            <pre className="info-lyrics-plain">{plainLyrics}</pre>
+          ) : (
+            <div className="info-lyrics-state">
+              Lyrics were found, but no readable text is available.
+            </div>
+          )}
+        </>
+      )
+    }
+
+    if (lyricsStoreError) {
+      return (
+        <div className="info-lyrics-state info-lyrics-state-error">
+          {lyricsStoreError}
+        </div>
+      )
+    }
+
+    return (
+      <div className="info-lyrics-state">
+        Open the Lyrics tab to load lyrics for the current track.
+      </div>
+    )
+  }
+
   return (
-    <aside className="info-sidebar">
+    <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
         <span className="info-sidebar-label">NOW PLAYING</span>
         <button className="info-sidebar-close" onClick={toggleInfoSidebar} title="Close">
@@ -24,7 +224,38 @@ export default function InfoSidebar() {
         </button>
       </div>
 
-      {currentTrack ? (
+      <div className="info-sidebar-tabs">
+        <button
+          type="button"
+          className={`info-sidebar-tab ${activeTab === 'info' ? 'active' : ''}`}
+          onClick={() => setActiveTab('info')}
+        >
+          Info
+        </button>
+        <button
+          type="button"
+          className={`info-sidebar-tab ${activeTab === 'lyrics' ? 'active' : ''}`}
+          onClick={() => setActiveTab('lyrics')}
+        >
+          Lyrics
+        </button>
+      </div>
+
+      {activeTab === 'lyrics' ? (
+        <div className="info-lyrics-panel">
+          <div className="info-sidebar-actions">
+            <button
+              type="button"
+              className="info-lyrics-refresh-btn"
+              onClick={refreshLyrics}
+              disabled={!currentTrack || lyricsIsLoading}
+            >
+              {lyricsIsLoading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
+          {renderLyricsContent()}
+        </div>
+      ) : currentTrack ? (
         <>
           <div className="info-sidebar-artwork">
             {currentTrack.artworkHash ? (

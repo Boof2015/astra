@@ -35,6 +35,8 @@ interface UIStore {
   showQueue: boolean
   showInfoSidebar: boolean
   showPipelineShelf: boolean
+  showLyricsShelf: boolean
+  lyricsShelfExpanded: boolean
   isFullscreen: boolean
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
@@ -45,6 +47,9 @@ interface UIStore {
   toggleQueue: () => void
   toggleInfoSidebar: () => void
   togglePipelineShelf: () => void
+  toggleLyricsShelf: () => void
+  setLyricsShelfExpanded: (expanded: boolean) => void
+  closeLyricsShelf: () => void
   setFullscreen: (fs: boolean) => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
@@ -62,6 +67,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showQueue: false,
   showInfoSidebar: false,
   showPipelineShelf: false,
+  showLyricsShelf: false,
+  lyricsShelfExpanded: false,
   isFullscreen: false,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
@@ -72,6 +79,27 @@ export const useUIStore = create<UIStore>((set, get) => ({
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
   togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf })),
+  toggleLyricsShelf: () => set((s) => {
+    if (s.showLyricsShelf) {
+      return {
+        showLyricsShelf: false,
+        lyricsShelfExpanded: false
+      }
+    }
+    return {
+      showLyricsShelf: true
+    }
+  }),
+  setLyricsShelfExpanded: (expanded) => set((s) => {
+    if (!s.showLyricsShelf) {
+      return { lyricsShelfExpanded: false }
+    }
+    return { lyricsShelfExpanded: expanded }
+  }),
+  closeLyricsShelf: () => set({
+    showLyricsShelf: false,
+    lyricsShelfExpanded: false
+  }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'

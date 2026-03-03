@@ -10,6 +10,7 @@ import {
 } from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
+import { useLyricsStore } from '../../stores/lyricsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerStore'
 
@@ -60,11 +61,15 @@ export async function resetIntegrationSettings(): Promise<string> {
   if (!lastFmStatus) {
     throw new Error('Failed to reset Last.fm settings.')
   }
+  const lyricsStatus = await useLyricsStore.getState().resetToDefaults()
+  if (!lyricsStatus) {
+    throw new Error('Failed to reset lyrics settings.')
+  }
   const status = await useLocalApiSettingsStore.getState().resetToDefaults()
   if (!status) {
     throw new Error('Failed to reset local API settings.')
   }
-  return 'Integrations reset (Discord, Last.fm, and Local API).'
+  return 'Integrations reset (Discord, Last.fm, Lyrics, and Local API).'
 }
 
 export async function resetDiscordCoverArtCache(): Promise<string> {

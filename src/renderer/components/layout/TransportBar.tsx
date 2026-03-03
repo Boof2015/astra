@@ -12,6 +12,7 @@ import WaveformSeekBar from '../player/WaveformSeekBar'
 import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
+import TransportLyricsShelf from './TransportLyricsShelf'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 export default function TransportBar() {
@@ -42,7 +43,9 @@ export default function TransportBar() {
     showInfoSidebar,
     toggleInfoSidebar,
     showPipelineShelf,
+    showLyricsShelf,
     togglePipelineShelf,
+    toggleLyricsShelf,
     setFullscreen,
     waveformTimeDisplayMode,
     toggleWaveformTimeDisplayMode
@@ -109,6 +112,12 @@ export default function TransportBar() {
       unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!showLyricsShelf) return
+    if (!showEQPopover) return
+    setShowEQPopover(false)
+  }, [showEQPopover, showLyricsShelf])
 
   const formatTime = (seconds: number): string => {
     if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
@@ -184,8 +193,14 @@ export default function TransportBar() {
     }
   })()
 
+  const transportBarClassName = [
+    'transport-bar',
+    showPipelineShelf ? 'transport-has-pipeline-open' : '',
+    showLyricsShelf ? 'transport-has-lyrics-open' : ''
+  ].join(' ').trim()
+
   return (
-    <div className="transport-bar">
+    <div className={transportBarClassName}>
       <button
         className={`pipeline-shelf-toggle${showPipelineShelf ? ' pipeline-shelf-toggle-open' : ''}`}
         onClick={togglePipelineShelf}
@@ -203,6 +218,7 @@ export default function TransportBar() {
         </svg>
       </button>
       <AudioPipelineShelf />
+      <TransportLyricsShelf />
 
       {/* Left: Track info */}
       <div className="transport-info">
@@ -431,18 +447,34 @@ export default function TransportBar() {
 
       {/* Right: EQ + Queue/Info + File readout */}
       <div className="transport-right">
-        <button
-          className={`transport-mini-btn ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
-          onClick={() => void window.electronAPI.miniPlayer.open()}
-          title={miniWindowState.alwaysOnTop ? 'Open mini player (pinned)' : 'Open mini player'}
-          aria-label="Open mini player"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-            <line x1="7" y1="8.5" x2="17" y2="8.5" />
-            <line x1="7" y1="12.5" x2="14" y2="12.5" />
-          </svg>
-        </button>
+        <div className="transport-mini-lyrics-stack">
+          <button
+            className={`transport-mini-btn transport-mini-btn-split-top ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
+            onClick={() => void window.electronAPI.miniPlayer.open()}
+            title="Open mini player"
+            aria-label="Open mini player"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+              <line x1="7" y1="8.5" x2="17" y2="8.5" />
+              <line x1="7" y1="12.5" x2="14" y2="12.5" />
+            </svg>
+          </button>
+          <button
+            className={`transport-lyrics-btn ${showLyricsShelf ? 'active' : ''}`}
+            onClick={toggleLyricsShelf}
+            title="Toggle lyrics shelf"
+            aria-label="Toggle lyrics shelf"
+            aria-pressed={showLyricsShelf}
+            disabled={!currentTrack}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 7h16" />
+              <path d="M4 12h12" />
+              <path d="M4 17h9" />
+            </svg>
+          </button>
+        </div>
 
         {/* EQ toggle button with mini curve */}
         <button

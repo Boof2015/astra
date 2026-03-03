@@ -6,6 +6,8 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/metadataEditorStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useLyricsStore } from '../../stores/lyricsStore'
+import type { LyricsTrackOverride } from '../../../types/lyrics'
 
 interface DraftField {
   value: string
@@ -321,6 +323,25 @@ function parseOptionalInteger(value: string, fieldLabel: string): number | null 
   return parsed
 }
 
+function toErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return fallback
+}
+
+function buildLyricsQueryForCurrentTrack() {
+  const currentTrack = usePlayerStore.getState().currentTrack
+  if (!currentTrack) return null
+  return {
+    path: currentTrack.path,
+    title: currentTrack.title,
+    artist: currentTrack.artist,
+    album: currentTrack.album || undefined,
+    durationSeconds: Number.isFinite(currentTrack.duration) ? currentTrack.duration : undefined
+  }
+}
+
 export default function MetadataView() {
   const loadLibrary = useLibraryStore((state) => state.loadLibrary)
   const [tracks, setTracks] = useState<TrackRecord[]>([])
@@ -328,6 +349,7 @@ export default function MetadataView() {
 
   const playlistsSelectedId = usePlaylistStore((state) => state.selectedPlaylistId)
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
+  const refreshLyricsForTrack = useLyricsStore((state) => state.refreshForTrack)
 
   const {
     saveMode,
@@ -365,6 +387,13 @@ export default function MetadataView() {
   const [reorderedTracks, setReorderedTracks] = useState<TrackRecord[] | null>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const [lyricsOverrides, setLyricsOverrides] = useState<Record<string, LyricsTrackOverride>>({})
+  const [isLyricsStateLoading, setIsLyricsStateLoading] = useState(false)
+  const [isLyricsActionRunning, setIsLyricsActionRunning] = useState(false)
+  const [lyricsOffsetDraft, setLyricsOffsetDraft] = useState('0')
+  const [lyricsOffsetMixed, setLyricsOffsetMixed] = useState(false)
+  const [lyricsStatusMessage, setLyricsStatusMessage] = useState<string | null>(null)
+  const [lyricsValidationError, setLyricsValidationError] = useState<string | null>(null)
 
   const metadataListBodyRef = useRef<HTMLDivElement | null>(null)
 
@@ -462,6 +491,44 @@ export default function MetadataView() {
   const selectionKey = useMemo(() => {
     return Array.from(selectedPaths).sort((a, b) => a.localeCompare(b)).join('\\u0000')
   }, [selectedPaths])
+  const selectedTrackPaths = useMemo(() => Array.from(selectedPaths), [selectedPaths])
+
+  const refreshLyricsForActiveTrack = useCallback(async (affectedTrackPaths: string[]) => {
+    if (affectedTrackPaths.length === 0) return
+    const lyricsQuery = buildLyricsQueryForCurrentTrack()
+    if (!lyricsQuery || !affectedTrackPaths.includes(lyricsQuery.path)) return
+    await refreshLyricsForTrack(lyricsQuery)
+  }, [refreshLyricsForTrack])
+
+  const loadLyricsOverrideState = useCallback(async (trackPaths: string[]) => {
+    if (trackPaths.length === 0) {
+      setLyricsOverrides({})
+      setLyricsOffsetMixed(false)
+      setLyricsOffsetDraft('0')
+      return
+    }
+
+    const overrides = await Promise.all(
+      trackPaths.map((trackPath) => window.electronAPI.lyrics.getTrackOverride(trackPath))
+    )
+
+    const nextOverrides: Record<string, LyricsTrackOverride> = {}
+    for (const override of overrides) {
+      nextOverrides[override.trackPath] = override
+    }
+    setLyricsOverrides(nextOverrides)
+
+    if (overrides.length === 0) {
+      setLyricsOffsetMixed(false)
+      setLyricsOffsetDraft('0')
+      return
+    }
+
+    const firstOffset = overrides[0].syncOffsetMs
+    const mixed = overrides.some((override) => override.syncOffsetMs !== firstOffset)
+    setLyricsOffsetMixed(mixed)
+    setLyricsOffsetDraft(mixed ? '' : String(firstOffset))
+  }, [])
 
   useEffect(() => {
     setDraft(createDraftFromCommon(selectionCommon))
@@ -504,6 +571,11 @@ export default function MetadataView() {
   }, [clearLastResult, selectionKey])
 
   useEffect(() => {
+    setLyricsValidationError(null)
+    setLyricsStatusMessage(null)
+  }, [selectionKey])
+
+  useEffect(() => {
     const paths = Array.from(selectedPaths)
     if (paths.length === 0) {
       setFieldOverrides({})
@@ -511,6 +583,29 @@ export default function MetadataView() {
     }
     void window.electronAPI.library.getTrackOverrideFields(paths).then(setFieldOverrides)
   }, [selectionKey])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const run = async () => {
+      setIsLyricsStateLoading(true)
+      try {
+        await loadLyricsOverrideState(selectedTrackPaths)
+      } catch (error) {
+        if (cancelled) return
+        setLyricsValidationError(toErrorMessage(error, 'Failed to load lyrics override state.'))
+      } finally {
+        if (cancelled) return
+        setIsLyricsStateLoading(false)
+      }
+    }
+
+    void run()
+
+    return () => {
+      cancelled = true
+    }
+  }, [loadLyricsOverrideState, selectedTrackPaths])
 
   const allVisibleSelected = useMemo(() => {
     if (filteredTracks.length === 0) return false
@@ -543,6 +638,127 @@ export default function MetadataView() {
   const handleRemoveArtwork = useCallback(() => {
     setArtworkDraft((current) => (current.mode === 'remove' ? { mode: 'unchanged' } : { mode: 'remove' }))
   }, [])
+
+  const handleImportLyricsFile = useCallback(async () => {
+    if (selectedTrackPaths.length === 0) {
+      setLyricsValidationError('Select at least one track to import lyrics.')
+      return
+    }
+
+    setLyricsValidationError(null)
+    setLyricsStatusMessage(null)
+
+    const filePath = await window.electronAPI.openFileDialog({
+      title: 'Import lyrics file',
+      filters: [{ name: 'Lyrics', extensions: ['lrc', 'txt'] }]
+    })
+    if (!filePath) return
+
+    setIsLyricsActionRunning(true)
+    try {
+      const lyricsText = await window.electronAPI.readTextFile(filePath)
+      const result = await window.electronAPI.lyrics.importManualLyrics(selectedTrackPaths, lyricsText)
+      await loadLyricsOverrideState(selectedTrackPaths)
+      await refreshLyricsForActiveTrack(selectedTrackPaths)
+
+      const importedMode = result.hasSyncedLyrics ? 'synced' : 'plain'
+      setLyricsStatusMessage(`Imported ${importedMode} manual lyrics for ${result.updated} track${result.updated === 1 ? '' : 's'}.`)
+    } catch (error) {
+      setLyricsValidationError(toErrorMessage(error, 'Failed to import manual lyrics.'))
+    } finally {
+      setIsLyricsActionRunning(false)
+    }
+  }, [loadLyricsOverrideState, refreshLyricsForActiveTrack, selectedTrackPaths])
+
+  const handleClearManualLyrics = useCallback(async () => {
+    if (selectedTrackPaths.length === 0) {
+      setLyricsValidationError('Select at least one track to clear manual lyrics.')
+      return
+    }
+
+    setLyricsValidationError(null)
+    setLyricsStatusMessage(null)
+    setIsLyricsActionRunning(true)
+
+    try {
+      const result = await window.electronAPI.lyrics.clearManualLyrics(selectedTrackPaths)
+      await loadLyricsOverrideState(selectedTrackPaths)
+      await refreshLyricsForActiveTrack(selectedTrackPaths)
+
+      if (result.cleared === 0) {
+        setLyricsStatusMessage('No manual lyrics were set on the selected tracks.')
+      } else {
+        setLyricsStatusMessage(`Cleared manual lyrics for ${result.cleared} track${result.cleared === 1 ? '' : 's'}.`)
+      }
+    } catch (error) {
+      setLyricsValidationError(toErrorMessage(error, 'Failed to clear manual lyrics.'))
+    } finally {
+      setIsLyricsActionRunning(false)
+    }
+  }, [loadLyricsOverrideState, refreshLyricsForActiveTrack, selectedTrackPaths])
+
+  const handleApplyLyricsOffset = useCallback(async () => {
+    if (selectedTrackPaths.length === 0) {
+      setLyricsValidationError('Select at least one track before applying sync offset.')
+      return
+    }
+
+    const normalizedOffsetText = lyricsOffsetDraft.trim()
+    if (!/^-?\d+$/.test(normalizedOffsetText)) {
+      setLyricsValidationError('Sync offset must be an integer in milliseconds.')
+      return
+    }
+
+    const offsetMs = Number.parseInt(normalizedOffsetText, 10)
+    if (!Number.isFinite(offsetMs)) {
+      setLyricsValidationError('Sync offset must be an integer in milliseconds.')
+      return
+    }
+
+    setLyricsValidationError(null)
+    setLyricsStatusMessage(null)
+    setIsLyricsActionRunning(true)
+    try {
+      const result = await window.electronAPI.lyrics.setTrackOffset(selectedTrackPaths, offsetMs)
+      await loadLyricsOverrideState(selectedTrackPaths)
+      await refreshLyricsForActiveTrack(selectedTrackPaths)
+      const signedOffset = result.offsetMs > 0 ? `+${result.offsetMs}` : String(result.offsetMs)
+      if (result.updated === 0) {
+        setLyricsStatusMessage('Selected tracks already use this sync offset.')
+      } else {
+        setLyricsStatusMessage(`Applied ${signedOffset} ms sync offset to ${result.updated} track${result.updated === 1 ? '' : 's'}.`)
+      }
+    } catch (error) {
+      setLyricsValidationError(toErrorMessage(error, 'Failed to apply sync offset.'))
+    } finally {
+      setIsLyricsActionRunning(false)
+    }
+  }, [loadLyricsOverrideState, lyricsOffsetDraft, refreshLyricsForActiveTrack, selectedTrackPaths])
+
+  const handleResetLyricsOffset = useCallback(async () => {
+    if (selectedTrackPaths.length === 0) {
+      setLyricsValidationError('Select at least one track before resetting sync offset.')
+      return
+    }
+
+    setLyricsValidationError(null)
+    setLyricsStatusMessage(null)
+    setIsLyricsActionRunning(true)
+    try {
+      const result = await window.electronAPI.lyrics.setTrackOffset(selectedTrackPaths, 0)
+      await loadLyricsOverrideState(selectedTrackPaths)
+      await refreshLyricsForActiveTrack(selectedTrackPaths)
+      if (result.updated === 0) {
+        setLyricsStatusMessage('Sync offset was already reset for the selected tracks.')
+      } else {
+        setLyricsStatusMessage(`Reset sync offset for ${result.updated} track${result.updated === 1 ? '' : 's'}.`)
+      }
+    } catch (error) {
+      setLyricsValidationError(toErrorMessage(error, 'Failed to reset sync offset.'))
+    } finally {
+      setIsLyricsActionRunning(false)
+    }
+  }, [loadLyricsOverrideState, refreshLyricsForActiveTrack, selectedTrackPaths])
 
   const handleRowSelection = useCallback((trackPath: string, rowIndex: number, options: MetadataRowSelectionOptions) => {
     setSelectedPaths((current) => {
@@ -861,6 +1077,17 @@ export default function MetadataView() {
   }, [fieldOverrides])
 
   const selectedCount = selectedPaths.size
+  const manualLyricsCount = useMemo(() => {
+    if (selectedTrackPaths.length === 0) return 0
+    let count = 0
+    for (const trackPath of selectedTrackPaths) {
+      if (lyricsOverrides[trackPath]?.hasManualLyrics) {
+        count += 1
+      }
+    }
+    return count
+  }, [lyricsOverrides, selectedTrackPaths])
+  const lyricsControlsDisabled = selectedCount === 0 || isSaving || isLyricsActionRunning || isLyricsStateLoading
   const metadataRowProps = useMemo<MetadataTrackRowSharedProps>(() => ({
     filteredTracks,
     selectedPaths,
@@ -1291,6 +1518,79 @@ export default function MetadataView() {
               </div>
             </label>
           </div>
+
+          <section className="metadata-lyrics-tools">
+            <div className="metadata-lyrics-tools-header">
+              <span>Lyrics Tools</span>
+              <span className="metadata-lyrics-tools-summary">
+                Manual lyrics: {manualLyricsCount}/{selectedCount || 0}
+              </span>
+            </div>
+
+            <p className="metadata-lyrics-tools-note">
+              Imported manual lyrics override embedded and LRCLIB results. Sync offset retimes synced lyrics from any source.
+            </p>
+
+            <div className="metadata-lyrics-tools-actions">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => void handleImportLyricsFile()}
+                disabled={lyricsControlsDisabled}
+              >
+                Import Lyrics File
+              </button>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => void handleClearManualLyrics()}
+                disabled={lyricsControlsDisabled}
+              >
+                Clear Manual Lyrics
+              </button>
+            </div>
+
+            <label className="metadata-field">
+              <span>Sync Offset (ms)</span>
+              <div className="metadata-field-inline">
+                <input
+                  className="settings-select"
+                  type="text"
+                  inputMode="numeric"
+                  value={lyricsOffsetDraft}
+                  onChange={(event) => setLyricsOffsetDraft(event.target.value)}
+                  placeholder={lyricsOffsetMixed ? 'Mixed offsets' : '0'}
+                  disabled={lyricsControlsDisabled}
+                />
+                <button
+                  type="button"
+                  className="settings-btn metadata-clear-btn"
+                  onClick={() => void handleApplyLyricsOffset()}
+                  disabled={lyricsControlsDisabled}
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  className="settings-btn metadata-clear-btn"
+                  onClick={() => void handleResetLyricsOffset()}
+                  disabled={lyricsControlsDisabled}
+                >
+                  Reset
+                </button>
+              </div>
+            </label>
+
+            {isLyricsStateLoading && (
+              <div className="metadata-footnote">Loading lyrics override state...</div>
+            )}
+            {lyricsValidationError && (
+              <div className="metadata-status metadata-status-error">{lyricsValidationError}</div>
+            )}
+            {lyricsStatusMessage && (
+              <div className="metadata-status metadata-status-success">{lyricsStatusMessage}</div>
+            )}
+          </section>
 
           {validationError && (
             <div className="metadata-status metadata-status-error">{validationError}</div>

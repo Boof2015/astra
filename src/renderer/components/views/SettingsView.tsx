@@ -16,6 +16,7 @@ import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualize
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
+import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -221,6 +222,11 @@ export default function SettingsView() {
     disconnect: disconnectLastFm,
   } = useLastFmSettingsStore()
   const {
+    status: lyricsStatus,
+    errorMessage: lyricsErrorMessage,
+    setEnabled: setLyricsEnabled,
+  } = useLyricsStore()
+  const {
     autoCheckEnabled,
     checkState: updateCheckState,
     statusMessage: updateStatusMessage,
@@ -357,10 +363,10 @@ export default function SettingsView() {
     {
       id: 'reset-integrations',
       title: 'Reset Integrations',
-      description: 'Disable integrations and clear integration preferences.',
+      description: 'Disable Discord, Last.fm, Lyrics lookup, and the Local API.',
       buttonLabel: 'Reset Integrations',
       confirmTitle: 'Reset Integration Settings',
-      confirmMessage: 'This will disable Discord and the local integration API, and reset related preferences.',
+      confirmMessage: 'This will disable Discord, Last.fm scrobbling, online lyrics lookup, and the local integration API, then clear related preferences.',
       confirmLabel: 'Reset Integrations',
       destructive: false,
       run: resetIntegrationSettings,
@@ -471,6 +477,9 @@ export default function SettingsView() {
   const lastFmQueueLabel = `Pending scrobbles: ${lastFmPendingScrobbles}.`
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
   const lastFmCanConnect = lastFmHasApiCredentials && !lastFmConnected && !lastFmIsAuthorizing
+  const lyricsEnabled = lyricsStatus?.enabled ?? false
+  const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
+  const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
 
   useEffect(() => {
     let isMounted = true
@@ -1213,6 +1222,29 @@ export default function SettingsView() {
                     Last.fm API credentials are missing in this build.
                   </p>
                 )}
+              </div>
+
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Lyrics</h4>
+                  <p>Embedded lyrics with optional LRCLIB fallback.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Online Lyrics Lookup</span>
+                    <button
+                      className={`settings-toggle ${lyricsEnabled ? 'active' : ''}`}
+                      onClick={() => void setLyricsEnabled(!lyricsEnabled)}
+                    >
+                      {lyricsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
+                <p className="settings-note">{lyricsStatusLabel}</p>
+                {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
+                <p className="settings-note">
+                  Online lookup is off by default. Astra only queries LRCLIB when the Lyrics tab is opened and embedded lyrics are missing.
+                </p>
               </div>
 
               <div className="settings-integration-card">

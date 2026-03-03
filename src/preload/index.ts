@@ -20,6 +20,15 @@ import type {
   LastFmAuthStartResult,
   LastFmStatus
 } from '../types/lastFm'
+import type {
+  LyricsManualClearResult,
+  LyricsManualImportResult,
+  LyricsLookupResult,
+  LyricsOffsetSetResult,
+  LyricsStatus,
+  LyricsTrackOverride,
+  LyricsTrackQuery
+} from '../types/lyrics'
 
 // Audio file result from main process
 export interface AudioFileResult {
@@ -459,6 +468,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  lyrics: {
+    getStatus: (): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:getStatus'),
+    setEnabled: (enabled: boolean): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:setEnabled', enabled),
+    getForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> => ipcRenderer.invoke('lyrics:getForTrack', query),
+    refreshForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> =>
+      ipcRenderer.invoke('lyrics:refreshForTrack', query),
+    getTrackOverride: (trackPath: string): Promise<LyricsTrackOverride> =>
+      ipcRenderer.invoke('lyrics:getTrackOverride', trackPath),
+    importManualLyrics: (trackPaths: string[], lyricsText: string): Promise<LyricsManualImportResult> =>
+      ipcRenderer.invoke('lyrics:importManualLyrics', trackPaths, lyricsText),
+    clearManualLyrics: (trackPaths: string[]): Promise<LyricsManualClearResult> =>
+      ipcRenderer.invoke('lyrics:clearManualLyrics', trackPaths),
+    setTrackOffset: (trackPaths: string[], offsetMs: number): Promise<LyricsOffsetSetResult> =>
+      ipcRenderer.invoke('lyrics:setTrackOffset', trackPaths, offsetMs),
+    resetToDefaults: (): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:resetToDefaults'),
+    onStatus: (callback: (status: LyricsStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LyricsStatus) => callback(status)
+      ipcRenderer.on('lyrics:status', handler)
+      return () => ipcRenderer.removeListener('lyrics:status', handler)
+    }
+  },
+
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
@@ -672,6 +703,18 @@ declare global {
         disconnect: () => Promise<LastFmStatus>
         resetToDefaults: () => Promise<LastFmStatus>
         onStatus: (callback: (status: LastFmStatus) => void) => () => void
+      }
+      lyrics: {
+        getStatus: () => Promise<LyricsStatus>
+        setEnabled: (enabled: boolean) => Promise<LyricsStatus>
+        getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+        refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+        getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>
+        importManualLyrics: (trackPaths: string[], lyricsText: string) => Promise<LyricsManualImportResult>
+        clearManualLyrics: (trackPaths: string[]) => Promise<LyricsManualClearResult>
+        setTrackOffset: (trackPaths: string[], offsetMs: number) => Promise<LyricsOffsetSetResult>
+        resetToDefaults: () => Promise<LyricsStatus>
+        onStatus: (callback: (status: LyricsStatus) => void) => () => void
       }
 
       // File operations
