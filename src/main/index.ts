@@ -1758,8 +1758,8 @@ ipcMain.handle('library:getTracks', () => {
 })
 
 // Get tracks by artist
-ipcMain.handle('library:getTracksByArtist', (_event, artist: string) => {
-  return library.getTracksByArtist(artist)
+ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: library.ArtistBrowseMode) => {
+  return library.getTracksByArtist(artist, mode)
 })
 
 // Get tracks by album
@@ -1768,8 +1768,8 @@ ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: stri
 })
 
 // Get all artists
-ipcMain.handle('library:getArtists', () => {
-  return library.getArtists()
+ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) => {
+  return library.getArtists(mode)
 })
 
 // Get all albums

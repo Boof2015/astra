@@ -797,6 +797,7 @@ export default function HomeView() {
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
+  const [strictArtistCount, setStrictArtistCount] = useState(() => artists.length)
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined'
       ? HOME_RECENT_MEDIUM_BREAKPOINT_PX
@@ -842,6 +843,32 @@ export default function HomeView() {
       window.clearTimeout(timeoutId)
     }
   }, [playlistImportStatus])
+
+  useEffect(() => {
+    if (totalTrackCount <= 0) {
+      setStrictArtistCount(0)
+      return
+    }
+
+    let canceled = false
+
+    void window.electronAPI.library.getArtists('strict')
+      .then((strictArtists) => {
+        if (!canceled) {
+          setStrictArtistCount(strictArtists.length)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load strict artist count for Home view:', error)
+        if (!canceled) {
+          setStrictArtistCount(artists.length)
+        }
+      })
+
+    return () => {
+      canceled = true
+    }
+  }, [artists.length, totalTrackCount])
 
   useEffect(() => {
     if (!hasLibraryContent) return
@@ -1210,7 +1237,7 @@ export default function HomeView() {
             </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Artists</span>
-              <span className="home-greeting-stat-value">{artists.length}</span>
+              <span className="home-greeting-stat-value">{strictArtistCount}</span>
             </div>
           </div>
         </section>

@@ -11,6 +11,28 @@ import ArtistList from '../library/ArtistList'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
+type ArtistBrowseMode = 'strict' | 'canonical'
+type AlbumSortMode = 'title' | 'artist'
+const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
+const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
+
+function loadArtistBrowseModeSetting(): ArtistBrowseMode {
+  try {
+    const stored = localStorage.getItem(ARTIST_BROWSE_MODE_STORAGE_KEY)
+    return stored === 'canonical' ? 'canonical' : 'strict'
+  } catch {
+    return 'strict'
+  }
+}
+
+function loadAlbumSortModeSetting(): AlbumSortMode {
+  try {
+    const stored = localStorage.getItem(ALBUM_SORT_MODE_STORAGE_KEY)
+    return stored === 'artist' ? 'artist' : 'title'
+  } catch {
+    return 'title'
+  }
+}
 
 function normalizeSortText(value: string | null | undefined): string {
   return (value ?? '').trim()
@@ -134,6 +156,7 @@ function toQueueTrack(track: {
 
 export default function LibraryView() {
   const tracks = useLibraryStore((state) => state.tracks)
+  const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const albums = useLibraryStore((state) => state.albums)
   const artists = useLibraryStore((state) => state.artists)
   const viewMode = useLibraryStore((state) => state.viewMode)
@@ -168,6 +191,10 @@ export default function LibraryView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
+  const [artistBrowseMode, setArtistBrowseMode] = useState<ArtistBrowseMode>(() => loadArtistBrowseModeSetting())
+  const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
+  const [strictArtists, setStrictArtists] = useState<typeof artists>([])
+  const [isStrictArtistsLoading, setIsStrictArtistsLoading] = useState(false)
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const shufflePlayPendingRef = useRef(false)
@@ -175,6 +202,8 @@ export default function LibraryView() {
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
+  const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist
+  const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
   const sortContextKey = useMemo(() => {
     if (selectedAlbum) {
@@ -203,6 +232,55 @@ export default function LibraryView() {
     }
     previousInDetailViewRef.current = inDetailView
   }, [inDetailView])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ARTIST_BROWSE_MODE_STORAGE_KEY, artistBrowseMode)
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  }, [artistBrowseMode])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ALBUM_SORT_MODE_STORAGE_KEY, albumSortMode)
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  }, [albumSortMode])
+
+  useEffect(() => {
+    if (!isArtistRootView || artistBrowseMode !== 'strict') return
+    if (totalTrackCount <= 0) {
+      setStrictArtists([])
+      return
+    }
+
+    let cancelled = false
+    setIsStrictArtistsLoading(true)
+
+    void window.electronAPI.library.getArtists('strict')
+      .then((nextArtists) => {
+        if (!cancelled) {
+          setStrictArtists(nextArtists)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load strict artist list:', error)
+        if (!cancelled) {
+          setStrictArtists([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsStrictArtistsLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [artistBrowseMode, isArtistRootView, totalTrackCount])
 
   useEffect(() => {
     setArtistAlbumRailMode('albums')
@@ -254,6 +332,18 @@ export default function LibraryView() {
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
   }, [])
+
+  const handleSetArtistBrowseMode = useCallback((mode: ArtistBrowseMode) => {
+    setArtistBrowseMode(mode)
+  }, [])
+
+  const handleSetAlbumSortMode = useCallback((mode: AlbumSortMode) => {
+    setAlbumSortMode(mode)
+  }, [])
+
+  const handleSelectArtistFromList = useCallback(async (artistName: string) => {
+    await selectArtist(artistName, 'library', artistBrowseMode)
+  }, [artistBrowseMode, selectArtist])
 
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...tracks]
@@ -337,17 +427,37 @@ export default function LibraryView() {
   }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
 
   const filteredAlbums = useMemo(() => {
-    if (!hasSearchQuery) return albums
-    return albums.filter((album) =>
-      album.album.toLowerCase().includes(normalizedQuery)
-      || album.artist.toLowerCase().includes(normalizedQuery)
-    )
-  }, [albums, hasSearchQuery, normalizedQuery])
+    const visibleAlbums = !hasSearchQuery
+      ? albums
+      : albums.filter((album) =>
+        album.album.toLowerCase().includes(normalizedQuery)
+        || album.artist.toLowerCase().includes(normalizedQuery)
+      )
 
+    const sortedAlbums = [...visibleAlbums]
+    sortedAlbums.sort((a, b) => {
+      if (albumSortMode === 'artist') {
+        const artistCompare = compareTextValue(a.artist, b.artist)
+        if (artistCompare !== 0) return artistCompare
+        const albumCompare = compareTextValue(a.album, b.album)
+        if (albumCompare !== 0) return albumCompare
+      } else {
+        const albumCompare = compareTextValue(a.album, b.album)
+        if (albumCompare !== 0) return albumCompare
+        const artistCompare = compareTextValue(a.artist, b.artist)
+        if (artistCompare !== 0) return artistCompare
+      }
+      return a.identity_key.localeCompare(b.identity_key)
+    })
+
+    return sortedAlbums
+  }, [albumSortMode, albums, hasSearchQuery, normalizedQuery])
+
+  const visibleArtists = artistBrowseMode === 'strict' ? strictArtists : artists
   const filteredArtists = useMemo(() => {
-    if (!hasSearchQuery) return artists
-    return artists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
-  }, [artists, hasSearchQuery, normalizedQuery])
+    if (!hasSearchQuery) return visibleArtists
+    return visibleArtists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
+  }, [hasSearchQuery, normalizedQuery, visibleArtists])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
@@ -376,17 +486,50 @@ export default function LibraryView() {
       }
     }
 
+    const UNKNOWN_ALBUM_NAME = 'Unknown Album'
+    const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
     const matchedIdentityKeys = new Set<string>()
+    const selectedArtistKey = normalizeKey(selectedArtist)
+    const featuredSinglesByIdentityKey = new Map<string, (typeof albums)[number]>()
+
     for (const track of tracks) {
       const identityKey = buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)
       const match = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
-      if (!match) continue
-      matchedIdentityKeys.add(match.identity_key)
+
+      if (match) {
+        matchedIdentityKeys.add(match.identity_key)
+        continue
+      }
+
+      if (normalizeKey(identityArtist) === selectedArtistKey) continue
+
+      const normalizedAlbumName = track.album.trim() || UNKNOWN_ALBUM_NAME
+      if (normalizeKey(normalizedAlbumName) === normalizeKey(UNKNOWN_ALBUM_NAME)) continue
+
+      const existingSingle = featuredSinglesByIdentityKey.get(identityKey)
+      if (existingSingle) {
+        existingSingle.track_count += 1
+        if (existingSingle.year === null || ((track.year ?? -1) > existingSingle.year)) {
+          existingSingle.year = track.year
+        }
+        if (!existingSingle.artwork_hash && track.artwork_hash) {
+          existingSingle.artwork_hash = track.artwork_hash
+        }
+        continue
+      }
+
+      featuredSinglesByIdentityKey.set(identityKey, {
+        identity_key: identityKey,
+        album: normalizedAlbumName,
+        artist: identityArtist || UNKNOWN_ARTIST_NAME,
+        year: track.year,
+        artwork_hash: track.artwork_hash,
+        track_count: 1
+      })
     }
 
-    const selectedArtistKey = normalizeKey(selectedArtist)
     const primary: (typeof albums)[number][] = []
     const featured: (typeof albums)[number][] = []
 
@@ -399,6 +542,18 @@ export default function LibraryView() {
         featured.push(album)
       }
     }
+
+    for (const single of featuredSinglesByIdentityKey.values()) {
+      featured.push(single)
+    }
+
+    featured.sort((a, b) => {
+      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+      if (albumCompare !== 0) return albumCompare
+      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+      if (artistCompare !== 0) return artistCompare
+      return a.identity_key.localeCompare(b.identity_key)
+    })
 
     return {
       primaryArtistAlbums: primary,
@@ -577,19 +732,28 @@ export default function LibraryView() {
 
     // Artists list
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist) {
+      if (artistBrowseMode === 'strict' && isStrictArtistsLoading) {
+        return (
+          <div className="library-loading">
+            <div className="loading-spinner" />
+            <p>Loading artists...</p>
+          </div>
+        )
+      }
+
       if (filteredArtists.length === 0) {
         return hasSearchQuery
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
           : <div className="library-empty"><p>No artists found</p></div>
       }
-      return <ArtistList artists={filteredArtists} onSelectArtist={selectArtist} />
+      return <ArtistList artists={filteredArtists} onSelectArtist={handleSelectArtistFromList} />
     }
 
     if (selectedArtist) {
       const showingFeaturedAlbums = artistAlbumRailMode === 'featured'
       const visibleArtistAlbums = showingFeaturedAlbums ? featuredArtistAlbums : primaryArtistAlbums
       const railEmptyMessage = showingFeaturedAlbums
-        ? 'No featured appearances found in indexed albums.'
+        ? 'No featured appearances found in indexed albums or singles.'
         : 'No primary albums found in indexed albums.'
 
       return (
@@ -719,6 +883,60 @@ export default function LibraryView() {
           </span>
         </div>
         <div className="library-header-right">
+          {isAlbumRootView && (
+            <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
+              <span
+                className="library-segmented-highlight"
+                aria-hidden="true"
+                style={{ transform: albumSortMode === 'artist' ? 'translateX(100%)' : 'translateX(0%)' }}
+              />
+              <button
+                type="button"
+                className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
+                onClick={() => handleSetAlbumSortMode('title')}
+                aria-pressed={albumSortMode === 'title'}
+                title="Sort albums by title"
+              >
+                Title
+              </button>
+              <button
+                type="button"
+                className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
+                onClick={() => handleSetAlbumSortMode('artist')}
+                aria-pressed={albumSortMode === 'artist'}
+                title="Sort albums by artist"
+              >
+                Artist
+              </button>
+            </div>
+          )}
+          {isArtistRootView && (
+            <div className="library-segmented-toggle" role="group" aria-label="Artist matching mode">
+              <span
+                className="library-segmented-highlight"
+                aria-hidden="true"
+                style={{ transform: artistBrowseMode === 'canonical' ? 'translateX(100%)' : 'translateX(0%)' }}
+              />
+              <button
+                type="button"
+                className={`library-segmented-btn ${artistBrowseMode === 'strict' ? 'active' : ''}`}
+                onClick={() => handleSetArtistBrowseMode('strict')}
+                aria-pressed={artistBrowseMode === 'strict'}
+                title="Use strict tag matching"
+              >
+                Strict
+              </button>
+              <button
+                type="button"
+                className={`library-segmented-btn ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
+                onClick={() => handleSetArtistBrowseMode('canonical')}
+                aria-pressed={artistBrowseMode === 'canonical'}
+                title="Use canonical artist matching"
+              >
+                Canonical
+              </button>
+            </div>
+          )}
           {isTracklistContext && (
             <button
               type="button"

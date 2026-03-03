@@ -71,6 +71,7 @@ export interface FolderSubdirectoryEntry {
 
 type ViewMode = 'tracks' | 'albums' | 'artists'
 type SelectionOrigin = 'home' | 'library' | null
+export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type ArtworkVariant = 'full' | 'thumbnail'
 
 export interface ArtworkRequestOptions {
@@ -158,7 +159,11 @@ interface LibraryStore {
     origin?: Exclude<SelectionOrigin, null>,
     identityKey?: string
   ) => Promise<void>
-  selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
+  selectArtist: (
+    artist: string,
+    origin?: Exclude<SelectionOrigin, null>,
+    mode?: LibraryArtistBrowseMode
+  ) => Promise<void>
   clearSelection: () => void
   goBackSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
@@ -732,8 +737,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   // Select artist
-  selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
-    const tracks = await window.electronAPI.library.getTracksByArtist(artist)
+  selectArtist: async (
+    artist: string,
+    origin: Exclude<SelectionOrigin, null> = 'library',
+    mode: LibraryArtistBrowseMode = 'canonical'
+  ) => {
+    const tracks = await window.electronAPI.library.getTracksByArtist(artist, mode)
     set((state) => ({
       selectedArtist: artist,
       tracks,

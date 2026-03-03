@@ -523,8 +523,11 @@ interface AlbumGroupAccumulator {
 
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
 const UNKNOWN_ALBUM_KEY = UNKNOWN_ALBUM_NAME.toLocaleLowerCase()
+const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
 const MIN_TRACKS_FOR_ALBUM = 2
 const VARIOUS_ARTISTS_NAME = 'Various Artists'
+
+export type ArtistBrowseMode = 'strict' | 'canonical'
 
 function normalizeDisplay(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
@@ -571,9 +574,73 @@ function splitCollaborators(rawArtist: string): string[] {
   return Array.from(unique.values())
 }
 
+function splitAlbumArtistCollaborators(rawAlbumArtist: string): string[] {
+  const normalized = normalizeDisplay(rawAlbumArtist)
+  if (!normalized) return []
+
+  const unified = normalized
+    .replace(/\s*;\s*/g, ',')
+    .replace(/\s+[x×]\s+/gi, ',')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/gi, ',')
+
+  const unique = new Map<string, string>()
+  for (const part of unified.split(',')) {
+    const display = normalizeDisplay(part)
+    if (!display) continue
+    const key = normalizeKey(display)
+    if (!key || unique.has(key)) continue
+    unique.set(key, display)
+  }
+
+  return Array.from(unique.values())
+}
+
 function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   const contributors = splitCollaborators(trackArtist)
-  return contributors[0] ?? 'Unknown Artist'
+  return contributors[0] ?? UNKNOWN_ARTIST_NAME
+}
+
+function getPrimaryArtistFromAlbumArtist(albumArtist: string): string {
+  const contributors = splitAlbumArtistCollaborators(albumArtist)
+  if (contributors.length > 0) return contributors[0]
+  return normalizeDisplay(albumArtist) || UNKNOWN_ARTIST_NAME
+}
+
+function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) return normalizedAlbumArtist
+
+  const normalizedTrackArtist = normalizeDisplay(track.artist)
+  return normalizedTrackArtist || UNKNOWN_ARTIST_NAME
+}
+
+function resolveCanonicalBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) {
+    return getPrimaryArtistFromAlbumArtist(normalizedAlbumArtist)
+  }
+
+  const normalizedPrimaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist))
+  return normalizedPrimaryArtist || UNKNOWN_ARTIST_NAME
+}
+
+function trackMatchesBrowseArtist(track: DbTrack, targetArtistKey: string, mode: ArtistBrowseMode): boolean {
+  const browseArtistKey = normalizeKey(
+    mode === 'strict' ? resolveStrictBrowseArtist(track) : resolveCanonicalBrowseArtist(track)
+  )
+  if (browseArtistKey === targetArtistKey) return true
+
+  if (mode === 'strict') {
+    return false
+  }
+
+  const albumArtistKey = normalizeKey(track.album_artist ?? '')
+  if (albumArtistKey && albumArtistKey === targetArtistKey) return true
+
+  const trackArtistKey = normalizeKey(track.artist)
+  if (trackArtistKey && trackArtistKey === targetArtistKey) return true
+
+  return splitCollaborators(track.artist).some((name) => normalizeKey(name) === targetArtistKey)
 }
 
 function incrementDisplayVariant(map: Map<string, CountedDisplayVariant>, display: string): void {
@@ -1484,17 +1551,14 @@ export function getAllTracks(): DbTrack[] {
 }
 
 // Get tracks by artist
-export function getTracksByArtist(artist: string): DbTrack[] {
+export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'canonical'): DbTrack[] {
   if (!db) return []
   const targetArtistKey = normalizeKey(artist)
   if (!targetArtistKey) return []
+  const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
 
   const tracks = readAllTracksUnordered()
-  const matched = tracks.filter((track) => {
-    const contributors = splitCollaborators(track.artist)
-    const effectiveContributors = contributors.length > 0 ? contributors : ['Unknown Artist']
-    return effectiveContributors.some((name) => normalizeKey(name) === targetArtistKey)
-  })
+  const matched = tracks.filter((track) => trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode))
 
   return matched.sort(compareTracksByAlbumDiscTrackTitle)
 }
@@ -1549,10 +1613,12 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
 }
 
 // Get unique artists
-export function getArtists(): { artist: string; track_count: number; artwork_hash: string | null }[] {
+export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: string; track_count: number; artwork_hash: string | null }[] {
   if (!db) return []
   const tracks = readAllTracksUnordered()
   if (tracks.length === 0) return []
+  const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+  const browseArtistResolver = resolvedMode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
 
   interface ArtistAggregate {
     artist: string
@@ -1566,55 +1632,49 @@ export function getArtists(): { artist: string; track_count: number; artwork_has
   const artistCounts = new Map<string, ArtistAggregate>()
 
   for (const track of tracks) {
-    const contributors = splitCollaborators(track.artist)
-    const effectiveContributors = contributors.length > 0 ? contributors : ['Unknown Artist']
-    const seenForTrack = new Set<string>()
+    const browseArtist = browseArtistResolver(track)
+    const key = normalizeKey(browseArtist)
+    if (!key) continue
 
-    for (const contributor of effectiveContributors) {
-      const key = normalizeKey(contributor)
-      if (!key || seenForTrack.has(key)) continue
-      seenForTrack.add(key)
+    const existing = artistCounts.get(key)
+    if (existing) {
+      existing.track_count += 1
+    } else {
+      artistCounts.set(key, {
+        artist: browseArtist,
+        track_count: 1,
+        artwork_hash: null,
+        newestArtworkYear: -1,
+        newestArtworkAddedAt: -1,
+        newestArtworkModifiedAt: -1,
+      })
+    }
 
-      const existing = artistCounts.get(key)
-      if (existing) {
-        existing.track_count += 1
-      } else {
-        artistCounts.set(key, {
-          artist: contributor,
-          track_count: 1,
-          artwork_hash: null,
-          newestArtworkYear: -1,
-          newestArtworkAddedAt: -1,
-          newestArtworkModifiedAt: -1,
-        })
-      }
+    if (!track.artwork_hash) continue
+    const aggregate = artistCounts.get(key)
+    if (!aggregate) continue
 
-      if (!track.artwork_hash) continue
-      const aggregate = artistCounts.get(key)
-      if (!aggregate) continue
-
-      const candidateYear = track.year ?? -1
-      const shouldReplaceArtwork = (
-        aggregate.artwork_hash == null
-        || candidateYear > aggregate.newestArtworkYear
-        || (
-          candidateYear === aggregate.newestArtworkYear
-          && (
-            track.added_at > aggregate.newestArtworkAddedAt
-            || (
-              track.added_at === aggregate.newestArtworkAddedAt
-              && track.modified_at > aggregate.newestArtworkModifiedAt
-            )
+    const candidateYear = track.year ?? -1
+    const shouldReplaceArtwork = (
+      aggregate.artwork_hash == null
+      || candidateYear > aggregate.newestArtworkYear
+      || (
+        candidateYear === aggregate.newestArtworkYear
+        && (
+          track.added_at > aggregate.newestArtworkAddedAt
+          || (
+            track.added_at === aggregate.newestArtworkAddedAt
+            && track.modified_at > aggregate.newestArtworkModifiedAt
           )
         )
       )
+    )
 
-      if (!shouldReplaceArtwork) continue
-      aggregate.artwork_hash = track.artwork_hash
-      aggregate.newestArtworkYear = candidateYear
-      aggregate.newestArtworkAddedAt = track.added_at
-      aggregate.newestArtworkModifiedAt = track.modified_at
-    }
+    if (!shouldReplaceArtwork) continue
+    aggregate.artwork_hash = track.artwork_hash
+    aggregate.newestArtworkYear = candidateYear
+    aggregate.newestArtworkAddedAt = track.added_at
+    aggregate.newestArtworkModifiedAt = track.modified_at
   }
 
   return Array.from(artistCounts.values())
