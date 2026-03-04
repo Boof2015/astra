@@ -8,6 +8,7 @@ import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, 
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList from '../library/ArtistList'
+import { type ListImperativeAPI } from 'react-window'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
@@ -198,6 +199,11 @@ export default function LibraryView() {
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const shufflePlayPendingRef = useRef(false)
+  const albumGridRef = useRef<HTMLDivElement | null>(null)
+  const albumGridScrollRef = useRef(0)
+  const artistListRef = useRef<ListImperativeAPI | null>(null)
+  const artistScrollRef = useRef(0)
+  const pendingScrollRef = useRef<'albums' | 'artists' | null>(null)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
@@ -307,6 +313,17 @@ export default function LibraryView() {
     setSortState({ key: 'title', direction: 'asc' })
   }, [sortContextKey, selectedAlbum])
 
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current
+    if (pending === 'albums' && albumGridRef.current) {
+      albumGridRef.current.scrollTop = albumGridScrollRef.current
+      pendingScrollRef.current = null
+    } else if (pending === 'artists' && artistListRef.current?.element) {
+      artistListRef.current.element.scrollTop = artistScrollRef.current
+      pendingScrollRef.current = null
+    }
+  })
+
   useEffect(() => {
     if (showTracklistBpmKey) return
     if (!sortState) return
@@ -342,6 +359,7 @@ export default function LibraryView() {
   }, [])
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
+    artistScrollRef.current = artistListRef.current?.element?.scrollTop ?? 0
     await selectArtist(artistName, 'library', artistBrowseMode)
   }, [artistBrowseMode, selectArtist])
 
@@ -577,6 +595,9 @@ export default function LibraryView() {
     const shouldReturnHome = selectionOrigin === 'home'
     if (shouldReturnHome) {
       setActiveView('home')
+    } else {
+      if (viewMode === 'albums') pendingScrollRef.current = 'albums'
+      else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
     }
     await clearSelection()
   }
@@ -709,12 +730,15 @@ export default function LibraryView() {
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
-        <div className="album-grid">
+        <div className="album-grid" ref={albumGridRef}>
           {filteredAlbums.map((album) => (
             <div
               key={album.identity_key}
               className="album-card"
-              onClick={() => selectAlbum(album.album, album.artist, 'library', album.identity_key)}
+              onClick={() => {
+                albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
+                void selectAlbum(album.album, album.artist, 'library', album.identity_key)
+              }}
             >
               <div className="album-artwork">
                 <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
@@ -746,7 +770,7 @@ export default function LibraryView() {
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
           : <div className="library-empty"><p>No artists found</p></div>
       }
-      return <ArtistList artists={filteredArtists} onSelectArtist={handleSelectArtistFromList} />
+      return <ArtistList artists={filteredArtists} onSelectArtist={handleSelectArtistFromList} listRef={artistListRef} />
     }
 
     if (selectedArtist) {

@@ -1,5 +1,5 @@
-import { CSSProperties, memo, ReactElement, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { List, RowComponentProps } from 'react-window'
+import { CSSProperties, memo, ReactElement, Ref, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { List, ListImperativeAPI, RowComponentProps } from 'react-window'
 import AlbumArtwork from './AlbumArtwork'
 
 interface ArtistRecord {
@@ -11,6 +11,7 @@ interface ArtistRecord {
 interface ArtistListProps {
   artists: ArtistRecord[]
   onSelectArtist: (artist: string) => void | Promise<void>
+  listRef?: Ref<ListImperativeAPI>
 }
 
 interface ArtistListRowSharedProps {
@@ -71,7 +72,7 @@ const ArtistListRow = memo(ArtistListRowRenderer) as (
   props: RowComponentProps<ArtistListRowSharedProps>
 ) => ReactElement | null
 
-export default function ArtistList({ artists, onSelectArtist }: ArtistListProps) {
+export default function ArtistList({ artists, onSelectArtist, listRef }: ArtistListProps) {
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [artistRowHeight, setArtistRowHeight] = useState(ARTIST_ROW_HEIGHT_FALLBACK_PX)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
@@ -123,6 +124,7 @@ export default function ArtistList({ artists, onSelectArtist }: ArtistListProps)
       <List
         className="artist-list-virtualized"
         defaultHeight={ARTIST_ROW_HEIGHT_FALLBACK_PX * 8}
+        listRef={listRef}
         overscanCount={ARTIST_LIST_OVERSCAN_COUNT}
         rowComponent={ArtistListRow}
         rowCount={artists.length}
