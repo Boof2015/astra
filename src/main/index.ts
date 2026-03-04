@@ -78,6 +78,8 @@ let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainScanEnabled: boolean = false
+let associatedOpenRendererReady = false
+const associatedOpenPendingPaths: string[] = []
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
@@ -300,13 +302,122 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
 }
 
 // Supported audio formats
-const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff']
+const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv']
+const AUDIO_EXTENSION_SET = new Set(AUDIO_EXTENSIONS.map((extension) => `.${extension}`))
 const AUDIO_FILTERS = [
   {
     name: 'Audio Files',
     extensions: AUDIO_EXTENSIONS
   }
 ]
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
+
+function normalizeAssociatedOpenPath(rawPath: unknown): string | null {
+  if (typeof rawPath !== 'string') {
+    return null
+  }
+
+  const trimmed = rawPath.trim()
+  if (!trimmed || trimmed.startsWith('-')) {
+    return null
+  }
+
+  let normalizedPath = trimmed
+  if ((normalizedPath.startsWith('"') && normalizedPath.endsWith('"'))
+    || (normalizedPath.startsWith('\'') && normalizedPath.endsWith('\''))) {
+    normalizedPath = normalizedPath.slice(1, -1).trim()
+  }
+  if (!normalizedPath) {
+    return null
+  }
+
+  const extension = extname(normalizedPath).toLowerCase()
+  if (!AUDIO_EXTENSION_SET.has(extension)) {
+    return null
+  }
+  if (!existsSync(normalizedPath)) {
+    return null
+  }
+  return normalizedPath
+}
+
+function parseAssociatedOpenPathsFromArgv(argv: string[]): string[] {
+  if (!Array.isArray(argv) || argv.length === 0) {
+    return []
+  }
+
+  const uniquePaths = new Set<string>()
+  for (const candidate of argv) {
+    const normalizedPath = normalizeAssociatedOpenPath(candidate)
+    if (normalizedPath) {
+      uniquePaths.add(normalizedPath)
+    }
+  }
+  return [...uniquePaths]
+}
+
+function canDispatchAssociatedOpenFiles(): boolean {
+  if (!associatedOpenRendererReady) {
+    return false
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false
+  }
+  if (mainWindow.webContents.isDestroyed()) {
+    return false
+  }
+  return true
+}
+
+function flushAssociatedOpenFiles(): void {
+  if (!canDispatchAssociatedOpenFiles()) {
+    return
+  }
+  if (associatedOpenPendingPaths.length === 0) {
+    return
+  }
+
+  const paths = [...associatedOpenPendingPaths]
+  associatedOpenPendingPaths.length = 0
+  mainWindow!.webContents.send('associated-open-files', paths)
+}
+
+function queueAssociatedOpenFiles(paths: string[]): void {
+  if (paths.length === 0) {
+    return
+  }
+
+  for (const path of paths) {
+    if (associatedOpenPendingPaths.includes(path)) {
+      continue
+    }
+    associatedOpenPendingPaths.push(path)
+  }
+  flushAssociatedOpenFiles()
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function focusOrCreateMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  focusMainWindow()
+}
 
 function getMiniWindowState(): MiniPlayerWindowState {
   const isOpen = Boolean(miniWindow && !miniWindow.isDestroyed())
@@ -903,6 +1014,8 @@ async function createMiniPlayerWindow(): Promise<void> {
 }
 
 function createWindow(): void {
+  associatedOpenRendererReady = false
+
   const prefs = mainWindowPrefs ?? {
     width: MAIN_WINDOW_DEFAULT_WIDTH,
     height: MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -953,6 +1066,7 @@ function createWindow(): void {
   })
   mainWindow.on('closed', () => {
     mainWindow = null
+    associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
       miniWindow.close()
     }
@@ -970,6 +1084,7 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  flushAssociatedOpenFiles()
   broadcastMiniWindowState()
   broadcastScopePopoutState()
   broadcastLocalApiStatus()
@@ -1193,6 +1308,28 @@ async function getArtworkThumbnailDataUrlByHash(hash: string): Promise<string | 
   }
 }
 
+app.on('second-instance', (_event, commandLine) => {
+  queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(commandLine))
+  if (app.isReady()) {
+    focusOrCreateMainWindow()
+  }
+})
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+
+  const normalizedPath = normalizeAssociatedOpenPath(filePath)
+  if (normalizedPath) {
+    queueAssociatedOpenFiles([normalizedPath])
+  }
+
+  if (app.isReady()) {
+    focusOrCreateMainWindow()
+  }
+})
+
+queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(process.argv))
+
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
@@ -1212,13 +1349,17 @@ app.whenReady().then(async () => {
   lyricsService.applyConfig(lyricsOnlineEnabled)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
 
-  // Clean up tracks that no longer exist on disk
-  const removedCount = await library.cleanupMissingTracks()
-  if (removedCount > 0) {
-    console.log(`Removed ${removedCount} missing tracks from library`)
-  }
-
   createWindow()
+  void (async () => {
+    try {
+      const removedCount = await library.cleanupMissingTracks()
+      if (removedCount > 0) {
+        console.log(`Removed ${removedCount} missing tracks from library`)
+      }
+    } catch (error) {
+      console.warn('Library cleanup on startup failed:', error)
+    }
+  })()
   scheduleAudioMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
 
@@ -1282,6 +1423,11 @@ ipcMain.on('window:close', () => {
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
+})
+
+ipcMain.on('associated-open-files:rendererReady', () => {
+  associatedOpenRendererReady = true
+  flushAssociatedOpenFiles()
 })
 
 // Mini player window controls/state

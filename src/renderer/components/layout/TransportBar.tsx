@@ -58,7 +58,8 @@ export default function TransportBar() {
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
 
-  const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
+  const isAssociationTrack = currentTrack?.origin === 'associated-external'
+  const isFavorite = currentTrack && !isAssociationTrack ? favorites.has(currentTrack.path) : false
 
   const [showEQPopover, setShowEQPopover] = useState(false)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
@@ -282,9 +283,13 @@ export default function TransportBar() {
         </div>
         <button
           className={`transport-fav-btn ${isFavorite ? 'active' : ''}`}
-          title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+          title={isAssociationTrack
+            ? 'Unavailable for files opened from your file explorer'
+            : isFavorite
+              ? 'Remove from favorites'
+              : 'Add to favorites'}
           onClick={() => currentTrack && toggleFavorite(currentTrack.path)}
-          disabled={!currentTrack}
+          disabled={!currentTrack || isAssociationTrack}
         >
           {isFavorite ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">

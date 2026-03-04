@@ -37,6 +37,10 @@ declare global {
             maximize: () => void
             close: () => void
             isMaximized: () => Promise<boolean>
+            associatedOpenFiles: {
+                markReady: () => void
+                onOpenFiles: (callback: (paths: string[]) => void) => () => void
+            }
             miniPlayer: {
                 open: () => Promise<void>
                 close: () => Promise<void>

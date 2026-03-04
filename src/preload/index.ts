@@ -367,6 +367,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  associatedOpenFiles: {
+    markReady: () => ipcRenderer.send('associated-open-files:rendererReady'),
+    onOpenFiles: (callback: (paths: string[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, paths: string[]) => callback(paths)
+      ipcRenderer.on('associated-open-files', handler)
+      return () => ipcRenderer.removeListener('associated-open-files', handler)
+    }
+  },
 
   miniPlayer: {
     open: () => ipcRenderer.invoke('mini-player:open'),
@@ -647,6 +655,10 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
+      associatedOpenFiles: {
+        markReady: () => void
+        onOpenFiles: (callback: (paths: string[]) => void) => () => void
+      }
       miniPlayer: {
         open: () => Promise<void>
         close: () => Promise<void>

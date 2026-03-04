@@ -87,6 +87,7 @@ interface RecentPlaySession {
   trackPath: string
   thresholdSeconds: number
   counted: boolean
+  allowDbWrite: boolean
   sourcePlaylistId: number | null
 }
 
@@ -197,6 +198,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const commitRecentPlay = (session: RecentPlaySession): void => {
     if (session.counted) return
     session.counted = true
+    if (!session.allowDbWrite) return
     void useLibraryStore.getState().recordPlay(session.trackPath)
     if (session.sourcePlaylistId !== null) {
       void window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
@@ -222,6 +224,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       trackPath,
       thresholdSeconds,
       counted: false,
+      allowDbWrite: track?.origin !== 'associated-external',
       sourcePlaylistId: resolveSourcePlaylistIdForTrack(trackPath)
     }
     clearQueueSourceIfMismatched(trackPath)

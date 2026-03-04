@@ -20,6 +20,7 @@ import { useUpdateStore } from './stores/updateStore'
 import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
+import { usePlayerStore } from './stores/playerStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -27,6 +28,26 @@ import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
+import type { Track } from './types/audio'
+
+function toAssociatedExternalTrack(filePath: string): Track {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  const fileName = normalizedPath.split('/').pop() ?? filePath
+  const extensionIndex = fileName.lastIndexOf('.')
+  const title = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName
+  const format = extensionIndex > 0 ? fileName.slice(extensionIndex + 1).toLowerCase() : 'unknown'
+
+  return {
+    id: filePath,
+    path: filePath,
+    origin: 'associated-external',
+    title,
+    artist: 'Unknown Artist',
+    album: 'Unknown Album',
+    duration: 0,
+    format,
+  }
+}
 
 function App() {
   useKeyboardShortcuts()
@@ -49,14 +70,52 @@ function App() {
     void useLocalApiSettingsStore.getState().init()
     void useLastFmSettingsStore.getState().init()
     void useLyricsStore.getState().init()
+
+    const handleAssociatedOpenFiles = async (rawPaths: string[]) => {
+      const queuePaths = [...new Set(
+        rawPaths
+          .filter((path): path is string => typeof path === 'string')
+          .map((path) => path.trim())
+          .filter((path) => path.length > 0)
+      )]
+      if (queuePaths.length === 0) {
+        return
+      }
+
+      const queueTracks = queuePaths.map(toAssociatedExternalTrack)
+      const player = usePlayerStore.getState()
+      player.setQueue(queueTracks, 0)
+
+      const firstTrack = queueTracks[0]
+      const loaded = await window.electronAPI.loadAudioFile(firstTrack.path, { metadataMode: 'none' })
+      if (!loaded) {
+        return
+      }
+
+      const didLoad = await player.loadTrack(firstTrack, loaded.data)
+      if (didLoad) {
+        await player.play()
+      }
+    }
+
+    const unsubscribeAssociatedOpenFiles = window.electronAPI.associatedOpenFiles.onOpenFiles((paths) => {
+      void handleAssociatedOpenFiles(paths).catch((error) => {
+        console.error('Failed to handle associated open files:', error)
+      })
+    })
+    window.electronAPI.associatedOpenFiles.markReady()
+
     const updatesStore = useUpdateStore.getState()
     if (updatesStore.autoCheckEnabled) {
       void updatesStore.checkForUpdates()
     }
-    const unsubscribe = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
+    const unsubscribeBackfill = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })
-    return () => unsubscribe()
+    return () => {
+      unsubscribeBackfill()
+      unsubscribeAssociatedOpenFiles()
+    }
   }, [])
 
   return (

@@ -2,6 +2,7 @@
 export interface Track {
   id: string
   path: string
+  origin?: 'library' | 'associated-external'
   title: string
   artist: string
   album: string
