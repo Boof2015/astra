@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 // Types matching preload
-interface DbTrack {
+export interface DbTrack {
   id: number
   path: string
   title: string
@@ -43,7 +43,7 @@ interface Artist {
   artwork_hash: string | null
 }
 
-interface LibraryFolder {
+export interface LibraryFolder {
   id: number
   path: string
   added_at: number
@@ -70,7 +70,7 @@ export interface FolderSubdirectoryEntry {
   audioFileCount: number
 }
 
-type ViewMode = 'tracks' | 'albums' | 'artists'
+type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type ArtworkVariant = 'full' | 'thumbnail'

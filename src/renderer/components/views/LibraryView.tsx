@@ -8,6 +8,7 @@ import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, 
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList from '../library/ArtistList'
+import FolderTreeView from '../library/FolderTreeView'
 import { type ListImperativeAPI } from 'react-window'
 
 type SortDirection = 'asc' | 'desc'
@@ -160,6 +161,7 @@ export default function LibraryView() {
   const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const albums = useLibraryStore((state) => state.albums)
   const artists = useLibraryStore((state) => state.artists)
+  const folders = useLibraryStore((state) => state.folders)
   const viewMode = useLibraryStore((state) => state.viewMode)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
@@ -586,7 +588,9 @@ export default function LibraryView() {
       ? 'Search albums...'
       : viewMode === 'artists'
         ? 'Search artists...'
-        : 'Search tracks...'
+        : viewMode === 'folders'
+          ? 'Search folders & tracks...'
+          : 'Search tracks...'
 
   const handleBack = async () => {
     const restored = await goBackSelection()
@@ -644,6 +648,9 @@ export default function LibraryView() {
   } else if (viewMode === 'artists') {
     itemCount = filteredArtists.length
     itemLabel = filteredArtists.length === 1 ? 'artist' : 'artists'
+  } else if (viewMode === 'folders') {
+    itemCount = tracks.length
+    itemLabel = tracks.length === 1 ? 'track' : 'tracks'
   }
 
   // Scan progress overlay
@@ -720,6 +727,11 @@ export default function LibraryView() {
           <p>No tracks found for "{trimmedQueryForMessage}"</p>
         </div>
       )
+    }
+
+    // Folder tree
+    if (viewMode === 'folders' && !selectedAlbum && !selectedArtist) {
+      return <FolderTreeView tracks={tracks} folders={folders} searchQuery={searchQuery} />
     }
 
     // Albums grid
@@ -899,6 +911,12 @@ export default function LibraryView() {
                 onClick={() => setViewMode('artists')}
               >
                 Artists
+              </button>
+              <button
+                className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
+                onClick={() => setViewMode('folders')}
+              >
+                Folders
               </button>
             </div>
           )}

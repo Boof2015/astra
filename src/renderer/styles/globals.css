@@ -5518,6 +5518,139 @@ button, .titlebar {
   /* Children render inline with tree guides */
 }
 
+/* ============================================
+   Folder Browse Tree (Library "Folders" tab)
+   ============================================ */
+.folder-browse-tree {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+}
+
+.folder-browse-node {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  cursor: pointer;
+  gap: 0;
+  transition: background var(--transition-fast);
+}
+
+.folder-browse-node:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.folder-browse-node.is-root {
+  height: 40px;
+  padding: 0 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  margin-bottom: 2px;
+}
+
+.folder-browse-node.is-root:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.folder-browse-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-left: 4px;
+}
+
+.folder-browse-count {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  opacity: 0.7;
+}
+
+.folder-browse-track {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px 0 0;
+  gap: 0;
+  cursor: default;
+  transition: background var(--transition-fast);
+  font-size: 13px;
+}
+
+.folder-browse-track:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.folder-browse-track.is-active {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.folder-browse-track-play {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0;
+  margin-right: 4px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.folder-browse-track:hover .folder-browse-track-play {
+  opacity: 1;
+}
+
+.folder-browse-track-play:hover {
+  color: var(--text-primary);
+}
+
+.folder-browse-track-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.folder-browse-track.is-active .folder-browse-track-title {
+  color: var(--accent);
+}
+
+.folder-browse-track-artist {
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.folder-browse-track-duration {
+  flex-shrink: 0;
+  margin-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  min-width: 40px;
+  text-align: right;
+}
+
 .folder-settings-footer {
   justify-content: space-between;
   align-items: center;
