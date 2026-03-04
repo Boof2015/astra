@@ -54,6 +54,8 @@ export default function TransportBar() {
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const selectedOutputDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
+  const availableOutputDevices = useAudioSettingsStore((s) => s.availableDevices)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
@@ -173,6 +175,12 @@ export default function TransportBar() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
+  const outputDeviceLabel = (() => {
+    const normalizedDeviceId = selectedOutputDeviceId.trim()
+    if (normalizedDeviceId.length === 0) return 'System Default Output'
+    return availableOutputDevices.find((device) => device.deviceId === selectedOutputDeviceId)?.label
+      ?? 'Selected Output'
+  })()
   const normalizationReadout = (() => {
     const gainMode = audioEngine.getNormalizationMode()
     if (!currentTrack) {
@@ -279,6 +287,10 @@ export default function TransportBar() {
                 )}
               </div>
             )}
+          </div>
+          <div className="transport-output-line" title={outputDeviceLabel}>
+            <span className="transport-output-line-prefix">OUT</span>
+            <span className="transport-output-line-value">{outputDeviceLabel}</span>
           </div>
         </div>
         <button

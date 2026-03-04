@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
+import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
@@ -56,6 +57,7 @@ export default function InfoSidebar() {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const openAlbumInLibrary = useOpenAlbumInLibrary()
   const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
@@ -282,7 +284,20 @@ export default function InfoSidebar() {
           <div className="info-sidebar-meta">
             <div className="info-meta-row">
               <span className="info-meta-label">Album</span>
-              <span className="info-meta-value">{currentTrack.album}</span>
+              {currentTrack.album.trim().length > 0 ? (
+                <button
+                  type="button"
+                  className="info-meta-value info-meta-album-link"
+                  onClick={() => {
+                    void openAlbumInLibrary(currentTrack.album, currentTrack.artist, currentTrack.albumArtist)
+                  }}
+                  title={`Show album ${currentTrack.album}`}
+                >
+                  {currentTrack.album}
+                </button>
+              ) : (
+                <span className="info-meta-value">{'\u2014'}</span>
+              )}
             </div>
             {currentTrack.year && (
               <div className="info-meta-row">

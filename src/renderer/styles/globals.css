@@ -475,7 +475,7 @@ button, .titlebar {
 
 /* Left: Track info zone */
 .transport-info {
-  width: 256px;
+  width: clamp(272px, 23vw, 352px);
   padding: 0 16px;
   display: flex;
   align-items: center;
@@ -534,6 +534,31 @@ button, .titlebar {
 .transport-subline .now-playing-artist {
   min-width: 0;
   flex: 1;
+}
+
+.transport-output-line {
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.46);
+  letter-spacing: 0.05em;
+}
+
+.transport-output-line-prefix {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.34);
+}
+
+.transport-output-line-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .transport-audio-badges {
@@ -1019,8 +1044,38 @@ button, .titlebar {
 }
 
 .info-meta-value {
+  display: block;
   font-size: 12px;
   color: var(--text-secondary);
+  max-width: 60%;
+  min-width: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-meta-album-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.info-meta-album-link:hover {
+  text-decoration: underline;
+  color: var(--text-primary);
+}
+
+.info-meta-album-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .info-sidebar-technical {
@@ -8897,7 +8952,7 @@ body::after {
   }
 
   .transport-info {
-    width: 228px;
+    width: clamp(244px, 26vw, 292px);
   }
 
   .transport-file-readout {
@@ -9151,7 +9206,7 @@ body::after {
   }
 
   .transport-info {
-    width: 190px;
+    width: clamp(198px, 34vw, 228px);
     padding: 0 10px;
   }
 
@@ -9168,6 +9223,12 @@ body::after {
     min-height: 13px;
     padding: 0 4px;
     font-size: 6.5px;
+  }
+
+  .transport-output-line {
+    margin-top: 2px;
+    gap: 4px;
+    font-size: 8px;
   }
 
   .transport-waveform-wrap {
