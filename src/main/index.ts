@@ -1791,6 +1791,10 @@ ipcMain.handle('audio:loadFile', async (_event, filePath: string, options?: Load
   return loadAudioFile(filePath, options)
 })
 
+ipcMain.handle('audio:getMetadata', async (_event, filePath: string) => {
+  return loadAudioMetadata(filePath)
+})
+
 // Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
 ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
@@ -2964,15 +2968,78 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
   }
 }
 
+async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {
+  const name = basename(filePath)
+  const fallbackTitle = name.replace(/\.[^.]+$/, '')
+  const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+
+  // Extract metadata using music-metadata with ffprobe enrichment fallback.
+  let metadata: LoadedAudioMetadata = {
+    title: fallbackTitle,
+    artist: 'Unknown Artist',
+    album: 'Unknown Album',
+    format
+  }
+
+  try {
+    const mm_metadata = await mm.parseFile(filePath)
+    const common = mm_metadata.common
+    const replayGain = extractReplayGainDb(mm_metadata)
+
+    // Convert artwork to base64 data URL
+    let artworkDataUrl: string | undefined
+    if (common.picture && common.picture.length > 0) {
+      const pic = common.picture[0]
+      const base64 = Buffer.from(pic.data).toString('base64')
+      artworkDataUrl = `data:${pic.format};base64,${base64}`
+    }
+
+    metadata = {
+      title: common.title || fallbackTitle,
+      artist: common.artist || 'Unknown Artist',
+      album: common.album || 'Unknown Album',
+      albumArtist: typeof common.albumartist === 'string' ? common.albumartist : undefined,
+      duration: mm_metadata.format.duration,
+      format,
+      artwork: artworkDataUrl,
+      channels: mm_metadata.format.numberOfChannels,
+      codec: mm_metadata.format.codec,
+      codecProfile: mm_metadata.format.codecProfile,
+      isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile),
+      replayGainTrackDb: replayGainScanEnabled
+        ? replayGain.trackGainDb
+        : undefined,
+      replayGainAlbumDb: replayGainScanEnabled
+        ? replayGain.albumGainDb
+        : undefined
+    }
+  } catch {
+    // Keep default metadata when parser fails.
+  }
+
+  if (shouldProbeWithFfprobe(filePath, metadata)) {
+    const ffprobeMetadata = await probeAudioMetadataWithFfprobe(filePath)
+    if (ffprobeMetadata) {
+      metadata.channels = ffprobeMetadata.channels ?? metadata.channels
+      metadata.codec = ffprobeMetadata.codec ?? metadata.codec
+      metadata.codecProfile = ffprobeMetadata.codecProfile ?? metadata.codecProfile
+      metadata.isAtmosJoc = Boolean(
+        metadata.isAtmosJoc ||
+        ffprobeMetadata.isAtmosJoc ||
+        isAtmosJocStream(metadata.codec, metadata.codecProfile, ffprobeMetadata.hints)
+      )
+    }
+  }
+
+  return metadata
+}
+
 async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {}) {
   const loadStartMs = Date.now()
   try {
     // Read file as buffer
     const buffer = await readFile(filePath)
     const name = basename(filePath)
-    const fallbackTitle = name.replace(/\.[^.]+$/, '')
-    const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
-
     if (options.metadataMode === 'none') {
       const elapsedMs = Date.now() - loadStartMs
       if (isDev && elapsedMs > 1500) {
@@ -2988,69 +3055,13 @@ async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {
       }
     }
 
-    // Extract metadata using music-metadata with ffprobe enrichment fallback.
-    let metadata: LoadedAudioMetadata = {
-      title: fallbackTitle,
-      artist: 'Unknown Artist',
-      album: 'Unknown Album',
-      format
-    }
-
-    try {
-      const mm_metadata = await mm.parseFile(filePath)
-      const common = mm_metadata.common
-      const replayGain = extractReplayGainDb(mm_metadata)
-
-      // Convert artwork to base64 data URL
-      let artworkDataUrl: string | undefined
-      if (common.picture && common.picture.length > 0) {
-        const pic = common.picture[0]
-        const base64 = Buffer.from(pic.data).toString('base64')
-        artworkDataUrl = `data:${pic.format};base64,${base64}`
-      }
-
-      metadata = {
-        title: common.title || fallbackTitle,
-        artist: common.artist || 'Unknown Artist',
-        album: common.album || 'Unknown Album',
-        albumArtist: typeof common.albumartist === 'string' ? common.albumartist : undefined,
-        duration: mm_metadata.format.duration,
-        format,
-        artwork: artworkDataUrl,
-        channels: mm_metadata.format.numberOfChannels,
-        codec: mm_metadata.format.codec,
-        codecProfile: mm_metadata.format.codecProfile,
-        isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile),
-        replayGainTrackDb: replayGainScanEnabled
-          ? replayGain.trackGainDb
-          : undefined,
-        replayGainAlbumDb: replayGainScanEnabled
-          ? replayGain.albumGainDb
-          : undefined
-      }
-    } catch {
-      // Keep default metadata when parser fails.
-    }
-
-    if (shouldProbeWithFfprobe(filePath, metadata)) {
-      const ffprobeMetadata = await probeAudioMetadataWithFfprobe(filePath)
-      if (ffprobeMetadata) {
-        metadata.channels = ffprobeMetadata.channels ?? metadata.channels
-        metadata.codec = ffprobeMetadata.codec ?? metadata.codec
-        metadata.codecProfile = ffprobeMetadata.codecProfile ?? metadata.codecProfile
-        metadata.isAtmosJoc = Boolean(
-          metadata.isAtmosJoc ||
-          ffprobeMetadata.isAtmosJoc ||
-          isAtmosJocStream(metadata.codec, metadata.codecProfile, ffprobeMetadata.hints)
-        )
-      }
-    }
+    const metadata = await loadAudioMetadata(filePath)
 
     const payload = {
       path: filePath,
       name: name,
       data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
-      metadata
+      metadata: metadata ?? undefined
     }
     const elapsedMs = Date.now() - loadStartMs
     if (isDev && elapsedMs > 1500) {

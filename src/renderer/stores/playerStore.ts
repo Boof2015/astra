@@ -28,6 +28,13 @@ interface PlayerStore {
     delayMs: number
     outputLabel: string
   } | null
+  associatedOpenNotice: {
+    id: number
+    trackPath: string
+    title: string
+    fileCount: number
+    sourceLabel: string
+  } | null
 
   // Queue state
   queue: Track[]
@@ -65,6 +72,13 @@ interface PlayerStore {
   getPreviousTracks: () => Track[]
   clearFfmpegFallbackNotice: () => void
   clearOutputDelayNotice: () => void
+  showAssociatedOpenNotice: (notice: {
+    trackPath: string
+    title: string
+    fileCount: number
+    sourceLabel: string
+  }) => void
+  clearAssociatedOpenNotice: () => void
 
   // Internal
   _initListeners: () => void
@@ -89,6 +103,43 @@ interface RecentPlaySession {
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
+}
+
+interface AssociatedAudioMetadata {
+  title?: string
+  artist?: string
+  album?: string
+  albumArtist?: string
+  duration?: number
+  format?: string
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
+  replayGainTrackDb?: number
+  replayGainAlbumDb?: number
+  artwork?: string
+}
+
+function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedAudioMetadata): Track {
+  return {
+    ...track,
+    title: metadata.title?.trim() || track.title,
+    artist: metadata.artist?.trim() || track.artist,
+    album: metadata.album?.trim() || track.album,
+    albumArtist: metadata.albumArtist ?? track.albumArtist,
+    duration: typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration > 0
+      ? metadata.duration
+      : track.duration,
+    format: metadata.format?.trim() || track.format,
+    artworkData: metadata.artwork ?? track.artworkData,
+    channels: metadata.channels ?? track.channels,
+    codec: metadata.codec ?? track.codec,
+    codecProfile: metadata.codecProfile ?? track.codecProfile,
+    isAtmosJoc: metadata.isAtmosJoc ?? track.isAtmosJoc,
+    replayGainTrackDb: metadata.replayGainTrackDb ?? track.replayGainTrackDb,
+    replayGainAlbumDb: metadata.replayGainAlbumDb ?? track.replayGainAlbumDb
+  }
 }
 
 function clampPlayerVolume(value: number): number {
@@ -166,8 +217,46 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let listenersInitialized = false
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
+  let associatedOpenNoticeId = 0
+  const associatedMetadataInflight = new Set<string>()
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
+
+  const hydrateAssociatedCurrentTrackMetadata = (track: Track): void => {
+    if (track.origin !== 'associated-external') {
+      return
+    }
+    if (associatedMetadataInflight.has(track.path)) {
+      return
+    }
+
+    associatedMetadataInflight.add(track.path)
+
+    void window.electronAPI.getAudioMetadata(track.path)
+      .then((metadata) => {
+        if (!metadata) {
+          return
+        }
+
+        const currentState = get()
+        const activeTrack = currentState.currentTrack
+        if (!activeTrack || activeTrack.path !== track.path || activeTrack.origin !== 'associated-external') {
+          return
+        }
+
+        const nextTrack = mergeAssociatedTrackMetadata(activeTrack, metadata)
+        set({
+          currentTrack: nextTrack,
+          duration: currentState.duration > 0 ? currentState.duration : nextTrack.duration
+        })
+      })
+      .catch((error) => {
+        console.warn(`Failed to hydrate metadata for associated track ${track.path}:`, error)
+      })
+      .finally(() => {
+        associatedMetadataInflight.delete(track.path)
+      })
+  }
 
   const getRecentPlayThresholdSeconds = (track: Track | null): number => {
     if (!track || !Number.isFinite(track.duration) || track.duration <= 0) {
@@ -275,6 +364,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     waveformData: null,
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
+    associatedOpenNotice: null,
 
     // Queue state
     queue: [],
@@ -329,6 +419,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTrack: resolvedTrack,
           currentTime: 0
         })
+        hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }
@@ -623,6 +714,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({ outputDelayNotice: null })
     },
 
+    showAssociatedOpenNotice: (notice) => {
+      const fileCount = Number.isFinite(notice.fileCount)
+        ? Math.max(1, Math.floor(notice.fileCount))
+        : 1
+      associatedOpenNoticeId += 1
+      set({
+        associatedOpenNotice: {
+          id: associatedOpenNoticeId,
+          trackPath: notice.trackPath,
+          title: notice.title.trim() || 'Unknown Track',
+          fileCount,
+          sourceLabel: notice.sourceLabel.trim() || 'File Explorer'
+        }
+      })
+    },
+
+    clearAssociatedOpenNotice: () => {
+      set({ associatedOpenNotice: null })
+    },
+
     // Get the next index based on shuffle/repeat settings
     _getNextIndex: () => {
       const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
@@ -815,6 +926,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTrack: resolvedTrack,
           currentTime: 0
         })
+        hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }

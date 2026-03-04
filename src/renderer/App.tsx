@@ -11,6 +11,7 @@ import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
+import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -47,6 +48,12 @@ function toAssociatedExternalTrack(filePath: string): Track {
     duration: 0,
     format,
   }
+}
+
+function getAssociatedOpenSourceLabel(platform: NodeJS.Platform): string {
+  if (platform === 'darwin') return 'Finder'
+  if (platform === 'win32') return 'File Explorer'
+  return 'File Manager'
 }
 
 function App() {
@@ -95,6 +102,12 @@ function App() {
       const didLoad = await player.loadTrack(firstTrack, loaded.data)
       if (didLoad) {
         await player.play()
+        player.showAssociatedOpenNotice({
+          trackPath: firstTrack.path,
+          title: firstTrack.title,
+          fileCount: queueTracks.length,
+          sourceLabel: getAssociatedOpenSourceLabel(window.electronAPI.platform)
+        })
       }
     }
 
@@ -137,6 +150,7 @@ function App() {
       <TransportBar />
       <DecodeFallbackCue />
       <OutputDelayCue />
+      <AssociatedOpenCue />
       <UpdateAvailableCue />
       <QuickLaunchPalette />
       {isFullscreen && <FullscreenMode />}

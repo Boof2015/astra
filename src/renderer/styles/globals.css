@@ -2087,11 +2087,57 @@ button, .titlebar {
   }
 }
 
-.update-available-cue {
+.associated-open-cue {
   position: fixed;
   right: clamp(18px, 4vw, 40px);
   bottom: calc(var(--now-playing-height) + 14px);
   z-index: 242;
+  width: min(360px, calc(100vw - 40px));
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.3s ease, transform 0.36s ease;
+}
+
+.associated-open-cue-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.associated-open-cue-fullscreen {
+  bottom: clamp(18px, 3.6vh, 36px);
+}
+
+.associated-open-cue-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.94);
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.2);
+  flex-shrink: 0;
+}
+
+.associated-open-cue-fill {
+  animation: associatedOpenCueFill 4.6s linear forwards;
+}
+
+@keyframes associatedOpenCueFill {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.update-available-cue {
+  position: fixed;
+  right: clamp(18px, 4vw, 40px);
+  bottom: calc(var(--now-playing-height) + 14px);
+  z-index: 243;
   width: min(360px, calc(100vw - 40px));
   pointer-events: none;
   opacity: 0;
@@ -2203,9 +2249,11 @@ button, .titlebar {
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
+  .associated-open-cue,
   .update-available-cue,
   .fullscreen-next-cue-fill,
   .output-delay-cue-fill,
+  .associated-open-cue-fill,
   .update-available-cue-fill,
   .pipeline-shelf,
   .transport-lyrics-shelf,
@@ -2225,11 +2273,13 @@ button, .titlebar {
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
+  .associated-open-cue,
   .update-available-cue,
   .fullscreen-next-cue-visible,
   .fullscreen-next-cue-handoff,
   .decode-fallback-cue-visible,
   .output-delay-cue-visible,
+  .associated-open-cue-visible,
   .update-available-cue-visible,
   .transport-lyrics-shelf,
   .transport-lyrics-focus-track {
@@ -8954,6 +9004,11 @@ body::after {
     width: min(320px, calc(100vw - 32px));
   }
 
+  .associated-open-cue {
+    right: 16px;
+    width: min(320px, calc(100vw - 32px));
+  }
+
   .update-available-cue {
     right: 16px;
     width: min(320px, calc(100vw - 32px));
@@ -9290,6 +9345,12 @@ body::after {
   }
 
   .output-delay-cue {
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+
+  .associated-open-cue {
     right: 10px;
     left: 10px;
     width: auto;
