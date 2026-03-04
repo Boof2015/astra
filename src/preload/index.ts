@@ -30,29 +30,31 @@ import type {
   LyricsTrackQuery
 } from '../types/lyrics'
 
+export interface AudioFileMetadata {
+  title?: string
+  artist?: string
+  album?: string
+  albumArtist?: string
+  year?: number
+  trackNumber?: number
+  duration?: number
+  format?: string
+  sampleRate?: number
+  channels?: number
+  codec?: string
+  codecProfile?: string
+  isAtmosJoc?: boolean
+  replayGainTrackDb?: number
+  replayGainAlbumDb?: number
+  artwork?: string
+}
+
 // Audio file result from main process
 export interface AudioFileResult {
   path: string
   name: string
   data: ArrayBuffer
-  metadata?: {
-    title?: string
-    artist?: string
-    album?: string
-    albumArtist?: string
-    year?: number
-    trackNumber?: number
-    duration?: number
-    format?: string
-    sampleRate?: number
-    channels?: number
-    codec?: string
-    codecProfile?: string
-    isAtmosJoc?: boolean
-    replayGainTrackDb?: number
-    replayGainAlbumDb?: number
-    artwork?: string  // Base64 data URL
-  }
+  metadata?: AudioFileMetadata
 }
 
 export interface AudioLoadOptions {
@@ -367,6 +369,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  associatedOpenFiles: {
+    markReady: () => ipcRenderer.send('associated-open-files:rendererReady'),
+    onOpenFiles: (callback: (paths: string[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, paths: string[]) => callback(paths)
+      ipcRenderer.on('associated-open-files', handler)
+      return () => ipcRenderer.removeListener('associated-open-files', handler)
+    }
+  },
 
   miniPlayer: {
     open: () => ipcRenderer.invoke('mini-player:open'),
@@ -496,6 +506,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
+  getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
   getReplayGainScanEnabled: () => ipcRenderer.invoke('audio:getReplayGainScanEnabled') as Promise<boolean>,
   setReplayGainScanEnabled: (enabled: boolean) => ipcRenderer.invoke('audio:setReplayGainScanEnabled', enabled) as Promise<boolean>,
@@ -647,6 +658,10 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
+      associatedOpenFiles: {
+        markReady: () => void
+        onOpenFiles: (callback: (paths: string[]) => void) => () => void
+      }
       miniPlayer: {
         open: () => Promise<void>
         close: () => Promise<void>
@@ -725,6 +740,7 @@ declare global {
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
+      getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
       getReplayGainScanEnabled: () => Promise<boolean>
       setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>

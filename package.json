@@ -86,6 +86,27 @@
         ]
       }
     ],
+    "fileAssociations": [
+      {
+        "name": "Astra Audio File",
+        "description": "Audio file",
+        "role": "Viewer",
+        "ext": [
+          "mp3",
+          "flac",
+          "wav",
+          "ogg",
+          "aac",
+          "m4a",
+          "opus",
+          "wma",
+          "aiff",
+          "alac",
+          "ape",
+          "wv"
+        ]
+      }
+    ],
     "win": {
       "target": [
         {
