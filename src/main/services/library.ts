@@ -63,6 +63,7 @@ export interface FolderSubdirectoryEntry {
   excluded: boolean
   hasChildren: boolean
   missing: boolean
+  audioFileCount: number
 }
 
 export type LyricsCacheStatus = 'hit' | 'not_found'
@@ -2183,15 +2184,6 @@ async function collectDiscoveredSubdirectories(folderPath: string): Promise<Set<
   return discovered
 }
 
-async function directoryHasSubdirectories(directoryPath: string): Promise<boolean> {
-  try {
-    const entries = await readdir(directoryPath, { withFileTypes: true })
-    return entries.some((entry) => entry.isDirectory())
-  } catch {
-    return false
-  }
-}
-
 export async function listFolderSubdirectories(
   folderPath: string,
   parentRelativePath: string = ''
@@ -2222,11 +2214,26 @@ export async function listFolderSubdirectories(
       if (!childRelativePath) continue
 
       const childAbsolutePath = join(currentAbsolutePath, entry.name)
+      let hasChildDirs = false
+      let audioCount = 0
+      try {
+        const childEntries = await readdir(childAbsolutePath, { withFileTypes: true })
+        for (const ce of childEntries) {
+          if (ce.isDirectory()) hasChildDirs = true
+          else if (ce.isFile()) {
+            const ext = extname(ce.name).toLowerCase()
+            if (AUDIO_EXTENSIONS.has(ext)) audioCount++
+          }
+        }
+      } catch {
+        // Permission denied or inaccessible
+      }
       directChildren.set(childRelativePath, {
         name: entry.name,
         relativePath: childRelativePath,
         excluded: isRelativeSubfolderExcluded(childRelativePath, excludedRelativePaths),
-        hasChildren: await directoryHasSubdirectories(childAbsolutePath),
+        hasChildren: hasChildDirs,
+        audioFileCount: audioCount,
         missing: false,
       })
     }
@@ -2255,6 +2262,7 @@ export async function listFolderSubdirectories(
       excluded: true,
       hasChildren: Array.from(excludedRelativePaths.values())
         .some((candidatePath) => candidatePath !== excludedRelativePath && candidatePath.startsWith(`${excludedRelativePath}/`)),
+      audioFileCount: 0,
       missing: true,
     })
   }

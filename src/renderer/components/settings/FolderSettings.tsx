@@ -19,16 +19,10 @@ function formatSubfolderSummary(totalSubfolders: number, excludedSubfolders: num
   }
 
   if (excludedSubfolders > 0) {
-    return `${totalSubfolders} found • ${excludedSubfolders} excluded`
+    return `${totalSubfolders} found \u2022 ${excludedSubfolders} excluded`
   }
 
   return `${totalSubfolders} found`
-}
-
-function getParentPath(relativePath: string): string {
-  const separatorIndex = relativePath.lastIndexOf('/')
-  if (separatorIndex === -1) return ''
-  return relativePath.slice(0, separatorIndex)
 }
 
 function formatScanIssuePhase(phase: ScanIssueEntry['phase']): string {
@@ -44,6 +38,10 @@ function formatScanIssuePhase(phase: ScanIssueEntry['phase']): string {
     default:
       return phase
   }
+}
+
+function makeNodeKey(folderPath: string, relativePath: string): string {
+  return `${folderPath}::${relativePath}`
 }
 
 export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps) {
@@ -67,16 +65,16 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
   } = useLibraryStore()
 
   const [removingPath, setRemovingPath] = useState<string | null>(null)
-  const [expandedWarning, setExpandedWarning] = useState<string | null>(null)
-  const [activeFolderPath, setActiveFolderPath] = useState<string | null>(null)
-  const [currentRelativePath, setCurrentRelativePath] = useState('')
-  const [subdirectories, setSubdirectories] = useState<FolderSubdirectoryEntry[]>([])
-  const [isSubdirectoryLoading, setIsSubdirectoryLoading] = useState(false)
-  const [subdirectoryError, setSubdirectoryError] = useState<string | null>(null)
   const [pendingExclusionChangesByFolder, setPendingExclusionChangesByFolder] = useState<Record<string, Record<string, boolean>>>({})
   const [pendingFolderScans, setPendingFolderScans] = useState<string[]>([])
   const [isSavingChanges, setIsSavingChanges] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus | null>(null)
+
+  // Tree state
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
+  const [childrenCache, setChildrenCache] = useState<Map<string, FolderSubdirectoryEntry[]>>(new Map())
+  const [loadingNodes, setLoadingNodes] = useState<Set<string>>(new Set())
+  const [nodeErrors, setNodeErrors] = useState<Map<string, string>>(new Map())
 
   useEffect(() => {
     if (!isOpen) return
@@ -89,15 +87,6 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
       folders.map((folder) => loadFolderSubfolderSummary(folder.path).catch(() => ({ totalSubfolders: 0, excludedSubfolders: 0 })))
     )
   }, [folders, isOpen, loadFolderSubfolderSummary])
-
-  useEffect(() => {
-    if (!activeFolderPath) return
-    if (folders.some((folder) => folder.path === activeFolderPath)) return
-    setActiveFolderPath(null)
-    setCurrentRelativePath('')
-    setSubdirectories([])
-    setSubdirectoryError(null)
-  }, [activeFolderPath, folders])
 
   useEffect(() => {
     if (folders.length === 0) {
@@ -136,12 +125,10 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
 
   useEffect(() => {
     if (isOpen) return
-    setActiveFolderPath(null)
-    setCurrentRelativePath('')
-    setSubdirectories([])
-    setSubdirectoryError(null)
-    setIsSubdirectoryLoading(false)
-    setExpandedWarning(null)
+    setExpandedNodes(new Set())
+    setChildrenCache(new Map())
+    setLoadingNodes(new Set())
+    setNodeErrors(new Map())
     setRemovingPath(null)
   }, [isOpen])
 
@@ -158,21 +145,6 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [cancelScan, isOpen, isScanning])
 
-  const breadcrumbSegments = useMemo(
-    () => currentRelativePath.split('/').filter((segment) => segment.length > 0),
-    [currentRelativePath]
-  )
-
-  const activeFolderPendingChanges = useMemo(
-    () => activeFolderPath ? (pendingExclusionChangesByFolder[activeFolderPath] ?? {}) : {},
-    [activeFolderPath, pendingExclusionChangesByFolder]
-  )
-
-  const pendingChangeCount = useMemo(
-    () => Object.keys(activeFolderPendingChanges).length,
-    [activeFolderPendingChanges]
-  )
-
   const pendingScanFolderPaths = useMemo(() => {
     const paths = new Set<string>(pendingFolderScans)
     for (const [folderPath, changes] of Object.entries(pendingExclusionChangesByFolder)) {
@@ -187,6 +159,81 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     () => new Set(pendingScanFolderPaths),
     [pendingScanFolderPaths]
   )
+
+  const totalPendingChangeCount = useMemo(() => {
+    let count = 0
+    for (const changes of Object.values(pendingExclusionChangesByFolder)) {
+      count += Object.keys(changes).length
+    }
+    return count
+  }, [pendingExclusionChangesByFolder])
+
+  // Compute per-root-folder error counts and per-subfolder error presence from scan issues
+  const folderIssueCountMap = useMemo(() => {
+    const map: Record<string, number> = {}
+    if (!lastScanIssueLog) return map
+    for (const entry of lastScanIssueLog.entries) {
+      const fp = entry.folderPath ?? ''
+      map[fp] = (map[fp] ?? 0) + 1
+    }
+    return map
+  }, [lastScanIssueLog])
+
+  // Map of "folderPath::relativePath" -> issue count for subfolders (scan errors + inaccessible warnings)
+  const subfolderIssueMap = useMemo(() => {
+    const map = new Map<string, number>()
+
+    // Attribute scan issue entries to their containing subfolders
+    if (lastScanIssueLog) {
+      for (const entry of lastScanIssueLog.entries) {
+        const rootFolder = entry.folderPath
+        if (!rootFolder) continue
+        if (!entry.path.startsWith(rootFolder)) continue
+        const relative = entry.path.slice(rootFolder.length).replace(/^[/\\]/, '')
+        const parts = relative.split('/')
+        for (let i = 1; i <= parts.length - 1; i++) {
+          const subPath = parts.slice(0, i).join('/')
+          const key = makeNodeKey(rootFolder, subPath)
+          map.set(key, (map.get(key) ?? 0) + 1)
+        }
+      }
+    }
+
+    // Attribute inaccessible folder warnings to the exact subfolder node
+    for (const [rootFolder, warningPaths] of Object.entries(folderWarnings)) {
+      for (const absPath of warningPaths) {
+        if (!absPath.startsWith(rootFolder)) continue
+        const relative = absPath.slice(rootFolder.length).replace(/^[/\\]/, '')
+        if (!relative) continue
+        const key = makeNodeKey(rootFolder, relative)
+        // Mark with at least 1 so the indicator shows even if no scan issues exist
+        if (!map.has(key)) map.set(key, 0)
+        // Also bubble up to parent subfolders
+        const parts = relative.split('/')
+        for (let i = 1; i < parts.length; i++) {
+          const parentPath = parts.slice(0, i).join('/')
+          const parentKey = makeNodeKey(rootFolder, parentPath)
+          if (!map.has(parentKey)) map.set(parentKey, 0)
+        }
+      }
+    }
+
+    return map
+  }, [lastScanIssueLog, folderWarnings])
+
+  // Set of node keys that are directly inaccessible (EACCES/EPERM)
+  const inaccessibleNodeKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const [rootFolder, warningPaths] of Object.entries(folderWarnings)) {
+      for (const absPath of warningPaths) {
+        if (!absPath.startsWith(rootFolder)) continue
+        const relative = absPath.slice(rootFolder.length).replace(/^[/\\]/, '')
+        if (!relative) continue
+        set.add(makeNodeKey(rootFolder, relative))
+      }
+    }
+    return set
+  }, [folderWarnings])
 
   const pendingScanCount = pendingScanFolderPaths.length
   const hasPendingChanges = pendingScanCount > 0
@@ -221,32 +268,57 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     })
   }
 
-  const loadSubdirectoryBranch = async (folderPath: string, relativePath: string = '') => {
-    setIsSubdirectoryLoading(true)
-    setSubdirectoryError(null)
-    try {
-      const entries = await listFolderSubdirectories(folderPath, relativePath)
-      setSubdirectories(entries)
-      setCurrentRelativePath(relativePath)
-    } catch (error) {
-      console.error('Failed to load subdirectories:', error)
-      setSubdirectoryError('Could not load subfolders right now.')
-      setSubdirectories([])
-    } finally {
-      setIsSubdirectoryLoading(false)
-    }
-  }
-
   const handleClose = () => {
     if (!canClose) return
     onClose()
   }
 
-  const getEffectiveExcludedState = (entry: FolderSubdirectoryEntry): boolean => {
-    if (Object.prototype.hasOwnProperty.call(activeFolderPendingChanges, entry.relativePath)) {
-      return Boolean(activeFolderPendingChanges[entry.relativePath])
+  const getEffectiveExcludedState = (folderPath: string, entry: FolderSubdirectoryEntry): boolean => {
+    const changes = pendingExclusionChangesByFolder[folderPath] ?? {}
+    if (Object.prototype.hasOwnProperty.call(changes, entry.relativePath)) {
+      return Boolean(changes[entry.relativePath])
     }
     return entry.excluded
+  }
+
+  const handleToggleExpand = async (folderPath: string, relativePath: string) => {
+    const key = makeNodeKey(folderPath, relativePath)
+
+    if (expandedNodes.has(key)) {
+      setExpandedNodes((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+      return
+    }
+
+    if (childrenCache.has(key)) {
+      setExpandedNodes((prev) => new Set(prev).add(key))
+      return
+    }
+
+    setLoadingNodes((prev) => new Set(prev).add(key))
+    setNodeErrors((prev) => {
+      const next = new Map(prev)
+      next.delete(key)
+      return next
+    })
+
+    try {
+      const entries = await listFolderSubdirectories(folderPath, relativePath)
+      setChildrenCache((prev) => new Map(prev).set(key, entries))
+      setExpandedNodes((prev) => new Set(prev).add(key))
+    } catch (error) {
+      console.error('Failed to load tree node:', error)
+      setNodeErrors((prev) => new Map(prev).set(key, 'Could not load subfolders.'))
+    } finally {
+      setLoadingNodes((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
   }
 
   const handleRemoveFolder = async (path: string) => {
@@ -261,12 +333,20 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         return remaining
       })
 
-      if (activeFolderPath === path) {
-        setActiveFolderPath(null)
-        setCurrentRelativePath('')
-        setSubdirectories([])
-        setSubdirectoryError(null)
-      }
+      setExpandedNodes((prev) => {
+        const next = new Set(prev)
+        for (const key of next) {
+          if (key.startsWith(`${path}::`)) next.delete(key)
+        }
+        return next
+      })
+      setChildrenCache((prev) => {
+        const next = new Map(prev)
+        for (const key of next.keys()) {
+          if (key.startsWith(`${path}::`)) next.delete(key)
+        }
+        return next
+      })
 
       setSaveStatus({ tone: 'info', message: 'Folder removed from library.' })
     } catch (error) {
@@ -285,27 +365,13 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     setSaveStatus({ tone: 'info', message: 'Folder added. Review subfolders, then Save & Scan.' })
   }
 
-  const handleOpenSubfolders = async (folderPath: string) => {
-    setActiveFolderPath(folderPath)
-    await loadSubdirectoryBranch(folderPath, '')
-  }
-
-  const handleBackToFolders = () => {
-    setActiveFolderPath(null)
-    setCurrentRelativePath('')
-    setSubdirectories([])
-    setSubdirectoryError(null)
-  }
-
-  const handleToggleSubfolderExcluded = (entry: FolderSubdirectoryEntry) => {
-    if (!activeFolderPath) return
-
-    const currentExcluded = getEffectiveExcludedState(entry)
+  const handleToggleExcluded = (folderPath: string, entry: FolderSubdirectoryEntry) => {
+    const currentExcluded = getEffectiveExcludedState(folderPath, entry)
     const nextExcluded = !currentExcluded
     const baselineExcluded = entry.excluded
 
     setPendingExclusionChangesByFolder((current) => {
-      const currentFolderChanges = { ...(current[activeFolderPath] ?? {}) }
+      const currentFolderChanges = { ...(current[folderPath] ?? {}) }
 
       if (nextExcluded === baselineExcluded) {
         delete currentFolderChanges[entry.relativePath]
@@ -315,23 +381,17 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
 
       const next = { ...current }
       if (Object.keys(currentFolderChanges).length === 0) {
-        delete next[activeFolderPath]
+        delete next[folderPath]
       } else {
-        next[activeFolderPath] = currentFolderChanges
+        next[folderPath] = currentFolderChanges
       }
 
       return next
     })
   }
 
-  const handleDiscardPendingChanges = () => {
-    if (!activeFolderPath) return
-
-    setPendingExclusionChangesByFolder((current) => {
-      if (!Object.prototype.hasOwnProperty.call(current, activeFolderPath)) return current
-      const { [activeFolderPath]: _discarded, ...remaining } = current
-      return remaining
-    })
+  const handleDiscardAllPendingChanges = () => {
+    setPendingExclusionChangesByFolder({})
   }
 
   const handleSaveAndScan = async () => {
@@ -343,18 +403,22 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     try {
       const scanTargets = new Set(pendingScanFolderPaths)
 
+      const exclusionPromises: Promise<void>[] = []
       for (const [folderPath, changes] of Object.entries(pendingExclusionChangesByFolder)) {
         const updates = Object.entries(changes)
         if (updates.length === 0) continue
+        scanTargets.add(folderPath)
 
         for (const [relativePath, excluded] of updates) {
-          const result = await setFolderSubfolderExcluded(folderPath, relativePath, excluded)
-          if (!result) {
-            throw new Error(`Failed to update exclusion for ${folderPath}:${relativePath}`)
-          }
+          exclusionPromises.push(
+            setFolderSubfolderExcluded(folderPath, relativePath, excluded).then((result) => {
+              if (!result) throw new Error(`Failed to update exclusion for ${folderPath}:${relativePath}`)
+            })
+          )
         }
-
-        scanTargets.add(folderPath)
+      }
+      if (exclusionPromises.length > 0) {
+        await Promise.all(exclusionPromises)
       }
 
       const folderPathsToScan = Array.from(scanTargets)
@@ -379,9 +443,16 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         return next
       })
 
-      if (activeFolderPath) {
-        await loadSubdirectoryBranch(activeFolderPath, currentRelativePath)
-      }
+      // Invalidate tree cache for scanned folders so re-expand fetches fresh data
+      setChildrenCache((prev) => {
+        const next = new Map(prev)
+        for (const fp of folderPathsToScan) {
+          for (const key of next.keys()) {
+            if (key.startsWith(`${fp}::`)) next.delete(key)
+          }
+        }
+        return next
+      })
 
       if (canceled) {
         const remainingFolders = Math.max(0, folderPathsToScan.length - scannedFolders)
@@ -403,23 +474,128 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     }
   }
 
-  const handleOpenChildPath = async (entry: FolderSubdirectoryEntry) => {
-    if (!activeFolderPath || !entry.hasChildren) return
-    await loadSubdirectoryBranch(activeFolderPath, entry.relativePath)
-  }
+  function TreeNode({ folderPath, entry, guideMask, isLast }: {
+    folderPath: string
+    entry: FolderSubdirectoryEntry
+    guideMask: boolean[]
+    isLast: boolean
+  }) {
+    const key = makeNodeKey(folderPath, entry.relativePath)
+    const isExpanded = expandedNodes.has(key)
+    const isLoading = loadingNodes.has(key)
+    const children = childrenCache.get(key)
+    const effectiveExcluded = getEffectiveExcludedState(folderPath, entry)
+    const hasPendingOverride = Object.prototype.hasOwnProperty.call(
+      pendingExclusionChangesByFolder[folderPath] ?? {}, entry.relativePath
+    )
+    const error = nodeErrors.get(key)
+    const childMask = [...guideMask, !isLast]
 
-  const handleNavigateToBreadcrumb = async (segmentIndex: number) => {
-    if (!activeFolderPath) return
-    const nextRelativePath = segmentIndex < 0
-      ? ''
-      : breadcrumbSegments.slice(0, segmentIndex + 1).join('/')
-    await loadSubdirectoryBranch(activeFolderPath, nextRelativePath)
-  }
+    const issueCount = subfolderIssueMap.get(key) ?? 0
+    const isInaccessible = inaccessibleNodeKeys.has(key)
+    // subfolderIssueMap has key with value 0 = "contains child issues", value > 0 = "has direct scan errors"
+    const hasChildIssues = !isInaccessible && issueCount === 0 && subfolderIssueMap.has(key)
 
-  const handleNavigateUp = async () => {
-    if (!activeFolderPath) return
-    const parentPath = getParentPath(currentRelativePath)
-    await loadSubdirectoryBranch(activeFolderPath, parentPath)
+    return (
+      <>
+        <div className={`folder-tree-node ${effectiveExcluded ? 'is-excluded' : ''} ${hasPendingOverride ? 'has-pending-change' : ''}`}>
+          <span className="folder-tree-guide">
+            {guideMask.map((hasLine, i) => (
+              <span key={i} className={`folder-tree-guide-col ${hasLine ? 'has-line' : ''}`} />
+            ))}
+            <span className={`folder-tree-guide-branch ${isLast ? 'is-last' : ''}`} />
+          </span>
+          {entry.hasChildren ? (
+            <button
+              className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
+              onClick={() => void handleToggleExpand(folderPath, entry.relativePath)}
+              disabled={isScanning || isSavingChanges}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+          ) : (
+            <div className="folder-tree-chevron is-leaf" />
+          )}
+          <span className="folder-tree-name">{entry.name}</span>
+          {entry.audioFileCount > 0 && (
+            <span className="folder-tree-file-count">
+              {entry.audioFileCount}
+            </span>
+          )}
+          {isInaccessible && (
+            <span className="folder-tree-badge inaccessible" title="Permission denied — cannot read this folder">Inaccessible</span>
+          )}
+          {issueCount > 0 && (
+            <span className="folder-tree-issue-count" title={`${issueCount} scan error${issueCount !== 1 ? 's' : ''} in this folder`}>
+              {issueCount}
+            </span>
+          )}
+          {hasChildIssues && (
+            <span className="folder-tree-issue-hint" title="Contains subfolders with issues">&bull;</span>
+          )}
+          {entry.missing && <span className="folder-tree-badge missing">missing</span>}
+          {effectiveExcluded && <span className="folder-tree-badge excluded">Excluded</span>}
+          {hasPendingOverride && <span className="folder-tree-badge unsaved">Unsaved</span>}
+          <button
+            className="folder-tree-toggle-btn"
+            onClick={() => handleToggleExcluded(folderPath, entry)}
+            disabled={isScanning || isSavingChanges}
+          >
+            {effectiveExcluded ? 'Include' : 'Exclude'}
+          </button>
+        </div>
+
+        {isLoading && (
+          <div className="folder-tree-status">
+            <span className="folder-tree-guide">
+              {childMask.map((hasLine, i) => (
+                <span key={i} className={`folder-tree-guide-col ${hasLine ? 'has-line' : ''}`} />
+              ))}
+            </span>
+            <div className="loading-spinner-small" />
+            <span>Loading...</span>
+          </div>
+        )}
+
+        {error && (
+          <div className="folder-tree-status">
+            <span className="folder-tree-guide">
+              {childMask.map((hasLine, i) => (
+                <span key={i} className={`folder-tree-guide-col ${hasLine ? 'has-line' : ''}`} />
+              ))}
+            </span>
+            {error}
+          </div>
+        )}
+
+        {isExpanded && children && (
+          <div className="folder-tree-children">
+            {children.length === 0 ? (
+              <div className="folder-tree-status">
+                <span className="folder-tree-guide">
+                  {childMask.map((hasLine, i) => (
+                    <span key={i} className={`folder-tree-guide-col ${hasLine ? 'has-line' : ''}`} />
+                  ))}
+                </span>
+                <span style={{ opacity: 0.5 }}>(empty)</span>
+              </div>
+            ) : (
+              children.map((child, index) => (
+                <TreeNode
+                  key={child.relativePath}
+                  folderPath={folderPath}
+                  entry={child}
+                  guideMask={childMask}
+                  isLast={index === children.length - 1}
+                />
+              ))
+            )}
+          </div>
+        )}
+      </>
+    )
   }
 
   if (!isOpen) return null
@@ -430,27 +606,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
       <div className={`modal-content folder-settings ${showScanIssuePopout ? 'has-detached-issues' : ''}`}>
         <div className="folder-settings-main">
           <div className="modal-header">
-            {activeFolderPath ? (
-              <button
-                className="folder-subfolder-back-btn"
-                onClick={handleBackToFolders}
-                aria-label="Back to parent folders"
-                disabled={isScanning || isSavingChanges}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
-                </svg>
-                <span>Folders</span>
-              </button>
-            ) : (
-              <h2>Library Folders</h2>
-            )}
-            {activeFolderPath && (
-              <div className="folder-subfolder-header-title">
-                <h2>Subfolders</h2>
-                <p>{activeFolderPath}</p>
-              </div>
-            )}
+            <h2>Library Folders</h2>
             <button className="modal-close" onClick={handleClose} aria-label="Close" disabled={!canClose}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -458,177 +614,110 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
             </button>
           </div>
 
-          <div className={`modal-body folder-settings-body ${activeFolderPath ? 'is-subfolder-view' : ''}`}>
+          <div className="modal-body folder-settings-body">
             {hasPendingChanges && (
               <div className="folder-settings-pending-overview">
                 {pendingScanCount} folder{pendingScanCount === 1 ? '' : 's'} queued for scan.
               </div>
             )}
 
-            {!activeFolderPath ? (
-              folders.length === 0 ? (
-                <div className="folder-empty">
-                  <p>No folders added to library</p>
-                  <p className="folder-empty-hint">Add a folder to start scanning your music collection</p>
-                </div>
-              ) : (
-                <div className="folder-list">
-                  {folders.map((folder) => {
-                    const summary = folderSubfolderSummaries[folder.path]
-                    return (
-                      <div key={folder.path} className="folder-item">
-                        <div className="folder-icon">
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+            {folders.length === 0 ? (
+              <div className="folder-empty">
+                <p>No folders added to library</p>
+                <p className="folder-empty-hint">Add a folder to start scanning your music collection</p>
+              </div>
+            ) : (
+              <div className="folder-tree">
+                {folders.map((folder) => {
+                  const rootKey = makeNodeKey(folder.path, '')
+                  const isExpanded = expandedNodes.has(rootKey)
+                  const isLoading = loadingNodes.has(rootKey)
+                  const children = childrenCache.get(rootKey)
+                  const summary = folderSubfolderSummaries[folder.path]
+                  const needsScan = pendingScanFolderSet.has(folder.path)
+                  const rootError = nodeErrors.get(rootKey)
+                  const rootIssueCount = folderIssueCountMap[folder.path] ?? 0
+
+                  return (
+                    <div key={folder.path} className="folder-tree-root-group">
+                      <div className="folder-tree-node is-root">
+                        <button
+                          className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
+                          onClick={() => void handleToggleExpand(folder.path, '')}
+                          disabled={isScanning || isSavingChanges}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z" />
                           </svg>
-                        </div>
-                        <div className="folder-info">
-                          <div className="folder-path">{folder.path}</div>
-                          <div className="folder-meta">
-                            Added {new Date(folder.added_at).toLocaleDateString()}
-                          </div>
-                          <div className="folder-subfolder-summary">
+                        </button>
+                        <svg className="folder-tree-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                        </svg>
+                        <div className="folder-tree-label">
+                          <span className="folder-tree-name" title={folder.path}>{folder.path}</span>
+                          <span className="folder-tree-meta">
                             {summary
                               ? formatSubfolderSummary(summary.totalSubfolders, summary.excludedSubfolders)
-                              : 'Loading subfolder counts...'}
-                            {pendingScanFolderSet.has(folder.path) && (
-                              <span className="folder-pending-scan-badge">Needs Scan</span>
-                            )}
-                          </div>
-                          {folderWarnings[folder.path] && folderWarnings[folder.path].length > 0 && (
-                            <div className="folder-warning">
-                              <button
-                                className="folder-warning-toggle"
-                                onClick={() => setExpandedWarning(
-                                  expandedWarning === folder.path ? null : folder.path
-                                )}
-                              >
-                                <svg className="folder-warning-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                  <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
-                                </svg>
-                                {folderWarnings[folder.path].length} subfolder{folderWarnings[folder.path].length !== 1 ? 's' : ''} inaccessible
-                              </button>
-                              {expandedWarning === folder.path && (
-                                <div className="folder-warning-details">
-                                  {folderWarnings[folder.path].map((dir) => (
-                                    <div key={dir} className="folder-warning-path">{dir}</div>
-                                  ))}
-                                </div>
-                              )}
+                              : 'Loading...'}
+                          </span>
+                        </div>
+                        {rootIssueCount > 0 && (
+                          <span className="folder-tree-issue-count" title={`${rootIssueCount} scan error${rootIssueCount !== 1 ? 's' : ''}`}>
+                            {rootIssueCount}
+                          </span>
+                        )}
+                        {needsScan && <span className="folder-tree-badge needs-scan">Needs Scan</span>}
+                        <button
+                          className="folder-remove"
+                          onClick={() => void handleRemoveFolder(folder.path)}
+                          disabled={removingPath === folder.path || isScanning || isSavingChanges}
+                          title="Remove folder"
+                        >
+                          {removingPath === folder.path ? (
+                            <div className="loading-spinner-small" />
+                          ) : (
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+
+                      {isLoading && (
+                        <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                          <div className="loading-spinner-small" />
+                          <span>Loading...</span>
+                        </div>
+                      )}
+
+                      {rootError && (
+                        <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                          {rootError}
+                        </div>
+                      )}
+
+                      {isExpanded && children && (
+                        <div className="folder-tree-children">
+                          {children.length === 0 ? (
+                            <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                              <span style={{ opacity: 0.5 }}>(empty)</span>
                             </div>
+                          ) : (
+                            children.map((entry, index) => (
+                              <TreeNode
+                                key={entry.relativePath}
+                                folderPath={folder.path}
+                                entry={entry}
+                                guideMask={[]}
+                                isLast={index === children.length - 1}
+                              />
+                            ))
                           )}
                         </div>
-                        <div className="folder-actions">
-                          <button
-                            className="folder-manage-subfolders"
-                            onClick={() => void handleOpenSubfolders(folder.path)}
-                            disabled={isScanning || isSavingChanges}
-                          >
-                            Subfolders
-                          </button>
-                          <button
-                            className="folder-remove"
-                            onClick={() => void handleRemoveFolder(folder.path)}
-                            disabled={removingPath === folder.path || isScanning || isSavingChanges}
-                            title="Remove folder"
-                          >
-                            {removingPath === folder.path ? (
-                              <div className="loading-spinner-small" />
-                            ) : (
-                              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )
-            ) : (
-              <div className="folder-subfolder-view">
-                <div className="folder-subfolder-toolbar">
-                  <div className="folder-subfolder-breadcrumb">
-                    <button
-                      className={`folder-subfolder-crumb ${currentRelativePath.length === 0 ? 'active' : ''}`}
-                      onClick={() => void handleNavigateToBreadcrumb(-1)}
-                      disabled={isSubdirectoryLoading || isScanning || isSavingChanges}
-                    >
-                      Root
-                    </button>
-                    {breadcrumbSegments.map((segment, index) => (
-                      <button
-                        key={`${segment}-${index}`}
-                        className={`folder-subfolder-crumb ${index === breadcrumbSegments.length - 1 ? 'active' : ''}`}
-                        onClick={() => void handleNavigateToBreadcrumb(index)}
-                        disabled={isSubdirectoryLoading || isScanning || isSavingChanges}
-                      >
-                        {segment}
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    className="folder-subfolder-up-btn"
-                    onClick={() => void handleNavigateUp()}
-                    disabled={currentRelativePath.length === 0 || isSubdirectoryLoading || isScanning || isSavingChanges}
-                  >
-                    Up
-                  </button>
-                </div>
-
-                {pendingChangeCount > 0 && (
-                  <div className="folder-subfolder-pending-note">
-                    {pendingChangeCount} unsaved change{pendingChangeCount === 1 ? '' : 's'}
-                  </div>
-                )}
-
-                {subdirectoryError ? (
-                  <div className="folder-subfolder-empty">
-                    <p>{subdirectoryError}</p>
-                  </div>
-                ) : isSubdirectoryLoading ? (
-                  <div className="folder-subfolder-empty">
-                    <div className="loading-spinner" />
-                    <p>Loading subfolders...</p>
-                  </div>
-                ) : subdirectories.length === 0 ? (
-                  <div className="folder-subfolder-empty">
-                    <p>No subfolders at this level.</p>
-                  </div>
-                ) : (
-                  <div className="folder-subfolder-list">
-                    {subdirectories.map((entry) => {
-                      const effectiveExcluded = getEffectiveExcludedState(entry)
-                      const hasPendingOverride = Object.prototype.hasOwnProperty.call(activeFolderPendingChanges, entry.relativePath)
-                      return (
-                        <div
-                          key={entry.relativePath}
-                          className={`folder-subfolder-item ${effectiveExcluded ? 'is-excluded' : ''} ${hasPendingOverride ? 'has-pending-change' : ''}`}
-                        >
-                          <button
-                            className="folder-subfolder-entry"
-                            onClick={() => void handleOpenChildPath(entry)}
-                            disabled={!entry.hasChildren || isScanning || isSubdirectoryLoading || isSavingChanges}
-                            title={entry.hasChildren ? 'Open subfolder' : 'No nested subfolders'}
-                          >
-                            <span className="folder-subfolder-name">{entry.name}</span>
-                            {entry.missing && <span className="folder-subfolder-missing">missing</span>}
-                            {effectiveExcluded && <span className="folder-subfolder-excluded-badge">Excluded</span>}
-                            {hasPendingOverride && <span className="folder-subfolder-pending-badge">Unsaved</span>}
-                          </button>
-                          <button
-                            className="folder-subfolder-toggle-btn"
-                            onClick={() => handleToggleSubfolderExcluded(entry)}
-                            disabled={isScanning || isSubdirectoryLoading || isSavingChanges}
-                          >
-                            {effectiveExcluded ? 'Include again' : 'Exclude'}
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -639,25 +728,23 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
             </div>
 
             <div className="folder-settings-footer-actions">
-              {activeFolderPath && (
+              {totalPendingChangeCount > 0 && (
                 <button
                   className="settings-btn"
-                  onClick={handleDiscardPendingChanges}
-                  disabled={isSavingChanges || isScanning || pendingChangeCount === 0}
+                  onClick={handleDiscardAllPendingChanges}
+                  disabled={isSavingChanges || isScanning}
                 >
                   Discard
                 </button>
               )}
 
-              {!activeFolderPath && (
-                <button
-                  className="add-folder-btn"
-                  onClick={() => void handleAddFolder()}
-                  disabled={isScanning || isSavingChanges}
-                >
-                  <span>+</span> Add Folder
-                </button>
-              )}
+              <button
+                className="add-folder-btn"
+                onClick={() => void handleAddFolder()}
+                disabled={isScanning || isSavingChanges}
+              >
+                <span>+</span> Add Folder
+              </button>
 
               <button
                 className="settings-btn settings-btn-primary"

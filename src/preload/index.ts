@@ -109,6 +109,7 @@ export interface FolderSubdirectoryEntry {
   excluded: boolean
   hasChildren: boolean
   missing: boolean
+  audioFileCount: number
 }
 
 export interface Album {

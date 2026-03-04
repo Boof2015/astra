@@ -67,6 +67,7 @@ export interface FolderSubdirectoryEntry {
   excluded: boolean
   hasChildren: boolean
   missing: boolean
+  audioFileCount: number
 }
 
 type ViewMode = 'tracks' | 'albums' | 'artists'
