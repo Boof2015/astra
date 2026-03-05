@@ -30,6 +30,12 @@ import type {
   LyricsTrackQuery
 } from '../types/lyrics'
 import type {
+  JellyfinSource,
+  JellyfinSourceCreateInput,
+  JellyfinSourceTestInput,
+  JellyfinSourceTestResult,
+  JellyfinSourceUpdateInput,
+  JellyfinStatusSnapshot,
   SubsonicSource,
   SubsonicSourceCreateInput,
   SubsonicSourceTestInput,
@@ -72,7 +78,7 @@ export interface AudioLoadOptions {
 
 export interface RemoteAudioLoadProgress {
   path: string
-  sourceType: 'subsonic'
+  sourceType: 'subsonic' | 'jellyfin'
   stage: 'downloading'
   loadedBytes: number
   totalBytes: number | null
@@ -549,6 +555,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('subsonic:status', handler)
     }
   },
+  jellyfin: {
+    listSources: (): Promise<JellyfinSource[]> => ipcRenderer.invoke('jellyfin:listSources'),
+    createSource: (input: JellyfinSourceCreateInput): Promise<JellyfinSource> =>
+      ipcRenderer.invoke('jellyfin:createSource', input),
+    updateSource: (sourceId: number, input: JellyfinSourceUpdateInput): Promise<JellyfinSource> =>
+      ipcRenderer.invoke('jellyfin:updateSource', sourceId, input),
+    deleteSource: (sourceId: number, purgeTracks: boolean): Promise<void> =>
+      ipcRenderer.invoke('jellyfin:deleteSource', sourceId, purgeTracks),
+    testSource: (input: JellyfinSourceTestInput): Promise<JellyfinSourceTestResult> =>
+      ipcRenderer.invoke('jellyfin:testSource', input),
+    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('jellyfin:syncSource', sourceId),
+    syncAll: (): Promise<void> => ipcRenderer.invoke('jellyfin:syncAll'),
+    getStatus: (): Promise<JellyfinStatusSnapshot> => ipcRenderer.invoke('jellyfin:getStatus'),
+    onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: JellyfinStatusSnapshot) => callback(status)
+      ipcRenderer.on('jellyfin:status', handler)
+      return () => ipcRenderer.removeListener('jellyfin:status', handler)
+    }
+  },
 
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
@@ -798,6 +823,17 @@ declare global {
         syncAll: () => Promise<void>
         getStatus: () => Promise<SubsonicStatusSnapshot>
         onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
+      }
+      jellyfin: {
+        listSources: () => Promise<JellyfinSource[]>
+        createSource: (input: JellyfinSourceCreateInput) => Promise<JellyfinSource>
+        updateSource: (sourceId: number, input: JellyfinSourceUpdateInput) => Promise<JellyfinSource>
+        deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
+        testSource: (input: JellyfinSourceTestInput) => Promise<JellyfinSourceTestResult>
+        syncSource: (sourceId: number) => Promise<void>
+        syncAll: () => Promise<void>
+        getStatus: () => Promise<JellyfinStatusSnapshot>
+        onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => () => void
       }
 
       // File operations

@@ -58,7 +58,7 @@ type TrackRecord = {
   disc_number: number | null
   format: string
   artwork_hash: string | null
-  source_type?: 'local' | 'subsonic'
+  source_type?: 'local' | 'subsonic' | 'jellyfin'
 }
 
 interface MetadataRowSelectionOptions {

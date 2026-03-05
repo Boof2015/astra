@@ -19,6 +19,7 @@ import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
+import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import {
   SLEEP_TIMER_MAX_MINUTES,
   SLEEP_TIMER_MIN_MINUTES,
@@ -50,7 +51,14 @@ import {
   LOCAL_API_MAX_PORT,
   LOCAL_API_MIN_PORT
 } from '../../../types/localApi'
-import type { SubsonicSource, SubsonicSourceUpdateInput } from '../../../types/subsonic'
+import type {
+  JellyfinSourceCreateInput,
+  JellyfinSourceTestResult,
+  JellyfinSourceUpdateInput,
+  SubsonicSourceCreateInput,
+  SubsonicSourceTestResult,
+  SubsonicSourceUpdateInput
+} from '../../../types/subsonic'
 
 type ResetActionId =
   | 'reset-theme'
@@ -103,6 +111,53 @@ const ASTRA_DISCORD_URL = 'https://discord.gg/hsKK8Kr9Nj'
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
+
+type RemoteSourceType = 'subsonic' | 'jellyfin'
+type RemoteServerTypeInput = 'auto' | RemoteSourceType
+
+interface RemoteEditingSourceRef {
+  sourceType: RemoteSourceType
+  sourceId: number
+}
+
+interface RemoteSourceListItem {
+  sourceType: RemoteSourceType
+  id: number
+  name: string
+  base_url: string
+  username: string
+  enabled: number
+  last_status: string
+  last_error: string | null
+  last_sync_at: number | null
+  last_checked_at: number | null
+  created_at: number
+  updated_at: number
+  has_stored_secret: boolean
+}
+
+interface RemoteSourceStatusItem {
+  status: string
+  error: string | null
+  lastSyncAt: number | null
+  lastCheckedAt: number | null
+  progress: {
+    activity: string
+    current: number | null
+    total: number | null
+    detail: string | null
+  } | null
+}
+
+const REMOTE_PROVIDER_LABEL: Record<RemoteSourceType, string> = {
+  subsonic: 'Subsonic / Navidrome',
+  jellyfin: 'Jellyfin'
+}
+
+const REMOTE_DEFAULT_BASE_URL_BY_TYPE: Record<RemoteSourceType, string> = {
+  subsonic: 'http://localhost:4533',
+  jellyfin: 'http://localhost:8096'
+}
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -240,6 +295,17 @@ export default function SettingsView() {
     syncAll: syncAllSubsonicSources
   } = useSubsonicSettingsStore()
   const {
+    sources: jellyfinSources,
+    status: jellyfinStatus,
+    errorMessage: jellyfinErrorMessage,
+    createSource: createJellyfinSource,
+    updateSource: updateJellyfinSource,
+    deleteSource: deleteJellyfinSource,
+    testSource: testJellyfinSource,
+    syncSource: syncJellyfinSource,
+    syncAll: syncAllJellyfinSources
+  } = useJellyfinSettingsStore()
+  const {
     autoCheckEnabled,
     checkState: updateCheckState,
     statusMessage: updateStatusMessage,
@@ -263,14 +329,15 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
-  const [subsonicEditingSourceId, setSubsonicEditingSourceId] = useState<number | null>(null)
-  const [subsonicNameInput, setSubsonicNameInput] = useState('')
-  const [subsonicBaseUrlInput, setSubsonicBaseUrlInput] = useState('http://localhost:4533')
-  const [subsonicUsernameInput, setSubsonicUsernameInput] = useState('')
-  const [subsonicPasswordInput, setSubsonicPasswordInput] = useState('')
-  const [subsonicEnabledInput, setSubsonicEnabledInput] = useState(true)
-  const [subsonicFeedback, setSubsonicFeedback] = useState('')
-  const [pendingSubsonicDelete, setPendingSubsonicDelete] = useState<SubsonicSource | null>(null)
+  const [remoteEditingSource, setRemoteEditingSource] = useState<RemoteEditingSourceRef | null>(null)
+  const [remoteServerTypeInput, setRemoteServerTypeInput] = useState<RemoteServerTypeInput>('auto')
+  const [remoteNameInput, setRemoteNameInput] = useState('')
+  const [remoteBaseUrlInput, setRemoteBaseUrlInput] = useState(REMOTE_DEFAULT_BASE_URL_BY_TYPE.subsonic)
+  const [remoteUsernameInput, setRemoteUsernameInput] = useState('')
+  const [remotePasswordInput, setRemotePasswordInput] = useState('')
+  const [remoteEnabledInput, setRemoteEnabledInput] = useState(true)
+  const [remoteFeedback, setRemoteFeedback] = useState('')
+  const [pendingRemoteDelete, setPendingRemoteDelete] = useState<RemoteSourceListItem | null>(null)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -346,12 +413,12 @@ export default function SettingsView() {
   }, [sleepTimerFeedback])
 
   useEffect(() => {
-    if (!subsonicFeedback) return
+    if (!remoteFeedback) return
     const timeoutId = window.setTimeout(() => {
-      setSubsonicFeedback('')
+      setRemoteFeedback('')
     }, 3200)
     return () => window.clearTimeout(timeoutId)
-  }, [subsonicFeedback])
+  }, [remoteFeedback])
 
   useEffect(() => {
     setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
@@ -510,16 +577,7 @@ export default function SettingsView() {
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
   const subsonicStatusBySourceId = useMemo(() => {
-    const map = new Map<
-      number,
-      {
-        status: string
-        error: string | null
-        lastSyncAt: number | null
-        lastCheckedAt: number | null
-        progress: NonNullable<NonNullable<typeof subsonicStatus>['sources'][number]['progress']> | null
-      }
-    >()
+    const map = new Map<number, RemoteSourceStatusItem>()
     for (const sourceStatus of subsonicStatus?.sources ?? []) {
       map.set(sourceStatus.sourceId, {
         status: sourceStatus.status,
@@ -527,11 +585,65 @@ export default function SettingsView() {
         lastSyncAt: sourceStatus.lastSyncAt,
         lastCheckedAt: sourceStatus.lastCheckedAt,
         progress: sourceStatus.progress
+          ? {
+              activity: sourceStatus.progress.activity,
+              current: sourceStatus.progress.current,
+              total: sourceStatus.progress.total,
+              detail: sourceStatus.progress.detail
+            }
+          : null
       })
     }
     return map
   }, [subsonicStatus])
-  const isSubsonicSyncing = subsonicStatus?.isSyncing ?? false
+  const jellyfinStatusBySourceId = useMemo(() => {
+    const map = new Map<number, RemoteSourceStatusItem>()
+    for (const sourceStatus of jellyfinStatus?.sources ?? []) {
+      map.set(sourceStatus.sourceId, {
+        status: sourceStatus.status,
+        error: sourceStatus.error,
+        lastSyncAt: sourceStatus.lastSyncAt,
+        lastCheckedAt: sourceStatus.lastCheckedAt,
+        progress: sourceStatus.progress
+          ? {
+              activity: sourceStatus.progress.activity,
+              current: sourceStatus.progress.current,
+              total: sourceStatus.progress.total,
+              detail: sourceStatus.progress.detail
+            }
+          : null
+      })
+    }
+    return map
+  }, [jellyfinStatus])
+  const remoteSources = useMemo<RemoteSourceListItem[]>(() => {
+    const subsonicItems: RemoteSourceListItem[] = subsonicSources.map((source) => ({
+      ...source,
+      sourceType: 'subsonic'
+    }))
+    const jellyfinItems: RemoteSourceListItem[] = jellyfinSources.map((source) => ({
+      ...source,
+      sourceType: 'jellyfin'
+    }))
+    return [...subsonicItems, ...jellyfinItems].sort((a, b) => b.updated_at - a.updated_at)
+  }, [jellyfinSources, subsonicSources])
+  const remoteStatusBySourceKey = useMemo(() => {
+    const map = new Map<string, RemoteSourceStatusItem>()
+    for (const [sourceId, status] of subsonicStatusBySourceId) {
+      map.set(`subsonic:${sourceId}`, status)
+    }
+    for (const [sourceId, status] of jellyfinStatusBySourceId) {
+      map.set(`jellyfin:${sourceId}`, status)
+    }
+    return map
+  }, [jellyfinStatusBySourceId, subsonicStatusBySourceId])
+  const isAnyRemoteSyncing = (subsonicStatus?.isSyncing ?? false) || (jellyfinStatus?.isSyncing ?? false)
+  const remoteErrorMessages = useMemo(() => {
+    const messages: string[] = []
+    if (subsonicErrorMessage) messages.push(`Subsonic: ${subsonicErrorMessage}`)
+    if (jellyfinErrorMessage) messages.push(`Jellyfin: ${jellyfinErrorMessage}`)
+    return messages
+  }, [jellyfinErrorMessage, subsonicErrorMessage])
 
   useEffect(() => {
     let isMounted = true
@@ -648,121 +760,261 @@ export default function SettingsView() {
     })
   }
 
-  const resetSubsonicEditor = () => {
-    setSubsonicEditingSourceId(null)
-    setSubsonicNameInput('')
-    setSubsonicBaseUrlInput('http://localhost:4533')
-    setSubsonicUsernameInput('')
-    setSubsonicPasswordInput('')
-    setSubsonicEnabledInput(true)
+  const resetRemoteEditor = () => {
+    setRemoteEditingSource(null)
+    setRemoteServerTypeInput('auto')
+    setRemoteNameInput('')
+    setRemoteBaseUrlInput(REMOTE_DEFAULT_BASE_URL_BY_TYPE.subsonic)
+    setRemoteUsernameInput('')
+    setRemotePasswordInput('')
+    setRemoteEnabledInput(true)
   }
 
-  const handleEditSubsonicSource = (source: SubsonicSource) => {
-    setSubsonicEditingSourceId(source.id)
-    setSubsonicNameInput(source.name)
-    setSubsonicBaseUrlInput(source.base_url)
-    setSubsonicUsernameInput(source.username)
-    setSubsonicPasswordInput('')
-    setSubsonicEnabledInput(source.enabled === 1)
-    setSubsonicFeedback('')
+  const handleRemoteServerTypeChange = (nextType: RemoteServerTypeInput) => {
+    if (remoteEditingSource !== null) return
+    setRemoteServerTypeInput(nextType)
+    if (nextType === 'jellyfin') {
+      setRemoteBaseUrlInput(REMOTE_DEFAULT_BASE_URL_BY_TYPE.jellyfin)
+      return
+    }
+    if (nextType === 'subsonic') {
+      setRemoteBaseUrlInput(REMOTE_DEFAULT_BASE_URL_BY_TYPE.subsonic)
+      return
+    }
+    setRemoteBaseUrlInput(REMOTE_DEFAULT_BASE_URL_BY_TYPE.subsonic)
   }
 
-  const handleSaveSubsonicSource = async () => {
-    const name = subsonicNameInput.trim()
-    const baseUrl = subsonicBaseUrlInput.trim()
-    const username = subsonicUsernameInput.trim()
-    const password = subsonicPasswordInput
+  const runRemoteSourceTest = async (
+    sourceType: RemoteSourceType,
+    input: { sourceId?: number; baseUrl?: string; username?: string; password?: string }
+  ): Promise<SubsonicSourceTestResult | JellyfinSourceTestResult> => {
+    if (sourceType === 'subsonic') {
+      return testSubsonicSource(input)
+    }
+    return testJellyfinSource(input)
+  }
+
+  const detectServerTypeOrder = (baseUrl: string): RemoteSourceType[] => {
+    const normalizedUrl = baseUrl.toLowerCase()
+    if (normalizedUrl.includes('8096') || normalizedUrl.includes('/jellyfin')) {
+      return ['jellyfin', 'subsonic']
+    }
+    if (
+      normalizedUrl.includes('4533')
+      || normalizedUrl.includes('subsonic')
+      || normalizedUrl.includes('navidrome')
+    ) {
+      return ['subsonic', 'jellyfin']
+    }
+    return ['subsonic', 'jellyfin']
+  }
+
+  const resolveAutoServerType = async (
+    baseUrl: string,
+    username: string,
+    password: string
+  ): Promise<{ sourceType: RemoteSourceType | null; message: string }> => {
+    const attempts: Array<{ sourceType: RemoteSourceType; message: string }> = []
+    for (const sourceType of detectServerTypeOrder(baseUrl)) {
+      const result = await runRemoteSourceTest(sourceType, { baseUrl, username, password })
+      if (result.ok) {
+        return {
+          sourceType,
+          message: `Detected ${REMOTE_PROVIDER_LABEL[sourceType]}.`
+        }
+      }
+      attempts.push({
+        sourceType,
+        message: result.error ?? result.message
+      })
+    }
+    const failureReason = attempts
+      .map((attempt) => `${REMOTE_PROVIDER_LABEL[attempt.sourceType]}: ${attempt.message}`)
+      .join(' | ')
+    return {
+      sourceType: null,
+      message: `Could not detect server type. ${failureReason}`
+    }
+  }
+
+  const handleEditRemoteSource = (source: RemoteSourceListItem) => {
+    setRemoteEditingSource({
+      sourceType: source.sourceType,
+      sourceId: source.id
+    })
+    setRemoteServerTypeInput(source.sourceType)
+    setRemoteNameInput(source.name)
+    setRemoteBaseUrlInput(source.base_url)
+    setRemoteUsernameInput(source.username)
+    setRemotePasswordInput('')
+    setRemoteEnabledInput(source.enabled === 1)
+    setRemoteFeedback('')
+  }
+
+  const handleSaveRemoteSource = async () => {
+    const name = remoteNameInput.trim()
+    const baseUrl = remoteBaseUrlInput.trim()
+    const username = remoteUsernameInput.trim()
+    const password = remotePasswordInput
+
     if (!name || !baseUrl || !username) {
-      setSubsonicFeedback('Name, server URL, and username are required.')
+      setRemoteFeedback('Name, server URL, and username are required.')
       return
     }
 
-    if (subsonicEditingSourceId === null) {
+    if (remoteEditingSource === null) {
       if (!password) {
-        setSubsonicFeedback('Password is required for new sources.')
+        setRemoteFeedback('Password is required for new sources.')
         return
       }
-      const created = await createSubsonicSource({
+
+      let resolvedType: RemoteSourceType | null = null
+      let detectionMessage = ''
+      if (remoteServerTypeInput === 'auto') {
+        const detected = await resolveAutoServerType(baseUrl, username, password)
+        if (!detected.sourceType) {
+          setRemoteFeedback(detected.message)
+          return
+        }
+        resolvedType = detected.sourceType
+        detectionMessage = `${detected.message} `
+      } else {
+        resolvedType = remoteServerTypeInput
+      }
+
+      const sourcePayload: SubsonicSourceCreateInput | JellyfinSourceCreateInput = {
         name,
         baseUrl,
         username,
         password,
-        enabled: subsonicEnabledInput
-      })
-      if (created) {
-        resetSubsonicEditor()
-        setSubsonicFeedback(`Added source "${created.name}".`)
+        enabled: remoteEnabledInput
       }
+      const created = resolvedType === 'subsonic'
+        ? await createSubsonicSource(sourcePayload)
+        : await createJellyfinSource(sourcePayload)
+
+      if (!created) return
+
+      resetRemoteEditor()
+      setRemoteFeedback(`${detectionMessage}Added ${REMOTE_PROVIDER_LABEL[resolvedType]} source "${created.name}".`)
       return
     }
 
-    const updatePayload: SubsonicSourceUpdateInput = {
+    const sourceType = remoteEditingSource.sourceType
+    const updatePayload: SubsonicSourceUpdateInput | JellyfinSourceUpdateInput = {
       name,
       baseUrl,
       username,
-      enabled: subsonicEnabledInput
+      enabled: remoteEnabledInput
     }
     if (password) {
       updatePayload.password = password
     }
-    const updated = await updateSubsonicSource(subsonicEditingSourceId, updatePayload)
-    if (updated) {
-      resetSubsonicEditor()
-      setSubsonicFeedback(`Updated source "${updated.name}".`)
-    }
+
+    const updated = sourceType === 'subsonic'
+      ? await updateSubsonicSource(remoteEditingSource.sourceId, updatePayload)
+      : await updateJellyfinSource(remoteEditingSource.sourceId, updatePayload)
+
+    if (!updated) return
+
+    resetRemoteEditor()
+    setRemoteFeedback(`Updated ${REMOTE_PROVIDER_LABEL[sourceType]} source "${updated.name}".`)
   }
 
-  const handleTestSubsonicEditor = async () => {
-    if (subsonicEditingSourceId !== null && subsonicPasswordInput.trim().length === 0) {
-      const result = await testSubsonicSource({ sourceId: subsonicEditingSourceId })
-      setSubsonicFeedback(result.ok ? result.message : (result.error ?? result.message))
+  const handleTestRemoteEditor = async () => {
+    if (remoteEditingSource !== null && remotePasswordInput.trim().length === 0) {
+      const result = await runRemoteSourceTest(remoteEditingSource.sourceType, {
+        sourceId: remoteEditingSource.sourceId
+      })
+      setRemoteFeedback(
+        result.ok
+          ? `${REMOTE_PROVIDER_LABEL[remoteEditingSource.sourceType]}: ${result.message}`
+          : `${REMOTE_PROVIDER_LABEL[remoteEditingSource.sourceType]}: ${result.error ?? result.message}`
+      )
       return
     }
 
-    const result = await testSubsonicSource({
-      baseUrl: subsonicBaseUrlInput.trim(),
-      username: subsonicUsernameInput.trim(),
-      password: subsonicPasswordInput
-    })
-    setSubsonicFeedback(result.ok ? result.message : (result.error ?? result.message))
-  }
+    const baseUrl = remoteBaseUrlInput.trim()
+    const username = remoteUsernameInput.trim()
+    const password = remotePasswordInput
+    if (!baseUrl || !username || !password) {
+      setRemoteFeedback('Server URL, username, and password are required to test a new source.')
+      return
+    }
 
-  const handleToggleSubsonicEnabled = (source: SubsonicSource) => {
-    const nextEnabled = source.enabled !== 1
-    void updateSubsonicSource(source.id, { enabled: nextEnabled }).then((updated) => {
-      if (!updated) return
-      setSubsonicFeedback(`${updated.name} ${nextEnabled ? 'enabled' : 'disabled'}.`)
-    })
-  }
-
-  const handleSyncSubsonicSource = (source: SubsonicSource) => {
-    void syncSubsonicSource(source.id).then((ok) => {
-      if (!ok) return
-      setSubsonicFeedback(`Sync finished for "${source.name}".`)
-    })
-  }
-
-  const handleSyncAllSubsonic = () => {
-    void syncAllSubsonicSources().then((ok) => {
-      if (!ok) return
-      setSubsonicFeedback('Subsonic sync finished.')
-    })
-  }
-
-  const handleDeleteSubsonicSource = async (purgeTracks: boolean) => {
-    if (!pendingSubsonicDelete) return
-    const target = pendingSubsonicDelete
-    const deleted = await deleteSubsonicSource(target.id, purgeTracks)
-    if (deleted) {
-      setSubsonicFeedback(
-        purgeTracks
-          ? `Deleted "${target.name}" and purged synced tracks.`
-          : `Deleted "${target.name}". Tracks remain as unavailable placeholders.`
-      )
-      setPendingSubsonicDelete(null)
-      if (subsonicEditingSourceId === target.id) {
-        resetSubsonicEditor()
+    if (remoteServerTypeInput === 'auto') {
+      const detected = await resolveAutoServerType(baseUrl, username, password)
+      if (!detected.sourceType) {
+        setRemoteFeedback(detected.message)
+        return
       }
+      const testResult = await runRemoteSourceTest(detected.sourceType, { baseUrl, username, password })
+      setRemoteFeedback(
+        testResult.ok
+          ? `${detected.message} ${testResult.message}`
+          : `${detected.message} ${testResult.error ?? testResult.message}`
+      )
+      return
+    }
+
+    const result = await runRemoteSourceTest(remoteServerTypeInput, { baseUrl, username, password })
+    setRemoteFeedback(
+      result.ok
+        ? `${REMOTE_PROVIDER_LABEL[remoteServerTypeInput]}: ${result.message}`
+        : `${REMOTE_PROVIDER_LABEL[remoteServerTypeInput]}: ${result.error ?? result.message}`
+    )
+  }
+
+  const handleToggleRemoteEnabled = (source: RemoteSourceListItem) => {
+    const nextEnabled = source.enabled !== 1
+    const updatePromise = source.sourceType === 'subsonic'
+      ? updateSubsonicSource(source.id, { enabled: nextEnabled })
+      : updateJellyfinSource(source.id, { enabled: nextEnabled })
+    void updatePromise.then((updated) => {
+      if (!updated) return
+      setRemoteFeedback(
+        `${REMOTE_PROVIDER_LABEL[source.sourceType]} source "${updated.name}" ${nextEnabled ? 'enabled' : 'disabled'}.`
+      )
+    })
+  }
+
+  const handleSyncRemoteSource = (source: RemoteSourceListItem) => {
+    const syncPromise = source.sourceType === 'subsonic'
+      ? syncSubsonicSource(source.id)
+      : syncJellyfinSource(source.id)
+    void syncPromise.then((ok) => {
+      if (!ok) return
+      setRemoteFeedback(`Sync finished for ${REMOTE_PROVIDER_LABEL[source.sourceType]} source "${source.name}".`)
+    })
+  }
+
+  const handleSyncAllRemoteSources = () => {
+    if (remoteSources.length === 0) return
+    void Promise.all([
+      subsonicSources.length > 0 ? syncAllSubsonicSources() : Promise.resolve(true),
+      jellyfinSources.length > 0 ? syncAllJellyfinSources() : Promise.resolve(true)
+    ]).then(([subsonicOk, jellyfinOk]) => {
+      if (!subsonicOk || !jellyfinOk) return
+      setRemoteFeedback('Sync finished for all configured remote sources.')
+    })
+  }
+
+  const handleDeleteRemoteSource = async (purgeTracks: boolean) => {
+    if (!pendingRemoteDelete) return
+    const target = pendingRemoteDelete
+    const deleted = target.sourceType === 'subsonic'
+      ? await deleteSubsonicSource(target.id, purgeTracks)
+      : await deleteJellyfinSource(target.id, purgeTracks)
+    if (!deleted) return
+
+    setRemoteFeedback(
+      purgeTracks
+        ? `Deleted ${REMOTE_PROVIDER_LABEL[target.sourceType]} source "${target.name}" and purged synced tracks.`
+        : `Deleted ${REMOTE_PROVIDER_LABEL[target.sourceType]} source "${target.name}". Tracks remain as unavailable placeholders.`
+    )
+    setPendingRemoteDelete(null)
+    if (remoteEditingSource && remoteEditingSource.sourceType === target.sourceType && remoteEditingSource.sourceId === target.id) {
+      resetRemoteEditor()
     }
   }
 
@@ -1341,18 +1593,31 @@ export default function SettingsView() {
             <div className="settings-integration-cards">
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Subsonic / Navidrome</h4>
-                  <p>Connect one or more Subsonic-compatible servers.</p>
+                  <h4>Remote Music Servers</h4>
+                  <p>Connect Subsonic/Navidrome and Jellyfin sources from one setup flow.</p>
                 </div>
                 <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Server Type</span>
+                    <select
+                      className="settings-select"
+                      value={remoteServerTypeInput}
+                      onChange={(event) => handleRemoteServerTypeChange(event.target.value as RemoteServerTypeInput)}
+                      disabled={remoteEditingSource !== null}
+                    >
+                      <option value="auto">Auto Detect</option>
+                      <option value="subsonic">Subsonic / Navidrome</option>
+                      <option value="jellyfin">Jellyfin</option>
+                    </select>
+                  </label>
                   <label className="settings-field">
                     <span className="settings-field-label">Source Name</span>
                     <input
                       className="settings-select"
                       type="text"
-                      value={subsonicNameInput}
-                      onChange={(event) => setSubsonicNameInput(event.target.value)}
-                      placeholder="My Navidrome"
+                      value={remoteNameInput}
+                      onChange={(event) => setRemoteNameInput(event.target.value)}
+                      placeholder="My Remote Library"
                     />
                   </label>
                   <label className="settings-field">
@@ -1360,8 +1625,8 @@ export default function SettingsView() {
                     <input
                       className="settings-select"
                       type="text"
-                      value={subsonicBaseUrlInput}
-                      onChange={(event) => setSubsonicBaseUrlInput(event.target.value)}
+                      value={remoteBaseUrlInput}
+                      onChange={(event) => setRemoteBaseUrlInput(event.target.value)}
                       placeholder="http://localhost:4533"
                     />
                   </label>
@@ -1370,55 +1635,55 @@ export default function SettingsView() {
                     <input
                       className="settings-select"
                       type="text"
-                      value={subsonicUsernameInput}
-                      onChange={(event) => setSubsonicUsernameInput(event.target.value)}
+                      value={remoteUsernameInput}
+                      onChange={(event) => setRemoteUsernameInput(event.target.value)}
                     />
                   </label>
                   <label className="settings-field">
                     <span className="settings-field-label">
                       Password
-                      {subsonicEditingSourceId !== null ? ' (leave blank to keep existing)' : ''}
+                      {remoteEditingSource !== null ? ' (leave blank to keep existing)' : ''}
                     </span>
                     <input
                       className="settings-select"
                       type="password"
-                      value={subsonicPasswordInput}
-                      onChange={(event) => setSubsonicPasswordInput(event.target.value)}
+                      value={remotePasswordInput}
+                      onChange={(event) => setRemotePasswordInput(event.target.value)}
                     />
                   </label>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Enabled</span>
                     <button
-                      className={`settings-toggle ${subsonicEnabledInput ? 'active' : ''}`}
-                      onClick={() => setSubsonicEnabledInput(!subsonicEnabledInput)}
+                      className={`settings-toggle ${remoteEnabledInput ? 'active' : ''}`}
+                      onClick={() => setRemoteEnabledInput(!remoteEnabledInput)}
                     >
-                      {subsonicEnabledInput ? 'Enabled' : 'Disabled'}
+                      {remoteEnabledInput ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
                 </div>
                 <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
-                  <button className="settings-btn settings-btn-primary" onClick={() => void handleSaveSubsonicSource()}>
-                    {subsonicEditingSourceId === null ? 'Add Source' : 'Save Source'}
+                  <button className="settings-btn settings-btn-primary" onClick={() => void handleSaveRemoteSource()}>
+                    {remoteEditingSource === null ? 'Add Source' : 'Save Source'}
                   </button>
-                  <button className="settings-btn" onClick={() => void handleTestSubsonicEditor()}>
+                  <button className="settings-btn" onClick={() => void handleTestRemoteEditor()}>
                     Test
                   </button>
-                  <button className="settings-btn" onClick={resetSubsonicEditor}>
-                    {subsonicEditingSourceId === null ? 'Clear' : 'Cancel Edit'}
+                  <button className="settings-btn" onClick={resetRemoteEditor}>
+                    {remoteEditingSource === null ? 'Clear' : 'Cancel Edit'}
                   </button>
                   <button
                     className="settings-btn"
-                    onClick={handleSyncAllSubsonic}
-                    disabled={isSubsonicSyncing || subsonicSources.length === 0}
+                    onClick={handleSyncAllRemoteSources}
+                    disabled={isAnyRemoteSyncing || remoteSources.length === 0}
                   >
-                    {isSubsonicSyncing ? 'Syncing...' : 'Sync All Sources'}
+                    {isAnyRemoteSyncing ? 'Syncing...' : 'Sync All Sources'}
                   </button>
                 </div>
 
-                {subsonicSources.length > 0 ? (
+                {remoteSources.length > 0 ? (
                   <div className="settings-danger-list">
-                    {subsonicSources.map((source) => {
-                      const status = subsonicStatusBySourceId.get(source.id)
+                    {remoteSources.map((source) => {
+                      const status = remoteStatusBySourceKey.get(`${source.sourceType}:${source.id}`)
                       const statusText = status
                         ? `${status.status}${status.error ? ` (${status.error})` : ''}`
                         : source.last_status
@@ -1430,9 +1695,12 @@ export default function SettingsView() {
                       const lastSyncText = status?.lastSyncAt ?? source.last_sync_at
                       const checkedAtText = status?.lastCheckedAt ?? source.last_checked_at
                       return (
-                        <div key={source.id} className="settings-danger-item">
+                        <div key={`${source.sourceType}:${source.id}`} className="settings-danger-item">
                           <div className="settings-danger-item-copy">
-                            <p className="settings-danger-item-title">{source.name}</p>
+                            <div className="settings-inline-row">
+                              <p className="settings-danger-item-title">{source.name}</p>
+                              <span className="settings-chip settings-chip-mono">{REMOTE_PROVIDER_LABEL[source.sourceType]}</span>
+                            </div>
                             <p className="settings-danger-item-description">{source.base_url} as {source.username}</p>
                             <p className="settings-note">
                               Status: {statusText}
@@ -1446,20 +1714,20 @@ export default function SettingsView() {
                             )}
                           </div>
                           <div className="settings-inline-row">
-                            <button className="settings-btn" onClick={() => handleEditSubsonicSource(source)}>
+                            <button className="settings-btn" onClick={() => handleEditRemoteSource(source)}>
                               Edit
                             </button>
-                            <button className="settings-btn" onClick={() => handleToggleSubsonicEnabled(source)}>
+                            <button className="settings-btn" onClick={() => handleToggleRemoteEnabled(source)}>
                               {source.enabled === 1 ? 'Disable' : 'Enable'}
                             </button>
                             <button
                               className="settings-btn"
-                              onClick={() => handleSyncSubsonicSource(source)}
-                              disabled={isSubsonicSyncing || source.enabled !== 1}
+                              onClick={() => handleSyncRemoteSource(source)}
+                              disabled={isAnyRemoteSyncing || source.enabled !== 1}
                             >
                               Sync
                             </button>
-                            <button className="settings-btn settings-btn-danger" onClick={() => setPendingSubsonicDelete(source)}>
+                            <button className="settings-btn settings-btn-danger" onClick={() => setPendingRemoteDelete(source)}>
                               Delete
                             </button>
                           </div>
@@ -1468,35 +1736,42 @@ export default function SettingsView() {
                     })}
                   </div>
                 ) : (
-                  <p className="settings-note">No Subsonic sources configured.</p>
+                  <p className="settings-note">No remote sources configured.</p>
                 )}
 
-                {pendingSubsonicDelete && (
+                {pendingRemoteDelete && (
                   <div className="settings-danger-item settings-danger-item-destructive">
                     <div className="settings-danger-item-copy">
-                      <p className="settings-danger-item-title">Delete {pendingSubsonicDelete.name}?</p>
+                      <p className="settings-danger-item-title">
+                        Delete {REMOTE_PROVIDER_LABEL[pendingRemoteDelete.sourceType]} source {pendingRemoteDelete.name}?
+                      </p>
                       <p className="settings-danger-item-description">
                         Choose whether to keep synced tracks as unavailable placeholders or purge them completely.
                       </p>
                     </div>
                     <div className="settings-inline-row">
-                      <button className="settings-btn" onClick={() => void handleDeleteSubsonicSource(false)}>
+                      <button className="settings-btn" onClick={() => void handleDeleteRemoteSource(false)}>
                         Keep Tracks Unavailable
                       </button>
-                      <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteSubsonicSource(true)}>
+                      <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteRemoteSource(true)}>
                         Purge Tracks
                       </button>
-                      <button className="settings-btn" onClick={() => setPendingSubsonicDelete(null)}>
+                      <button className="settings-btn" onClick={() => setPendingRemoteDelete(null)}>
                         Cancel
                       </button>
                     </div>
                   </div>
                 )}
 
-                {subsonicFeedback && <p className="settings-note settings-note-success">{subsonicFeedback}</p>}
-                {subsonicErrorMessage && <p className="settings-note settings-note-error">{subsonicErrorMessage}</p>}
+                {remoteFeedback && <p className="settings-note settings-note-success">{remoteFeedback}</p>}
+                {remoteErrorMessages.map((message, index) => (
+                  <p key={`${message}-${index}`} className="settings-note settings-note-error">{message}</p>
+                ))}
                 <p className="settings-note">
                   Passwords are encrypted with OS secure storage and never stored in track URLs.
+                </p>
+                <p className="settings-note">
+                  Auto Detect tests both APIs and picks the first successful match.
                 </p>
               </div>
 

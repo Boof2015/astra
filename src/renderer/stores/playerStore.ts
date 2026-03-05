@@ -7,7 +7,7 @@ import { useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore
 
 interface RemoteLoadProgress {
   path: string
-  sourceType: 'subsonic'
+  sourceType: 'subsonic' | 'jellyfin'
   stage: 'downloading'
   loadedBytes: number
   totalBytes: number | null
@@ -937,10 +937,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrack: track,
         playbackState: 'loading',
         waveformData: null,
-        remoteLoadProgress: track.sourceType === 'subsonic'
+        remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
           ? {
               path: track.path,
-              sourceType: 'subsonic',
+              sourceType: track.sourceType,
               stage: 'downloading',
               loadedBytes: 0,
               totalBytes: null,

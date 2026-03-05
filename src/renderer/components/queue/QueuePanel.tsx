@@ -122,7 +122,15 @@ function QueueRowRenderer({
   const isDragOver = row.dragIndex !== null && dragOverIndex === row.dragIndex
   const isUnavailable = isUnavailableQueueTrack(row.track)
   const canPlay = row.actualQueueIndex !== null && !isUnavailable
-  const isLoadingRow = row.variant === 'current' && isCurrentLoading && row.track.sourceType === 'subsonic'
+  const isLoadingRow = row.variant === 'current'
+    && isCurrentLoading
+    && row.track.sourceType !== undefined
+    && row.track.sourceType !== 'local'
+  const sourceLabel = row.track.sourceType === 'jellyfin'
+    ? 'Jellyfin'
+    : row.track.sourceType === 'subsonic'
+      ? 'Subsonic'
+      : null
   const loadingPercentLabel = typeof currentLoadingPercent === 'number' && Number.isFinite(currentLoadingPercent)
     ? `${Math.round(Math.max(0, Math.min(1, currentLoadingPercent)) * 100)}%`
     : null
@@ -154,14 +162,21 @@ function QueueRowRenderer({
                 <span className="loading-spinner-small queue-item-loading-spinner" />
               </span>
             )}
-            {row.track.sourceType === 'subsonic' && (
-              <span className="queue-source-badge" title={isUnavailable ? 'Subsonic (unavailable)' : 'Subsonic'}>
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 17h2a4 4 0 0 1 4 4" />
-                  <path d="M3 11h4a8 8 0 0 1 8 8" />
-                  <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
-                </svg>
-                <span>Subsonic</span>
+            {sourceLabel && (
+              <span className="queue-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
+                {row.track.sourceType === 'jellyfin' ? (
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                    <path d="M8.5 8h7M8.5 12h7M8.5 16h4" />
+                  </svg>
+                ) : (
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 17h2a4 4 0 0 1 4 4" />
+                    <path d="M3 11h4a8 8 0 0 1 8 8" />
+                    <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                  </svg>
+                )}
+                <span>{sourceLabel}</span>
               </span>
             )}
             {row.track.title}

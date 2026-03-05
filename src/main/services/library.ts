@@ -9,7 +9,11 @@ import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
-import type { SubsonicSourceLastStatus, TrackSourceType } from '../../types/subsonic'
+import type {
+  JellyfinSourceLastStatus,
+  SubsonicSourceLastStatus,
+  TrackSourceType
+} from '../../types/subsonic'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -83,7 +87,65 @@ export interface SubsonicSourcePublic {
   has_stored_secret: boolean
 }
 
+export interface JellyfinSourceRow {
+  id: number
+  name: string
+  base_url: string
+  username: string
+  secret_encrypted: string
+  enabled: number
+  last_status: JellyfinSourceLastStatus
+  last_error: string | null
+  last_sync_at: number | null
+  last_checked_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface JellyfinSourcePublic {
+  id: number
+  name: string
+  base_url: string
+  username: string
+  enabled: number
+  last_status: JellyfinSourceLastStatus
+  last_error: string | null
+  last_sync_at: number | null
+  last_checked_at: number | null
+  created_at: number
+  updated_at: number
+  has_stored_secret: boolean
+}
+
 export interface SubsonicTrackUpsertInput {
+  path: string
+  title: string
+  artist: string
+  album: string
+  album_artist: string | null
+  duration: number
+  track_number: number | null
+  disc_number: number | null
+  year: number | null
+  genre: string | null
+  artwork_hash: string | null
+  format: string
+  sample_rate: number | null
+  bit_depth: number | null
+  bitrate: number | null
+  channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
+  bpm: number | null
+  musical_key: string | null
+  source_track_id: string
+  source_path: string | null
+}
+
+export interface JellyfinTrackUpsertInput {
   path: string
   title: string
   artist: string
@@ -1221,6 +1283,24 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_subsonic_sources_enabled ON subsonic_sources(enabled)')
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS jellyfin_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      username TEXT NOT NULL,
+      secret_encrypted TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_status TEXT NOT NULL DEFAULT 'unknown',
+      last_error TEXT,
+      last_sync_at INTEGER,
+      last_checked_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_jellyfin_sources_enabled ON jellyfin_sources(enabled)')
+
   db.run(`UPDATE tracks SET source_type = 'local' WHERE source_type IS NULL OR TRIM(source_type) = ''`)
   db.run('UPDATE tracks SET is_available = 1 WHERE is_available IS NULL')
 
@@ -1331,6 +1411,14 @@ function normalizeSubsonicLastStatus(value: unknown): SubsonicSourceLastStatus {
   return 'unknown'
 }
 
+function normalizeJellyfinLastStatus(value: unknown): JellyfinSourceLastStatus {
+  if (value === 'ok') return 'ok'
+  if (value === 'error') return 'error'
+  if (value === 'disabled') return 'disabled'
+  if (value === 'syncing') return 'syncing'
+  return 'unknown'
+}
+
 function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
   return {
     id: row.id,
@@ -1339,6 +1427,23 @@ function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
     username: row.username,
     enabled: row.enabled,
     last_status: normalizeSubsonicLastStatus(row.last_status),
+    last_error: row.last_error,
+    last_sync_at: row.last_sync_at,
+    last_checked_at: row.last_checked_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    has_stored_secret: typeof row.secret_encrypted === 'string' && row.secret_encrypted.trim().length > 0
+  }
+}
+
+function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
+  return {
+    id: row.id,
+    name: row.name,
+    base_url: row.base_url,
+    username: row.username,
+    enabled: row.enabled,
+    last_status: normalizeJellyfinLastStatus(row.last_status),
     last_error: row.last_error,
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
@@ -1511,6 +1616,169 @@ export async function updateSubsonicSource(
   return toSubsonicSourcePublic(next)
 }
 
+export function listJellyfinSources(): JellyfinSourcePublic[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT
+      id,
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    FROM jellyfin_sources
+    ORDER BY created_at ASC, id ASC
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<JellyfinSourceRow>(result[0].columns, result[0].values).map(toJellyfinSourcePublic)
+}
+
+export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | null {
+  if (!db) return null
+  const stmt = db.prepare(`
+    SELECT
+      id,
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    FROM jellyfin_sources
+    WHERE id = ?
+    LIMIT 1
+  `)
+  stmt.bind([sourceId])
+  const row = stmt.step() ? (stmt.getAsObject() as JellyfinSourceRow) : null
+  stmt.free()
+  if (!row) return null
+  row.last_status = normalizeJellyfinLastStatus(row.last_status)
+  return row
+}
+
+export async function createJellyfinSource(input: {
+  name: string
+  base_url: string
+  username: string
+  secret_encrypted: string
+  enabled: number
+  last_status?: JellyfinSourceLastStatus
+}): Promise<JellyfinSourcePublic> {
+  if (!db) {
+    throw new Error('Database not initialized')
+  }
+  const now = Date.now()
+  db.run(
+    `INSERT INTO jellyfin_sources (
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    [
+      input.name.trim(),
+      input.base_url.trim(),
+      input.username.trim(),
+      input.secret_encrypted,
+      input.enabled ? 1 : 0,
+      normalizeJellyfinLastStatus(input.last_status),
+      now,
+      now
+    ]
+  )
+
+  const insertedIdResult = db.exec('SELECT last_insert_rowid() as id')
+  const sourceId = Number(insertedIdResult[0]?.values?.[0]?.[0] ?? 0)
+  const source = getJellyfinSourceById(sourceId)
+  if (!source) {
+    throw new Error('Failed to create Jellyfin source.')
+  }
+  await saveDatabase()
+  return toJellyfinSourcePublic(source)
+}
+
+export async function updateJellyfinSource(
+  sourceId: number,
+  input: {
+    name?: string
+    base_url?: string
+    username?: string
+    secret_encrypted?: string
+    enabled?: number
+    last_status?: JellyfinSourceLastStatus
+    last_error?: string | null
+    last_sync_at?: number | null
+    last_checked_at?: number | null
+  },
+  options: { persist?: boolean } = {}
+): Promise<JellyfinSourcePublic> {
+  if (!db) {
+    throw new Error('Database not initialized')
+  }
+  const current = getJellyfinSourceById(sourceId)
+  if (!current) {
+    throw new Error('Jellyfin source not found.')
+  }
+
+  const now = Date.now()
+  db.run(
+    `UPDATE jellyfin_sources
+     SET name = ?,
+         base_url = ?,
+         username = ?,
+         secret_encrypted = ?,
+         enabled = ?,
+         last_status = ?,
+         last_error = ?,
+         last_sync_at = ?,
+         last_checked_at = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      input.name !== undefined ? input.name.trim() : current.name,
+      input.base_url !== undefined ? input.base_url.trim() : current.base_url,
+      input.username !== undefined ? input.username.trim() : current.username,
+      input.secret_encrypted !== undefined ? input.secret_encrypted : current.secret_encrypted,
+      input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
+      input.last_status !== undefined ? normalizeJellyfinLastStatus(input.last_status) : normalizeJellyfinLastStatus(current.last_status),
+      input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
+      input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
+      now,
+      sourceId
+    ]
+  )
+
+  const next = getJellyfinSourceById(sourceId)
+  if (!next) {
+    throw new Error('Failed to update Jellyfin source.')
+  }
+
+  if (options.persist !== false) {
+    await saveDatabase()
+  }
+
+  return toJellyfinSourcePublic(next)
+}
+
 function deleteTrackRelatedRows(trackPaths: string[]): void {
   if (!db || trackPaths.length === 0) return
   for (let offset = 0; offset < trackPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
@@ -1541,8 +1809,21 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
 
   if (purgeTracks) {
     const sourcePathPattern = `subsonic://${sourceId}/%`
-    const stmt = db.prepare("SELECT path FROM tracks WHERE source_type = 'subsonic' AND source_id = ?")
-    stmt.bind([sourceId])
+    let includeUnknownSourceTracks = false
+    if (source) {
+      const countStmt = db.prepare('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?')
+      countStmt.bind([sourceId])
+      const countRow = countStmt.step() ? (countStmt.getAsObject() as { count?: unknown }) : null
+      countStmt.free()
+      const otherSourcesCount = Number(countRow?.count ?? 0)
+      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
+    }
+
+    const trackSelectSql = includeUnknownSourceTracks
+      ? "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
+      : "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)"
+    const stmt = db.prepare(trackSelectSql)
+    stmt.bind([sourceId, sourcePathPattern])
     const trackPaths: string[] = []
     while (stmt.step()) {
       const row = stmt.getAsObject() as { path?: unknown }
@@ -1554,10 +1835,17 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
 
     deleteTrackRelatedRows(trackPaths)
     deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    db.run(
-      "DELETE FROM tracks WHERE (source_type = 'subsonic' AND source_id = ?) OR path LIKE ?",
-      [sourceId, sourcePathPattern]
-    )
+    if (includeUnknownSourceTracks) {
+      db.run(
+        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
+        [sourceId, sourcePathPattern]
+      )
+    } else {
+      db.run(
+        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)",
+        [sourceId, sourcePathPattern]
+      )
+    }
   } else {
     db.run(
       `UPDATE tracks
@@ -1654,6 +1942,14 @@ export async function upsertSubsonicTracks(
   options: { persist?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
+    return { inserted: 0, updated: 0 }
+  }
+
+  const sourceExistsStmt = db.prepare('SELECT 1 FROM subsonic_sources WHERE id = ? LIMIT 1')
+  sourceExistsStmt.bind([sourceId])
+  const sourceExists = sourceExistsStmt.step()
+  sourceExistsStmt.free()
+  if (!sourceExists) {
     return { inserted: 0, updated: 0 }
   }
 
@@ -1897,6 +2193,411 @@ export function getSubsonicTrackCountsBySource(sourceId: number): { total: numbe
     total: Number.isFinite(total) ? total : 0,
     available: Number.isFinite(available) ? available : 0
   }
+}
+
+export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolean): Promise<void> {
+  if (!db) return
+  const source = getJellyfinSourceById(sourceId)
+
+  if (purgeTracks) {
+    const sourcePathPattern = `jellyfin://${sourceId}/%`
+    let includeUnknownSourceTracks = false
+    if (source) {
+      const countStmt = db.prepare('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?')
+      countStmt.bind([sourceId])
+      const countRow = countStmt.step() ? (countStmt.getAsObject() as { count?: unknown }) : null
+      countStmt.free()
+      const otherSourcesCount = Number(countRow?.count ?? 0)
+      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
+    }
+
+    const trackSelectSql = includeUnknownSourceTracks
+      ? "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
+      : "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)"
+    const stmt = db.prepare(trackSelectSql)
+    stmt.bind([sourceId, sourcePathPattern])
+    const trackPaths: string[] = []
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { path?: unknown }
+      if (typeof row.path === 'string' && row.path.trim().length > 0) {
+        trackPaths.push(row.path)
+      }
+    }
+    stmt.free()
+
+    deleteTrackRelatedRows(trackPaths)
+    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
+    if (includeUnknownSourceTracks) {
+      db.run(
+        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
+        [sourceId, sourcePathPattern]
+      )
+    } else {
+      db.run(
+        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)",
+        [sourceId, sourcePathPattern]
+      )
+    }
+  } else {
+    db.run(
+      `UPDATE tracks
+       SET is_available = 0,
+           availability_reason = 'source_deleted',
+           modified_at = ?
+       WHERE source_type = 'jellyfin' AND source_id = ?`,
+      [Date.now(), sourceId]
+    )
+  }
+
+  if (source) {
+    db.run('DELETE FROM jellyfin_sources WHERE id = ?', [sourceId])
+  }
+  await saveDatabase()
+}
+
+export async function updateJellyfinSourceStatus(
+  sourceId: number,
+  input: {
+    status: JellyfinSourceLastStatus
+    error?: string | null
+    syncedAt?: number | null
+    checkedAt?: number | null
+  },
+  options: { persist?: boolean } = {}
+): Promise<void> {
+  if (!db) return
+  const existing = getJellyfinSourceById(sourceId)
+  if (!existing) return
+  await updateJellyfinSource(
+    sourceId,
+    {
+      last_status: normalizeJellyfinLastStatus(input.status),
+      last_error: input.error === undefined ? existing.last_error : input.error,
+      last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
+      last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
+    },
+    { persist: options.persist }
+  )
+}
+
+export async function markJellyfinTracksAvailability(
+  sourceId: number,
+  isAvailable: boolean,
+  reason: string | null,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+  db.run(
+    `UPDATE tracks
+     SET is_available = ?,
+         availability_reason = ?,
+         modified_at = ?
+     WHERE source_type = 'jellyfin' AND source_id = ?`,
+    [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export async function restoreJellyfinTracksFromSourceUnavailable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  db.run(
+    `UPDATE tracks
+     SET is_available = 1,
+         availability_reason = NULL,
+         modified_at = ?
+     WHERE source_type = 'jellyfin'
+       AND source_id = ?
+       AND is_available = 0
+       AND availability_reason = 'source_unavailable'`,
+    [Date.now(), sourceId]
+  )
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export async function upsertJellyfinTracks(
+  sourceId: number,
+  tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean } = {}
+): Promise<{ inserted: number; updated: number }> {
+  if (!db || tracks.length === 0) {
+    return { inserted: 0, updated: 0 }
+  }
+
+  const sourceExistsStmt = db.prepare('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1')
+  sourceExistsStmt.bind([sourceId])
+  const sourceExists = sourceExistsStmt.step()
+  sourceExistsStmt.free()
+  if (!sourceExists) {
+    return { inserted: 0, updated: 0 }
+  }
+
+  let inserted = 0
+  let updated = 0
+  const now = Date.now()
+
+  for (const track of tracks) {
+    const existingStmt = db.prepare('SELECT id FROM tracks WHERE path = ? LIMIT 1')
+    existingStmt.bind([track.path])
+    const exists = existingStmt.step()
+    existingStmt.free()
+
+    if (exists) {
+      db.run(
+        `UPDATE tracks
+         SET title = ?,
+             artist = ?,
+             album = ?,
+             album_artist = ?,
+             duration = ?,
+             track_number = ?,
+             disc_number = ?,
+             year = ?,
+             genre = ?,
+             artwork_hash = ?,
+             format = ?,
+             sample_rate = ?,
+             bit_depth = ?,
+             bitrate = ?,
+             channels = ?,
+             codec = ?,
+             codec_profile = ?,
+             is_atmos_joc = ?,
+             replaygain_track_gain_db = ?,
+             replaygain_album_gain_db = ?,
+             bpm = ?,
+             musical_key = ?,
+             source_type = 'jellyfin',
+             source_id = ?,
+             source_track_id = ?,
+             source_path = ?,
+             is_available = 1,
+             availability_reason = NULL,
+             modified_at = ?
+         WHERE path = ?`,
+        [
+          track.title,
+          track.artist,
+          track.album,
+          track.album_artist,
+          track.duration,
+          track.track_number,
+          track.disc_number,
+          track.year,
+          track.genre,
+          track.artwork_hash,
+          track.format,
+          track.sample_rate,
+          track.bit_depth,
+          track.bitrate,
+          track.channels,
+          track.codec,
+          track.codec_profile,
+          track.is_atmos_joc,
+          track.replaygain_track_gain_db,
+          track.replaygain_album_gain_db,
+          track.bpm,
+          track.musical_key,
+          sourceId,
+          track.source_track_id,
+          track.source_path,
+          now,
+          track.path
+        ]
+      )
+      updated += 1
+      continue
+    }
+
+    db.run(
+      `INSERT INTO tracks (
+        path,
+        title,
+        artist,
+        album,
+        album_artist,
+        duration,
+        track_number,
+        disc_number,
+        year,
+        genre,
+        artwork_hash,
+        format,
+        sample_rate,
+        bit_depth,
+        bitrate,
+        channels,
+        codec,
+        codec_profile,
+        is_atmos_joc,
+        replaygain_track_gain_db,
+        replaygain_album_gain_db,
+        bpm,
+        musical_key,
+        source_type,
+        source_id,
+        source_track_id,
+        source_path,
+        is_available,
+        availability_reason,
+        added_at,
+        modified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?)`,
+      [
+        track.path,
+        track.title,
+        track.artist,
+        track.album,
+        track.album_artist,
+        track.duration,
+        track.track_number,
+        track.disc_number,
+        track.year,
+        track.genre,
+        track.artwork_hash,
+        track.format,
+        track.sample_rate,
+        track.bit_depth,
+        track.bitrate,
+        track.channels,
+        track.codec,
+        track.codec_profile,
+        track.is_atmos_joc,
+        track.replaygain_track_gain_db,
+        track.replaygain_album_gain_db,
+        track.bpm,
+        track.musical_key,
+        sourceId,
+        track.source_track_id,
+        track.source_path,
+        now,
+        now
+      ]
+    )
+    inserted += 1
+  }
+
+  if (options.persist !== false && (inserted > 0 || updated > 0)) {
+    await saveDatabase()
+  }
+
+  return { inserted, updated }
+}
+
+export async function markMissingJellyfinTracksUnavailable(
+  sourceId: number,
+  seenSourceTrackIds: Set<string>,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const params: Array<number | string> = [Date.now(), sourceId]
+  let sql = `
+    UPDATE tracks
+    SET is_available = 0,
+        availability_reason = 'missing_upstream',
+        modified_at = ?
+    WHERE source_type = 'jellyfin'
+      AND source_id = ?
+  `
+
+  if (seenSourceTrackIds.size > 0) {
+    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
+    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
+    params.push(...seenSourceTrackIds)
+  }
+
+  db.run(sql, params)
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export function getJellyfinTrackCountsBySource(sourceId: number): { total: number; available: number } {
+  if (!db) return { total: 0, available: 0 }
+  const stmt = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END) AS available
+    FROM tracks
+    WHERE source_type = 'jellyfin' AND source_id = ?
+  `)
+  stmt.bind([sourceId])
+  let total = 0
+  let available = 0
+  if (stmt.step()) {
+    const row = stmt.getAsObject() as { total?: unknown; available?: unknown }
+    total = Number(row.total ?? 0)
+    available = Number(row.available ?? 0)
+  }
+  stmt.free()
+  return {
+    total: Number.isFinite(total) ? total : 0,
+    available: Number.isFinite(available) ? available : 0
+  }
+}
+
+export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean } = {}): Promise<number> {
+  if (!db) return 0
+
+  const result = db.exec(`
+    SELECT path
+    FROM tracks
+    WHERE (
+      source_type = 'subsonic'
+      AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM subsonic_sources))
+      AND COALESCE(availability_reason, '') <> 'source_deleted'
+    ) OR (
+      source_type = 'jellyfin'
+      AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM jellyfin_sources))
+      AND COALESCE(availability_reason, '') <> 'source_deleted'
+    )
+  `)
+  if (result.length === 0) return 0
+
+  const rows = rowsToObjects<{ path?: unknown }>(result[0].columns, result[0].values)
+  const orphanPaths = Array.from(new Set(
+    rows
+      .map((row) => (typeof row.path === 'string' ? row.path.trim() : ''))
+      .filter((path): path is string => path.length > 0)
+  ))
+  if (orphanPaths.length === 0) return 0
+
+  deleteTrackRelatedRows(orphanPaths)
+
+  let deletedCount = 0
+  for (let offset = 0; offset < orphanPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = orphanPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    db.run(`DELETE FROM tracks WHERE path IN (${placeholders})`, chunk)
+    const changesResult = db.exec('SELECT changes() as count')
+    const chunkDeleted = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+    if (Number.isFinite(chunkDeleted) && chunkDeleted > 0) {
+      deletedCount += chunkDeleted
+    }
+  }
+
+  if (options.persist !== false && deletedCount > 0) {
+    await saveDatabase()
+  }
+
+  return deletedCount
 }
 
 function normalizeLyricsCacheStatus(value: unknown): LyricsCacheStatus | null {

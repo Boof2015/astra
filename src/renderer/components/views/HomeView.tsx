@@ -788,8 +788,7 @@ export default function HomeView() {
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
-  const loadTrack = usePlayerStore((s) => s.loadTrack)
-  const play = usePlayerStore((s) => s.play)
+  const playTrackAt = usePlayerStore((s) => s.playTrackAt)
   const setQueue = usePlayerStore((s) => s.setQueue)
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
@@ -1094,45 +1093,7 @@ export default function HomeView() {
     [playlists, favoriteTracks]
   )
 
-  const handlePlayTrack = async (track: HomeTrack) => {
-    const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
-    if (!result) return
-
-    const playerTrack: Track = {
-      id: track.path,
-      path: track.path,
-      title: result.metadata?.title ?? track.title,
-      artist: result.metadata?.artist ?? track.artist,
-      album: result.metadata?.album ?? track.album,
-      albumArtist: result.metadata?.albumArtist ?? track.album_artist ?? undefined,
-      duration: result.metadata?.duration ?? track.duration,
-      format: track.format,
-      artworkData: result.metadata?.artwork,
-      artworkHash: track.artwork_hash ?? undefined,
-      sampleRate: track.sample_rate ?? undefined,
-      bitDepth: track.bit_depth ?? undefined,
-      bitrate: track.bitrate ?? undefined,
-      channels: result.metadata?.channels ?? track.channels ?? undefined,
-      codec: result.metadata?.codec ?? track.codec ?? undefined,
-      codecProfile: result.metadata?.codecProfile ?? track.codec_profile ?? undefined,
-      isAtmosJoc: result.metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1),
-      replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replaygain_track_gain_db ?? undefined,
-      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined,
-      sourceType: track.source_type,
-      sourceId: track.source_id ?? undefined,
-      sourceTrackId: track.source_track_id ?? undefined,
-      sourcePath: track.source_path ?? undefined,
-      isAvailable: track.is_available === 1,
-      availabilityReason: track.availability_reason ?? undefined
-    }
-
-    const loaded = await loadTrack(playerTrack, result.data)
-    if (loaded) {
-      await play()
-    }
-  }
-
-  const handlePlayRecentList = async (track: HomeTrack, index: number) => {
+  const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
     const queueTracks: Track[] = recentTracks.map((recentTrack) => ({
       id: recentTrack.path,
       path: recentTrack.path,
@@ -1161,7 +1122,7 @@ export default function HomeView() {
     }))
 
     setQueue(queueTracks, index)
-    await handlePlayTrack(track)
+    await playTrackAt(index)
   }
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {

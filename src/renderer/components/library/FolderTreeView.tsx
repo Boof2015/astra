@@ -175,7 +175,7 @@ const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
 export default function FolderTreeView({ tracks, folders, searchQuery }: FolderTreeViewProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
-  const { setQueue, loadTrack, play, currentTrack } = usePlayerStore()
+  const { setQueue, playTrackAt, currentTrack } = usePlayerStore()
   const listBodyRef = useRef<HTMLDivElement>(null)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
@@ -290,25 +290,10 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
   const handlePlayTrack = useCallback(async (track: DbTrack, folderTracks: DbTrack[]) => {
     const queueTracks = folderTracks.map(dbTrackToTrack)
     const index = folderTracks.findIndex((t) => t.path === track.path)
-    setQueue(queueTracks, index >= 0 ? index : 0)
-
-    const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
-    if (!result) return
-
-    const playTrack: Track = {
-      ...dbTrackToTrack(track),
-      artworkData: result.metadata?.artwork,
-      channels: result.metadata?.channels ?? track.channels ?? undefined,
-      codec: result.metadata?.codec ?? undefined,
-      codecProfile: result.metadata?.codecProfile ?? undefined,
-      isAtmosJoc: result.metadata?.isAtmosJoc ?? false,
-    }
-
-    const loaded = await loadTrack(playTrack, result.data)
-    if (loaded) {
-      await play()
-    }
-  }, [loadTrack, play, setQueue])
+    const queueIndex = index >= 0 ? index : 0
+    setQueue(queueTracks, queueIndex)
+    await playTrackAt(queueIndex)
+  }, [playTrackAt, setQueue])
 
   const currentTrackPath = currentTrack?.path ?? null
 

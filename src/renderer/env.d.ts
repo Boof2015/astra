@@ -29,6 +29,12 @@ import type {
     LyricsTrackQuery
 } from '../types/lyrics'
 import type {
+    JellyfinSource,
+    JellyfinSourceCreateInput,
+    JellyfinSourceTestInput,
+    JellyfinSourceTestResult,
+    JellyfinSourceUpdateInput,
+    JellyfinStatusSnapshot,
     SubsonicSource,
     SubsonicSourceCreateInput,
     SubsonicSourceTestInput,
@@ -163,6 +169,17 @@ declare global {
                 getStatus: () => Promise<SubsonicStatusSnapshot>
                 onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
             }
+            jellyfin: {
+                listSources: () => Promise<JellyfinSource[]>
+                createSource: (input: JellyfinSourceCreateInput) => Promise<JellyfinSource>
+                updateSource: (sourceId: number, input: JellyfinSourceUpdateInput) => Promise<JellyfinSource>
+                deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
+                testSource: (input: JellyfinSourceTestInput) => Promise<JellyfinSourceTestResult>
+                syncSource: (sourceId: number) => Promise<void>
+                syncAll: () => Promise<void>
+                getStatus: () => Promise<JellyfinStatusSnapshot>
+                onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => () => void
+            }
             openAudioFile: () => Promise<{
                 path: string
                 name: string
@@ -236,7 +253,7 @@ declare global {
             setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
             onRemoteLoadProgress: (callback: (progress: {
                 path: string
-                sourceType: 'subsonic'
+                sourceType: 'subsonic' | 'jellyfin'
                 stage: 'downloading'
                 loadedBytes: number
                 totalBytes: number | null

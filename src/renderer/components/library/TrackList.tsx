@@ -205,7 +205,7 @@ function TrackListRowRenderer({
   const isCurrent = currentTrackPath === track.path
   const isCurrentLoading = isCurrent
     && isLoadingTrack
-    && track.source_type === 'subsonic'
+    && track.source_type !== 'local'
     && (loadingTrackPath === null || loadingTrackPath === track.path)
   const showPlayNextCheck = nextQueuedTrackPath === track.path || hasQueueActionFeedback(queueFeedback, 'next', track.path)
   const showAddQueueCheck = queuedTrackPaths.has(track.path) || hasQueueActionFeedback(queueFeedback, 'queue', track.path)
@@ -239,6 +239,11 @@ function TrackListRowRenderer({
       : `${resolvedChannelCount ?? 0} channels`
 
   const isUnavailable = isUnavailableRemoteTrack(track)
+  const sourceLabel = track.source_type === 'jellyfin'
+    ? 'Jellyfin'
+    : track.source_type === 'subsonic'
+      ? 'Subsonic'
+      : null
   const loadingPercentLabel = typeof loadingTrackPercent === 'number' && Number.isFinite(loadingTrackPercent)
     ? `${Math.round(Math.max(0, Math.min(1, loadingTrackPercent)) * 100)}%`
     : null
@@ -267,14 +272,21 @@ function TrackListRowRenderer({
             <div className="track-artwork-thumb">
               <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
             </div>
-            {track.source_type === 'subsonic' && (
-              <span className="track-source-badge" title={isUnavailable ? 'Subsonic (unavailable)' : 'Subsonic'}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 17h2a4 4 0 0 1 4 4" />
-                  <path d="M3 11h4a8 8 0 0 1 8 8" />
-                  <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
-                </svg>
-                <span>Subsonic</span>
+            {sourceLabel && (
+              <span className="track-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
+                {track.source_type === 'jellyfin' ? (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                    <path d="M8.5 8h7M8.5 12h7M8.5 16h4" />
+                  </svg>
+                ) : (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 17h2a4 4 0 0 1 4 4" />
+                    <path d="M3 11h4a8 8 0 0 1 8 8" />
+                    <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                  </svg>
+                )}
+                <span>{sourceLabel}</span>
               </span>
             )}
             <span className="track-title">{track.title}</span>
@@ -436,8 +448,8 @@ export default function TrackList({
   const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
   const queue = usePlayerStore((state) => state.queue)
   const queueIndex = usePlayerStore((state) => state.queueIndex)
-  const loadTrack = usePlayerStore((state) => state.loadTrack)
-  const play = usePlayerStore((state) => state.play)
+  const queueSourcePlaylistId = usePlayerStore((state) => state.queueSourcePlaylistId)
+  const playTrackAt = usePlayerStore((state) => state.playTrackAt)
   const setQueue = usePlayerStore((state) => state.setQueue)
   const addToQueue = usePlayerStore((state) => state.addToQueue)
   const addToQueueNext = usePlayerStore((state) => state.addToQueueNext)
@@ -593,49 +605,31 @@ export default function TrackList({
 
   const handleTrackClick = useCallback(async (dbTrack: DbTrack, index: number) => {
     const queueSeedIndex = queueSeedTrackPathToIndex.get(dbTrack.path)
-    if (queueSeedIndex !== undefined) {
-      setQueue(queueSeedQueueTracks, queueSeedIndex, { sourcePlaylistId: playlistSourceId })
-    } else {
+    if (queueSeedIndex === undefined) {
       // Fallback to the rendered list if the clicked row path is missing from queue seed tracks.
       setQueue(renderedQueueTracks, index, { sourcePlaylistId: playlistSourceId })
+      await playTrackAt(index)
+      return
     }
 
-    const result = await window.electronAPI.loadAudioFile(dbTrack.path, { metadataMode: 'none' })
-    if (!result) return
-
-    const track: Track = {
-      id: dbTrack.path,
-      path: dbTrack.path,
-      title: result.metadata?.title ?? dbTrack.title,
-      artist: result.metadata?.artist ?? dbTrack.artist,
-      album: result.metadata?.album ?? dbTrack.album,
-      albumArtist: result.metadata?.albumArtist ?? dbTrack.album_artist ?? undefined,
-      duration: result.metadata?.duration ?? dbTrack.duration,
-      format: dbTrack.format,
-      artworkData: result.metadata?.artwork,
-      artworkHash: dbTrack.artwork_hash ?? undefined,
-      sampleRate: dbTrack.sample_rate ?? undefined,
-      bitDepth: dbTrack.bit_depth ?? undefined,
-      bitrate: dbTrack.bitrate ?? undefined,
-      channels: result.metadata?.channels ?? dbTrack.channels ?? undefined,
-      codec: result.metadata?.codec ?? dbTrack.codec ?? undefined,
-      codecProfile: result.metadata?.codecProfile ?? dbTrack.codec_profile ?? undefined,
-      isAtmosJoc: result.metadata?.isAtmosJoc ?? (dbTrack.is_atmos_joc === 1),
-      replayGainTrackDb: result.metadata?.replayGainTrackDb ?? dbTrack.replaygain_track_gain_db ?? undefined,
-      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? dbTrack.replaygain_album_gain_db ?? undefined,
-      sourceType: dbTrack.source_type,
-      sourceId: dbTrack.source_id ?? undefined,
-      sourceTrackId: dbTrack.source_track_id ?? undefined,
-      sourcePath: dbTrack.source_path ?? undefined,
-      isAvailable: dbTrack.is_available === 1,
-      availabilityReason: dbTrack.availability_reason ?? undefined
+    const queueMatchesSeed = queue === queueSeedQueueTracks
+      && queueSourcePlaylistId === playlistSourceId
+      && queue.length === queueSeedQueueTracks.length
+      && queue[queueSeedIndex]?.path === dbTrack.path
+    if (!queueMatchesSeed) {
+      setQueue(queueSeedQueueTracks, queueSeedIndex, { sourcePlaylistId: playlistSourceId })
     }
-
-    const loaded = await loadTrack(track, result.data)
-    if (loaded) {
-      await play()
-    }
-  }, [loadTrack, play, playlistSourceId, queueSeedQueueTracks, queueSeedTrackPathToIndex, renderedQueueTracks, setQueue])
+    await playTrackAt(queueSeedIndex)
+  }, [
+    playTrackAt,
+    playlistSourceId,
+    queue,
+    queueSeedQueueTracks,
+    queueSeedTrackPathToIndex,
+    queueSourcePlaylistId,
+    renderedQueueTracks,
+    setQueue
+  ])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()

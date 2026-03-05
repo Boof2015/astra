@@ -32,26 +32,6 @@ interface ResultGroup {
   results: QuickLaunchResult[]
 }
 
-interface AudioLoadMetadata {
-  title?: string
-  artist?: string
-  album?: string
-  albumArtist?: string
-  duration?: number
-  artwork?: string
-  channels?: number
-  codec?: string
-  codecProfile?: string
-  isAtmosJoc?: boolean
-  replayGainTrackDb?: number
-  replayGainAlbumDb?: number
-}
-
-interface AudioLoadResult {
-  data: ArrayBuffer
-  metadata?: AudioLoadMetadata
-}
-
 function toQueueTrack(track: QuickLaunchTrackRecord): Track {
   return {
     id: track.path,
@@ -76,40 +56,6 @@ function toQueueTrack(track: QuickLaunchTrackRecord): Track {
     isAtmosJoc: track.is_atmos_joc === 1,
     replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
     replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined,
-    sourceType: track.source_type,
-    sourceId: track.source_id ?? undefined,
-    sourceTrackId: track.source_track_id ?? undefined,
-    sourcePath: track.source_path ?? undefined,
-    isAvailable: track.is_available === 1,
-    availabilityReason: track.availability_reason ?? undefined
-  }
-}
-
-function toLoadedTrack(track: QuickLaunchTrackRecord, metadata?: AudioLoadMetadata): Track {
-  return {
-    id: track.path,
-    path: track.path,
-    title: metadata?.title ?? track.title,
-    artist: metadata?.artist ?? track.artist,
-    album: metadata?.album ?? track.album,
-    albumArtist: metadata?.albumArtist ?? track.album_artist ?? undefined,
-    duration: metadata?.duration ?? track.duration,
-    trackNumber: track.track_number ?? undefined,
-    discNumber: track.disc_number ?? undefined,
-    year: track.year ?? undefined,
-    genre: track.genre ?? undefined,
-    artworkData: metadata?.artwork,
-    artworkHash: track.artwork_hash ?? undefined,
-    format: track.format,
-    sampleRate: track.sample_rate ?? undefined,
-    bitDepth: track.bit_depth ?? undefined,
-    bitrate: track.bitrate ?? undefined,
-    channels: metadata?.channels ?? track.channels ?? undefined,
-    codec: metadata?.codec ?? track.codec ?? undefined,
-    codecProfile: metadata?.codecProfile ?? track.codec_profile ?? undefined,
-    isAtmosJoc: metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1),
-    replayGainTrackDb: metadata?.replayGainTrackDb ?? track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined,
     sourceType: track.source_type,
     sourceId: track.source_id ?? undefined,
     sourceTrackId: track.source_track_id ?? undefined,
@@ -219,8 +165,7 @@ export default function QuickLaunchPalette() {
 
   const addToQueueNext = usePlayerStore((state) => state.addToQueueNext)
   const setQueue = usePlayerStore((state) => state.setQueue)
-  const loadTrack = usePlayerStore((state) => state.loadTrack)
-  const play = usePlayerStore((state) => state.play)
+  const playTrackAt = usePlayerStore((state) => state.playTrackAt)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
@@ -652,18 +597,9 @@ export default function QuickLaunchPalette() {
       const queueIndex = trackCorpus.findIndex((track) => track.path === result.track.path)
       if (queueIndex >= 0) {
         setQueue(queueTracks, queueIndex)
-      }
-
-      const loaded = await window.electronAPI.loadAudioFile(
-        result.track.path,
-        { metadataMode: 'none' }
-      ) as AudioLoadResult | null
-      if (!loaded) return
-
-      const loadedTrack = toLoadedTrack(result.track, loaded.metadata)
-      const didLoad = await loadTrack(loadedTrack, loaded.data)
-      if (didLoad) {
-        await play()
+        await playTrackAt(queueIndex)
+        closeQuickLaunch()
+        return
       }
       closeQuickLaunch()
     } catch (error) {
@@ -676,8 +612,7 @@ export default function QuickLaunchPalette() {
     clearSelection,
     closeQuickLaunch,
     isExecuting,
-    loadTrack,
-    play,
+    playTrackAt,
     selectAlbum,
     selectArtist,
     selectPlaylist,

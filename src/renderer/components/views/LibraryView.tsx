@@ -3,6 +3,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
+import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
@@ -154,7 +155,7 @@ function toQueueTrack(track: {
   channels: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
-  source_type: 'local' | 'subsonic'
+  source_type: 'local' | 'subsonic' | 'jellyfin'
   source_id: number | null
   source_track_id: string | null
   source_path: string | null
@@ -209,6 +210,7 @@ export default function LibraryView() {
   const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
+  const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
@@ -292,7 +294,8 @@ export default function LibraryView() {
   useEffect(() => {
     const validFilterKeys = new Set<string>([
       'local',
-      ...subsonicSources.map((source) => `subsonic:${source.id}`)
+      ...subsonicSources.map((source) => `subsonic:${source.id}`),
+      ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
     ])
 
     setSelectedSourceFilters((current) => {
@@ -305,7 +308,7 @@ export default function LibraryView() {
       }
       return next.size === current.size ? current : next
     })
-  }, [subsonicSources])
+  }, [jellyfinSources, subsonicSources])
 
   useEffect(() => {
     if (!isArtistRootView || artistBrowseMode !== 'strict') return
@@ -441,6 +444,10 @@ export default function LibraryView() {
       if (track.source_type === 'subsonic') {
         if (track.source_id == null) return false
         return selectedSourceFilters.has(`subsonic:${track.source_id}`)
+      }
+      if (track.source_type === 'jellyfin') {
+        if (track.source_id == null) return false
+        return selectedSourceFilters.has(`jellyfin:${track.source_id}`)
       }
       return false
     })
@@ -704,11 +711,17 @@ export default function LibraryView() {
           ? 'Search folders & tracks...'
           : 'Search tracks...'
   const sourceFilterOptions = useMemo(() => {
-    return subsonicSources.map((source) => ({
-      key: `subsonic:${source.id}`,
-      label: source.name
-    }))
-  }, [subsonicSources])
+    return [
+      ...subsonicSources.map((source) => ({
+        key: `subsonic:${source.id}`,
+        label: source.name
+      })),
+      ...jellyfinSources.map((source) => ({
+        key: `jellyfin:${source.id}`,
+        label: source.name
+      }))
+    ]
+  }, [jellyfinSources, subsonicSources])
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {

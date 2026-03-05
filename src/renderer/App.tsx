@@ -22,6 +22,7 @@ import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
+import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
 import { usePlayerStore } from './stores/playerStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
@@ -79,6 +80,7 @@ function App() {
     void useLastFmSettingsStore.getState().init()
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
+    void useJellyfinSettingsStore.getState().init()
 
     const handleAssociatedOpenFiles = async (rawPaths: string[]) => {
       const queuePaths = [...new Set(

@@ -18,6 +18,17 @@ import {
   type SubsonicDownloadProgress
 } from './services/subsonic'
 import {
+  authenticateJellyfin,
+  buildJellyfinStreamUrl,
+  fetchJellyfinCoverArt,
+  fetchJellyfinTrackBytes,
+  normalizeJellyfinBaseUrl,
+  parseJellyfinTrackPath,
+  syncJellyfinCatalog,
+  testJellyfinConnection,
+  type JellyfinDownloadProgress
+} from './services/jellyfin'
+import {
   discordRpcService,
   type DiscordPresenceUpdate,
   type DiscordRpcConfigureOptions
@@ -67,6 +78,15 @@ import {
 import type { LastFmServiceConfig } from '../types/lastFm'
 import type { LyricsTrackQuery } from '../types/lyrics'
 import type {
+  JellyfinSource,
+  JellyfinSourceCreateInput,
+  JellyfinSourceLastStatus,
+  JellyfinSourceSyncProgress,
+  JellyfinSourceTestInput,
+  JellyfinSourceTestResult,
+  JellyfinSyncPhase,
+  JellyfinSourceUpdateInput,
+  JellyfinStatusSnapshot,
   SubsonicSource,
   SubsonicSourceCreateInput,
   SubsonicSourceLastStatus,
@@ -99,8 +119,10 @@ let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
+let jellyfinSyncTimer: ReturnType<typeof setInterval> | null = null
 let replayGainScanEnabled: boolean = false
 let subsonicSyncInFlight = false
+let jellyfinSyncInFlight = false
 let associatedOpenRendererReady = false
 const associatedOpenPendingPaths: string[] = []
 
@@ -129,7 +151,9 @@ const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
 const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
 const SUBSONIC_STREAM_MAX_BITRATE_KBPS = 256
+const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
 const SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 80
+const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
 let artworkThumbnailCacheDir = ''
 const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
@@ -139,6 +163,13 @@ let subsonicStatusCache: SubsonicStatusSnapshot = {
   sources: []
 }
 const subsonicSyncProgressBySourceId = new Map<number, SubsonicSourceSyncProgress>()
+let jellyfinStatusCache: JellyfinStatusSnapshot = {
+  isSyncing: false,
+  updatedAt: Date.now(),
+  sources: []
+}
+const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgress>()
+const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
@@ -951,6 +982,63 @@ function refreshSubsonicStatusCache(isSyncing: boolean = subsonicSyncInFlight): 
   return subsonicStatusCache
 }
 
+function broadcastJellyfinStatus(snapshot?: JellyfinStatusSnapshot): void {
+  const payload = snapshot ?? jellyfinStatusCache
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('jellyfin:status', payload)
+  }
+}
+
+function setJellyfinSyncProgress(
+  sourceId: number,
+  progress: {
+    phase: JellyfinSyncPhase
+    activity: string
+    current?: number | null
+    total?: number | null
+    detail?: string | null
+  }
+): void {
+  jellyfinSyncProgressBySourceId.set(sourceId, {
+    phase: progress.phase,
+    activity: progress.activity,
+    current: progress.current ?? null,
+    total: progress.total ?? null,
+    detail: progress.detail ?? null,
+    updatedAt: Date.now()
+  })
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+}
+
+function clearJellyfinSyncProgress(sourceId: number): void {
+  if (!jellyfinSyncProgressBySourceId.has(sourceId)) return
+  jellyfinSyncProgressBySourceId.delete(sourceId)
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+}
+
+function computeJellyfinStatusSnapshot(isSyncing: boolean): JellyfinStatusSnapshot {
+  const sources = library.listJellyfinSources().map((source) => ({
+    sourceId: source.id,
+    enabled: source.enabled === 1,
+    status: source.last_status,
+    error: source.last_error,
+    lastSyncAt: source.last_sync_at,
+    lastCheckedAt: source.last_checked_at,
+    progress: jellyfinSyncProgressBySourceId.get(source.id) ?? null
+  }))
+
+  return {
+    isSyncing,
+    updatedAt: Date.now(),
+    sources
+  }
+}
+
+function refreshJellyfinStatusCache(isSyncing: boolean = jellyfinSyncInFlight): JellyfinStatusSnapshot {
+  jellyfinStatusCache = computeJellyfinStatusSnapshot(isSyncing)
+  return jellyfinStatusCache
+}
+
 function ensureSafeStorageAvailable(): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error(
@@ -1094,6 +1182,182 @@ function resolveSubsonicTestConnectionInput(input: SubsonicSourceTestInput): {
   }
 
   const baseUrl = normalizeSubsonicBaseUrl(String(input.baseUrl ?? ''))
+  const username = String(input.username ?? '').trim()
+  const password = String(input.password ?? '')
+
+  if (!username) throw new Error('Username is required.')
+  if (!password) throw new Error('Password is required.')
+
+  return { baseUrl, username, password }
+}
+
+function encryptJellyfinSecret(secret: string): string {
+  return encryptSubsonicSecret(secret)
+}
+
+function decryptJellyfinSecret(secretEncrypted: string): string {
+  ensureSafeStorageAvailable()
+  if (!secretEncrypted) {
+    throw new Error('Stored Jellyfin credential is missing.')
+  }
+  const encryptedBuffer = Buffer.from(secretEncrypted, 'base64')
+  return safeStorage.decryptString(encryptedBuffer)
+}
+
+function requireJellyfinSourceCredentials(sourceId: number): {
+  source: library.JellyfinSourceRow
+  connection: { baseUrl: string; username: string; password: string }
+} {
+  const source = library.getJellyfinSourceById(sourceId)
+  if (!source) {
+    throw new Error('Jellyfin source not found.')
+  }
+
+  const password = decryptJellyfinSecret(source.secret_encrypted)
+  return {
+    source,
+    connection: {
+      baseUrl: source.base_url,
+      username: source.username,
+      password
+    }
+  }
+}
+
+function clearJellyfinAuthContext(sourceId: number): void {
+  jellyfinAuthCacheBySourceId.delete(sourceId)
+}
+
+function isJellyfinUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const message = error.message.toLowerCase()
+  return message.includes('(401)') || message.includes(' 401') || message.endsWith('401')
+}
+
+async function getJellyfinAuthContext(
+  sourceId: number,
+  connection: { baseUrl: string; username: string; password: string },
+  options: { forceRefresh?: boolean } = {}
+): Promise<{ accessToken: string; userId: string }> {
+  const now = Date.now()
+  if (!options.forceRefresh) {
+    const cached = jellyfinAuthCacheBySourceId.get(sourceId)
+    if (cached && cached.expiresAt > now) {
+      return cached.authContext
+    }
+  }
+
+  const authContext = await authenticateJellyfin(connection, {
+    timeoutMs: 12_000,
+    retries: 1
+  })
+  jellyfinAuthCacheBySourceId.set(sourceId, {
+    authContext,
+    expiresAt: now + JELLYFIN_AUTH_CACHE_TTL_MS
+  })
+  return authContext
+}
+
+function toJellyfinSourcePayload(source: library.JellyfinSourcePublic): JellyfinSource {
+  return {
+    id: source.id,
+    name: source.name,
+    base_url: source.base_url,
+    username: source.username,
+    enabled: source.enabled,
+    last_status: source.last_status,
+    last_error: source.last_error,
+    last_sync_at: source.last_sync_at,
+    last_checked_at: source.last_checked_at,
+    created_at: source.created_at,
+    updated_at: source.updated_at,
+    has_stored_secret: source.has_stored_secret
+  }
+}
+
+function normalizeJellyfinSourceCreateInput(raw: JellyfinSourceCreateInput): {
+  name: string
+  baseUrl: string
+  username: string
+  password: string
+  enabled: boolean
+} {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid Jellyfin source payload.')
+  }
+
+  const name = String(raw.name ?? '').trim()
+  const baseUrl = normalizeJellyfinBaseUrl(String(raw.baseUrl ?? ''))
+  const username = String(raw.username ?? '').trim()
+  const password = String(raw.password ?? '')
+  const enabled = Boolean(raw.enabled)
+
+  if (!name) throw new Error('Source name is required.')
+  if (!username) throw new Error('Username is required.')
+  if (!password) throw new Error('Password is required.')
+
+  return { name, baseUrl, username, password, enabled }
+}
+
+function normalizeJellyfinSourceUpdateInput(raw: JellyfinSourceUpdateInput): {
+  name?: string
+  baseUrl?: string
+  username?: string
+  password?: string
+  enabled?: boolean
+} {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid Jellyfin source update payload.')
+  }
+
+  const next: {
+    name?: string
+    baseUrl?: string
+    username?: string
+    password?: string
+    enabled?: boolean
+  } = {}
+
+  if (raw.name !== undefined) {
+    const value = String(raw.name).trim()
+    if (!value) throw new Error('Source name cannot be empty.')
+    next.name = value
+  }
+  if (raw.baseUrl !== undefined) {
+    next.baseUrl = normalizeJellyfinBaseUrl(String(raw.baseUrl))
+  }
+  if (raw.username !== undefined) {
+    const value = String(raw.username).trim()
+    if (!value) throw new Error('Username cannot be empty.')
+    next.username = value
+  }
+  if (raw.password !== undefined) {
+    const value = String(raw.password)
+    if (!value) throw new Error('Password cannot be empty.')
+    next.password = value
+  }
+  if (raw.enabled !== undefined) {
+    next.enabled = Boolean(raw.enabled)
+  }
+
+  return next
+}
+
+function resolveJellyfinTestConnectionInput(input: JellyfinSourceTestInput): {
+  baseUrl: string
+  username: string
+  password: string
+} {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Jellyfin test payload.')
+  }
+
+  if (typeof input.sourceId === 'number' && Number.isInteger(input.sourceId) && input.sourceId > 0) {
+    const credentials = requireJellyfinSourceCredentials(input.sourceId)
+    return credentials.connection
+  }
+
+  const baseUrl = normalizeJellyfinBaseUrl(String(input.baseUrl ?? ''))
   const username = String(input.username ?? '').trim()
   const password = String(input.password ?? '')
 
@@ -1323,6 +1587,234 @@ function startSubsonicSyncScheduler(): void {
         return
       }
       console.warn('Periodic Subsonic sync failed:', error)
+    })
+  }, SUBSONIC_SYNC_INTERVAL_MS)
+}
+
+async function setJellyfinSourceDisabledState(sourceId: number): Promise<void> {
+  clearJellyfinAuthContext(sourceId)
+  clearJellyfinSyncProgress(sourceId)
+  await library.updateJellyfinSourceStatus(
+    sourceId,
+    {
+      status: 'disabled',
+      error: null,
+      checkedAt: Date.now()
+    },
+    { persist: false }
+  )
+  await library.markJellyfinTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
+}
+
+async function hydrateJellyfinTrackArtworkHashes(
+  connection: { baseUrl: string; username: string; password: string },
+  authContext: { accessToken: string; userId: string },
+  tracks: Array<{ artwork_source_id: string | null }>,
+  onProgress?: (current: number, total: number, artworkId: string | null) => void
+): Promise<Map<string, string>> {
+  const artworkIds = Array.from(new Set(
+    tracks
+      .map((track) => track.artwork_source_id)
+      .filter((artworkId): artworkId is string => typeof artworkId === 'string' && artworkId.trim().length > 0)
+  ))
+
+  const hashesByArtworkId = new Map<string, string>()
+  onProgress?.(0, artworkIds.length, null)
+  let processed = 0
+  for (const artworkId of artworkIds) {
+    try {
+      const artworkPayload = await fetchJellyfinCoverArt(connection, artworkId, authContext, {
+        timeoutMs: 12_000,
+        retries: 1
+      })
+      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      if (hash) {
+        hashesByArtworkId.set(artworkId, hash)
+      }
+    } catch (error) {
+      console.warn(`Failed to sync Jellyfin cover art ${artworkId}:`, error)
+    } finally {
+      processed += 1
+      onProgress?.(processed, artworkIds.length, artworkId)
+    }
+  }
+
+  return hashesByArtworkId
+}
+
+async function syncOneJellyfinSource(sourceId: number): Promise<void> {
+  const source = library.getJellyfinSourceById(sourceId)
+  if (!source) return
+
+  if (source.enabled !== 1) {
+    clearJellyfinSyncProgress(sourceId)
+    await setJellyfinSourceDisabledState(sourceId)
+    await library.persistLibraryDatabase()
+    return
+  }
+
+  await library.updateJellyfinSourceStatus(
+    sourceId,
+    {
+      status: 'syncing',
+      error: null,
+      checkedAt: Date.now()
+    },
+    { persist: false }
+  )
+  setJellyfinSyncProgress(sourceId, {
+    phase: 'connecting',
+    activity: 'Connecting to server...'
+  })
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(true))
+
+  let credentials: ReturnType<typeof requireJellyfinSourceCredentials> | null = null
+  try {
+    credentials = requireJellyfinSourceCredentials(sourceId)
+    clearJellyfinAuthContext(sourceId)
+    await testJellyfinConnection(credentials.connection, {
+      timeoutMs: 12_000,
+      retries: 1
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to reach Jellyfin source.'
+    await library.markJellyfinTracksAvailability(sourceId, false, 'source_unavailable', { persist: false })
+    await library.updateJellyfinSourceStatus(
+      sourceId,
+      {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearJellyfinSyncProgress(sourceId)
+    throw error
+  }
+
+  await library.restoreJellyfinTracksFromSourceUnavailable(sourceId, { persist: false })
+
+  try {
+    const authContext = await authenticateJellyfin(credentials.connection, {
+      timeoutMs: 12_000,
+      retries: 1
+    })
+    const result = await syncJellyfinCatalog(sourceId, credentials.connection, {
+      authContext,
+      timeoutMs: 12_000,
+      retries: 1,
+      onProgress: (progress) => {
+        setJellyfinSyncProgress(sourceId, {
+          phase: progress.phase,
+          activity: 'Loading library items...',
+          current: progress.current,
+          total: progress.total,
+          detail: progress.detail
+        })
+      }
+    })
+
+    setJellyfinSyncProgress(sourceId, {
+      phase: 'artwork',
+      activity: 'Syncing artwork...'
+    })
+    const artworkHashesBySourceId = await hydrateJellyfinTrackArtworkHashes(
+      credentials.connection,
+      authContext,
+      result.tracks,
+      (current, total, artworkId) => {
+        setJellyfinSyncProgress(sourceId, {
+          phase: 'artwork',
+          activity: 'Syncing artwork...',
+          current,
+          total,
+          detail: artworkId
+        })
+      }
+    )
+    const tracksForUpsert = result.tracks.map((track) => ({
+      ...track,
+      artwork_hash: track.artwork_source_id
+        ? (artworkHashesBySourceId.get(track.artwork_source_id) ?? track.artwork_hash)
+        : track.artwork_hash
+    }))
+
+    setJellyfinSyncProgress(sourceId, {
+      phase: 'finalizing',
+      activity: 'Applying library updates...'
+    })
+    await library.upsertJellyfinTracks(sourceId, tracksForUpsert, { persist: false })
+    await library.markMissingJellyfinTracksUnavailable(
+      sourceId,
+      new Set(result.tracks.map((track) => track.source_track_id)),
+      { persist: false }
+    )
+    await library.updateJellyfinSourceStatus(
+      sourceId,
+      {
+        status: 'ok',
+        error: null,
+        syncedAt: Date.now(),
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearJellyfinSyncProgress(sourceId)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Jellyfin sync failure.'
+    await library.updateJellyfinSourceStatus(
+      sourceId,
+      {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearJellyfinSyncProgress(sourceId)
+    throw error
+  }
+}
+
+async function runJellyfinSync(sourceId?: number): Promise<void> {
+  if (jellyfinSyncInFlight) {
+    throw new Error('A Jellyfin sync is already in progress.')
+  }
+
+  jellyfinSyncInFlight = true
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(true))
+
+  try {
+    const sources = sourceId
+      ? library.listJellyfinSources().filter((source) => source.id === sourceId)
+      : library.listJellyfinSources()
+
+    for (const source of sources) {
+      try {
+        await syncOneJellyfinSource(source.id)
+      } catch (error) {
+        console.warn(`Jellyfin sync failed for source ${source.id}:`, error)
+      }
+    }
+  } finally {
+    jellyfinSyncInFlight = false
+    broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  }
+}
+
+function startJellyfinSyncScheduler(): void {
+  if (jellyfinSyncTimer !== null) {
+    clearInterval(jellyfinSyncTimer)
+  }
+  jellyfinSyncTimer = setInterval(() => {
+    void runJellyfinSync().catch((error) => {
+      if (error instanceof Error && error.message.includes('already in progress')) {
+        return
+      }
+      console.warn('Periodic Jellyfin sync failed:', error)
     })
   }, SUBSONIC_SYNC_INTERVAL_MS)
 }
@@ -1798,6 +2290,14 @@ queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(process.argv))
 app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
+  try {
+    const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
+    if (orphanedRemoteDeleted > 0) {
+      console.log(`Removed ${orphanedRemoteDeleted} orphaned remote tracks from library`)
+    }
+  } catch (error) {
+    console.warn('Failed to cleanup orphaned remote tracks on startup:', error)
+  }
   replayGainScanEnabled = await loadReplayGainScanEnabledFromMeta()
   try {
     await ensureArtworkThumbnailCacheDirectory()
@@ -1814,15 +2314,24 @@ app.whenReady().then(async () => {
   lyricsService.applyConfig(lyricsOnlineEnabled)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
   refreshSubsonicStatusCache(false)
+  refreshJellyfinStatusCache(false)
 
   createWindow()
   broadcastSubsonicStatus()
+  broadcastJellyfinStatus()
   startSubsonicSyncScheduler()
+  startJellyfinSyncScheduler()
   void runSubsonicSync().catch((error) => {
     if (error instanceof Error && error.message.includes('already in progress')) {
       return
     }
     console.warn('Startup Subsonic sync failed:', error)
+  })
+  void runJellyfinSync().catch((error) => {
+    if (error instanceof Error && error.message.includes('already in progress')) {
+      return
+    }
+    console.warn('Startup Jellyfin sync failed:', error)
   })
   void (async () => {
     try {
@@ -1870,6 +2379,10 @@ app.on('before-quit', () => {
   if (subsonicSyncTimer !== null) {
     clearInterval(subsonicSyncTimer)
     subsonicSyncTimer = null
+  }
+  if (jellyfinSyncTimer !== null) {
+    clearInterval(jellyfinSyncTimer)
+    jellyfinSyncTimer = null
   }
   void persistMainWindowPrefs()
   void persistMiniWindowPrefs()
@@ -2306,6 +2819,142 @@ ipcMain.handle('subsonic:syncAll', async () => {
 
 ipcMain.handle('subsonic:getStatus', () => {
   return refreshSubsonicStatusCache(subsonicSyncInFlight)
+})
+
+ipcMain.handle('jellyfin:listSources', () => {
+  return library.listJellyfinSources().map(toJellyfinSourcePayload)
+})
+
+ipcMain.handle('jellyfin:createSource', async (_event, rawInput: JellyfinSourceCreateInput) => {
+  const input = normalizeJellyfinSourceCreateInput(rawInput)
+  const encryptedSecret = encryptJellyfinSecret(input.password)
+
+  const created = await library.createJellyfinSource({
+    name: input.name,
+    base_url: input.baseUrl,
+    username: input.username,
+    secret_encrypted: encryptedSecret,
+    enabled: input.enabled ? 1 : 0,
+    last_status: input.enabled ? 'unknown' : 'disabled'
+  })
+
+  if (!input.enabled) {
+    await setJellyfinSourceDisabledState(created.id)
+    await library.persistLibraryDatabase()
+  }
+  clearJellyfinAuthContext(created.id)
+
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  return toJellyfinSourcePayload(created)
+})
+
+ipcMain.handle('jellyfin:updateSource', async (_event, sourceIdValue: unknown, rawInput: JellyfinSourceUpdateInput) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Jellyfin source id.')
+  }
+
+  const input = normalizeJellyfinSourceUpdateInput(rawInput)
+  const updatePayload: {
+    name?: string
+    base_url?: string
+    username?: string
+    secret_encrypted?: string
+    enabled?: number
+    last_status?: JellyfinSourceLastStatus
+    last_error?: string | null
+  } = {}
+
+  if (input.name !== undefined) updatePayload.name = input.name
+  if (input.baseUrl !== undefined) updatePayload.base_url = input.baseUrl
+  if (input.username !== undefined) updatePayload.username = input.username
+  if (input.password !== undefined) {
+    updatePayload.secret_encrypted = encryptJellyfinSecret(input.password)
+  }
+  if (input.enabled !== undefined) {
+    updatePayload.enabled = input.enabled ? 1 : 0
+    updatePayload.last_status = input.enabled ? 'unknown' : 'disabled'
+    if (!input.enabled) {
+      updatePayload.last_error = null
+    }
+  }
+
+  const updated = await library.updateJellyfinSource(sourceId, updatePayload)
+  clearJellyfinAuthContext(sourceId)
+  if (input.enabled === false) {
+    await setJellyfinSourceDisabledState(sourceId)
+    await library.persistLibraryDatabase()
+  }
+
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  return toJellyfinSourcePayload(updated)
+})
+
+ipcMain.handle('jellyfin:deleteSource', async (_event, sourceIdValue: unknown, purgeTracksValue: unknown) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Jellyfin source id.')
+  }
+  const purgeTracks = Boolean(purgeTracksValue)
+  await library.deleteJellyfinSource(sourceId, purgeTracks)
+  clearJellyfinAuthContext(sourceId)
+  clearJellyfinSyncProgress(sourceId)
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+})
+
+ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTestInput): Promise<JellyfinSourceTestResult> => {
+  const sourceId = typeof rawInput?.sourceId === 'number' && Number.isInteger(rawInput.sourceId) && rawInput.sourceId > 0
+    ? rawInput.sourceId
+    : null
+  try {
+    const resolved = resolveJellyfinTestConnectionInput(rawInput)
+    await testJellyfinConnection(resolved, { timeoutMs: 12_000, retries: 1 })
+    if (sourceId !== null) {
+      clearJellyfinSyncProgress(sourceId)
+      await library.updateJellyfinSourceStatus(sourceId, {
+        status: 'ok',
+        error: null,
+        checkedAt: Date.now()
+      })
+      broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+    }
+    return {
+      ok: true,
+      message: 'Connection successful.'
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Connection test failed.'
+    if (sourceId !== null) {
+      clearJellyfinSyncProgress(sourceId)
+      await library.updateJellyfinSourceStatus(sourceId, {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      })
+      broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+    }
+    return {
+      ok: false,
+      message: 'Connection failed.',
+      error: message
+    }
+  }
+})
+
+ipcMain.handle('jellyfin:syncSource', async (_event, sourceIdValue: unknown) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Jellyfin source id.')
+  }
+  await runJellyfinSync(sourceId)
+})
+
+ipcMain.handle('jellyfin:syncAll', async () => {
+  await runJellyfinSync()
+})
+
+ipcMain.handle('jellyfin:getStatus', () => {
+  return refreshJellyfinStatusCache(jellyfinSyncInFlight)
 })
 
 // Local integration API
@@ -3234,7 +3883,7 @@ interface LoadAudioFileOptions {
 
 interface RemoteAudioLoadProgressPayload {
   path: string
-  sourceType: 'subsonic'
+  sourceType: 'subsonic' | 'jellyfin'
   stage: 'downloading'
   loadedBytes: number
   totalBytes: number | null
@@ -3566,6 +4215,10 @@ function isSubsonicPath(pathValue: string): boolean {
   return parseSubsonicTrackPath(pathValue) !== null
 }
 
+function isJellyfinPath(pathValue: string): boolean {
+  return parseJellyfinTrackPath(pathValue) !== null
+}
+
 function sanitizeAudioExtension(extension: string | null | undefined): string {
   const normalized = String(extension ?? '').trim().toLowerCase()
   if (!normalized) return ''
@@ -3578,7 +4231,7 @@ async function writeTempAudioFileFromBuffer(
   buffer: ArrayBuffer,
   extension: string | null | undefined
 ): Promise<{ tempDir: string; filePath: string }> {
-  const tempDir = await mkdtemp(join(tmpdir(), 'astra-subsonic-'))
+  const tempDir = await mkdtemp(join(tmpdir(), 'astra-remote-'))
   const ext = sanitizeAudioExtension(extension)
   const tempPath = join(tempDir, `stream${ext || '.bin'}`)
   const data = Buffer.from(buffer)
@@ -3719,11 +4372,176 @@ async function resolveSubsonicAudioPayload(
   }
 }
 
+async function resolveJellyfinAudioPayload(
+  filePath: string,
+  options: {
+    onDownloadProgress?: (progress: RemoteAudioLoadProgressPayload) => void
+  } = {}
+): Promise<{
+  parsed: { sourceId: number; sourceTrackId: string }
+  track: library.DbTrack | null
+  streamUrl: string
+  data: ArrayBuffer
+}> {
+  const parsed = parseJellyfinTrackPath(filePath)
+  if (!parsed) {
+    throw new Error('Invalid Jellyfin track path.')
+  }
+
+  const credentials = requireJellyfinSourceCredentials(parsed.sourceId)
+  if (credentials.source.enabled !== 1) {
+    await library.setTrackAvailability(filePath, false, 'source_disabled')
+    throw new Error(`Jellyfin source "${credentials.source.name}" is disabled.`)
+  }
+
+  let authContext = await getJellyfinAuthContext(parsed.sourceId, credentials.connection)
+  let streamUrl = buildJellyfinStreamUrl(credentials.connection, parsed.sourceTrackId, authContext.accessToken)
+  let latestProgress: {
+    loadedBytes: number
+    totalBytes: number | null
+    chunkCount: number
+  } = {
+    loadedBytes: 0,
+    totalBytes: null,
+    chunkCount: 0
+  }
+  let lastProgressEmitAt = 0
+  const emitDownloadProgress = (
+    progress: JellyfinDownloadProgress,
+    optionsOverride: { force?: boolean; failed?: boolean } = {}
+  ) => {
+    latestProgress = {
+      loadedBytes: progress.loadedBytes,
+      totalBytes: progress.totalBytes,
+      chunkCount: progress.chunkCount
+    }
+
+    if (!options.onDownloadProgress) return
+    const force = optionsOverride.force === true
+    const now = Date.now()
+    if (!force && !progress.done && now - lastProgressEmitAt < SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS) {
+      return
+    }
+    lastProgressEmitAt = now
+
+    const percent = progress.totalBytes && progress.totalBytes > 0
+      ? Math.max(0, Math.min(1, progress.loadedBytes / progress.totalBytes))
+      : null
+
+    options.onDownloadProgress({
+      path: filePath,
+      sourceType: 'jellyfin',
+      stage: 'downloading',
+      loadedBytes: progress.loadedBytes,
+      totalBytes: progress.totalBytes,
+      chunkCount: progress.chunkCount,
+      percent,
+      done: progress.done,
+      failed: optionsOverride.failed === true
+    })
+  }
+
+  try {
+    emitDownloadProgress(
+      {
+        loadedBytes: 0,
+        totalBytes: null,
+        chunkCount: 0,
+        done: false
+      },
+      { force: true }
+    )
+
+    const fetchWithAuthContext = async (
+      context: { accessToken: string; userId: string },
+      options: { allowTranscodeRetry?: boolean } = {}
+    ): Promise<ArrayBuffer> => {
+      try {
+        return await fetchJellyfinTrackBytes(credentials.connection, parsed.sourceTrackId, context, {
+          timeoutMs: 20_000,
+          retries: 1,
+          maxBitRateKbps: JELLYFIN_STREAM_MAX_BITRATE_KBPS,
+          onDownloadProgress: (progress) => {
+            emitDownloadProgress(progress, { force: progress.done })
+          }
+        })
+      } catch (transcodeError) {
+        if (options.allowTranscodeRetry === false) {
+          throw transcodeError
+        }
+
+        console.warn(`Jellyfin bitrate-limited stream failed for ${filePath}, retrying raw stream:`, transcodeError)
+        emitDownloadProgress(
+          {
+            loadedBytes: 0,
+            totalBytes: null,
+            chunkCount: 0,
+            done: false
+          },
+          { force: true }
+        )
+        return fetchJellyfinTrackBytes(credentials.connection, parsed.sourceTrackId, context, {
+          timeoutMs: 20_000,
+          retries: 1,
+          onDownloadProgress: (progress) => {
+            emitDownloadProgress(progress, { force: progress.done })
+          }
+        })
+      }
+    }
+
+    let data: ArrayBuffer
+    try {
+      data = await fetchWithAuthContext(authContext)
+    } catch (error) {
+      if (!isJellyfinUnauthorizedError(error)) {
+        throw error
+      }
+
+      clearJellyfinAuthContext(parsed.sourceId)
+      authContext = await getJellyfinAuthContext(parsed.sourceId, credentials.connection, { forceRefresh: true })
+      streamUrl = buildJellyfinStreamUrl(credentials.connection, parsed.sourceTrackId, authContext.accessToken)
+      emitDownloadProgress(
+        {
+          loadedBytes: 0,
+          totalBytes: null,
+          chunkCount: 0,
+          done: false
+        },
+        { force: true }
+      )
+      data = await fetchWithAuthContext(authContext, { allowTranscodeRetry: true })
+    }
+
+    await library.setTrackAvailability(filePath, true, null, { persist: false })
+    return {
+      parsed,
+      track: library.getTrackByPath(filePath),
+      streamUrl,
+      data
+    }
+  } catch (error) {
+    emitDownloadProgress(
+      {
+        loadedBytes: latestProgress.loadedBytes,
+        totalBytes: latestProgress.totalBytes,
+        chunkCount: latestProgress.chunkCount,
+        done: true
+      },
+      { force: true, failed: true }
+    )
+    await library.setTrackAvailability(filePath, false, 'source_unavailable')
+    throw error
+  }
+}
+
 async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | null> {
-  if (isSubsonicPath(filePath)) {
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
     let tempDir: string | null = null
     try {
-      const payload = await resolveSubsonicAudioPayload(filePath)
+      const payload = isSubsonicPath(filePath)
+        ? await resolveSubsonicAudioPayload(filePath)
+        : await resolveJellyfinAudioPayload(filePath)
       const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
       tempDir = temp.tempDir
       return await decodeAudioWithFfmpeg(temp.filePath)
@@ -3770,11 +4588,13 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
 }
 
 async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {
-  if (isSubsonicPath(filePath)) {
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
     let tempDir: string | null = null
     const dbTrack = library.getTrackByPath(filePath)
     try {
-      const payload = await resolveSubsonicAudioPayload(filePath)
+      const payload = isSubsonicPath(filePath)
+        ? await resolveSubsonicAudioPayload(filePath)
+        : await resolveJellyfinAudioPayload(filePath)
       const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
       tempDir = temp.tempDir
       const parsed = await loadAudioMetadata(temp.filePath)
@@ -3892,10 +4712,14 @@ async function loadAudioFile(
 ) {
   const loadStartMs = Date.now()
   try {
-    if (isSubsonicPath(filePath)) {
-      const payload = await resolveSubsonicAudioPayload(filePath, {
-        onDownloadProgress: runtime.onRemoteLoadProgress
-      })
+    if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+      const payload = isSubsonicPath(filePath)
+        ? await resolveSubsonicAudioPayload(filePath, {
+            onDownloadProgress: runtime.onRemoteLoadProgress
+          })
+        : await resolveJellyfinAudioPayload(filePath, {
+            onDownloadProgress: runtime.onRemoteLoadProgress
+          })
       const name = payload.track?.title ?? payload.parsed.sourceTrackId
       const response = {
         path: filePath,

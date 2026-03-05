@@ -167,7 +167,7 @@ export default function TransportBar() {
     : null
   const loadingLabel = (() => {
     if (!isLoadingTrack || !currentTrack) return null
-    if (currentTrack.sourceType !== 'subsonic') return null
+    if (!currentTrack.sourceType || currentTrack.sourceType === 'local') return null
     if (loadingPercent !== null) {
       return `Buffering ${Math.round(loadingPercent * 100)}% • ${activeRemoteLoadProgress?.chunkCount ?? 0} chunks`
     }
