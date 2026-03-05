@@ -75,7 +75,13 @@ function toQueueTrack(track: QuickLaunchTrackRecord): Track {
     codecProfile: track.codec_profile ?? undefined,
     isAtmosJoc: track.is_atmos_joc === 1,
     replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined
+    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined,
+    sourceType: track.source_type,
+    sourceId: track.source_id ?? undefined,
+    sourceTrackId: track.source_track_id ?? undefined,
+    sourcePath: track.source_path ?? undefined,
+    isAvailable: track.is_available === 1,
+    availabilityReason: track.availability_reason ?? undefined
   }
 }
 
@@ -103,7 +109,13 @@ function toLoadedTrack(track: QuickLaunchTrackRecord, metadata?: AudioLoadMetada
     codecProfile: metadata?.codecProfile ?? track.codec_profile ?? undefined,
     isAtmosJoc: metadata?.isAtmosJoc ?? (track.is_atmos_joc === 1),
     replayGainTrackDb: metadata?.replayGainTrackDb ?? track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined
+    replayGainAlbumDb: metadata?.replayGainAlbumDb ?? track.replaygain_album_gain_db ?? undefined,
+    sourceType: track.source_type,
+    sourceId: track.source_id ?? undefined,
+    sourceTrackId: track.source_track_id ?? undefined,
+    sourcePath: track.source_path ?? undefined,
+    isAvailable: track.is_available === 1,
+    availabilityReason: track.availability_reason ?? undefined
   }
 }
 

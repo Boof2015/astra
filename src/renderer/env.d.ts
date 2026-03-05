@@ -28,6 +28,14 @@ import type {
     LyricsTrackOverride,
     LyricsTrackQuery
 } from '../types/lyrics'
+import type {
+    SubsonicSource,
+    SubsonicSourceCreateInput,
+    SubsonicSourceTestInput,
+    SubsonicSourceTestResult,
+    SubsonicSourceUpdateInput,
+    SubsonicStatusSnapshot
+} from '../types/subsonic'
 
 declare global {
     interface Window {
@@ -144,6 +152,17 @@ declare global {
                 resetToDefaults: () => Promise<LyricsStatus>
                 onStatus: (callback: (status: LyricsStatus) => void) => () => void
             }
+            subsonic: {
+                listSources: () => Promise<SubsonicSource[]>
+                createSource: (input: SubsonicSourceCreateInput) => Promise<SubsonicSource>
+                updateSource: (sourceId: number, input: SubsonicSourceUpdateInput) => Promise<SubsonicSource>
+                deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
+                testSource: (input: SubsonicSourceTestInput) => Promise<SubsonicSourceTestResult>
+                syncSource: (sourceId: number) => Promise<void>
+                syncAll: () => Promise<void>
+                getStatus: () => Promise<SubsonicStatusSnapshot>
+                onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
+            }
             openAudioFile: () => Promise<{
                 path: string
                 name: string
@@ -215,6 +234,17 @@ declare global {
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
             getReplayGainScanEnabled: () => Promise<boolean>
             setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
+            onRemoteLoadProgress: (callback: (progress: {
+                path: string
+                sourceType: 'subsonic'
+                stage: 'downloading'
+                loadedBytes: number
+                totalBytes: number | null
+                chunkCount: number
+                percent: number | null
+                done: boolean
+                failed: boolean
+            }) => void) => () => void
             showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
             openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
             readTextFile: (filePath: string) => Promise<string>

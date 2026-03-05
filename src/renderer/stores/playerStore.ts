@@ -5,6 +5,18 @@ import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
 import { useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 
+interface RemoteLoadProgress {
+  path: string
+  sourceType: 'subsonic'
+  stage: 'downloading'
+  loadedBytes: number
+  totalBytes: number | null
+  chunkCount: number
+  percent: number | null
+  done: boolean
+  failed: boolean
+}
+
 interface PlayerStore {
   // State
   currentTrack: Track | null
@@ -14,6 +26,7 @@ interface PlayerStore {
   volume: number
   isMuted: boolean
   waveformData: Float32Array | null
+  remoteLoadProgress: RemoteLoadProgress | null
   ffmpegFallbackNotice: {
     id: number
     trackPath: string
@@ -83,7 +96,7 @@ interface PlayerStore {
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<void>
+  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<boolean>
   _preBufferNextTrack: () => Promise<void>
   _getNextIndex: () => number
   _generateShuffleOrder: (currentQueueIndex: number) => void
@@ -96,6 +109,13 @@ const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
+
+function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
+  if (!track) return false
+  return track.sourceType !== undefined
+    && track.sourceType !== 'local'
+    && track.isAvailable === false
+}
 
 interface RecentPlaySession {
   trackPath: string
@@ -215,6 +235,7 @@ function getReplayGainCandidateDb(
 export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
+  let remoteLoadProgressUnsubscribe: (() => void) | null = null
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
   let associatedOpenNoticeId = 0
@@ -353,6 +374,57 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     })
   }
 
+  const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
+    set((state) => ({
+      queue: state.queue.map((queuedTrack) => (
+        queuedTrack.path === trackPath
+          ? { ...queuedTrack, isAvailable: false, availabilityReason: reason }
+          : queuedTrack
+      )),
+      currentTrack: state.currentTrack && state.currentTrack.path === trackPath
+        ? { ...state.currentTrack, isAvailable: false, availabilityReason: reason }
+        : state.currentTrack
+    }))
+  }
+
+  const collectNextCandidateIndices = (): number[] => {
+    const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
+    if (queue.length === 0) return []
+
+    if (repeat === 'one') {
+      return queueIndex >= 0 && queueIndex < queue.length ? [queueIndex] : []
+    }
+
+    if (shuffle && shuffledIndices.length > 0) {
+      const afterCurrent = shuffledIndices.slice(Math.max(0, shufflePosition + 1))
+      if (repeat === 'all') {
+        const wrap = shuffledIndices.slice(0, Math.max(0, shufflePosition + 1))
+        return [...afterCurrent, ...wrap]
+      }
+      return afterCurrent
+    }
+
+    const linearIndices = queue.map((_, index) => index)
+    const afterCurrent = linearIndices.slice(Math.max(0, queueIndex + 1))
+    if (repeat === 'all') {
+      const wrap = linearIndices.slice(0, Math.max(0, queueIndex + 1))
+      return [...afterCurrent, ...wrap]
+    }
+    return afterCurrent
+  }
+
+  const getNextPlayableIndex = (): number => {
+    const { queue } = get()
+    const candidates = collectNextCandidateIndices()
+    for (const candidateIndex of candidates) {
+      const candidate = queue[candidateIndex]
+      if (!candidate) continue
+      if (isUnavailableRemoteTrack(candidate)) continue
+      return candidateIndex
+    }
+    return -1
+  }
+
   return {
     // Initial state
     currentTrack: null,
@@ -362,6 +434,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     volume: initialPlayerVolume,
     isMuted: false,
     waveformData: null,
+    remoteLoadProgress: null,
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
     associatedOpenNotice: null,
@@ -388,6 +461,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrack: track,
         playbackState: 'loading',
         waveformData: null,
+        remoteLoadProgress: null,
         currentTime: 0,
         duration: track.duration
       })
@@ -417,6 +491,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           duration: audioEngine.duration,
           currentTrack: resolvedTrack,
+          remoteLoadProgress: null,
           currentTime: 0
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -441,7 +516,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           trackPath: track.path,
           failed: true
         })
-        set({ playbackState: 'stopped' })
+        set({ playbackState: 'stopped', remoteLoadProgress: null })
         pendingManualLoadCueTrack = null
         return false
       }
@@ -736,51 +811,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Get the next index based on shuffle/repeat settings
     _getNextIndex: () => {
-      const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
-      if (queue.length === 0) return -1
-
-      if (repeat === 'one') {
-        return queueIndex
-      }
-
-      if (shuffle && shuffledIndices.length > 0) {
-        const nextPos = shufflePosition + 1
-        if (nextPos >= shuffledIndices.length) {
-          if (repeat === 'all') {
-            // Will re-shuffle at transition time, return first non-current track
-            const indices = queue.map((_, i) => i).filter(i => i !== queueIndex)
-            return indices.length > 0 ? indices[Math.floor(Math.random() * indices.length)] : queueIndex
-          }
-          return -1
-        }
-        return shuffledIndices[nextPos]
-      }
-
-      const nextIndex = queueIndex + 1
-      if (nextIndex >= queue.length) {
-        return repeat === 'all' ? 0 : -1
-      }
-      return nextIndex
+      return getNextPlayableIndex()
     },
 
     playNext: async () => {
-      const { shuffle, shuffledIndices, shufflePosition, repeat } = get()
-      const nextIndex = get()._getNextIndex()
-      if (nextIndex === -1) return
+      const { queue, shuffle, shuffledIndices } = get()
+      const candidateIndices = collectNextCandidateIndices()
+      if (candidateIndices.length === 0) return
 
-      if (shuffle && shuffledIndices.length > 0 && repeat !== 'one') {
-        const nextPos = shufflePosition + 1
-        if (nextPos >= shuffledIndices.length && repeat === 'all') {
-          // Re-shuffle for new cycle
-          get()._generateShuffleOrder(nextIndex)
-          set({ shufflePosition: 0 })
-        } else {
-          set({ shufflePosition: nextPos })
+      for (const nextIndex of candidateIndices) {
+        const nextTrack = queue[nextIndex]
+        if (!nextTrack) continue
+        if (isUnavailableRemoteTrack(nextTrack)) continue
+
+        const nextState: { queueIndex: number; shufflePosition?: number } = {
+          queueIndex: nextIndex
+        }
+        if (shuffle && shuffledIndices.length > 0) {
+          const nextShufflePosition = shuffledIndices.indexOf(nextIndex)
+          if (nextShufflePosition >= 0) {
+            nextState.shufflePosition = nextShufflePosition
+          }
+        }
+        set(nextState)
+
+        const loaded = await get()._loadAndPlayTrack(nextTrack)
+        if (loaded) return
+        if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+          markTrackUnavailableInState(nextTrack.path)
         }
       }
-
-      set({ queueIndex: nextIndex })
-      await get()._loadAndPlayTrack(get().queue[nextIndex])
     },
 
     playPrevious: async () => {
@@ -817,6 +877,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     playTrackAt: async (index: number) => {
       const { queue, shuffle, shuffledIndices, _loadAndPlayTrack } = get()
       if (index < 0 || index >= queue.length) return
+      if (isUnavailableRemoteTrack(queue[index])) return
 
       set({ queueIndex: index })
 
@@ -827,7 +888,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
       }
 
-      await _loadAndPlayTrack(queue[index], { manualStart: true })
+      const loaded = await _loadAndPlayTrack(queue[index], { manualStart: true })
+      if (!loaded) {
+        const failedTrack = queue[index]
+        if (failedTrack?.sourceType && failedTrack.sourceType !== 'local') {
+          markTrackUnavailableInState(failedTrack.path)
+        }
+      }
     },
 
     toggleShuffle: () => {
@@ -870,6 +937,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrack: track,
         playbackState: 'loading',
         waveformData: null,
+        remoteLoadProgress: track.sourceType === 'subsonic'
+          ? {
+              path: track.path,
+              sourceType: 'subsonic',
+              stage: 'downloading',
+              loadedBytes: 0,
+              totalBytes: null,
+              chunkCount: 0,
+              percent: null,
+              done: false,
+              failed: false
+            }
+          : null,
         currentTime: 0,
         duration: track.duration
       })
@@ -886,8 +966,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             failed: true,
             stage: 'fileLoad'
           })
-          set({ playbackState: 'stopped' })
-          return
+          set({ playbackState: 'stopped', remoteLoadProgress: null })
+          return false
         }
 
         let usedFfmpegFallback = false
@@ -924,6 +1004,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           duration: audioEngine.duration,
           currentTrack: resolvedTrack,
+          remoteLoadProgress: null,
           currentTime: 0
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -944,13 +1025,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           decodeMs,
           usedFfmpegFallback
         })
+        return true
       } catch (error) {
         console.error('Failed to load track:', error)
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           failed: true
         })
-        set({ playbackState: 'stopped' })
+        if (track.sourceType && track.sourceType !== 'local') {
+          markTrackUnavailableInState(track.path)
+        }
+        set({ playbackState: 'stopped', remoteLoadProgress: null })
+        return false
       }
     },
 
@@ -963,32 +1049,47 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         return
       }
 
-      const nextIndex = get()._getNextIndex()
-      if (nextIndex < 0 || nextIndex >= queue.length) return
+      const candidates = collectNextCandidateIndices()
+      if (candidates.length === 0) return
 
-      const nextTrack = queue[nextIndex]
-
-      try {
-        const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
-        // Re-check repeat mode after async gap — may have changed to 'one'
-        if (get().repeat === 'one') {
-          return
+      for (const nextIndex of candidates) {
+        const nextTrack = queue[nextIndex]
+        if (!nextTrack) continue
+        if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+          // Remote prebuffering downloads entire files and can stall click-to-play on constrained links.
+          continue
         }
-        if (result) {
-          await audioEngine.preBufferNext(result.data, {
-            replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+        if (isUnavailableRemoteTrack(nextTrack)) continue
+
+        try {
+          const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
+          // Re-check repeat mode after async gap — may have changed to 'one'
+          if (get().repeat === 'one') {
+            return
+          }
+          if (result) {
+            await audioEngine.preBufferNext(result.data, {
+              replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+            })
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              loaded: true
+            })
+            return
+          }
+          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+            markTrackUnavailableInState(nextTrack.path)
+          }
+        } catch (error) {
+          console.error('Failed to pre-buffer next track:', error)
+          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+            markTrackUnavailableInState(nextTrack.path)
+          }
+          logSlowPath('preBufferNextTrack', bufferStart, {
+            trackPath: nextTrack.path,
+            failed: true
           })
         }
-        logSlowPath('preBufferNextTrack', bufferStart, {
-          trackPath: nextTrack.path,
-          loaded: Boolean(result)
-        })
-      } catch (error) {
-        console.error('Failed to pre-buffer next track:', error)
-        logSlowPath('preBufferNextTrack', bufferStart, {
-          trackPath: nextTrack.path,
-          failed: true
-        })
       }
     },
 
@@ -996,6 +1097,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     _initListeners: () => {
       if (listenersInitialized) return
       listenersInitialized = true
+
+      remoteLoadProgressUnsubscribe?.()
+      remoteLoadProgressUnsubscribe = window.electronAPI.onRemoteLoadProgress((progress) => {
+        set((state) => {
+          const activeTrackPath = state.currentTrack?.path
+          if (!activeTrackPath || activeTrackPath !== progress.path) {
+            return state
+          }
+          return {
+            remoteLoadProgress: progress
+          }
+        })
+      })
 
       audioEngine.on('stateChange', (state) => {
         set({ playbackState: state as PlaybackState })
@@ -1029,59 +1143,48 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
         commitRecentPlayNow()
-        const { queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition } = get()
-
-        let nextIndex: number
-        let newShufflePosition = shufflePosition
+        const { queue, queueIndex, repeat, shuffle, shuffledIndices } = get()
 
         if (repeat === 'one') {
           // Safety net: AudioEngine already swapped to the wrong buffer.
           // Reload the correct track to fix audio/UI desync.
           const correctTrack = queue[queueIndex]
           if (correctTrack) {
-            get()._loadAndPlayTrack(correctTrack)
+            void get()._loadAndPlayTrack(correctTrack)
           }
           return
-        } else if (shuffle && shuffledIndices.length > 0) {
-          const nextPos = shufflePosition + 1
-          if (nextPos >= shuffledIndices.length) {
-            if (repeat === 'all') {
-              // Re-shuffle for next cycle
-              get()._generateShuffleOrder(queueIndex)
-              const newState = get()
-              nextIndex = newState.shuffledIndices[1] !== undefined ? newState.shuffledIndices[1] : newState.shuffledIndices[0]
-              newShufflePosition = 1
-            } else {
-              return
-            }
-          } else {
-            nextIndex = shuffledIndices[nextPos]
-            newShufflePosition = nextPos
-          }
-        } else {
-          nextIndex = queueIndex + 1
-          if (nextIndex >= queue.length) {
-            if (repeat === 'all') {
-              nextIndex = 0
-            } else {
-              return
-            }
-          }
         }
 
-        if (nextIndex >= 0 && nextIndex < queue.length) {
-          const nextTrack = queue[nextIndex]
-          set({
-            queueIndex: nextIndex,
-            currentTrack: nextTrack,
-            currentTime: 0,
-            shufflePosition: newShufflePosition
-          })
-          startRecentPlaySession(nextTrack.path)
-
-          // Pre-buffer the NEXT next track
-          get()._preBufferNextTrack()
+        const nextIndex = get()._getNextIndex()
+        if (nextIndex < 0 || nextIndex >= queue.length) {
+          return
         }
+
+        const nextTrack = queue[nextIndex]
+        if (!nextTrack) return
+        if (isUnavailableRemoteTrack(nextTrack)) return
+
+        const nextState: {
+          queueIndex: number
+          currentTrack: Track
+          currentTime: number
+          shufflePosition?: number
+        } = {
+          queueIndex: nextIndex,
+          currentTrack: nextTrack,
+          currentTime: 0
+        }
+        if (shuffle && shuffledIndices.length > 0) {
+          const nextShufflePosition = shuffledIndices.indexOf(nextIndex)
+          if (nextShufflePosition >= 0) {
+            nextState.shufflePosition = nextShufflePosition
+          }
+        }
+        set(nextState)
+        startRecentPlaySession(nextTrack.path)
+
+        // Pre-buffer the NEXT next track
+        void get()._preBufferNextTrack()
       })
 
       // Handle non-gapless track end (when no next track buffered)
@@ -1104,6 +1207,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Cleanup listeners
     _cleanupListeners: () => {
       // Audio engine handles its own cleanup
+      if (remoteLoadProgressUnsubscribe) {
+        remoteLoadProgressUnsubscribe()
+        remoteLoadProgressUnsubscribe = null
+      }
       listenersInitialized = false
     }
   }

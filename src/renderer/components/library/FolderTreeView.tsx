@@ -57,7 +57,13 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     bitrate: dbTrack.bitrate ?? undefined,
     channels: dbTrack.channels ?? undefined,
     replayGainTrackDb: dbTrack.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined
+    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined,
+    sourceType: dbTrack.source_type,
+    sourceId: dbTrack.source_id ?? undefined,
+    sourceTrackId: dbTrack.source_track_id ?? undefined,
+    sourcePath: dbTrack.source_path ?? undefined,
+    isAvailable: dbTrack.is_available === 1,
+    availabilityReason: dbTrack.availability_reason ?? undefined
   }
 }
 

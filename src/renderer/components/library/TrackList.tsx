@@ -8,6 +8,7 @@ import type { LibraryTrackRevealRequest } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
+import type { TrackSourceType } from '../../../types/subsonic'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
 import PlaylistCover from '../playlists/PlaylistCover'
@@ -31,6 +32,12 @@ interface DbTrack {
   musical_key: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
@@ -64,9 +71,13 @@ interface TrackListRowSharedProps {
   showAlbum: boolean
   showTracklistBpmKey: boolean
   currentTrackPath: string | null
+  loadingTrackPath: string | null
+  loadingTrackPercent: number | null
+  loadingTrackChunkCount: number
   currentTrackChannels: number | undefined
   currentTrackIsAtmosJoc: boolean
   isPlaying: boolean
+  isLoadingTrack: boolean
   selectedOutputChannelCount: number | null
   favorites: Set<string>
   playlistPopupTrackPath: string | null
@@ -118,7 +129,13 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     codecProfile: dbTrack.codec_profile ?? undefined,
     isAtmosJoc: dbTrack.is_atmos_joc === 1,
     replayGainTrackDb: dbTrack.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined
+    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined,
+    sourceType: dbTrack.source_type,
+    sourceId: dbTrack.source_id ?? undefined,
+    sourceTrackId: dbTrack.source_track_id ?? undefined,
+    sourcePath: dbTrack.source_path ?? undefined,
+    isAvailable: dbTrack.is_available === 1,
+    availabilityReason: dbTrack.availability_reason ?? undefined
   }
 }
 
@@ -146,6 +163,10 @@ function formatTrackBpm(bpm: number | null | undefined): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
+function isUnavailableRemoteTrack(track: Pick<DbTrack, 'source_type' | 'is_available'>): boolean {
+  return track.source_type !== 'local' && track.is_available !== 1
+}
+
 function TrackListRowRenderer({
   ariaAttributes,
   index,
@@ -155,9 +176,13 @@ function TrackListRowRenderer({
   showAlbum,
   showTracklistBpmKey,
   currentTrackPath,
+  loadingTrackPath,
+  loadingTrackPercent,
+  loadingTrackChunkCount,
   currentTrackChannels,
   currentTrackIsAtmosJoc,
   isPlaying,
+  isLoadingTrack,
   selectedOutputChannelCount,
   favorites,
   playlistPopupTrackPath,
@@ -178,6 +203,10 @@ function TrackListRowRenderer({
   if (!track) return null
 
   const isCurrent = currentTrackPath === track.path
+  const isCurrentLoading = isCurrent
+    && isLoadingTrack
+    && track.source_type === 'subsonic'
+    && (loadingTrackPath === null || loadingTrackPath === track.path)
   const showPlayNextCheck = nextQueuedTrackPath === track.path || hasQueueActionFeedback(queueFeedback, 'next', track.path)
   const showAddQueueCheck = queuedTrackPaths.has(track.path) || hasQueueActionFeedback(queueFeedback, 'queue', track.path)
   const resolvedChannelCount = track.channels ?? (isCurrent ? currentTrackChannels : undefined)
@@ -209,10 +238,15 @@ function TrackListRowRenderer({
       ? 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
       : `${resolvedChannelCount ?? 0} channels`
 
+  const isUnavailable = isUnavailableRemoteTrack(track)
+  const loadingPercentLabel = typeof loadingTrackPercent === 'number' && Number.isFinite(loadingTrackPercent)
+    ? `${Math.round(Math.max(0, Math.min(1, loadingTrackPercent)) * 100)}%`
+    : null
+
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
       <div
-        className={`track-row ${isCurrent ? 'track-row-active' : ''}`}
+        className={`track-row ${isCurrent ? 'track-row-active' : ''} ${isCurrentLoading ? 'track-row-loading' : ''} ${isUnavailable ? 'track-row-unavailable' : ''}`}
         onClick={() => {
           void onTrackClick(track, index)
         }}
@@ -220,6 +254,10 @@ function TrackListRowRenderer({
         <div className="track-col track-col-num">
           {isCurrent && isPlaying ? (
             <span className="track-playing-icon">&#9654;</span>
+          ) : isCurrentLoading ? (
+            <span className="track-loading-icon" title="Buffering track">
+              <span className="loading-spinner-small track-loading-spinner" />
+            </span>
           ) : (
             <span className="track-number">{track.track_number ?? index + 1}</span>
           )}
@@ -229,7 +267,26 @@ function TrackListRowRenderer({
             <div className="track-artwork-thumb">
               <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
             </div>
+            {track.source_type === 'subsonic' && (
+              <span className="track-source-badge" title={isUnavailable ? 'Subsonic (unavailable)' : 'Subsonic'}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 17h2a4 4 0 0 1 4 4" />
+                  <path d="M3 11h4a8 8 0 0 1 8 8" />
+                  <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                </svg>
+                <span>Subsonic</span>
+              </span>
+            )}
             <span className="track-title">{track.title}</span>
+            {isCurrentLoading && (
+              <span className="track-loading-status">
+                {loadingPercentLabel
+                  ? `Buffering ${loadingPercentLabel}`
+                  : loadingTrackChunkCount > 0
+                    ? `Buffering ${loadingTrackChunkCount} chunks`
+                    : 'Buffering...'}
+              </span>
+            )}
             {showAtmosBadge && (
               <span className="track-channel-badge track-channel-badge-atmos" title={atmosphereBadgeTitle}>
                 <span>ATMOS</span>
@@ -376,6 +433,7 @@ export default function TrackList({
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
+  const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
   const queue = usePlayerStore((state) => state.queue)
   const queueIndex = usePlayerStore((state) => state.queueIndex)
   const loadTrack = usePlayerStore((state) => state.loadTrack)
@@ -488,6 +546,10 @@ export default function TrackList({
 
   const currentTrackPath = currentTrack?.path ?? null
   const isPlaying = playbackState === 'playing'
+  const isLoadingTrack = playbackState === 'loading'
+  const loadingTrackPath = remoteLoadProgress?.path ?? (isLoadingTrack ? currentTrackPath : null)
+  const loadingTrackPercent = remoteLoadProgress?.percent ?? null
+  const loadingTrackChunkCount = remoteLoadProgress?.chunkCount ?? 0
   const currentTrackChannels = currentTrack?.channels
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
   const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
@@ -560,7 +622,13 @@ export default function TrackList({
       codecProfile: result.metadata?.codecProfile ?? dbTrack.codec_profile ?? undefined,
       isAtmosJoc: result.metadata?.isAtmosJoc ?? (dbTrack.is_atmos_joc === 1),
       replayGainTrackDb: result.metadata?.replayGainTrackDb ?? dbTrack.replaygain_track_gain_db ?? undefined,
-      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? dbTrack.replaygain_album_gain_db ?? undefined
+      replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? dbTrack.replaygain_album_gain_db ?? undefined,
+      sourceType: dbTrack.source_type,
+      sourceId: dbTrack.source_id ?? undefined,
+      sourceTrackId: dbTrack.source_track_id ?? undefined,
+      sourcePath: dbTrack.source_path ?? undefined,
+      isAvailable: dbTrack.is_available === 1,
+      availabilityReason: dbTrack.availability_reason ?? undefined
     }
 
     const loaded = await loadTrack(track, result.data)
@@ -801,9 +869,13 @@ export default function TrackList({
     showAlbum,
     showTracklistBpmKey,
     currentTrackPath,
+    loadingTrackPath,
+    loadingTrackPercent,
+    loadingTrackChunkCount,
     currentTrackChannels,
     currentTrackIsAtmosJoc,
     isPlaying,
+    isLoadingTrack,
     selectedOutputChannelCount,
     favorites,
     playlistPopupTrackPath,
@@ -825,9 +897,13 @@ export default function TrackList({
     showAlbum,
     showTracklistBpmKey,
     currentTrackPath,
+    loadingTrackPath,
+    loadingTrackPercent,
+    loadingTrackChunkCount,
     currentTrackChannels,
     currentTrackIsAtmosJoc,
     isPlaying,
+    isLoadingTrack,
     selectedOutputChannelCount,
     favorites,
     playlistPopupTrackPath,

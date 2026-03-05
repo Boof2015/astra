@@ -18,6 +18,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import {
   SLEEP_TIMER_MAX_MINUTES,
   SLEEP_TIMER_MIN_MINUTES,
@@ -49,6 +50,7 @@ import {
   LOCAL_API_MAX_PORT,
   LOCAL_API_MIN_PORT
 } from '../../../types/localApi'
+import type { SubsonicSource, SubsonicSourceUpdateInput } from '../../../types/subsonic'
 
 type ResetActionId =
   | 'reset-theme'
@@ -227,6 +229,17 @@ export default function SettingsView() {
     setEnabled: setLyricsEnabled,
   } = useLyricsStore()
   const {
+    sources: subsonicSources,
+    status: subsonicStatus,
+    errorMessage: subsonicErrorMessage,
+    createSource: createSubsonicSource,
+    updateSource: updateSubsonicSource,
+    deleteSource: deleteSubsonicSource,
+    testSource: testSubsonicSource,
+    syncSource: syncSubsonicSource,
+    syncAll: syncAllSubsonicSources
+  } = useSubsonicSettingsStore()
+  const {
     autoCheckEnabled,
     checkState: updateCheckState,
     statusMessage: updateStatusMessage,
@@ -250,6 +263,14 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
+  const [subsonicEditingSourceId, setSubsonicEditingSourceId] = useState<number | null>(null)
+  const [subsonicNameInput, setSubsonicNameInput] = useState('')
+  const [subsonicBaseUrlInput, setSubsonicBaseUrlInput] = useState('http://localhost:4533')
+  const [subsonicUsernameInput, setSubsonicUsernameInput] = useState('')
+  const [subsonicPasswordInput, setSubsonicPasswordInput] = useState('')
+  const [subsonicEnabledInput, setSubsonicEnabledInput] = useState(true)
+  const [subsonicFeedback, setSubsonicFeedback] = useState('')
+  const [pendingSubsonicDelete, setPendingSubsonicDelete] = useState<SubsonicSource | null>(null)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -323,6 +344,14 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [sleepTimerFeedback])
+
+  useEffect(() => {
+    if (!subsonicFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setSubsonicFeedback('')
+    }, 3200)
+    return () => window.clearTimeout(timeoutId)
+  }, [subsonicFeedback])
 
   useEffect(() => {
     setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
@@ -480,6 +509,29 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+  const subsonicStatusBySourceId = useMemo(() => {
+    const map = new Map<
+      number,
+      {
+        status: string
+        error: string | null
+        lastSyncAt: number | null
+        lastCheckedAt: number | null
+        progress: NonNullable<NonNullable<typeof subsonicStatus>['sources'][number]['progress']> | null
+      }
+    >()
+    for (const sourceStatus of subsonicStatus?.sources ?? []) {
+      map.set(sourceStatus.sourceId, {
+        status: sourceStatus.status,
+        error: sourceStatus.error,
+        lastSyncAt: sourceStatus.lastSyncAt,
+        lastCheckedAt: sourceStatus.lastCheckedAt,
+        progress: sourceStatus.progress
+      })
+    }
+    return map
+  }, [subsonicStatus])
+  const isSubsonicSyncing = subsonicStatus?.isSyncing ?? false
 
   useEffect(() => {
     let isMounted = true
@@ -594,6 +646,124 @@ export default function SettingsView() {
       if (!status) return
       setLocalApiFeedback('API key regenerated.')
     })
+  }
+
+  const resetSubsonicEditor = () => {
+    setSubsonicEditingSourceId(null)
+    setSubsonicNameInput('')
+    setSubsonicBaseUrlInput('http://localhost:4533')
+    setSubsonicUsernameInput('')
+    setSubsonicPasswordInput('')
+    setSubsonicEnabledInput(true)
+  }
+
+  const handleEditSubsonicSource = (source: SubsonicSource) => {
+    setSubsonicEditingSourceId(source.id)
+    setSubsonicNameInput(source.name)
+    setSubsonicBaseUrlInput(source.base_url)
+    setSubsonicUsernameInput(source.username)
+    setSubsonicPasswordInput('')
+    setSubsonicEnabledInput(source.enabled === 1)
+    setSubsonicFeedback('')
+  }
+
+  const handleSaveSubsonicSource = async () => {
+    const name = subsonicNameInput.trim()
+    const baseUrl = subsonicBaseUrlInput.trim()
+    const username = subsonicUsernameInput.trim()
+    const password = subsonicPasswordInput
+    if (!name || !baseUrl || !username) {
+      setSubsonicFeedback('Name, server URL, and username are required.')
+      return
+    }
+
+    if (subsonicEditingSourceId === null) {
+      if (!password) {
+        setSubsonicFeedback('Password is required for new sources.')
+        return
+      }
+      const created = await createSubsonicSource({
+        name,
+        baseUrl,
+        username,
+        password,
+        enabled: subsonicEnabledInput
+      })
+      if (created) {
+        resetSubsonicEditor()
+        setSubsonicFeedback(`Added source "${created.name}".`)
+      }
+      return
+    }
+
+    const updatePayload: SubsonicSourceUpdateInput = {
+      name,
+      baseUrl,
+      username,
+      enabled: subsonicEnabledInput
+    }
+    if (password) {
+      updatePayload.password = password
+    }
+    const updated = await updateSubsonicSource(subsonicEditingSourceId, updatePayload)
+    if (updated) {
+      resetSubsonicEditor()
+      setSubsonicFeedback(`Updated source "${updated.name}".`)
+    }
+  }
+
+  const handleTestSubsonicEditor = async () => {
+    if (subsonicEditingSourceId !== null && subsonicPasswordInput.trim().length === 0) {
+      const result = await testSubsonicSource({ sourceId: subsonicEditingSourceId })
+      setSubsonicFeedback(result.ok ? result.message : (result.error ?? result.message))
+      return
+    }
+
+    const result = await testSubsonicSource({
+      baseUrl: subsonicBaseUrlInput.trim(),
+      username: subsonicUsernameInput.trim(),
+      password: subsonicPasswordInput
+    })
+    setSubsonicFeedback(result.ok ? result.message : (result.error ?? result.message))
+  }
+
+  const handleToggleSubsonicEnabled = (source: SubsonicSource) => {
+    const nextEnabled = source.enabled !== 1
+    void updateSubsonicSource(source.id, { enabled: nextEnabled }).then((updated) => {
+      if (!updated) return
+      setSubsonicFeedback(`${updated.name} ${nextEnabled ? 'enabled' : 'disabled'}.`)
+    })
+  }
+
+  const handleSyncSubsonicSource = (source: SubsonicSource) => {
+    void syncSubsonicSource(source.id).then((ok) => {
+      if (!ok) return
+      setSubsonicFeedback(`Sync finished for "${source.name}".`)
+    })
+  }
+
+  const handleSyncAllSubsonic = () => {
+    void syncAllSubsonicSources().then((ok) => {
+      if (!ok) return
+      setSubsonicFeedback('Subsonic sync finished.')
+    })
+  }
+
+  const handleDeleteSubsonicSource = async (purgeTracks: boolean) => {
+    if (!pendingSubsonicDelete) return
+    const target = pendingSubsonicDelete
+    const deleted = await deleteSubsonicSource(target.id, purgeTracks)
+    if (deleted) {
+      setSubsonicFeedback(
+        purgeTracks
+          ? `Deleted "${target.name}" and purged synced tracks.`
+          : `Deleted "${target.name}". Tracks remain as unavailable placeholders.`
+      )
+      setPendingSubsonicDelete(null)
+      if (subsonicEditingSourceId === target.id) {
+        resetSubsonicEditor()
+      }
+    }
   }
 
   const handleSleepTimerStartResult = (
@@ -1169,6 +1339,167 @@ export default function SettingsView() {
               <p>Optional platform integrations.</p>
             </div>
             <div className="settings-integration-cards">
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Subsonic / Navidrome</h4>
+                  <p>Connect one or more Subsonic-compatible servers.</p>
+                </div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Source Name</span>
+                    <input
+                      className="settings-select"
+                      type="text"
+                      value={subsonicNameInput}
+                      onChange={(event) => setSubsonicNameInput(event.target.value)}
+                      placeholder="My Navidrome"
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Server URL</span>
+                    <input
+                      className="settings-select"
+                      type="text"
+                      value={subsonicBaseUrlInput}
+                      onChange={(event) => setSubsonicBaseUrlInput(event.target.value)}
+                      placeholder="http://localhost:4533"
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Username</span>
+                    <input
+                      className="settings-select"
+                      type="text"
+                      value={subsonicUsernameInput}
+                      onChange={(event) => setSubsonicUsernameInput(event.target.value)}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">
+                      Password
+                      {subsonicEditingSourceId !== null ? ' (leave blank to keep existing)' : ''}
+                    </span>
+                    <input
+                      className="settings-select"
+                      type="password"
+                      value={subsonicPasswordInput}
+                      onChange={(event) => setSubsonicPasswordInput(event.target.value)}
+                    />
+                  </label>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Enabled</span>
+                    <button
+                      className={`settings-toggle ${subsonicEnabledInput ? 'active' : ''}`}
+                      onClick={() => setSubsonicEnabledInput(!subsonicEnabledInput)}
+                    >
+                      {subsonicEnabledInput ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
+                <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
+                  <button className="settings-btn settings-btn-primary" onClick={() => void handleSaveSubsonicSource()}>
+                    {subsonicEditingSourceId === null ? 'Add Source' : 'Save Source'}
+                  </button>
+                  <button className="settings-btn" onClick={() => void handleTestSubsonicEditor()}>
+                    Test
+                  </button>
+                  <button className="settings-btn" onClick={resetSubsonicEditor}>
+                    {subsonicEditingSourceId === null ? 'Clear' : 'Cancel Edit'}
+                  </button>
+                  <button
+                    className="settings-btn"
+                    onClick={handleSyncAllSubsonic}
+                    disabled={isSubsonicSyncing || subsonicSources.length === 0}
+                  >
+                    {isSubsonicSyncing ? 'Syncing...' : 'Sync All Sources'}
+                  </button>
+                </div>
+
+                {subsonicSources.length > 0 ? (
+                  <div className="settings-danger-list">
+                    {subsonicSources.map((source) => {
+                      const status = subsonicStatusBySourceId.get(source.id)
+                      const statusText = status
+                        ? `${status.status}${status.error ? ` (${status.error})` : ''}`
+                        : source.last_status
+                      const progress = status?.progress ?? null
+                      const progressCountText = progress && progress.total !== null
+                        ? ` (${progress.current ?? 0}/${progress.total})`
+                        : ''
+                      const progressDetailText = progress?.detail ? ` • ${progress.detail}` : ''
+                      const lastSyncText = status?.lastSyncAt ?? source.last_sync_at
+                      const checkedAtText = status?.lastCheckedAt ?? source.last_checked_at
+                      return (
+                        <div key={source.id} className="settings-danger-item">
+                          <div className="settings-danger-item-copy">
+                            <p className="settings-danger-item-title">{source.name}</p>
+                            <p className="settings-danger-item-description">{source.base_url} as {source.username}</p>
+                            <p className="settings-note">
+                              Status: {statusText}
+                              {checkedAtText ? ` • Checked ${new Date(checkedAtText).toLocaleString()}` : ''}
+                              {lastSyncText ? ` • Synced ${new Date(lastSyncText).toLocaleString()}` : ''}
+                            </p>
+                            {progress && (
+                              <p className="settings-note">
+                                Sync Activity: {progress.activity}{progressCountText}{progressDetailText}
+                              </p>
+                            )}
+                          </div>
+                          <div className="settings-inline-row">
+                            <button className="settings-btn" onClick={() => handleEditSubsonicSource(source)}>
+                              Edit
+                            </button>
+                            <button className="settings-btn" onClick={() => handleToggleSubsonicEnabled(source)}>
+                              {source.enabled === 1 ? 'Disable' : 'Enable'}
+                            </button>
+                            <button
+                              className="settings-btn"
+                              onClick={() => handleSyncSubsonicSource(source)}
+                              disabled={isSubsonicSyncing || source.enabled !== 1}
+                            >
+                              Sync
+                            </button>
+                            <button className="settings-btn settings-btn-danger" onClick={() => setPendingSubsonicDelete(source)}>
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="settings-note">No Subsonic sources configured.</p>
+                )}
+
+                {pendingSubsonicDelete && (
+                  <div className="settings-danger-item settings-danger-item-destructive">
+                    <div className="settings-danger-item-copy">
+                      <p className="settings-danger-item-title">Delete {pendingSubsonicDelete.name}?</p>
+                      <p className="settings-danger-item-description">
+                        Choose whether to keep synced tracks as unavailable placeholders or purge them completely.
+                      </p>
+                    </div>
+                    <div className="settings-inline-row">
+                      <button className="settings-btn" onClick={() => void handleDeleteSubsonicSource(false)}>
+                        Keep Tracks Unavailable
+                      </button>
+                      <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteSubsonicSource(true)}>
+                        Purge Tracks
+                      </button>
+                      <button className="settings-btn" onClick={() => setPendingSubsonicDelete(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {subsonicFeedback && <p className="settings-note settings-note-success">{subsonicFeedback}</p>}
+                {subsonicErrorMessage && <p className="settings-note settings-note-error">{subsonicErrorMessage}</p>}
+                <p className="settings-note">
+                  Passwords are encrypted with OS secure storage and never stored in track URLs.
+                </p>
+              </div>
+
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Last.fm</h4>

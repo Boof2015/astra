@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
+import type { SubsonicSourceLastStatus, TrackSourceType } from '../../types/subsonic'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -42,8 +43,72 @@ export interface DbTrack {
   replaygain_album_gain_db: number | null
   bpm: number | null
   musical_key: string | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   added_at: number
   modified_at: number
+}
+
+export interface SubsonicSourceRow {
+  id: number
+  name: string
+  base_url: string
+  username: string
+  secret_encrypted: string
+  enabled: number
+  last_status: SubsonicSourceLastStatus
+  last_error: string | null
+  last_sync_at: number | null
+  last_checked_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface SubsonicSourcePublic {
+  id: number
+  name: string
+  base_url: string
+  username: string
+  enabled: number
+  last_status: SubsonicSourceLastStatus
+  last_error: string | null
+  last_sync_at: number | null
+  last_checked_at: number | null
+  created_at: number
+  updated_at: number
+  has_stored_secret: boolean
+}
+
+export interface SubsonicTrackUpsertInput {
+  path: string
+  title: string
+  artist: string
+  album: string
+  album_artist: string | null
+  duration: number
+  track_number: number | null
+  disc_number: number | null
+  year: number | null
+  genre: string | null
+  artwork_hash: string | null
+  format: string
+  sample_rate: number | null
+  bit_depth: number | null
+  bitrate: number | null
+  channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
+  bpm: number | null
+  musical_key: string | null
+  source_track_id: string
+  source_path: string | null
 }
 
 export interface LibraryFolder {
@@ -238,6 +303,7 @@ const SCAN_PARALLEL_MAX_WORKERS = 4
 const BACKFILL_PARALLEL_MIN_FILES = 80
 const BACKFILL_PARALLEL_MIN_WORKERS = 2
 const BACKFILL_PARALLEL_MAX_WORKERS = 3
+const SQLITE_SAFE_MAX_VARIABLES = 900
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
@@ -268,6 +334,12 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.replaygain_album_gain_db AS replaygain_album_gain_db,
   t.bpm AS bpm,
   t.musical_key AS musical_key,
+  t.source_type AS source_type,
+  t.source_id AS source_id,
+  t.source_track_id AS source_track_id,
+  t.source_path AS source_path,
+  t.is_available AS is_available,
+  t.availability_reason AS availability_reason,
   t.added_at AS added_at,
   t.modified_at AS modified_at
 `
@@ -932,6 +1004,12 @@ export async function initDatabase(): Promise<void> {
       replaygain_album_gain_db REAL,
       bpm REAL,
       musical_key TEXT,
+      source_type TEXT NOT NULL DEFAULT 'local',
+      source_id INTEGER,
+      source_track_id TEXT,
+      source_path TEXT,
+      is_available INTEGER NOT NULL DEFAULT 1,
+      availability_reason TEXT,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
@@ -1052,6 +1130,36 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run(`ALTER TABLE tracks ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'`)
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN source_id INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN source_track_id TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN source_path TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN availability_reason TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
   } catch {
     // Column already exists.
@@ -1090,8 +1198,31 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_scope ON tracks(source_type, source_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_track ON tracks(source_type, source_id, source_track_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_cache_updated_at ON lyrics_cache(updated_at)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_track_overrides_updated_at ON lyrics_track_overrides(updated_at)')
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS subsonic_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      username TEXT NOT NULL,
+      secret_encrypted TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_status TEXT NOT NULL DEFAULT 'unknown',
+      last_error TEXT,
+      last_sync_at INTEGER,
+      last_checked_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_subsonic_sources_enabled ON subsonic_sources(enabled)')
+
+  db.run(`UPDATE tracks SET source_type = 'local' WHERE source_type IS NULL OR TRIM(source_type) = ''`)
+  db.run('UPDATE tracks SET is_available = 1 WHERE is_available IS NULL')
 
   // Favorites table
   db.run(`
@@ -1190,6 +1321,582 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
     [key, value, now]
   )
   await saveDatabase()
+}
+
+function normalizeSubsonicLastStatus(value: unknown): SubsonicSourceLastStatus {
+  if (value === 'ok') return 'ok'
+  if (value === 'error') return 'error'
+  if (value === 'disabled') return 'disabled'
+  if (value === 'syncing') return 'syncing'
+  return 'unknown'
+}
+
+function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
+  return {
+    id: row.id,
+    name: row.name,
+    base_url: row.base_url,
+    username: row.username,
+    enabled: row.enabled,
+    last_status: normalizeSubsonicLastStatus(row.last_status),
+    last_error: row.last_error,
+    last_sync_at: row.last_sync_at,
+    last_checked_at: row.last_checked_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    has_stored_secret: typeof row.secret_encrypted === 'string' && row.secret_encrypted.trim().length > 0
+  }
+}
+
+export function listSubsonicSources(): SubsonicSourcePublic[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT
+      id,
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    FROM subsonic_sources
+    ORDER BY created_at ASC, id ASC
+  `)
+  if (result.length === 0) return []
+  return rowsToObjects<SubsonicSourceRow>(result[0].columns, result[0].values).map(toSubsonicSourcePublic)
+}
+
+export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | null {
+  if (!db) return null
+  const stmt = db.prepare(`
+    SELECT
+      id,
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    FROM subsonic_sources
+    WHERE id = ?
+    LIMIT 1
+  `)
+  stmt.bind([sourceId])
+  const row = stmt.step() ? (stmt.getAsObject() as SubsonicSourceRow) : null
+  stmt.free()
+  if (!row) return null
+  row.last_status = normalizeSubsonicLastStatus(row.last_status)
+  return row
+}
+
+export async function createSubsonicSource(input: {
+  name: string
+  base_url: string
+  username: string
+  secret_encrypted: string
+  enabled: number
+  last_status?: SubsonicSourceLastStatus
+}): Promise<SubsonicSourcePublic> {
+  if (!db) {
+    throw new Error('Database not initialized')
+  }
+  const now = Date.now()
+  db.run(
+    `INSERT INTO subsonic_sources (
+      name,
+      base_url,
+      username,
+      secret_encrypted,
+      enabled,
+      last_status,
+      last_error,
+      last_sync_at,
+      last_checked_at,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    [
+      input.name.trim(),
+      input.base_url.trim(),
+      input.username.trim(),
+      input.secret_encrypted,
+      input.enabled ? 1 : 0,
+      normalizeSubsonicLastStatus(input.last_status),
+      now,
+      now
+    ]
+  )
+
+  const insertedIdResult = db.exec('SELECT last_insert_rowid() as id')
+  const sourceId = Number(insertedIdResult[0]?.values?.[0]?.[0] ?? 0)
+  const source = getSubsonicSourceById(sourceId)
+  if (!source) {
+    throw new Error('Failed to create Subsonic source.')
+  }
+  await saveDatabase()
+  return toSubsonicSourcePublic(source)
+}
+
+export async function updateSubsonicSource(
+  sourceId: number,
+  input: {
+    name?: string
+    base_url?: string
+    username?: string
+    secret_encrypted?: string
+    enabled?: number
+    last_status?: SubsonicSourceLastStatus
+    last_error?: string | null
+    last_sync_at?: number | null
+    last_checked_at?: number | null
+  },
+  options: { persist?: boolean } = {}
+): Promise<SubsonicSourcePublic> {
+  if (!db) {
+    throw new Error('Database not initialized')
+  }
+  const current = getSubsonicSourceById(sourceId)
+  if (!current) {
+    throw new Error('Subsonic source not found.')
+  }
+
+  const now = Date.now()
+  db.run(
+    `UPDATE subsonic_sources
+     SET name = ?,
+         base_url = ?,
+         username = ?,
+         secret_encrypted = ?,
+         enabled = ?,
+         last_status = ?,
+         last_error = ?,
+         last_sync_at = ?,
+         last_checked_at = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      input.name !== undefined ? input.name.trim() : current.name,
+      input.base_url !== undefined ? input.base_url.trim() : current.base_url,
+      input.username !== undefined ? input.username.trim() : current.username,
+      input.secret_encrypted !== undefined ? input.secret_encrypted : current.secret_encrypted,
+      input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
+      input.last_status !== undefined ? normalizeSubsonicLastStatus(input.last_status) : normalizeSubsonicLastStatus(current.last_status),
+      input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
+      input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
+      now,
+      sourceId
+    ]
+  )
+
+  const next = getSubsonicSourceById(sourceId)
+  if (!next) {
+    throw new Error('Failed to update Subsonic source.')
+  }
+
+  if (options.persist !== false) {
+    await saveDatabase()
+  }
+
+  return toSubsonicSourcePublic(next)
+}
+
+function deleteTrackRelatedRows(trackPaths: string[]): void {
+  if (!db || trackPaths.length === 0) return
+  for (let offset = 0; offset < trackPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = trackPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    db.run(`DELETE FROM playlist_tracks WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM favorites WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM recently_played WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM lyrics_cache WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM lyrics_track_overrides WHERE track_path IN (${placeholders})`, chunk)
+  }
+}
+
+function deleteTrackRelatedRowsByPathPattern(trackPathPattern: string): void {
+  if (!db || trackPathPattern.trim().length === 0) return
+  db.run('DELETE FROM playlist_tracks WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM favorites WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM recently_played WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM track_metadata_overrides WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM lyrics_cache WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM lyrics_track_overrides WHERE track_path LIKE ?', [trackPathPattern])
+}
+
+export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolean): Promise<void> {
+  if (!db) return
+  const source = getSubsonicSourceById(sourceId)
+
+  if (purgeTracks) {
+    const sourcePathPattern = `subsonic://${sourceId}/%`
+    const stmt = db.prepare("SELECT path FROM tracks WHERE source_type = 'subsonic' AND source_id = ?")
+    stmt.bind([sourceId])
+    const trackPaths: string[] = []
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { path?: unknown }
+      if (typeof row.path === 'string' && row.path.trim().length > 0) {
+        trackPaths.push(row.path)
+      }
+    }
+    stmt.free()
+
+    deleteTrackRelatedRows(trackPaths)
+    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
+    db.run(
+      "DELETE FROM tracks WHERE (source_type = 'subsonic' AND source_id = ?) OR path LIKE ?",
+      [sourceId, sourcePathPattern]
+    )
+  } else {
+    db.run(
+      `UPDATE tracks
+       SET is_available = 0,
+           availability_reason = 'source_deleted',
+           modified_at = ?
+       WHERE source_type = 'subsonic' AND source_id = ?`,
+      [Date.now(), sourceId]
+    )
+  }
+
+  if (source) {
+    db.run('DELETE FROM subsonic_sources WHERE id = ?', [sourceId])
+  }
+  await saveDatabase()
+}
+
+export async function updateSubsonicSourceStatus(
+  sourceId: number,
+  input: {
+    status: SubsonicSourceLastStatus
+    error?: string | null
+    syncedAt?: number | null
+    checkedAt?: number | null
+  },
+  options: { persist?: boolean } = {}
+): Promise<void> {
+  if (!db) return
+  const existing = getSubsonicSourceById(sourceId)
+  if (!existing) return
+  await updateSubsonicSource(
+    sourceId,
+    {
+      last_status: normalizeSubsonicLastStatus(input.status),
+      last_error: input.error === undefined ? existing.last_error : input.error,
+      last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
+      last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
+    },
+    { persist: options.persist }
+  )
+}
+
+export async function markSubsonicTracksAvailability(
+  sourceId: number,
+  isAvailable: boolean,
+  reason: string | null,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+  db.run(
+    `UPDATE tracks
+     SET is_available = ?,
+         availability_reason = ?,
+         modified_at = ?
+     WHERE source_type = 'subsonic' AND source_id = ?`,
+    [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export async function restoreSubsonicTracksFromSourceUnavailable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  db.run(
+    `UPDATE tracks
+     SET is_available = 1,
+         availability_reason = NULL,
+         modified_at = ?
+     WHERE source_type = 'subsonic'
+       AND source_id = ?
+       AND is_available = 0
+       AND availability_reason = 'source_unavailable'`,
+    [Date.now(), sourceId]
+  )
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export async function upsertSubsonicTracks(
+  sourceId: number,
+  tracks: SubsonicTrackUpsertInput[],
+  options: { persist?: boolean } = {}
+): Promise<{ inserted: number; updated: number }> {
+  if (!db || tracks.length === 0) {
+    return { inserted: 0, updated: 0 }
+  }
+
+  let inserted = 0
+  let updated = 0
+  const now = Date.now()
+
+  for (const track of tracks) {
+    const existingStmt = db.prepare('SELECT id FROM tracks WHERE path = ? LIMIT 1')
+    existingStmt.bind([track.path])
+    const exists = existingStmt.step()
+    existingStmt.free()
+
+    if (exists) {
+      db.run(
+        `UPDATE tracks
+         SET title = ?,
+             artist = ?,
+             album = ?,
+             album_artist = ?,
+             duration = ?,
+             track_number = ?,
+             disc_number = ?,
+             year = ?,
+             genre = ?,
+             artwork_hash = ?,
+             format = ?,
+             sample_rate = ?,
+             bit_depth = ?,
+             bitrate = ?,
+             channels = ?,
+             codec = ?,
+             codec_profile = ?,
+             is_atmos_joc = ?,
+             replaygain_track_gain_db = ?,
+             replaygain_album_gain_db = ?,
+             bpm = ?,
+             musical_key = ?,
+             source_type = 'subsonic',
+             source_id = ?,
+             source_track_id = ?,
+             source_path = ?,
+             is_available = 1,
+             availability_reason = NULL,
+             modified_at = ?
+         WHERE path = ?`,
+        [
+          track.title,
+          track.artist,
+          track.album,
+          track.album_artist,
+          track.duration,
+          track.track_number,
+          track.disc_number,
+          track.year,
+          track.genre,
+          track.artwork_hash,
+          track.format,
+          track.sample_rate,
+          track.bit_depth,
+          track.bitrate,
+          track.channels,
+          track.codec,
+          track.codec_profile,
+          track.is_atmos_joc,
+          track.replaygain_track_gain_db,
+          track.replaygain_album_gain_db,
+          track.bpm,
+          track.musical_key,
+          sourceId,
+          track.source_track_id,
+          track.source_path,
+          now,
+          track.path
+        ]
+      )
+      updated += 1
+      continue
+    }
+
+    db.run(
+      `INSERT INTO tracks (
+        path,
+        title,
+        artist,
+        album,
+        album_artist,
+        duration,
+        track_number,
+        disc_number,
+        year,
+        genre,
+        artwork_hash,
+        format,
+        sample_rate,
+        bit_depth,
+        bitrate,
+        channels,
+        codec,
+        codec_profile,
+        is_atmos_joc,
+        replaygain_track_gain_db,
+        replaygain_album_gain_db,
+        bpm,
+        musical_key,
+        source_type,
+        source_id,
+        source_track_id,
+        source_path,
+        is_available,
+        availability_reason,
+        added_at,
+        modified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?)`,
+      [
+        track.path,
+        track.title,
+        track.artist,
+        track.album,
+        track.album_artist,
+        track.duration,
+        track.track_number,
+        track.disc_number,
+        track.year,
+        track.genre,
+        track.artwork_hash,
+        track.format,
+        track.sample_rate,
+        track.bit_depth,
+        track.bitrate,
+        track.channels,
+        track.codec,
+        track.codec_profile,
+        track.is_atmos_joc,
+        track.replaygain_track_gain_db,
+        track.replaygain_album_gain_db,
+        track.bpm,
+        track.musical_key,
+        sourceId,
+        track.source_track_id,
+        track.source_path,
+        now,
+        now
+      ]
+    )
+    inserted += 1
+  }
+
+  if (options.persist !== false && (inserted > 0 || updated > 0)) {
+    await saveDatabase()
+  }
+
+  return { inserted, updated }
+}
+
+export async function markMissingSubsonicTracksUnavailable(
+  sourceId: number,
+  seenSourceTrackIds: Set<string>,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const params: Array<number | string> = [Date.now(), sourceId]
+  let sql = `
+    UPDATE tracks
+    SET is_available = 0,
+        availability_reason = 'missing_upstream',
+        modified_at = ?
+    WHERE source_type = 'subsonic'
+      AND source_id = ?
+  `
+
+  if (seenSourceTrackIds.size > 0) {
+    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
+    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
+    params.push(...seenSourceTrackIds)
+  }
+
+  db.run(sql, params)
+  const changesResult = db.exec('SELECT changes() as count')
+  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export function getTrackByPath(trackPath: string): DbTrack | null {
+  if (!db) return null
+  const stmt = db.prepare(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE t.path = ?
+    LIMIT 1
+  `)
+  stmt.bind([trackPath])
+  const row = stmt.step() ? (stmt.getAsObject() as DbTrack) : null
+  stmt.free()
+  return row
+}
+
+export async function setTrackAvailability(
+  trackPath: string,
+  isAvailable: boolean,
+  reason: string | null,
+  options: { persist?: boolean } = {}
+): Promise<void> {
+  if (!db) return
+  db.run(
+    `UPDATE tracks
+     SET is_available = ?,
+         availability_reason = ?,
+         modified_at = ?
+     WHERE path = ?`,
+    [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), trackPath]
+  )
+  if (options.persist !== false) {
+    await saveDatabase()
+  }
+}
+
+export function getSubsonicTrackCountsBySource(sourceId: number): { total: number; available: number } {
+  if (!db) return { total: 0, available: 0 }
+  const stmt = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END) AS available
+    FROM tracks
+    WHERE source_type = 'subsonic' AND source_id = ?
+  `)
+  stmt.bind([sourceId])
+  let total = 0
+  let available = 0
+  if (stmt.step()) {
+    const row = stmt.getAsObject() as { total?: unknown; available?: unknown }
+    total = Number(row.total ?? 0)
+    available = Number(row.available ?? 0)
+  }
+  stmt.free()
+  return {
+    total: Number.isFinite(total) ? total : 0,
+    available: Number.isFinite(available) ? available : 0
+  }
 }
 
 function normalizeLyricsCacheStatus(value: unknown): LyricsCacheStatus | null {
@@ -1773,6 +2480,7 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
     FROM tracks t
     LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
     WHERE t.path = ?
+      AND t.source_type = 'local'
     LIMIT 1
   `)
   stmt.bind([trackPath])
@@ -2109,7 +2817,7 @@ function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
   ))
   if (normalizedPrefixes.length === 0) return 0
 
-  const result = db.exec('SELECT id, path FROM tracks')
+  const result = db.exec("SELECT id, path FROM tracks WHERE source_type = 'local'")
   if (result.length === 0) return 0
 
   const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)
@@ -2450,7 +3158,7 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
@@ -2462,8 +3170,8 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
@@ -3307,7 +4015,7 @@ function getBackfillCandidatePaths(options: {
     candidateClauses.push(legacyAtmosClause)
   }
 
-  let sql = `SELECT path FROM tracks WHERE (${candidateClauses.join(' OR ')})`
+  let sql = `SELECT path FROM tracks WHERE source_type = 'local' AND (${candidateClauses.join(' OR ')})`
   const params: unknown[] = []
   if (options.folderPath) {
     sql += ' AND path LIKE ?'
@@ -3335,8 +4043,11 @@ function getReplayGainBackfillCandidatePaths(): string[] {
   const result = db.exec(`
     SELECT path
     FROM tracks
-    WHERE replaygain_track_gain_db IS NULL
-       OR replaygain_album_gain_db IS NULL
+    WHERE source_type = 'local'
+      AND (
+        replaygain_track_gain_db IS NULL
+        OR replaygain_album_gain_db IS NULL
+      )
   `)
   if (result.length === 0) return []
   return result[0].values
@@ -3371,7 +4082,7 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
   })
 
   db.run(
-    'UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ?, bpm = ?, musical_key = ? WHERE path = ?',
+    "UPDATE tracks SET channels = ?, codec = ?, codec_profile = ?, is_atmos_joc = ?, bpm = ?, musical_key = ? WHERE path = ? AND source_type = 'local'",
     [
       resolvedCodecMetadata.channels,
       resolvedCodecMetadata.codec,
@@ -3402,7 +4113,7 @@ async function backfillTrackReplayGainMetadata(path: string): Promise<void> {
   }
 
   db.run(
-    'UPDATE tracks SET replaygain_track_gain_db = ?, replaygain_album_gain_db = ? WHERE path = ?',
+    "UPDATE tracks SET replaygain_track_gain_db = ?, replaygain_album_gain_db = ? WHERE path = ? AND source_type = 'local'",
     [replayGainTrackDb, replayGainAlbumDb, path]
   )
 }
@@ -3538,6 +4249,80 @@ function getImageExtension(mimeType: string): string {
   if (type.includes('webp')) return '.webp'
   if (type.includes('bmp')) return '.bmp'
   return '.jpg' // Default to jpg for jpeg and unknown types
+}
+
+function detectImageExtensionFromBytes(data: Uint8Array): string {
+  if (data.length >= 8) {
+    if (
+      data[0] === 0x89 &&
+      data[1] === 0x50 &&
+      data[2] === 0x4e &&
+      data[3] === 0x47 &&
+      data[4] === 0x0d &&
+      data[5] === 0x0a &&
+      data[6] === 0x1a &&
+      data[7] === 0x0a
+    ) {
+      return '.png'
+    }
+  }
+  if (data.length >= 6) {
+    const header = Buffer.from(data.subarray(0, 6)).toString('ascii')
+    if (header === 'GIF87a' || header === 'GIF89a') {
+      return '.gif'
+    }
+  }
+  if (data.length >= 12) {
+    const riff = Buffer.from(data.subarray(0, 4)).toString('ascii')
+    const webp = Buffer.from(data.subarray(8, 12)).toString('ascii')
+    if (riff === 'RIFF' && webp === 'WEBP') {
+      return '.webp'
+    }
+  }
+  if (data.length >= 2 && data[0] === 0xff && data[1] === 0xd8) {
+    return '.jpg'
+  }
+  if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) {
+    return '.bmp'
+  }
+  return '.jpg'
+}
+
+export async function cacheArtworkBuffer(
+  imageData: ArrayBuffer | Uint8Array | Buffer,
+  mimeType?: string | null
+): Promise<string | null> {
+  if (!artworkDir) return null
+
+  const bytes: Uint8Array = imageData instanceof ArrayBuffer
+    ? new Uint8Array(imageData)
+    : imageData
+
+  if (bytes.byteLength === 0) return null
+
+  const extension = mimeType && mimeType.trim().length > 0
+    ? getImageExtension(mimeType)
+    : detectImageExtensionFromBytes(bytes)
+
+  const hash = `${createHash('md5').update(bytes).digest('hex')}${extension}`
+  const artworkPath = join(artworkDir, hash)
+
+  try {
+    await writeFile(artworkPath, bytes, { flag: 'wx' })
+    return hash
+  } catch (error) {
+    if (getErrorCode(error) !== 'EEXIST') {
+      console.warn('Failed to persist artwork cache entry:', artworkPath, error)
+      return null
+    }
+  }
+
+  try {
+    await stat(artworkPath)
+    return hash
+  } catch {
+    return null
+  }
 }
 
 // Get artwork path by hash
@@ -3712,7 +4497,7 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
@@ -3993,6 +4778,7 @@ export function getPlaylists(): Playlist[] {
       (
         SELECT COUNT(*)
         FROM playlist_tracks pt
+        INNER JOIN tracks t ON t.path = pt.track_path
         WHERE pt.playlist_id = p.id
       ) as track_count
     FROM playlists p
@@ -4493,7 +5279,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   const { persist = true, signal, onIssue } = options
   if (!db) return 0
 
-  const result = db.exec('SELECT id, path FROM tracks')
+  const result = db.exec("SELECT id, path FROM tracks WHERE source_type = 'local'")
   if (result.length === 0) return 0
 
   const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)

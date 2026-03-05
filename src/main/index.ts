@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -7,6 +7,16 @@ import { execFile, type ExecFileOptions } from 'child_process'
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import {
+  buildSubsonicStreamUrl,
+  fetchSubsonicCoverArt,
+  fetchSubsonicTrackBytes,
+  normalizeSubsonicBaseUrl,
+  parseSubsonicTrackPath,
+  syncSubsonicCatalog,
+  testSubsonicConnection,
+  type SubsonicDownloadProgress
+} from './services/subsonic'
 import {
   discordRpcService,
   type DiscordPresenceUpdate,
@@ -56,6 +66,17 @@ import {
 } from '../types/localApi'
 import type { LastFmServiceConfig } from '../types/lastFm'
 import type { LyricsTrackQuery } from '../types/lyrics'
+import type {
+  SubsonicSource,
+  SubsonicSourceCreateInput,
+  SubsonicSourceLastStatus,
+  SubsonicSourceSyncProgress,
+  SubsonicSourceTestInput,
+  SubsonicSourceTestResult,
+  SubsonicSyncPhase,
+  SubsonicSourceUpdateInput,
+  SubsonicStatusSnapshot
+} from '../types/subsonic'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -77,7 +98,9 @@ let mainWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
 let replayGainScanEnabled: boolean = false
+let subsonicSyncInFlight = false
 let associatedOpenRendererReady = false
 const associatedOpenPendingPaths: string[] = []
 
@@ -104,9 +127,18 @@ const TRACKLIST_THUMB_JPEG_QUALITY = 78
 const TRACKLIST_THUMB_CACHE_VERSION = 'v1'
 const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
+const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
+const SUBSONIC_STREAM_MAX_BITRATE_KBPS = 256
+const SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 80
 
 let artworkThumbnailCacheDir = ''
 const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
+let subsonicStatusCache: SubsonicStatusSnapshot = {
+  isSyncing: false,
+  updatedAt: Date.now(),
+  sources: []
+}
+const subsonicSyncProgressBySourceId = new Map<number, SubsonicSourceSyncProgress>()
 
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
@@ -862,6 +894,439 @@ function broadcastLyricsStatus(): void {
   }
 }
 
+function broadcastSubsonicStatus(snapshot?: SubsonicStatusSnapshot): void {
+  const payload = snapshot ?? subsonicStatusCache
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('subsonic:status', payload)
+  }
+}
+
+function setSubsonicSyncProgress(
+  sourceId: number,
+  progress: {
+    phase: SubsonicSyncPhase
+    activity: string
+    current?: number | null
+    total?: number | null
+    detail?: string | null
+  }
+): void {
+  subsonicSyncProgressBySourceId.set(sourceId, {
+    phase: progress.phase,
+    activity: progress.activity,
+    current: progress.current ?? null,
+    total: progress.total ?? null,
+    detail: progress.detail ?? null,
+    updatedAt: Date.now()
+  })
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+}
+
+function clearSubsonicSyncProgress(sourceId: number): void {
+  if (!subsonicSyncProgressBySourceId.has(sourceId)) return
+  subsonicSyncProgressBySourceId.delete(sourceId)
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+}
+
+function computeSubsonicStatusSnapshot(isSyncing: boolean): SubsonicStatusSnapshot {
+  const sources = library.listSubsonicSources().map((source) => ({
+    sourceId: source.id,
+    enabled: source.enabled === 1,
+    status: source.last_status,
+    error: source.last_error,
+    lastSyncAt: source.last_sync_at,
+    lastCheckedAt: source.last_checked_at,
+    progress: subsonicSyncProgressBySourceId.get(source.id) ?? null
+  }))
+
+  return {
+    isSyncing,
+    updatedAt: Date.now(),
+    sources
+  }
+}
+
+function refreshSubsonicStatusCache(isSyncing: boolean = subsonicSyncInFlight): SubsonicStatusSnapshot {
+  subsonicStatusCache = computeSubsonicStatusSnapshot(isSyncing)
+  return subsonicStatusCache
+}
+
+function ensureSafeStorageAvailable(): void {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      'Secure credential storage is unavailable. Unlock your OS keychain and restart Astra, then retry.'
+    )
+  }
+}
+
+function encryptSubsonicSecret(secret: string): string {
+  ensureSafeStorageAvailable()
+  const encrypted = safeStorage.encryptString(secret)
+  return encrypted.toString('base64')
+}
+
+function decryptSubsonicSecret(secretEncrypted: string): string {
+  ensureSafeStorageAvailable()
+  if (!secretEncrypted) {
+    throw new Error('Stored Subsonic credential is missing.')
+  }
+  const encryptedBuffer = Buffer.from(secretEncrypted, 'base64')
+  return safeStorage.decryptString(encryptedBuffer)
+}
+
+function requireSubsonicSourceCredentials(sourceId: number): {
+  source: library.SubsonicSourceRow
+  connection: { baseUrl: string; username: string; password: string }
+} {
+  const source = library.getSubsonicSourceById(sourceId)
+  if (!source) {
+    throw new Error('Subsonic source not found.')
+  }
+
+  const password = decryptSubsonicSecret(source.secret_encrypted)
+  return {
+    source,
+    connection: {
+      baseUrl: source.base_url,
+      username: source.username,
+      password
+    }
+  }
+}
+
+function toSubsonicSourcePayload(source: library.SubsonicSourcePublic): SubsonicSource {
+  return {
+    id: source.id,
+    name: source.name,
+    base_url: source.base_url,
+    username: source.username,
+    enabled: source.enabled,
+    last_status: source.last_status,
+    last_error: source.last_error,
+    last_sync_at: source.last_sync_at,
+    last_checked_at: source.last_checked_at,
+    created_at: source.created_at,
+    updated_at: source.updated_at,
+    has_stored_secret: source.has_stored_secret
+  }
+}
+
+function normalizeSubsonicSourceCreateInput(raw: SubsonicSourceCreateInput): {
+  name: string
+  baseUrl: string
+  username: string
+  password: string
+  enabled: boolean
+} {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid Subsonic source payload.')
+  }
+
+  const name = String(raw.name ?? '').trim()
+  const baseUrl = normalizeSubsonicBaseUrl(String(raw.baseUrl ?? ''))
+  const username = String(raw.username ?? '').trim()
+  const password = String(raw.password ?? '')
+  const enabled = Boolean(raw.enabled)
+
+  if (!name) throw new Error('Source name is required.')
+  if (!username) throw new Error('Username is required.')
+  if (!password) throw new Error('Password is required.')
+
+  return { name, baseUrl, username, password, enabled }
+}
+
+function normalizeSubsonicSourceUpdateInput(raw: SubsonicSourceUpdateInput): {
+  name?: string
+  baseUrl?: string
+  username?: string
+  password?: string
+  enabled?: boolean
+} {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid Subsonic source update payload.')
+  }
+
+  const next: {
+    name?: string
+    baseUrl?: string
+    username?: string
+    password?: string
+    enabled?: boolean
+  } = {}
+
+  if (raw.name !== undefined) {
+    const value = String(raw.name).trim()
+    if (!value) throw new Error('Source name cannot be empty.')
+    next.name = value
+  }
+  if (raw.baseUrl !== undefined) {
+    next.baseUrl = normalizeSubsonicBaseUrl(String(raw.baseUrl))
+  }
+  if (raw.username !== undefined) {
+    const value = String(raw.username).trim()
+    if (!value) throw new Error('Username cannot be empty.')
+    next.username = value
+  }
+  if (raw.password !== undefined) {
+    const value = String(raw.password)
+    if (!value) throw new Error('Password cannot be empty.')
+    next.password = value
+  }
+  if (raw.enabled !== undefined) {
+    next.enabled = Boolean(raw.enabled)
+  }
+
+  return next
+}
+
+function resolveSubsonicTestConnectionInput(input: SubsonicSourceTestInput): {
+  baseUrl: string
+  username: string
+  password: string
+} {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Subsonic test payload.')
+  }
+
+  if (typeof input.sourceId === 'number' && Number.isInteger(input.sourceId) && input.sourceId > 0) {
+    const credentials = requireSubsonicSourceCredentials(input.sourceId)
+    return credentials.connection
+  }
+
+  const baseUrl = normalizeSubsonicBaseUrl(String(input.baseUrl ?? ''))
+  const username = String(input.username ?? '').trim()
+  const password = String(input.password ?? '')
+
+  if (!username) throw new Error('Username is required.')
+  if (!password) throw new Error('Password is required.')
+
+  return { baseUrl, username, password }
+}
+
+async function setSubsonicSourceDisabledState(sourceId: number): Promise<void> {
+  clearSubsonicSyncProgress(sourceId)
+  await library.updateSubsonicSourceStatus(
+    sourceId,
+    {
+      status: 'disabled',
+      error: null,
+      checkedAt: Date.now()
+    },
+    { persist: false }
+  )
+  await library.markSubsonicTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
+}
+
+async function hydrateSubsonicTrackArtworkHashes(
+  connection: { baseUrl: string; username: string; password: string },
+  tracks: Array<{ artwork_source_id: string | null }>,
+  onProgress?: (current: number, total: number, artworkId: string | null) => void
+): Promise<Map<string, string>> {
+  const artworkIds = Array.from(new Set(
+    tracks
+      .map((track) => track.artwork_source_id)
+      .filter((artworkId): artworkId is string => typeof artworkId === 'string' && artworkId.trim().length > 0)
+  ))
+
+  const hashesByArtworkId = new Map<string, string>()
+  onProgress?.(0, artworkIds.length, null)
+  let processed = 0
+  for (const artworkId of artworkIds) {
+    try {
+      const artworkPayload = await fetchSubsonicCoverArt(connection, artworkId, {
+        timeoutMs: 12_000,
+        retries: 1
+      })
+      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      if (hash) {
+        hashesByArtworkId.set(artworkId, hash)
+      }
+    } catch (error) {
+      console.warn(`Failed to sync Subsonic cover art ${artworkId}:`, error)
+    } finally {
+      processed += 1
+      onProgress?.(processed, artworkIds.length, artworkId)
+    }
+  }
+
+  return hashesByArtworkId
+}
+
+async function syncOneSubsonicSource(sourceId: number): Promise<void> {
+  const source = library.getSubsonicSourceById(sourceId)
+  if (!source) return
+
+  if (source.enabled !== 1) {
+    clearSubsonicSyncProgress(sourceId)
+    await setSubsonicSourceDisabledState(sourceId)
+    await library.persistLibraryDatabase()
+    return
+  }
+
+  await library.updateSubsonicSourceStatus(
+    sourceId,
+    {
+      status: 'syncing',
+      error: null,
+      checkedAt: Date.now()
+    },
+    { persist: false }
+  )
+  setSubsonicSyncProgress(sourceId, {
+    phase: 'connecting',
+    activity: 'Connecting to server...'
+  })
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(true))
+
+  let credentials: ReturnType<typeof requireSubsonicSourceCredentials> | null = null
+  try {
+    credentials = requireSubsonicSourceCredentials(sourceId)
+    await testSubsonicConnection(credentials.connection, {
+      timeoutMs: 12_000,
+      retries: 1
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to reach Subsonic source.'
+    await library.markSubsonicTracksAvailability(sourceId, false, 'source_unavailable', { persist: false })
+    await library.updateSubsonicSourceStatus(
+      sourceId,
+      {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearSubsonicSyncProgress(sourceId)
+    throw error
+  }
+
+  await library.restoreSubsonicTracksFromSourceUnavailable(sourceId, { persist: false })
+
+  try {
+    const result = await syncSubsonicCatalog(sourceId, credentials.connection, {
+      timeoutMs: 12_000,
+      retries: 1,
+      onProgress: (progress) => {
+        const label = progress.phase === 'artists'
+          ? 'Loading artists...'
+          : progress.phase === 'albums'
+            ? 'Loading albums...'
+            : 'Loading tracks...'
+        setSubsonicSyncProgress(sourceId, {
+          phase: progress.phase,
+          activity: label,
+          current: progress.current,
+          total: progress.total,
+          detail: progress.detail
+        })
+      }
+    })
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'artwork',
+      activity: 'Syncing artwork...'
+    })
+    const artworkHashesBySourceId = await hydrateSubsonicTrackArtworkHashes(
+      credentials.connection,
+      result.tracks,
+      (current, total, artworkId) => {
+        setSubsonicSyncProgress(sourceId, {
+          phase: 'artwork',
+          activity: 'Syncing artwork...',
+          current,
+          total,
+          detail: artworkId
+        })
+      }
+    )
+    const tracksForUpsert = result.tracks.map((track) => ({
+      ...track,
+      artwork_hash: track.artwork_source_id
+        ? (artworkHashesBySourceId.get(track.artwork_source_id) ?? track.artwork_hash)
+        : track.artwork_hash
+    }))
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'finalizing',
+      activity: 'Applying library updates...'
+    })
+    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, { persist: false })
+    await library.markMissingSubsonicTracksUnavailable(
+      sourceId,
+      new Set(result.tracks.map((track) => track.source_track_id)),
+      { persist: false }
+    )
+    await library.updateSubsonicSourceStatus(
+      sourceId,
+      {
+        status: 'ok',
+        error: null,
+        syncedAt: Date.now(),
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearSubsonicSyncProgress(sourceId)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Subsonic sync failure.'
+    await library.updateSubsonicSourceStatus(
+      sourceId,
+      {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      },
+      { persist: false }
+    )
+    await library.persistLibraryDatabase()
+    clearSubsonicSyncProgress(sourceId)
+    throw error
+  }
+}
+
+async function runSubsonicSync(sourceId?: number): Promise<void> {
+  if (subsonicSyncInFlight) {
+    throw new Error('A Subsonic sync is already in progress.')
+  }
+
+  subsonicSyncInFlight = true
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(true))
+
+  try {
+    const sources = sourceId
+      ? library.listSubsonicSources().filter((source) => source.id === sourceId)
+      : library.listSubsonicSources()
+
+    for (const source of sources) {
+      try {
+        await syncOneSubsonicSource(source.id)
+      } catch (error) {
+        console.warn(`Subsonic sync failed for source ${source.id}:`, error)
+      }
+    }
+  } finally {
+    subsonicSyncInFlight = false
+    broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  }
+}
+
+function startSubsonicSyncScheduler(): void {
+  if (subsonicSyncTimer !== null) {
+    clearInterval(subsonicSyncTimer)
+  }
+  subsonicSyncTimer = setInterval(() => {
+    void runSubsonicSync().catch((error) => {
+      if (error instanceof Error && error.message.includes('already in progress')) {
+        return
+      }
+      console.warn('Periodic Subsonic sync failed:', error)
+    })
+  }, SUBSONIC_SYNC_INTERVAL_MS)
+}
+
 function captureMainWindowPrefs(): MainWindowPrefs | null {
   if (!mainWindow || mainWindow.isDestroyed()) return null
   const bounds = mainWindow.getNormalBounds()
@@ -1348,8 +1813,17 @@ app.whenReady().then(async () => {
   lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
   lyricsService.applyConfig(lyricsOnlineEnabled)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
+  refreshSubsonicStatusCache(false)
 
   createWindow()
+  broadcastSubsonicStatus()
+  startSubsonicSyncScheduler()
+  void runSubsonicSync().catch((error) => {
+    if (error instanceof Error && error.message.includes('already in progress')) {
+      return
+    }
+    console.warn('Startup Subsonic sync failed:', error)
+  })
   void (async () => {
     try {
       const removedCount = await library.cleanupMissingTracks()
@@ -1392,6 +1866,10 @@ app.on('before-quit', () => {
   if (replayGainBackfillTimer !== null) {
     clearTimeout(replayGainBackfillTimer)
     replayGainBackfillTimer = null
+  }
+  if (subsonicSyncTimer !== null) {
+    clearInterval(subsonicSyncTimer)
+    subsonicSyncTimer = null
   }
   void persistMainWindowPrefs()
   void persistMiniWindowPrefs()
@@ -1697,6 +2175,139 @@ ipcMain.handle('lyrics:resetToDefaults', async () => {
   return applyLyricsConfig(false)
 })
 
+ipcMain.handle('subsonic:listSources', () => {
+  return library.listSubsonicSources().map(toSubsonicSourcePayload)
+})
+
+ipcMain.handle('subsonic:createSource', async (_event, rawInput: SubsonicSourceCreateInput) => {
+  const input = normalizeSubsonicSourceCreateInput(rawInput)
+  const encryptedSecret = encryptSubsonicSecret(input.password)
+
+  const created = await library.createSubsonicSource({
+    name: input.name,
+    base_url: input.baseUrl,
+    username: input.username,
+    secret_encrypted: encryptedSecret,
+    enabled: input.enabled ? 1 : 0,
+    last_status: input.enabled ? 'unknown' : 'disabled'
+  })
+
+  if (!input.enabled) {
+    await setSubsonicSourceDisabledState(created.id)
+    await library.persistLibraryDatabase()
+  }
+
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  return toSubsonicSourcePayload(created)
+})
+
+ipcMain.handle('subsonic:updateSource', async (_event, sourceIdValue: unknown, rawInput: SubsonicSourceUpdateInput) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Subsonic source id.')
+  }
+
+  const input = normalizeSubsonicSourceUpdateInput(rawInput)
+  const updatePayload: {
+    name?: string
+    base_url?: string
+    username?: string
+    secret_encrypted?: string
+    enabled?: number
+    last_status?: SubsonicSourceLastStatus
+    last_error?: string | null
+  } = {}
+
+  if (input.name !== undefined) updatePayload.name = input.name
+  if (input.baseUrl !== undefined) updatePayload.base_url = input.baseUrl
+  if (input.username !== undefined) updatePayload.username = input.username
+  if (input.password !== undefined) {
+    updatePayload.secret_encrypted = encryptSubsonicSecret(input.password)
+  }
+  if (input.enabled !== undefined) {
+    updatePayload.enabled = input.enabled ? 1 : 0
+    updatePayload.last_status = input.enabled ? 'unknown' : 'disabled'
+    if (!input.enabled) {
+      updatePayload.last_error = null
+    }
+  }
+
+  const updated = await library.updateSubsonicSource(sourceId, updatePayload)
+  if (input.enabled === false) {
+    await setSubsonicSourceDisabledState(sourceId)
+    await library.persistLibraryDatabase()
+  }
+
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  return toSubsonicSourcePayload(updated)
+})
+
+ipcMain.handle('subsonic:deleteSource', async (_event, sourceIdValue: unknown, purgeTracksValue: unknown) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Subsonic source id.')
+  }
+  const purgeTracks = Boolean(purgeTracksValue)
+  await library.deleteSubsonicSource(sourceId, purgeTracks)
+  clearSubsonicSyncProgress(sourceId)
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+})
+
+ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTestInput): Promise<SubsonicSourceTestResult> => {
+  const sourceId = typeof rawInput?.sourceId === 'number' && Number.isInteger(rawInput.sourceId) && rawInput.sourceId > 0
+    ? rawInput.sourceId
+    : null
+  try {
+    const resolved = resolveSubsonicTestConnectionInput(rawInput)
+    await testSubsonicConnection(resolved, { timeoutMs: 12_000, retries: 1 })
+    if (sourceId !== null) {
+      clearSubsonicSyncProgress(sourceId)
+      await library.updateSubsonicSourceStatus(sourceId, {
+        status: 'ok',
+        error: null,
+        checkedAt: Date.now()
+      })
+      broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+    }
+    return {
+      ok: true,
+      message: 'Connection successful.'
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Connection test failed.'
+    if (sourceId !== null) {
+      clearSubsonicSyncProgress(sourceId)
+      await library.updateSubsonicSourceStatus(sourceId, {
+        status: 'error',
+        error: message,
+        checkedAt: Date.now()
+      })
+      broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+    }
+    return {
+      ok: false,
+      message: 'Connection failed.',
+      error: message
+    }
+  }
+})
+
+ipcMain.handle('subsonic:syncSource', async (_event, sourceIdValue: unknown) => {
+  const sourceId = Number(sourceIdValue)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) {
+    throw new Error('Invalid Subsonic source id.')
+  }
+  await runSubsonicSync(sourceId)
+})
+
+ipcMain.handle('subsonic:syncAll', async () => {
+  await runSubsonicSync()
+})
+
+ipcMain.handle('subsonic:getStatus', () => {
+  return refreshSubsonicStatusCache(subsonicSyncInFlight)
+})
+
 // Local integration API
 ipcMain.handle('local-api:getStatus', () => {
   return localApiService.getStatus()
@@ -1787,8 +2398,12 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 })
 
 // Load a specific audio file
-ipcMain.handle('audio:loadFile', async (_event, filePath: string, options?: LoadAudioFileOptions) => {
-  return loadAudioFile(filePath, options)
+ipcMain.handle('audio:loadFile', async (event, filePath: string, options?: LoadAudioFileOptions) => {
+  return loadAudioFile(filePath, options, {
+    onRemoteLoadProgress: (progress) => {
+      event.sender.send('audio:remoteLoadProgress', progress)
+    }
+  })
 })
 
 ipcMain.handle('audio:getMetadata', async (_event, filePath: string) => {
@@ -2617,6 +3232,18 @@ interface LoadAudioFileOptions {
   metadataMode?: 'full' | 'none'
 }
 
+interface RemoteAudioLoadProgressPayload {
+  path: string
+  sourceType: 'subsonic'
+  stage: 'downloading'
+  loadedBytes: number
+  totalBytes: number | null
+  chunkCount: number
+  percent: number | null
+  done: boolean
+  failed: boolean
+}
+
 interface FfprobeAudioMetadata {
   channels?: number
   codec?: string
@@ -2935,7 +3562,181 @@ async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeA
   }
 }
 
+function isSubsonicPath(pathValue: string): boolean {
+  return parseSubsonicTrackPath(pathValue) !== null
+}
+
+function sanitizeAudioExtension(extension: string | null | undefined): string {
+  const normalized = String(extension ?? '').trim().toLowerCase()
+  if (!normalized) return ''
+  const safe = normalized.replace(/[^a-z0-9]/g, '')
+  if (!safe) return ''
+  return `.${safe}`
+}
+
+async function writeTempAudioFileFromBuffer(
+  buffer: ArrayBuffer,
+  extension: string | null | undefined
+): Promise<{ tempDir: string; filePath: string }> {
+  const tempDir = await mkdtemp(join(tmpdir(), 'astra-subsonic-'))
+  const ext = sanitizeAudioExtension(extension)
+  const tempPath = join(tempDir, `stream${ext || '.bin'}`)
+  const data = Buffer.from(buffer)
+  await writeFile(tempPath, data)
+  return { tempDir, filePath: tempPath }
+}
+
+async function resolveSubsonicAudioPayload(
+  filePath: string,
+  options: {
+    onDownloadProgress?: (progress: RemoteAudioLoadProgressPayload) => void
+  } = {}
+): Promise<{
+  parsed: { sourceId: number; sourceTrackId: string }
+  track: library.DbTrack | null
+  streamUrl: string
+  data: ArrayBuffer
+}> {
+  const parsed = parseSubsonicTrackPath(filePath)
+  if (!parsed) {
+    throw new Error('Invalid Subsonic track path.')
+  }
+
+  const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+  if (credentials.source.enabled !== 1) {
+    await library.setTrackAvailability(filePath, false, 'source_disabled')
+    throw new Error(`Subsonic source "${credentials.source.name}" is disabled.`)
+  }
+
+  const streamUrl = buildSubsonicStreamUrl(credentials.connection, parsed.sourceTrackId, {
+    maxBitRateKbps: SUBSONIC_STREAM_MAX_BITRATE_KBPS
+  })
+  let latestProgress: {
+    loadedBytes: number
+    totalBytes: number | null
+    chunkCount: number
+  } = {
+    loadedBytes: 0,
+    totalBytes: null,
+    chunkCount: 0
+  }
+  let lastProgressEmitAt = 0
+  const emitDownloadProgress = (
+    progress: SubsonicDownloadProgress,
+    optionsOverride: { force?: boolean; failed?: boolean } = {}
+  ) => {
+    latestProgress = {
+      loadedBytes: progress.loadedBytes,
+      totalBytes: progress.totalBytes,
+      chunkCount: progress.chunkCount
+    }
+
+    if (!options.onDownloadProgress) return
+    const force = optionsOverride.force === true
+    const now = Date.now()
+    if (!force && !progress.done && now - lastProgressEmitAt < SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS) {
+      return
+    }
+    lastProgressEmitAt = now
+
+    const percent = progress.totalBytes && progress.totalBytes > 0
+      ? Math.max(0, Math.min(1, progress.loadedBytes / progress.totalBytes))
+      : null
+
+    options.onDownloadProgress({
+      path: filePath,
+      sourceType: 'subsonic',
+      stage: 'downloading',
+      loadedBytes: progress.loadedBytes,
+      totalBytes: progress.totalBytes,
+      chunkCount: progress.chunkCount,
+      percent,
+      done: progress.done,
+      failed: optionsOverride.failed === true
+    })
+  }
+
+  try {
+    emitDownloadProgress(
+      {
+        loadedBytes: 0,
+        totalBytes: null,
+        chunkCount: 0,
+        done: false
+      },
+      { force: true }
+    )
+
+    let data: ArrayBuffer
+    try {
+      data = await fetchSubsonicTrackBytes(credentials.connection, parsed.sourceTrackId, {
+        timeoutMs: 20_000,
+        retries: 1,
+        maxBitRateKbps: SUBSONIC_STREAM_MAX_BITRATE_KBPS,
+        onDownloadProgress: (progress) => {
+          emitDownloadProgress(progress, { force: progress.done })
+        }
+      })
+    } catch (transcodeError) {
+      // Some servers or codecs cannot transcode; retry raw stream before failing.
+      console.warn(`Subsonic bitrate-limited stream failed for ${filePath}, retrying raw stream:`, transcodeError)
+      emitDownloadProgress(
+        {
+          loadedBytes: 0,
+          totalBytes: null,
+          chunkCount: 0,
+          done: false
+        },
+        { force: true }
+      )
+      data = await fetchSubsonicTrackBytes(credentials.connection, parsed.sourceTrackId, {
+        timeoutMs: 20_000,
+        retries: 1,
+        onDownloadProgress: (progress) => {
+          emitDownloadProgress(progress, { force: progress.done })
+        }
+      })
+    }
+    await library.setTrackAvailability(filePath, true, null, { persist: false })
+    return {
+      parsed,
+      track: library.getTrackByPath(filePath),
+      streamUrl,
+      data
+    }
+  } catch (error) {
+    emitDownloadProgress(
+      {
+        loadedBytes: latestProgress.loadedBytes,
+        totalBytes: latestProgress.totalBytes,
+        chunkCount: latestProgress.chunkCount,
+        done: true
+      },
+      { force: true, failed: true }
+    )
+    await library.setTrackAvailability(filePath, false, 'source_unavailable')
+    throw error
+  }
+}
+
 async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | null> {
+  if (isSubsonicPath(filePath)) {
+    let tempDir: string | null = null
+    try {
+      const payload = await resolveSubsonicAudioPayload(filePath)
+      const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
+      tempDir = temp.tempDir
+      return await decodeAudioWithFfmpeg(temp.filePath)
+    } catch (error) {
+      console.warn(`FFmpeg compatibility decode failed for ${filePath}:`, error)
+      return null
+    } finally {
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+      }
+    }
+  }
+
   const ffmpegPath = await resolveBinary('ffmpeg')
   if (!ffmpegPath) return null
 
@@ -2969,6 +3770,54 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
 }
 
 async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {
+  if (isSubsonicPath(filePath)) {
+    let tempDir: string | null = null
+    const dbTrack = library.getTrackByPath(filePath)
+    try {
+      const payload = await resolveSubsonicAudioPayload(filePath)
+      const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
+      tempDir = temp.tempDir
+      const parsed = await loadAudioMetadata(temp.filePath)
+      if (parsed) {
+        return {
+          ...parsed,
+          title: parsed.title ?? payload.track?.title ?? dbTrack?.title,
+          artist: parsed.artist ?? payload.track?.artist ?? dbTrack?.artist,
+          album: parsed.album ?? payload.track?.album ?? dbTrack?.album,
+          albumArtist: parsed.albumArtist ?? payload.track?.album_artist ?? dbTrack?.album_artist ?? undefined,
+          duration: parsed.duration ?? payload.track?.duration ?? dbTrack?.duration,
+          format: payload.track?.format ?? dbTrack?.format ?? parsed.format
+        }
+      }
+    } catch {
+      // Fall back to DB metadata below.
+    } finally {
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+      }
+    }
+
+    if (!dbTrack) return null
+    return {
+      title: dbTrack.title,
+      artist: dbTrack.artist,
+      album: dbTrack.album,
+      albumArtist: dbTrack.album_artist ?? undefined,
+      duration: dbTrack.duration,
+      format: dbTrack.format,
+      channels: dbTrack.channels ?? undefined,
+      codec: dbTrack.codec ?? undefined,
+      codecProfile: dbTrack.codec_profile ?? undefined,
+      isAtmosJoc: dbTrack.is_atmos_joc === 1,
+      replayGainTrackDb: replayGainScanEnabled
+        ? (dbTrack.replaygain_track_gain_db ?? undefined)
+        : undefined,
+      replayGainAlbumDb: replayGainScanEnabled
+        ? (dbTrack.replaygain_album_gain_db ?? undefined)
+        : undefined
+    }
+  }
+
   const name = basename(filePath)
   const fallbackTitle = name.replace(/\.[^.]+$/, '')
   const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
@@ -3034,9 +3883,40 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   return metadata
 }
 
-async function loadAudioFile(filePath: string, options: LoadAudioFileOptions = {}) {
+async function loadAudioFile(
+  filePath: string,
+  options: LoadAudioFileOptions = {},
+  runtime: {
+    onRemoteLoadProgress?: (progress: RemoteAudioLoadProgressPayload) => void
+  } = {}
+) {
   const loadStartMs = Date.now()
   try {
+    if (isSubsonicPath(filePath)) {
+      const payload = await resolveSubsonicAudioPayload(filePath, {
+        onDownloadProgress: runtime.onRemoteLoadProgress
+      })
+      const name = payload.track?.title ?? payload.parsed.sourceTrackId
+      const response = {
+        path: filePath,
+        name,
+        data: payload.data,
+        metadata: options.metadataMode === 'none'
+          ? undefined
+          : (await loadAudioMetadata(filePath)) ?? undefined
+      }
+
+      const elapsedMs = Date.now() - loadStartMs
+      if (isDev && elapsedMs > 1500) {
+        console.warn(`[perf] loadAudioFile slow path (${elapsedMs}ms):`, {
+          filePath,
+          metadataMode: options.metadataMode ?? 'full',
+          remote: true
+        })
+      }
+      return response
+    }
+
     // Read file as buffer
     const buffer = await readFile(filePath)
     const name = basename(filePath)

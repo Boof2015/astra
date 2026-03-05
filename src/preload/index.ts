@@ -29,6 +29,15 @@ import type {
   LyricsTrackOverride,
   LyricsTrackQuery
 } from '../types/lyrics'
+import type {
+  SubsonicSource,
+  SubsonicSourceCreateInput,
+  SubsonicSourceTestInput,
+  SubsonicSourceTestResult,
+  SubsonicSourceUpdateInput,
+  SubsonicStatusSnapshot,
+  TrackSourceType
+} from '../types/subsonic'
 
 export interface AudioFileMetadata {
   title?: string
@@ -61,6 +70,18 @@ export interface AudioLoadOptions {
   metadataMode?: 'full' | 'none'
 }
 
+export interface RemoteAudioLoadProgress {
+  path: string
+  sourceType: 'subsonic'
+  stage: 'downloading'
+  loadedBytes: number
+  totalBytes: number | null
+  chunkCount: number
+  percent: number | null
+  done: boolean
+  failed: boolean
+}
+
 // Library types
 export interface DbTrack {
   id: number
@@ -88,6 +109,12 @@ export interface DbTrack {
   replaygain_album_gain_db: number | null
   bpm: number | null
   musical_key: string | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   added_at: number
   modified_at: number
 }
@@ -503,6 +530,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  subsonic: {
+    listSources: (): Promise<SubsonicSource[]> => ipcRenderer.invoke('subsonic:listSources'),
+    createSource: (input: SubsonicSourceCreateInput): Promise<SubsonicSource> =>
+      ipcRenderer.invoke('subsonic:createSource', input),
+    updateSource: (sourceId: number, input: SubsonicSourceUpdateInput): Promise<SubsonicSource> =>
+      ipcRenderer.invoke('subsonic:updateSource', sourceId, input),
+    deleteSource: (sourceId: number, purgeTracks: boolean): Promise<void> =>
+      ipcRenderer.invoke('subsonic:deleteSource', sourceId, purgeTracks),
+    testSource: (input: SubsonicSourceTestInput): Promise<SubsonicSourceTestResult> =>
+      ipcRenderer.invoke('subsonic:testSource', input),
+    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('subsonic:syncSource', sourceId),
+    syncAll: (): Promise<void> => ipcRenderer.invoke('subsonic:syncAll'),
+    getStatus: (): Promise<SubsonicStatusSnapshot> => ipcRenderer.invoke('subsonic:getStatus'),
+    onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: SubsonicStatusSnapshot) => callback(status)
+      ipcRenderer.on('subsonic:status', handler)
+      return () => ipcRenderer.removeListener('subsonic:status', handler)
+    }
+  },
+
   // File operations
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
@@ -511,6 +558,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
   getReplayGainScanEnabled: () => ipcRenderer.invoke('audio:getReplayGainScanEnabled') as Promise<boolean>,
   setReplayGainScanEnabled: (enabled: boolean) => ipcRenderer.invoke('audio:setReplayGainScanEnabled', enabled) as Promise<boolean>,
+  onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: RemoteAudioLoadProgress) => callback(progress)
+    ipcRenderer.on('audio:remoteLoadProgress', handler)
+    return () => ipcRenderer.removeListener('audio:remoteLoadProgress', handler)
+  },
 
   // Generic file dialogs & I/O
   showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
@@ -736,6 +788,17 @@ declare global {
         resetToDefaults: () => Promise<LyricsStatus>
         onStatus: (callback: (status: LyricsStatus) => void) => () => void
       }
+      subsonic: {
+        listSources: () => Promise<SubsonicSource[]>
+        createSource: (input: SubsonicSourceCreateInput) => Promise<SubsonicSource>
+        updateSource: (sourceId: number, input: SubsonicSourceUpdateInput) => Promise<SubsonicSource>
+        deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
+        testSource: (input: SubsonicSourceTestInput) => Promise<SubsonicSourceTestResult>
+        syncSource: (sourceId: number) => Promise<void>
+        syncAll: () => Promise<void>
+        getStatus: () => Promise<SubsonicStatusSnapshot>
+        onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
+      }
 
       // File operations
       openAudioFile: () => Promise<AudioFileResult | null>
@@ -745,6 +808,7 @@ declare global {
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
       getReplayGainScanEnabled: () => Promise<boolean>
       setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
+      onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => () => void
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>

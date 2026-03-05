@@ -1,4 +1,5 @@
 import type { SettingsSectionId } from '../constants/settingsSections'
+import type { TrackSourceType } from '../../types/subsonic'
 
 export type QuickLaunchTrackAction = 'play-now' | 'queue-next'
 
@@ -22,6 +23,12 @@ export interface QuickLaunchTrackRecord {
   channels: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
