@@ -1433,6 +1433,189 @@ export default function SettingsView() {
                 Normalization is disabled. ReplayGain can stay configured, but playback gain is bypassed until normalization is re-enabled.
               </p>
             )}
+            <div className="settings-integration-card settings-library-remote-card">
+              <div className="settings-integration-card-head">
+                <h4>Remote Music Servers</h4>
+                <p>Connect Subsonic/Navidrome and Jellyfin sources from one setup flow.</p>
+              </div>
+              <div className="settings-grid">
+                <label className="settings-field">
+                  <span className="settings-field-label">Server Type</span>
+                  <select
+                    className="settings-select"
+                    value={remoteServerTypeInput}
+                    onChange={(event) => handleRemoteServerTypeChange(event.target.value as RemoteServerTypeInput)}
+                    disabled={remoteEditingSource !== null}
+                  >
+                    <option value="auto">Auto Detect</option>
+                    <option value="subsonic">Subsonic / Navidrome</option>
+                    <option value="jellyfin">Jellyfin</option>
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">Source Name</span>
+                  <input
+                    className="settings-select"
+                    type="text"
+                    value={remoteNameInput}
+                    onChange={(event) => setRemoteNameInput(event.target.value)}
+                    placeholder="My Remote Library"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">Server URL</span>
+                  <input
+                    className="settings-select"
+                    type="text"
+                    value={remoteBaseUrlInput}
+                    onChange={(event) => setRemoteBaseUrlInput(event.target.value)}
+                    placeholder="http://localhost:4533"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">Username</span>
+                  <input
+                    className="settings-select"
+                    type="text"
+                    value={remoteUsernameInput}
+                    onChange={(event) => setRemoteUsernameInput(event.target.value)}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">
+                    Password
+                    {remoteEditingSource !== null ? ' (leave blank to keep existing)' : ''}
+                  </span>
+                  <input
+                    className="settings-select"
+                    type="password"
+                    value={remotePasswordInput}
+                    onChange={(event) => setRemotePasswordInput(event.target.value)}
+                  />
+                </label>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Enabled</span>
+                  <button
+                    className={`settings-toggle ${remoteEnabledInput ? 'active' : ''}`}
+                    onClick={() => setRemoteEnabledInput(!remoteEnabledInput)}
+                  >
+                    {remoteEnabledInput ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+              </div>
+              <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
+                <button className="settings-btn settings-btn-primary" onClick={() => void handleSaveRemoteSource()}>
+                  {remoteEditingSource === null ? 'Add Source' : 'Save Source'}
+                </button>
+                <button className="settings-btn" onClick={() => void handleTestRemoteEditor()}>
+                  Test
+                </button>
+                <button className="settings-btn" onClick={resetRemoteEditor}>
+                  {remoteEditingSource === null ? 'Clear' : 'Cancel Edit'}
+                </button>
+                <button
+                  className="settings-btn"
+                  onClick={handleSyncAllRemoteSources}
+                  disabled={isAnyRemoteSyncing || remoteSources.length === 0}
+                >
+                  {isAnyRemoteSyncing ? 'Syncing...' : 'Sync All Sources'}
+                </button>
+              </div>
+
+              {remoteSources.length > 0 ? (
+                <div className="settings-danger-list">
+                  {remoteSources.map((source) => {
+                    const status = remoteStatusBySourceKey.get(`${source.sourceType}:${source.id}`)
+                    const statusText = status
+                      ? `${status.status}${status.error ? ` (${status.error})` : ''}`
+                      : source.last_status
+                    const progress = status?.progress ?? null
+                    const progressCountText = progress && progress.total !== null
+                      ? ` (${progress.current ?? 0}/${progress.total})`
+                      : ''
+                    const progressDetailText = progress?.detail ? ` • ${progress.detail}` : ''
+                    const lastSyncText = status?.lastSyncAt ?? source.last_sync_at
+                    const checkedAtText = status?.lastCheckedAt ?? source.last_checked_at
+                    return (
+                      <div key={`${source.sourceType}:${source.id}`} className="settings-danger-item">
+                        <div className="settings-danger-item-copy">
+                          <div className="settings-inline-row">
+                            <p className="settings-danger-item-title">{source.name}</p>
+                            <span className="settings-chip settings-chip-mono">{REMOTE_PROVIDER_LABEL[source.sourceType]}</span>
+                          </div>
+                          <p className="settings-danger-item-description">{source.base_url} as {source.username}</p>
+                          <p className="settings-note">
+                            Status: {statusText}
+                            {checkedAtText ? ` • Checked ${new Date(checkedAtText).toLocaleString()}` : ''}
+                            {lastSyncText ? ` • Synced ${new Date(lastSyncText).toLocaleString()}` : ''}
+                          </p>
+                          {progress && (
+                            <p className="settings-note">
+                              Sync Activity: {progress.activity}{progressCountText}{progressDetailText}
+                            </p>
+                          )}
+                        </div>
+                        <div className="settings-inline-row">
+                          <button className="settings-btn" onClick={() => handleEditRemoteSource(source)}>
+                            Edit
+                          </button>
+                          <button className="settings-btn" onClick={() => handleToggleRemoteEnabled(source)}>
+                            {source.enabled === 1 ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            className="settings-btn"
+                            onClick={() => handleSyncRemoteSource(source)}
+                            disabled={isAnyRemoteSyncing || source.enabled !== 1}
+                          >
+                            Sync
+                          </button>
+                          <button className="settings-btn settings-btn-danger" onClick={() => setPendingRemoteDelete(source)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="settings-note">No remote sources configured.</p>
+              )}
+
+              {pendingRemoteDelete && (
+                <div className="settings-danger-item settings-danger-item-destructive">
+                  <div className="settings-danger-item-copy">
+                    <p className="settings-danger-item-title">
+                      Delete {REMOTE_PROVIDER_LABEL[pendingRemoteDelete.sourceType]} source {pendingRemoteDelete.name}?
+                    </p>
+                    <p className="settings-danger-item-description">
+                      Choose whether to keep synced tracks as unavailable placeholders or purge them completely.
+                    </p>
+                  </div>
+                  <div className="settings-inline-row">
+                    <button className="settings-btn" onClick={() => void handleDeleteRemoteSource(false)}>
+                      Keep Tracks Unavailable
+                    </button>
+                    <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteRemoteSource(true)}>
+                      Purge Tracks
+                    </button>
+                    <button className="settings-btn" onClick={() => setPendingRemoteDelete(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {remoteFeedback && <p className="settings-note settings-note-success">{remoteFeedback}</p>}
+              {remoteErrorMessages.map((message, index) => (
+                <p key={`${message}-${index}`} className="settings-note settings-note-error">{message}</p>
+              ))}
+              <p className="settings-note">
+                Passwords are encrypted with OS secure storage and never stored in track URLs.
+              </p>
+              <p className="settings-note">
+                Auto Detect tests both APIs and picks the first successful match.
+              </p>
+            </div>
           </section>
             )}
 
@@ -1588,193 +1771,9 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
-              <p>Optional platform integrations.</p>
+              <p>Optional platform integrations outside library sources.</p>
             </div>
             <div className="settings-integration-cards">
-              <div className="settings-integration-card">
-                <div className="settings-integration-card-head">
-                  <h4>Remote Music Servers</h4>
-                  <p>Connect Subsonic/Navidrome and Jellyfin sources from one setup flow.</p>
-                </div>
-                <div className="settings-grid">
-                  <label className="settings-field">
-                    <span className="settings-field-label">Server Type</span>
-                    <select
-                      className="settings-select"
-                      value={remoteServerTypeInput}
-                      onChange={(event) => handleRemoteServerTypeChange(event.target.value as RemoteServerTypeInput)}
-                      disabled={remoteEditingSource !== null}
-                    >
-                      <option value="auto">Auto Detect</option>
-                      <option value="subsonic">Subsonic / Navidrome</option>
-                      <option value="jellyfin">Jellyfin</option>
-                    </select>
-                  </label>
-                  <label className="settings-field">
-                    <span className="settings-field-label">Source Name</span>
-                    <input
-                      className="settings-select"
-                      type="text"
-                      value={remoteNameInput}
-                      onChange={(event) => setRemoteNameInput(event.target.value)}
-                      placeholder="My Remote Library"
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span className="settings-field-label">Server URL</span>
-                    <input
-                      className="settings-select"
-                      type="text"
-                      value={remoteBaseUrlInput}
-                      onChange={(event) => setRemoteBaseUrlInput(event.target.value)}
-                      placeholder="http://localhost:4533"
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span className="settings-field-label">Username</span>
-                    <input
-                      className="settings-select"
-                      type="text"
-                      value={remoteUsernameInput}
-                      onChange={(event) => setRemoteUsernameInput(event.target.value)}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span className="settings-field-label">
-                      Password
-                      {remoteEditingSource !== null ? ' (leave blank to keep existing)' : ''}
-                    </span>
-                    <input
-                      className="settings-select"
-                      type="password"
-                      value={remotePasswordInput}
-                      onChange={(event) => setRemotePasswordInput(event.target.value)}
-                    />
-                  </label>
-                  <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Enabled</span>
-                    <button
-                      className={`settings-toggle ${remoteEnabledInput ? 'active' : ''}`}
-                      onClick={() => setRemoteEnabledInput(!remoteEnabledInput)}
-                    >
-                      {remoteEnabledInput ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                </div>
-                <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
-                  <button className="settings-btn settings-btn-primary" onClick={() => void handleSaveRemoteSource()}>
-                    {remoteEditingSource === null ? 'Add Source' : 'Save Source'}
-                  </button>
-                  <button className="settings-btn" onClick={() => void handleTestRemoteEditor()}>
-                    Test
-                  </button>
-                  <button className="settings-btn" onClick={resetRemoteEditor}>
-                    {remoteEditingSource === null ? 'Clear' : 'Cancel Edit'}
-                  </button>
-                  <button
-                    className="settings-btn"
-                    onClick={handleSyncAllRemoteSources}
-                    disabled={isAnyRemoteSyncing || remoteSources.length === 0}
-                  >
-                    {isAnyRemoteSyncing ? 'Syncing...' : 'Sync All Sources'}
-                  </button>
-                </div>
-
-                {remoteSources.length > 0 ? (
-                  <div className="settings-danger-list">
-                    {remoteSources.map((source) => {
-                      const status = remoteStatusBySourceKey.get(`${source.sourceType}:${source.id}`)
-                      const statusText = status
-                        ? `${status.status}${status.error ? ` (${status.error})` : ''}`
-                        : source.last_status
-                      const progress = status?.progress ?? null
-                      const progressCountText = progress && progress.total !== null
-                        ? ` (${progress.current ?? 0}/${progress.total})`
-                        : ''
-                      const progressDetailText = progress?.detail ? ` • ${progress.detail}` : ''
-                      const lastSyncText = status?.lastSyncAt ?? source.last_sync_at
-                      const checkedAtText = status?.lastCheckedAt ?? source.last_checked_at
-                      return (
-                        <div key={`${source.sourceType}:${source.id}`} className="settings-danger-item">
-                          <div className="settings-danger-item-copy">
-                            <div className="settings-inline-row">
-                              <p className="settings-danger-item-title">{source.name}</p>
-                              <span className="settings-chip settings-chip-mono">{REMOTE_PROVIDER_LABEL[source.sourceType]}</span>
-                            </div>
-                            <p className="settings-danger-item-description">{source.base_url} as {source.username}</p>
-                            <p className="settings-note">
-                              Status: {statusText}
-                              {checkedAtText ? ` • Checked ${new Date(checkedAtText).toLocaleString()}` : ''}
-                              {lastSyncText ? ` • Synced ${new Date(lastSyncText).toLocaleString()}` : ''}
-                            </p>
-                            {progress && (
-                              <p className="settings-note">
-                                Sync Activity: {progress.activity}{progressCountText}{progressDetailText}
-                              </p>
-                            )}
-                          </div>
-                          <div className="settings-inline-row">
-                            <button className="settings-btn" onClick={() => handleEditRemoteSource(source)}>
-                              Edit
-                            </button>
-                            <button className="settings-btn" onClick={() => handleToggleRemoteEnabled(source)}>
-                              {source.enabled === 1 ? 'Disable' : 'Enable'}
-                            </button>
-                            <button
-                              className="settings-btn"
-                              onClick={() => handleSyncRemoteSource(source)}
-                              disabled={isAnyRemoteSyncing || source.enabled !== 1}
-                            >
-                              Sync
-                            </button>
-                            <button className="settings-btn settings-btn-danger" onClick={() => setPendingRemoteDelete(source)}>
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="settings-note">No remote sources configured.</p>
-                )}
-
-                {pendingRemoteDelete && (
-                  <div className="settings-danger-item settings-danger-item-destructive">
-                    <div className="settings-danger-item-copy">
-                      <p className="settings-danger-item-title">
-                        Delete {REMOTE_PROVIDER_LABEL[pendingRemoteDelete.sourceType]} source {pendingRemoteDelete.name}?
-                      </p>
-                      <p className="settings-danger-item-description">
-                        Choose whether to keep synced tracks as unavailable placeholders or purge them completely.
-                      </p>
-                    </div>
-                    <div className="settings-inline-row">
-                      <button className="settings-btn" onClick={() => void handleDeleteRemoteSource(false)}>
-                        Keep Tracks Unavailable
-                      </button>
-                      <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteRemoteSource(true)}>
-                        Purge Tracks
-                      </button>
-                      <button className="settings-btn" onClick={() => setPendingRemoteDelete(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {remoteFeedback && <p className="settings-note settings-note-success">{remoteFeedback}</p>}
-                {remoteErrorMessages.map((message, index) => (
-                  <p key={`${message}-${index}`} className="settings-note settings-note-error">{message}</p>
-                ))}
-                <p className="settings-note">
-                  Passwords are encrypted with OS secure storage and never stored in track URLs.
-                </p>
-                <p className="settings-note">
-                  Auto Detect tests both APIs and picks the first successful match.
-                </p>
-              </div>
-
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Last.fm</h4>

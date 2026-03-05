@@ -9958,6 +9958,10 @@ body::after {
   padding: 12px;
 }
 
+.settings-library-remote-card {
+  margin-top: 12px;
+}
+
 .settings-integration-card-head {
   display: flex;
   flex-direction: column;
