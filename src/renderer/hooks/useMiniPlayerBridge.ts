@@ -10,7 +10,11 @@ import type {
 } from '../../types/miniPlayer'
 
 const SNAPSHOT_THROTTLE_MS = 120
-const VISUALIZER_STREAM_INTERVAL_MS = 16
+const MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS = 8
+const MINI_SPECTRUM_STREAM_INTERVAL_MS = 12
+const MINI_MAX_CHUNKS_PER_TICK_OSCILLOSCOPE = 6
+const MINI_MAX_CHUNKS_PER_TICK_SPECTRUM = 8
+const MINI_MAX_FFT_SIZE = 2048
 const DEFAULT_MINI_WINDOW_STATE: MiniPlayerWindowState = {
   isOpen: false,
   alwaysOnTop: true,
@@ -170,13 +174,21 @@ export function useMiniPlayerBridge(): void {
       visualizerStreamTimerRef.current = null
     }
 
+    const isOscilloscopeMode = miniWindowState.visualizerMode === 'oscilloscope'
+    const streamIntervalMs = isOscilloscopeMode
+      ? MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS
+      : MINI_SPECTRUM_STREAM_INTERVAL_MS
+    const maxChunksPerTick = isOscilloscopeMode
+      ? MINI_MAX_CHUNKS_PER_TICK_OSCILLOSCOPE
+      : MINI_MAX_CHUNKS_PER_TICK_SPECTRUM
+
     const emitReset = () => {
       window.electronAPI.miniPlayer.publishVisualizerChunk({
         capturedAt: Date.now(),
         sampleRate: audioEngine.getSampleRate(),
         leftChunks: [],
         monoChunks: [],
-        fftSize,
+        fftSize: Math.min(fftSize, MINI_MAX_FFT_SIZE),
         pitchLock,
         oscilloscopeUnderfillEnabled,
         lineColor,
@@ -204,20 +216,23 @@ export function useMiniPlayerBridge(): void {
 
       const chunks = audioEngine.flushPendingMiniVisualizerChunks()
       if (chunks.length === 0) return
+      const chunksToPublish = chunks.length > maxChunksPerTick
+        ? chunks.slice(-maxChunksPerTick)
+        : chunks
 
       window.electronAPI.miniPlayer.publishVisualizerChunk({
         capturedAt: Date.now(),
         sampleRate: audioEngine.getSampleRate(),
-        leftChunks: chunks.map((chunk) => chunk.left),
-        monoChunks: chunks.map((chunk) => chunk.mono),
-        fftSize,
+        leftChunks: isOscilloscopeMode ? chunksToPublish.map((chunk) => chunk.left) : [],
+        monoChunks: isOscilloscopeMode ? [] : chunksToPublish.map((chunk) => chunk.mono),
+        fftSize: Math.min(fftSize, MINI_MAX_FFT_SIZE),
         pitchLock,
         oscilloscopeUnderfillEnabled,
         lineColor,
         reset: false
       })
       visualizerResetSentRef.current = false
-    }, VISUALIZER_STREAM_INTERVAL_MS)
+    }, streamIntervalMs)
 
     return () => {
       if (visualizerStreamTimerRef.current !== null) {

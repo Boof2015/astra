@@ -1071,6 +1071,7 @@ export default function SettingsView() {
 
             </div>
             <p className="settings-note">Visualizer line color follows the active theme accent.</p>
+            <p className="settings-note">For smoother mini-player visuals, use FFT 1024/2048, disable oscilloscope underfill, and avoid hero mode on lower-end GPUs.</p>
           </section>
             )}
 

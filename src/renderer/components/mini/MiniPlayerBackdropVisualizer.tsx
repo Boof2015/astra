@@ -40,6 +40,12 @@ const DEFAULT_BACKDROP_METRICS = {
   luminance: 0.24,
   saturation: 0.34
 }
+const MINI_MAX_PENDING_CHUNKS = 24
+const MINI_MAX_DPR = 1.5
+const MINI_COMPACT_SPECTRUM_POINT_CAP = 320
+const MINI_WIDE_SPECTRUM_POINT_CAP = 520
+const MINI_OSCILLOSCOPE_POINT_CAP = 1024
+const MINI_OSCILLOSCOPE_UNDERFILL_POINT_CAP = 640
 
 interface BackdropMetrics {
   luminance: number
@@ -261,6 +267,7 @@ export default function MiniPlayerBackdropVisualizer({
   const animationRef = useRef<number | null>(null)
   const canvasSizeRef = useRef({ width: 0, height: 0 })
   const modeRef = useRef(mode)
+  const layoutModeRef = useRef(layoutMode)
   const lineColorRef = useRef(lineColor)
   const idleRef = useRef(isIdle)
 
@@ -293,6 +300,10 @@ export default function MiniPlayerBackdropVisualizer({
       }
     }
   }, [mode])
+
+  useEffect(() => {
+    layoutModeRef.current = layoutMode
+  }, [layoutMode])
 
   useEffect(() => {
     lineColorRef.current = lineColor
@@ -354,7 +365,7 @@ export default function MiniPlayerBackdropVisualizer({
     const rect = container.getBoundingClientRect()
     const width = Math.max(1, Math.floor(rect.width))
     const height = Math.max(1, Math.floor(rect.height))
-    const dpr = window.devicePixelRatio || 1
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, MINI_MAX_DPR))
 
     const pixelWidth = Math.max(1, Math.floor(width * dpr))
     const pixelHeight = Math.max(1, Math.floor(height * dpr))
@@ -394,6 +405,7 @@ export default function MiniPlayerBackdropVisualizer({
       oscilloscopeUnderfillEnabledRef.current = typeof rawUnderfillEnabled === 'boolean' ? rawUnderfillEnabled : false
       fftSizeRef.current = Math.max(1024, chunk.fftSize)
       lineColorRef.current = chunk.lineColor
+      const activeMode = modeRef.current
 
       if (chunk.reset) {
         pendingLeftChunksRef.current = []
@@ -405,11 +417,27 @@ export default function MiniPlayerBackdropVisualizer({
         return
       }
 
-      if (chunk.leftChunks.length > 0) {
-        pendingLeftChunksRef.current.push(...chunk.leftChunks)
+      // Only keep the queue needed by the active render mode.
+      if (activeMode !== 'oscilloscope' && pendingLeftChunksRef.current.length > 0) {
+        pendingLeftChunksRef.current = []
       }
-      if (chunk.monoChunks.length > 0) {
+      if (activeMode !== 'spectrum' && pendingMonoChunksRef.current.length > 0) {
+        pendingMonoChunksRef.current = []
+      }
+
+      if (activeMode === 'oscilloscope' && chunk.leftChunks.length > 0) {
+        pendingLeftChunksRef.current.push(...chunk.leftChunks)
+        const overflow = pendingLeftChunksRef.current.length - MINI_MAX_PENDING_CHUNKS
+        if (overflow > 0) {
+          pendingLeftChunksRef.current = pendingLeftChunksRef.current.slice(-MINI_MAX_PENDING_CHUNKS)
+        }
+      }
+      if (activeMode === 'spectrum' && chunk.monoChunks.length > 0) {
         pendingMonoChunksRef.current.push(...chunk.monoChunks)
+        const overflow = pendingMonoChunksRef.current.length - MINI_MAX_PENDING_CHUNKS
+        if (overflow > 0) {
+          pendingMonoChunksRef.current = pendingMonoChunksRef.current.slice(-MINI_MAX_PENDING_CHUNKS)
+        }
       }
     })
 
@@ -478,11 +506,15 @@ export default function MiniPlayerBackdropVisualizer({
       const maxDb = SPECTRUM_MAX_DB + Math.max(minTiltOffset, maxTiltOffset)
       const dbRange = Math.max(0.0001, maxDb - minDb)
 
+      const isWideLayout = layoutModeRef.current === 'wide' || layoutModeRef.current === 'hero'
+      const maxPointCount = isWideLayout
+        ? MINI_WIDE_SPECTRUM_POINT_CAP
+        : MINI_COMPACT_SPECTRUM_POINT_CAP
+      const pointCount = Math.max(2, Math.min(Math.floor(width), maxPointCount))
       const points: Array<{ x: number; y: number }> = []
-      const pointCount = Math.max(2, Math.floor(width))
 
       for (let i = 0; i < pointCount; i++) {
-        const x = i
+        const x = pointCount > 1 ? (i / (pointCount - 1)) * width : 0
         const frequency = Math.max(
           AMBIENT_SPECTRUM_MIN_FREQ,
           frequencyAtX(x, width, AMBIENT_SPECTRUM_MIN_FREQ, maxDisplayFreq)
@@ -607,19 +639,32 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.lineTo(width, centerY)
       ctx.stroke()
 
-      const sliceWidth = width / samplesToShow
+      const totalSamples = Math.min(samplesToShow, renderData.length)
+      if (totalSamples < 2) return
+
+      const stride = Math.max(1, Math.ceil(totalSamples / MINI_OSCILLOSCOPE_POINT_CAP))
       const visualGain = idle ? 1.35 : 1.8
       const points: Array<{ x: number; y: number }> = []
-      for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
+      let lastSampledIndex = -1
+      for (let i = 0; i < totalSamples; i += stride) {
         const sample = renderData[i]
         const y = ((1 - sample * visualGain) / 2) * height
-        const x = i * sliceWidth
+        const x = totalSamples > 1 ? (i / (totalSamples - 1)) * width : 0
         points.push({ x, y })
+        lastSampledIndex = i
+      }
+
+      const lastIndex = totalSamples - 1
+      if (lastSampledIndex !== lastIndex) {
+        const sample = renderData[lastIndex]
+        const y = ((1 - sample * visualGain) / 2) * height
+        points.push({ x: width, y })
       }
 
       if (points.length < 2) return
 
-      if (underfillEnabled) {
+      const shouldRenderUnderfill = underfillEnabled && points.length <= MINI_OSCILLOSCOPE_UNDERFILL_POINT_CAP
+      if (shouldRenderUnderfill) {
         ctx.beginPath()
         ctx.moveTo(points[0].x, centerY)
         for (const point of points) {
@@ -722,20 +767,20 @@ export default function MiniPlayerBackdropVisualizer({
 
     const draw = () => {
       const { width, height } = canvasSizeRef.current
-      ctx.clearRect(0, 0, width, height)
-
       if (!isNativeAvailable() || width <= 0 || height <= 0) {
         animationRef.current = window.requestAnimationFrame(draw)
         return
       }
-
-      ensureNativeConfig()
 
       const currentMode = modeRef.current
       if (currentMode === 'off') {
         animationRef.current = window.requestAnimationFrame(draw)
         return
       }
+
+      ctx.clearRect(0, 0, width, height)
+
+      ensureNativeConfig()
 
       const visualizerColor = lineColorRef.current
       const accentColor = visualizerColor

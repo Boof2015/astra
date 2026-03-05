@@ -46,7 +46,7 @@
   height: 100%;
   object-fit: cover;
   transform: scale(1.08);
-  filter: blur(34px) saturate(1.28) brightness(0.92);
+  filter: blur(24px) saturate(1.28) brightness(0.92);
   opacity: 0.9;
 }
 
@@ -115,8 +115,8 @@
   padding: 0 8px 0 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .mini-player-drag {
@@ -498,7 +498,7 @@
 .mini-player-mode-wide .mini-player-backdrop-image,
 .mini-player-mode-hero .mini-player-backdrop-image {
   transform: scale(1.14);
-  filter: blur(46px) saturate(1.35) brightness(1.02);
+  filter: blur(30px) saturate(1.35) brightness(1.02);
   opacity: 0.94;
 }
 
