@@ -1,4 +1,4 @@
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 
 const SUBSONIC_API_VERSION = '1.16.1'
 const SUBSONIC_CLIENT_ID = 'astra'
@@ -201,7 +201,7 @@ function buildAuthQuery(
     throw new Error('Password is required.')
   }
 
-  const salt = Math.random().toString(36).slice(2, 12)
+  const salt = randomBytes(6).toString('hex')
   const token = createHash('md5').update(`${password}${salt}`).digest('hex')
 
   const query: Record<string, string> = {

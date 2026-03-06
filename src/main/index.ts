@@ -3128,17 +3128,53 @@ ipcMain.handle('dialog:openFile', async (_event, options: {
   return result.filePaths[0]
 })
 
-ipcMain.handle('fs:readTextFile', async (_event, filePath: string) => {
+const FS_READ_TEXT_ALLOWED_EXTENSIONS = new Set([
+  '.json', '.txt', '.lrc', '.csv', '.m3u', '.m3u8', '.xspf', '.wpl', '.asx'
+])
+const FS_READ_IMAGE_ALLOWED_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.avif'
+])
+const FS_WRITE_ALLOWED_EXTENSIONS = new Set(['.json', '.txt', '.lrc', '.csv'])
+const FS_WRITE_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
+
+ipcMain.handle('fs:readTextFile', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('Invalid file path.')
+  }
+  const ext = extname(filePath).toLowerCase()
+  if (!FS_READ_TEXT_ALLOWED_EXTENSIONS.has(ext)) {
+    throw new Error(`File type not permitted for reading: ${ext || '(none)'}`)
+  }
   return readFile(filePath, 'utf-8')
 })
 
-ipcMain.handle('fs:readDataUrl', async (_event, filePath: string) => {
+ipcMain.handle('fs:readDataUrl', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('Invalid file path.')
+  }
+  const ext = extname(filePath).toLowerCase()
+  if (!FS_READ_IMAGE_ALLOWED_EXTENSIONS.has(ext)) {
+    throw new Error(`File type not permitted for reading: ${ext || '(none)'}`)
+  }
   const data = await readFile(filePath)
   if (data.length === 0) return null
   return toDataUrl(detectArtworkMimeType(filePath.toLowerCase(), data), data)
 })
 
-ipcMain.handle('fs:writeTextFile', async (_event, filePath: string, content: string) => {
+ipcMain.handle('fs:writeTextFile', async (_event, filePath: unknown, content: unknown) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('Invalid file path.')
+  }
+  if (typeof content !== 'string') {
+    throw new Error('Invalid content.')
+  }
+  const ext = extname(filePath).toLowerCase()
+  if (!FS_WRITE_ALLOWED_EXTENSIONS.has(ext)) {
+    throw new Error(`File type not permitted for writing: ${ext || '(none)'}`)
+  }
+  if (Buffer.byteLength(content, 'utf-8') > FS_WRITE_MAX_BYTES) {
+    throw new Error('Content exceeds maximum allowed size.')
+  }
   await writeFile(filePath, content, 'utf-8')
   return true
 })
