@@ -1750,9 +1750,12 @@ button, .titlebar {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-align: center;
   line-height: 1.24;
-  word-break: break-word;
   color: rgba(255, 255, 255, 0.4);
   opacity: 0.38;
   filter: blur(1.08px);
@@ -1763,6 +1766,15 @@ button, .titlebar {
     filter 240ms ease,
     transform 240ms ease,
     text-shadow 240ms ease;
+}
+
+.fullscreen-lyrics-dock-line-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .fullscreen-lyrics-dock-line.is-near {

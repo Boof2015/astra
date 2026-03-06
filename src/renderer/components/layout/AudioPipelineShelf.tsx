@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useEQStore } from '../../stores/eqStore'
-import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 
@@ -190,8 +190,10 @@ export default function AudioPipelineShelf() {
     }
 
     // Output Device
-    const device = availableDevices.find((d) => d.deviceId === selectedDeviceId)
-    const deviceLabel = device ? device.label.replace(/\s*\(.*?\)\s*$/, '') : 'System Default'
+    const deviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+      defaultRouteFallbackLabel: 'System Default Output',
+      selectedFallbackLabel: 'Selected Output'
+    }).label
     const outSR = (contextSR / 1000).toFixed(1)
     result.push({ id: 'output', icon: OutputIcon, label: 'Output', detail: `${deviceLabel} @ ${outSR} kHz` })
 

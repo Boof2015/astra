@@ -3,7 +3,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
-import { useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 
 interface RemoteLoadProgress {
   path: string
@@ -357,9 +357,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const delayMs = Math.round(audioSettingsState.effectiveDelayMs)
     if (delayMs < OUTPUT_DELAY_NOTICE_THRESHOLD_MS) return
 
-    const selectedDeviceLabel = audioSettingsState.selectedDeviceId
-      ? audioSettingsState.availableDevices.find((device) => device.deviceId === audioSettingsState.selectedDeviceId)?.label
-      : null
+    const outputLabel = resolveOutputDeviceLabel(
+      audioSettingsState.selectedDeviceId,
+      audioSettingsState.availableDevices,
+      {
+        defaultRouteFallbackLabel: 'System Default Output',
+        selectedFallbackLabel: 'Selected Output'
+      }
+    ).label
 
     outputDelayNoticeId += 1
     set({
@@ -369,7 +374,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         title: track.title,
         artist: track.artist,
         delayMs,
-        outputLabel: selectedDeviceLabel ?? 'System Default Output'
+        outputLabel
       }
     })
   }

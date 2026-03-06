@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
 
 interface SpeakerChannel {
@@ -144,8 +144,10 @@ export default function ChannelRoutingPanel() {
   const downmixActive = hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveOutputChannels
   const hasManualRouting = Boolean(channelRoutingMap && channelRoutingMap.length > 0)
 
-  const selectedDeviceLabel = availableDevices.find((d) => d.deviceId === selectedDeviceId)?.label
-    ?? 'System Default Device'
+  const selectedDeviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+    defaultRouteFallbackLabel: 'System Default Device',
+    selectedFallbackLabel: 'Selected Device'
+  }).label
 
   const sourceOptions = useMemo(() => {
     if (!hasTrackChannels) return []

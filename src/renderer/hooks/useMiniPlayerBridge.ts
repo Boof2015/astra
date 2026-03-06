@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
-import { useAudioSettingsStore } from '../stores/audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
 import type {
@@ -252,9 +252,10 @@ export function useMiniPlayerBridge(): void {
   ])
 
   useEffect(() => {
-    const outputDeviceLabel = selectedDeviceId
-      ? availableDevices.find((device) => device.deviceId === selectedDeviceId)?.label ?? null
-      : null
+    const outputDeviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+      defaultRouteFallbackLabel: 'System Default Output',
+      selectedFallbackLabel: 'Selected Output'
+    }).label
 
     const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
     const snapshot: MiniPlayerSnapshot = {

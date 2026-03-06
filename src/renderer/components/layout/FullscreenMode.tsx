@@ -1,4 +1,4 @@
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -12,6 +12,8 @@ import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
 const FULLSCREEN_DOCK_CHROME_HEIGHT_PX = 58
+const ACTIVE_LYRIC_MIN_SCALE = 0.82
+const ACTIVE_LYRIC_FONT_SIZE_EPSILON_PX = 0.1
 
 interface LyricsDockLayout {
   lineHeightPx: number
@@ -241,6 +243,8 @@ export default function FullscreenMode() {
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
   const fullscreenTitleOuterRef = useRef<HTMLHeadingElement>(null)
   const fullscreenTitleInnerRef = useRef<HTMLSpanElement>(null)
+  const activeLyricLineRef = useRef<HTMLParagraphElement | null>(null)
+  const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -291,6 +295,7 @@ export default function FullscreenMode() {
   )
   const hasSyncedLyrics = syncedLines.length > 0
   const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
+  const activeSyncedLineText = syncedLines[effectiveSyncedLineIndex]?.text ?? ''
   const syncedLyricsTrackOffsetY = (
     lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndex
   ) * lyricsDockLayout.lineHeightPx
@@ -315,6 +320,58 @@ export default function FullscreenMode() {
 
     outer.style.removeProperty('--marquee-offset')
   }, [])
+
+  const setActiveLyricLineNode = useCallback((node: HTMLParagraphElement | null) => {
+    activeLyricLineRef.current = node
+  }, [])
+
+  const recalculateActiveLyricFontSize = useCallback(() => {
+    const node = activeLyricLineRef.current
+    if (!showLyricsDock || !hasSyncedLyrics || !node) {
+      setActiveLyricFontSizePx((previous) => (previous === null ? previous : null))
+      return
+    }
+
+    const previousInlineFontSize = node.style.fontSize
+    if (previousInlineFontSize.length > 0) {
+      node.style.fontSize = ''
+    }
+
+    const textNode = node.querySelector('.fullscreen-lyrics-dock-line-text') as HTMLSpanElement | null
+    const baseFontSizePx = Number.parseFloat(window.getComputedStyle(node).fontSize)
+    const availableWidthPx = textNode?.clientWidth ?? node.clientWidth
+    const contentWidthPx = textNode?.scrollWidth ?? node.scrollWidth
+
+    if (previousInlineFontSize.length > 0) {
+      node.style.fontSize = previousInlineFontSize
+    }
+
+    if (
+      !Number.isFinite(baseFontSizePx)
+      || baseFontSizePx <= 0
+      || availableWidthPx <= 0
+      || contentWidthPx <= availableWidthPx + 0.5
+    ) {
+      setActiveLyricFontSizePx((previous) => (previous === null ? previous : null))
+      return
+    }
+
+    const minFontSizePx = baseFontSizePx * ACTIVE_LYRIC_MIN_SCALE
+    const fitScale = availableWidthPx / contentWidthPx
+    const unclampedTargetPx = baseFontSizePx * fitScale
+    const clampedTargetPx = Math.max(minFontSizePx, Math.min(baseFontSizePx, unclampedTargetPx))
+    const roundedTargetPx = Math.round(clampedTargetPx * 100) / 100
+    const shouldClearOverride = roundedTargetPx >= baseFontSizePx - ACTIVE_LYRIC_FONT_SIZE_EPSILON_PX
+
+    setActiveLyricFontSizePx((previous) => {
+      const next = shouldClearOverride ? null : roundedTargetPx
+      if (previous === null && next === null) return previous
+      if (previous != null && next != null && Math.abs(previous - next) < ACTIVE_LYRIC_FONT_SIZE_EPSILON_PX) {
+        return previous
+      }
+      return next
+    })
+  }, [hasSyncedLyrics, showLyricsDock])
 
   const nextQueueIndex = useMemo(() => {
     if (queue.length === 0 || queueIndex < 0 || repeat === 'one') return -1
@@ -401,6 +458,38 @@ export default function FullscreenMode() {
     resizeObserver.observe(outer)
     return () => resizeObserver.disconnect()
   }, [checkFullscreenTitleOverflow])
+
+  useLayoutEffect(() => {
+    recalculateActiveLyricFontSize()
+  }, [
+    recalculateActiveLyricFontSize,
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    lyricsDockLayout.lineHeightPx,
+    lyricsDockLayout.visibleLines,
+    showLyricsDock
+  ])
+
+  useEffect(() => {
+    if (!showLyricsDock || !hasSyncedLyrics) return
+    const node = activeLyricLineRef.current
+    if (!node) return
+
+    const resizeObserver = new ResizeObserver(() => {
+      recalculateActiveLyricFontSize()
+    })
+    resizeObserver.observe(node)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    hasSyncedLyrics,
+    recalculateActiveLyricFontSize,
+    showLyricsDock
+  ])
 
   useEffect(() => {
     return () => {
@@ -837,9 +926,10 @@ export default function FullscreenMode() {
                   >
                     {syncedLines.map((line, index) => {
                       const distance = index - effectiveSyncedLineIndex
+                      const isActiveLine = distance === 0
                       const lineClassName = [
                         'fullscreen-lyrics-dock-line',
-                        distance === 0
+                        isActiveLine
                           ? 'is-active'
                           : Math.abs(distance) === 1
                             ? 'is-near'
@@ -849,8 +939,15 @@ export default function FullscreenMode() {
                       ].join(' ')
 
                       return (
-                        <p key={`${line.timestampMs}:${index}`} className={lineClassName}>
-                          {line.text}
+                        <p
+                          key={`${line.timestampMs}:${index}`}
+                          ref={isActiveLine ? setActiveLyricLineNode : undefined}
+                          className={lineClassName}
+                          style={isActiveLine && activeLyricFontSizePx != null
+                            ? { fontSize: `${activeLyricFontSizePx}px` }
+                            : undefined}
+                        >
+                          <span className="fullscreen-lyrics-dock-line-text">{line.text}</span>
                         </p>
                       )
                     })}

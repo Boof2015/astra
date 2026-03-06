@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import {
+  resolveOutputDeviceLabel,
   useAudioSettingsStore,
   type CalibrationInputDevice,
   type DelayCalibrationMethod,
@@ -75,9 +76,10 @@ export default function DelayCompensationPanel() {
   } = useAudioSettingsStore()
 
   const selectedOutputLabel = useMemo(() => {
-    if (!selectedDeviceId) return 'System Default Output'
-    return availableDevices.find((device) => device.deviceId === selectedDeviceId)?.label
-      ?? 'Selected Output'
+    return resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+      defaultRouteFallbackLabel: 'System Default Output',
+      selectedFallbackLabel: 'Selected Output'
+    }).label
   }, [availableDevices, selectedDeviceId])
 
   const activeProfileLabel = useMemo(() => {
@@ -136,9 +138,14 @@ export default function DelayCompensationPanel() {
     inputBaselinesByKey
   ])
   const referenceOutputLabel = useMemo(() => {
-    const referenceId = activeDelayProfile.differentialReferenceOutputDeviceId
-    if (!referenceId) return 'System Default Output'
-    return availableDevices.find((device) => device.deviceId === referenceId)?.label ?? 'Selected Reference Output'
+    return resolveOutputDeviceLabel(
+      activeDelayProfile.differentialReferenceOutputDeviceId,
+      availableDevices,
+      {
+        defaultRouteFallbackLabel: 'System Default Output',
+        selectedFallbackLabel: 'Selected Reference Output'
+      }
+    ).label
   }, [activeDelayProfile.differentialReferenceOutputDeviceId, availableDevices])
 
   const statusLine = delayCalibrationMessage

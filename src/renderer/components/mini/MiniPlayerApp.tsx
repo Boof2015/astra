@@ -24,6 +24,7 @@ const EMPTY_WINDOW_STATE: MiniPlayerWindowState = {
 }
 
 type MiniLayoutMode = 'tiny' | 'compact' | 'wide' | 'hero'
+const SYSTEM_DEFAULT_OUTPUT_SUFFIX = ' (System Default)'
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -62,6 +63,13 @@ function nextMiniVisualizerMode(current: MiniPlayerVisualizerMode): MiniPlayerVi
   if (currentIndex === -1) return 'off'
   const nextIndex = (currentIndex + 1) % MINI_VISUALIZER_MODE_ORDER.length
   return MINI_VISUALIZER_MODE_ORDER[nextIndex] ?? 'off'
+}
+
+function isSystemDefaultRouteLabel(label: string): boolean {
+  const normalized = label.trim()
+  return normalized.endsWith(SYSTEM_DEFAULT_OUTPUT_SUFFIX)
+    || normalized === 'System Default Output'
+    || normalized === 'System Default Device'
 }
 
 export default function MiniPlayerApp() {
@@ -159,7 +167,11 @@ export default function MiniPlayerApp() {
   const nextVisualizerMode = nextMiniVisualizerMode(visualizerMode)
   const visualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[visualizerMode]
   const nextVisualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[nextVisualizerMode]
-  const secondaryLabel = (snapshot.outputDeviceLabel?.trim() || track?.artist || 'No output selected')
+  const outputDeviceLabel = snapshot.outputDeviceLabel?.trim() ?? ''
+  const artistLabel = track?.artist?.trim() ?? ''
+  const secondaryLabel = isSystemDefaultRouteLabel(outputDeviceLabel)
+    ? (artistLabel || outputDeviceLabel || 'No output selected')
+    : (outputDeviceLabel || artistLabel || 'No output selected')
   const contextLine = hasTrack
     ? [track?.artist, track?.album].filter((value): value is string => Boolean(value && value.trim())).join(' • ')
     : ''

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 
 export default function AudioOutputSelect() {
   const { availableDevices, selectedDeviceId, refreshDevices, selectDevice } = useAudioSettingsStore()
@@ -30,7 +30,10 @@ export default function AudioOutputSelect() {
     setIsOpen(false)
   }
 
-  const currentLabel = availableDevices.find(d => d.deviceId === selectedDeviceId)?.label
+  const currentLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+    defaultRouteFallbackLabel: 'System Default Device',
+    selectedFallbackLabel: 'Selected Device'
+  }).label
 
   return (
     <div className="audio-output-select" ref={menuRef}>

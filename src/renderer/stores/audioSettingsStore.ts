@@ -126,6 +126,8 @@ const OUTPUT_ANCHOR_ROUNDTRIP_TOLERANCE_MS = 250
 const AUTO_OFFSET_DOWNWARD_OUTLIER_DELTA_MS = 220
 const AUTO_OFFSET_DOWNWARD_OUTLIER_MAX_CONFIDENCE = 0.5
 let mediaDeviceChangeListenerAttached = false
+const SYSTEM_DEFAULT_LABEL_SUFFIX = ' (System Default)'
+const DEFAULT_ALIAS_PREFIX_PATTERN = /^\s*default\s*-\s*/i
 
 function clampAppliedDelayMs(value: number): number {
   if (!Number.isFinite(value)) return 0
@@ -347,6 +349,68 @@ function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
   ))
 
   return physical?.deviceId ?? null
+}
+
+function sanitizeDefaultAliasLabel(label: string): string {
+  return label.replace(DEFAULT_ALIAS_PREFIX_PATTERN, '').trim()
+}
+
+function appendSystemDefaultSuffix(label: string): string {
+  const trimmed = label.trim()
+  if (!trimmed) return ''
+  if (trimmed.endsWith(SYSTEM_DEFAULT_LABEL_SUFFIX)) return trimmed
+  return `${trimmed}${SYSTEM_DEFAULT_LABEL_SUFFIX}`
+}
+
+export function resolveOutputDeviceLabel(
+  selectedDeviceId: string,
+  devices: AudioDevice[],
+  options: {
+    defaultRouteFallbackLabel?: string
+    selectedFallbackLabel?: string
+  } = {}
+): {
+  label: string
+  isSystemDefaultRoute: boolean
+} {
+  const defaultRouteFallbackLabel = options.defaultRouteFallbackLabel ?? 'System Default Output'
+  const selectedFallbackLabel = options.selectedFallbackLabel ?? 'Selected Output'
+  const normalizedSelection = selectedDeviceId.trim()
+  const isSystemDefaultRoute = normalizedSelection.length === 0 || normalizedSelection === 'default'
+
+  if (!isSystemDefaultRoute) {
+    const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
+    const selectedLabel = selectedDevice?.label.trim() ?? ''
+    return {
+      label: selectedLabel.length > 0 ? selectedLabel : selectedFallbackLabel,
+      isSystemDefaultRoute: false
+    }
+  }
+
+  const physicalDefaultId = resolvePhysicalDefaultDeviceId(devices)
+  const physicalDefaultLabel = physicalDefaultId
+    ? (devices.find((device) => device.deviceId === physicalDefaultId)?.label.trim() ?? '')
+    : ''
+  if (physicalDefaultLabel.length > 0) {
+    return {
+      label: appendSystemDefaultSuffix(physicalDefaultLabel),
+      isSystemDefaultRoute: true
+    }
+  }
+
+  const defaultAlias = devices.find((device) => device.isDefaultAlias) ?? null
+  const sanitizedAlias = defaultAlias ? sanitizeDefaultAliasLabel(defaultAlias.label) : ''
+  if (sanitizedAlias.length > 0) {
+    return {
+      label: appendSystemDefaultSuffix(sanitizedAlias),
+      isSystemDefaultRoute: true
+    }
+  }
+
+  return {
+    label: defaultRouteFallbackLabel,
+    isSystemDefaultRoute: true
+  }
 }
 
 function buildOutputGroupProfileKey(groupId: string): string {

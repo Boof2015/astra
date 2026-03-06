@@ -3,7 +3,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
-import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -197,10 +197,10 @@ export default function TransportBar() {
     currentCodec.includes('joc')
   )
   const outputDeviceLabel = (() => {
-    const normalizedDeviceId = selectedOutputDeviceId.trim()
-    if (normalizedDeviceId.length === 0) return 'System Default Output'
-    return availableOutputDevices.find((device) => device.deviceId === selectedOutputDeviceId)?.label
-      ?? 'Selected Output'
+    return resolveOutputDeviceLabel(selectedOutputDeviceId, availableOutputDevices, {
+      defaultRouteFallbackLabel: 'System Default Output',
+      selectedFallbackLabel: 'Selected Output'
+    }).label
   })()
   const normalizationReadout = (() => {
     const gainMode = audioEngine.getNormalizationMode()
