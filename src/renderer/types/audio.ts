@@ -24,6 +24,12 @@ export interface Track {
   isAtmosJoc?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
+  sourceType?: 'local' | 'subsonic' | 'jellyfin'
+  sourceId?: number
+  sourceTrackId?: string
+  sourcePath?: string
+  isAvailable?: boolean
+  availabilityReason?: string
 }
 
 // Playback state

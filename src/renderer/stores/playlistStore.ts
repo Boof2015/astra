@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
+import type { TrackSourceType } from '../../types/subsonic'
 
 export interface Playlist {
   id: number
@@ -49,6 +50,12 @@ interface DbTrack {
   channels: number | null
   bpm: number | null
   musical_key: string | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number

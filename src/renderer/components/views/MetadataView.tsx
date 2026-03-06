@@ -58,6 +58,7 @@ type TrackRecord = {
   disc_number: number | null
   format: string
   artwork_hash: string | null
+  source_type?: 'local' | 'subsonic' | 'jellyfin'
 }
 
 interface MetadataRowSelectionOptions {
@@ -346,6 +347,7 @@ export default function MetadataView() {
   const loadLibrary = useLibraryStore((state) => state.loadLibrary)
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [isTracksLoading, setIsTracksLoading] = useState(false)
+  const [excludedRemoteTrackCount, setExcludedRemoteTrackCount] = useState(0)
 
   const playlistsSelectedId = usePlaylistStore((state) => state.selectedPlaylistId)
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
@@ -401,7 +403,8 @@ export default function MetadataView() {
     setIsTracksLoading(true)
     try {
       const allTracks = await window.electronAPI.library.getTracks()
-      const nextTracks = allTracks as TrackRecord[]
+      const nextTracks = (allTracks as TrackRecord[]).filter((track) => (track.source_type ?? 'local') === 'local')
+      setExcludedRemoteTrackCount(Math.max(0, (allTracks as TrackRecord[]).length - nextTracks.length))
       setTracks(nextTracks)
       return nextTracks
     } finally {
@@ -1631,6 +1634,11 @@ export default function MetadataView() {
           )}
 
           {isTracksLoading && <div className="metadata-footnote">Refreshing library…</div>}
+          {excludedRemoteTrackCount > 0 && (
+            <div className="metadata-footnote">
+              {excludedRemoteTrackCount} remote track{excludedRemoteTrackCount === 1 ? '' : 's'} hidden. Remote metadata editing is not supported.
+            </div>
+          )}
           <div className="metadata-footnote">Default mode: {defaultSaveMode === 'file' ? 'Write file tags' : 'Virtual (DB override)'}</div>
         </div>
       </div>

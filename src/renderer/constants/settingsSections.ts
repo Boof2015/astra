@@ -7,7 +7,24 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'library',
     label: 'Library',
-    keywords: ['folders', 'rescan', 'scan', 'music', 'metadata', 'import', 'path', 'replaygain', 'normalization', 'loudness', 'gain']
+    keywords: [
+      'folders',
+      'rescan',
+      'scan',
+      'music',
+      'metadata',
+      'import',
+      'path',
+      'replaygain',
+      'normalization',
+      'loudness',
+      'gain',
+      'subsonic',
+      'navidrome',
+      'jellyfin',
+      'remote source',
+      'remote server'
+    ]
   },
   {
     id: 'analyzer',
@@ -27,7 +44,21 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'integrations',
     label: 'Integrations',
-    keywords: ['discord', 'local api', 'api key', 'port', 'controls', 'remote', 'webhook', 'last.fm', 'lastfm', 'scrobble', 'scrobbling', 'lyrics', 'lyric', 'lrclib']
+    keywords: [
+      'discord',
+      'local api',
+      'api key',
+      'port',
+      'controls',
+      'webhook',
+      'last.fm',
+      'lastfm',
+      'scrobble',
+      'scrobbling',
+      'lyrics',
+      'lyric',
+      'lrclib'
+    ]
   },
   {
     id: 'info',

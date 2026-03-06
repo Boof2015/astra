@@ -18,6 +18,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
   SLEEP_TIMER_MIN_MINUTES,
@@ -480,7 +481,6 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
-
   useEffect(() => {
     let isMounted = true
 
@@ -1011,6 +1011,7 @@ export default function SettingsView() {
                 Normalization is disabled. ReplayGain can stay configured, but playback gain is bypassed until normalization is re-enabled.
               </p>
             )}
+            <RemoteServersPanel />
           </section>
             )}
 
@@ -1166,7 +1167,7 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
-              <p>Optional platform integrations.</p>
+              <p>Optional platform integrations outside library sources.</p>
             </div>
             <div className="settings-integration-cards">
               <div className="settings-integration-card">

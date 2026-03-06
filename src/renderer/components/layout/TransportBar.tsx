@@ -35,6 +35,7 @@ export default function TransportBar() {
     toggleShuffle,
     toggleRepeat,
     waveformData,
+    remoteLoadProgress,
   } = usePlayerStore()
 
   const {
@@ -155,6 +156,26 @@ export default function TransportBar() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
+  const activeRemoteLoadProgress = isLoadingTrack
+    && currentTrack
+    && remoteLoadProgress
+    && remoteLoadProgress.path === currentTrack.path
+    ? remoteLoadProgress
+    : null
+  const loadingPercent = typeof activeRemoteLoadProgress?.percent === 'number'
+    ? Math.max(0, Math.min(1, activeRemoteLoadProgress.percent))
+    : null
+  const loadingLabel = (() => {
+    if (!isLoadingTrack || !currentTrack) return null
+    if (!currentTrack.sourceType || currentTrack.sourceType === 'local') return null
+    if (loadingPercent !== null) {
+      return `Buffering ${Math.round(loadingPercent * 100)}% • ${activeRemoteLoadProgress?.chunkCount ?? 0} chunks`
+    }
+    if ((activeRemoteLoadProgress?.chunkCount ?? 0) > 0) {
+      return `Buffering ${activeRemoteLoadProgress!.chunkCount} chunks`
+    }
+    return 'Buffering remote track...'
+  })()
   const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
   const compensatedTime = duration > 0
     ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
@@ -419,6 +440,20 @@ export default function TransportBar() {
               void seek(rawSeekTime)
             }}
           />
+          {loadingLabel && (
+            <div className="transport-loading-hint" role="status" aria-live="polite">
+              <span className="transport-loading-hint-label">{loadingLabel}</span>
+              <span
+                className={`transport-loading-hint-bar ${loadingPercent === null ? 'indeterminate' : ''}`}
+                aria-hidden="true"
+              >
+                <span
+                  className="transport-loading-hint-fill"
+                  style={loadingPercent === null ? undefined : { width: `${Math.round(loadingPercent * 100)}%` }}
+                />
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Volume */}

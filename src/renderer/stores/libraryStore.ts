@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { TrackSourceType } from '../../types/subsonic'
 
 // Types matching preload
 export interface DbTrack {
@@ -22,6 +23,12 @@ export interface DbTrack {
   channels: number | null
   bpm: number | null
   musical_key: string | null
+  source_type: TrackSourceType
+  source_id: number | null
+  source_track_id: string | null
+  source_path: string | null
+  is_available: number
+  availability_reason: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number
@@ -311,6 +318,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Load entire library
   loadLibrary: async () => {
     set({ isLoading: true })
+    const currentSelection = {
+      album: get().selectedAlbum,
+      artist: get().selectedArtist
+    }
     await Promise.all([
       get().loadTracks(),
       get().loadTrackCount(),
@@ -320,6 +331,31 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       get().loadFavorites(),
       get().loadRecentlyPlayed()
     ])
+
+    if (currentSelection.album) {
+      const albumSelection = currentSelection.album
+      const tracks = await window.electronAPI.library.getTracksByAlbum(
+        albumSelection.album,
+        albumSelection.artist,
+        albumSelection.identity_key
+      )
+      set((state) => {
+        const activeAlbum = state.selectedAlbum
+        if (!activeAlbum) return {}
+        if (activeAlbum.identity_key !== albumSelection.identity_key) return {}
+        if (activeAlbum.album !== albumSelection.album) return {}
+        if (activeAlbum.artist !== albumSelection.artist) return {}
+        return { tracks }
+      })
+    } else if (currentSelection.artist) {
+      const artistSelection = currentSelection.artist
+      const tracks = await window.electronAPI.library.getTracksByArtist(artistSelection)
+      set((state) => {
+        if (state.selectedArtist !== artistSelection) return {}
+        return { tracks }
+      })
+    }
+
     set({ isLoading: false })
   },
 

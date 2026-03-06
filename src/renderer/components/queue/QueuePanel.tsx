@@ -39,6 +39,9 @@ type QueueVirtualRow = QueueSectionRow | QueueTrackRow
 interface QueueRowSharedProps {
   rows: QueueVirtualRow[]
   dragOverIndex: number | null
+  isCurrentLoading: boolean
+  currentLoadingPercent: number | null
+  currentLoadingChunkCount: number
   formatDuration: (seconds: number) => string
   onDragStart: (event: DragEvent<HTMLDivElement>, index: number) => void
   onDragOver: (event: DragEvent<HTMLDivElement>, index: number) => void
@@ -51,6 +54,12 @@ interface QueueRowSharedProps {
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
 const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
 const QUEUE_LIST_OVERSCAN_COUNT = 8
+
+function isUnavailableQueueTrack(track: Track): boolean {
+  return track.sourceType !== undefined
+    && track.sourceType !== 'local'
+    && track.isAvailable === false
+}
 
 function parseCssPixelValue(value: string, fallback: number): number {
   const parsed = Number.parseFloat(value.trim())
@@ -85,6 +94,9 @@ function QueueRowRenderer({
   style,
   rows,
   dragOverIndex,
+  isCurrentLoading,
+  currentLoadingPercent,
+  currentLoadingChunkCount,
   formatDuration,
   onDragStart,
   onDragOver,
@@ -108,14 +120,27 @@ function QueueRowRenderer({
   }
 
   const isDragOver = row.dragIndex !== null && dragOverIndex === row.dragIndex
-  const canPlay = row.actualQueueIndex !== null
+  const isUnavailable = isUnavailableQueueTrack(row.track)
+  const canPlay = row.actualQueueIndex !== null && !isUnavailable
+  const isLoadingRow = row.variant === 'current'
+    && isCurrentLoading
+    && row.track.sourceType !== undefined
+    && row.track.sourceType !== 'local'
+  const sourceLabel = row.track.sourceType === 'jellyfin'
+    ? 'Jellyfin'
+    : row.track.sourceType === 'subsonic'
+      ? 'Subsonic'
+      : null
+  const loadingPercentLabel = typeof currentLoadingPercent === 'number' && Number.isFinite(currentLoadingPercent)
+    ? `${Math.round(Math.max(0, Math.min(1, currentLoadingPercent)) * 100)}%`
+    : null
 
   return (
     <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
       <div
         className={`queue-item ${row.variant === 'current' ? 'queue-item-current' : ''} ${
           row.variant === 'previous' ? 'queue-item-previous' : ''
-        } ${isDragOver ? 'queue-item-drag-over' : ''}`}
+        } ${isDragOver ? 'queue-item-drag-over' : ''} ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
         draggable={row.draggable}
         onDragStart={row.draggable && row.dragIndex !== null ? (event) => onDragStart(event, row.dragIndex!) : undefined}
         onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
@@ -131,8 +156,41 @@ function QueueRowRenderer({
           </div>
         )}
         <div className="queue-item-info">
-          <div className="queue-item-title">{row.track.title}</div>
+          <div className="queue-item-title">
+            {isLoadingRow && (
+              <span className="queue-item-loading-icon" title="Buffering track">
+                <span className="loading-spinner-small queue-item-loading-spinner" />
+              </span>
+            )}
+            {sourceLabel && (
+              <span className="queue-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
+                {row.track.sourceType === 'jellyfin' ? (
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                    <path d="M8.5 8h7M8.5 12h7M8.5 16h4" />
+                  </svg>
+                ) : (
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 17h2a4 4 0 0 1 4 4" />
+                    <path d="M3 11h4a8 8 0 0 1 8 8" />
+                    <circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                  </svg>
+                )}
+                <span>{sourceLabel}</span>
+              </span>
+            )}
+            {row.track.title}
+          </div>
           <div className="queue-item-artist">{row.track.artist}</div>
+          {isLoadingRow && (
+            <div className="queue-item-loading-status">
+              {loadingPercentLabel
+                ? `Buffering ${loadingPercentLabel}`
+                : currentLoadingChunkCount > 0
+                  ? `Buffering ${currentLoadingChunkCount} chunks`
+                  : 'Buffering...'}
+            </div>
+          )}
         </div>
         <div className="queue-item-duration">
           {formatDuration(row.track.duration)}
@@ -161,6 +219,8 @@ export default function QueuePanel() {
   const queue = usePlayerStore((state) => state.queue)
   const queueIndex = usePlayerStore((state) => state.queueIndex)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
+  const playbackState = usePlayerStore((state) => state.playbackState)
+  const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
   const shuffle = usePlayerStore((state) => state.shuffle)
   const shuffledIndices = usePlayerStore((state) => state.shuffledIndices)
   const shufflePosition = usePlayerStore((state) => state.shufflePosition)
@@ -375,9 +435,20 @@ export default function QueuePanel() {
     return row.kind === 'section' ? queueSectionRowHeight : queueItemRowHeight
   }, [rows, queueItemRowHeight, queueSectionRowHeight])
 
+  const isCurrentLoading = playbackState === 'loading'
+  const currentLoadingProgress = isCurrentLoading
+    && currentTrack
+    && remoteLoadProgress
+    && remoteLoadProgress.path === currentTrack.path
+    ? remoteLoadProgress
+    : null
+
   const rowProps = useMemo<QueueRowSharedProps>(() => ({
     rows,
     dragOverIndex,
+    isCurrentLoading,
+    currentLoadingPercent: currentLoadingProgress?.percent ?? null,
+    currentLoadingChunkCount: currentLoadingProgress?.chunkCount ?? 0,
     formatDuration,
     onDragStart: handleDragStart,
     onDragOver: handleDragOver,
@@ -388,6 +459,8 @@ export default function QueuePanel() {
   }), [
     rows,
     dragOverIndex,
+    isCurrentLoading,
+    currentLoadingProgress,
     formatDuration,
     handleDragStart,
     handleDragOver,
