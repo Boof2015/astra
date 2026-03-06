@@ -9962,6 +9962,506 @@ body::after {
   margin-top: 12px;
 }
 
+/* ============================================
+   Remote Servers Panel
+   ============================================ */
+
+.remote-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.remote-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Source cards */
+
+.remote-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remote-source-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remote-source-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.remote-source-card-header-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.94);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.remote-source-card-meta {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remote-source-card-status {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.remote-source-card-status-error {
+  color: #fca5a5;
+}
+
+.remote-source-card-progress {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+  color: #fde68a;
+}
+
+.remote-source-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  position: relative;
+}
+
+/* Status dot */
+
+.remote-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.remote-status-dot-ok {
+  background: #86efac;
+  box-shadow: 0 0 6px rgba(134, 239, 172, 0.4);
+}
+
+.remote-status-dot-error {
+  background: #fca5a5;
+  box-shadow: 0 0 6px rgba(252, 165, 165, 0.4);
+}
+
+.remote-status-dot-syncing {
+  background: #fde68a;
+  box-shadow: 0 0 6px rgba(253, 230, 138, 0.4);
+  animation: remote-pulse 1.5s ease-in-out infinite;
+}
+
+.remote-status-dot-disabled {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes remote-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Overflow menu */
+
+.remote-overflow-wrap {
+  position: relative;
+}
+
+.remote-overflow-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 2px;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.remote-overflow-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.remote-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 140px;
+  background: rgba(20, 22, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.remote-overflow-menu-item {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background var(--transition-fast);
+}
+
+.remote-overflow-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.remote-overflow-menu-item-danger {
+  color: #fca5a5;
+}
+
+.remote-overflow-menu-item-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+/* Delete confirmation inline */
+
+.remote-delete-confirm {
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 10px;
+  background: rgba(88, 20, 30, 0.3);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remote-delete-confirm-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fee2e2;
+}
+
+.remote-delete-confirm-desc {
+  font-size: 11px;
+  color: rgba(254, 226, 226, 0.76);
+}
+
+.remote-delete-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Empty state */
+
+.remote-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 24px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+}
+
+.remote-empty-state-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.remote-empty-state-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  max-width: 300px;
+  line-height: 1.45;
+}
+
+/* Wizard */
+
+.remote-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.remote-wizard-back {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color var(--transition-fast);
+  align-self: flex-start;
+}
+
+.remote-wizard-back:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.remote-wizard-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.remote-wizard-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.94);
+  margin: 0;
+}
+
+.remote-wizard-step-label {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Step indicator */
+
+.remote-wizard-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.remote-wizard-step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: default;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+
+.remote-wizard-step-indicator.active {
+  color: rgba(var(--accent-rgb), 1);
+  font-weight: 600;
+}
+
+.remote-wizard-step-indicator.completed {
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+}
+
+.remote-wizard-step-indicator.completed:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.remote-wizard-step-number {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  flex-shrink: 0;
+}
+
+.remote-wizard-step-indicator.active .remote-wizard-step-number {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.15);
+  color: rgba(var(--accent-rgb), 1);
+}
+
+.remote-wizard-step-indicator.completed .remote-wizard-step-number {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.remote-wizard-step-connector {
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 0 8px;
+  min-width: 16px;
+}
+
+.remote-wizard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.remote-wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.remote-wizard-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Type selection cards */
+
+.remote-type-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remote-type-option {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.remote-type-option:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.remote-type-option.selected {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.remote-type-option.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.remote-type-option-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.remote-type-option.selected .remote-type-option-title {
+  color: rgba(var(--accent-rgb), 1);
+}
+
+.remote-type-option-desc {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Type fallback (shown when auto-detect fails) */
+
+.remote-type-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 10px 12px;
+}
+
+.remote-type-fallback-row {
+  display: flex;
+  gap: 6px;
+}
+
+.remote-type-fallback-row .remote-type-option {
+  flex: 1;
+  padding: 8px 10px;
+}
+
+/* Test connection status */
+
+.remote-test-status {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.remote-test-status-success {
+  color: #86efac;
+}
+
+.remote-test-status-error {
+  color: #fca5a5;
+}
+
+.remote-test-status-testing {
+  color: #fde68a;
+}
+
+/* Summary (step 2) */
+
+.remote-summary {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remote-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.remote-summary-label {
+  color: rgba(255, 255, 255, 0.45);
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.remote-summary-value {
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .settings-integration-card-head {
   display: flex;
   flex-direction: column;
