@@ -23,9 +23,9 @@ const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 function loadArtistBrowseModeSetting(): ArtistBrowseMode {
   try {
     const stored = localStorage.getItem(ARTIST_BROWSE_MODE_STORAGE_KEY)
-    return stored === 'canonical' ? 'canonical' : 'strict'
+    return stored === 'strict' ? 'strict' : 'canonical'
   } catch {
-    return 'strict'
+    return 'canonical'
   }
 }
 
@@ -258,6 +258,19 @@ export default function LibraryView() {
     }
     return 'library-root'
   }, [selectedAlbum, selectedArtist])
+  const sourceFilterOptions = useMemo(() => {
+    return [
+      ...subsonicSources.map((source) => ({
+        key: `subsonic:${source.id}`,
+        label: source.name
+      })),
+      ...jellyfinSources.map((source) => ({
+        key: `jellyfin:${source.id}`,
+        label: source.name
+      }))
+    ]
+  }, [jellyfinSources, subsonicSources])
+  const shouldShowSourceFilters = sourceFilterOptions.length > 0
 
   useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
@@ -309,6 +322,11 @@ export default function LibraryView() {
       return next.size === current.size ? current : next
     })
   }, [jellyfinSources, subsonicSources])
+
+  useEffect(() => {
+    if (shouldShowSourceFilters) return
+    setSelectedSourceFilters((current) => (current.size === 0 ? current : new Set()))
+  }, [shouldShowSourceFilters])
 
   useEffect(() => {
     if (!isArtistRootView || artistBrowseMode !== 'strict') return
@@ -435,7 +453,7 @@ export default function LibraryView() {
   }, [artistBrowseMode, selectArtist])
 
   const sourceFilteredTracks = useMemo(() => {
-    if (selectedSourceFilters.size === 0) return tracks
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return tracks
 
     return tracks.filter((track) => {
       if (track.source_type === 'local') {
@@ -451,7 +469,7 @@ export default function LibraryView() {
       }
       return false
     })
-  }, [selectedSourceFilters, tracks])
+  }, [selectedSourceFilters, shouldShowSourceFilters, tracks])
 
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...sourceFilteredTracks]
@@ -543,9 +561,9 @@ export default function LibraryView() {
   }, [sourceFilteredTracks])
 
   const sourceFilteredAlbums = useMemo(() => {
-    if (selectedSourceFilters.size === 0) return albums
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return albums
     return albums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albums, selectedSourceFilters.size, sourceFilteredAlbumIdentityKeys])
+  }, [albums, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
     const visibleAlbums = !hasSearchQuery
@@ -575,7 +593,7 @@ export default function LibraryView() {
   }, [albumSortMode, hasSearchQuery, normalizedQuery, sourceFilteredAlbums])
 
   const sourceFilteredArtistKeys = useMemo(() => {
-    if (selectedSourceFilters.size === 0) return null
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
       const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
@@ -585,7 +603,7 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, sourceFilteredTracks])
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleArtists = useMemo(() => {
     const rawVisibleArtists = artistBrowseMode === 'strict' ? strictArtists : artists
@@ -710,18 +728,6 @@ export default function LibraryView() {
       : viewMode === 'folders'
           ? 'Search folders & tracks...'
           : 'Search tracks...'
-  const sourceFilterOptions = useMemo(() => {
-    return [
-      ...subsonicSources.map((source) => ({
-        key: `subsonic:${source.id}`,
-        label: source.name
-      })),
-      ...jellyfinSources.map((source) => ({
-        key: `jellyfin:${source.id}`,
-        label: source.name
-      }))
-    ]
-  }, [jellyfinSources, subsonicSources])
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {
@@ -1055,32 +1061,34 @@ export default function LibraryView() {
           <span className="track-count">
             {itemCount} {itemLabel}
           </span>
-          <div className="library-source-filters" role="group" aria-label="Source filters">
-            <button
-              type="button"
-              className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
-              onClick={handleResetSourceFilters}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
-              onClick={() => handleToggleSourceFilter('local')}
-            >
-              Local
-            </button>
-            {sourceFilterOptions.map((source) => (
+          {shouldShowSourceFilters && (
+            <div className="library-source-filters" role="group" aria-label="Source filters">
               <button
-                key={source.key}
                 type="button"
-                className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-                onClick={() => handleToggleSourceFilter(source.key)}
+                className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
+                onClick={handleResetSourceFilters}
               >
-                {source.label}
+                All
               </button>
-            ))}
-          </div>
+              <button
+                type="button"
+                className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
+                onClick={() => handleToggleSourceFilter('local')}
+              >
+                Local
+              </button>
+              {sourceFilterOptions.map((source) => (
+                <button
+                  key={source.key}
+                  type="button"
+                  className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
+                  onClick={() => handleToggleSourceFilter(source.key)}
+                >
+                  {source.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="library-header-right">
           {isAlbumRootView && (
