@@ -190,8 +190,10 @@ bool resolveOutputDevice(
     }
 
     if (requestedDeviceId.empty()) {
-        *resolvedDevice = devices.front();
-        return true;
+        if (error != nullptr) {
+            *error = "Select a direct ALSA hardware output device for bit-perfect playback.";
+        }
+        return false;
     }
 
     for (const OutputDeviceInfo& device : devices) {

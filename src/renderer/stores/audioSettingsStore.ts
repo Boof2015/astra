@@ -106,6 +106,7 @@ const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 export const DEFAULT_NORMALIZATION_TARGET_LUFS = audioEngine.targetLufs
 export const BIT_PERFECT_DSP_DISABLED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
+const BIT_PERFECT_LINUX_DEVICE_SELECTION_MESSAGE = 'Bit-perfect mode on Linux requires selecting a direct ALSA hardware output device.'
 
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
@@ -443,9 +444,46 @@ export function resolveOutputDeviceLabel(
     }
   }
 
+  if (devices.length > 0) {
+    return {
+      label: selectedFallbackLabel,
+      isSystemDefaultRoute: false
+    }
+  }
+
   return {
     label: defaultRouteFallbackLabel,
     isSystemDefaultRoute: true
+  }
+}
+
+function resolveInitialNativeOutputSelection(
+  capabilities: NativeAudioCapabilities,
+  devices: AudioDevice[]
+): {
+  deviceId: string
+  statusMessage: string | null
+} {
+  if (capabilities.activeBackend !== 'alsa-hw') {
+    return {
+      deviceId: '',
+      statusMessage: null
+    }
+  }
+
+  const physicalDevices = devices.filter((device) => !device.isDefaultAlias)
+  if (physicalDevices.length === 1) {
+    return {
+      deviceId: physicalDevices[0].deviceId,
+      statusMessage: null
+    }
+  }
+
+  return {
+    deviceId: '',
+    statusMessage: physicalDevices.length > 0
+      ? BIT_PERFECT_LINUX_DEVICE_SELECTION_MESSAGE
+      : null
   }
 }
 
@@ -699,6 +737,10 @@ function buildNativeOutputDevices(capabilities: NativeAudioCapabilities): AudioD
     groupId: device.deviceId,
     isDefaultAlias: false
   }))
+
+  if (capabilities.activeBackend === 'alsa-hw') {
+    return mappedDevices
+  }
 
   const defaultDevice = capabilities.devices.find((device) => device.isDefault) ?? null
   if (!defaultDevice) {
@@ -993,11 +1035,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         ? true
         : availableDevices.some((device) => device.deviceId === selectedOutputId)
 
-      if (selectedExists) {
+      if (selectedExists && selectedOutputId.length > 0) {
         await get().selectDevice(selectedOutputId)
+      } else if (selectedExists) {
+        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
       } else {
         localStorage.removeItem(selectedStorageKey)
-        await get().selectDevice('')
+        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
       }
 
       if (fallbackMode !== normalizedMode && result.message) {
@@ -1688,7 +1740,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           set({ selectedDeviceId: '' })
         }
       } else {
-        await get().selectDevice('')
+        const initialSelection = resolveInitialNativeOutputSelection(nativeAudioCapabilities, get().availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
       }
 
       const savedCalibrationInputDeviceId = localStorage.getItem(CALIBRATION_INPUT_STORAGE_KEY)
