@@ -3036,8 +3036,8 @@ export class AudioEngine {
 
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)
-    this.emit('bufferReady', this.audioBuffer)
     this.emit('gaplessTransition')
+    this.emit('bufferReady', this.audioBuffer)
   }
 
   // Clear pre-buffered next track
