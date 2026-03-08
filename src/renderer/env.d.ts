@@ -42,10 +42,35 @@ import type {
     SubsonicSourceUpdateInput,
     SubsonicStatusSnapshot
 } from '../types/subsonic'
+import type {
+    NativeAudioCapabilities,
+    NativeAudioEvent,
+    NativeAudioPlaybackSnapshot,
+    NativeAudioTrackLoadResult,
+    NativeAudioTrackMetadata,
+    NativeAudioVectorscopeChunk
+} from '../types/nativeAudio'
 
 declare global {
     interface Window {
         visualizerAPI: VisualizerDSP | null
+        nativeAudioAPI: {
+            initialize: () => Promise<NativeAudioCapabilities>
+            getCapabilities: () => Promise<NativeAudioCapabilities>
+            setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+            loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            play: () => Promise<NativeAudioPlaybackSnapshot>
+            pause: () => Promise<NativeAudioPlaybackSnapshot>
+            stop: () => Promise<NativeAudioPlaybackSnapshot>
+            seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+            clearNextTrack: () => Promise<void>
+            getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+            flushOscilloscopeChunks: () => Float32Array[]
+            flushSpectrumChunks: () => Float32Array[]
+            flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
+            onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
+        }
         electronAPI: {
             minimize: () => void
             maximize: () => void

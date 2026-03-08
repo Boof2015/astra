@@ -109,6 +109,7 @@ const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
+const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
 
 function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   if (!track) return false
@@ -230,6 +231,30 @@ function getReplayGainCandidateDb(
   }
 
   return trackGainDb ?? albumGainDb
+}
+
+function shouldUseBitPerfectPath(track: Track | null | undefined): boolean {
+  if (!track) return false
+  const sourceType = track.sourceType ?? 'local'
+  if (sourceType !== 'local') return false
+  return useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect'
+}
+
+async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
+  const sourceType = track.sourceType ?? 'local'
+  if (sourceType === 'local') {
+    return
+  }
+
+  const audioSettings = useAudioSettingsStore.getState()
+  if (audioSettings.playbackOutputMode !== 'bitperfect') {
+    return
+  }
+
+  await audioSettings.setPlaybackOutputMode('standard')
+  useAudioSettingsStore.setState({
+    playbackModeStatusMessage: BIT_PERFECT_REMOTE_FALLBACK_MESSAGE
+  })
 }
 
 export const usePlayerStore = create<PlayerStore>((set, get) => {
@@ -472,9 +497,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       try {
+        await ensureCompatiblePlaybackMode(track)
         let usedFfmpegFallback = false
-        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         const decodeStart = performance.now()
+        if (shouldUseBitPerfectPath(track)) {
+          const result = await audioEngine.loadTrackFromPath(track)
+          const decodeMs = Math.round(performance.now() - decodeStart)
+          const resolvedTrack: Track = {
+            ...track,
+            duration: result.duration > 0 ? result.duration : track.duration,
+            channels: result.channels ?? track.channels
+          }
+          set({
+            duration: result.duration > 0 ? result.duration : track.duration,
+            currentTrack: resolvedTrack,
+            remoteLoadProgress: null,
+            currentTime: 0
+          })
+          hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+          pendingManualLoadCueTrack = resolvedTrack
+          clearQueueSourceIfMismatched(track.path)
+          get()._preBufferNextTrack()
+          logSlowPath('loadTrack', loadStart, {
+            trackPath: track.path,
+            usedNativeBitPerfect: true,
+            decodeMs
+          })
+          return true
+        }
+
+        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         try {
           await audioEngine.loadAudioData(audioData, { replayGainDb })
         } catch (primaryDecodeError) {
@@ -960,6 +1012,34 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       try {
+        await ensureCompatiblePlaybackMode(track)
+        if (shouldUseBitPerfectPath(track)) {
+          const loadResult = await audioEngine.loadTrackFromPath(track)
+          const resolvedTrack: Track = {
+            ...track,
+            duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
+            channels: loadResult.channels ?? track.channels
+          }
+          set({
+            duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
+            currentTrack: resolvedTrack,
+            remoteLoadProgress: null,
+            currentTime: 0
+          })
+          hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+          if (manualStart) {
+            showOutputDelayNotice(resolvedTrack)
+          }
+          await audioEngine.play()
+          startRecentPlaySession(resolvedTrack.path)
+          get()._preBufferNextTrack()
+          logSlowPath('queueLoadAndPlayTrack', loadStart, {
+            trackPath: track.path,
+            usedNativeBitPerfect: true
+          })
+          return true
+        }
+
         const fileLoadStart = performance.now()
         // Load audio file from path
         const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
@@ -1067,6 +1147,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (isUnavailableRemoteTrack(nextTrack)) continue
 
         try {
+          if (shouldUseBitPerfectPath(nextTrack)) {
+            await audioEngine.preBufferNextTrackFromPath(nextTrack)
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              loaded: true,
+              usedNativeBitPerfect: true
+            })
+            return
+          }
+
           const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
           // Re-check repeat mode after async gap — may have changed to 'one'
           if (get().repeat === 'one') {
@@ -1173,11 +1263,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           queueIndex: number
           currentTrack: Track
           currentTime: number
+          duration: number
+          waveformData: Float32Array | null
           shufflePosition?: number
         } = {
           queueIndex: nextIndex,
           currentTrack: nextTrack,
-          currentTime: 0
+          currentTime: 0,
+          duration: nextTrack.duration,
+          waveformData: waveformCache.get(nextTrack.path) ?? null
         }
         if (shuffle && shuffledIndices.length > 0) {
           const nextShufflePosition = shuffledIndices.indexOf(nextIndex)

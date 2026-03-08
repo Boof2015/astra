@@ -10,7 +10,9 @@
         "src/oscilloscope.cpp",
         "src/spectrum.cpp",
         "src/vectorscope.cpp",
-        "src/dsp_utils.cpp"
+        "src/dsp_utils.cpp",
+        "src/playback_engine.cpp",
+        "src/coreaudio_hal_sink.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -23,6 +25,13 @@
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "CLANG_CXX_LIBRARY": "libc++",
             "MACOSX_DEPLOYMENT_TARGET": "10.15"
+          },
+          "link_settings": {
+            "libraries": [
+              "-framework CoreAudio",
+              "-framework AudioToolbox",
+              "-framework CoreFoundation"
+            ]
           }
         }],
         ["OS=='win'", {

@@ -5552,7 +5552,8 @@ export async function addToPlaylist(playlistId: number, trackPaths: string[]): P
   // Get current max position
   const maxStmt = db.prepare('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?')
   maxStmt.bind([playlistId])
-  const maxPos = maxStmt.step() ? (maxStmt.get()[0] as number) : -1
+  const maxPosRow = maxStmt.step() ? (maxStmt.getAsObject() as { max_pos?: unknown }) : null
+  const maxPos = typeof maxPosRow?.max_pos === 'number' ? maxPosRow.max_pos : -1
   maxStmt.free()
   let position = maxPos + 1
   const now = Date.now()
@@ -5572,13 +5573,13 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   // Reorder positions
   const idStmt = db.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position')
   idStmt.bind([playlistId])
-  const idRows: unknown[][] = []
+  const idRows: Array<{ id?: unknown }> = []
   while (idStmt.step()) {
-    idRows.push(idStmt.get())
+    idRows.push(idStmt.getAsObject() as { id?: unknown })
   }
   idStmt.free()
   idRows.forEach((row, i) => {
-    db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [i, row[0]])
+    db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [i, row.id])
   })
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
   await saveDatabase()

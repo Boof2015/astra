@@ -1,5 +1,9 @@
 import { useMemo } from 'react'
-import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  BIT_PERFECT_DSP_DISABLED_MESSAGE,
+  resolveOutputDeviceLabel,
+  useAudioSettingsStore
+} from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
 
 interface SpeakerChannel {
@@ -80,11 +84,13 @@ export default function ChannelRoutingPanel() {
     availableDevices,
     selectedOutputChannelCount,
     multichannelEnabled,
+    playbackOutputMode,
     setMultichannelEnabled,
     channelRoutingMap,
     setChannelRoutingMap,
     resetChannelRoutingMap,
   } = useAudioSettingsStore()
+  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
 
   const trackChannels = currentTrack?.channels ?? null
   const outputChannels = selectedOutputChannelCount && selectedOutputChannelCount > 0
@@ -196,7 +202,9 @@ export default function ChannelRoutingPanel() {
         <button
           type="button"
           className={`channel-routing-mode-toggle ${multichannelEnabled ? 'active' : ''}`}
-          onClick={() => void setMultichannelEnabled(!multichannelEnabled)}
+          onClick={bitPerfectModeActive ? undefined : (() => void setMultichannelEnabled(!multichannelEnabled))}
+          disabled={bitPerfectModeActive}
+          title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
         >
           {multichannelEnabled ? 'Multichannel On' : 'Stereo Safe'}
         </button>
@@ -216,7 +224,9 @@ export default function ChannelRoutingPanel() {
           <button
             type="button"
             className="channel-routing-reset-btn"
-            onClick={() => void resetChannelRoutingMap()}
+            onClick={bitPerfectModeActive ? undefined : (() => void resetChannelRoutingMap())}
+            disabled={bitPerfectModeActive}
+            title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
           >
             Reset Routing
           </button>
@@ -263,7 +273,8 @@ export default function ChannelRoutingPanel() {
                     className="channel-routing-route-select"
                     value={multichannelEnabled ? sourceIndex : -1}
                     onChange={(event) => handleMappingChange(index, event.target.value)}
-                    disabled={!hasTrackChannels || !multichannelEnabled}
+                    disabled={!hasTrackChannels || !multichannelEnabled || bitPerfectModeActive}
+                    title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
                     aria-label={`Route output channel ${speaker.id}`}
                   >
                     <option value={-1}>Mute</option>
@@ -292,6 +303,11 @@ export default function ChannelRoutingPanel() {
         {hasOutputChannels && hasTrackChannels && !multichannelEnabled && (
           <div className="channel-routing-empty">
             Stereo mode is enabled. Turn on multichannel to edit per-channel routing.
+          </div>
+        )}
+        {bitPerfectModeActive && (
+          <div className="channel-routing-empty">
+            {BIT_PERFECT_DSP_DISABLED_MESSAGE}
           </div>
         )}
       </div>

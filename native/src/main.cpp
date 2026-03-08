@@ -1,12 +1,133 @@
 #include <napi.h>
+#include <cstring>
+#include <vector>
+#include <string>
 #include "oscilloscope.h"
 #include "spectrum.h"
 #include "vectorscope.h"
+#include "playback_engine.h"
 
 // Global instances (we could make these per-instance if needed)
 static Visualizer::Oscilloscope oscilloscope;
 static Visualizer::Spectrum spectrum(2048);
 static Visualizer::Vectorscope vectorscope;
+static NativePlayback::PlaybackEngine playbackEngine;
+
+namespace {
+
+Napi::Value ToNullableString(Napi::Env env, const std::string& value) {
+    if (value.empty()) {
+        return env.Null();
+    }
+    return Napi::String::New(env, value);
+}
+
+Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::PlaybackSnapshot& snapshot) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("playbackState", Napi::String::New(env, snapshot.playbackState));
+    obj.Set("currentTime", Napi::Number::New(env, snapshot.currentTime));
+    obj.Set("duration", Napi::Number::New(env, snapshot.duration));
+    obj.Set("sampleRate", snapshot.sampleRate > 0 ? Napi::Number::New(env, snapshot.sampleRate) : env.Null());
+    obj.Set("channels", snapshot.channels > 0 ? Napi::Number::New(env, snapshot.channels) : env.Null());
+    obj.Set("sampleFormat", ToNullableString(env, snapshot.sampleFormat));
+    obj.Set("deviceId", ToNullableString(env, snapshot.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, snapshot.deviceLabel));
+    obj.Set("activeBackend", Napi::String::New(env, snapshot.activeBackend));
+    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
+    obj.Set("bitPerfectActive", Napi::Boolean::New(env, snapshot.bitPerfectActive));
+    return obj;
+}
+
+Napi::Object CreatePlaybackEventObject(Napi::Env env, const NativePlayback::PlaybackEvent& event) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("type", Napi::String::New(env, event.type));
+    if (!event.playbackState.empty()) {
+        obj.Set("playbackState", Napi::String::New(env, event.playbackState));
+    }
+    if (event.currentTime > 0.0) {
+        obj.Set("currentTime", Napi::Number::New(env, event.currentTime));
+    }
+    if (event.duration > 0.0) {
+        obj.Set("duration", Napi::Number::New(env, event.duration));
+    }
+    if (event.sampleRate > 0) {
+        obj.Set("sampleRate", Napi::Number::New(env, event.sampleRate));
+    }
+    if (!event.sampleFormat.empty()) {
+        obj.Set("sampleFormat", Napi::String::New(env, event.sampleFormat));
+    }
+    if (!event.deviceId.empty()) {
+        obj.Set("deviceId", Napi::String::New(env, event.deviceId));
+    }
+    if (!event.message.empty()) {
+        obj.Set("message", Napi::String::New(env, event.message));
+    }
+    return obj;
+}
+
+Napi::Object CreateCapabilitiesObject(Napi::Env env) {
+    std::string reason;
+    const bool bitPerfectAvailable = playbackEngine.isBitPerfectAvailable(&reason);
+    const auto devices = playbackEngine.getOutputDevices(&reason);
+    const auto snapshot = playbackEngine.getSnapshot();
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("bitPerfectAvailable", Napi::Boolean::New(env, bitPerfectAvailable));
+    obj.Set("reasonUnavailable", bitPerfectAvailable ? env.Null() : ToNullableString(env, reason));
+    obj.Set("activeBackend", Napi::String::New(env, playbackEngine.backendKind()));
+    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
+    obj.Set("activeSampleRate", snapshot.sampleRate > 0 ? Napi::Number::New(env, snapshot.sampleRate) : env.Null());
+    obj.Set("activeSampleFormat", ToNullableString(env, snapshot.sampleFormat));
+    obj.Set("selectedDeviceId", ToNullableString(env, playbackEngine.getSelectedDeviceId()));
+
+    Napi::Array deviceArray = Napi::Array::New(env, devices.size());
+    for (size_t i = 0; i < devices.size(); i++) {
+        const auto& device = devices[i];
+        Napi::Object entry = Napi::Object::New(env);
+        entry.Set("deviceId", Napi::String::New(env, device.id));
+        entry.Set("label", Napi::String::New(env, device.label));
+        entry.Set("maxChannels", Napi::Number::New(env, device.maxChannels));
+        entry.Set("isDefault", Napi::Boolean::New(env, device.isDefault));
+        deviceArray.Set(i, entry);
+    }
+    obj.Set("devices", deviceArray);
+    obj.Set("selectedDeviceMaxChannels", Napi::Number::New(env, playbackEngine.getSelectedDeviceMaxChannels()));
+
+    return obj;
+}
+
+NativePlayback::TrackBuffer ParseTrackBuffer(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (
+        info.Length() < 5
+        || !info[0].IsTypedArray()
+        || !info[1].IsNumber()
+        || !info[2].IsNumber()
+        || !info[3].IsString()
+        || !info[4].IsNumber()
+    ) {
+        Napi::TypeError::New(env, "Expected Uint8Array, sampleRate, channels, sampleFormat, duration")
+            .ThrowAsJavaScriptException();
+        return {};
+    }
+
+    Napi::Uint8Array pcmData = info[0].As<Napi::Uint8Array>();
+    const uint32_t sampleRate = info[1].As<Napi::Number>().Uint32Value();
+    const uint32_t channels = info[2].As<Napi::Number>().Uint32Value();
+    const std::string sampleFormat = info[3].As<Napi::String>().Utf8Value();
+    const double duration = info[4].As<Napi::Number>().DoubleValue();
+
+    NativePlayback::TrackBuffer track;
+    track.format = NativePlayback::BuildTrackFormat(sampleRate, channels, sampleFormat);
+    track.duration = duration;
+    track.data.assign(pcmData.Data(), pcmData.Data() + pcmData.ByteLength());
+    if (track.duration <= 0.0 && track.format.sampleRate > 0) {
+        track.duration = static_cast<double>(track.totalFrames()) / static_cast<double>(track.format.sampleRate);
+    }
+    return track;
+}
+
+} // namespace
 
 // ============== Oscilloscope ==============
 
@@ -302,6 +423,135 @@ Napi::Value VectorscopeReset(const Napi::CallbackInfo& info) {
     return info.Env().Undefined();
 }
 
+// ============== Native Playback ==============
+
+Napi::Value PlaybackGetCapabilities(const Napi::CallbackInfo& info) {
+    return CreateCapabilitiesObject(info.Env());
+}
+
+Napi::Value PlaybackSetOutputDevice(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected device id").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    try {
+        playbackEngine.setSelectedDeviceId(info[0].As<Napi::String>().Utf8Value());
+    } catch (const std::exception& error) {
+        Napi::Error::New(env, error.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    return CreateCapabilitiesObject(env);
+}
+
+Napi::Value PlaybackLoadTrack(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NativePlayback::TrackBuffer track = ParseTrackBuffer(info);
+    if (env.IsExceptionPending()) {
+        return env.Null();
+    }
+
+    playbackEngine.loadTrack(std::move(track));
+    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+}
+
+Napi::Value PlaybackPreloadNextTrack(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NativePlayback::TrackBuffer track = ParseTrackBuffer(info);
+    if (env.IsExceptionPending()) {
+        return env.Null();
+    }
+
+    playbackEngine.preloadNextTrack(std::move(track));
+    return env.Undefined();
+}
+
+Napi::Value PlaybackPlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    try {
+        return CreatePlaybackSnapshotObject(env, playbackEngine.play());
+    } catch (const std::exception& error) {
+        Napi::Error::New(env, error.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+Napi::Value PlaybackPause(const Napi::CallbackInfo& info) {
+    return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.pause());
+}
+
+Napi::Value PlaybackStop(const Napi::CallbackInfo& info) {
+    return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.stop());
+}
+
+Napi::Value PlaybackSeek(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected seek time in seconds").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    return CreatePlaybackSnapshotObject(env, playbackEngine.seek(info[0].As<Napi::Number>().DoubleValue()));
+}
+
+Napi::Value PlaybackClearNextTrack(const Napi::CallbackInfo& info) {
+    playbackEngine.clearNextTrack();
+    return info.Env().Undefined();
+}
+
+Napi::Value PlaybackGetSnapshot(const Napi::CallbackInfo& info) {
+    return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.getSnapshot());
+}
+
+Napi::Value PlaybackDrainEvents(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto events = playbackEngine.drainEvents();
+    Napi::Array result = Napi::Array::New(env, events.size());
+    for (size_t i = 0; i < events.size(); i++) {
+        result.Set(i, CreatePlaybackEventObject(env, events[i]));
+    }
+    return result;
+}
+
+Napi::Value PlaybackFlushOscilloscopeSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto samples = playbackEngine.drainOscilloscopeSamples();
+    Napi::Float32Array output = Napi::Float32Array::New(env, samples.size());
+    if (!samples.empty()) {
+        std::memcpy(output.Data(), samples.data(), samples.size() * sizeof(float));
+    }
+    return output;
+}
+
+Napi::Value PlaybackFlushSpectrumSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto samples = playbackEngine.drainSpectrumSamples();
+    Napi::Float32Array output = Napi::Float32Array::New(env, samples.size());
+    if (!samples.empty()) {
+        std::memcpy(output.Data(), samples.data(), samples.size() * sizeof(float));
+    }
+    return output;
+}
+
+Napi::Value PlaybackFlushVectorscopeSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto samples = playbackEngine.drainVectorscopeSamples();
+    Napi::Object result = Napi::Object::New(env);
+    Napi::Float32Array left = Napi::Float32Array::New(env, samples.left.size());
+    Napi::Float32Array right = Napi::Float32Array::New(env, samples.right.size());
+    if (!samples.left.empty()) {
+        std::memcpy(left.Data(), samples.left.data(), samples.left.size() * sizeof(float));
+    }
+    if (!samples.right.empty()) {
+        std::memcpy(right.Data(), samples.right.data(), samples.right.size() * sizeof(float));
+    }
+    result.Set("left", left);
+    result.Set("right", right);
+    return result;
+}
+
 // ============== Module Init ==============
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -339,6 +589,24 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     vecExports.Set("process", Napi::Function::New(env, VectorscopeProcess));
     vecExports.Set("reset", Napi::Function::New(env, VectorscopeReset));
     exports.Set("vectorscope", vecExports);
+
+    // Native playback
+    Napi::Object playbackExports = Napi::Object::New(env);
+    playbackExports.Set("getCapabilities", Napi::Function::New(env, PlaybackGetCapabilities));
+    playbackExports.Set("setOutputDevice", Napi::Function::New(env, PlaybackSetOutputDevice));
+    playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));
+    playbackExports.Set("preloadNextTrack", Napi::Function::New(env, PlaybackPreloadNextTrack));
+    playbackExports.Set("play", Napi::Function::New(env, PlaybackPlay));
+    playbackExports.Set("pause", Napi::Function::New(env, PlaybackPause));
+    playbackExports.Set("stop", Napi::Function::New(env, PlaybackStop));
+    playbackExports.Set("seek", Napi::Function::New(env, PlaybackSeek));
+    playbackExports.Set("clearNextTrack", Napi::Function::New(env, PlaybackClearNextTrack));
+    playbackExports.Set("getPlaybackSnapshot", Napi::Function::New(env, PlaybackGetSnapshot));
+    playbackExports.Set("drainEvents", Napi::Function::New(env, PlaybackDrainEvents));
+    playbackExports.Set("flushOscilloscopeSamples", Napi::Function::New(env, PlaybackFlushOscilloscopeSamples));
+    playbackExports.Set("flushSpectrumSamples", Napi::Function::New(env, PlaybackFlushSpectrumSamples));
+    playbackExports.Set("flushVectorscopeSamples", Napi::Function::New(env, PlaybackFlushVectorscopeSamples));
+    exports.Set("playback", playbackExports);
 
     return exports;
 }

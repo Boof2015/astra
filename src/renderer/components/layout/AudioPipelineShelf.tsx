@@ -1,7 +1,11 @@
 import React, { useMemo } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useEQStore } from '../../stores/eqStore'
-import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  BIT_PERFECT_DSP_DISABLED_MESSAGE,
+  resolveOutputDeviceLabel,
+  useAudioSettingsStore
+} from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 
@@ -125,6 +129,8 @@ export default function AudioPipelineShelf() {
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
+  const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
+  const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -144,6 +150,36 @@ export default function AudioPipelineShelf() {
       sourceDetail = bd && sr ? `${fmt} ${bd}/${sr}` : fmt
     }
     result.push({ id: 'source', icon: SourceIcon, label: 'Source', detail: sourceDetail })
+
+    if (playbackOutputMode === 'bitperfect') {
+      const backendLabel = (() => {
+        switch (nativeAudioCapabilities.activeBackend) {
+          case 'coreaudio':
+            return 'CoreAudio HAL'
+          case 'wasapi-exclusive':
+            return 'WASAPI Exclusive'
+          case 'alsa-hw':
+            return 'ALSA hw'
+          default:
+            return 'Native Output'
+        }
+      })()
+      const sampleRate = nativeAudioCapabilities.activeSampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate()
+      const sampleRateLabel = sampleRate ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
+
+      result.push({ id: 'decoder', icon: DecoderIcon, label: 'Decoder', detail: 'FFmpeg PCM stream' })
+      result.push({ id: 'native-output', icon: ResamplerIcon, label: 'Bit-Perfect', detail: `${backendLabel} • ${sampleRateLabel}` })
+      result.push({ id: 'native-scopes', icon: EQIcon, label: 'Scopes', detail: 'Native DSP taps preserved' })
+      result.push({ id: 'dsp-bypass', icon: NormIcon, label: 'DSP', detail: 'App DSP bypassed' })
+
+      const deviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
+        defaultRouteFallbackLabel: 'System Default Output',
+        selectedFallbackLabel: 'Selected Output'
+      }).label
+      const exclusivityLabel = nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Direct'
+      result.push({ id: 'output', icon: OutputIcon, label: 'Output', detail: `${deviceLabel} • ${exclusivityLabel}` })
+      return result
+    }
 
     // Decoder
     result.push({ id: 'decoder', icon: DecoderIcon, label: 'Decoder', detail: 'Web Audio API' })
@@ -210,6 +246,10 @@ export default function AudioPipelineShelf() {
     normalizationEnabled,
     normalizationTargetLufs,
     replayGainScanEnabled,
+    playbackOutputMode,
+    nativeAudioCapabilities.activeBackend,
+    nativeAudioCapabilities.activeDeviceExclusive,
+    nativeAudioCapabilities.activeSampleRate,
   ])
 
   return (
@@ -219,6 +259,11 @@ export default function AudioPipelineShelf() {
           <div className="pipeline-shelf-empty">No active signal chain</div>
         ) : (
           <div className="pipeline-shelf-chain">
+            {playbackOutputMode === 'bitperfect' && (
+              <div className="pipeline-shelf-empty" title={BIT_PERFECT_DSP_DISABLED_MESSAGE}>
+                {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+              </div>
+            )}
             {nodes.map((node, i) => (
               <React.Fragment key={node.id}>
                 {i > 0 && <PipelineArrow />}
