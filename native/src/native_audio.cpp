@@ -18,7 +18,8 @@ namespace {
 constexpr ma_uint32 kVisualizerRingFrames = 65536;
 constexpr ma_uint32 kSpectrumRingFrames = 65536;
 constexpr ma_uint64 kDecodeChunkFrames = 4096;
-constexpr ma_uint32 kAnalysisQuantumFrames = 128;
+constexpr ma_uint32 kDefaultPeriodMs = 10;  // 10ms - safe for WASAPI, CoreAudio, ALSA
+constexpr ma_uint32 kCallbackScratchMaxFrames = 2048;  // Pre-alloc ceiling for scratch buffers
 
 #if defined(MA_HAS_COREAUDIO)
 constexpr ma_backend kPreferredBackends[] = {
@@ -785,7 +786,7 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
     config.performanceProfile = ma_performance_profile_low_latency;
     config.noPreSilencedOutputBuffer = MA_TRUE;
     config.noClip = MA_TRUE;
-    config.periodSizeInFrames = kAnalysisQuantumFrames;
+    config.periodSizeInMilliseconds = kDefaultPeriodMs;
     config.periods = 2;
 #if defined(MA_HAS_COREAUDIO)
     config.coreaudio.allowNominalSampleRateChange = MA_TRUE;
@@ -824,6 +825,15 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
     activeDeviceConfig_.sampleRate = device_->sampleRate;
     activeDeviceConfig_.outputChannels = device_->playback.channels;
     activeDeviceConfig_.exclusive = exclusiveModeActive_.load(std::memory_order_relaxed);
+
+    // Pre-allocate scratch buffers for audio callback (avoid RT heap allocs)
+    callbackMaxFrames_ = std::max<uint32_t>(kCallbackScratchMaxFrames,
+        device_->playback.internalPeriodSizeInFrames * 2);
+    callbackVisualizerScratch_.resize(static_cast<size_t>(callbackMaxFrames_) * 3);
+    callbackSpectrumScratch_.resize(callbackMaxFrames_);
+    mappedFrameScratch_.resize(device_->playback.channels);
+    delayedVisualizerFramesScratch_.resize(static_cast<size_t>(callbackMaxFrames_) * 3);
+    delayedSpectrumFramesScratch_.resize(callbackMaxFrames_);
 
     rebuildEqFiltersLocked();
 
@@ -1029,23 +1039,34 @@ void Engine::dataCallback(ma_device* device, void* output, const void* /*input*/
 }
 
 void Engine::handleDataCallback(float* output, uint32_t frameCount) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    uint32_t outputChannels = deviceInitialized_ && device_ != nullptr
+    // Determine output channels from device (safe - device_ is stable while callback runs)
+    uint32_t outputChannels = device_ != nullptr
         ? device_->playback.channels
-        : resolveOutputChannelsLocked();
+        : 2;
     outputChannels = std::max<uint32_t>(1, outputChannels);
 
-    std::fill(output, output + (static_cast<size_t>(frameCount) * outputChannels), 0.0f);
+    // Zero output first (silence by default)
+    std::memset(output, 0, static_cast<size_t>(frameCount) * outputChannels * sizeof(float));
+
+    // Non-blocking lock: if the UI thread holds the mutex (loading, EQ update, etc.),
+    // we output silence rather than blocking the real-time audio thread.
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;
+    }
 
     if (static_cast<PlaybackState>(playbackState_.load(std::memory_order_relaxed)) != PlaybackState::Playing || currentAudio_.empty()) {
         return;
     }
 
-    mappedFrameScratch_.resize(outputChannels);
+    // Use pre-allocated scratch buffers; cap frameCount to avoid overflow
+    uint32_t safeFrameCount = std::min(frameCount, callbackMaxFrames_);
+    if (safeFrameCount == 0 || mappedFrameScratch_.size() < outputChannels) {
+        return;
+    }
 
-    std::vector<float> visualizerFrames(static_cast<size_t>(frameCount) * 3);
-    std::vector<float> spectrumFrames(frameCount);
+    float* visualizerFrames = callbackVisualizerScratch_.data();
+    float* spectrumFrames = callbackSpectrumScratch_.data();
     ma_uint32 producedFrames = 0;
 
     bool dspEnabled = dspEnabled_.load(std::memory_order_relaxed);
@@ -1055,7 +1076,7 @@ void Engine::handleDataCallback(float* output, uint32_t frameCount) {
     bool muted = exclusiveActive ? false : muted_.load(std::memory_order_relaxed);
     float gain = muted ? 0.0f : volume;
 
-    for (ma_uint32 frame = 0; frame < frameCount; ++frame) {
+    for (ma_uint32 frame = 0; frame < safeFrameCount; ++frame) {
         uint64_t frameIndex = currentFrameIndex_.load(std::memory_order_relaxed);
         if (frameIndex >= currentAudio_.frameCount) {
             bool canGapless = !nextAudio_.empty()
@@ -1092,7 +1113,7 @@ void Engine::handleDataCallback(float* output, uint32_t frameCount) {
         visualizerFrames[static_cast<size_t>(producedFrames) * 3 + 1] = analyzedLeft;
         visualizerFrames[static_cast<size_t>(producedFrames) * 3 + 2] = analyzedRight;
 
-        std::fill(mappedFrameScratch_.begin(), mappedFrameScratch_.end(), 0.0f);
+        std::fill_n(mappedFrameScratch_.data(), outputChannels, 0.0f);
 
         if (exclusiveModeRequested_.load(std::memory_order_relaxed)) {
             for (uint32_t outputChannel = 0; outputChannel < outputChannels; ++outputChannel) {
@@ -1146,11 +1167,10 @@ void Engine::handleDataCallback(float* output, uint32_t frameCount) {
         syncAnalysisDelayBuffersLocked(analysisSampleRate);
 
         if (visualizerRing_ != nullptr) {
-            const float* visualizerWriteFrames = visualizerFrames.data();
+            const float* visualizerWriteFrames = visualizerFrames;
             if (visualizerDelayBuffer_.delayFrames > 0) {
-                delayedVisualizerFramesScratch_.resize(static_cast<size_t>(producedFrames) * 3);
                 visualizerDelayBuffer_.process(
-                    visualizerFrames.data(),
+                    visualizerFrames,
                     producedFrames,
                     delayedVisualizerFramesScratch_.data()
                 );
@@ -1159,11 +1179,10 @@ void Engine::handleDataCallback(float* output, uint32_t frameCount) {
             visualizerRing_->write(visualizerWriteFrames, producedFrames);
         }
         if (spectrumRing_ != nullptr) {
-            const float* spectrumWriteFrames = spectrumFrames.data();
+            const float* spectrumWriteFrames = spectrumFrames;
             if (spectrumDelayBuffer_.delayFrames > 0) {
-                delayedSpectrumFramesScratch_.resize(producedFrames);
                 spectrumDelayBuffer_.process(
-                    spectrumFrames.data(),
+                    spectrumFrames,
                     producedFrames,
                     delayedSpectrumFramesScratch_.data()
                 );

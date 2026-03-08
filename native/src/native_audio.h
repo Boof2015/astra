@@ -189,6 +189,11 @@ private:
     std::vector<float> delayedVisualizerFramesScratch_;
     std::vector<float> delayedSpectrumFramesScratch_;
 
+    // Pre-allocated scratch buffers for the audio callback (avoid heap allocs on RT thread)
+    std::vector<float> callbackVisualizerScratch_;
+    std::vector<float> callbackSpectrumScratch_;
+    uint32_t callbackMaxFrames_ = 0;
+
     std::atomic<uint64_t> currentFrameIndex_;
     std::atomic<double> durationSeconds_;
     std::atomic<int> playbackState_;
