@@ -20,6 +20,11 @@ namespace NativePlayback {
 
 namespace {
 
+constexpr useconds_t kSampleRateSettleSleepUs = 10 * 1000;
+constexpr size_t kSampleRateSettleMaxAttempts = 150;
+constexpr useconds_t kHogModeSettleSleepUs = 10 * 1000;
+constexpr size_t kHogModeSettleMaxAttempts = 150;
+
 std::string cfStringToStdString(CFStringRef value) {
     if (value == nullptr) {
         return {};
@@ -70,6 +75,57 @@ AudioDeviceID getDefaultOutputDeviceId() {
         return kAudioObjectUnknown;
     }
     return deviceId;
+}
+
+std::string formatSampleRateLabel(double sampleRate) {
+    if (sampleRate <= 0.0) {
+        return "unknown";
+    }
+    return std::to_string(static_cast<int>(std::llround(sampleRate))) + " Hz";
+}
+
+bool getDeviceNominalSampleRate(AudioDeviceID deviceId, double* outSampleRate) {
+    if (deviceId == kAudioObjectUnknown || outSampleRate == nullptr) {
+        return false;
+    }
+
+    AudioObjectPropertyAddress address {
+        kAudioDevicePropertyNominalSampleRate,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+
+    Float64 sampleRate = 0.0;
+    UInt32 size = sizeof(sampleRate);
+    const OSStatus status = AudioObjectGetPropertyData(deviceId, &address, 0, nullptr, &size, &sampleRate);
+    if (status != noErr || sampleRate <= 0.0) {
+        return false;
+    }
+
+    *outSampleRate = static_cast<double>(sampleRate);
+    return true;
+}
+
+bool getDeviceHogModePid(AudioDeviceID deviceId, pid_t* outPid) {
+    if (deviceId == kAudioObjectUnknown || outPid == nullptr) {
+        return false;
+    }
+
+    AudioObjectPropertyAddress address {
+        kAudioDevicePropertyHogMode,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+
+    pid_t hogPid = -1;
+    UInt32 size = sizeof(hogPid);
+    const OSStatus status = AudioObjectGetPropertyData(deviceId, &address, 0, nullptr, &size, &hogPid);
+    if (status != noErr) {
+        return false;
+    }
+
+    *outPid = hogPid;
+    return true;
 }
 
 uint32_t getOutputChannelCount(AudioDeviceID deviceId) {
@@ -205,6 +261,87 @@ bool setDeviceNominalSampleRate(AudioDeviceID deviceId, double sampleRate) {
     return AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(requestedSampleRate), &requestedSampleRate) == noErr;
 }
 
+bool waitForDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRate, double* outSampleRate = nullptr) {
+    for (size_t attempt = 0; attempt < kSampleRateSettleMaxAttempts; attempt++) {
+        double currentSampleRate = 0.0;
+        if (getDeviceNominalSampleRate(deviceId, &currentSampleRate)) {
+            if (outSampleRate != nullptr) {
+                *outSampleRate = currentSampleRate;
+            }
+            if (std::abs(currentSampleRate - targetSampleRate) < 1.0) {
+                return true;
+            }
+        }
+        usleep(kSampleRateSettleSleepUs);
+    }
+
+    if (outSampleRate != nullptr) {
+        *outSampleRate = 0.0;
+        getDeviceNominalSampleRate(deviceId, outSampleRate);
+    }
+    return false;
+}
+
+bool ensureDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRate, std::string* error) {
+    if (deviceId == kAudioObjectUnknown || targetSampleRate <= 0.0) {
+        if (error != nullptr) {
+            *error = "Invalid CoreAudio device sample-rate request.";
+        }
+        return false;
+    }
+
+    double currentSampleRate = 0.0;
+    if (getDeviceNominalSampleRate(deviceId, &currentSampleRate) && std::abs(currentSampleRate - targetSampleRate) < 1.0) {
+        return true;
+    }
+
+    if (!setDeviceNominalSampleRate(deviceId, targetSampleRate)) {
+        if (error != nullptr) {
+            const std::string currentLabel = currentSampleRate > 0.0
+                ? formatSampleRateLabel(currentSampleRate)
+                : "unknown";
+            *error = "Failed to switch the CoreAudio device to " + formatSampleRateLabel(targetSampleRate)
+                + " (current " + currentLabel + ").";
+        }
+        return false;
+    }
+
+    double settledSampleRate = currentSampleRate;
+    if (waitForDeviceNominalSampleRate(deviceId, targetSampleRate, &settledSampleRate)) {
+        return true;
+    }
+
+    if (error != nullptr) {
+        const std::string settledLabel = settledSampleRate > 0.0
+            ? formatSampleRateLabel(settledSampleRate)
+            : "unknown";
+        *error = "Timed out waiting for the CoreAudio device to switch to "
+            + formatSampleRateLabel(targetSampleRate) + " (stayed at " + settledLabel + ").";
+    }
+    return false;
+}
+
+bool waitForDeviceHogMode(AudioDeviceID deviceId, pid_t expectedPid, pid_t* outObservedPid = nullptr) {
+    for (size_t attempt = 0; attempt < kHogModeSettleMaxAttempts; attempt++) {
+        pid_t observedPid = -1;
+        if (getDeviceHogModePid(deviceId, &observedPid)) {
+            if (outObservedPid != nullptr) {
+                *outObservedPid = observedPid;
+            }
+            if (observedPid == expectedPid) {
+                return true;
+            }
+        }
+        usleep(kHogModeSettleSleepUs);
+    }
+
+    if (outObservedPid != nullptr) {
+        *outObservedPid = -1;
+        getDeviceHogModePid(deviceId, outObservedPid);
+    }
+    return false;
+}
+
 class CoreAudioHalSink final : public AudioOutputSink {
 public:
     CoreAudioHalSink() = default;
@@ -269,8 +406,12 @@ public:
         releaseHogMode();
         disposeQueue();
 
-        setDeviceNominalSampleRate(resolvedDeviceId, static_cast<double>(format.sampleRate));
         acquireHogMode(resolvedDeviceId);
+        if (!ensureDeviceNominalSampleRate(resolvedDeviceId, static_cast<double>(format.sampleRate), error)) {
+            releaseHogMode();
+            disposeQueue();
+            return false;
+        }
 
         AudioStreamBasicDescription asbd {};
         asbd.mSampleRate = static_cast<Float64>(format.sampleRate);
@@ -436,7 +577,7 @@ private:
     };
 
     static constexpr size_t kBufferCount = 3;
-    static constexpr size_t kFramesPerBuffer = 1024;
+    static constexpr size_t kFramesPerBuffer = 256;
 
     static void handleOutputCallback(void* userData, AudioQueueRef, AudioQueueBufferRef buffer) {
         auto* sink = static_cast<CoreAudioHalSink*>(userData);
@@ -525,6 +666,7 @@ private:
     void acquireHogMode(AudioDeviceID deviceId) {
         hogModeAcquired_ = false;
         hogPid_ = -1;
+        hogDeviceId_ = kAudioObjectUnknown;
         if (deviceId == kAudioObjectUnknown) {
             return;
         }
@@ -537,15 +679,20 @@ private:
 
         pid_t pid = getpid();
         if (AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(pid), &pid) == noErr) {
-            hogModeAcquired_ = true;
-            hogPid_ = pid;
+            pid_t observedPid = -1;
+            if (waitForDeviceHogMode(deviceId, pid, &observedPid)) {
+                hogModeAcquired_ = true;
+                hogPid_ = pid;
+                hogDeviceId_ = deviceId;
+            }
         }
     }
 
     void releaseHogMode() {
-        if (!hogModeAcquired_ || activeDeviceId_ == kAudioObjectUnknown) {
+        if (!hogModeAcquired_ || hogDeviceId_ == kAudioObjectUnknown) {
             hogModeAcquired_ = false;
             hogPid_ = -1;
+            hogDeviceId_ = kAudioObjectUnknown;
             return;
         }
 
@@ -555,9 +702,10 @@ private:
             kAudioObjectPropertyElementMain
         };
         pid_t pid = -1;
-        AudioObjectSetPropertyData(activeDeviceId_, &address, 0, nullptr, sizeof(pid), &pid);
+        AudioObjectSetPropertyData(hogDeviceId_, &address, 0, nullptr, sizeof(pid), &pid);
         hogModeAcquired_ = false;
         hogPid_ = -1;
+        hogDeviceId_ = kAudioObjectUnknown;
     }
 
     PlaybackEngine* engine_ = nullptr;
@@ -570,6 +718,7 @@ private:
     std::string activeDeviceLabel_;
     bool hogModeAcquired_ = false;
     pid_t hogPid_ = -1;
+    AudioDeviceID hogDeviceId_ = kAudioObjectUnknown;
     BufferState buffers_[kBufferCount];
 };
 

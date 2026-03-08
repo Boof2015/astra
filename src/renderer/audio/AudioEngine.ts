@@ -12,11 +12,15 @@ type EventCallback = (...args: unknown[]) => void
 
 const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
-const NATIVE_AUDIO_SCOPE_POLL_INTERVAL_MS = 16
 const BIT_PERFECT_UNSUPPORTED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
+const BIT_PERFECT_OSCILLOSCOPE_QUANTUM = 128
+const BIT_PERFECT_VISUALIZER_TARGET_PEAK = 0.92
+const BIT_PERFECT_VISUALIZER_GAIN_RISE_SMOOTHING = 0.08
+const BIT_PERFECT_VISUALIZER_GAIN_FALL_SMOOTHING = 0.28
+const BIT_PERFECT_VISUALIZER_SILENCE_RMS = 1e-4
 
 const CALIBRATION_RTT_MAX_MS = 2500
 const CALIBRATION_CAPTURE_WINDOW_SEC = 4
@@ -201,6 +205,9 @@ export class AudioEngine {
   private nextNormalizationGainDb: number | null = null
   private nextNormalizationLinearGain: number | null = null
   private nextNormalizationMode: GainApplicationMode | null = null
+  private bitPerfectVisualizerGain: number = 1
+  private bitPerfectVisualizerGainInitialized: boolean = false
+  private bitPerfectOscilloscopeRemainder: Float32Array = new Float32Array(0)
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -229,7 +236,7 @@ export class AudioEngine {
     devices: []
   }
   private nativeSnapshot: NativeAudioPlaybackSnapshot | null = null
-  private nativeScopePollTimer: number | null = null
+  private nativeScopePollFrameId: number | null = null
   private nativeEventUnsubscribe: (() => void) | null = null
   private nativeModeMessage: string | null = null
   private nativeNextTrackBuffered: boolean = false
@@ -339,27 +346,27 @@ export class AudioEngine {
     this.pendingSpectrumSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingMiniVisualizerChunks = []
+    this.resetBitPerfectVisualizerGain()
+    this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
     this.trackChangeCallbacks.forEach(cb => cb())
   }
 
   private queueVisualizerSamples(left: Float32Array, right: Float32Array): void {
     if (!left || !right || left.length === 0 || right.length === 0) return
 
-    this.latestLeftChannel = left
-    this.latestRightChannel = right
+    const normalizedSamples = this.normalizeBitPerfectVisualizerSamples(left, right)
+    const normalizedLeft = normalizedSamples?.left ?? left
+    const normalizedRight = normalizedSamples?.right ?? right
 
-    const leftChunk = new Float32Array(left)
+    this.latestLeftChannel = normalizedLeft
+    this.latestRightChannel = normalizedRight
 
-    if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
-      this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
-        -AudioEngine.MAX_PENDING_CHUNKS / 2
-      )
-    }
-    this.pendingOscilloscopeSamples.push(leftChunk)
+    const leftChunk = new Float32Array(normalizedLeft)
+    this.enqueueOscilloscopeSamples(leftChunk)
 
-    const mono = new Float32Array(Math.min(left.length, right.length))
+    const mono = new Float32Array(Math.min(normalizedLeft.length, normalizedRight.length))
     for (let i = 0; i < mono.length; i++) {
-      mono[i] = (left[i] + right[i]) / 2
+      mono[i] = (normalizedLeft[i] + normalizedRight[i]) / 2
     }
     this.latestMonoChannel = mono
 
@@ -383,9 +390,156 @@ export class AudioEngine {
       )
     }
     this.pendingVectorscopeSamples.push({
-      left: new Float32Array(left),
-      right: new Float32Array(right)
+      left: new Float32Array(normalizedLeft),
+      right: new Float32Array(normalizedRight)
     })
+  }
+
+  private enqueueOscilloscopeSamples(chunk: Float32Array): void {
+    if (this.playbackOutputMode !== 'bitperfect') {
+      if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
+        this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
+          -AudioEngine.MAX_PENDING_CHUNKS / 2
+        )
+      }
+      this.pendingOscilloscopeSamples.push(chunk)
+      return
+    }
+
+    const remainderLength = this.bitPerfectOscilloscopeRemainder.length
+    const merged = new Float32Array(remainderLength + chunk.length)
+    if (remainderLength > 0) {
+      merged.set(this.bitPerfectOscilloscopeRemainder, 0)
+    }
+    merged.set(chunk, remainderLength)
+
+    const quantumCount = Math.floor(merged.length / BIT_PERFECT_OSCILLOSCOPE_QUANTUM)
+    if (quantumCount === 0) {
+      this.bitPerfectOscilloscopeRemainder = merged
+      return
+    }
+
+    if ((this.pendingOscilloscopeSamples.length + quantumCount) >= AudioEngine.MAX_PENDING_CHUNKS) {
+      this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_CHUNKS / 2)
+      )
+    }
+
+    for (let quantumIndex = 0; quantumIndex < quantumCount; quantumIndex++) {
+      const start = quantumIndex * BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+      const end = start + BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+      this.pendingOscilloscopeSamples.push(merged.slice(start, end))
+    }
+
+    const remainderStart = quantumCount * BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+    this.bitPerfectOscilloscopeRemainder = remainderStart < merged.length
+      ? merged.slice(remainderStart)
+      : new Float32Array(0)
+  }
+
+  private resetBitPerfectVisualizerGain(): void {
+    this.bitPerfectVisualizerGain = 1
+    this.bitPerfectVisualizerGainInitialized = false
+  }
+
+  private normalizeBitPerfectVisualizerSamples(
+    left: Float32Array,
+    right: Float32Array
+  ): { left: Float32Array; right: Float32Array } | null {
+    if (this.playbackOutputMode !== 'bitperfect' || (!this._normalizationEnabled && !this._replayGainEnabled)) {
+      return null
+    }
+
+    const desiredGain = this.resolveBitPerfectVisualizerGain(left, right)
+    if (!Number.isFinite(desiredGain) || Math.abs(desiredGain - 1) < 1e-4) {
+      this.bitPerfectVisualizerGain = 1
+      this.bitPerfectVisualizerGainInitialized = true
+      return null
+    }
+
+    const appliedGain = this.bitPerfectVisualizerGainInitialized
+      ? this.smoothBitPerfectVisualizerGain(desiredGain)
+      : desiredGain
+
+    this.bitPerfectVisualizerGain = appliedGain
+    this.bitPerfectVisualizerGainInitialized = true
+
+    const normalizedLeft = new Float32Array(left.length)
+    const normalizedRight = new Float32Array(right.length)
+    for (let i = 0; i < left.length; i++) {
+      normalizedLeft[i] = Math.max(-1, Math.min(1, left[i] * appliedGain))
+    }
+    for (let i = 0; i < right.length; i++) {
+      normalizedRight[i] = Math.max(-1, Math.min(1, right[i] * appliedGain))
+    }
+
+    return {
+      left: normalizedLeft,
+      right: normalizedRight
+    }
+  }
+
+  private smoothBitPerfectVisualizerGain(desiredGain: number): number {
+    const smoothing = desiredGain > this.bitPerfectVisualizerGain
+      ? BIT_PERFECT_VISUALIZER_GAIN_RISE_SMOOTHING
+      : BIT_PERFECT_VISUALIZER_GAIN_FALL_SMOOTHING
+
+    return this.bitPerfectVisualizerGain + ((desiredGain - this.bitPerfectVisualizerGain) * smoothing)
+  }
+
+  private resolveBitPerfectVisualizerGain(left: Float32Array, right: Float32Array): number {
+    if (!this._normalizationEnabled) {
+      return 1
+    }
+
+    let desiredGainDb: number
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+      desiredGainDb = this.currentReplayGainDb
+    } else {
+      const chunkLoudnessDb = this.calculateChunkLoudness(left, right)
+      if (chunkLoudnessDb == null) {
+        return this.bitPerfectVisualizerGainInitialized ? this.bitPerfectVisualizerGain : 1
+      }
+      desiredGainDb = this._targetLufs - chunkLoudnessDb
+    }
+
+    const clampedGain = this.toLinearGain(this.clampGainDb(desiredGainDb))
+    const peak = this.getChunkPeak(left, right)
+    if (!Number.isFinite(peak) || peak <= 0) {
+      return clampedGain
+    }
+
+    return Math.min(clampedGain, BIT_PERFECT_VISUALIZER_TARGET_PEAK / peak)
+  }
+
+  private calculateChunkLoudness(left: Float32Array, right: Float32Array): number | null {
+    const sampleCount = Math.min(left.length, right.length)
+    if (sampleCount === 0) return null
+
+    let sumSquares = 0
+    for (let i = 0; i < sampleCount; i++) {
+      const leftSample = left[i]
+      const rightSample = right[i]
+      sumSquares += (leftSample * leftSample) + (rightSample * rightSample)
+    }
+
+    const rms = Math.sqrt(sumSquares / (sampleCount * 2))
+    if (!Number.isFinite(rms) || rms < BIT_PERFECT_VISUALIZER_SILENCE_RMS) {
+      return null
+    }
+
+    return 20 * Math.log10(rms + 1e-10)
+  }
+
+  private getChunkPeak(left: Float32Array, right: Float32Array): number {
+    const sampleCount = Math.min(left.length, right.length)
+    let peak = 0
+
+    for (let i = 0; i < sampleCount; i++) {
+      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]))
+    }
+
+    return peak
   }
 
   private async initNativeAudio(): Promise<NativeAudioCapabilities> {
@@ -491,28 +645,21 @@ export class AudioEngine {
     }
   }
 
-  private startNativeScopePolling(): void {
-    if (this.nativeScopePollTimer !== null) return
-    this.nativeScopePollTimer = window.setInterval(() => {
-      if (this.playbackOutputMode !== 'bitperfect') {
-        return
+  private pollNativeScopeData = (): void => {
+    if (this.playbackOutputMode !== 'bitperfect') {
+      this.nativeScopePollFrameId = null
+      return
+    }
+
+    const leftChunks = window.nativeAudioAPI.flushOscilloscopeChunks()
+    const monoChunks = window.nativeAudioAPI.flushSpectrumChunks()
+    const stereoChunks = window.nativeAudioAPI.flushVectorscopeChunks()
+
+    if (stereoChunks.length > 0) {
+      for (const chunk of stereoChunks) {
+        this.queueVisualizerSamples(chunk.left, chunk.right)
       }
-
-      const leftChunks = window.nativeAudioAPI.flushOscilloscopeChunks()
-      const monoChunks = window.nativeAudioAPI.flushSpectrumChunks()
-      const stereoChunks = window.nativeAudioAPI.flushVectorscopeChunks()
-
-      if (stereoChunks.length > 0) {
-        for (const chunk of stereoChunks) {
-          this.queueVisualizerSamples(chunk.left, chunk.right)
-        }
-        return
-      }
-
-      if (leftChunks.length === 0 && monoChunks.length === 0) {
-        return
-      }
-
+    } else if (leftChunks.length > 0 || monoChunks.length > 0) {
       const left = leftChunks[leftChunks.length - 1] ?? new Float32Array(0)
       const mono = monoChunks[monoChunks.length - 1] ?? left
       const right = mono.length === left.length
@@ -521,13 +668,20 @@ export class AudioEngine {
       if (left.length > 0) {
         this.queueVisualizerSamples(left, right)
       }
-    }, NATIVE_AUDIO_SCOPE_POLL_INTERVAL_MS)
+    }
+
+    this.nativeScopePollFrameId = window.requestAnimationFrame(this.pollNativeScopeData)
+  }
+
+  private startNativeScopePolling(): void {
+    if (this.nativeScopePollFrameId !== null) return
+    this.nativeScopePollFrameId = window.requestAnimationFrame(this.pollNativeScopeData)
   }
 
   private stopNativeScopePolling(): void {
-    if (this.nativeScopePollTimer !== null) {
-      window.clearInterval(this.nativeScopePollTimer)
-      this.nativeScopePollTimer = null
+    if (this.nativeScopePollFrameId !== null) {
+      window.cancelAnimationFrame(this.nativeScopePollFrameId)
+      this.nativeScopePollFrameId = null
     }
   }
 
@@ -560,7 +714,6 @@ export class AudioEngine {
     this.clearNextBuffer()
     this.audioBuffer = null
     this.nativeNextTrackBuffered = false
-    this.currentReplayGainDb = null
     const result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
     await this.refreshNativeCapabilities()
     await this.refreshNativeSnapshot()

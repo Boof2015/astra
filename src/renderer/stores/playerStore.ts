@@ -501,6 +501,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         if (shouldUseBitPerfectPath(track)) {
+          const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
+          audioEngine.setCurrentReplayGainDb(replayGainDb)
           const result = await audioEngine.loadTrackFromPath(track)
           const decodeMs = Math.round(performance.now() - decodeStart)
           const resolvedTrack: Track = {
@@ -1014,6 +1016,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       try {
         await ensureCompatiblePlaybackMode(track)
         if (shouldUseBitPerfectPath(track)) {
+          const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
+          audioEngine.setCurrentReplayGainDb(replayGainDb)
           const loadResult = await audioEngine.loadTrackFromPath(track)
           const resolvedTrack: Track = {
             ...track,
@@ -1280,6 +1284,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
         set(nextState)
+        audioEngine.setCurrentReplayGainDb(
+          getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+        )
         startRecentPlaySession(nextTrack.path)
 
         // Pre-buffer the NEXT next track
