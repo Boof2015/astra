@@ -789,25 +789,27 @@ private:
                 return;
             }
 
-            snd_pcm_sframes_t delayFrames = 0;
-            const int delayResult = snd_pcm_delay(pcmHandle, &delayFrames);
-            if (delayResult < 0) {
-                recoverStream(delayResult);
+            const snd_pcm_sframes_t availableFrames = snd_pcm_avail_update(pcmHandle);
+            if (availableFrames < 0) {
+                recoverStream(static_cast<int>(availableFrames));
                 return;
             }
 
-            if (delayFrames < 0) {
-                delayFrames = 0;
+            snd_pcm_uframes_t available = static_cast<snd_pcm_uframes_t>(availableFrames);
+            if (available > bufferFrames) {
+                available = bufferFrames;
             }
 
-            const snd_pcm_uframes_t delay = static_cast<snd_pcm_uframes_t>(delayFrames);
-            if (delay > queuedEndpointFrames) {
-                queuedEndpointFrames = delay;
+            const snd_pcm_uframes_t padding = bufferFrames > available
+                ? (bufferFrames - available)
+                : 0;
+            if (padding > queuedEndpointFrames) {
+                queuedEndpointFrames = padding;
                 return;
             }
 
-            const snd_pcm_uframes_t consumedEndpointFrames = queuedEndpointFrames - delay;
-            queuedEndpointFrames = delay;
+            const snd_pcm_uframes_t consumedEndpointFrames = queuedEndpointFrames - padding;
+            queuedEndpointFrames = padding;
             if (consumedEndpointFrames == 0) {
                 return;
             }
