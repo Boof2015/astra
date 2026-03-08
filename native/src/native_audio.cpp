@@ -810,15 +810,61 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
         ma_device_info deviceInfo{};
         ma_result infoResult = ma_context_get_device_info(
             context_, ma_device_type_playback, pSelectedId, &deviceInfo);
-        if (infoResult == MA_SUCCESS && deviceInfo.nativeDataFormatCount > 0) {
-            nativeDeviceRate = deviceInfo.nativeDataFormats[0].sampleRate;
-            fprintf(stderr, "[NativeAudio] device native rate: %u Hz (%s)\n",
-                nativeDeviceRate, deviceInfo.name);
+        if (infoResult == MA_SUCCESS) {
+            fprintf(stderr, "[NativeAudio] device: %s (%u native formats)\n",
+                deviceInfo.name, deviceInfo.nativeDataFormatCount);
+            for (ma_uint32 fi = 0; fi < deviceInfo.nativeDataFormatCount; ++fi) {
+                const auto& nf = deviceInfo.nativeDataFormats[fi];
+                fprintf(stderr, "[NativeAudio]   format[%u]: %u Hz, %u ch, fmt=%d\n",
+                    fi, nf.sampleRate, nf.channels, nf.format);
+            }
+            if (deviceInfo.nativeDataFormatCount > 0) {
+                nativeDeviceRate = deviceInfo.nativeDataFormats[0].sampleRate;
+            }
         }
     }
 
     bool requestedExclusive = exclusiveModeRequested_.load(std::memory_order_relaxed);
     ma_result result = MA_ERROR;
+
+    // Helper: attempt exclusive init at a given rate and verify the device actually
+    // switched to that rate. Two-level verification:
+    //   1) Check device_->playback.internalSampleRate (what miniaudio negotiated)
+    //   2) Re-query ma_context_get_device_info to see if the device's native rate changed
+    // If either check fails, the device is silently resampling — reject it.
+    auto tryExclusiveAtRate = [&](ma_uint32 rate) -> bool {
+        config.sampleRate = rate;
+        ma_result r = ma_device_init(context_, &config, device_);
+        if (r != MA_SUCCESS) {
+            fprintf(stderr, "[NativeAudio] exclusive init @ %u Hz: FAILED (err=%d)\n", rate, (int)r);
+            return false;
+        }
+
+        ma_uint32 internalRate = device_->playback.internalSampleRate;
+        fprintf(stderr, "[NativeAudio] exclusive init @ %u Hz: OK (internal=%u, callback=%u)\n",
+            rate, internalRate, device_->sampleRate);
+
+        // Check 1: miniaudio's internal rate should match what we requested
+        if (internalRate != 0 && internalRate != rate) {
+            fprintf(stderr, "[NativeAudio]   -> rejecting: internal rate %u != requested %u\n",
+                internalRate, rate);
+            ma_device_uninit(device_);
+            *device_ = {};
+            return false;
+        }
+
+        // Check 2: re-query device info to see if the hardware actually switched
+        // (some drivers accept the format but don't actually change clock rate)
+        ma_device_info postInfo{};
+        ma_result postResult = ma_context_get_device_info(
+            context_, ma_device_type_playback, pSelectedId, &postInfo);
+        if (postResult == MA_SUCCESS && postInfo.nativeDataFormatCount > 0) {
+            ma_uint32 postNativeRate = postInfo.nativeDataFormats[0].sampleRate;
+            fprintf(stderr, "[NativeAudio]   -> post-init device native rate: %u Hz\n", postNativeRate);
+        }
+
+        return true;
+    };
 
     if (requestedExclusive) {
         // Exclusive mode: tell WASAPI not to resample — we want the real device rate.
@@ -828,29 +874,23 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
         config.wasapi.noDefaultQualitySRC = MA_TRUE;
         config.wasapi.noAutoStreamRouting = MA_TRUE;
 #endif
-
-        // Attempt 1: exclusive with file's native sample rate
         config.playback.shareMode = ma_share_mode_exclusive;
-        config.sampleRate = currentAudio_.sampleRate;
-        result = ma_device_init(context_, &config, device_);
-        fprintf(stderr, "[NativeAudio] exclusive init @ %u Hz, %u ch: %s\n",
-            currentAudio_.sampleRate, config.playback.channels,
-            result == MA_SUCCESS ? "OK" : "FAILED");
 
-        if (result != MA_SUCCESS) {
-            // Attempt 2: exclusive with common sample rates the device is likely to support
-            static constexpr ma_uint32 kFallbackRates[] = { 48000, 44100, 96000, 192000 };
+        // Attempt 1: exclusive at the file's native sample rate
+        bool exclusiveOk = tryExclusiveAtRate(currentAudio_.sampleRate);
+
+        if (!exclusiveOk) {
+            // Attempt 2: exclusive at common sample rates the device is likely to support
+            static constexpr ma_uint32 kFallbackRates[] = { 48000, 44100, 96000, 192000, 88200, 176400, 352800, 384000 };
             for (ma_uint32 rate : kFallbackRates) {
                 if (rate == currentAudio_.sampleRate) continue;
-                config.sampleRate = rate;
-                result = ma_device_init(context_, &config, device_);
-                fprintf(stderr, "[NativeAudio] exclusive fallback @ %u Hz: %s\n",
-                    rate, result == MA_SUCCESS ? "OK" : "FAILED");
-                if (result == MA_SUCCESS) break;
+                exclusiveOk = tryExclusiveAtRate(rate);
+                if (exclusiveOk) break;
             }
         }
 
-        if (result == MA_SUCCESS) {
+        if (exclusiveOk) {
+            result = MA_SUCCESS;
             exclusiveModeActive_.store(true, std::memory_order_relaxed);
         } else if (allowExclusiveFallback) {
             // Attempt 3: fall back to shared mode (with SRC disabled so we see the real behavior)
