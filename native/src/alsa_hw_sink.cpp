@@ -114,18 +114,103 @@ uint32_t queryDeviceMaxChannels(const std::string& deviceId) {
     return maxChannels;
 }
 
-std::vector<OutputDeviceInfo> enumerateAlsaHwDevices(std::string* reason) {
+void appendEnumeratedDevice(
+    std::vector<OutputDeviceInfo>* devices,
+    std::unordered_set<std::string>* seenIds,
+    const std::string& deviceId,
+    const std::string& label
+) {
+    if (devices == nullptr || seenIds == nullptr || deviceId.empty()) {
+        return;
+    }
+    if (!seenIds->insert(deviceId).second) {
+        return;
+    }
+
+    devices->push_back({
+        deviceId,
+        label.empty() ? deviceId : label,
+        queryDeviceMaxChannels(deviceId),
+        devices->empty()
+    });
+}
+
+void enumerateAlsaHwDevicesFromCards(
+    std::vector<OutputDeviceInfo>* devices,
+    std::unordered_set<std::string>* seenIds
+) {
+    if (devices == nullptr || seenIds == nullptr) {
+        return;
+    }
+
+    int cardIndex = -1;
+    if (snd_card_next(&cardIndex) < 0) {
+        return;
+    }
+
+    while (cardIndex >= 0) {
+        const std::string controlName = "hw:" + std::to_string(cardIndex);
+        snd_ctl_t* controlHandle = nullptr;
+        if (snd_ctl_open(&controlHandle, controlName.c_str(), 0) >= 0 && controlHandle != nullptr) {
+            snd_ctl_card_info_t* cardInfo = nullptr;
+            snd_ctl_card_info_alloca(&cardInfo);
+
+            if (snd_ctl_card_info(controlHandle, cardInfo) >= 0) {
+                const char* rawCardId = snd_ctl_card_info_get_id(cardInfo);
+                const char* rawCardName = snd_ctl_card_info_get_name(cardInfo);
+                const std::string cardId = rawCardId != nullptr && *rawCardId != '\0'
+                    ? std::string(rawCardId)
+                    : std::to_string(cardIndex);
+                const std::string cardName = rawCardName != nullptr && *rawCardName != '\0'
+                    ? trimWhitespace(rawCardName)
+                    : ("Card " + std::to_string(cardIndex));
+
+                int deviceIndex = -1;
+                while (snd_ctl_pcm_next_device(controlHandle, &deviceIndex) >= 0 && deviceIndex >= 0) {
+                    snd_pcm_info_t* pcmInfo = nullptr;
+                    snd_pcm_info_alloca(&pcmInfo);
+                    snd_pcm_info_set_device(pcmInfo, static_cast<unsigned int>(deviceIndex));
+                    snd_pcm_info_set_subdevice(pcmInfo, 0);
+                    snd_pcm_info_set_stream(pcmInfo, SND_PCM_STREAM_PLAYBACK);
+
+                    if (snd_ctl_pcm_info(controlHandle, pcmInfo) < 0) {
+                        continue;
+                    }
+
+                    const char* rawPcmName = snd_pcm_info_get_name(pcmInfo);
+                    const std::string pcmName = rawPcmName != nullptr && *rawPcmName != '\0'
+                        ? trimWhitespace(rawPcmName)
+                        : ("Device " + std::to_string(deviceIndex));
+                    const std::string deviceId = "hw:CARD=" + cardId + ",DEV=" + std::to_string(deviceIndex);
+                    const std::string label = cardName == pcmName
+                        ? cardName
+                        : (cardName + " - " + pcmName);
+                    appendEnumeratedDevice(devices, seenIds, deviceId, label);
+                }
+            }
+
+            snd_ctl_close(controlHandle);
+        }
+
+        if (snd_card_next(&cardIndex) < 0) {
+            break;
+        }
+    }
+}
+
+void enumerateAlsaHwDevicesFromHints(
+    std::vector<OutputDeviceInfo>* devices,
+    std::unordered_set<std::string>* seenIds
+) {
+    if (devices == nullptr || seenIds == nullptr) {
+        return;
+    }
+
     void** hints = nullptr;
     const int hintResult = snd_device_name_hint(-1, "pcm", &hints);
     if (hintResult < 0 || hints == nullptr) {
-        if (reason != nullptr) {
-            *reason = "No ALSA hardware playback devices are available.";
-        }
-        return {};
+        return;
     }
-
-    std::vector<OutputDeviceInfo> devices;
-    std::unordered_set<std::string> seenIds;
 
     for (void** currentHint = hints; *currentHint != nullptr; ++currentHint) {
         const std::string name = getHintString(*currentHint, "NAME");
@@ -138,20 +223,18 @@ std::vector<OutputDeviceInfo> enumerateAlsaHwDevices(std::string* reason) {
             continue;
         }
 
-        if (!seenIds.insert(name).second) {
-            continue;
-        }
-
         const std::string description = firstDescriptionLine(getHintString(*currentHint, "DESC"));
-        devices.push_back({
-            name,
-            description.empty() ? name : description,
-            queryDeviceMaxChannels(name),
-            devices.empty()
-        });
+        appendEnumeratedDevice(devices, seenIds, name, description.empty() ? name : description);
     }
 
     snd_device_name_free_hint(hints);
+}
+
+std::vector<OutputDeviceInfo> enumerateAlsaHwDevices(std::string* reason) {
+    std::vector<OutputDeviceInfo> devices;
+    std::unordered_set<std::string> seenIds;
+    enumerateAlsaHwDevicesFromCards(&devices, &seenIds);
+    enumerateAlsaHwDevicesFromHints(&devices, &seenIds);
 
     if (devices.empty()) {
         if (reason != nullptr) {
