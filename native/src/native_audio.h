@@ -209,6 +209,7 @@ private:
     std::atomic<uint32_t> analysisDelayMs_;
     std::atomic<uint32_t> currentTrackChannels_;
     std::atomic<uint32_t> currentSampleRate_;
+    std::atomic<uint32_t> deviceInternalSampleRate_;
     std::atomic<uint32_t> outputMaxChannels_;
 
     bool contextInitialized_;

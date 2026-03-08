@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <iterator>
@@ -268,6 +269,7 @@ Engine::Engine()
     , analysisDelayMs_(0)
     , currentTrackChannels_(0)
     , currentSampleRate_(0)
+    , deviceInternalSampleRate_(0)
     , outputMaxChannels_(2)
     , contextInitialized_(false)
     , deviceInitialized_(false)
@@ -609,12 +611,7 @@ uint32_t Engine::getSampleRate() const {
 }
 
 uint32_t Engine::getDeviceSampleRate() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!deviceInitialized_) {
-        return 0;
-    }
-
-    return activeDeviceConfig_.sampleRate;
+    return deviceInternalSampleRate_.load(std::memory_order_relaxed);
 }
 
 VisualizerSamples Engine::readVisualizerSamples(uint32_t maxFrames) {
@@ -766,6 +763,7 @@ void Engine::uninitDeviceLocked() {
     }
     deviceInitialized_ = false;
     exclusiveModeActive_.store(false, std::memory_order_relaxed);
+    deviceInternalSampleRate_.store(0, std::memory_order_relaxed);
     activeDeviceConfig_ = {};
 }
 
@@ -791,6 +789,9 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
 #if defined(MA_HAS_COREAUDIO)
     config.coreaudio.allowNominalSampleRateChange = MA_TRUE;
 #endif
+#if defined(MA_HAS_WASAPI)
+    config.wasapi.noAutoConvertSRC = MA_FALSE;
+#endif
 
     ma_device_id selectedId{};
     if (hasSelectedDevice_) {
@@ -800,15 +801,50 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
     }
 
     bool requestedExclusive = exclusiveModeRequested_.load(std::memory_order_relaxed);
-    config.playback.shareMode = requestedExclusive ? ma_share_mode_exclusive : ma_share_mode_shared;
+    ma_result result = MA_ERROR;
 
-    ma_result result = ma_device_init(context_, &config, device_);
-    if (result != MA_SUCCESS && requestedExclusive && allowExclusiveFallback) {
+    if (requestedExclusive) {
+        // Attempt 1: exclusive with file's native sample rate
+        config.playback.shareMode = ma_share_mode_exclusive;
+        config.sampleRate = currentAudio_.sampleRate;
+        result = ma_device_init(context_, &config, device_);
+        fprintf(stderr, "[NativeAudio] exclusive init @ %u Hz, %u ch: %s\n",
+            currentAudio_.sampleRate, config.playback.channels,
+            result == MA_SUCCESS ? "OK" : "FAILED");
+
+        if (result != MA_SUCCESS) {
+            // Attempt 2: exclusive with common sample rates the device is likely to support
+            static constexpr ma_uint32 kFallbackRates[] = { 48000, 44100, 96000, 192000 };
+            for (ma_uint32 rate : kFallbackRates) {
+                if (rate == currentAudio_.sampleRate) continue;
+                config.sampleRate = rate;
+                result = ma_device_init(context_, &config, device_);
+                fprintf(stderr, "[NativeAudio] exclusive fallback @ %u Hz: %s\n",
+                    rate, result == MA_SUCCESS ? "OK" : "FAILED");
+                if (result == MA_SUCCESS) break;
+            }
+        }
+
+        if (result == MA_SUCCESS) {
+            exclusiveModeActive_.store(true, std::memory_order_relaxed);
+        } else if (allowExclusiveFallback) {
+            // Attempt 3: fall back to shared mode
+            config.playback.shareMode = ma_share_mode_shared;
+            config.sampleRate = currentAudio_.sampleRate;
+            result = ma_device_init(context_, &config, device_);
+            fprintf(stderr, "[NativeAudio] shared fallback @ %u Hz: %s\n",
+                currentAudio_.sampleRate, result == MA_SUCCESS ? "OK" : "FAILED");
+            exclusiveModeActive_.store(false, std::memory_order_relaxed);
+        } else {
+            exclusiveModeActive_.store(false, std::memory_order_relaxed);
+        }
+    } else {
         config.playback.shareMode = ma_share_mode_shared;
         result = ma_device_init(context_, &config, device_);
+        fprintf(stderr, "[NativeAudio] shared init @ %u Hz, %u ch: %s\n",
+            currentAudio_.sampleRate, config.playback.channels,
+            result == MA_SUCCESS ? "OK" : "FAILED");
         exclusiveModeActive_.store(false, std::memory_order_relaxed);
-    } else {
-        exclusiveModeActive_.store(requestedExclusive && result == MA_SUCCESS, std::memory_order_relaxed);
     }
 
     if (result != MA_SUCCESS) {
@@ -819,7 +855,13 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
 
     deviceInitialized_ = true;
     currentSampleRate_.store(device_->sampleRate, std::memory_order_relaxed);
+    deviceInternalSampleRate_.store(device_->playback.internalSampleRate, std::memory_order_relaxed);
     outputMaxChannels_.store(std::max<uint32_t>(1, device_->playback.channels), std::memory_order_relaxed);
+
+    fprintf(stderr, "[NativeAudio] device ready: callback=%u Hz, internal=%u Hz, %u ch, %s\n",
+        device_->sampleRate, device_->playback.internalSampleRate,
+        device_->playback.channels,
+        exclusiveModeActive_.load(std::memory_order_relaxed) ? "exclusive" : "shared");
 
     activeDeviceConfig_.deviceId = hasSelectedDevice_ ? selectedDeviceId_ : std::string();
     activeDeviceConfig_.sampleRate = device_->sampleRate;
