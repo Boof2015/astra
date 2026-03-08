@@ -789,14 +789,27 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
 #if defined(MA_HAS_COREAUDIO)
     config.coreaudio.allowNominalSampleRateChange = MA_TRUE;
 #endif
-#if defined(MA_HAS_WASAPI)
-    config.wasapi.noAutoConvertSRC = MA_FALSE;
-#endif
-
     ma_device_id selectedId{};
+    const ma_device_id* pSelectedId = nullptr;
     if (hasSelectedDevice_) {
         if (decodeDeviceId(selectedDeviceId_, selectedId)) {
             config.playback.pDeviceID = &selectedId;
+            pSelectedId = &selectedId;
+        }
+    }
+
+    // Query the device's actual native sample rate BEFORE opening.
+    // On WASAPI shared, ma_device reports our requested rate, not the real hardware rate.
+    // ma_context_get_device_info returns the device's preferred/mix format which IS the real rate.
+    uint32_t nativeDeviceRate = 0;
+    {
+        ma_device_info deviceInfo{};
+        ma_result infoResult = ma_context_get_device_info(
+            context_, ma_device_type_playback, pSelectedId, &deviceInfo);
+        if (infoResult == MA_SUCCESS && deviceInfo.nativeDataFormatCount > 0) {
+            nativeDeviceRate = deviceInfo.nativeDataFormats[0].sampleRate;
+            fprintf(stderr, "[NativeAudio] device native rate: %u Hz (%s)\n",
+                nativeDeviceRate, deviceInfo.name);
         }
     }
 
@@ -804,6 +817,14 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
     ma_result result = MA_ERROR;
 
     if (requestedExclusive) {
+        // Exclusive mode: tell WASAPI not to resample — we want the real device rate.
+        // Also disable channel conversion and SRC to get true bit-perfect output.
+#if defined(MA_HAS_WASAPI)
+        config.wasapi.noAutoConvertSRC = MA_TRUE;
+        config.wasapi.noDefaultQualitySRC = MA_TRUE;
+        config.wasapi.noAutoStreamRouting = MA_TRUE;
+#endif
+
         // Attempt 1: exclusive with file's native sample rate
         config.playback.shareMode = ma_share_mode_exclusive;
         config.sampleRate = currentAudio_.sampleRate;
@@ -828,22 +849,57 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
         if (result == MA_SUCCESS) {
             exclusiveModeActive_.store(true, std::memory_order_relaxed);
         } else if (allowExclusiveFallback) {
-            // Attempt 3: fall back to shared mode
+            // Attempt 3: fall back to shared mode (with SRC disabled so we see the real behavior)
             config.playback.shareMode = ma_share_mode_shared;
             config.sampleRate = currentAudio_.sampleRate;
+#if defined(MA_HAS_WASAPI)
+            // Keep noAutoConvertSRC = TRUE in shared mode too:
+            // If the device can't handle the file's rate natively, the init will fail,
+            // and we fall through to the final shared attempt with SRC enabled.
+#endif
             result = ma_device_init(context_, &config, device_);
-            fprintf(stderr, "[NativeAudio] shared fallback @ %u Hz: %s\n",
+            fprintf(stderr, "[NativeAudio] shared fallback (no SRC) @ %u Hz: %s\n",
                 currentAudio_.sampleRate, result == MA_SUCCESS ? "OK" : "FAILED");
+
+            if (result != MA_SUCCESS) {
+                // Final attempt: shared with Windows SRC enabled (guaranteed to work)
+#if defined(MA_HAS_WASAPI)
+                config.wasapi.noAutoConvertSRC = MA_FALSE;
+                config.wasapi.noDefaultQualitySRC = MA_FALSE;
+#endif
+                result = ma_device_init(context_, &config, device_);
+                fprintf(stderr, "[NativeAudio] shared fallback (with SRC) @ %u Hz: %s\n",
+                    currentAudio_.sampleRate, result == MA_SUCCESS ? "OK" : "FAILED");
+            }
             exclusiveModeActive_.store(false, std::memory_order_relaxed);
         } else {
             exclusiveModeActive_.store(false, std::memory_order_relaxed);
         }
     } else {
+        // Native shared mode: disable Windows auto-SRC so the device runs at its native rate.
+        // Our callback still delivers audio at the file's sample rate — miniaudio handles
+        // the conversion between callback rate and device rate internally.
+#if defined(MA_HAS_WASAPI)
+        config.wasapi.noAutoConvertSRC = MA_TRUE;
+        config.wasapi.noDefaultQualitySRC = MA_TRUE;
+#endif
         config.playback.shareMode = ma_share_mode_shared;
         result = ma_device_init(context_, &config, device_);
-        fprintf(stderr, "[NativeAudio] shared init @ %u Hz, %u ch: %s\n",
+        fprintf(stderr, "[NativeAudio] shared init (no SRC) @ %u Hz, %u ch: %s\n",
             currentAudio_.sampleRate, config.playback.channels,
             result == MA_SUCCESS ? "OK" : "FAILED");
+
+        if (result != MA_SUCCESS) {
+            // Fallback: let Windows handle SRC (guaranteed to work)
+#if defined(MA_HAS_WASAPI)
+            config.wasapi.noAutoConvertSRC = MA_FALSE;
+            config.wasapi.noDefaultQualitySRC = MA_FALSE;
+#endif
+            result = ma_device_init(context_, &config, device_);
+            fprintf(stderr, "[NativeAudio] shared init (with SRC) @ %u Hz, %u ch: %s\n",
+                currentAudio_.sampleRate, config.playback.channels,
+                result == MA_SUCCESS ? "OK" : "FAILED");
+        }
         exclusiveModeActive_.store(false, std::memory_order_relaxed);
     }
 
@@ -855,13 +911,21 @@ void Engine::reconfigureDeviceLocked(bool restartIfPlaying, bool allowExclusiveF
 
     deviceInitialized_ = true;
     currentSampleRate_.store(device_->sampleRate, std::memory_order_relaxed);
-    deviceInternalSampleRate_.store(device_->playback.internalSampleRate, std::memory_order_relaxed);
     outputMaxChannels_.store(std::max<uint32_t>(1, device_->playback.channels), std::memory_order_relaxed);
 
-    fprintf(stderr, "[NativeAudio] device ready: callback=%u Hz, internal=%u Hz, %u ch, %s\n",
-        device_->sampleRate, device_->playback.internalSampleRate,
+    // For exclusive mode, the device IS running at device->sampleRate (we own it).
+    // For shared mode, the OS may or may not resample — use the queried native rate
+    // as the ground truth for what the hardware is actually doing.
+    bool isExclusive = exclusiveModeActive_.load(std::memory_order_relaxed);
+    uint32_t realDeviceRate = isExclusive
+        ? device_->sampleRate
+        : (nativeDeviceRate > 0 ? nativeDeviceRate : device_->sampleRate);
+    deviceInternalSampleRate_.store(realDeviceRate, std::memory_order_relaxed);
+
+    fprintf(stderr, "[NativeAudio] device ready: callback=%u Hz, device=%u Hz, %u ch, %s\n",
+        device_->sampleRate, realDeviceRate,
         device_->playback.channels,
-        exclusiveModeActive_.load(std::memory_order_relaxed) ? "exclusive" : "shared");
+        isExclusive ? "exclusive" : "shared");
 
     activeDeviceConfig_.deviceId = hasSelectedDevice_ ? selectedDeviceId_ : std::string();
     activeDeviceConfig_.sampleRate = device_->sampleRate;
