@@ -13,6 +13,7 @@
         "src/dsp_utils.cpp",
         "src/playback_engine.cpp",
         "src/coreaudio_hal_sink.cpp",
+        "src/alsa_hw_sink.cpp",
         "src/wasapi_exclusive_sink.cpp"
       ],
       "include_dirs": [
@@ -53,7 +54,12 @@
         }],
         ["OS=='linux'", {
           "cflags_cc": ["-std=c++17", "-O3", "-ffast-math", "-fPIC"],
-          "ldflags": ["-Wl,-z,now"]
+          "ldflags": ["-Wl,-z,now"],
+          "link_settings": {
+            "libraries": [
+              "-lasound"
+            ]
+          }
         }]
       ]
     }

@@ -728,7 +728,7 @@ std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
     return std::make_unique<CoreAudioHalSink>();
 }
 
-#elif !defined(_WIN32)
+#elif !defined(_WIN32) && !defined(__linux__)
 
 namespace {
 
