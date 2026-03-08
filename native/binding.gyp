@@ -12,7 +12,8 @@
         "src/vectorscope.cpp",
         "src/dsp_utils.cpp",
         "src/playback_engine.cpp",
-        "src/coreaudio_hal_sink.cpp"
+        "src/coreaudio_hal_sink.cpp",
+        "src/wasapi_exclusive_sink.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -40,6 +41,14 @@
               "ExceptionHandling": 1,
               "AdditionalOptions": ["/O2"]
             }
+          },
+          "link_settings": {
+            "libraries": [
+              "Ole32.lib",
+              "Avrt.lib",
+              "Mmdevapi.lib",
+              "Audioclient.lib"
+            ]
           }
         }],
         ["OS=='linux'", {
