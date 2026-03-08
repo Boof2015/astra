@@ -373,6 +373,18 @@ function resolveSampleFormat(
   // 44.1 kHz lossy material. Keep the exact sample rate, but prefer integer PCM
   // for Linux hardware output when the source does not provide integer samples.
   if (backendKind === 'alsa-hw') {
+    if (sampleFormat.startsWith('u8') || sampleFormat.startsWith('s8') || sampleFormat.startsWith('s16')) {
+      return 's32'
+    }
+
+    if (sampleFormat.startsWith('s24') || sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
+      return 's32'
+    }
+
+    if (Number.isFinite(bitDepth) && bitDepth > 0) {
+      return bitDepth > 16 ? 's32' : 's32'
+    }
+
     if (LOSSY_CODECS.has(codec)) {
       return 's16'
     }
@@ -638,13 +650,23 @@ export function createNativeAudioController(
       try {
         return normalizePlaybackSnapshot(engine.play())
       } catch (error) {
-        if (capabilitiesCache.activeBackend !== 'alsa-hw' || currentTrackRequest?.sampleFormat !== 'f32') {
+        if (capabilitiesCache.activeBackend !== 'alsa-hw' || !currentTrackRequest) {
+          throw error
+        }
+
+        const retrySampleFormat = currentTrackRequest.sampleFormat === 'f32'
+          ? 's16'
+          : currentTrackRequest.sampleFormat === 's16'
+            ? 's32'
+            : null
+
+        if (!retrySampleFormat) {
           throw error
         }
 
         const decoded = await decodeFileToPcm(currentTrackRequest.filePath, currentTrackRequest.metadata, {
           backendKind: capabilitiesCache.activeBackend,
-          forcedSampleFormat: 's16'
+          forcedSampleFormat: retrySampleFormat
         })
         currentTrackRequest = {
           ...currentTrackRequest,
