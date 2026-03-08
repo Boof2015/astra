@@ -422,12 +422,12 @@ void Engine::seek(double seconds) {
 }
 
 double Engine::getPosition() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    pumpDeferredDeviceStop();
-    if (currentAudio_.sampleRate == 0) {
+    // Lock-free: uses atomics only. No mutex needed.
+    uint32_t sampleRate = currentSampleRate_.load(std::memory_order_relaxed);
+    if (sampleRate == 0) {
         return 0.0;
     }
-    return static_cast<double>(currentFrameIndex_.load(std::memory_order_relaxed)) / static_cast<double>(currentAudio_.sampleRate);
+    return static_cast<double>(currentFrameIndex_.load(std::memory_order_relaxed)) / static_cast<double>(sampleRate);
 }
 
 double Engine::getDuration() const {
@@ -435,8 +435,12 @@ double Engine::getDuration() const {
 }
 
 PlaybackState Engine::getState() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    pumpDeferredDeviceStop();
+    // Lock-free: playbackState_ is atomic.
+    // Pump deferred stop only when there's actually work to do (atomic check is cheap).
+    if (needsDeferredStop_.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pumpDeferredDeviceStop();
+    }
     return static_cast<PlaybackState>(playbackState_.load(std::memory_order_relaxed));
 }
 
@@ -615,7 +619,7 @@ uint32_t Engine::getDeviceSampleRate() const {
 }
 
 VisualizerSamples Engine::readVisualizerSamples(uint32_t maxFrames) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Lock-free: ma_pcm_rb is a SPSC ring buffer, safe for concurrent read/write.
     VisualizerSamples out;
     if (visualizerRing_ == nullptr || maxFrames == 0) {
         return out;
@@ -638,7 +642,7 @@ VisualizerSamples Engine::readVisualizerSamples(uint32_t maxFrames) {
 }
 
 SpectrumSamples Engine::readPostEqSpectrumSamples(uint32_t maxFrames) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Lock-free: ma_pcm_rb is a SPSC ring buffer, safe for concurrent read/write.
     SpectrumSamples out;
     if (spectrumRing_ == nullptr || maxFrames == 0) {
         return out;
