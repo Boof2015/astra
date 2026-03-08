@@ -77,6 +77,17 @@ interface DecodedPcmTrack {
   pcmData: Buffer
 }
 
+interface DecodeFileOptions {
+  backendKind?: NativeAudioBackendKind
+  forcedSampleFormat?: NativeAudioSampleFormat
+}
+
+interface LoadedTrackRequest {
+  filePath: string
+  metadata?: NativeAudioTrackMetadata
+  sampleFormat: NativeAudioSampleFormat
+}
+
 interface FfprobeStreamInfo {
   codec_name?: string
   codec_type?: string
@@ -344,10 +355,32 @@ function parseSampleRate(value: string | number | undefined): number | null {
   return Math.round(numeric)
 }
 
-function resolveSampleFormat(stream: FfprobeStreamInfo, metadata?: NativeAudioTrackMetadata): NativeAudioSampleFormat {
+function resolveSampleFormat(
+  stream: FfprobeStreamInfo,
+  metadata?: NativeAudioTrackMetadata,
+  backendKind: NativeAudioBackendKind = 'unavailable',
+  forcedSampleFormat?: NativeAudioSampleFormat
+): NativeAudioSampleFormat {
+  if (forcedSampleFormat) {
+    return forcedSampleFormat
+  }
+
   const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
   const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
   const bitDepth = Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0)
+
+  // Many ALSA hw devices reject float PCM in direct mode, especially for common
+  // 44.1 kHz lossy material. Keep the exact sample rate, but prefer integer PCM
+  // for Linux hardware output when the source does not provide integer samples.
+  if (backendKind === 'alsa-hw') {
+    if (LOSSY_CODECS.has(codec)) {
+      return 's16'
+    }
+
+    if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) {
+      return Number.isFinite(bitDepth) && bitDepth > 16 ? 's32' : 's16'
+    }
+  }
 
   if (LOSSY_CODECS.has(codec)) {
     return 'f32'
@@ -395,6 +428,7 @@ export function createNativeAudioController(
   const listeners = new Set<(event: NativeAudioEvent) => void>()
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
   let nextDecodedTrack: DecodedPcmTrack | null = null
+  let currentTrackRequest: LoadedTrackRequest | null = null
   const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
   let capabilitiesCache: NativeAudioCapabilities = {
     ...DEFAULT_UNAVAILABLE_CAPABILITIES,
@@ -454,7 +488,8 @@ export function createNativeAudioController(
 
   const decodeFileToPcm = async (
     filePath: string,
-    metadata?: NativeAudioTrackMetadata
+    metadata?: NativeAudioTrackMetadata,
+    options: DecodeFileOptions = {}
   ): Promise<DecodedPcmTrack> => {
     const ffprobePath = await resolveBinary('ffprobe')
     const ffmpegPath = await resolveBinary('ffmpeg')
@@ -484,7 +519,12 @@ export function createNativeAudioController(
     const duration = Number.isFinite(Number(stream.duration))
       ? Math.max(0, Number(stream.duration))
       : 0
-    const sampleFormat = resolveSampleFormat(stream, metadata)
+    const sampleFormat = resolveSampleFormat(
+      stream,
+      metadata,
+      options.backendKind ?? capabilitiesCache.activeBackend,
+      options.forcedSampleFormat
+    )
 
     const ffmpegArgs = [
       '-v', 'error',
@@ -563,16 +603,24 @@ export function createNativeAudioController(
 
     loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
       const engine = await ensureAvailable()
+      const backendKind = capabilitiesCache.activeBackend
       const decoded = nextDecodedTrack?.filePath === filePath
         ? nextDecodedTrack
-        : await decodeFileToPcm(filePath, metadata)
+        : await decodeFileToPcm(filePath, metadata, { backendKind })
       nextDecodedTrack = null
+      currentTrackRequest = {
+        filePath,
+        metadata,
+        sampleFormat: decoded.sampleFormat
+      }
       return loadDecodedTrack(engine, decoded)
     },
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
       const engine = await ensureAvailable()
-      const decoded = await decodeFileToPcm(filePath, metadata)
+      const decoded = await decodeFileToPcm(filePath, metadata, {
+        backendKind: capabilitiesCache.activeBackend
+      })
       engine.preloadNextTrack(
         new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
         decoded.sampleRate,
@@ -587,7 +635,24 @@ export function createNativeAudioController(
 
     play: async () => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.play())
+      try {
+        return normalizePlaybackSnapshot(engine.play())
+      } catch (error) {
+        if (capabilitiesCache.activeBackend !== 'alsa-hw' || currentTrackRequest?.sampleFormat !== 'f32') {
+          throw error
+        }
+
+        const decoded = await decodeFileToPcm(currentTrackRequest.filePath, currentTrackRequest.metadata, {
+          backendKind: capabilitiesCache.activeBackend,
+          forcedSampleFormat: 's16'
+        })
+        currentTrackRequest = {
+          ...currentTrackRequest,
+          sampleFormat: decoded.sampleFormat
+        }
+        loadDecodedTrack(engine, decoded)
+        return normalizePlaybackSnapshot(engine.play())
+      }
     },
 
     pause: async () => {
