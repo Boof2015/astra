@@ -1,6 +1,7 @@
 #include "playback_engine.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -38,8 +39,8 @@ constexpr DWORD kRenderThreadWaitTimeoutMs = 2000;
 
 class ScopedCoInit final {
 public:
-    ScopedCoInit() {
-        hr_ = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    explicit ScopedCoInit(DWORD coinitFlags = COINIT_MULTITHREADED) {
+        hr_ = CoInitializeEx(nullptr, coinitFlags);
         initialized_ = SUCCEEDED(hr_);
     }
 
@@ -426,10 +427,11 @@ public:
         PlaybackEngine* engine,
         std::string* error
     ) override {
-        ComPtr<IMMDevice> resolvedDevice;
         std::string resolvedDeviceId;
         std::string resolvedLabel;
-        if (!resolveOutputDevice(deviceId, &resolvedDevice, &resolvedDeviceId, &resolvedLabel, nullptr, error)) {
+        uint32_t maxChannels = 2;
+        ComPtr<IMMDevice> resolvedDevice;
+        if (!resolveOutputDevice(deviceId, &resolvedDevice, &resolvedDeviceId, &resolvedLabel, &maxChannels, error)) {
             return false;
         }
 
@@ -441,250 +443,74 @@ public:
                 || openFormat_.sampleFormat != format.sampleFormat;
             const bool deviceChanged = resolvedDeviceId != activeDeviceId_;
             engine_ = engine;
-            if (!formatChanged && !deviceChanged && audioClient_ != nullptr && renderClient_ != nullptr) {
+            if (!formatChanged && !deviceChanged && hasOpenFormat_) {
                 return true;
             }
         }
 
         close();
-
-        ScopedCoInit coInit;
-        if (!coInit.ok()) {
-            if (error != nullptr) {
-                *error = "Failed to initialize COM for WASAPI exclusive playback (" + formatHRESULT(coInit.hr()) + ").";
-            }
-            return false;
-        }
-
-        WAVEFORMATEXTENSIBLE waveFormat {};
-        if (!buildWaveFormat(format, &waveFormat, error)) {
-            return false;
-        }
-
-        ComPtr<IAudioClient> audioClient;
-        HRESULT hr = resolvedDevice->Activate(
-            __uuidof(IAudioClient),
-            CLSCTX_ALL,
-            nullptr,
-            reinterpret_cast<void**>(audioClient.GetAddressOf())
-        );
-        if (FAILED(hr) || audioClient == nullptr) {
-            if (error != nullptr) {
-                *error = "Failed to activate the selected WASAPI output device (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        hr = audioClient->IsFormatSupported(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
-            nullptr
-        );
-        if (hr != S_OK) {
-            if (error != nullptr) {
-                *error = "The selected WASAPI device does not support "
-                    + std::to_string(format.sampleRate)
-                    + " Hz "
-                    + std::to_string(format.channels)
-                    + "-channel "
-                    + format.sampleFormatId()
-                    + " in exclusive mode ("
-                    + formatHRESULT(hr)
-                    + ").";
-            }
-            return false;
-        }
-
-        REFERENCE_TIME defaultPeriod = 0;
-        REFERENCE_TIME minimumPeriod = 0;
-        hr = audioClient->GetDevicePeriod(&defaultPeriod, &minimumPeriod);
-        if (FAILED(hr)) {
-            if (error != nullptr) {
-                *error = "WASAPI could not query the device period (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        const REFERENCE_TIME exclusivePeriod = minimumPeriod > 0 ? minimumPeriod : defaultPeriod;
-        if (exclusivePeriod <= 0) {
-            if (error != nullptr) {
-                *error = "WASAPI reported an invalid exclusive buffer period.";
-            }
-            return false;
-        }
-
-        HANDLE sampleReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (sampleReadyEvent == nullptr || stopEvent == nullptr) {
-            if (sampleReadyEvent != nullptr) {
-                CloseHandle(sampleReadyEvent);
-            }
-            if (stopEvent != nullptr) {
-                CloseHandle(stopEvent);
-            }
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not create synchronization events.";
-            }
-            return false;
-        }
-
-        hr = audioClient->Initialize(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-            exclusivePeriod,
-            exclusivePeriod,
-            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
-            nullptr
-        );
-        if (FAILED(hr)) {
-            CloseHandle(sampleReadyEvent);
-            CloseHandle(stopEvent);
-            if (error != nullptr) {
-                *error = "WASAPI exclusive initialization failed (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        hr = audioClient->SetEventHandle(sampleReadyEvent);
-        if (FAILED(hr)) {
-            CloseHandle(sampleReadyEvent);
-            CloseHandle(stopEvent);
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not register its render event (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        UINT32 bufferFrameCount = 0;
-        hr = audioClient->GetBufferSize(&bufferFrameCount);
-        if (FAILED(hr) || bufferFrameCount == 0) {
-            CloseHandle(sampleReadyEvent);
-            CloseHandle(stopEvent);
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output reported an invalid endpoint buffer size.";
-            }
-            return false;
-        }
-
-        ComPtr<IAudioRenderClient> renderClient;
-        hr = audioClient->GetService(
-            __uuidof(IAudioRenderClient),
-            reinterpret_cast<void**>(renderClient.GetAddressOf())
-        );
-        if (FAILED(hr) || renderClient == nullptr) {
-            CloseHandle(sampleReadyEvent);
-            CloseHandle(stopEvent);
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not open its render client (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
         std::lock_guard<std::mutex> lock(mutex_);
         engine_ = engine;
-        activeDevice_ = resolvedDevice;
-        audioClient_ = audioClient;
-        renderClient_ = renderClient;
         openFormat_ = format;
         hasOpenFormat_ = true;
         activeDeviceId_ = resolvedDeviceId;
         activeDeviceLabel_ = resolvedLabel;
-        bufferFrameCount_ = bufferFrameCount;
-        sampleReadyEvent_ = sampleReadyEvent;
-        stopEvent_ = stopEvent;
-        resetQueueStateLocked();
-        clientStarted_ = false;
+        activeDeviceMaxChannels_ = maxChannels;
+        if (stopEvent_ == nullptr) {
+            stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (stopEvent_ == nullptr) {
+                hasOpenFormat_ = false;
+                if (error != nullptr) {
+                    *error = "WASAPI exclusive output could not create its stop event.";
+                }
+                return false;
+            }
+        }
         return true;
     }
 
     bool start(std::string* error) override {
-        stopRenderThread();
+        stopRenderThread(false);
 
-        ScopedCoInit coInit;
-        if (!coInit.ok()) {
-            if (error != nullptr) {
-                *error = "Failed to initialize COM for WASAPI playback start (" + formatHRESULT(coInit.hr()) + ").";
-            }
-            return false;
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (audioClient_ == nullptr || renderClient_ == nullptr || engine_ == nullptr || bufferFrameCount_ == 0) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output is unavailable.";
-            }
-            return false;
-        }
-
-        HRESULT hr = audioClient_->Stop();
-        if (FAILED(hr) && hr != AUDCLNT_E_NOT_STOPPED) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not stop before restart (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        hr = audioClient_->Reset();
-        if (FAILED(hr)) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not reset before playback (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        resetQueueStateLocked();
-        if (stopEvent_ != nullptr) {
-            ResetEvent(stopEvent_);
-        }
-
-        BYTE* renderBuffer = nullptr;
-        hr = renderClient_->GetBuffer(bufferFrameCount_, &renderBuffer);
-        if (FAILED(hr) || renderBuffer == nullptr) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not acquire its initial render buffer (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        bool streamEnded = false;
-        const size_t framesWritten = engine_->renderInto(renderBuffer, bufferFrameCount_, streamEnded);
-        hr = renderClient_->ReleaseBuffer(static_cast<UINT32>(framesWritten), 0);
-        if (FAILED(hr)) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output could not release its initial render buffer (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        if (framesWritten == 0) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output started without any audio frames to enqueue.";
-            }
-            return false;
-        }
-
-        queuedEndpointFrames_ = static_cast<UINT32>(framesWritten);
-        queuedAudioFrames_ = static_cast<UINT32>(framesWritten);
-        endOfStreamReached_ = streamEnded;
-
-        hr = audioClient_->Start();
-        if (FAILED(hr)) {
-            if (error != nullptr) {
-                *error = "WASAPI exclusive output failed to start (" + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        clientStarted_ = true;
         try {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!hasOpenFormat_ || engine_ == nullptr || stopEvent_ == nullptr) {
+                    if (error != nullptr) {
+                        *error = "WASAPI exclusive output is unavailable.";
+                    }
+                    return false;
+                }
+
+                ResetEvent(stopEvent_);
+                accountProgressOnStop_ = false;
+                startFinished_ = false;
+                startSucceeded_ = false;
+                startError_.clear();
+            }
+
             renderThread_ = std::thread(&WasapiExclusiveSink::renderLoop, this);
         } catch (const std::exception& threadError) {
-            audioClient_->Stop();
-            audioClient_->Reset();
-            clientStarted_ = false;
-            resetQueueStateLocked();
             if (error != nullptr) {
                 *error = std::string("WASAPI exclusive output could not start its render thread: ") + threadError.what();
+            }
+            return false;
+        }
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        startCv_.wait(lock, [this]() { return startFinished_; });
+        const bool success = startSucceeded_;
+        const std::string startError = startError_;
+        lock.unlock();
+
+        if (!success) {
+            if (renderThread_.joinable()) {
+                renderThread_.join();
+            }
+            if (error != nullptr) {
+                *error = startError.empty()
+                    ? "WASAPI exclusive output failed to start."
+                    : startError;
             }
             return false;
         }
@@ -693,40 +519,19 @@ public:
     }
 
     void close() override {
-        stopRenderThread();
+        stopRenderThread(false);
 
-        ScopedCoInit coInit;
-        if (coInit.ok()) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (audioClient_ != nullptr) {
-                audioClient_->Stop();
-                audioClient_->Reset();
-            }
-        }
-
-        HANDLE sampleReadyEvent = nullptr;
         HANDLE stopEvent = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            sampleReadyEvent = sampleReadyEvent_;
             stopEvent = stopEvent_;
-            sampleReadyEvent_ = nullptr;
             stopEvent_ = nullptr;
-            activeDevice_.Reset();
-            renderClient_.Reset();
-            audioClient_.Reset();
             activeDeviceId_.clear();
             activeDeviceLabel_.clear();
-            bufferFrameCount_ = 0;
+            activeDeviceMaxChannels_ = 2;
             hasOpenFormat_ = false;
             openFormat_ = TrackFormat{};
             engine_ = nullptr;
-            clientStarted_ = false;
-            resetQueueStateLocked();
-        }
-
-        if (sampleReadyEvent != nullptr) {
-            CloseHandle(sampleReadyEvent);
         }
         if (stopEvent != nullptr) {
             CloseHandle(stopEvent);
@@ -734,40 +539,11 @@ public:
     }
 
     void pause() override {
-        stopRenderThread();
-
-        ScopedCoInit coInit;
-        if (!coInit.ok()) {
-            return;
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (audioClient_ == nullptr) {
-            return;
-        }
-        updatePlaybackProgressLocked();
-        audioClient_->Stop();
-        audioClient_->Reset();
-        clientStarted_ = false;
-        resetQueueStateLocked();
+        stopRenderThread(true);
     }
 
     void stop() override {
-        stopRenderThread();
-
-        ScopedCoInit coInit;
-        if (!coInit.ok()) {
-            return;
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (audioClient_ == nullptr) {
-            return;
-        }
-        audioClient_->Stop();
-        audioClient_->Reset();
-        clientStarted_ = false;
-        resetQueueStateLocked();
+        stopRenderThread(false);
     }
 
     void reset() override {
@@ -776,7 +552,7 @@ public:
 
     bool isExclusive() const override {
         std::lock_guard<std::mutex> lock(mutex_);
-        return audioClient_ != nullptr;
+        return renderThread_.joinable() || hasOpenFormat_;
     }
 
     std::string activeDeviceId() const override {
@@ -790,12 +566,13 @@ public:
     }
 
 private:
-    void stopRenderThread() {
+    void stopRenderThread(bool accountProgress) {
         std::thread threadToJoin;
         HANDLE stopEvent = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stopEvent = stopEvent_;
+            accountProgressOnStop_ = accountProgress;
             if (renderThread_.joinable()) {
                 threadToJoin = std::move(renderThread_);
             }
@@ -810,71 +587,267 @@ private:
         }
     }
 
-    void resetQueueStateLocked() {
-        queuedEndpointFrames_ = 0;
-        queuedAudioFrames_ = 0;
-        endOfStreamReached_ = false;
-    }
-
-    void updatePlaybackProgressLocked() {
-        if (audioClient_ == nullptr || engine_ == nullptr || queuedEndpointFrames_ == 0) {
-            return;
-        }
-
-        UINT32 padding = 0;
-        const HRESULT hr = audioClient_->GetCurrentPadding(&padding);
-        if (FAILED(hr)) {
-            return;
-        }
-
-        if (padding > queuedEndpointFrames_) {
-            queuedEndpointFrames_ = padding;
-            return;
-        }
-
-        const UINT32 consumedEndpointFrames = queuedEndpointFrames_ - padding;
-        queuedEndpointFrames_ = padding;
-        if (consumedEndpointFrames == 0) {
-            return;
-        }
-
-        const UINT32 consumedAudioFrames = std::min(queuedAudioFrames_, consumedEndpointFrames);
-        queuedAudioFrames_ -= consumedAudioFrames;
-        if (consumedAudioFrames > 0) {
-            engine_->onFramesConsumed(consumedAudioFrames);
-        }
+    void finishStart(bool success, std::string error = {}) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        startFinished_ = true;
+        startSucceeded_ = success;
+        startError_ = std::move(error);
+        startCv_.notify_one();
     }
 
     void renderLoop() {
-        ScopedCoInit coInit;
+        ScopedCoInit coInit(COINIT_APARTMENTTHREADED);
         HANDLE mmcssHandle = nullptr;
         DWORD taskIndex = 0;
-        if (coInit.ok()) {
-            mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
-            if (mmcssHandle != nullptr) {
-                AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-            }
+        if (!coInit.ok()) {
+            finishStart(false, "Failed to initialize COM for the WASAPI render thread (" + formatHRESULT(coInit.hr()) + ").");
+            return;
         }
 
-        HANDLE waitHandles[2] = {};
+        PlaybackEngine* engine = nullptr;
+        TrackFormat format {};
+        std::string deviceId;
+        HANDLE stopEvent = nullptr;
+        bool hasOpenFormat = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            waitHandles[0] = stopEvent_;
-            waitHandles[1] = sampleReadyEvent_;
+            engine = engine_;
+            format = openFormat_;
+            deviceId = activeDeviceId_;
+            stopEvent = stopEvent_;
+            hasOpenFormat = hasOpenFormat_;
         }
 
-        bool shouldStopClient = true;
-        while (waitHandles[0] != nullptr && waitHandles[1] != nullptr) {
+        if (engine == nullptr || !hasOpenFormat || stopEvent == nullptr) {
+            finishStart(false, "WASAPI exclusive output is unavailable.");
+            return;
+        }
+
+        ComPtr<IMMDevice> resolvedDevice;
+        std::string resolvedDeviceId;
+        std::string resolvedLabel;
+        if (!resolveOutputDevice(deviceId, &resolvedDevice, &resolvedDeviceId, &resolvedLabel, nullptr, nullptr)) {
+            finishStart(false, "WASAPI could not resolve the selected output device on the render thread.");
+            return;
+        }
+
+        WAVEFORMATEXTENSIBLE waveFormat {};
+        std::string waveFormatError;
+        if (!buildWaveFormat(format, &waveFormat, &waveFormatError)) {
+            finishStart(false, waveFormatError);
+            return;
+        }
+
+        ComPtr<IAudioClient> audioClient;
+        HRESULT hr = resolvedDevice->Activate(
+            __uuidof(IAudioClient),
+            CLSCTX_ALL,
+            nullptr,
+            reinterpret_cast<void**>(audioClient.GetAddressOf())
+        );
+        if (FAILED(hr) || audioClient == nullptr) {
+            finishStart(false, "Failed to activate the selected WASAPI output device (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        hr = audioClient->IsFormatSupported(
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
+            nullptr
+        );
+        if (hr != S_OK) {
+            finishStart(false,
+                "The selected WASAPI device does not support "
+                + std::to_string(format.sampleRate)
+                + " Hz "
+                + std::to_string(format.channels)
+                + "-channel "
+                + format.sampleFormatId()
+                + " in exclusive mode ("
+                + formatHRESULT(hr)
+                + ")."
+            );
+            return;
+        }
+
+        REFERENCE_TIME defaultPeriod = 0;
+        REFERENCE_TIME minimumPeriod = 0;
+        hr = audioClient->GetDevicePeriod(&defaultPeriod, &minimumPeriod);
+        if (FAILED(hr)) {
+            finishStart(false, "WASAPI could not query the device period (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        const REFERENCE_TIME exclusivePeriod = minimumPeriod > 0 ? minimumPeriod : defaultPeriod;
+        if (exclusivePeriod <= 0) {
+            finishStart(false, "WASAPI reported an invalid exclusive buffer period.");
+            return;
+        }
+
+        HANDLE sampleReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (sampleReadyEvent == nullptr) {
+            finishStart(false, "WASAPI exclusive output could not create its sample-ready event.");
+            return;
+        }
+
+        hr = audioClient->Initialize(
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
+            exclusivePeriod,
+            exclusivePeriod,
+            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
+            nullptr
+        );
+        if (FAILED(hr)) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive initialization failed (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        hr = audioClient->SetEventHandle(sampleReadyEvent);
+        if (FAILED(hr)) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive output could not register its render event (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        UINT32 bufferFrameCount = 0;
+        hr = audioClient->GetBufferSize(&bufferFrameCount);
+        if (FAILED(hr) || bufferFrameCount == 0) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive output reported an invalid endpoint buffer size.");
+            return;
+        }
+
+        ComPtr<IAudioRenderClient> renderClient;
+        hr = audioClient->GetService(
+            __uuidof(IAudioRenderClient),
+            reinterpret_cast<void**>(renderClient.GetAddressOf())
+        );
+        if (FAILED(hr) || renderClient == nullptr) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive output could not open its render client (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        auto updatePlaybackProgress = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames) {
+            if (queuedEndpointFrames == 0) {
+                return;
+            }
+
+            UINT32 padding = 0;
+            const HRESULT paddingHr = audioClient->GetCurrentPadding(&padding);
+            if (FAILED(paddingHr)) {
+                return;
+            }
+
+            if (padding > queuedEndpointFrames) {
+                queuedEndpointFrames = padding;
+                return;
+            }
+
+            const UINT32 consumedEndpointFrames = queuedEndpointFrames - padding;
+            queuedEndpointFrames = padding;
+            if (consumedEndpointFrames == 0) {
+                return;
+            }
+
+            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, consumedEndpointFrames);
+            queuedAudioFrames -= consumedAudioFrames;
+            if (consumedAudioFrames > 0) {
+                engine->onFramesConsumed(consumedAudioFrames);
+            }
+        };
+
+        auto fillBuffer = [&](UINT32 requestedFrames, UINT32* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
+            BYTE* renderBuffer = nullptr;
+            HRESULT bufferHr = renderClient->GetBuffer(requestedFrames, &renderBuffer);
+            if (FAILED(bufferHr) || renderBuffer == nullptr) {
+                if (fillError != nullptr) {
+                    *fillError = "WASAPI exclusive output could not acquire a render buffer (" + formatHRESULT(bufferHr) + ").";
+                }
+                return false;
+            }
+
+            bool streamEnded = false;
+            const size_t framesWritten = engine->renderInto(renderBuffer, requestedFrames, streamEnded);
+            const UINT32 bytesPerFrame = format.bytesPerFrame();
+            const UINT32 usedFrames = static_cast<UINT32>(std::min<size_t>(framesWritten, requestedFrames));
+            if (usedFrames < requestedFrames && bytesPerFrame > 0) {
+                const UINT32 usedBytes = usedFrames * bytesPerFrame;
+                const UINT32 remainingBytes = (requestedFrames - usedFrames) * bytesPerFrame;
+                std::memset(renderBuffer + usedBytes, 0, remainingBytes);
+            }
+
+            bufferHr = renderClient->ReleaseBuffer(requestedFrames, 0);
+            if (FAILED(bufferHr)) {
+                if (fillError != nullptr) {
+                    *fillError = "WASAPI exclusive output could not release a render buffer (" + formatHRESULT(bufferHr) + ").";
+                }
+                return false;
+            }
+
+            if (writtenAudioFrames != nullptr) {
+                *writtenAudioFrames = usedFrames;
+            }
+            if (reachedEndOfStream != nullptr) {
+                *reachedEndOfStream = streamEnded;
+            }
+            return true;
+        };
+
+        UINT32 queuedEndpointFrames = 0;
+        UINT32 queuedAudioFrames = 0;
+        bool endOfStreamReached = false;
+        std::string fillError;
+        UINT32 primedFrames = 0;
+        if (!fillBuffer(bufferFrameCount, &primedFrames, &endOfStreamReached, &fillError)) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, fillError);
+            return;
+        }
+
+        if (primedFrames == 0) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive output started without any audio frames to enqueue.");
+            return;
+        }
+
+        queuedEndpointFrames = bufferFrameCount;
+        queuedAudioFrames = primedFrames;
+
+        hr = audioClient->Start();
+        if (FAILED(hr)) {
+            CloseHandle(sampleReadyEvent);
+            finishStart(false, "WASAPI exclusive output failed to start (" + formatHRESULT(hr) + ").");
+            return;
+        }
+
+        mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+        if (mmcssHandle != nullptr) {
+            AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+        }
+
+        finishStart(true);
+
+        HANDLE waitHandles[2] = { stopEvent, sampleReadyEvent };
+        while (true) {
             const DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, kRenderThreadWaitTimeoutMs);
             if (waitResult == WAIT_OBJECT_0) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                updatePlaybackProgressLocked();
+                bool accountProgress = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    accountProgress = accountProgressOnStop_;
+                    accountProgressOnStop_ = false;
+                }
+                if (accountProgress) {
+                    updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
+                }
                 break;
             }
 
             if (waitResult == WAIT_TIMEOUT) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                updatePlaybackProgressLocked();
+                updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
                 continue;
             }
 
@@ -882,74 +855,44 @@ private:
                 break;
             }
 
-            bool playbackDrained = false;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (audioClient_ == nullptr || renderClient_ == nullptr || engine_ == nullptr) {
+            updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
+
+            if (endOfStreamReached) {
+                if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
                     break;
                 }
-
-                updatePlaybackProgressLocked();
-
-                UINT32 padding = 0;
-                HRESULT hr = audioClient_->GetCurrentPadding(&padding);
-                if (FAILED(hr)) {
-                    break;
-                }
-
-                if (endOfStreamReached_) {
-                    queuedEndpointFrames_ = padding;
-                    if (queuedAudioFrames_ == 0 && padding == 0) {
-                        playbackDrained = true;
-                    }
-                } else {
-                    const UINT32 availableFrames = bufferFrameCount_ > padding
-                        ? bufferFrameCount_ - padding
-                        : 0;
-
-                    if (availableFrames > 0) {
-                        BYTE* renderBuffer = nullptr;
-                        hr = renderClient_->GetBuffer(availableFrames, &renderBuffer);
-                        if (FAILED(hr) || renderBuffer == nullptr) {
-                            break;
-                        }
-
-                        bool streamEnded = false;
-                        const size_t framesWritten = engine_->renderInto(renderBuffer, availableFrames, streamEnded);
-                        hr = renderClient_->ReleaseBuffer(static_cast<UINT32>(framesWritten), 0);
-                        if (FAILED(hr)) {
-                            break;
-                        }
-
-                        queuedEndpointFrames_ = padding + static_cast<UINT32>(framesWritten);
-                        queuedAudioFrames_ = std::min<UINT32>(
-                            bufferFrameCount_,
-                            queuedAudioFrames_ + static_cast<UINT32>(framesWritten)
-                        );
-                        endOfStreamReached_ = streamEnded;
-
-                        if (endOfStreamReached_ && queuedAudioFrames_ == 0 && queuedEndpointFrames_ == 0) {
-                            playbackDrained = true;
-                        }
-                    } else {
-                        queuedEndpointFrames_ = padding;
-                    }
-                }
+                continue;
             }
 
-            if (playbackDrained) {
+            UINT32 padding = 0;
+            hr = audioClient->GetCurrentPadding(&padding);
+            if (FAILED(hr)) {
                 break;
             }
+
+            const UINT32 availableFrames = bufferFrameCount > padding
+                ? bufferFrameCount - padding
+                : 0;
+            if (availableFrames == 0) {
+                queuedEndpointFrames = padding;
+                continue;
+            }
+
+            UINT32 writtenFrames = 0;
+            fillError.clear();
+            bool streamEnded = false;
+            if (!fillBuffer(availableFrames, &writtenFrames, &streamEnded, &fillError)) {
+                break;
+            }
+
+            queuedEndpointFrames = padding + availableFrames;
+            queuedAudioFrames = std::min<UINT32>(bufferFrameCount, queuedAudioFrames + writtenFrames);
+            endOfStreamReached = streamEnded;
         }
 
-        ScopedCoInit cleanupCoInit;
-        if (cleanupCoInit.ok()) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (audioClient_ != nullptr && clientStarted_) {
-                audioClient_->Stop();
-            }
-            clientStarted_ = false;
-        }
+        audioClient->Stop();
+        audioClient->Reset();
+        CloseHandle(sampleReadyEvent);
 
         if (mmcssHandle != nullptr) {
             AvRevertMmThreadCharacteristics(mmcssHandle);
@@ -957,25 +900,20 @@ private:
     }
 
     mutable std::mutex mutex_;
+    std::condition_variable startCv_;
     PlaybackEngine* engine_ = nullptr;
     TrackFormat openFormat_ {};
     bool hasOpenFormat_ = false;
 
-    ComPtr<IMMDevice> activeDevice_;
-    ComPtr<IAudioClient> audioClient_;
-    ComPtr<IAudioRenderClient> renderClient_;
-
     std::string activeDeviceId_;
     std::string activeDeviceLabel_;
-    UINT32 bufferFrameCount_ = 0;
-    HANDLE sampleReadyEvent_ = nullptr;
+    uint32_t activeDeviceMaxChannels_ = 2;
     HANDLE stopEvent_ = nullptr;
     std::thread renderThread_;
-    bool clientStarted_ = false;
-
-    UINT32 queuedEndpointFrames_ = 0;
-    UINT32 queuedAudioFrames_ = 0;
-    bool endOfStreamReached_ = false;
+    bool accountProgressOnStop_ = false;
+    bool startFinished_ = false;
+    bool startSucceeded_ = false;
+    std::string startError_;
 };
 
 } // namespace
