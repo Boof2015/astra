@@ -23,8 +23,8 @@ namespace NativePlayback {
 namespace {
 
 constexpr int kRenderThreadWaitTimeoutMs = 100;
-constexpr snd_pcm_uframes_t kPreferredPeriodFrames = 256;
-constexpr snd_pcm_uframes_t kPreferredBufferPeriods = 4;
+constexpr snd_pcm_uframes_t kPreferredPeriodFrames = 1024;
+constexpr unsigned int kPreferredBufferPeriods = 4;
 
 std::string formatAlsaError(const std::string& message, int errorCode) {
     return message + " (" + snd_strerror(errorCode) + ").";
@@ -393,7 +393,20 @@ bool configurePcmHandle(
         return false;
     }
 
-    snd_pcm_uframes_t bufferFrames = std::max<snd_pcm_uframes_t>(periodFrames * kPreferredBufferPeriods, periodFrames * 2);
+    unsigned int periodCount = std::max<unsigned int>(2, kPreferredBufferPeriods);
+    int periodsDirection = 0;
+    result = snd_pcm_hw_params_set_periods_near(pcmHandle, hwParams, &periodCount, &periodsDirection);
+    if (result < 0) {
+        if (error != nullptr) {
+            *error = formatAlsaError("ALSA hw output could not configure its period count", result);
+        }
+        return false;
+    }
+
+    snd_pcm_uframes_t bufferFrames = std::max<snd_pcm_uframes_t>(
+        periodFrames * static_cast<snd_pcm_uframes_t>(std::max<unsigned int>(2, periodCount)),
+        periodFrames * 2
+    );
     result = snd_pcm_hw_params_set_buffer_size_near(pcmHandle, hwParams, &bufferFrames);
     if (result < 0) {
         if (error != nullptr) {
