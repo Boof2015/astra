@@ -72,15 +72,28 @@ function App() {
   const isFullscreen = useUIStore((s) => s.isFullscreen)
 
   useEffect(() => {
+    const runInitTask = (label: string, task: () => unknown): void => {
+      try {
+        const result = task()
+        if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+          void Promise.resolve(result).catch((error) => {
+            console.error(`${label} initialization failed:`, error)
+          })
+        }
+      } catch (error) {
+        console.error(`${label} initialization failed:`, error)
+      }
+    }
+
     useThemeStore.getState().initFromSaved()
-    useLibraryStore.getState().loadLibrary()
-    useAudioSettingsStore.getState().initFromSaved()
-    useDiscordSettingsStore.getState().initFromSaved()
-    void useLocalApiSettingsStore.getState().init()
-    void useLastFmSettingsStore.getState().init()
-    void useLyricsStore.getState().init()
-    void useSubsonicSettingsStore.getState().init()
-    void useJellyfinSettingsStore.getState().init()
+    runInitTask('Library', () => useLibraryStore.getState().loadLibrary())
+    runInitTask('Audio settings', () => useAudioSettingsStore.getState().initFromSaved())
+    runInitTask('Discord settings', () => useDiscordSettingsStore.getState().initFromSaved())
+    runInitTask('Local API', () => useLocalApiSettingsStore.getState().init())
+    runInitTask('Last.fm', () => useLastFmSettingsStore.getState().init())
+    runInitTask('Lyrics', () => useLyricsStore.getState().init())
+    runInitTask('Subsonic', () => useSubsonicSettingsStore.getState().init())
+    runInitTask('Jellyfin', () => useJellyfinSettingsStore.getState().init())
 
     const handleAssociatedOpenFiles = async (rawPaths: string[]) => {
       const queuePaths = [...new Set(

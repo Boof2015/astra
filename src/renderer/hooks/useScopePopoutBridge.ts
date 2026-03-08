@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { audioEngine } from '../audio/AudioEngine'
+import { backendManager as audioEngine } from '../audio/AudioBackendManager'
 import { usePlayerStore } from '../stores/playerStore'
 import { useScopePopoutStore } from '../stores/scopePopoutStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'

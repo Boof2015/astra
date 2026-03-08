@@ -1,4 +1,4 @@
-import { audioEngine } from '../AudioEngine'
+import { backendManager as audioEngine } from '../AudioBackendManager'
 import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
@@ -97,6 +97,7 @@ export class Oscilloscope {
   private samplesReceived: number = 0
   private lastSampleRate: number = 0
   private unsubscribeTrackChange: (() => void) | null = null
+  private missingNativeWarningShown = false
   private static readonly WARMUP_SAMPLES = 4096 // Need ~4K samples before pitch detection is reliable
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
@@ -126,8 +127,9 @@ export class Oscilloscope {
       // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
-    } else if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP not available!')
+    } else if (!isNativeAvailable() && !this.missingNativeWarningShown) {
+      console.warn('Oscilloscope: Native DSP not available, using idle fallback')
+      this.missingNativeWarningShown = true
     }
   }
 
@@ -189,7 +191,6 @@ export class Oscilloscope {
 
     // Native C++ is being fed continuously by AudioWorklet via AudioEngine
     if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP required')
       this.animationId = requestAnimationFrame(this.draw)
       return
     }

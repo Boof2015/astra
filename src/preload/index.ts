@@ -44,6 +44,7 @@ import type {
   SubsonicStatusSnapshot,
   TrackSourceType
 } from '../types/subsonic'
+import type { NativeAudioAPI } from '../renderer/audio/native/native-audio'
 
 export interface AudioFileMetadata {
   title?: string
@@ -375,12 +376,13 @@ export interface VisualizerDSP {
 
 // Load Native Module
 let visualizerDSP: VisualizerDSP | null = null
+let nativeAudioModule: NativeAudioAPI | null = null
+const isElectronViteDev = Boolean(process.env['ELECTRON_RENDERER_URL']) || process.env.NODE_ENV === 'development'
 try {
   // Determine path based on environment
-  const isDev = process.env.NODE_ENV === 'development'
   let modulePath: string
 
-  if (isDev) {
+  if (isElectronViteDev) {
     // In dev: .../astra/native/build/Release/visualizer_dsp.node
     // __dirname is .../out/preload
     modulePath = join(__dirname, '../../native/build/Release/visualizer_dsp.node')
@@ -394,6 +396,26 @@ try {
   console.log('Native visualizer DSP module loaded successfully', modulePath)
 } catch (error) {
   console.warn('Failed to load native visualizer DSP module:', error)
+}
+
+try {
+  const modulePath = isElectronViteDev
+    ? join(__dirname, '../../native/build/Release/native_audio.node')
+    : join(process.resourcesPath, 'native/native_audio.node')
+
+  const loadedModule = require(modulePath) as NativeAudioAPI
+  if (!loadedModule.initialize()) {
+    loadedModule.shutdown()
+    console.warn('Native audio module loaded but failed to initialize:', modulePath)
+  } else {
+    nativeAudioModule = loadedModule
+    window.addEventListener('beforeunload', () => {
+      nativeAudioModule?.shutdown()
+    })
+    console.log('Native audio module loaded successfully', modulePath)
+  }
+} catch (error) {
+  console.warn('Failed to load native audio module:', error)
 }
 
 // Expose APIs to renderer
@@ -726,10 +748,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
+contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioModule)
 
 // Type declarations for renderer
 declare global {
   interface Window {
+    nativeAudioAPI: NativeAudioAPI | null
     electronAPI: {
       // Window controls
       minimize: () => void

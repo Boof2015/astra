@@ -16,10 +16,17 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
+  'astra-audio-backend-mode',
   'astra-audio-output-device',
+  'astra-audio-output-device-web',
+  'astra-audio-output-device-native',
   'astra-audio-calibration-input-device',
   'astra-audio-multichannel-enabled',
+  'astra-audio-multichannel-enabled-web',
+  'astra-audio-multichannel-enabled-native',
   'astra-audio-channel-routing-map',
+  'astra-audio-channel-routing-map-web',
+  'astra-audio-channel-routing-map-native',
   'astra-audio-normalization-enabled-v1',
   'astra-audio-normalization-target-lufs-v1',
   'astra-audio-delay-profiles-v1',

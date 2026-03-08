@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
-import { audioEngine } from '../../audio/AudioEngine'
+import { backendManager as audioEngine } from '../../audio/AudioBackendManager'
 import EQFrequencyResponse from './EQFrequencyResponse'
 import EQSpectrumOverlay from './EQSpectrumOverlay'
 import EQBandSlider from './EQBandSlider'

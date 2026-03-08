@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useEQStore } from '../../stores/eqStore'
-import { audioEngine } from '../../audio/AudioEngine'
+import { backendManager as audioEngine } from '../../audio/AudioBackendManager'
 import type { EQBand } from '../../types/audio'
 
 interface EQResponsePreviewProps {

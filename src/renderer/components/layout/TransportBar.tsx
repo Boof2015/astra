@@ -5,7 +5,7 @@ import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
-import { audioEngine } from '../../audio/AudioEngine'
+import { backendManager as audioEngine } from '../../audio/AudioBackendManager'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import WaveformSeekBar from '../player/WaveformSeekBar'
@@ -57,9 +57,12 @@ export default function TransportBar() {
   const openArtistInLibrary = useOpenArtistInLibrary()
   const selectedOutputDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
   const availableOutputDevices = useAudioSettingsStore((s) => s.availableDevices)
+  const effectiveAudioBackendMode = useAudioSettingsStore((s) => s.effectiveAudioBackendMode)
+  const audioBackendFallbackWarning = useAudioSettingsStore((s) => s.audioBackendFallbackWarning)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
+  const isBitPerfectMode = effectiveAudioBackendMode === 'bit-perfect'
 
   const isAssociationTrack = currentTrack?.origin === 'associated-external'
   const isFavorite = currentTrack && !isAssociationTrack ? favorites.has(currentTrack.path) : false
@@ -138,12 +141,14 @@ export default function TransportBar() {
   }
 
   const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isBitPerfectMode) return
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
     setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
   }
 
   const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isBitPerfectMode) return
     if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
     setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
   }
@@ -202,7 +207,20 @@ export default function TransportBar() {
       selectedFallbackLabel: 'Selected Output'
     }).label
   })()
+  const backendModeLabel = (() => {
+    switch (effectiveAudioBackendMode) {
+      case 'native-shared':
+        return 'Native'
+      case 'bit-perfect':
+        return 'Bit-Perfect'
+      default:
+        return 'Web Audio'
+    }
+  })()
   const normalizationReadout = (() => {
+    if (isBitPerfectMode) {
+      return { value: 'BYP', dim: false, accent: false, off: true }
+    }
     const gainMode = audioEngine.getNormalizationMode()
     if (!currentTrack) {
       return { value: '\u2014', dim: true, accent: false, off: false }
@@ -309,9 +327,12 @@ export default function TransportBar() {
               </div>
             )}
           </div>
-          <div className="transport-output-line" title={outputDeviceLabel}>
+          <div
+            className="transport-output-line"
+            title={`${backendModeLabel} • ${audioEngine.decoderLabel}${audioBackendFallbackWarning ? ` • ${audioBackendFallbackWarning}` : ''}`}
+          >
             <span className="transport-output-line-prefix">OUT</span>
-            <span className="transport-output-line-value">{outputDeviceLabel}</span>
+            <span className="transport-output-line-value">{backendModeLabel} • {outputDeviceLabel}</span>
           </div>
         </div>
         <button
@@ -462,6 +483,8 @@ export default function TransportBar() {
             className="volume-btn"
             onClick={toggleMute}
             aria-label={isMuted ? 'Unmute' : 'Mute'}
+            disabled={isBitPerfectMode}
+            title={isBitPerfectMode ? 'App volume is disabled in bit-perfect mode' : (isMuted ? 'Unmute' : 'Mute')}
           >
             {isMuted || volume === 0 ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -487,6 +510,7 @@ export default function TransportBar() {
             aria-valuenow={volume * 100}
             aria-valuemin={0}
             aria-valuemax={100}
+            aria-disabled={isBitPerfectMode}
           >
             <div
               className="volume-fill"

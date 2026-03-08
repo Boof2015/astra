@@ -3,13 +3,21 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useEQStore } from '../../stores/eqStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
-import { audioEngine } from '../../audio/AudioEngine'
+import { backendManager as audioEngine } from '../../audio/AudioBackendManager'
 
 interface PipelineNode {
   id: string
   icon: React.ReactNode
   label: string
   detail: string
+}
+
+function formatSampleRateKhz(sampleRate: number | null | undefined): string | null {
+  if (!Number.isFinite(sampleRate) || (sampleRate ?? 0) <= 0) {
+    return null
+  }
+
+  return `${((sampleRate ?? 0) / 1000).toFixed(1)} kHz`
 }
 
 function PipelineArrow() {
@@ -119,12 +127,20 @@ export default function AudioPipelineShelf() {
   const eqBands = useEQStore((s) => s.bands)
   const selectedDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
   const availableDevices = useAudioSettingsStore((s) => s.availableDevices)
+  const effectiveAudioBackendMode = useAudioSettingsStore((s) => s.effectiveAudioBackendMode)
+  const audioBackendFallbackWarning = useAudioSettingsStore((s) => s.audioBackendFallbackWarning)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const multichannelEnabled = useAudioSettingsStore((s) => s.multichannelEnabled)
   const channelRoutingMap = useAudioSettingsStore((s) => s.channelRoutingMap)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
+  const backendModeLabel = effectiveAudioBackendMode === 'web-audio'
+    ? 'Web Audio'
+    : effectiveAudioBackendMode === 'bit-perfect'
+      ? 'Bit-Perfect'
+      : 'Native'
+  const isBitPerfectMode = effectiveAudioBackendMode === 'bit-perfect'
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -146,26 +162,47 @@ export default function AudioPipelineShelf() {
     result.push({ id: 'source', icon: SourceIcon, label: 'Source', detail: sourceDetail })
 
     // Decoder
-    result.push({ id: 'decoder', icon: DecoderIcon, label: 'Decoder', detail: 'Web Audio API' })
+    result.push({
+      id: 'decoder',
+      icon: DecoderIcon,
+      label: 'Decoder',
+      detail: `${backendModeLabel} • ${audioEngine.decoderLabel}`
+    })
+    if (audioBackendFallbackWarning) {
+      result.push({ id: 'mode', icon: DecoderIcon, label: 'Mode', detail: 'Shared fallback' })
+    }
 
-    // Resampler (only if sample rates differ)
+    // Resampler
     const trackSR = currentTrack.sampleRate
-    const contextSR = audioEngine.getSampleRate()
-    if (trackSR && contextSR && trackSR !== contextSR) {
+    const signalSR = audioEngine.getSampleRate()
+    const deviceSR = audioEngine.getDeviceSampleRate()
+    if (effectiveAudioBackendMode !== 'web-audio') {
+      if (trackSR && deviceSR && trackSR !== deviceSR) {
+        const from = (trackSR / 1000).toFixed(1)
+        const to = (deviceSR / 1000).toFixed(1)
+        result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail: `${from} \u2192 ${to} kHz` })
+      } else {
+        result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail: 'Bypassed' })
+      }
+    } else if (trackSR && signalSR && trackSR !== signalSR) {
       const from = (trackSR / 1000).toFixed(1)
-      const to = (contextSR / 1000).toFixed(1)
+      const to = (signalSR / 1000).toFixed(1)
       result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail: `${from} \u2192 ${to} kHz` })
     }
 
     // Channel Routing
-    if (multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
+    if (isBitPerfectMode && multichannelEnabled) {
+      result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: 'Bypassed' })
+    } else if (multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
       const srcCh = currentTrack.channels ?? 2
       const outCh = channelRoutingMap.length
       result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: `${srcCh}ch \u2192 ${outCh}ch` })
     }
 
     // Normalization
-    if (normalizationEnabled && Number.isFinite(normalizationTargetLufs)) {
+    if (isBitPerfectMode && (normalizationEnabled || replayGainScanEnabled)) {
+      result.push({ id: 'norm', icon: NormIcon, label: 'Normalization', detail: 'Bypassed' })
+    } else if (normalizationEnabled && Number.isFinite(normalizationTargetLufs)) {
       const gainMode = audioEngine.getNormalizationMode()
       const gainDb = audioEngine.getNormalizationGainDb()
       const rounded = Math.round(gainDb * 10) / 10
@@ -180,7 +217,9 @@ export default function AudioPipelineShelf() {
     }
 
     // EQ
-    if (eqEnabled) {
+    if (isBitPerfectMode && eqEnabled) {
+      result.push({ id: 'eq', icon: EQIcon, label: 'EQ', detail: 'Bypassed' })
+    } else if (eqEnabled) {
       result.push({ id: 'eq', icon: EQIcon, label: 'EQ', detail: `${eqBands.length} bands` })
     }
 
@@ -194,8 +233,13 @@ export default function AudioPipelineShelf() {
       defaultRouteFallbackLabel: 'System Default Output',
       selectedFallbackLabel: 'Selected Output'
     }).label
-    const outSR = (contextSR / 1000).toFixed(1)
-    result.push({ id: 'output', icon: OutputIcon, label: 'Output', detail: `${deviceLabel} @ ${outSR} kHz` })
+    const outputRateDetail = formatSampleRateKhz(deviceSR)
+    result.push({
+      id: 'output',
+      icon: OutputIcon,
+      label: 'Output',
+      detail: outputRateDetail ? `${deviceLabel} @ ${outputRateDetail}` : deviceLabel
+    })
 
     return result
   }, [
@@ -210,6 +254,10 @@ export default function AudioPipelineShelf() {
     normalizationEnabled,
     normalizationTargetLufs,
     replayGainScanEnabled,
+    effectiveAudioBackendMode,
+    audioBackendFallbackWarning,
+    backendModeLabel,
+    isBitPerfectMode,
   ])
 
   return (

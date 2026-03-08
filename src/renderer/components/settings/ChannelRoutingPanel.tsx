@@ -76,6 +76,7 @@ function getChannelLabel(index: number, layout: SpeakerChannel[]): string {
 export default function ChannelRoutingPanel() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const {
+    effectiveAudioBackendMode,
     selectedDeviceId,
     availableDevices,
     selectedOutputChannelCount,
@@ -143,6 +144,7 @@ export default function ChannelRoutingPanel() {
 
   const downmixActive = hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveOutputChannels
   const hasManualRouting = Boolean(channelRoutingMap && channelRoutingMap.length > 0)
+  const routingBypassed = effectiveAudioBackendMode === 'bit-perfect'
 
   const selectedDeviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
     defaultRouteFallbackLabel: 'System Default Device',
@@ -158,7 +160,7 @@ export default function ChannelRoutingPanel() {
   }, [hasTrackChannels, resolvedTrackChannels, sourceLayout])
 
   const handleMappingChange = (outputIndex: number, rawValue: string) => {
-    if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled) return
+    if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled || routingBypassed) return
 
     const parsed = Number(rawValue)
     const sourceIndex = Number.isFinite(parsed) ? Math.trunc(parsed) : -1
@@ -197,6 +199,7 @@ export default function ChannelRoutingPanel() {
           type="button"
           className={`channel-routing-mode-toggle ${multichannelEnabled ? 'active' : ''}`}
           onClick={() => void setMultichannelEnabled(!multichannelEnabled)}
+          disabled={routingBypassed}
         >
           {multichannelEnabled ? 'Multichannel On' : 'Stereo Safe'}
         </button>
@@ -217,6 +220,7 @@ export default function ChannelRoutingPanel() {
             type="button"
             className="channel-routing-reset-btn"
             onClick={() => void resetChannelRoutingMap()}
+            disabled={routingBypassed}
           >
             Reset Routing
           </button>
@@ -263,7 +267,7 @@ export default function ChannelRoutingPanel() {
                     className="channel-routing-route-select"
                     value={multichannelEnabled ? sourceIndex : -1}
                     onChange={(event) => handleMappingChange(index, event.target.value)}
-                    disabled={!hasTrackChannels || !multichannelEnabled}
+                    disabled={!hasTrackChannels || !multichannelEnabled || routingBypassed}
                     aria-label={`Route output channel ${speaker.id}`}
                   >
                     <option value={-1}>Mute</option>
@@ -292,6 +296,11 @@ export default function ChannelRoutingPanel() {
         {hasOutputChannels && hasTrackChannels && !multichannelEnabled && (
           <div className="channel-routing-empty">
             Stereo mode is enabled. Turn on multichannel to edit per-channel routing.
+          </div>
+        )}
+        {routingBypassed && (
+          <div className="channel-routing-empty">
+            Bit-perfect playback bypasses Astra channel routing. Saved routing will return in shared/native modes.
           </div>
         )}
       </div>

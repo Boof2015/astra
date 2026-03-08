@@ -1,4 +1,4 @@
-import { audioEngine } from '../AudioEngine'
+import { backendManager as audioEngine } from '../AudioBackendManager'
 import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
 
 export interface VectorscopeOptions {

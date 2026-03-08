@@ -3,7 +3,7 @@ import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
-import { audioEngine } from '../audio/AudioEngine'
+import { backendManager as audioEngine } from '../audio/AudioBackendManager'
 import type {
   MiniPlayerSnapshot,
   MiniPlayerWindowState

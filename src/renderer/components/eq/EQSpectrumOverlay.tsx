@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
-import { audioEngine } from '../../audio/AudioEngine'
+import { audioAnalysisManager } from '../../audio/AudioAnalysisManager'
+import { backendManager } from '../../audio/AudioBackendManager'
 import { colorToRgbChannels } from '../visualizers/ambientSpectrumMath'
 
 const MIN_FREQ = 20
@@ -7,10 +8,6 @@ const MAX_FREQ = 20000
 const LOG_MIN = Math.log10(MIN_FREQ)
 const LOG_MAX = Math.log10(MAX_FREQ)
 
-// Spectrum dB range
-const SPEC_MIN_DB = -90
-const SPEC_MAX_DB = -10
-const SPEC_DB_RANGE = SPEC_MAX_DB - SPEC_MIN_DB
 const DEFAULT_ACCENT_HEX = '#38bdf8'
 const DEFAULT_ACCENT_CHANNELS = '56, 189, 248'
 
@@ -56,7 +53,7 @@ function resolveAccentRgbChannels(): string {
 export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animIdRef = useRef<number | null>(null)
-  const dataRef = useRef<Float32Array<ArrayBuffer> | null>(null)
+  const dataRef = useRef<Float32Array | null>(null)
 
   useEffect(() => {
     if (width <= 0 || height <= 0) return
@@ -74,20 +71,17 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
     const draw = () => {
       ctx.clearRect(0, 0, width, height)
 
-      const analyser = audioEngine.getEQAnalyserNode()
-      if (!analyser || audioEngine.playbackState !== 'playing') {
+      const frame = audioAnalysisManager.getEqSpectrumFrame()
+      if (!frame || backendManager.playbackState !== 'playing') {
         animIdRef.current = requestAnimationFrame(draw)
         return
       }
 
-      // Allocate/reuse Float32Array for frequency data
-      const binCount = analyser.frequencyBinCount
-      if (!dataRef.current || dataRef.current.length !== binCount) {
-        dataRef.current = new Float32Array(binCount)
-      }
-      analyser.getFloatFrequencyData(dataRef.current)
+      const binCount = frame.bins.length
+      dataRef.current = frame.bins
+      const frequencyData = dataRef.current
 
-      const sampleRate = audioEngine.getSampleRate()
+      const sampleRate = frame.sampleRate
       const nyquist = sampleRate / 2
       const binWidth = nyquist / binCount
 
@@ -106,12 +100,12 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
         const frac = bin - binLow
 
         // Interpolate between adjacent bins
-        const dbLow = dataRef.current[binLow] ?? SPEC_MIN_DB
-        const dbHigh = dataRef.current[binHigh] ?? SPEC_MIN_DB
+        const dbLow = frequencyData[binLow] ?? frame.minDb
+        const dbHigh = frequencyData[binHigh] ?? frame.minDb
         const db = dbLow + (dbHigh - dbLow) * frac
 
         // Map dB to Y position
-        const normalized = (db - SPEC_MIN_DB) / SPEC_DB_RANGE
+        const normalized = (db - frame.minDb) / Math.max(0.0001, frame.maxDb - frame.minDb)
         const y = height - Math.max(0, Math.min(1, normalized)) * height
 
         if (i === 0) {

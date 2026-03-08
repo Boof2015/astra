@@ -1,4 +1,4 @@
-import { audioEngine } from '../AudioEngine'
+import { backendManager as audioEngine } from '../AudioBackendManager'
 import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
 
 export interface SpectrumAnalyzerDataSource {
@@ -64,6 +64,7 @@ export class SpectrumAnalyzer {
   private nativeInitialized: boolean = false
   private sampleRate: number = 48000
   private lastSampleRate: number = 0
+  private missingNativeWarningShown = false
 
   constructor(canvas: HTMLCanvasElement, options: SpectrumAnalyzerOptions = {}) {
     this.canvas = canvas
@@ -87,8 +88,9 @@ export class SpectrumAnalyzer {
       nativeSpectrum.setSmoothing(this.getNativeSmoothing())
       this.nativeInitialized = true
       console.log(`SpectrumAnalyzer: Using native DSP (${this.sampleRate}Hz)`)
-    } else if (!isNativeAvailable()) {
-      console.error('SpectrumAnalyzer: Native DSP not available!')
+    } else if (!isNativeAvailable() && !this.missingNativeWarningShown) {
+      console.warn('SpectrumAnalyzer: Native DSP not available, using idle fallback')
+      this.missingNativeWarningShown = true
     }
   }
 
@@ -227,7 +229,18 @@ export class SpectrumAnalyzer {
 
     // Get frequency data from native FFT
     if (!isNativeAvailable()) {
-      console.error('SpectrumAnalyzer: Native DSP required')
+      ctx.clearRect(0, 0, width, height)
+      if (options.backgroundColor !== 'transparent') {
+        ctx.fillStyle = options.backgroundColor
+        ctx.fillRect(0, 0, width, height)
+      }
+      const fallbackSampleRate = Math.max(1, this.dataSource.getSampleRate() || this.sampleRate)
+      const nyquist = fallbackSampleRate / 2
+      const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
+      const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
+      if (options.showGrid) {
+        this.drawGrid(minFrequency, maxFrequency)
+      }
       this.animationId = requestAnimationFrame(this.draw)
       return
     }

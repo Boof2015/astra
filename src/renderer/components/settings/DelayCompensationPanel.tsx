@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import {
   resolveOutputDeviceLabel,
+  stripFamilyScopedKey,
   useAudioSettingsStore,
   type CalibrationInputDevice,
   type DelayCalibrationMethod,
@@ -57,6 +58,8 @@ export default function DelayCompensationPanel() {
   const {
     availableDevices,
     availableInputDevices,
+    audioBackendFamily,
+    effectiveAudioBackendMode,
     selectedDeviceId,
     selectedCalibrationInputDeviceId,
     activeDelayProfileKey,
@@ -83,12 +86,14 @@ export default function DelayCompensationPanel() {
   }, [availableDevices, selectedDeviceId])
 
   const activeProfileLabel = useMemo(() => {
-    if (activeDelayProfileKey === 'default') {
+    const { key } = stripFamilyScopedKey(activeDelayProfileKey)
+
+    if (key === 'default') {
       return 'System Default (unresolved physical target)'
     }
 
-    if (activeDelayProfileKey.startsWith(OUTPUT_GROUP_PROFILE_KEY_PREFIX)) {
-      const groupId = activeDelayProfileKey.slice(OUTPUT_GROUP_PROFILE_KEY_PREFIX.length)
+    if (key.startsWith(OUTPUT_GROUP_PROFILE_KEY_PREFIX)) {
+      const groupId = key.slice(OUTPUT_GROUP_PROFILE_KEY_PREFIX.length)
       const groupMatchedDevice = availableDevices.find((device) => (
         !device.isDefaultAlias
         && device.groupId.length > 0
@@ -105,11 +110,12 @@ export default function DelayCompensationPanel() {
       return 'System Default (resolved profile group)'
     }
 
-    return availableDevices.find((device) => device.deviceId === activeDelayProfileKey)?.label
-      ?? `Device ${activeDelayProfileKey}`
+    return availableDevices.find((device) => device.deviceId === key)?.label
+      ?? `Device ${key}`
   }, [activeDelayProfileKey, availableDevices])
 
   const isDifferentialMethod = activeDelayProfile.calibrationMethod === 'differential'
+  const calibrationSupported = audioBackendFamily === 'web'
   const modeDescription = activeDelayProfile.mode === 'manual'
     ? 'Manual offset only.'
     : isDifferentialMethod
@@ -127,11 +133,13 @@ export default function DelayCompensationPanel() {
     const sampleRate = activeDelayProfile.lastCalibrationSampleRate
     if (!sampleRate || sampleRate <= 0) return null
 
-    const key = activeDelayProfile.lastCalibrationInputKey
-      ? `${activeDelayProfile.lastCalibrationInputKey}@${sampleRate}`
-      : `${calibrationInputKey}@${sampleRate}`
+    const inputDeviceKey = activeDelayProfile.lastCalibrationInputKey
+      ? activeDelayProfile.lastCalibrationInputKey
+      : calibrationInputKey
+    const key = `${audioBackendFamily}:${inputDeviceKey}@${sampleRate}`
     return inputBaselinesByKey[key]?.baselineRttMs ?? null
   }, [
+    audioBackendFamily,
     activeDelayProfile.lastCalibrationInputKey,
     activeDelayProfile.lastCalibrationSampleRate,
     calibrationInputKey,
@@ -226,6 +234,7 @@ export default function DelayCompensationPanel() {
             className="settings-select"
             value={activeDelayProfile.calibrationMethod}
             onChange={(event) => void setDelayCalibrationMethod(event.target.value as DelayCalibrationMethod)}
+            disabled={!calibrationSupported}
           >
             {CALIBRATION_METHODS.map((method) => (
               <option key={method.value} value={method.value}>{method.label}</option>
@@ -240,6 +249,7 @@ export default function DelayCompensationPanel() {
               className="settings-select"
               value={activeDelayProfile.differentialReferenceOutputDeviceId}
               onChange={(event) => void setDifferentialReferenceOutputDeviceId(event.target.value)}
+              disabled={!calibrationSupported}
             >
               <option value="">System Default Output</option>
               {availableDevices
@@ -259,6 +269,7 @@ export default function DelayCompensationPanel() {
             className="settings-select"
             value={selectedCalibrationInputDeviceId}
             onChange={(event) => setCalibrationInputDeviceId(event.target.value)}
+            disabled={!calibrationSupported}
           >
             <option value="">System Default Input</option>
             {availableInputDevices.map((device) => (
@@ -301,7 +312,7 @@ export default function DelayCompensationPanel() {
           type="button"
           className="settings-btn"
           onClick={() => void runDelayAutoCalibration()}
-          disabled={isRunningCalibration}
+          disabled={isRunningCalibration || !calibrationSupported}
         >
           {runButtonLabel}
         </button>
@@ -318,6 +329,16 @@ export default function DelayCompensationPanel() {
       <p className={`settings-note delay-comp-note delay-comp-note-${delayCalibrationState}`}>
         {modeDescription} {statusLine}
       </p>
+      {!calibrationSupported && (
+        <p className="settings-note">
+          Automatic calibration requires the Web Audio backend. Manual delay still applies in native modes.
+        </p>
+      )}
+      {effectiveAudioBackendMode === 'bit-perfect' && (
+        <p className="settings-note">
+          Bit-perfect playback bypasses Astra DSP. Delay compensation only affects visual analysis alignment.
+        </p>
+      )}
     </div>
   )
 }

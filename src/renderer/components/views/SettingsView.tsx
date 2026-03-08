@@ -12,6 +12,7 @@ import {
   useAudioSettingsStore,
   type ReplayGainMode
 } from '../../stores/audioSettingsStore'
+import type { AudioBackendMode } from '../../types/audio'
 import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
@@ -191,6 +192,11 @@ export default function SettingsView() {
   const setReplayGainScanEnabled = useAudioSettingsStore((state) => state.setReplayGainScanEnabled)
   const replayGainMode = useAudioSettingsStore((state) => state.replayGainMode)
   const setReplayGainMode = useAudioSettingsStore((state) => state.setReplayGainMode)
+  const requestedAudioBackendMode = useAudioSettingsStore((state) => state.requestedAudioBackendMode)
+  const effectiveAudioBackendMode = useAudioSettingsStore((state) => state.effectiveAudioBackendMode)
+  const isNativeAudioAvailable = useAudioSettingsStore((state) => state.isNativeAudioAvailable)
+  const audioBackendFallbackWarning = useAudioSettingsStore((state) => state.audioBackendFallbackWarning)
+  const setAudioBackendMode = useAudioSettingsStore((state) => state.setAudioBackendMode)
   const normalizationEnabled = useAudioSettingsStore((state) => state.normalizationEnabled)
   const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
@@ -1082,9 +1088,36 @@ export default function SettingsView() {
               <h3>Audio Output</h3>
               <p>Output device, delay compensation, and channel routing.</p>
             </div>
+            <div className="settings-grid">
+              <label className="settings-field">
+                <span className="settings-field-label">Backend Mode</span>
+                <select
+                  className="settings-select"
+                  value={requestedAudioBackendMode}
+                  onChange={(event) => void setAudioBackendMode(event.target.value as AudioBackendMode)}
+                >
+                  <option value="web-audio">Web Audio</option>
+                  <option value="native-shared" disabled={!isNativeAudioAvailable}>Native</option>
+                  <option value="bit-perfect" disabled={!isNativeAudioAvailable}>Bit-Perfect</option>
+                </select>
+              </label>
+            </div>
             <div className="settings-audio-control">
               <AudioOutputSelect />
             </div>
+            {!isNativeAudioAvailable && (
+              <p className="settings-note">
+                Native playback is unavailable in this build. Web Audio remains active.
+              </p>
+            )}
+            {effectiveAudioBackendMode === 'bit-perfect' && (
+              <p className="settings-note">
+                Bit-perfect mode requests exclusive playback and bypasses EQ, normalization, ReplayGain, routing, mute, and app volume.
+              </p>
+            )}
+            {audioBackendFallbackWarning && (
+              <p className="settings-note settings-note-error">{audioBackendFallbackWarning}</p>
+            )}
             <DelayCompensationPanel />
             <ChannelRoutingPanel />
           </section>

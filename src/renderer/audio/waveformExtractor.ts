@@ -44,6 +44,50 @@ export function extractWaveformPeaks(buffer: AudioBuffer, resolution: number = 5
   return peaks
 }
 
+export function extractWaveformPeaksFromRaw(
+  samples: Float32Array,
+  channels: number,
+  _sampleRate: number,
+  resolution: number = 512
+): Float32Array {
+  if (!Number.isFinite(channels) || channels <= 0 || samples.length === 0) {
+    return new Float32Array(resolution)
+  }
+
+  const frameCount = Math.max(1, Math.floor(samples.length / channels))
+  const samplesPerBin = Math.max(1, Math.floor(frameCount / resolution))
+  const peaks = new Float32Array(resolution)
+
+  let globalMax = 0
+  for (let i = 0; i < resolution; i++) {
+    const startFrame = i * samplesPerBin
+    const endFrame = Math.min(frameCount, startFrame + samplesPerBin)
+    let sumSquares = 0
+    let count = 0
+
+    for (let frame = startFrame; frame < endFrame; frame++) {
+      const baseIndex = frame * channels
+      for (let channel = 0; channel < channels; channel++) {
+        const sample = samples[baseIndex + channel] ?? 0
+        sumSquares += sample * sample
+        count += 1
+      }
+    }
+
+    const rms = Math.sqrt(sumSquares / Math.max(1, count))
+    peaks[i] = rms
+    if (rms > globalMax) globalMax = rms
+  }
+
+  if (globalMax > 0) {
+    for (let i = 0; i < resolution; i++) {
+      peaks[i] /= globalMax
+    }
+  }
+
+  return peaks
+}
+
 /**
  * Downsample high-resolution waveform data to a target bar count,
  * with power curve and smoothing applied. Called at render time

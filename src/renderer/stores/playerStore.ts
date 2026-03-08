@@ -1,7 +1,10 @@
 import { create } from 'zustand'
-import { audioEngine } from '../audio/AudioEngine'
+import { backendManager as audioEngine } from '../audio/AudioBackendManager'
 import { Track, PlaybackState } from '../types/audio'
-import { extractWaveformPeaks } from '../audio/waveformExtractor'
+import {
+  extractWaveformPeaks,
+  extractWaveformPeaksFromRaw
+} from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 
@@ -242,6 +245,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const associatedMetadataInflight = new Set<string>()
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
+  let loadedTrackPath: string | null = null
+  let loadedBackendMode: string | null = null
+
+  const clearLoadedTrackIdentity = (): void => {
+    loadedTrackPath = null
+    loadedBackendMode = null
+  }
+
+  const markLoadedTrackIdentity = (trackPath: string): void => {
+    loadedTrackPath = trackPath
+    loadedBackendMode = audioEngine.backendMode
+  }
+
+  const isCurrentBackendTrackLoaded = (track: Track | null): boolean => {
+    if (!track) return false
+    return loadedTrackPath === track.path && loadedBackendMode === audioEngine.backendMode
+  }
 
   const hydrateAssociatedCurrentTrackMetadata = (track: Track): void => {
     if (track.origin !== 'associated-external') {
@@ -277,6 +297,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       .finally(() => {
         associatedMetadataInflight.delete(track.path)
       })
+  }
+
+  const updateWaveformForTrack = (track: Track, buffer: AudioBuffer | null): void => {
+    const cached = waveformCache.get(track.path)
+    if (cached) {
+      set({ waveformData: cached })
+      return
+    }
+
+    if (buffer) {
+      const peaks = extractWaveformPeaks(buffer)
+      waveformCache.set(track.path, peaks)
+      if (get().currentTrack?.path === track.path) {
+        set({ waveformData: peaks })
+      }
+      return
+    }
+
+    const decoded = window.nativeAudioAPI?.getDecodedSamples()
+    if (!decoded) return
+
+    const peaks = extractWaveformPeaksFromRaw(
+      decoded.samples,
+      decoded.channels,
+      decoded.sampleRate
+    )
+    waveformCache.set(track.path, peaks)
+    if (get().currentTrack?.path === track.path) {
+      set({ waveformData: peaks })
+    }
   }
 
   const getRecentPlayThresholdSeconds = (track: Track | null): number => {
@@ -499,6 +549,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteLoadProgress: null,
           currentTime: 0
         })
+        markLoadedTrackIdentity(resolvedTrack.path)
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
@@ -522,6 +573,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           failed: true
         })
         set({ playbackState: 'stopped', remoteLoadProgress: null })
+        clearLoadedTrackIdentity()
         pendingManualLoadCueTrack = null
         return false
       }
@@ -529,6 +581,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Playback controls
     play: async () => {
+      const currentTrackToReload = get().currentTrack
+      if (
+        currentTrackToReload
+        && get().playbackState !== 'loading'
+        && (
+          audioEngine.duration <= 0
+          || !isCurrentBackendTrackLoaded(currentTrackToReload)
+        )
+      ) {
+        await get()._loadAndPlayTrack(currentTrackToReload)
+        return
+      }
+
       const previousPlaybackState = get().playbackState
       if (pendingManualLoadCueTrack) {
         showOutputDelayNotice(pendingManualLoadCueTrack)
@@ -536,6 +601,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
       await audioEngine.play()
       const currentTrack = get().currentTrack
+      if (currentTrack) {
+        markLoadedTrackIdentity(currentTrack.path)
+      }
       if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
         startRecentPlaySession(currentTrack.path)
       }
@@ -546,7 +614,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     togglePlay: async () => {
-      await audioEngine.togglePlay()
+      if (get().playbackState === 'playing') {
+        audioEngine.pause()
+        return
+      }
+
+      await get().play()
     },
 
     stop: () => {
@@ -562,6 +635,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Volume controls
     setVolume: (volume: number) => {
       const normalized = clampPlayerVolume(volume)
+      if (useAudioSettingsStore.getState().effectiveAudioBackendMode === 'bit-perfect') {
+        set({ volume: normalized })
+        persistPlayerVolume(normalized)
+        return
+      }
       audioEngine.setMuted(false)
       audioEngine.setVolume(normalized)
       set({ volume: normalized, isMuted: false })
@@ -569,12 +647,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     toggleMute: () => {
+      if (useAudioSettingsStore.getState().effectiveAudioBackendMode === 'bit-perfect') {
+        return
+      }
       audioEngine.toggleMute()
       set({ isMuted: audioEngine.isMuted })
     },
 
     resetAudioPreferences: () => {
       clearSavedPlayerVolume()
+      if (useAudioSettingsStore.getState().effectiveAudioBackendMode === 'bit-perfect') {
+        set({ volume: DEFAULT_PLAYER_VOLUME, isMuted: false })
+        return
+      }
       audioEngine.setVolume(DEFAULT_PLAYER_VOLUME)
       audioEngine.setMuted(false)
       set({ volume: DEFAULT_PLAYER_VOLUME, isMuted: false })
@@ -1012,6 +1097,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteLoadProgress: null,
           currentTime: 0
         })
+        markLoadedTrackIdentity(resolvedTrack.path)
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
@@ -1020,6 +1106,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         await audioEngine.play()
+        markLoadedTrackIdentity(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
 
         // Pre-buffer next track for gapless playback
@@ -1041,6 +1128,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           markTrackUnavailableInState(track.path)
         }
         set({ playbackState: 'stopped', remoteLoadProgress: null })
+        clearLoadedTrackIdentity()
         return false
       }
     },
@@ -1132,17 +1220,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('bufferReady', (buffer) => {
         const track = get().currentTrack
-        if (!track || !buffer) return
-
-        const cached = waveformCache.get(track.path)
-        if (cached) {
-          set({ waveformData: cached })
-          return
-        }
-
-        const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-        waveformCache.set(track.path, peaks)
-        set({ waveformData: peaks })
+        if (!track) return
+        updateWaveformForTrack(track, (buffer as AudioBuffer | null) ?? null)
       })
 
       // Handle gapless transition - advance queue without reloading
@@ -1186,6 +1265,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
         set(nextState)
+        markLoadedTrackIdentity(nextTrack.path)
+        updateWaveformForTrack(nextTrack, null)
         startRecentPlaySession(nextTrack.path)
 
         // Pre-buffer the NEXT next track
@@ -1203,6 +1284,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('error', (error) => {
         console.error('Audio engine error:', error)
+      })
+
+      audioEngine.on('modeChange', (event) => {
+        const effectiveMode = event.effectiveMode
+        clearLoadedTrackIdentity()
+        set({
+          isMuted: effectiveMode === 'bit-perfect' ? false : audioEngine.isMuted
+        })
       })
 
       // Set initial volume

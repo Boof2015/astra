@@ -1,11 +1,19 @@
 import { create } from 'zustand'
-import { audioEngine } from '../audio/AudioEngine'
+import { backendManager } from '../audio/AudioBackendManager'
+import type {
+  AudioBackendFamily,
+  AudioBackendMode
+} from '../types/audio'
+
+const audioEngine = backendManager
 
 export interface AudioDevice {
   deviceId: string
   label: string
   groupId: string
   isDefaultAlias: boolean
+  maxChannels?: number
+  supportsExclusive?: boolean
 }
 
 export interface CalibrationInputDevice {
@@ -43,13 +51,21 @@ export interface InputDelayBaseline {
 }
 
 interface AudioSettingsStore {
+  requestedAudioBackendMode: AudioBackendMode
+  effectiveAudioBackendMode: AudioBackendMode
+  audioBackendFamily: AudioBackendFamily
+  isNativeAudioAvailable: boolean
+  audioBackendFallbackWarning: string | null
   selectedDeviceId: string
+  selectedDeviceIdByFamily: Record<AudioBackendFamily, string>
   availableDevices: AudioDevice[]
   availableInputDevices: CalibrationInputDevice[]
   selectedCalibrationInputDeviceId: string
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
+  multichannelEnabledByFamily: Record<AudioBackendFamily, boolean>
   channelRoutingMap: number[] | null
+  channelRoutingMapByFamily: Record<AudioBackendFamily, number[] | null>
   normalizationEnabled: boolean
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
@@ -63,6 +79,7 @@ interface AudioSettingsStore {
   delayCalibrationState: DelayCalibrationState
   delayCalibrationMessage: string | null
 
+  setAudioBackendMode: (mode: AudioBackendMode) => Promise<void>
   refreshDevices: () => Promise<void>
   refreshOutputChannelCount: () => Promise<void>
   selectDevice: (deviceId: string) => Promise<void>
@@ -87,10 +104,23 @@ interface AudioSettingsStore {
   initFromSaved: () => Promise<void>
 }
 
-const STORAGE_KEY = 'astra-audio-output-device'
+const AUDIO_BACKEND_MODE_STORAGE_KEY = 'astra-audio-backend-mode'
+const OUTPUT_DEVICE_STORAGE_KEYS: Record<AudioBackendFamily, string> = {
+  web: 'astra-audio-output-device-web',
+  native: 'astra-audio-output-device-native'
+}
+const LEGACY_OUTPUT_DEVICE_STORAGE_KEY = 'astra-audio-output-device'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
-const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
-const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
+const MULTICHANNEL_STORAGE_KEYS: Record<AudioBackendFamily, string> = {
+  web: 'astra-audio-multichannel-enabled-web',
+  native: 'astra-audio-multichannel-enabled-native'
+}
+const LEGACY_MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
+const ROUTING_STORAGE_KEYS: Record<AudioBackendFamily, string> = {
+  web: 'astra-audio-channel-routing-map-web',
+  native: 'astra-audio-channel-routing-map-native'
+}
+const LEGACY_ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'
@@ -413,8 +443,44 @@ export function resolveOutputDeviceLabel(
   }
 }
 
-function buildOutputGroupProfileKey(groupId: string): string {
-  return `${OUTPUT_GROUP_PROFILE_KEY_PREFIX}${groupId}`
+function resolveBackendFamily(mode: AudioBackendMode): AudioBackendFamily {
+  return mode === 'web-audio' ? 'web' : 'native'
+}
+
+function buildFamilyScopedKey(family: AudioBackendFamily, key: string): string {
+  return `${family}:${key}`
+}
+
+export function stripFamilyScopedKey(value: string): {
+  family: AudioBackendFamily | null
+  key: string
+} {
+  const trimmed = value.trim()
+  const separatorIndex = trimmed.indexOf(':')
+  if (separatorIndex <= 0) {
+    return {
+      family: null,
+      key: trimmed
+    }
+  }
+
+  const family = trimmed.slice(0, separatorIndex)
+  if (family !== 'web' && family !== 'native') {
+    return {
+      family: null,
+      key: trimmed
+    }
+  }
+
+  return {
+    family,
+    key: trimmed.slice(separatorIndex + 1)
+  }
+}
+
+function buildOutputGroupProfileKey(groupId: string, family?: AudioBackendFamily): string {
+  const key = `${OUTPUT_GROUP_PROFILE_KEY_PREFIX}${groupId}`
+  return family ? buildFamilyScopedKey(family, key) : key
 }
 
 function dedupeKeys(values: string[], exclude: string): string[] {
@@ -434,7 +500,8 @@ function dedupeKeys(values: string[], exclude: string): string[] {
 
 function resolveActiveDelayProfileTarget(
   selectedDeviceId: string,
-  devices: AudioDevice[]
+  devices: AudioDevice[],
+  family: AudioBackendFamily
 ): {
   key: string
   legacyFallbackKeys: string[]
@@ -445,7 +512,8 @@ function resolveActiveDelayProfileTarget(
   if (!isSystemDefault) {
     const selectedDevice = devices.find((device) => device.deviceId === normalizedSelection) ?? null
     if (selectedDevice?.groupId) {
-      const groupKey = buildOutputGroupProfileKey(selectedDevice.groupId)
+      const scopedDeviceId = buildFamilyScopedKey(family, normalizedSelection)
+      const scopedGroupKey = buildOutputGroupProfileKey(selectedDevice.groupId, family)
       const sameGroupDeviceIds = devices
         .filter((device) => (
           !device.isDefaultAlias
@@ -454,31 +522,43 @@ function resolveActiveDelayProfileTarget(
         ))
         .map((device) => device.deviceId)
       return {
-        key: normalizedSelection,
+        key: scopedDeviceId,
         legacyFallbackKeys: dedupeKeys(
-          [groupKey, ...sameGroupDeviceIds],
-          normalizedSelection
+          [
+            scopedGroupKey,
+            buildOutputGroupProfileKey(selectedDevice.groupId),
+            ...sameGroupDeviceIds.map((deviceId) => buildFamilyScopedKey(family, deviceId)),
+            ...sameGroupDeviceIds,
+          ],
+          scopedDeviceId
         )
       }
     }
 
     return {
-      key: normalizedSelection,
-      legacyFallbackKeys: []
+      key: buildFamilyScopedKey(family, normalizedSelection),
+      legacyFallbackKeys: dedupeKeys(
+        [normalizedSelection],
+        buildFamilyScopedKey(family, normalizedSelection)
+      )
     }
   }
 
   const physicalDefaultId = resolvePhysicalDefaultDeviceId(devices)
   if (!physicalDefaultId) {
     return {
-      key: 'default',
-      legacyFallbackKeys: []
+      key: buildFamilyScopedKey(family, 'default'),
+      legacyFallbackKeys: dedupeKeys(
+        ['default'],
+        buildFamilyScopedKey(family, 'default')
+      )
     }
   }
 
   const physicalDevice = devices.find((device) => device.deviceId === physicalDefaultId) ?? null
   if (physicalDevice?.groupId) {
-    const key = buildOutputGroupProfileKey(physicalDevice.groupId)
+    const scopedDeviceId = buildFamilyScopedKey(family, physicalDefaultId)
+    const scopedGroupKey = buildOutputGroupProfileKey(physicalDevice.groupId, family)
     const sameGroupDeviceIds = devices
       .filter((device) => (
         !device.isDefaultAlias
@@ -488,17 +568,25 @@ function resolveActiveDelayProfileTarget(
       .map((device) => device.deviceId)
 
     return {
-      key: physicalDefaultId,
+      key: scopedDeviceId,
       legacyFallbackKeys: dedupeKeys(
-        [key, ...sameGroupDeviceIds],
-        physicalDefaultId
+        [
+          scopedGroupKey,
+          buildOutputGroupProfileKey(physicalDevice.groupId),
+          ...sameGroupDeviceIds.map((deviceId) => buildFamilyScopedKey(family, deviceId)),
+          ...sameGroupDeviceIds,
+        ],
+        scopedDeviceId
       )
     }
   }
 
   return {
-    key: physicalDefaultId,
-    legacyFallbackKeys: []
+    key: buildFamilyScopedKey(family, physicalDefaultId),
+    legacyFallbackKeys: dedupeKeys(
+      [physicalDefaultId],
+      buildFamilyScopedKey(family, physicalDefaultId)
+    )
   }
 }
 
@@ -637,8 +725,12 @@ function resolveCalibrationInputDeviceKey(
   return resolvePhysicalDefaultInputDeviceId(inputs) ?? 'default-input'
 }
 
-function buildInputBaselineKey(inputDeviceKey: string, sampleRate: number): string {
-  return `${inputDeviceKey}@${sampleRate}`
+function buildInputBaselineKey(
+  family: AudioBackendFamily,
+  inputDeviceKey: string,
+  sampleRate: number
+): string {
+  return `${family}:${inputDeviceKey}@${sampleRate}`
 }
 
 function buildAudioDevice(entry: MediaDeviceInfo): AudioDevice {
@@ -653,6 +745,19 @@ function buildAudioDevice(entry: MediaDeviceInfo): AudioDevice {
     label: entry.label || fallbackLabel,
     groupId: entry.groupId || '',
     isDefaultAlias,
+    maxChannels: 2,
+    supportsExclusive: false,
+  }
+}
+
+function buildNativeAudioDevice(entry: AudioDevice): AudioDevice {
+  return {
+    deviceId: entry.deviceId,
+    label: entry.label,
+    groupId: entry.groupId || '',
+    isDefaultAlias: Boolean(entry.isDefaultAlias),
+    maxChannels: entry.maxChannels ?? 2,
+    supportsExclusive: entry.supportsExclusive ?? true,
   }
 }
 
@@ -707,11 +812,94 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
   }
 
+  const persistSelectedDeviceIdForFamily = (
+    family: AudioBackendFamily,
+    deviceId: string
+  ): void => {
+    const storageKey = OUTPUT_DEVICE_STORAGE_KEYS[family]
+    if (deviceId.trim().length > 0) {
+      localStorage.setItem(storageKey, deviceId)
+    } else {
+      localStorage.removeItem(storageKey)
+    }
+  }
+
+  const persistMultichannelForFamily = (
+    family: AudioBackendFamily,
+    enabled: boolean
+  ): void => {
+    localStorage.setItem(MULTICHANNEL_STORAGE_KEYS[family], enabled ? '1' : '0')
+  }
+
+  const persistRoutingForFamily = (
+    family: AudioBackendFamily,
+    map: number[] | null
+  ): void => {
+    if (map && map.length > 0) {
+      localStorage.setItem(ROUTING_STORAGE_KEYS[family], JSON.stringify(map))
+    } else {
+      localStorage.removeItem(ROUTING_STORAGE_KEYS[family])
+    }
+  }
+
+  const syncBackendSelectionState = (
+    requestedMode: AudioBackendMode,
+    effectiveMode: AudioBackendMode,
+    fallbackWarning: string | null
+  ): void => {
+    const family = resolveBackendFamily(effectiveMode)
+    const state = get()
+    const selectedDeviceId = state.selectedDeviceIdByFamily[family] ?? ''
+    const multichannelEnabled = state.multichannelEnabledByFamily[family] ?? false
+    const channelRoutingMap = state.channelRoutingMapByFamily[family] ?? null
+
+    set({
+      requestedAudioBackendMode: requestedMode,
+      effectiveAudioBackendMode: effectiveMode,
+      audioBackendFamily: family,
+      isNativeAudioAvailable: audioEngine.isNativeAvailable,
+      audioBackendFallbackWarning: fallbackWarning,
+      selectedDeviceId,
+      multichannelEnabled,
+      channelRoutingMap,
+    })
+  }
+
+  const applyRuntimePreferencesForCurrentBackend = async (): Promise<void> => {
+    const state = get()
+    const family = state.audioBackendFamily
+    const selectedDeviceId = state.selectedDeviceIdByFamily[family] ?? ''
+    const multichannelEnabled = state.multichannelEnabledByFamily[family] ?? false
+    const channelRoutingMap = state.channelRoutingMapByFamily[family] ?? null
+
+    const [{ usePlayerStore }, { useEQStore }] = await Promise.all([
+      import('./playerStore'),
+      import('./eqStore'),
+    ])
+
+    const playerState = usePlayerStore.getState()
+    const eqState = useEQStore.getState()
+
+    audioEngine.setVolume(playerState.volume)
+    audioEngine.setMuted(playerState.isMuted)
+    audioEngine.normalizationEnabled = state.normalizationEnabled
+    audioEngine.targetLufs = state.normalizationTargetLufs
+    audioEngine.setReplayGainEnabled(state.replayGainScanEnabled)
+    audioEngine.updateEQ(eqState.bands, eqState.preamp, eqState.enabled)
+    await audioEngine.setMultichannelEnabled(multichannelEnabled)
+    await audioEngine.setChannelRoutingMap(channelRoutingMap)
+    await audioEngine.setOutputDevice(selectedDeviceId)
+  }
+
   const syncDelayCompensationForActiveDevice = async (
     options: { resetCalibrationStatus?: boolean } = {}
   ): Promise<void> => {
     const state = get()
-    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const profileTarget = resolveActiveDelayProfileTarget(
+      state.selectedDeviceId,
+      state.availableDevices,
+      state.audioBackendFamily
+    )
     const activeDelayProfileKey = profileTarget.key
 
     const normalizedProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
@@ -758,7 +946,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     } = {}
   ): Promise<void> => {
     const state = get()
-    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const profileTarget = resolveActiveDelayProfileTarget(
+      state.selectedDeviceId,
+      state.availableDevices,
+      state.audioBackendFamily
+    )
     const activeDelayProfileKey = profileTarget.key
     const currentProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
     const updatedProfile = normalizeDelayProfile(updater(currentProfile))
@@ -797,6 +989,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     await get().refreshDevices()
 
     const state = get()
+    const family = state.audioBackendFamily
     const selectedDeviceId = state.selectedDeviceId.trim()
     if (selectedDeviceId.length > 0 && selectedDeviceId !== 'default') {
       const deviceStillExists = state.availableDevices.some((device) => device.deviceId === selectedDeviceId)
@@ -806,8 +999,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         } catch {
           // Ignore failures when falling back to default output.
         }
-        set({ selectedDeviceId: '' })
-        localStorage.removeItem(STORAGE_KEY)
+        set((currentState) => ({
+          selectedDeviceId: '',
+          selectedDeviceIdByFamily: {
+            ...currentState.selectedDeviceIdByFamily,
+            [family]: ''
+          }
+        }))
+        localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEYS[family])
         await syncDelayCompensationForActiveDevice()
       }
     }
@@ -825,13 +1024,30 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   }
 
   return {
+    requestedAudioBackendMode: 'web-audio',
+    effectiveAudioBackendMode: 'web-audio',
+    audioBackendFamily: 'web',
+    isNativeAudioAvailable: audioEngine.isNativeAvailable,
+    audioBackendFallbackWarning: null,
     selectedDeviceId: '',
+    selectedDeviceIdByFamily: {
+      web: '',
+      native: '',
+    },
     availableDevices: [],
     availableInputDevices: [],
     selectedCalibrationInputDeviceId: '',
     selectedOutputChannelCount: null,
     multichannelEnabled: false,
+    multichannelEnabledByFamily: {
+      web: false,
+      native: false,
+    },
     channelRoutingMap: null,
+    channelRoutingMapByFamily: {
+      web: null,
+      native: null,
+    },
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
@@ -845,13 +1061,62 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     delayCalibrationState: 'idle',
     delayCalibrationMessage: null,
 
+    setAudioBackendMode: async (mode: AudioBackendMode) => {
+      const requestedMode: AudioBackendMode = (
+        mode === 'native-shared' || mode === 'bit-perfect' || mode === 'web-audio'
+      )
+        ? mode
+        : 'web-audio'
+
+      localStorage.setItem(AUDIO_BACKEND_MODE_STORAGE_KEY, requestedMode)
+
+      try {
+        const effectiveMode = await audioEngine.switchTo(requestedMode)
+        syncBackendSelectionState(requestedMode, effectiveMode, audioEngine.fallbackWarning)
+        await get().refreshDevices()
+        await applyRuntimePreferencesForCurrentBackend()
+        await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
+      } catch (error) {
+        console.error(`Failed to switch audio backend to ${requestedMode}:`, error)
+
+        const fallbackWarning = requestedMode === 'web-audio'
+          ? 'Audio backend initialization failed. Astra is continuing with Web Audio.'
+          : 'Native audio backend failed to initialize. Astra fell back to Web Audio.'
+
+        try {
+          const effectiveMode = await audioEngine.switchTo('web-audio')
+          syncBackendSelectionState(
+            requestedMode,
+            effectiveMode,
+            audioEngine.fallbackWarning ?? fallbackWarning
+          )
+          await get().refreshDevices()
+          await applyRuntimePreferencesForCurrentBackend()
+          await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
+        } catch (fallbackError) {
+          console.error('Failed to recover with Web Audio backend:', fallbackError)
+          syncBackendSelectionState(requestedMode, 'web-audio', fallbackWarning)
+        }
+      }
+    },
+
     refreshDevices: async () => {
       try {
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        const audioOutputs = devices
-          .filter((device) => device.kind === 'audiooutput')
-          .map(buildAudioDevice)
-        const audioInputs = devices
+        const family = get().audioBackendFamily
+        let mediaDevices: MediaDeviceInfo[] = []
+        try {
+          mediaDevices = await navigator.mediaDevices.enumerateDevices()
+        } catch (error) {
+          if (family === 'web') {
+            throw error
+          }
+        }
+        const audioOutputs = family === 'native'
+          ? (await audioEngine.enumerateOutputDevices()).map(buildNativeAudioDevice)
+          : mediaDevices
+            .filter((device) => device.kind === 'audiooutput')
+            .map(buildAudioDevice)
+        const audioInputs = mediaDevices
           .filter((device) => device.kind === 'audioinput')
           .map(buildCalibrationInputDevice)
 
@@ -869,6 +1134,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           }
         }
 
+        const selectedOutputId = get().selectedDeviceId.trim()
+        if (selectedOutputId.length > 0 && selectedOutputId !== 'default') {
+          const outputStillExists = audioOutputs.some((device) => device.deviceId === selectedOutputId)
+          if (!outputStillExists) {
+            set((state) => ({
+              selectedDeviceId: '',
+              selectedDeviceIdByFamily: {
+                ...state.selectedDeviceIdByFamily,
+                [family]: ''
+              }
+            }))
+            localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEYS[family])
+          }
+        }
+
         await get().refreshOutputChannelCount()
         await syncDelayCompensationForActiveDevice()
       } catch {
@@ -878,8 +1158,20 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     refreshOutputChannelCount: async () => {
       try {
-        await audioEngine.ensureContextReady()
-        const maxChannels = audioEngine.getOutputMaxChannelCount()
+        const state = get()
+        let maxChannels: number | null = null
+
+        if (state.audioBackendFamily === 'native') {
+          const normalizedSelection = state.selectedDeviceId.trim()
+          const selectedDevice = normalizedSelection.length > 0
+            ? state.availableDevices.find((device) => device.deviceId === normalizedSelection) ?? null
+            : (state.availableDevices.find((device) => device.isDefaultAlias) ?? state.availableDevices[0] ?? null)
+          maxChannels = selectedDevice?.maxChannels ?? audioEngine.getOutputMaxChannelCount()
+        } else {
+          await audioEngine.ensureContextReady()
+          maxChannels = audioEngine.getOutputMaxChannelCount()
+        }
+
         set({ selectedOutputChannelCount: maxChannels })
       } catch {
         set({ selectedOutputChannelCount: null })
@@ -888,14 +1180,16 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     selectDevice: async (deviceId: string) => {
       try {
+        const family = get().audioBackendFamily
         await audioEngine.setOutputDevice(deviceId)
-        set({ selectedDeviceId: deviceId })
-
-        if (deviceId.trim().length > 0) {
-          localStorage.setItem(STORAGE_KEY, deviceId)
-        } else {
-          localStorage.removeItem(STORAGE_KEY)
-        }
+        set((state) => ({
+          selectedDeviceId: deviceId,
+          selectedDeviceIdByFamily: {
+            ...state.selectedDeviceIdByFamily,
+            [family]: deviceId
+          }
+        }))
+        persistSelectedDeviceIdForFamily(family, deviceId)
 
         await get().refreshOutputChannelCount()
         await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
@@ -915,8 +1209,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     setMultichannelEnabled: async (enabled: boolean) => {
-      set({ multichannelEnabled: enabled })
-      localStorage.setItem(MULTICHANNEL_STORAGE_KEY, enabled ? '1' : '0')
+      const family = get().audioBackendFamily
+      set((state) => ({
+        multichannelEnabled: enabled,
+        multichannelEnabledByFamily: {
+          ...state.multichannelEnabledByFamily,
+          [family]: enabled
+        }
+      }))
+      persistMultichannelForFamily(family, enabled)
       await audioEngine.setMultichannelEnabled(enabled)
     },
 
@@ -929,13 +1230,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         })
         : null
 
-      set({ channelRoutingMap: normalized })
-
-      if (normalized) {
-        localStorage.setItem(ROUTING_STORAGE_KEY, JSON.stringify(normalized))
-      } else {
-        localStorage.removeItem(ROUTING_STORAGE_KEY)
-      }
+      const family = get().audioBackendFamily
+      set((state) => ({
+        channelRoutingMap: normalized,
+        channelRoutingMapByFamily: {
+          ...state.channelRoutingMapByFamily,
+          [family]: normalized
+        }
+      }))
+      persistRoutingForFamily(family, normalized)
 
       await audioEngine.setChannelRoutingMap(normalized)
     },
@@ -1022,6 +1325,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     runDelayAutoCalibration: async () => {
       const initialState = get()
+      if (initialState.audioBackendFamily !== 'web') {
+        set({
+          delayCalibrationState: 'error',
+          delayCalibrationMessage: 'Automatic calibration requires the Web Audio backend.'
+        })
+        return
+      }
+
       const selectedMethod = initialState.activeDelayProfile.calibrationMethod
       set({
         delayCalibrationState: 'running',
@@ -1083,7 +1394,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
 
         const state = get()
-        const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+        const profileTarget = resolveActiveDelayProfileTarget(
+          state.selectedDeviceId,
+          state.availableDevices,
+          state.audioBackendFamily
+        )
         const activeDelayProfileKey = profileTarget.key
         const currentActiveProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
         const sampleRate = normalizeSampleRate(result.sampleRate)
@@ -1166,7 +1481,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       const state = get()
-      const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+      const profileTarget = resolveActiveDelayProfileTarget(
+        state.selectedDeviceId,
+        state.availableDevices,
+        state.audioBackendFamily
+      )
       const activeDelayProfileKey = profileTarget.key
       const currentActiveProfile = resolveDelayProfileForTarget(state.delayProfilesByDeviceKey, profileTarget).profile
       const calibrationInputKey = resolveCalibrationInputDeviceKey(
@@ -1176,7 +1495,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const sampleRate = normalizeSampleRate(result.sampleRate)
         ?? Math.max(1, Math.round(audioEngine.getSampleRate()))
       const roundTripMs = clampRoundTripMs(result.roundTripMs)
-      const baselineKey = buildInputBaselineKey(calibrationInputKey, sampleRate)
+      const baselineKey = buildInputBaselineKey(
+        state.audioBackendFamily,
+        calibrationInputKey,
+        sampleRate
+      )
       const existingBaseline = state.inputBaselinesByKey[baselineKey]
       const now = Date.now()
 
@@ -1378,15 +1701,24 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     resetToDefaults: async () => {
-      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(AUDIO_BACKEND_MODE_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_OUTPUT_DEVICE_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_MULTICHANNEL_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_ROUTING_STORAGE_KEY)
+      localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEYS.web)
+      localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEYS.native)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
-      localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
-      localStorage.removeItem(ROUTING_STORAGE_KEY)
+      localStorage.removeItem(MULTICHANNEL_STORAGE_KEYS.web)
+      localStorage.removeItem(MULTICHANNEL_STORAGE_KEYS.native)
+      localStorage.removeItem(ROUTING_STORAGE_KEYS.web)
+      localStorage.removeItem(ROUTING_STORAGE_KEYS.native)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
       localStorage.removeItem(REPLAYGAIN_MODE_STORAGE_KEY)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V2)
+
+      await audioEngine.switchTo('web-audio')
 
       try {
         await audioEngine.setOutputDevice('')
@@ -1451,13 +1783,30 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       set({
+        requestedAudioBackendMode: 'web-audio',
+        effectiveAudioBackendMode: 'web-audio',
+        audioBackendFamily: 'web',
+        isNativeAudioAvailable: audioEngine.isNativeAvailable,
+        audioBackendFallbackWarning: null,
         selectedDeviceId: '',
+        selectedDeviceIdByFamily: {
+          web: '',
+          native: '',
+        },
         availableDevices,
         availableInputDevices,
         selectedCalibrationInputDeviceId: '',
         selectedOutputChannelCount,
         multichannelEnabled: false,
+        multichannelEnabledByFamily: {
+          web: false,
+          native: false,
+        },
         channelRoutingMap: null,
+        channelRoutingMapByFamily: {
+          web: null,
+          native: null,
+        },
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
@@ -1473,6 +1822,46 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     initFromSaved: async () => {
+      const normalizeBackendMode = (value: string | null): AudioBackendMode => {
+        if (value === 'native-shared' || value === 'bit-perfect' || value === 'web-audio') {
+          return value
+        }
+        return 'web-audio'
+      }
+
+      const parseRoutingMap = (raw: string | null): number[] | null => {
+        if (!raw) return null
+        try {
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed)) return null
+          return parsed.map((value) => {
+            if (!Number.isFinite(value)) return -1
+            const rounded = Math.trunc(value)
+            return rounded >= -1 ? rounded : -1
+          })
+        } catch {
+          return null
+        }
+      }
+
+      const requestedAudioBackendMode = normalizeBackendMode(localStorage.getItem(AUDIO_BACKEND_MODE_STORAGE_KEY))
+      const selectedDeviceIdByFamily: Record<AudioBackendFamily, string> = {
+        web: localStorage.getItem(OUTPUT_DEVICE_STORAGE_KEYS.web)
+          ?? localStorage.getItem(LEGACY_OUTPUT_DEVICE_STORAGE_KEY)
+          ?? '',
+        native: localStorage.getItem(OUTPUT_DEVICE_STORAGE_KEYS.native) ?? '',
+      }
+      const multichannelEnabledByFamily: Record<AudioBackendFamily, boolean> = {
+        web: (localStorage.getItem(MULTICHANNEL_STORAGE_KEYS.web)
+          ?? localStorage.getItem(LEGACY_MULTICHANNEL_STORAGE_KEY)) === '1',
+        native: localStorage.getItem(MULTICHANNEL_STORAGE_KEYS.native) === '1',
+      }
+      const channelRoutingMapByFamily: Record<AudioBackendFamily, number[] | null> = {
+        web: parseRoutingMap(localStorage.getItem(ROUTING_STORAGE_KEYS.web)
+          ?? localStorage.getItem(LEGACY_ROUTING_STORAGE_KEY)),
+        native: parseRoutingMap(localStorage.getItem(ROUTING_STORAGE_KEYS.native)),
+      }
+
       const savedNormalizationEnabled = localStorage.getItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       const normalizationEnabled = savedNormalizationEnabled == null
         ? true
@@ -1513,6 +1902,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       set({
+        requestedAudioBackendMode,
+        effectiveAudioBackendMode: requestedAudioBackendMode,
+        audioBackendFamily: resolveBackendFamily(requestedAudioBackendMode),
+        isNativeAudioAvailable: audioEngine.isNativeAvailable,
+        audioBackendFallbackWarning: null,
+        selectedDeviceId: selectedDeviceIdByFamily[resolveBackendFamily(requestedAudioBackendMode)] ?? '',
+        selectedDeviceIdByFamily,
+        multichannelEnabled: multichannelEnabledByFamily[resolveBackendFamily(requestedAudioBackendMode)] ?? false,
+        multichannelEnabledByFamily,
+        channelRoutingMap: channelRoutingMapByFamily[resolveBackendFamily(requestedAudioBackendMode)] ?? null,
+        channelRoutingMapByFamily,
         delayProfilesByDeviceKey: savedProfiles,
         inputBaselinesByKey: savedInputBaselines,
         normalizationEnabled,
@@ -1521,19 +1921,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         replayGainMode
       })
 
-      await get().refreshDevices()
-
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        const { availableDevices } = get()
-        const exists = availableDevices.some((device) => device.deviceId === saved)
-        if (exists) {
-          await get().selectDevice(saved)
-        } else {
-          localStorage.removeItem(STORAGE_KEY)
-          set({ selectedDeviceId: '' })
-        }
-      }
+      await get().setAudioBackendMode(requestedAudioBackendMode)
 
       const savedCalibrationInputDeviceId = localStorage.getItem(CALIBRATION_INPUT_STORAGE_KEY)
       if (savedCalibrationInputDeviceId) {
@@ -1547,31 +1935,28 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
       }
 
-      const savedMultichannel = localStorage.getItem(MULTICHANNEL_STORAGE_KEY)
-      const multichannelEnabled = savedMultichannel === '1'
-      await get().setMultichannelEnabled(multichannelEnabled)
-
-      const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
-      if (savedRoutingMap) {
-        try {
-          const parsed = JSON.parse(savedRoutingMap)
-          if (Array.isArray(parsed)) {
-            const map = parsed.map((value) => {
-              if (!Number.isFinite(value)) return -1
-              const rounded = Math.trunc(value)
-              return rounded >= -1 ? rounded : -1
-            })
-            await get().setChannelRoutingMap(map)
-          } else {
-            localStorage.removeItem(ROUTING_STORAGE_KEY)
-          }
-        } catch {
-          localStorage.removeItem(ROUTING_STORAGE_KEY)
-        }
-      }
-
       ensureMediaDeviceChangeListener()
       await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
     }
   }
+})
+
+backendManager.on('modeChange', ({ requestedMode, effectiveMode }) => {
+  const family = resolveBackendFamily(effectiveMode)
+  useAudioSettingsStore.setState((state) => ({
+    requestedAudioBackendMode: requestedMode,
+    effectiveAudioBackendMode: effectiveMode,
+    audioBackendFamily: family,
+    selectedDeviceId: state.selectedDeviceIdByFamily[family] ?? '',
+    multichannelEnabled: state.multichannelEnabledByFamily[family] ?? false,
+    channelRoutingMap: state.channelRoutingMapByFamily[family] ?? null,
+  }))
+})
+
+backendManager.on('fallbackWarning', (warning) => {
+  useAudioSettingsStore.setState({
+    audioBackendFallbackWarning: warning,
+    effectiveAudioBackendMode: backendManager.effectiveMode,
+    audioBackendFamily: resolveBackendFamily(backendManager.effectiveMode),
+  })
 })

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
-import { audioEngine } from '../../audio/AudioEngine'
+import { audioAnalysisManager } from '../../audio/AudioAnalysisManager'
+import { backendManager } from '../../audio/AudioBackendManager'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import {
   AMBIENT_SPECTRUM_MAX_FREQ,
@@ -88,25 +89,25 @@ export default function FullscreenAmbientSpectrum({
 
       ctx.clearRect(0, 0, width, height)
 
-      if (!isRunning || audioEngine.playbackState !== 'playing') {
+      if (!isRunning || backendManager.playbackState !== 'playing') {
         animationRef.current = window.requestAnimationFrame(draw)
         return
       }
 
-      const analyser = audioEngine.getEQAnalyserNode()
-      if (!analyser) {
+      const frame = audioAnalysisManager.getEqSpectrumFrame()
+      if (!frame) {
         animationRef.current = window.requestAnimationFrame(draw)
         return
       }
 
-      const binCount = analyser.frequencyBinCount
+      const binCount = frame.bins.length
       if (!dataRef.current || dataRef.current.length !== binCount) {
         dataRef.current = new Float32Array(
           new ArrayBuffer(binCount * Float32Array.BYTES_PER_ELEMENT)
         )
       }
       const frequencyData = dataRef.current
-      analyser.getFloatFrequencyData(frequencyData)
+      frequencyData.set(frame.bins)
 
       if (!smoothedDataRef.current || smoothedDataRef.current.length !== binCount) {
         smoothedDataRef.current = new Float32Array(
@@ -120,7 +121,7 @@ export default function FullscreenAmbientSpectrum({
         smoothedFrequencyData[i] = smoothedFrequencyData[i] * 0.92 + frequencyData[i] * 0.08
       }
 
-      const sampleRate = audioEngine.getSampleRate()
+      const sampleRate = frame.sampleRate
       const nyquist = sampleRate / 2
       const binWidth = nyquist / binCount
       const maxDisplayFreq = Math.max(AMBIENT_SPECTRUM_MIN_FREQ + 1, Math.min(AMBIENT_SPECTRUM_MAX_FREQ, nyquist))
@@ -128,8 +129,8 @@ export default function FullscreenAmbientSpectrum({
       const maxTiltOffset = tiltOffsetAtFrequency(maxDisplayFreq)
 
       // Keep the normalization window aligned to analyser limits after tilt is applied.
-      const minDb = analyser.minDecibels + Math.min(minTiltOffset, maxTiltOffset)
-      const maxDb = analyser.maxDecibels + Math.max(minTiltOffset, maxTiltOffset)
+      const minDb = frame.minDb + Math.min(minTiltOffset, maxTiltOffset)
+      const maxDb = frame.maxDb + Math.max(minTiltOffset, maxTiltOffset)
 
       const points: Array<{ x: number; y: number }> = []
       const numPoints = Math.max(2, Math.floor(width))

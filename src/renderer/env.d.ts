@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
+import type { NativeAudioAPI } from './audio/native/native-audio'
 import type {
     MiniPlayerCommand,
     MiniPlayerSnapshot,
@@ -46,6 +47,7 @@ import type {
 declare global {
     interface Window {
         visualizerAPI: VisualizerDSP | null
+        nativeAudioAPI: NativeAudioAPI | null
         electronAPI: {
             minimize: () => void
             maximize: () => void

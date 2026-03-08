@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { EQBand, EQPreset } from '../types/audio'
-import { audioEngine } from '../audio/AudioEngine'
+import { backendManager as audioEngine } from '../audio/AudioBackendManager'
 import { parseAutoEQ } from '../utils/autoEQParser'
 import { useAudioSettingsStore } from './audioSettingsStore'
 

@@ -102,6 +102,37 @@ void BiquadFilter::setBandpass(float frequency, float sampleRate, float Q) {
     a2_ = (1.0f - alpha) / a0;
 }
 
+void BiquadFilter::setLowShelf(float frequency, float sampleRate, float gainDB, float Q) {
+    float A = powf(10.0f, gainDB / 40.0f);
+    float omega = 2.0f * M_PI * frequency / sampleRate;
+    float sinOmega = sinf(omega);
+    float cosOmega = cosf(omega);
+    float alpha = sinOmega / (2.0f * Q);
+    float sqrtA = sqrtf(A);
+
+    float a0 = (A + 1.0f) + (A - 1.0f) * cosOmega + 2.0f * sqrtA * alpha;
+    b0_ = A * ((A + 1.0f) - (A - 1.0f) * cosOmega + 2.0f * sqrtA * alpha) / a0;
+    b1_ = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cosOmega) / a0;
+    b2_ = A * ((A + 1.0f) - (A - 1.0f) * cosOmega - 2.0f * sqrtA * alpha) / a0;
+    a1_ = -2.0f * ((A - 1.0f) + (A + 1.0f) * cosOmega) / a0;
+    a2_ = ((A + 1.0f) + (A - 1.0f) * cosOmega - 2.0f * sqrtA * alpha) / a0;
+}
+
+void BiquadFilter::setPeaking(float frequency, float sampleRate, float gainDB, float Q) {
+    float A = powf(10.0f, gainDB / 40.0f);
+    float omega = 2.0f * M_PI * frequency / sampleRate;
+    float sinOmega = sinf(omega);
+    float cosOmega = cosf(omega);
+    float alpha = sinOmega / (2.0f * Q);
+
+    float a0 = 1.0f + alpha / A;
+    b0_ = (1.0f + alpha * A) / a0;
+    b1_ = (-2.0f * cosOmega) / a0;
+    b2_ = (1.0f - alpha * A) / a0;
+    a1_ = (-2.0f * cosOmega) / a0;
+    a2_ = (1.0f - alpha / A) / a0;
+}
+
 void BiquadFilter::setHighShelf(float frequency, float sampleRate, float gainDB, float Q) {
     float A = powf(10.0f, gainDB / 40.0f);  // sqrt(10^(dB/20))
     float omega = 2.0f * M_PI * frequency / sampleRate;

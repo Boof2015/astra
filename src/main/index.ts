@@ -98,8 +98,8 @@ import type {
   SubsonicStatusSnapshot
 } from '../types/subsonic'
 
-// Check if running in development
-const isDev = process.env.NODE_ENV === 'development'
+// electron-vite dev reliably provides ELECTRON_RENDERER_URL even when NODE_ENV is unset.
+const isDev = Boolean(process.env['ELECTRON_RENDERER_URL']) || process.env.NODE_ENV === 'development'
 
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
@@ -258,6 +258,7 @@ function loadMainProcessEnvLocal(): void {
 loadMainProcessEnvLocal()
 const LASTFM_API_KEY = (process.env.LASTFM_API_KEY ?? '').trim()
 const LASTFM_SHARED_SECRET = (process.env.LASTFM_SHARED_SECRET ?? '').trim()
+const SHOULD_AUTO_OPEN_DEVTOOLS = process.env.ASTRA_OPEN_DEVTOOLS === '1'
 
 function resolveSafeReleaseUrl(candidateUrl: unknown): string {
   if (typeof candidateUrl !== 'string') {
@@ -294,9 +295,7 @@ function resolveSafeReleaseUrl(candidateUrl: unknown): string {
 }
 
 function sendMiniPlayerCommand(command: MiniPlayerCommand): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('mini-player:command', command)
-  }
+  sendToMainWindow('mini-player:command', command)
 }
 
 const localApiService = new LocalApiService({
@@ -549,9 +548,7 @@ function resolveScopePopoutPosition(scope: ScopeKind): Pick<Electron.BrowserWind
 
 function broadcastScopePopoutState(): void {
   const payload = getScopePopoutState()
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('scope-popout:state', payload)
-  }
+  sendToMainWindow('scope-popout:state', payload)
 
   for (const scope of SCOPE_KINDS) {
     const scopeWindow = getScopePopoutWindow(scope)
@@ -893,43 +890,52 @@ function applyRuntimeIconDataUrl(dataUrl: string): boolean {
 
 function broadcastMiniWindowState(): void {
   const payload = getMiniWindowState()
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('mini-player:windowState', payload)
-  }
+  sendToMainWindow('mini-player:windowState', payload)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:windowState', payload)
   }
 }
 
+function sendToMainWindow(channel: string, payload?: unknown): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+
+  const { webContents } = mainWindow
+  if (webContents.isDestroyed()) return
+
+  try {
+    if (arguments.length > 1) {
+      webContents.send(channel, payload)
+      return
+    }
+    webContents.send(channel)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Render frame was disposed')) {
+      return
+    }
+    if (isDev) {
+      console.warn(`Failed to send ${channel} to main window:`, error)
+    }
+  }
+}
+
 function broadcastLocalApiStatus(): void {
   const payload = localApiService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('local-api:status', payload)
-  }
+  sendToMainWindow('local-api:status', payload)
 }
 
 function broadcastLastFmStatus(): void {
   const payload = lastFmService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('lastfm:status', payload)
-  }
+  sendToMainWindow('lastfm:status', payload)
 }
 
 function broadcastLyricsStatus(): void {
   const payload = lyricsService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('lyrics:status', payload)
-  }
+  sendToMainWindow('lyrics:status', payload)
 }
 
 function broadcastSubsonicStatus(snapshot?: SubsonicStatusSnapshot): void {
   const payload = snapshot ?? subsonicStatusCache
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('subsonic:status', payload)
-  }
+  sendToMainWindow('subsonic:status', payload)
 }
 
 function setSubsonicSyncProgress(
@@ -984,9 +990,7 @@ function refreshSubsonicStatusCache(isSyncing: boolean = subsonicSyncInFlight): 
 
 function broadcastJellyfinStatus(snapshot?: JellyfinStatusSnapshot): void {
   const payload = snapshot ?? jellyfinStatusCache
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('jellyfin:status', payload)
-  }
+  sendToMainWindow('jellyfin:status', payload)
 }
 
 function setJellyfinSyncProgress(
@@ -2033,6 +2037,38 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (isDev) {
+      console.log('Main window renderer finished load')
+      if (SHOULD_AUTO_OPEN_DEVTOOLS && !mainWindow?.webContents.isDevToolsOpened()) {
+        mainWindow?.webContents.openDevTools({ mode: 'detach' })
+      }
+    }
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('Main window failed to load:', { errorCode, errorDescription, validatedURL })
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Main window render process exited:', details)
+  })
+
+  mainWindow.webContents.on('unresponsive', () => {
+    console.error('Main window renderer became unresponsive')
+  })
+
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('Main window preload error:', { preloadPath, error })
+  })
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (!isDev) return
+
+    const levelLabel = level === 3 ? 'error' : level === 2 ? 'warn' : 'log'
+    console[levelLabel](`[renderer:${levelLabel}] ${sourceId}:${line} ${message}`)
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {

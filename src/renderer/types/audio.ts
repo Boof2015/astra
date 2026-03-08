@@ -32,8 +32,13 @@ export interface Track {
   availabilityReason?: string
 }
 
+export type AudioBackendMode = 'web-audio' | 'native-shared' | 'bit-perfect'
+export type AudioBackendFamily = 'web' | 'native'
+
 // Playback state
 export type PlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+
+export type GainApplicationMode = 'off' | 'normalization' | 'replaygain'
 
 // Player store state
 export interface PlayerState {
