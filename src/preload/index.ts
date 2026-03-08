@@ -418,6 +418,7 @@ interface NativeAddonModule extends VisualizerDSP {
 
 // Load Native Module
 let visualizerDSP: NativeAddonModule | null = null
+let nativeAddonLoadError: string | null = null
 try {
   // Determine path based on environment
   const isDev = process.env.NODE_ENV === 'development'
@@ -434,12 +435,20 @@ try {
 
   // Try to load
   visualizerDSP = require(modulePath)
+  if (!visualizerDSP?.playback) {
+    nativeAddonLoadError = 'Native addon loaded, but playback exports are missing. Rebuild the native addon for this platform.'
+  }
   console.log('Native visualizer DSP module loaded successfully', modulePath)
 } catch (error) {
+  nativeAddonLoadError = error instanceof Error
+    ? `Failed to load native addon: ${error.message}`
+    : 'Failed to load native addon.'
   console.warn('Failed to load native visualizer DSP module:', error)
 }
 
-const nativeAudioController = createNativeAudioController(visualizerDSP)
+const nativeAudioController = createNativeAudioController(visualizerDSP, {
+  unavailableReason: nativeAddonLoadError
+})
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {

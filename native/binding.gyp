@@ -47,7 +47,7 @@
               "Ole32.lib",
               "Avrt.lib",
               "Mmdevapi.lib",
-              "Audioclient.lib"
+              "Uuid.lib"
             ]
           }
         }],

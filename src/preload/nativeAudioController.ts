@@ -64,6 +64,10 @@ interface NativeAudioControllerApi {
   onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
 }
 
+interface NativeAudioControllerOptions {
+  unavailableReason?: string | null
+}
+
 interface DecodedPcmTrack {
   filePath: string
   sampleRate: number
@@ -383,12 +387,19 @@ function getFfmpegFormatArgs(sampleFormat: NativeAudioSampleFormat): string[] {
   }
 }
 
-export function createNativeAudioController(nativeModule: NativeAudioAddonModule | null): NativeAudioControllerApi {
+export function createNativeAudioController(
+  nativeModule: NativeAudioAddonModule | null,
+  options: NativeAudioControllerOptions = {}
+): NativeAudioControllerApi {
   const playback = nativeModule?.playback ?? null
   const listeners = new Set<(event: NativeAudioEvent) => void>()
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
   let nextDecodedTrack: DecodedPcmTrack | null = null
-  let capabilitiesCache: NativeAudioCapabilities = { ...DEFAULT_UNAVAILABLE_CAPABILITIES }
+  const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
+  let capabilitiesCache: NativeAudioCapabilities = {
+    ...DEFAULT_UNAVAILABLE_CAPABILITIES,
+    reasonUnavailable: fallbackUnavailableReason
+  }
 
   const notify = (event: NativeAudioEvent) => {
     if (event.type === 'gaplessTransition' && nextDecodedTrack) {
@@ -404,7 +415,10 @@ export function createNativeAudioController(nativeModule: NativeAudioAddonModule
 
   const refreshCapabilities = (): NativeAudioCapabilities => {
     if (!playback) {
-      capabilitiesCache = { ...DEFAULT_UNAVAILABLE_CAPABILITIES }
+      capabilitiesCache = {
+        ...DEFAULT_UNAVAILABLE_CAPABILITIES,
+        reasonUnavailable: fallbackUnavailableReason
+      }
       return capabilitiesCache
     }
     capabilitiesCache = normalizeCapabilities(playback.getCapabilities())
