@@ -784,32 +784,13 @@ private:
             return true;
         };
 
-        auto updatePlaybackProgress = [&]() {
-            if (queuedEndpointFrames == 0) {
+        auto consumeAvailableFrames = [&](snd_pcm_uframes_t available) {
+            if (queuedEndpointFrames == 0 || available == 0) {
                 return;
             }
 
-            const snd_pcm_sframes_t availableFrames = snd_pcm_avail_update(pcmHandle);
-            if (availableFrames < 0) {
-                recoverStream(static_cast<int>(availableFrames));
-                return;
-            }
-
-            snd_pcm_uframes_t available = static_cast<snd_pcm_uframes_t>(availableFrames);
-            if (available > bufferFrames) {
-                available = bufferFrames;
-            }
-
-            const snd_pcm_uframes_t padding = bufferFrames > available
-                ? (bufferFrames - available)
-                : 0;
-            if (padding > queuedEndpointFrames) {
-                queuedEndpointFrames = padding;
-                return;
-            }
-
-            const snd_pcm_uframes_t consumedEndpointFrames = queuedEndpointFrames - padding;
-            queuedEndpointFrames = padding;
+            const snd_pcm_uframes_t consumedEndpointFrames = std::min(queuedEndpointFrames, available);
+            queuedEndpointFrames -= consumedEndpointFrames;
             if (consumedEndpointFrames == 0) {
                 return;
             }
@@ -819,6 +800,28 @@ private:
             if (consumedAudioFrames > 0) {
                 engine->onFramesConsumed(consumedAudioFrames);
             }
+        };
+
+        auto updatePlaybackProgress = [&]() -> bool {
+            const snd_pcm_sframes_t availableFrames = snd_pcm_avail_update(pcmHandle);
+            if (availableFrames < 0) {
+                return recoverStream(static_cast<int>(availableFrames));
+            }
+
+            snd_pcm_uframes_t available = static_cast<snd_pcm_uframes_t>(availableFrames);
+            if (available > bufferFrames) {
+                available = bufferFrames;
+            }
+
+            consumeAvailableFrames(available);
+            return true;
+        };
+
+        auto updatePlaybackProgressFromAvailable = [&](snd_pcm_uframes_t available) {
+            if (available > bufferFrames) {
+                available = bufferFrames;
+            }
+            consumeAvailableFrames(available);
         };
 
         auto fillAndWriteFrames = [&](snd_pcm_uframes_t requestedFrames, snd_pcm_uframes_t* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
@@ -914,8 +917,6 @@ private:
                 break;
             }
 
-            updatePlaybackProgress();
-
             if (endOfStreamReached) {
                 if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
                     break;
@@ -924,6 +925,10 @@ private:
                 const int waitResult = snd_pcm_wait(pcmHandle, kRenderThreadWaitTimeoutMs);
                 if (waitResult < 0) {
                     recoverStream(waitResult);
+                    continue;
+                }
+                if (waitResult > 0) {
+                    updatePlaybackProgress();
                 }
                 continue;
             }
@@ -964,12 +969,17 @@ private:
                 }
                 continue;
             }
-            if (availableFrames == 0) {
+            const snd_pcm_uframes_t availableToWrite = static_cast<snd_pcm_uframes_t>(
+                std::min<snd_pcm_sframes_t>(availableFrames, static_cast<snd_pcm_sframes_t>(bufferFrames))
+            );
+            updatePlaybackProgressFromAvailable(availableToWrite);
+
+            if (availableToWrite == 0) {
                 continue;
             }
 
             const snd_pcm_uframes_t requestedFrames = static_cast<snd_pcm_uframes_t>(
-                std::min<snd_pcm_sframes_t>(availableFrames, static_cast<snd_pcm_sframes_t>(periodFrames))
+                std::min<snd_pcm_uframes_t>(availableToWrite, periodFrames)
             );
             if (requestedFrames == 0) {
                 continue;
