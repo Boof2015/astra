@@ -36,6 +36,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr DWORD kRenderThreadWaitTimeoutMs = 2000;
+constexpr REFERENCE_TIME kReferenceTimesPerSecond = 10000000;
 
 class ScopedCoInit final {
 public:
@@ -678,10 +679,13 @@ private:
             return;
         }
 
-        const REFERENCE_TIME exclusivePeriod = minimumPeriod > 0 ? minimumPeriod : defaultPeriod;
-        if (exclusivePeriod <= 0) {
+        REFERENCE_TIME targetPeriod = defaultPeriod > 0 ? defaultPeriod : minimumPeriod;
+        if (targetPeriod <= 0) {
             finishStart(false, "WASAPI reported an invalid exclusive buffer period.");
             return;
+        }
+        if (minimumPeriod > 0) {
+            targetPeriod = std::max(targetPeriod, minimumPeriod);
         }
 
         HANDLE sampleReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -690,14 +694,49 @@ private:
             return;
         }
 
-        hr = audioClient->Initialize(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-            exclusivePeriod,
-            exclusivePeriod,
-            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
-            nullptr
-        );
+        auto initializeExclusiveClient = [&](REFERENCE_TIME period) -> HRESULT {
+            return audioClient->Initialize(
+                AUDCLNT_SHAREMODE_EXCLUSIVE,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
+                period,
+                period,
+                reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
+                nullptr
+            );
+        };
+
+        hr = initializeExclusiveClient(targetPeriod);
+        if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
+            UINT32 alignedBufferFrames = 0;
+            const HRESULT alignedBufferHr = audioClient->GetBufferSize(&alignedBufferFrames);
+            if (FAILED(alignedBufferHr) || alignedBufferFrames == 0) {
+                CloseHandle(sampleReadyEvent);
+                finishStart(false, "WASAPI exclusive output reported an unaligned buffer size but did not return a valid aligned size.");
+                return;
+            }
+
+            const REFERENCE_TIME alignedPeriod = static_cast<REFERENCE_TIME>(
+                (static_cast<uint64_t>(alignedBufferFrames) * kReferenceTimesPerSecond + format.sampleRate - 1)
+                / format.sampleRate
+            );
+
+            audioClient.Reset();
+            hr = resolvedDevice->Activate(
+                __uuidof(IAudioClient),
+                CLSCTX_ALL,
+                nullptr,
+                reinterpret_cast<void**>(audioClient.GetAddressOf())
+            );
+            if (FAILED(hr) || audioClient == nullptr) {
+                CloseHandle(sampleReadyEvent);
+                finishStart(false, "Failed to reactivate the selected WASAPI output device after buffer alignment (" + formatHRESULT(hr) + ").");
+                return;
+            }
+
+            hr = initializeExclusiveClient(alignedPeriod);
+            targetPeriod = alignedPeriod;
+        }
+
         if (FAILED(hr)) {
             CloseHandle(sampleReadyEvent);
             finishStart(false, "WASAPI exclusive initialization failed (" + formatHRESULT(hr) + ").");
@@ -816,16 +855,19 @@ private:
         queuedEndpointFrames = bufferFrameCount;
         queuedAudioFrames = primedFrames;
 
-        hr = audioClient->Start();
-        if (FAILED(hr)) {
-            CloseHandle(sampleReadyEvent);
-            finishStart(false, "WASAPI exclusive output failed to start (" + formatHRESULT(hr) + ").");
-            return;
-        }
-
         mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
         if (mmcssHandle != nullptr) {
             AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+        }
+
+        hr = audioClient->Start();
+        if (FAILED(hr)) {
+            CloseHandle(sampleReadyEvent);
+            if (mmcssHandle != nullptr) {
+                AvRevertMmThreadCharacteristics(mmcssHandle);
+            }
+            finishStart(false, "WASAPI exclusive output failed to start (" + formatHRESULT(hr) + ").");
+            return;
         }
 
         finishStart(true);
