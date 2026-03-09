@@ -1236,7 +1236,7 @@ export default function HomeView() {
                 >
                   <div className="home-track-artwork">
                     {track.artwork_hash ? (
-                      <AlbumArtwork hash={track.artwork_hash} alt={track.album} />
+                      <AlbumArtwork hash={track.artwork_hash} alt={track.album} variant="card" />
                     ) : (
                       <span>&#9835;</span>
                     )}
@@ -1272,7 +1272,12 @@ export default function HomeView() {
                 >
                   <div className="home-artist-avatar">
                     {artist.artwork_hash ? (
-                      <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="home-artist-artwork" />
+                      <AlbumArtwork
+                        hash={artist.artwork_hash}
+                        alt={`${artist.artist} artwork`}
+                        className="home-artist-artwork"
+                        variant="card"
+                      />
                     ) : (
                       artistInitial(artist.artist)
                     )}
@@ -1308,7 +1313,7 @@ export default function HomeView() {
                 >
                   <div className="home-album-artwork">
                     {album.artwork_hash ? (
-                      <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
+                      <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
                     ) : (
                       <span>&#9835;</span>
                     )}

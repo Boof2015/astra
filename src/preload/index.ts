@@ -730,6 +730,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
     getArtworkThumbnailDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkThumbnailDataUrl', hash),
+    getArtworkCardDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkCardDataUrl', hash),
     onScanProgress: (callback: (progress: ScanProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress)
       ipcRenderer.on('library:scanProgress', handler)
@@ -1003,6 +1004,7 @@ declare global {
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>
+        getArtworkCardDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onScanStage: (callback: (progress: ScanStageProgress) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void

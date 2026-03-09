@@ -80,7 +80,7 @@ export interface FolderSubdirectoryEntry {
 type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
-export type ArtworkVariant = 'full' | 'thumbnail'
+export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
 
 export interface ArtworkRequestOptions {
   variant?: ArtworkVariant
@@ -226,7 +226,9 @@ function loadTracklistBpmKeyVisibilitySetting(): boolean {
 }
 
 function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
-  return `${variant === 'thumbnail' ? 'thumb' : 'full'}:${hash}`
+  if (variant === 'thumbnail') return `thumb:${hash}`
+  if (variant === 'card') return `card:${hash}`
+  return `full:${hash}`
 }
 
 function setThumbnailCacheEntry(cacheKey: string, dataUrl: string): void {
@@ -842,7 +844,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const cacheKey = getArtworkCacheKey(hash, variant)
 
     // Check cache first
-    if (variant === 'thumbnail') {
+    if (variant === 'thumbnail' || variant === 'card') {
       const thumbnailCached = getThumbnailCacheEntry(cacheKey)
       if (thumbnailCached) {
         return thumbnailCached
@@ -856,13 +858,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       return artworkRequestCache.get(cacheKey)!
     }
 
-    const request = (variant === 'thumbnail'
-      ? window.electronAPI.library.getArtworkThumbnailDataUrl(hash)
-      : window.electronAPI.library.getArtworkDataUrl(hash)
+    const request = (
+      variant === 'thumbnail'
+        ? window.electronAPI.library.getArtworkThumbnailDataUrl(hash)
+        : variant === 'card'
+          ? window.electronAPI.library.getArtworkCardDataUrl(hash)
+          : window.electronAPI.library.getArtworkDataUrl(hash)
     )
       .then((dataUrl) => {
         if (dataUrl) {
-          if (variant === 'thumbnail') {
+          if (variant === 'thumbnail' || variant === 'card') {
             setThumbnailCacheEntry(cacheKey, dataUrl)
           } else {
             artworkCache.set(cacheKey, dataUrl)

@@ -145,8 +145,10 @@ const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
 const LASTFM_PENDING_SCROBBLES_META_KEY = 'lastfm_pending_scrobbles_v1'
 const LYRICS_ONLINE_ENABLED_META_KEY = 'lyrics_online_enabled_v1'
 const TRACKLIST_THUMB_MAX_EDGE_PX = 96
+const CARD_ARTWORK_MAX_EDGE_PX = 320
 const TRACKLIST_THUMB_JPEG_QUALITY = 78
-const TRACKLIST_THUMB_CACHE_VERSION = 'v1'
+const CARD_ARTWORK_JPEG_QUALITY = 84
+const ARTWORK_THUMB_CACHE_VERSION = 'v2'
 const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
 const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
@@ -2162,9 +2164,9 @@ function toDataUrl(mimeType: string, data: Buffer): string {
   return `data:${mimeType};base64,${data.toString('base64')}`
 }
 
-function getArtworkThumbnailCacheKey(hash: string): string {
+function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
   return createHash('md5')
-    .update(`${TRACKLIST_THUMB_CACHE_VERSION}:${hash}:${TRACKLIST_THUMB_MAX_EDGE_PX}`)
+    .update(`${ARTWORK_THUMB_CACHE_VERSION}:${hash}:${maxEdgePx}`)
     .digest('hex')
 }
 
@@ -2193,16 +2195,16 @@ async function clearArtworkThumbnailCacheDirectory(): Promise<void> {
   }
 }
 
-function resizeForTracklistThumbnail(sourceImage: Electron.NativeImage): Electron.NativeImage {
+function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: number): Electron.NativeImage {
   const { width, height } = sourceImage.getSize()
   if (width <= 0 || height <= 0) return sourceImage
 
   const longestEdge = Math.max(width, height)
-  if (longestEdge <= TRACKLIST_THUMB_MAX_EDGE_PX) {
+  if (longestEdge <= maxEdgePx) {
     return sourceImage
   }
 
-  const scale = TRACKLIST_THUMB_MAX_EDGE_PX / longestEdge
+  const scale = maxEdgePx / longestEdge
   return sourceImage.resize({
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
@@ -2221,12 +2223,20 @@ async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
   }
 }
 
-async function getArtworkThumbnailDataUrlByHash(hash: string): Promise<string | null> {
+async function getArtworkThumbnailDataUrlByHash(
+  hash: string,
+  options?: {
+    maxEdgePx?: number
+    jpegQuality?: number
+  }
+): Promise<string | null> {
   if (!hash) return null
 
   try {
     await ensureArtworkThumbnailCacheDirectory()
-    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash)}.jpg`)
+    const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
+    const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
+    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
@@ -2244,8 +2254,8 @@ async function getArtworkThumbnailDataUrlByHash(hash: string): Promise<string | 
       return getArtworkDataUrlByHash(hash)
     }
 
-    const resized = resizeForTracklistThumbnail(sourceImage)
-    const thumbnailBuffer = resized.toJPEG(TRACKLIST_THUMB_JPEG_QUALITY)
+    const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
+    const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
       return getArtworkDataUrlByHash(hash)
     }
@@ -3791,12 +3801,36 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
 ipcMain.handle('library:getArtworkThumbnailDataUrl', async (_event, hash: string) => {
   if (!hash) return null
 
-  const requestKey = getArtworkThumbnailCacheKey(hash)
+  const requestKey = getArtworkThumbnailCacheKey(hash, TRACKLIST_THUMB_MAX_EDGE_PX)
   if (artworkThumbnailRequestCache.has(requestKey)) {
     return artworkThumbnailRequestCache.get(requestKey)!
   }
 
-  const request = getArtworkThumbnailDataUrlByHash(hash)
+  const request = getArtworkThumbnailDataUrlByHash(hash, {
+    maxEdgePx: TRACKLIST_THUMB_MAX_EDGE_PX,
+    jpegQuality: TRACKLIST_THUMB_JPEG_QUALITY
+  })
+    .finally(() => {
+      artworkThumbnailRequestCache.delete(requestKey)
+    })
+
+  artworkThumbnailRequestCache.set(requestKey, request)
+  return request
+})
+
+// Get card-sized artwork thumbnail as data URL
+ipcMain.handle('library:getArtworkCardDataUrl', async (_event, hash: string) => {
+  if (!hash) return null
+
+  const requestKey = getArtworkThumbnailCacheKey(hash, CARD_ARTWORK_MAX_EDGE_PX)
+  if (artworkThumbnailRequestCache.has(requestKey)) {
+    return artworkThumbnailRequestCache.get(requestKey)!
+  }
+
+  const request = getArtworkThumbnailDataUrlByHash(hash, {
+    maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX,
+    jpegQuality: CARD_ARTWORK_JPEG_QUALITY
+  })
     .finally(() => {
       artworkThumbnailRequestCache.delete(requestKey)
     })

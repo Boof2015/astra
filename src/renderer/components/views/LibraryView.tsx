@@ -891,7 +891,7 @@ export default function LibraryView() {
               }}
             >
               <div className="album-artwork">
-                <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
+                <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
               </div>
               <div className="album-info">
                 <div className="album-title">{album.album}</div>
@@ -966,7 +966,7 @@ export default function LibraryView() {
                   >
                     <div className="library-artist-rail-artwork">
                       {album.artwork_hash ? (
-                        <AlbumArtwork hash={album.artwork_hash} alt={album.album} />
+                        <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
                       ) : (
                         <span>&#9835;</span>
                       )}

@@ -4008,9 +4008,6 @@ button, .titlebar {
   flex-direction: column;
   cursor: pointer;
   transition: transform var(--transition-fast);
-  content-visibility: auto;
-  contain: layout paint style;
-  contain-intrinsic-size: 1px 260px;
 }
 
 .album-card:hover {
@@ -4031,6 +4028,7 @@ button, .titlebar {
 }
 
 .album-artwork img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -8210,6 +8208,7 @@ body::after {
 }
 
 .home-track-artwork img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -8392,6 +8391,7 @@ body::after {
 }
 
 .home-album-artwork img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
