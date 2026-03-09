@@ -1,12 +1,26 @@
-import { PlaybackState, EQBand } from '../types/audio'
+import { PlaybackState, EQBand, Track } from '../types/audio'
+import type {
+  NativeAudioCapabilities,
+  NativeAudioEvent,
+  NativeAudioPlaybackSnapshot,
+  NativeAudioTrackMetadata,
+  NativeAudioTrackLoadResult,
+  PlaybackOutputMode
+} from '../../types/nativeAudio'
 
 type EventCallback = (...args: unknown[]) => void
 
 const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
+const BIT_PERFECT_UNSUPPORTED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
+const BIT_PERFECT_OSCILLOSCOPE_QUANTUM = 128
+const BIT_PERFECT_VISUALIZER_TARGET_PEAK = 0.92
+const BIT_PERFECT_VISUALIZER_GAIN_RISE_SMOOTHING = 0.08
+const BIT_PERFECT_VISUALIZER_GAIN_FALL_SMOOTHING = 0.28
+const BIT_PERFECT_VISUALIZER_SILENCE_RMS = 1e-4
 
 const CALIBRATION_RTT_MAX_MS = 2500
 const CALIBRATION_CAPTURE_WINDOW_SEC = 4
@@ -61,6 +75,12 @@ interface GainState {
 
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
+}
+
+interface PlaybackModeSwitchResult {
+  activeMode: PlaybackOutputMode
+  capabilities: NativeAudioCapabilities
+  message: string | null
 }
 
 export type OutputDelayCalibrationFailureCode =
@@ -185,6 +205,9 @@ export class AudioEngine {
   private nextNormalizationGainDb: number | null = null
   private nextNormalizationLinearGain: number | null = null
   private nextNormalizationMode: GainApplicationMode | null = null
+  private bitPerfectVisualizerGain: number = 1
+  private bitPerfectVisualizerGainInitialized: boolean = false
+  private bitPerfectOscilloscopeRemainder: Float32Array = new Float32Array(0)
 
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
@@ -200,12 +223,108 @@ export class AudioEngine {
     splitter: ChannelSplitterNode
     merger: ChannelMergerNode
   }> = new WeakMap()
+  private playbackOutputMode: PlaybackOutputMode = 'standard'
+  private nativeCapabilities: NativeAudioCapabilities = {
+    bitPerfectAvailable: false,
+    reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
+    activeBackend: 'unavailable',
+    activeDeviceExclusive: false,
+    activeSampleRate: null,
+    activeSampleFormat: null,
+    selectedDeviceId: null,
+    selectedDeviceMaxChannels: null,
+    devices: []
+  }
+  private nativeSnapshot: NativeAudioPlaybackSnapshot | null = null
+  private nativeScopePollFrameId: number | null = null
+  private nativeEventUnsubscribe: (() => void) | null = null
+  private nativeModeMessage: string | null = null
+  private nativeNextTrackBuffered: boolean = false
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
 
   constructor() {
     // Lazy init AudioContext on first user interaction
+  }
+
+  getPlaybackOutputMode(): PlaybackOutputMode {
+    return this.playbackOutputMode
+  }
+
+  getBitPerfectUnavailableMessage(): string {
+    return this.nativeModeMessage ?? this.nativeCapabilities.reasonUnavailable ?? BIT_PERFECT_UNSUPPORTED_MESSAGE
+  }
+
+  getNativeAudioCapabilities(): NativeAudioCapabilities {
+    return this.nativeCapabilities
+  }
+
+  async refreshNativeAudioCapabilities(): Promise<NativeAudioCapabilities> {
+    await this.initNativeAudio()
+    return this.refreshNativeCapabilities()
+  }
+
+  isBitPerfectActive(): boolean {
+    return this.playbackOutputMode === 'bitperfect' && Boolean(this.nativeSnapshot?.bitPerfectActive)
+  }
+
+  isBitPerfectRouteActive(): boolean {
+    return this.isBitPerfectActive()
+  }
+
+  getPlaybackModeStatusMessage(): string | null {
+    if (this.playbackOutputMode !== 'bitperfect') return null
+    if (this.nativeCapabilities.bitPerfectAvailable && this.nativeSnapshot?.bitPerfectActive) {
+      return null
+    }
+    return this.getBitPerfectUnavailableMessage()
+  }
+
+  async setPlaybackOutputMode(mode: PlaybackOutputMode): Promise<PlaybackModeSwitchResult> {
+    if (mode === 'standard') {
+      if (this.playbackOutputMode === 'bitperfect') {
+        void window.nativeAudioAPI.stop()
+      }
+      this.playbackOutputMode = 'standard'
+      this.nativeModeMessage = null
+      this.nativeSnapshot = null
+      this.nativeNextTrackBuffered = false
+      this.stopNativeScopePolling()
+      this.notifyTrackChange()
+      return {
+        activeMode: this.playbackOutputMode,
+        capabilities: this.nativeCapabilities,
+        message: null
+      }
+    }
+
+    const capabilities = await this.initNativeAudio()
+    if (!capabilities.bitPerfectAvailable) {
+      this.playbackOutputMode = 'standard'
+      this.nativeModeMessage = capabilities.reasonUnavailable
+      this.stopNativeScopePolling()
+      return {
+        activeMode: this.playbackOutputMode,
+        capabilities,
+        message: capabilities.reasonUnavailable
+      }
+    }
+
+    if (this._playbackState === 'playing' || this._playbackState === 'paused') {
+      this.stop()
+    }
+    this.clearNextBuffer()
+    this.audioBuffer = null
+    this.playbackOutputMode = 'bitperfect'
+    this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
+    this.startNativeScopePolling()
+    this.notifyTrackChange()
+    return {
+      activeMode: this.playbackOutputMode,
+      capabilities,
+      message: null
+    }
   }
 
   // Register callback for track changes (for visualizer reset)
@@ -227,7 +346,389 @@ export class AudioEngine {
     this.pendingSpectrumSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingMiniVisualizerChunks = []
+    this.resetBitPerfectVisualizerGain()
+    this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
     this.trackChangeCallbacks.forEach(cb => cb())
+  }
+
+  private queueVisualizerSamples(left: Float32Array, right: Float32Array): void {
+    if (!left || !right || left.length === 0 || right.length === 0) return
+
+    const normalizedSamples = this.normalizeBitPerfectVisualizerSamples(left, right)
+    const normalizedLeft = normalizedSamples?.left ?? left
+    const normalizedRight = normalizedSamples?.right ?? right
+
+    this.latestLeftChannel = normalizedLeft
+    this.latestRightChannel = normalizedRight
+
+    const leftChunk = new Float32Array(normalizedLeft)
+    this.enqueueOscilloscopeSamples(leftChunk)
+
+    const mono = new Float32Array(Math.min(normalizedLeft.length, normalizedRight.length))
+    for (let i = 0; i < mono.length; i++) {
+      mono[i] = (normalizedLeft[i] + normalizedRight[i]) / 2
+    }
+    this.latestMonoChannel = mono
+
+    if (this.pendingSpectrumSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+      this.pendingSpectrumSamples = this.pendingSpectrumSamples.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+      )
+    }
+    this.pendingSpectrumSamples.push(mono)
+
+    if (this.pendingMiniVisualizerChunks.length >= AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS) {
+      this.pendingMiniVisualizerChunks = this.pendingMiniVisualizerChunks.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS / 2)
+      )
+    }
+    this.pendingMiniVisualizerChunks.push({ left: leftChunk, mono })
+
+    if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
+      this.pendingVectorscopeSamples = this.pendingVectorscopeSamples.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
+      )
+    }
+    this.pendingVectorscopeSamples.push({
+      left: new Float32Array(normalizedLeft),
+      right: new Float32Array(normalizedRight)
+    })
+  }
+
+  private enqueueOscilloscopeSamples(chunk: Float32Array): void {
+    if (this.playbackOutputMode !== 'bitperfect') {
+      if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
+        this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
+          -AudioEngine.MAX_PENDING_CHUNKS / 2
+        )
+      }
+      this.pendingOscilloscopeSamples.push(chunk)
+      return
+    }
+
+    const remainderLength = this.bitPerfectOscilloscopeRemainder.length
+    const merged = new Float32Array(remainderLength + chunk.length)
+    if (remainderLength > 0) {
+      merged.set(this.bitPerfectOscilloscopeRemainder, 0)
+    }
+    merged.set(chunk, remainderLength)
+
+    const quantumCount = Math.floor(merged.length / BIT_PERFECT_OSCILLOSCOPE_QUANTUM)
+    if (quantumCount === 0) {
+      this.bitPerfectOscilloscopeRemainder = merged
+      return
+    }
+
+    if ((this.pendingOscilloscopeSamples.length + quantumCount) >= AudioEngine.MAX_PENDING_CHUNKS) {
+      this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_CHUNKS / 2)
+      )
+    }
+
+    for (let quantumIndex = 0; quantumIndex < quantumCount; quantumIndex++) {
+      const start = quantumIndex * BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+      const end = start + BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+      this.pendingOscilloscopeSamples.push(merged.slice(start, end))
+    }
+
+    const remainderStart = quantumCount * BIT_PERFECT_OSCILLOSCOPE_QUANTUM
+    this.bitPerfectOscilloscopeRemainder = remainderStart < merged.length
+      ? merged.slice(remainderStart)
+      : new Float32Array(0)
+  }
+
+  private resetBitPerfectVisualizerGain(): void {
+    this.bitPerfectVisualizerGain = 1
+    this.bitPerfectVisualizerGainInitialized = false
+  }
+
+  private normalizeBitPerfectVisualizerSamples(
+    left: Float32Array,
+    right: Float32Array
+  ): { left: Float32Array; right: Float32Array } | null {
+    if (this.playbackOutputMode !== 'bitperfect' || (!this._normalizationEnabled && !this._replayGainEnabled)) {
+      return null
+    }
+
+    const desiredGain = this.resolveBitPerfectVisualizerGain(left, right)
+    if (!Number.isFinite(desiredGain) || Math.abs(desiredGain - 1) < 1e-4) {
+      this.bitPerfectVisualizerGain = 1
+      this.bitPerfectVisualizerGainInitialized = true
+      return null
+    }
+
+    const appliedGain = this.bitPerfectVisualizerGainInitialized
+      ? this.smoothBitPerfectVisualizerGain(desiredGain)
+      : desiredGain
+
+    this.bitPerfectVisualizerGain = appliedGain
+    this.bitPerfectVisualizerGainInitialized = true
+
+    const normalizedLeft = new Float32Array(left.length)
+    const normalizedRight = new Float32Array(right.length)
+    for (let i = 0; i < left.length; i++) {
+      normalizedLeft[i] = Math.max(-1, Math.min(1, left[i] * appliedGain))
+    }
+    for (let i = 0; i < right.length; i++) {
+      normalizedRight[i] = Math.max(-1, Math.min(1, right[i] * appliedGain))
+    }
+
+    return {
+      left: normalizedLeft,
+      right: normalizedRight
+    }
+  }
+
+  private smoothBitPerfectVisualizerGain(desiredGain: number): number {
+    const smoothing = desiredGain > this.bitPerfectVisualizerGain
+      ? BIT_PERFECT_VISUALIZER_GAIN_RISE_SMOOTHING
+      : BIT_PERFECT_VISUALIZER_GAIN_FALL_SMOOTHING
+
+    return this.bitPerfectVisualizerGain + ((desiredGain - this.bitPerfectVisualizerGain) * smoothing)
+  }
+
+  private resolveBitPerfectVisualizerGain(left: Float32Array, right: Float32Array): number {
+    if (!this._normalizationEnabled) {
+      return 1
+    }
+
+    let desiredGainDb: number
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+      desiredGainDb = this.currentReplayGainDb
+    } else {
+      const chunkLoudnessDb = this.calculateChunkLoudness(left, right)
+      if (chunkLoudnessDb == null) {
+        return this.bitPerfectVisualizerGainInitialized ? this.bitPerfectVisualizerGain : 1
+      }
+      desiredGainDb = this._targetLufs - chunkLoudnessDb
+    }
+
+    const clampedGain = this.toLinearGain(this.clampGainDb(desiredGainDb))
+    const peak = this.getChunkPeak(left, right)
+    if (!Number.isFinite(peak) || peak <= 0) {
+      return clampedGain
+    }
+
+    return Math.min(clampedGain, BIT_PERFECT_VISUALIZER_TARGET_PEAK / peak)
+  }
+
+  private calculateChunkLoudness(left: Float32Array, right: Float32Array): number | null {
+    const sampleCount = Math.min(left.length, right.length)
+    if (sampleCount === 0) return null
+
+    let sumSquares = 0
+    for (let i = 0; i < sampleCount; i++) {
+      const leftSample = left[i]
+      const rightSample = right[i]
+      sumSquares += (leftSample * leftSample) + (rightSample * rightSample)
+    }
+
+    const rms = Math.sqrt(sumSquares / (sampleCount * 2))
+    if (!Number.isFinite(rms) || rms < BIT_PERFECT_VISUALIZER_SILENCE_RMS) {
+      return null
+    }
+
+    return 20 * Math.log10(rms + 1e-10)
+  }
+
+  private getChunkPeak(left: Float32Array, right: Float32Array): number {
+    const sampleCount = Math.min(left.length, right.length)
+    let peak = 0
+
+    for (let i = 0; i < sampleCount; i++) {
+      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]))
+    }
+
+    return peak
+  }
+
+  private async initNativeAudio(): Promise<NativeAudioCapabilities> {
+    this.nativeCapabilities = await window.nativeAudioAPI.initialize()
+    if (this.nativeEventUnsubscribe === null) {
+      this.nativeEventUnsubscribe = window.nativeAudioAPI.onEvent((event) => {
+        this.handleNativeAudioEvent(event)
+      })
+    }
+    await this.refreshNativeSnapshot()
+    return this.nativeCapabilities
+  }
+
+  private async refreshNativeCapabilities(): Promise<NativeAudioCapabilities> {
+    this.nativeCapabilities = await window.nativeAudioAPI.getCapabilities()
+    return this.nativeCapabilities
+  }
+
+  private async refreshNativeSnapshot(): Promise<NativeAudioPlaybackSnapshot | null> {
+    if (this.playbackOutputMode !== 'bitperfect' && this.nativeSnapshot === null) {
+      return null
+    }
+    try {
+      this.nativeSnapshot = await window.nativeAudioAPI.getPlaybackSnapshot()
+      return this.nativeSnapshot
+    } catch {
+      return this.nativeSnapshot
+    }
+  }
+
+  private handleNativeAudioEvent(event: NativeAudioEvent): void {
+    switch (event.type) {
+      case 'stateChange':
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = {
+            ...this.nativeSnapshot,
+            playbackState: event.playbackState
+          }
+        }
+        this._playbackState = event.playbackState as PlaybackState
+        this.emit('stateChange', this._playbackState)
+        if (this._playbackState !== 'playing' || this.playbackOutputMode === 'bitperfect') {
+          this.stopTimeUpdate()
+        }
+        break
+      case 'timeUpdate':
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = {
+            ...this.nativeSnapshot,
+            currentTime: event.currentTime
+          }
+        }
+        this.emit('timeUpdate', event.currentTime)
+        break
+      case 'durationChange':
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = {
+            ...this.nativeSnapshot,
+            duration: event.duration
+          }
+        }
+        this.emit('durationChange', event.duration)
+        break
+      case 'gaplessTransition':
+        this.nativeNextTrackBuffered = false
+        void this.refreshNativeSnapshot()
+        this.notifyTrackChange()
+        this.emit('gaplessTransition')
+        break
+      case 'ended':
+        this.nativeNextTrackBuffered = false
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = {
+            ...this.nativeSnapshot,
+            playbackState: 'stopped',
+            currentTime: 0
+          }
+        }
+        this.notifyTrackChange()
+        this.emit('ended')
+        break
+      case 'deviceReopened':
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = {
+            ...this.nativeSnapshot,
+            sampleRate: event.sampleRate,
+            sampleFormat: event.sampleFormat,
+            deviceId: event.deviceId
+          }
+        }
+        void this.refreshNativeCapabilities()
+        void this.refreshNativeSnapshot()
+        this.notifyTrackChange()
+        break
+      case 'sampleRateChanged':
+        void this.refreshNativeCapabilities()
+        void this.refreshNativeSnapshot()
+        this.notifyTrackChange()
+        break
+      case 'error':
+        this.emit('error', new Error(event.message))
+        break
+    }
+  }
+
+  private pollNativeScopeData = (): void => {
+    if (this.playbackOutputMode !== 'bitperfect') {
+      this.nativeScopePollFrameId = null
+      return
+    }
+
+    const leftChunks = window.nativeAudioAPI.flushOscilloscopeChunks()
+    const monoChunks = window.nativeAudioAPI.flushSpectrumChunks()
+    const stereoChunks = window.nativeAudioAPI.flushVectorscopeChunks()
+
+    if (stereoChunks.length > 0) {
+      for (const chunk of stereoChunks) {
+        this.queueVisualizerSamples(chunk.left, chunk.right)
+      }
+    } else if (leftChunks.length > 0 || monoChunks.length > 0) {
+      const left = leftChunks[leftChunks.length - 1] ?? new Float32Array(0)
+      const mono = monoChunks[monoChunks.length - 1] ?? left
+      const right = mono.length === left.length
+        ? mono
+        : left
+      if (left.length > 0) {
+        this.queueVisualizerSamples(left, right)
+      }
+    }
+
+    this.nativeScopePollFrameId = window.requestAnimationFrame(this.pollNativeScopeData)
+  }
+
+  private startNativeScopePolling(): void {
+    if (this.nativeScopePollFrameId !== null) return
+    this.nativeScopePollFrameId = window.requestAnimationFrame(this.pollNativeScopeData)
+  }
+
+  private stopNativeScopePolling(): void {
+    if (this.nativeScopePollFrameId !== null) {
+      window.cancelAnimationFrame(this.nativeScopePollFrameId)
+      this.nativeScopePollFrameId = null
+    }
+  }
+
+  private buildNativeTrackMetadata(track: Track): NativeAudioTrackMetadata {
+    return {
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      format: track.format,
+      sampleRate: track.sampleRate,
+      bitDepth: track.bitDepth,
+      channels: track.channels,
+      codec: track.codec,
+      codecProfile: track.codecProfile
+    }
+  }
+
+  async loadTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+    await this.initNativeAudio()
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+    if (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused') {
+      try {
+        await window.nativeAudioAPI.stop()
+      } catch {
+        // Ignore stop failures here; the next load attempt will surface a hard error if the backend is unhealthy.
+      }
+    }
+    this.clearNextBuffer()
+    this.audioBuffer = null
+    this.nativeNextTrackBuffered = false
+    const result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
+    await this.refreshNativeCapabilities()
+    await this.refreshNativeSnapshot()
+    this.notifyTrackChange()
+    this._playbackState = 'stopped'
+    this.emit('stateChange', this._playbackState)
+    this.emit('durationChange', result.duration)
+    return result
+  }
+
+  async preBufferNextTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+    await this.initNativeAudio()
+    const result = await window.nativeAudioAPI.preloadNextTrack(track.path, this.buildNativeTrackMetadata(track))
+    this.nativeNextTrackBuffered = true
+    return result
   }
 
   private getMaxDestinationChannelCount(): number {
@@ -387,8 +888,6 @@ export class AudioEngine {
   }
 
   async setChannelRoutingMap(map: number[] | null): Promise<void> {
-    await this.initContext()
-
     const normalized = map && map.length > 0
       ? map
         .map((value) => {
@@ -400,6 +899,12 @@ export class AudioEngine {
       : null
 
     this.manualChannelRoutingMap = normalized
+
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
     if (this.multichannelEnabled && this._playbackState === 'playing' && this.audioBuffer) {
@@ -408,9 +913,12 @@ export class AudioEngine {
   }
 
   async setMultichannelEnabled(enabled: boolean): Promise<void> {
-    await this.initContext()
-
     this.multichannelEnabled = enabled
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
@@ -467,53 +975,7 @@ export class AudioEngine {
         this.workletNode.port.onmessage = (event: MessageEvent) => {
           const { left, right } = event.data
           if (left && right && left.length > 0) {
-            this.latestLeftChannel = left
-            this.latestRightChannel = right
-
-            const leftChunk = new Float32Array(left)
-
-            // Queue samples for oscilloscope (prevents sample loss)
-            // Memory safety: drop oldest chunks if queue gets too large
-            if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
-              this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
-                -AudioEngine.MAX_PENDING_CHUNKS / 2
-              )
-            }
-            this.pendingOscilloscopeSamples.push(leftChunk)
-
-            // Compute mono sum (L+R)/2
-            const mono = new Float32Array(left.length)
-            for (let i = 0; i < left.length; i++) {
-              mono[i] = (left[i] + right[i]) / 2
-            }
-            this.latestMonoChannel = mono
-
-            // Queue mono chunks for spectrum analyzer so it can consume all samples.
-            if (this.pendingSpectrumSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
-              this.pendingSpectrumSamples = this.pendingSpectrumSamples.slice(
-                -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
-              )
-            }
-            this.pendingSpectrumSamples.push(mono)
-
-            // Queue chunks for mini-player real-time stream without interfering with main visualizers.
-            if (this.pendingMiniVisualizerChunks.length >= AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS) {
-              this.pendingMiniVisualizerChunks = this.pendingMiniVisualizerChunks.slice(
-                -Math.floor(AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS / 2)
-              )
-            }
-            this.pendingMiniVisualizerChunks.push({ left: leftChunk, mono })
-
-            // Queue stereo chunks for vectorscope (prevents sample loss)
-            if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
-              this.pendingVectorscopeSamples = this.pendingVectorscopeSamples.slice(
-                -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
-              )
-            }
-            this.pendingVectorscopeSamples.push({
-              left: new Float32Array(left),
-              right: new Float32Array(right)
-            })
+            this.queueVisualizerSamples(left, right)
           }
         }
       }
@@ -713,6 +1175,9 @@ export class AudioEngine {
 
   set normalizationEnabled(enabled: boolean) {
     this._normalizationEnabled = enabled
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     if (!enabled) {
       this.applyGainState({
         gainDb: 0,
@@ -741,6 +1206,9 @@ export class AudioEngine {
 
   set targetLufs(lufs: number) {
     this._targetLufs = lufs
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     }
@@ -764,6 +1232,9 @@ export class AudioEngine {
     if (this.currentReplayGainDb === normalized) return
 
     this.currentReplayGainDb = normalized
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
 
     if (this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
@@ -786,6 +1257,9 @@ export class AudioEngine {
     if (this._replayGainEnabled === normalized) return
 
     this._replayGainEnabled = normalized
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
 
     if (this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
@@ -833,12 +1307,18 @@ export class AudioEngine {
   }
 
   get currentTime(): number {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeSnapshot?.currentTime ?? 0
+    }
     if (!this.context || this._playbackState === 'stopped') return 0
     if (this._playbackState === 'paused') return this.pauseTime
     return this.context.currentTime - this.startTime
   }
 
   get duration(): number {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeSnapshot?.duration ?? 0
+    }
     return this.audioBuffer?.duration ?? 0
   }
 
@@ -847,24 +1327,42 @@ export class AudioEngine {
   }
 
   getCurrentTrackChannelCount(): number | null {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeSnapshot?.channels ?? null
+    }
     return this.audioBuffer?.numberOfChannels ?? null
   }
 
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeSnapshot?.sampleRate
+        ?? this.nativeCapabilities.activeSampleRate
+        ?? 48000
+    }
     return this.context?.sampleRate ?? 48000
   }
 
   // Get post-EQ analyser node for spectrum overlay
   getEQAnalyserNode(): AnalyserNode | null {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return null
+    }
     return this.eqDisplayAnalyserNode ?? this.eqAnalyserNode
   }
 
   getOutputMaxChannelCount(): number | null {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeCapabilities.selectedDeviceMaxChannels ?? null
+    }
     return this.context?.destination.maxChannelCount ?? null
   }
 
   async setAnalysisDelayMs(ms: number): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      this.analysisDelayMs = 0
+      return
+    }
     await this.initContext()
     const safeMs = Number.isFinite(ms) ? ms : 0
     const clampedMs = Math.max(0, Math.min(ANALYSIS_DELAY_MAX_MS, safeMs))
@@ -881,6 +1379,13 @@ export class AudioEngine {
   }
 
   async runOutputDelayCalibration(inputDeviceId: string = ''): Promise<OutputDelayCalibrationResult> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: BIT_PERFECT_UNSUPPORTED_MESSAGE
+      }
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       return {
         ok: false,
@@ -1049,6 +1554,13 @@ export class AudioEngine {
     referenceDeviceId: string = '',
     inputDeviceId: string = ''
   ): Promise<DifferentialCalibrationResult> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return {
+        ok: false,
+        code: 'not-supported',
+        message: BIT_PERFECT_UNSUPPORTED_MESSAGE
+      }
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       return {
         ok: false,
@@ -2261,6 +2773,14 @@ export class AudioEngine {
 
   // Audio output device selection
   async setOutputDevice(deviceId: string): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      await this.initNativeAudio()
+      this.nativeCapabilities = await window.nativeAudioAPI.setOutputDevice(deviceId)
+      await this.refreshNativeSnapshot()
+      this.notifyTrackChange()
+      return
+    }
+
     await this.initContext()
     if (this.context && 'setSinkId' in this.context) {
       await (this.context as AudioContext & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
@@ -2272,15 +2792,25 @@ export class AudioEngine {
   }
 
   async ensureContextReady(): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      await this.initNativeAudio()
+      return
+    }
     await this.initContext()
   }
 
   // Check if audio context is initialized and ready
   isContextReady(): boolean {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeCapabilities.bitPerfectAvailable
+    }
     return this.context !== null && this.workletLoaded
   }
 
   get worklet(): AudioWorkletNode | null {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return null
+    }
     return this.workletNode
   }
 
@@ -2326,11 +2856,17 @@ export class AudioEngine {
   }
 
   get hasNextBuffered(): boolean {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return this.nativeNextTrackBuffered
+    }
     return this.nextBuffer !== null
   }
 
   // Load audio from ArrayBuffer
   async loadAudioData(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native loading.')
+    }
     await this.initContext()
     if (!this.context) throw new Error('AudioContext not initialized')
 
@@ -2374,6 +2910,9 @@ export class AudioEngine {
 
   // Pre-buffer the next track for gapless playback
   async preBufferNext(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native prebuffering.')
+    }
     await this.initContext()
     if (!this.context) throw new Error('AudioContext not initialized')
 
@@ -2497,12 +3036,17 @@ export class AudioEngine {
 
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)
-    this.emit('bufferReady', this.audioBuffer)
     this.emit('gaplessTransition')
+    this.emit('bufferReady', this.audioBuffer)
   }
 
   // Clear pre-buffered next track
   clearNextBuffer(): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      this.nativeNextTrackBuffered = false
+      void window.nativeAudioAPI.clearNextTrack()
+      return
+    }
     this.cancelScheduledNext()
     this.nextBuffer = null
     this.nextReplayGainDb = null
@@ -2526,6 +3070,14 @@ export class AudioEngine {
 
   // Play
   async play(): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      await this.initNativeAudio()
+      this.nativeSnapshot = await window.nativeAudioAPI.play()
+      this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
+      this.emit('stateChange', this._playbackState)
+      return
+    }
+
     if (!this.audioBuffer || !this.context) return
 
     // Resume context if suspended (autoplay policy)
@@ -2569,6 +3121,17 @@ export class AudioEngine {
 
   // Pause
   pause(): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      void window.nativeAudioAPI.pause().then((snapshot) => {
+        this.nativeSnapshot = snapshot
+        this._playbackState = snapshot.playbackState as PlaybackState
+        this.emit('stateChange', this._playbackState)
+      }).catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to pause native playback'))
+      })
+      return
+    }
+
     if (this._playbackState !== 'playing' || !this.context) return
 
     this.pauseTime = this.context.currentTime - this.startTime
@@ -2591,6 +3154,21 @@ export class AudioEngine {
 
   // Stop
   stop(): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      this.nativeNextTrackBuffered = false
+      void window.nativeAudioAPI.stop().then((snapshot) => {
+        this.nativeSnapshot = snapshot
+        this._playbackState = snapshot.playbackState as PlaybackState
+        this.emit('stateChange', this._playbackState)
+        this.emit('timeUpdate', 0)
+        this.notifyTrackChange()
+      }).catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to stop native playback'))
+      })
+      this.stopTimeUpdate()
+      return
+    }
+
     this.stopSource()
     this.cancelScheduledNext()
     this.pauseTime = 0
@@ -2602,6 +3180,15 @@ export class AudioEngine {
 
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      await this.initNativeAudio()
+      this.nativeSnapshot = await window.nativeAudioAPI.seek(time)
+      this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
+      this.emit('timeUpdate', this.nativeSnapshot.currentTime)
+      this.notifyTrackChange()
+      return
+    }
+
     if (!this.audioBuffer || !this.context) return
 
     const wasPlaying = this._playbackState === 'playing'
@@ -2639,6 +3226,9 @@ export class AudioEngine {
 
   // Set volume (0-1)
   setVolume(value: number): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     this._volume = Math.max(0, Math.min(1, value))
     if (this.gainNode && !this._isMuted) {
       this.gainNode.gain.value = this._volume
@@ -2647,6 +3237,9 @@ export class AudioEngine {
 
   // Toggle mute
   toggleMute(): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     this._isMuted = !this._isMuted
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
@@ -2655,6 +3248,9 @@ export class AudioEngine {
 
   // Set mute state
   setMuted(muted: boolean): void {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     this._isMuted = muted
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
@@ -2672,6 +3268,10 @@ export class AudioEngine {
     this.requestedEQBands = bands.map((band) => ({ ...band }))
     this.requestedEQPreampDb = preampDb
     this.requestedEQEnabled = enabled
+
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
 
     if (!this.context || !this.preampNode || !this.eqAnalyserNode) return
 
@@ -2719,6 +3319,9 @@ export class AudioEngine {
       this.requestedEQBands[index] = { ...band }
     }
 
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     if (index < 0 || index >= this.eqFilters.length || !this.context) return
     const filter = this.eqFilters[index]
     filter.type = this._mapBandType(band.type)
@@ -2732,6 +3335,9 @@ export class AudioEngine {
    */
   updatePreamp(dB: number): void {
     this.requestedEQPreampDb = dB
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
     if (!this.preampNode) return
     const effectiveDb = this.requestedEQEnabled ? dB : 0
     this.preampNode.gain.value = Math.pow(10, effectiveDb / 20)
@@ -2796,6 +3402,13 @@ export class AudioEngine {
     this.stop()
     this.clearNextBuffer()
     this.stopTimeUpdate()
+    this.stopNativeScopePolling()
+    if (this.nativeEventUnsubscribe) {
+      this.nativeEventUnsubscribe()
+      this.nativeEventUnsubscribe = null
+    }
+    this.nativeSnapshot = null
+    this.nativeNextTrackBuffered = false
 
     // Clean up EQ chain
     this._disconnectEQChain()
@@ -2849,6 +3462,12 @@ export class AudioEngine {
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
     this.audioBuffer = null
+    this.latestLeftChannel = new Float32Array(0)
+    this.latestRightChannel = new Float32Array(0)
+    this.latestMonoChannel = new Float32Array(0)
+    this.pendingOscilloscopeSamples = []
+    this.pendingSpectrumSamples = []
+    this.pendingVectorscopeSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }

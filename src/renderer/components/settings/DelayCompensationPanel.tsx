@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import {
+  BIT_PERFECT_DSP_DISABLED_MESSAGE,
   resolveOutputDeviceLabel,
   useAudioSettingsStore,
   type CalibrationInputDevice,
@@ -57,6 +58,7 @@ export default function DelayCompensationPanel() {
   const {
     availableDevices,
     availableInputDevices,
+    playbackOutputMode,
     selectedDeviceId,
     selectedCalibrationInputDeviceId,
     activeDelayProfileKey,
@@ -74,6 +76,7 @@ export default function DelayCompensationPanel() {
     runDelayAutoCalibration,
     resetDelayToAutoGuess,
   } = useAudioSettingsStore()
+  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
 
   const selectedOutputLabel = useMemo(() => {
     return resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
@@ -201,7 +204,8 @@ export default function DelayCompensationPanel() {
           <button
             type="button"
             className={`settings-toggle ${activeDelayProfile.enabled ? 'active' : ''}`}
-            onClick={() => void setDelayCompensationEnabled(!activeDelayProfile.enabled)}
+            onClick={bitPerfectModeActive ? undefined : (() => void setDelayCompensationEnabled(!activeDelayProfile.enabled))}
+            disabled={bitPerfectModeActive}
           >
             {activeDelayProfile.enabled ? 'Enabled' : 'Disabled'}
           </button>
@@ -212,6 +216,7 @@ export default function DelayCompensationPanel() {
           <select
             className="settings-select"
             value={activeDelayProfile.mode}
+            disabled={bitPerfectModeActive}
             onChange={(event) => void setDelayCompensationMode(event.target.value as DelayCompensationMode)}
           >
             {MODES.map((mode) => (
@@ -225,6 +230,7 @@ export default function DelayCompensationPanel() {
           <select
             className="settings-select"
             value={activeDelayProfile.calibrationMethod}
+            disabled={bitPerfectModeActive}
             onChange={(event) => void setDelayCalibrationMethod(event.target.value as DelayCalibrationMethod)}
           >
             {CALIBRATION_METHODS.map((method) => (
@@ -239,6 +245,7 @@ export default function DelayCompensationPanel() {
             <select
               className="settings-select"
               value={activeDelayProfile.differentialReferenceOutputDeviceId}
+              disabled={bitPerfectModeActive}
               onChange={(event) => void setDifferentialReferenceOutputDeviceId(event.target.value)}
             >
               <option value="">System Default Output</option>
@@ -258,6 +265,7 @@ export default function DelayCompensationPanel() {
           <select
             className="settings-select"
             value={selectedCalibrationInputDeviceId}
+            disabled={bitPerfectModeActive}
             onChange={(event) => setCalibrationInputDeviceId(event.target.value)}
           >
             <option value="">System Default Input</option>
@@ -281,6 +289,7 @@ export default function DelayCompensationPanel() {
               max={manualOffsetMax}
               step={5}
               value={activeDelayProfile.manualOffsetMs}
+              disabled={bitPerfectModeActive}
               onChange={(event) => handleManualOffsetChange(Number(event.target.value))}
             />
             <input
@@ -290,6 +299,7 @@ export default function DelayCompensationPanel() {
               max={manualOffsetMax}
               step={5}
               value={activeDelayProfile.manualOffsetMs}
+              disabled={bitPerfectModeActive}
               onChange={(event) => handleManualOffsetChange(Number(event.target.value))}
             />
           </div>
@@ -300,21 +310,26 @@ export default function DelayCompensationPanel() {
         <button
           type="button"
           className="settings-btn"
-          onClick={() => void runDelayAutoCalibration()}
-          disabled={isRunningCalibration}
+          onClick={bitPerfectModeActive ? undefined : (() => void runDelayAutoCalibration())}
+          disabled={isRunningCalibration || bitPerfectModeActive}
         >
           {runButtonLabel}
         </button>
         <button
           type="button"
           className="settings-btn"
-          onClick={() => void resetDelayToAutoGuess()}
-          disabled={!hasAutoEstimate || isRunningCalibration}
+          onClick={bitPerfectModeActive ? undefined : (() => void resetDelayToAutoGuess())}
+          disabled={!hasAutoEstimate || isRunningCalibration || bitPerfectModeActive}
         >
           Reset to Auto Guess
         </button>
       </div>
 
+      {bitPerfectModeActive && (
+        <p className="settings-note delay-comp-note">
+          {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+        </p>
+      )}
       <p className={`settings-note delay-comp-note delay-comp-note-${delayCalibrationState}`}>
         {modeDescription} {statusLine}
       </p>

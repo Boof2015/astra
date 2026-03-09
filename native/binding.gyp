@@ -10,7 +10,11 @@
         "src/oscilloscope.cpp",
         "src/spectrum.cpp",
         "src/vectorscope.cpp",
-        "src/dsp_utils.cpp"
+        "src/dsp_utils.cpp",
+        "src/playback_engine.cpp",
+        "src/coreaudio_hal_sink.cpp",
+        "src/alsa_hw_sink.cpp",
+        "src/wasapi_exclusive_sink.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -23,6 +27,13 @@
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "CLANG_CXX_LIBRARY": "libc++",
             "MACOSX_DEPLOYMENT_TARGET": "10.15"
+          },
+          "link_settings": {
+            "libraries": [
+              "-framework CoreAudio",
+              "-framework AudioToolbox",
+              "-framework CoreFoundation"
+            ]
           }
         }],
         ["OS=='win'", {
@@ -31,11 +42,24 @@
               "ExceptionHandling": 1,
               "AdditionalOptions": ["/O2"]
             }
+          },
+          "link_settings": {
+            "libraries": [
+              "Ole32.lib",
+              "Avrt.lib",
+              "Mmdevapi.lib",
+              "Uuid.lib"
+            ]
           }
         }],
         ["OS=='linux'", {
           "cflags_cc": ["-std=c++17", "-O3", "-ffast-math", "-fPIC"],
-          "ldflags": ["-Wl,-z,now"]
+          "ldflags": ["-Wl,-z,now"],
+          "link_settings": {
+            "libraries": [
+              "-lasound"
+            ]
+          }
         }]
       ]
     }

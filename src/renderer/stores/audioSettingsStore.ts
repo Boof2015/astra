@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
+import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
   deviceId: string
@@ -43,6 +44,9 @@ export interface InputDelayBaseline {
 }
 
 interface AudioSettingsStore {
+  playbackOutputMode: PlaybackOutputMode
+  nativeAudioCapabilities: NativeAudioCapabilities
+  playbackModeStatusMessage: string | null
   selectedDeviceId: string
   availableDevices: AudioDevice[]
   availableInputDevices: CalibrationInputDevice[]
@@ -65,6 +69,7 @@ interface AudioSettingsStore {
 
   refreshDevices: () => Promise<void>
   refreshOutputChannelCount: () => Promise<void>
+  setPlaybackOutputMode: (mode: PlaybackOutputMode) => Promise<void>
   selectDevice: (deviceId: string) => Promise<void>
   setCalibrationInputDeviceId: (deviceId: string) => void
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
@@ -88,6 +93,8 @@ interface AudioSettingsStore {
 }
 
 const STORAGE_KEY = 'astra-audio-output-device'
+const NATIVE_OUTPUT_STORAGE_KEY = 'astra-native-audio-output-device'
+const PLAYBACK_OUTPUT_MODE_STORAGE_KEY = 'astra-playback-output-mode-v1'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
@@ -98,6 +105,8 @@ const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 export const DEFAULT_NORMALIZATION_TARGET_LUFS = audioEngine.targetLufs
+export const BIT_PERFECT_DSP_DISABLED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
+const BIT_PERFECT_LINUX_DEVICE_SELECTION_MESSAGE = 'Bit-perfect mode on Linux requires selecting a direct ALSA hardware output device.'
 
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
@@ -112,6 +121,18 @@ const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   lastCalibrationConfidence: null,
   lastCalibrationMethod: null,
   lastCalibrationAt: null,
+}
+
+const DEFAULT_NATIVE_AUDIO_CAPABILITIES: NativeAudioCapabilities = {
+  bitPerfectAvailable: false,
+  reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
+  activeBackend: 'unavailable',
+  activeDeviceExclusive: false,
+  activeSampleRate: null,
+  activeSampleFormat: null,
+  selectedDeviceId: null,
+  selectedDeviceMaxChannels: null,
+  devices: []
 }
 
 const MAX_DELAY_MS = 2500
@@ -338,6 +359,22 @@ function computeEffectiveDelayMs(profile: DelayCompensationProfile): number {
   return clampAppliedDelayMs((profile.autoOffsetMs ?? 0) + clampSignedFineTuneMs(profile.manualOffsetMs))
 }
 
+function computeAppliedDelayMs(
+  profile: DelayCompensationProfile,
+  playbackOutputMode: PlaybackOutputMode
+): number {
+  if (playbackOutputMode === 'bitperfect') return 0
+  return computeEffectiveDelayMs(profile)
+}
+
+function getOutputStorageKeyForMode(mode: PlaybackOutputMode): string {
+  return mode === 'bitperfect' ? NATIVE_OUTPUT_STORAGE_KEY : STORAGE_KEY
+}
+
+function normalizePlaybackOutputMode(value: unknown): PlaybackOutputMode {
+  return value === 'bitperfect' ? 'bitperfect' : 'standard'
+}
+
 function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
   const defaultAlias = devices.find((device) => device.isDefaultAlias)
   if (!defaultAlias || !defaultAlias.groupId) return null
@@ -407,9 +444,46 @@ export function resolveOutputDeviceLabel(
     }
   }
 
+  if (devices.length > 0) {
+    return {
+      label: selectedFallbackLabel,
+      isSystemDefaultRoute: false
+    }
+  }
+
   return {
     label: defaultRouteFallbackLabel,
     isSystemDefaultRoute: true
+  }
+}
+
+function resolveInitialNativeOutputSelection(
+  capabilities: NativeAudioCapabilities,
+  devices: AudioDevice[]
+): {
+  deviceId: string
+  statusMessage: string | null
+} {
+  if (capabilities.activeBackend !== 'alsa-hw') {
+    return {
+      deviceId: '',
+      statusMessage: null
+    }
+  }
+
+  const physicalDevices = devices.filter((device) => !device.isDefaultAlias)
+  if (physicalDevices.length === 1) {
+    return {
+      deviceId: physicalDevices[0].deviceId,
+      statusMessage: null
+    }
+  }
+
+  return {
+    deviceId: '',
+    statusMessage: physicalDevices.length > 0
+      ? BIT_PERFECT_LINUX_DEVICE_SELECTION_MESSAGE
+      : null
   }
 }
 
@@ -656,6 +730,42 @@ function buildAudioDevice(entry: MediaDeviceInfo): AudioDevice {
   }
 }
 
+function buildNativeOutputDevices(capabilities: NativeAudioCapabilities): AudioDevice[] {
+  const mappedDevices = capabilities.devices.map((device) => ({
+    deviceId: device.deviceId,
+    label: device.label,
+    groupId: device.deviceId,
+    isDefaultAlias: false
+  }))
+
+  if (capabilities.activeBackend === 'alsa-hw') {
+    return mappedDevices
+  }
+
+  const defaultDevice = capabilities.devices.find((device) => device.isDefault) ?? null
+  if (!defaultDevice) {
+    return [
+      {
+        deviceId: '',
+        label: 'System Default Output',
+        groupId: '',
+        isDefaultAlias: true
+      },
+      ...mappedDevices
+    ]
+  }
+
+  return [
+    {
+      deviceId: '',
+      label: appendSystemDefaultSuffix(defaultDevice.label),
+      groupId: defaultDevice.deviceId,
+      isDefaultAlias: true
+    },
+    ...mappedDevices
+  ]
+}
+
 function buildCalibrationInputDevice(entry: MediaDeviceInfo): CalibrationInputDevice {
   const deviceId = entry.deviceId
   const isDefaultAlias = deviceId === 'default' || deviceId === ''
@@ -725,7 +835,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       persistDelaySettings(nextProfiles, state.inputBaselinesByKey)
     }
 
-    const effectiveDelayMs = computeEffectiveDelayMs(normalizedProfile)
+    const effectiveDelayMs = computeAppliedDelayMs(normalizedProfile, state.playbackOutputMode)
 
     set({
       delayProfilesByDeviceKey: nextProfiles,
@@ -768,7 +878,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       updatedProfile
     )
     const nextProfiles = canonicalized.profiles
-    const effectiveDelayMs = computeEffectiveDelayMs(updatedProfile)
+    const effectiveDelayMs = computeAppliedDelayMs(updatedProfile, state.playbackOutputMode)
 
     set({
       delayProfilesByDeviceKey: nextProfiles,
@@ -807,7 +917,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           // Ignore failures when falling back to default output.
         }
         set({ selectedDeviceId: '' })
-        localStorage.removeItem(STORAGE_KEY)
+        localStorage.removeItem(getOutputStorageKeyForMode(state.playbackOutputMode))
         await syncDelayCompensationForActiveDevice()
       }
     }
@@ -825,6 +935,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   }
 
   return {
+    playbackOutputMode: 'standard',
+    nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
+    playbackModeStatusMessage: null,
     selectedDeviceId: '',
     availableDevices: [],
     availableInputDevices: [],
@@ -848,14 +961,25 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     refreshDevices: async () => {
       try {
         const devices = await navigator.mediaDevices.enumerateDevices()
-        const audioOutputs = devices
-          .filter((device) => device.kind === 'audiooutput')
-          .map(buildAudioDevice)
         const audioInputs = devices
           .filter((device) => device.kind === 'audioinput')
           .map(buildCalibrationInputDevice)
+        const playbackOutputMode = get().playbackOutputMode
+        let audioOutputs = devices
+          .filter((device) => device.kind === 'audiooutput')
+          .map(buildAudioDevice)
+        let nativeAudioCapabilities = get().nativeAudioCapabilities
+        let playbackModeStatusMessage = get().playbackModeStatusMessage
+
+        if (playbackOutputMode === 'bitperfect') {
+          nativeAudioCapabilities = await audioEngine.refreshNativeAudioCapabilities()
+          audioOutputs = buildNativeOutputDevices(nativeAudioCapabilities)
+          playbackModeStatusMessage = audioEngine.getPlaybackModeStatusMessage()
+        }
 
         set({
+          nativeAudioCapabilities,
+          playbackModeStatusMessage,
           availableDevices: audioOutputs,
           availableInputDevices: audioInputs
         })
@@ -886,15 +1010,71 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
     },
 
+    setPlaybackOutputMode: async (mode: PlaybackOutputMode) => {
+      const normalizedMode = normalizePlaybackOutputMode(mode)
+      const result = await audioEngine.setPlaybackOutputMode(normalizedMode)
+      const fallbackMode = result.activeMode
+      const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
+      const savedSelectedDeviceId = localStorage.getItem(selectedStorageKey) ?? ''
+      const capabilities = fallbackMode === 'bitperfect'
+        ? await audioEngine.refreshNativeAudioCapabilities()
+        : result.capabilities
+
+      set({
+        playbackOutputMode: fallbackMode,
+        nativeAudioCapabilities: capabilities,
+        playbackModeStatusMessage: result.message ?? audioEngine.getPlaybackModeStatusMessage()
+      })
+
+      localStorage.setItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY, fallbackMode)
+      await get().refreshDevices()
+
+      const selectedOutputId = savedSelectedDeviceId.trim()
+      const availableDevices = get().availableDevices
+      const selectedExists = selectedOutputId.length === 0
+        ? true
+        : availableDevices.some((device) => device.deviceId === selectedOutputId)
+
+      if (selectedExists && selectedOutputId.length > 0) {
+        await get().selectDevice(selectedOutputId)
+      } else if (selectedExists) {
+        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
+      } else {
+        localStorage.removeItem(selectedStorageKey)
+        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
+      }
+
+      if (fallbackMode !== normalizedMode && result.message) {
+        set({ playbackModeStatusMessage: result.message })
+      }
+    },
+
     selectDevice: async (deviceId: string) => {
       try {
         await audioEngine.setOutputDevice(deviceId)
-        set({ selectedDeviceId: deviceId })
+        const nativeAudioCapabilities = get().playbackOutputMode === 'bitperfect'
+          ? audioEngine.getNativeAudioCapabilities()
+          : get().nativeAudioCapabilities
 
+        set({
+          selectedDeviceId: deviceId,
+          nativeAudioCapabilities,
+          playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
+        })
+
+        const storageKey = getOutputStorageKeyForMode(get().playbackOutputMode)
         if (deviceId.trim().length > 0) {
-          localStorage.setItem(STORAGE_KEY, deviceId)
+          localStorage.setItem(storageKey, deviceId)
         } else {
-          localStorage.removeItem(STORAGE_KEY)
+          localStorage.removeItem(storageKey)
         }
 
         await get().refreshOutputChannelCount()
@@ -1021,6 +1201,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     runDelayAutoCalibration: async () => {
+      if (get().playbackOutputMode === 'bitperfect') {
+        set({
+          delayCalibrationState: 'error',
+          delayCalibrationMessage: audioEngine.getBitPerfectUnavailableMessage()
+        })
+        return
+      }
+
       const initialState = get()
       const selectedMethod = initialState.activeDelayProfile.calibrationMethod
       set({
@@ -1113,7 +1301,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         nextProfiles = canonicalized.profiles
 
         const activeProfile = normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
-        const effectiveDelayMs = computeEffectiveDelayMs(activeProfile)
+        const effectiveDelayMs = computeAppliedDelayMs(activeProfile, state.playbackOutputMode)
         const confidencePct = Math.round(result.confidence * 100)
         const propagationBiasNote = result.propagationBiasWarning
           ? ' Mic placement may bias this result; keep the mic near both outputs and retry if needed.'
@@ -1318,7 +1506,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       nextProfiles = canonicalized.profiles
 
       const activeProfile = normalizeDelayProfile(nextProfiles[activeDelayProfileKey])
-      const effectiveDelayMs = computeEffectiveDelayMs(activeProfile)
+      const effectiveDelayMs = computeAppliedDelayMs(activeProfile, state.playbackOutputMode)
       const confidencePct = Math.round(result.confidence * 100)
       const baselineNote = baselineWasLowered
         ? ' Baseline improved and matching profiles were rebased.'
@@ -1379,6 +1567,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     resetToDefaults: async () => {
       localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(NATIVE_OUTPUT_STORAGE_KEY)
+      localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(ROUTING_STORAGE_KEY)
@@ -1426,6 +1616,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.setReplayGainEnabled(false)
       audioEngine.normalizationEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
+      await audioEngine.setPlaybackOutputMode('standard')
 
       let availableDevices = get().availableDevices
       let availableInputDevices = get().availableInputDevices
@@ -1451,6 +1642,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       set({
+        playbackOutputMode: 'standard',
+        nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
+        playbackModeStatusMessage: null,
         selectedDeviceId: '',
         availableDevices,
         availableInputDevices,
@@ -1473,6 +1667,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     initFromSaved: async () => {
+      const savedPlaybackOutputMode = normalizePlaybackOutputMode(
+        localStorage.getItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
+      )
+      const playbackModeResult = await audioEngine.setPlaybackOutputMode(savedPlaybackOutputMode)
+      const playbackOutputMode = playbackModeResult.activeMode
+      const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
+        ? await audioEngine.refreshNativeAudioCapabilities()
+        : playbackModeResult.capabilities
+
       const savedNormalizationEnabled = localStorage.getItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       const normalizationEnabled = savedNormalizationEnabled == null
         ? true
@@ -1513,6 +1716,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
 
       set({
+        playbackOutputMode,
+        nativeAudioCapabilities,
+        playbackModeStatusMessage: playbackModeResult.message ?? audioEngine.getPlaybackModeStatusMessage(),
         delayProfilesByDeviceKey: savedProfiles,
         inputBaselinesByKey: savedInputBaselines,
         normalizationEnabled,
@@ -1523,16 +1729,22 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       await get().refreshDevices()
 
-      const saved = localStorage.getItem(STORAGE_KEY)
+      const saved = localStorage.getItem(getOutputStorageKeyForMode(get().playbackOutputMode))
       if (saved) {
         const { availableDevices } = get()
         const exists = availableDevices.some((device) => device.deviceId === saved)
         if (exists) {
           await get().selectDevice(saved)
         } else {
-          localStorage.removeItem(STORAGE_KEY)
+          localStorage.removeItem(getOutputStorageKeyForMode(get().playbackOutputMode))
           set({ selectedDeviceId: '' })
         }
+      } else {
+        const initialSelection = resolveInitialNativeOutputSelection(nativeAudioCapabilities, get().availableDevices)
+        if (initialSelection.statusMessage) {
+          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        }
+        await get().selectDevice(initialSelection.deviceId)
       }
 
       const savedCalibrationInputDeviceId = localStorage.getItem(CALIBRATION_INPUT_STORAGE_KEY)

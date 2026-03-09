@@ -1,7 +1,10 @@
 import React, { useMemo } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useEQStore } from '../../stores/eqStore'
-import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  resolveOutputDeviceLabel,
+  useAudioSettingsStore
+} from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 
@@ -125,6 +128,8 @@ export default function AudioPipelineShelf() {
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
+  const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
+  const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -146,26 +151,31 @@ export default function AudioPipelineShelf() {
     result.push({ id: 'source', icon: SourceIcon, label: 'Source', detail: sourceDetail })
 
     // Decoder
-    result.push({ id: 'decoder', icon: DecoderIcon, label: 'Decoder', detail: 'Web Audio API' })
+    result.push({
+      id: 'decoder',
+      icon: DecoderIcon,
+      label: 'Decoder',
+      detail: playbackOutputMode === 'bitperfect' ? 'FFmpeg PCM' : 'Web Audio API'
+    })
 
     // Resampler (only if sample rates differ)
     const trackSR = currentTrack.sampleRate
     const contextSR = audioEngine.getSampleRate()
-    if (trackSR && contextSR && trackSR !== contextSR) {
+    if (playbackOutputMode !== 'bitperfect' && trackSR && contextSR && trackSR !== contextSR) {
       const from = (trackSR / 1000).toFixed(1)
       const to = (contextSR / 1000).toFixed(1)
       result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail: `${from} \u2192 ${to} kHz` })
     }
 
     // Channel Routing
-    if (multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
+    if (playbackOutputMode !== 'bitperfect' && multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
       const srcCh = currentTrack.channels ?? 2
       const outCh = channelRoutingMap.length
       result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: `${srcCh}ch \u2192 ${outCh}ch` })
     }
 
     // Normalization
-    if (normalizationEnabled && Number.isFinite(normalizationTargetLufs)) {
+    if (playbackOutputMode !== 'bitperfect' && normalizationEnabled && Number.isFinite(normalizationTargetLufs)) {
       const gainMode = audioEngine.getNormalizationMode()
       const gainDb = audioEngine.getNormalizationGainDb()
       const rounded = Math.round(gainDb * 10) / 10
@@ -180,12 +190,12 @@ export default function AudioPipelineShelf() {
     }
 
     // EQ
-    if (eqEnabled) {
+    if (playbackOutputMode !== 'bitperfect' && eqEnabled) {
       result.push({ id: 'eq', icon: EQIcon, label: 'EQ', detail: `${eqBands.length} bands` })
     }
 
     // Delay Compensation
-    if (effectiveDelayMs > 0) {
+    if (playbackOutputMode !== 'bitperfect' && effectiveDelayMs > 0) {
       result.push({ id: 'delay', icon: DelayIcon, label: 'Delay Comp.', detail: `${effectiveDelayMs} ms` })
     }
 
@@ -194,8 +204,12 @@ export default function AudioPipelineShelf() {
       defaultRouteFallbackLabel: 'System Default Output',
       selectedFallbackLabel: 'Selected Output'
     }).label
-    const outSR = (contextSR / 1000).toFixed(1)
-    result.push({ id: 'output', icon: OutputIcon, label: 'Output', detail: `${deviceLabel} @ ${outSR} kHz` })
+    const outputSampleRate = playbackOutputMode === 'bitperfect'
+      ? (nativeAudioCapabilities.activeSampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
+      : contextSR
+    const outSR = outputSampleRate > 0 ? (outputSampleRate / 1000).toFixed(1) : null
+    const outputDetail = outSR ? `${deviceLabel} @ ${outSR} kHz` : deviceLabel
+    result.push({ id: 'output', icon: OutputIcon, label: 'Output', detail: outputDetail })
 
     return result
   }, [
@@ -210,6 +224,8 @@ export default function AudioPipelineShelf() {
     normalizationEnabled,
     normalizationTargetLufs,
     replayGainScanEnabled,
+    playbackOutputMode,
+    nativeAudioCapabilities.activeSampleRate,
   ])
 
   return (

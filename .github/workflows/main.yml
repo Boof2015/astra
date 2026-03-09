@@ -33,5 +33,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
+
+      - name: Build native DSP module
+        run: npm run rebuild:native
+
+      - name: Verify native module exists
+        shell: bash
+        run: |
+          if [ ! -f native/build/Release/visualizer_dsp.node ]; then
+            echo "ERROR: native DSP module was not built!"
+            exit 1
+          fi
+          echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
+
       - name: Build Project
         run: npm run build

@@ -3,7 +3,11 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
 import { useLibraryStore } from '../../stores/libraryStore'
-import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  BIT_PERFECT_DSP_DISABLED_MESSAGE,
+  resolveOutputDeviceLabel,
+  useAudioSettingsStore
+} from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -60,6 +64,9 @@ export default function TransportBar() {
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
+  const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
+  const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
+  const playbackModeStatusMessage = useAudioSettingsStore((s) => s.playbackModeStatusMessage)
 
   const isAssociationTrack = currentTrack?.origin === 'associated-external'
   const isFavorite = currentTrack && !isAssociationTrack ? favorites.has(currentTrack.path) : false
@@ -123,6 +130,12 @@ export default function TransportBar() {
     setShowEQPopover(false)
   }, [showEQPopover, showLyricsShelf])
 
+  useEffect(() => {
+    if (playbackOutputMode !== 'bitperfect') return
+    if (!showEQPopover) return
+    setShowEQPopover(false)
+  }, [playbackOutputMode, showEQPopover])
+
   const formatTime = (seconds: number): string => {
     if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
     const mins = Math.floor(seconds / 60)
@@ -137,13 +150,20 @@ export default function TransportBar() {
     return Math.max(0, Math.min(1, percent))
   }
 
+  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const disabledControlMessage = playbackModeStatusMessage ?? BIT_PERFECT_DSP_DISABLED_MESSAGE
+  const volumeControlDisabled = bitPerfectModeActive
+  const eqControlDisabled = bitPerfectModeActive
+
   const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (volumeControlDisabled) return
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
     setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
   }
 
   const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (volumeControlDisabled) return
     if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
     setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
   }
@@ -202,7 +222,32 @@ export default function TransportBar() {
       selectedFallbackLabel: 'Selected Output'
     }).label
   })()
+  const bitPerfectStatusLabel = (() => {
+    if (!bitPerfectModeActive) return null
+
+    const backendLabel = (() => {
+      switch (nativeAudioCapabilities.activeBackend) {
+        case 'coreaudio':
+          return 'CoreAudio'
+        case 'wasapi-exclusive':
+          return 'WASAPI Exclusive'
+        case 'alsa-hw':
+          return 'ALSA hw'
+        default:
+          return 'Native Output'
+      }
+    })()
+
+    const sampleRate = nativeAudioCapabilities.activeSampleRate ?? audioEngine.getSampleRate()
+    const sampleRateLabel = sampleRate > 0 ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
+    const exclusivityLabel = nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Direct'
+    return `${backendLabel} • ${sampleRateLabel} • ${exclusivityLabel}`
+  })()
   const normalizationReadout = (() => {
+    if (bitPerfectModeActive) {
+      return { value: 'BYP', dim: false, accent: false, off: true }
+    }
+
     const gainMode = audioEngine.getNormalizationMode()
     if (!currentTrack) {
       return { value: '\u2014', dim: true, accent: false, off: false }
@@ -313,6 +358,12 @@ export default function TransportBar() {
             <span className="transport-output-line-prefix">OUT</span>
             <span className="transport-output-line-value">{outputDeviceLabel}</span>
           </div>
+          {bitPerfectStatusLabel && (
+            <div className="transport-output-line" title={disabledControlMessage}>
+              <span className="transport-output-line-prefix">BP</span>
+              <span className="transport-output-line-value">{bitPerfectStatusLabel}</span>
+            </div>
+          )}
         </div>
         <button
           className={`transport-fav-btn ${isFavorite ? 'active' : ''}`}
@@ -460,8 +511,10 @@ export default function TransportBar() {
         <div className="transport-volume">
           <button
             className="volume-btn"
-            onClick={toggleMute}
+            onClick={volumeControlDisabled ? undefined : toggleMute}
             aria-label={isMuted ? 'Unmute' : 'Mute'}
+            title={volumeControlDisabled ? disabledControlMessage : (isMuted ? 'Unmute' : 'Mute')}
+            disabled={volumeControlDisabled}
           >
             {isMuted || volume === 0 ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -478,7 +531,7 @@ export default function TransportBar() {
             )}
           </button>
           <div
-            className="volume-slider"
+            className={`volume-slider${volumeControlDisabled ? ' disabled' : ''}`}
             onPointerDown={handleVolumePointerDown}
             onPointerMove={handleVolumePointerMove}
             onPointerUp={releaseVolumePointer}
@@ -487,6 +540,8 @@ export default function TransportBar() {
             aria-valuenow={volume * 100}
             aria-valuemin={0}
             aria-valuemax={100}
+            aria-disabled={volumeControlDisabled}
+            title={volumeControlDisabled ? disabledControlMessage : 'Playback volume'}
           >
             <div
               className="volume-fill"
@@ -530,9 +585,10 @@ export default function TransportBar() {
 
         {/* EQ toggle button with mini curve */}
         <button
-          className={`transport-eq-btn ${showEQPopover ? 'active' : ''} ${eqEnabled ? 'enabled' : ''}`}
-          onClick={() => setShowEQPopover(!showEQPopover)}
-          title="Toggle equalizer"
+          className={`transport-eq-btn ${showEQPopover ? 'active' : ''} ${eqEnabled ? 'enabled' : ''}${eqControlDisabled ? ' disabled' : ''}`}
+          onClick={eqControlDisabled ? undefined : (() => setShowEQPopover(!showEQPopover))}
+          title={eqControlDisabled ? disabledControlMessage : 'Toggle equalizer'}
+          disabled={eqControlDisabled}
         >
           <span className="transport-eq-label">EQ</span>
           <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />

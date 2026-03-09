@@ -4,10 +4,12 @@ import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
+import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import {
+  BIT_PERFECT_DSP_DISABLED_MESSAGE,
   DEFAULT_NORMALIZATION_TARGET_LUFS,
   useAudioSettingsStore,
   type ReplayGainMode
@@ -102,6 +104,7 @@ const ASTRA_DISCORD_URL = 'https://discord.gg/hsKK8Kr9Nj'
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
+const BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY = 'astra-bitperfect-warning-dismissed-v1'
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -195,6 +198,10 @@ export default function SettingsView() {
   const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
+  const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
+  const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
+  const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
+  const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const {
@@ -251,6 +258,11 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
+  const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
+  const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
+  const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
+    return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
+  })
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -275,6 +287,19 @@ export default function SettingsView() {
     currentTrack &&
     (playbackState === 'playing' || playbackState === 'paused')
   )
+  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const nativeBackendLabel = useMemo(() => {
+    switch (nativeAudioCapabilities.activeBackend) {
+      case 'coreaudio':
+        return 'CoreAudio'
+      case 'wasapi-exclusive':
+        return 'WASAPI Exclusive'
+      case 'alsa-hw':
+        return 'ALSA hw'
+      default:
+        return 'Unavailable'
+    }
+  }, [nativeAudioCapabilities.activeBackend])
   const sleepTimerRemainingLabel = useMemo(
     () => formatSleepTimerRemaining(sleepTimerRemainingMs),
     [sleepTimerRemainingMs]
@@ -328,6 +353,12 @@ export default function SettingsView() {
   useEffect(() => {
     setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
   }, [normalizationTargetLufs])
+
+  useEffect(() => {
+    if (!showBitPerfectWarning) {
+      setDontShowBitPerfectWarningAgain(false)
+    }
+  }, [showBitPerfectWarning])
 
   useEffect(() => {
     if (pendingSettingsSection === null) return
@@ -481,6 +512,31 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+
+  const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
+    if (mode === playbackOutputMode) return
+    if (mode === 'standard') {
+      void setPlaybackOutputMode('standard')
+      return
+    }
+
+    if (bitPerfectWarningDismissed) {
+      void setPlaybackOutputMode('bitperfect')
+      return
+    }
+
+    setShowBitPerfectWarning(true)
+  }
+
+  const handleConfirmBitPerfectWarning = () => {
+    if (dontShowBitPerfectWarningAgain) {
+      localStorage.setItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY, '1')
+      setBitPerfectWarningDismissed(true)
+    }
+    setShowBitPerfectWarning(false)
+    void setPlaybackOutputMode('bitperfect')
+  }
+
   useEffect(() => {
     let isMounted = true
 
@@ -650,6 +706,7 @@ export default function SettingsView() {
   }
 
   const handleNormalizationToggle = () => {
+    if (bitPerfectModeActive) return
     if (normalizationEnabled) {
       setNormalizationDisableStep('warning')
       return
@@ -669,6 +726,7 @@ export default function SettingsView() {
   }
 
   const commitNormalizationTarget = () => {
+    if (bitPerfectModeActive) return
     const parsed = parseNormalizationTargetLufsInput(normalizationTargetInput)
     if (parsed == null) {
       setNormalizationTargetError(
@@ -683,6 +741,7 @@ export default function SettingsView() {
   }
 
   const resetNormalizationTarget = () => {
+    if (bitPerfectModeActive) return
     setNormalizationTargetError('')
     setNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS)
     setNormalizationTargetInput(formatNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS))
@@ -693,6 +752,7 @@ export default function SettingsView() {
     : 'disabled'
 
   const handleReplayGainSelectorChange = async (value: ReplayGainSelectorValue): Promise<void> => {
+    if (bitPerfectModeActive) return
     if (value === 'disabled') {
       await setReplayGainScanEnabled(false)
       return
@@ -934,6 +994,8 @@ export default function SettingsView() {
                 <button
                   className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
                   onClick={handleNormalizationToggle}
+                  disabled={bitPerfectModeActive}
+                  title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
                 >
                   {normalizationEnabled ? 'Enabled' : 'Disabled'}
                 </button>
@@ -948,7 +1010,7 @@ export default function SettingsView() {
                     max={NORMALIZATION_TARGET_MAX_LUFS}
                     step={0.5}
                     value={normalizationTargetInput}
-                    disabled={!normalizationEnabled}
+                    disabled={!normalizationEnabled || bitPerfectModeActive}
                     onChange={(event) => {
                       setNormalizationTargetInput(event.target.value)
                       if (normalizationTargetError) {
@@ -966,7 +1028,7 @@ export default function SettingsView() {
                   <button
                     type="button"
                     className="settings-chip settings-chip-mono settings-chip-danger"
-                    disabled={!normalizationEnabled}
+                    disabled={!normalizationEnabled || bitPerfectModeActive}
                     onClick={resetNormalizationTarget}
                   >
                     RESET
@@ -978,6 +1040,7 @@ export default function SettingsView() {
                 <select
                   className="settings-select"
                   value={replayGainSelectorValue}
+                  disabled={bitPerfectModeActive}
                   onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
                 >
                   <option value="disabled">Disabled</option>
@@ -1000,6 +1063,11 @@ export default function SettingsView() {
             <p className="settings-note">
               Normalization Target applies to built-in normalization. ReplayGain values override it on tagged tracks when ReplayGain is active.
             </p>
+            {bitPerfectModeActive && (
+              <p className="settings-note">
+                {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+              </p>
+            )}
             <p className="settings-note">
               Experimental.
             </p>
@@ -1082,9 +1150,59 @@ export default function SettingsView() {
               <h3>Audio Output</h3>
               <p>Output device, delay compensation, and channel routing.</p>
             </div>
+            <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Playback Path</span>
+                <div className="settings-inline-row">
+                  <button
+                    className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
+                    onClick={() => handlePlaybackPathChange('standard')}
+                  >
+                    Standard
+                  </button>
+                  <div className="settings-inline-row">
+                    <button
+                      className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
+                      onClick={() => handlePlaybackPathChange('bitperfect')}
+                    >
+                      Bit-Perfect (Exclusive)
+                    </button>
+                    <span className="settings-chip settings-chip-mono settings-chip-danger">
+                      Experimental
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-field">
+                <span className="settings-field-label">Native Status</span>
+                <div className="settings-inline-row">
+                  <span className="settings-chip settings-chip-mono">
+                    {nativeBackendLabel}
+                  </span>
+                  {nativeAudioCapabilities.activeSampleRate && (
+                    <span className="settings-chip settings-chip-mono">
+                      {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
+                    </span>
+                  )}
+                  <span className="settings-chip settings-chip-mono">
+                    {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
+                  </span>
+                </div>
+              </div>
+            </div>
             <div className="settings-audio-control">
               <AudioOutputSelect />
             </div>
+            {playbackModeStatusMessage && (
+              <p className="settings-note">
+                {playbackModeStatusMessage}
+              </p>
+            )}
+            {bitPerfectModeActive && (
+              <p className="settings-note">
+                {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+              </p>
+            )}
             <DelayCompensationPanel />
             <ChannelRoutingPanel />
           </section>
@@ -1546,6 +1664,13 @@ export default function SettingsView() {
         isDestructive
         onCancel={() => setNormalizationDisableStep(null)}
         onConfirm={handleConfirmDisableNormalization}
+      />
+      <BitPerfectModeWarningModal
+        isOpen={showBitPerfectWarning}
+        dontShowAgain={dontShowBitPerfectWarningAgain}
+        onDontShowAgainChange={setDontShowBitPerfectWarningAgain}
+        onCancel={() => setShowBitPerfectWarning(false)}
+        onConfirm={handleConfirmBitPerfectWarning}
       />
     </div>
   )

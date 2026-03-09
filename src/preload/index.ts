@@ -44,6 +44,16 @@ import type {
   SubsonicStatusSnapshot,
   TrackSourceType
 } from '../types/subsonic'
+import type {
+  NativeAudioCapabilities,
+  NativeAudioEvent,
+  NativeAudioPlaybackSnapshot,
+  NativeAudioSampleFormat,
+  NativeAudioTrackLoadResult,
+  NativeAudioTrackMetadata,
+  NativeAudioVectorscopeChunk
+} from '../types/nativeAudio'
+import { createNativeAudioController } from './nativeAudioController'
 
 export interface AudioFileMetadata {
   title?: string
@@ -373,8 +383,42 @@ export interface VisualizerDSP {
   }
 }
 
+interface NativeAudioAddonPlayback {
+  getCapabilities(): NativeAudioCapabilities
+  setOutputDevice(deviceId: string): NativeAudioCapabilities
+  loadTrack(
+    pcmData: Uint8Array,
+    sampleRate: number,
+    channels: number,
+    sampleFormat: NativeAudioSampleFormat,
+    duration: number
+  ): NativeAudioPlaybackSnapshot
+  preloadNextTrack(
+    pcmData: Uint8Array,
+    sampleRate: number,
+    channels: number,
+    sampleFormat: NativeAudioSampleFormat,
+    duration: number
+  ): void
+  play(): NativeAudioPlaybackSnapshot
+  pause(): NativeAudioPlaybackSnapshot
+  stop(): NativeAudioPlaybackSnapshot
+  seek(seconds: number): NativeAudioPlaybackSnapshot
+  clearNextTrack(): void
+  getPlaybackSnapshot(): NativeAudioPlaybackSnapshot
+  drainEvents(): NativeAudioEvent[]
+  flushOscilloscopeSamples(): Float32Array | null
+  flushSpectrumSamples(): Float32Array | null
+  flushVectorscopeSamples(): { left: Float32Array; right: Float32Array } | null
+}
+
+interface NativeAddonModule extends VisualizerDSP {
+  playback?: NativeAudioAddonPlayback
+}
+
 // Load Native Module
-let visualizerDSP: VisualizerDSP | null = null
+let visualizerDSP: NativeAddonModule | null = null
+let nativeAddonLoadError: string | null = null
 try {
   // Determine path based on environment
   const isDev = process.env.NODE_ENV === 'development'
@@ -391,10 +435,20 @@ try {
 
   // Try to load
   visualizerDSP = require(modulePath)
+  if (!visualizerDSP?.playback) {
+    nativeAddonLoadError = 'Native addon loaded, but playback exports are missing. Rebuild the native addon for this platform.'
+  }
   console.log('Native visualizer DSP module loaded successfully', modulePath)
 } catch (error) {
+  nativeAddonLoadError = error instanceof Error
+    ? `Failed to load native addon: ${error.message}`
+    : 'Failed to load native addon.'
   console.warn('Failed to load native visualizer DSP module:', error)
 }
+
+const nativeAudioController = createNativeAudioController(visualizerDSP, {
+  unavailableReason: nativeAddonLoadError
+})
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -726,10 +780,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
+contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioController)
 
 // Type declarations for renderer
 declare global {
   interface Window {
+    nativeAudioAPI: {
+      initialize: () => Promise<NativeAudioCapabilities>
+      getCapabilities: () => Promise<NativeAudioCapabilities>
+      setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+      loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      play: () => Promise<NativeAudioPlaybackSnapshot>
+      pause: () => Promise<NativeAudioPlaybackSnapshot>
+      stop: () => Promise<NativeAudioPlaybackSnapshot>
+      seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+      clearNextTrack: () => Promise<void>
+      getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+      flushOscilloscopeChunks: () => Float32Array[]
+      flushSpectrumChunks: () => Float32Array[]
+      flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
+      onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
+    }
     electronAPI: {
       // Window controls
       minimize: () => void
