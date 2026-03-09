@@ -8,6 +8,7 @@ import { execFile, type ExecFileOptions } from 'child_process'
 import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
+import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
@@ -4619,7 +4620,7 @@ async function extractMetadata(filePath: string): Promise<{
   bpm: number | null
   musicalKey: string | null
 }> {
-  const metadata = await mm.parseFile(filePath)
+  const metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
   const common = metadata.common
   const format = metadata.format
   const resolvedCodecMetadata = await resolveCodecMetadata(filePath, {
@@ -4766,7 +4767,7 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
   let musicalKey: string | null = null
 
   try {
-    const metadata = await mm.parseFile(path)
+    const metadata = await mm.parseFile(path, getMusicMetadataParseOptions(path))
     baseChannels = metadata.format.numberOfChannels || null
     baseCodec = toText(metadata.format.codec)
     baseCodecProfile = toText(metadata.format.codecProfile)
@@ -4804,7 +4805,7 @@ async function backfillTrackReplayGainMetadata(path: string): Promise<void> {
 
   if (replayGainScanEnabled) {
     try {
-      const metadata = await mm.parseFile(path)
+      const metadata = await mm.parseFile(path, getMusicMetadataParseOptions(path))
       const replayGain = extractReplayGainDb(metadata)
       replayGainTrackDb = replayGain.trackGainDb
       replayGainAlbumDb = replayGain.albumGainDb

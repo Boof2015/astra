@@ -38,6 +38,7 @@ import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
+import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
@@ -4721,7 +4722,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   }
 
   try {
-    const mm_metadata = await mm.parseFile(filePath)
+    const mm_metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
     const common = mm_metadata.common
     const replayGain = extractReplayGainDb(mm_metadata)
 
