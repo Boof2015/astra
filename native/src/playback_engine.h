@@ -70,6 +70,22 @@ struct VectorscopeSamples {
     std::vector<float> right;
 };
 
+class FloatSampleRingBuffer {
+public:
+    FloatSampleRingBuffer() = default;
+    explicit FloatSampleRingBuffer(size_t capacity);
+
+    void setCapacity(size_t capacity);
+    void clear();
+    void push(float sample);
+    std::vector<float> drain();
+
+private:
+    std::vector<float> data_;
+    size_t start_ = 0;
+    size_t size_ = 0;
+};
+
 class PlaybackEngine;
 
 class AudioOutputSink {
@@ -138,13 +154,16 @@ private:
 
     bool ensureSinkOpen(std::string* error);
     void pushEvent(const PlaybackEvent& event);
-    void clearTapBuffersLocked();
-    void appendTapSamplesLocked(const uint8_t* interleavedData, size_t frames);
+    bool tryPushEvent(const PlaybackEvent& event);
+    void clearPendingEvents();
+    void clearTapBuffers();
+    void appendTapSamples(const uint8_t* interleavedData, size_t frames, const TrackFormat& format);
     bool formatsMatch(const TrackFormat& a, const TrackFormat& b) const;
     uint64_t clampTargetFrameLocked(double seconds) const;
-    void trimTapBuffer(std::vector<float>& buffer, size_t maxSize) const;
 
-    mutable std::mutex mutex_;
+    mutable std::mutex stateMutex_;
+    mutable std::mutex eventMutex_;
+    mutable std::mutex tapMutex_;
     std::unique_ptr<AudioOutputSink> sink_;
     std::string selectedDeviceId_;
     std::string lastUnavailableReason_;
@@ -156,13 +175,18 @@ private:
     bool hasNextTrack_ = false;
     uint64_t nextRenderFrame_ = 0;
     uint64_t playedFrame_ = 0;
+    uint64_t lastTimeUpdateFrame_ = 0;
+
+    static constexpr size_t kMaxTapSamples = 32768;
+    static constexpr uint32_t kTimeUpdateRateHz = 30;
+    static constexpr size_t kFadeInFrames = 64;
+    uint64_t fadeInRemaining_ = 0;
 
     std::vector<PlaybackEvent> pendingEvents_;
-    std::vector<float> oscilloscopeTap_;
-    std::vector<float> spectrumTap_;
-    std::vector<float> vectorscopeLeftTap_;
-    std::vector<float> vectorscopeRightTap_;
-    size_t maxTapSamples_ = 32768;
+    FloatSampleRingBuffer oscilloscopeTap_;
+    FloatSampleRingBuffer spectrumTap_;
+    FloatSampleRingBuffer vectorscopeLeftTap_;
+    FloatSampleRingBuffer vectorscopeRightTap_;
 };
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink();

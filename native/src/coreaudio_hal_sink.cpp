@@ -576,8 +576,8 @@ private:
         size_t lastFrames = 0;
     };
 
-    static constexpr size_t kBufferCount = 3;
-    static constexpr size_t kFramesPerBuffer = 256;
+    static constexpr size_t kBufferCount = 4;
+    static constexpr size_t kFramesPerBuffer = 512;
 
     static void handleOutputCallback(void* userData, AudioQueueRef, AudioQueueBufferRef buffer) {
         auto* sink = static_cast<CoreAudioHalSink*>(userData);

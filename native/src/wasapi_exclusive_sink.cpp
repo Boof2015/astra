@@ -37,6 +37,8 @@ using Microsoft::WRL::ComPtr;
 
 constexpr DWORD kRenderThreadWaitTimeoutMs = 2000;
 constexpr REFERENCE_TIME kReferenceTimesPerSecond = 10000000;
+constexpr REFERENCE_TIME kReferenceTimesPerMillisecond = 10000;
+constexpr REFERENCE_TIME kMinimumStableExclusivePeriod = 10 * kReferenceTimesPerMillisecond;
 
 class ScopedCoInit final {
 public:
@@ -687,6 +689,7 @@ private:
         if (minimumPeriod > 0) {
             targetPeriod = std::max(targetPeriod, minimumPeriod);
         }
+        targetPeriod = std::max(targetPeriod, kMinimumStableExclusivePeriod);
 
         HANDLE sampleReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (sampleReadyEvent == nullptr) {
