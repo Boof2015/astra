@@ -4,6 +4,7 @@ import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
+import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -103,6 +104,7 @@ const ASTRA_DISCORD_URL = 'https://discord.gg/hsKK8Kr9Nj'
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
+const BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY = 'astra-bitperfect-warning-dismissed-v1'
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -256,6 +258,11 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
+  const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
+  const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
+  const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
+    return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
+  })
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -346,6 +353,12 @@ export default function SettingsView() {
   useEffect(() => {
     setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
   }, [normalizationTargetLufs])
+
+  useEffect(() => {
+    if (!showBitPerfectWarning) {
+      setDontShowBitPerfectWarningAgain(false)
+    }
+  }, [showBitPerfectWarning])
 
   useEffect(() => {
     if (pendingSettingsSection === null) return
@@ -499,6 +512,31 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+
+  const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
+    if (mode === playbackOutputMode) return
+    if (mode === 'standard') {
+      void setPlaybackOutputMode('standard')
+      return
+    }
+
+    if (bitPerfectWarningDismissed) {
+      void setPlaybackOutputMode('bitperfect')
+      return
+    }
+
+    setShowBitPerfectWarning(true)
+  }
+
+  const handleConfirmBitPerfectWarning = () => {
+    if (dontShowBitPerfectWarningAgain) {
+      localStorage.setItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY, '1')
+      setBitPerfectWarningDismissed(true)
+    }
+    setShowBitPerfectWarning(false)
+    void setPlaybackOutputMode('bitperfect')
+  }
+
   useEffect(() => {
     let isMounted = true
 
@@ -1118,16 +1156,21 @@ export default function SettingsView() {
                 <div className="settings-inline-row">
                   <button
                     className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
-                    onClick={() => void setPlaybackOutputMode('standard')}
+                    onClick={() => handlePlaybackPathChange('standard')}
                   >
                     Standard
                   </button>
-                  <button
-                    className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
-                    onClick={() => void setPlaybackOutputMode('bitperfect')}
-                  >
-                    Bit-Perfect (Exclusive)
-                  </button>
+                  <div className="settings-inline-row">
+                    <button
+                      className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
+                      onClick={() => handlePlaybackPathChange('bitperfect')}
+                    >
+                      Bit-Perfect (Exclusive)
+                    </button>
+                    <span className="settings-chip settings-chip-mono settings-chip-danger">
+                      Experimental
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="settings-field">
@@ -1621,6 +1664,13 @@ export default function SettingsView() {
         isDestructive
         onCancel={() => setNormalizationDisableStep(null)}
         onConfirm={handleConfirmDisableNormalization}
+      />
+      <BitPerfectModeWarningModal
+        isOpen={showBitPerfectWarning}
+        dontShowAgain={dontShowBitPerfectWarningAgain}
+        onDontShowAgainChange={setDontShowBitPerfectWarningAgain}
+        onCancel={() => setShowBitPerfectWarning(false)}
+        onConfirm={handleConfirmBitPerfectWarning}
       />
     </div>
   )
