@@ -86,6 +86,23 @@ function compareNullableDuration(a: number | null | undefined, b: number | null 
   return compareWithDirection(aValue - bValue, direction)
 }
 
+function resolveEffectiveAddedAt(
+  track: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number }
+): number {
+  if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
+    return track.file_created_at
+  }
+  return track.added_at
+}
+
+function compareAddedAt(
+  a: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
+  b: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
+  direction: SortDirection
+): number {
+  return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), direction)
+}
+
 function compareNullableKey(
   a: string | null | undefined,
   b: string | null | undefined,
@@ -209,6 +226,7 @@ export default function LibraryView() {
   const clearSelection = useLibraryStore((state) => state.clearSelection)
   const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
+  const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
@@ -397,11 +415,12 @@ export default function LibraryView() {
   })
 
   useEffect(() => {
-    if (showTracklistBpmKey) return
     if (!sortState) return
-    if (sortState.key !== 'bpm' && sortState.key !== 'musical_key') return
+    const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
+    const hideAddedSort = !showTracklistAddedDate && sortState.key === 'added'
+    if (!hideBpmKeySort && !hideAddedSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [selectedAlbum, showTracklistBpmKey, sortState])
+  }, [selectedAlbum, showTracklistAddedDate, showTracklistBpmKey, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
     setSortState((current) => {
@@ -413,7 +432,7 @@ export default function LibraryView() {
       }
       return {
         key,
-        direction: 'asc'
+        direction: key === 'added' ? 'desc' : 'asc'
       }
     })
   }, [])
@@ -492,6 +511,8 @@ export default function LibraryView() {
         comparison = compareNullableDuration(a.duration, b.duration, sortState.direction)
       } else if (sortState.key === 'bpm') {
         comparison = compareNullableBpm(a.bpm, b.bpm, sortState.direction)
+      } else if (sortState.key === 'added') {
+        comparison = compareAddedAt(a, b, sortState.direction)
       } else {
         comparison = compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
       }
@@ -989,6 +1010,7 @@ export default function LibraryView() {
             queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
             showArtist={false}
             showAlbum={!selectedAlbum}
+            showAddedDate={showTracklistAddedDate}
             externalScroll
             enableColumnSorting
             sortState={sortState}
@@ -1009,6 +1031,7 @@ export default function LibraryView() {
         queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
+        showAddedDate={showTracklistAddedDate}
         enableColumnSorting
         sortState={sortState}
         onSortColumnToggle={handleSortColumnToggle}

@@ -131,6 +131,7 @@ export interface DbTrack {
   source_path: string | null
   is_available: number
   availability_reason: string | null
+  file_created_at: number | null
   added_at: number
   modified_at: number
 }
@@ -741,6 +742,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('library:scanStage', handler)
       return () => ipcRenderer.removeListener('library:scanStage', handler)
     },
+    onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
+      ipcRenderer.on('library:fileCreatedAtBackfillComplete', handler)
+      return () => ipcRenderer.removeListener('library:fileCreatedAtBackfillComplete', handler)
+    },
     onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
       ipcRenderer.on('library:audioMetadataBackfillComplete', handler)
@@ -1007,6 +1013,7 @@ declare global {
         getArtworkCardDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onScanStage: (callback: (progress: ScanStageProgress) => void) => () => void
+        onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
 

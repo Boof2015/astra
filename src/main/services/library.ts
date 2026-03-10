@@ -54,6 +54,7 @@ export interface DbTrack {
   source_path: string | null
   is_available: number
   availability_reason: string | null
+  file_created_at: number | null
   added_at: number
   modified_at: number
 }
@@ -403,6 +404,7 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.source_path AS source_path,
   t.is_available AS is_available,
   t.availability_reason AS availability_reason,
+  t.file_created_at AS file_created_at,
   t.added_at AS added_at,
   t.modified_at AS modified_at
 `
@@ -1073,6 +1075,7 @@ export async function initDatabase(): Promise<void> {
       source_path TEXT,
       is_available INTEGER NOT NULL DEFAULT 1,
       availability_reason TEXT,
+      file_created_at INTEGER,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
@@ -1219,6 +1222,11 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN availability_reason TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN file_created_at INTEGER')
   } catch {
     // Column already exists.
   }
@@ -1995,6 +2003,7 @@ export async function upsertSubsonicTracks(
              source_path = ?,
              is_available = 1,
              availability_reason = NULL,
+             file_created_at = NULL,
              modified_at = ?
          WHERE path = ?`,
         [
@@ -2387,6 +2396,7 @@ export async function upsertJellyfinTracks(
              source_path = ?,
              is_available = 1,
              availability_reason = NULL,
+             file_created_at = NULL,
              modified_at = ?
          WHERE path = ?`,
         [
@@ -3820,6 +3830,7 @@ export async function scanFolder(
   interface ExistingTrackScanState {
     id: number
     modified_at: number
+    file_created_at: number | null
     replaygain_track_gain_db: number | null
     replaygain_album_gain_db: number | null
   }
@@ -3832,9 +3843,10 @@ export async function scanFolder(
       if (!db) return
 
       const fileStat = await stat(filePath)
+      const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
       const checkStmt = db.prepare(
-        'SELECT id, modified_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?'
+        'SELECT id, modified_at, file_created_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?'
       )
       checkStmt.bind([filePath])
       let existing: ExistingTrackScanState | undefined
@@ -3851,7 +3863,8 @@ export async function scanFolder(
           || existing.replaygain_album_gain_db == null
         )
       )
-      if (existing && existing.modified_at >= fileStat.mtimeMs && !replayGainMissing) {
+      const fileCreatedAtMissing = Boolean(existing && existing.file_created_at == null)
+      if (existing && existing.modified_at >= fileStat.mtimeMs && !replayGainMissing && !fileCreatedAtMissing) {
         return
       }
 
@@ -3860,26 +3873,26 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, modified_at=?
+          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, filePath
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?)
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, now
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, now
         ])
         added++
       }
@@ -4145,6 +4158,12 @@ function toNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null
   }
   return null
+}
+
+function normalizeFileCreatedAtMs(value: unknown): number | null {
+  const timestamp = toNumber(value)
+  if (timestamp === null || timestamp <= 0) return null
+  return timestamp
 }
 
 function normalizeReplayGainTagId(id: string): string {
@@ -4757,6 +4776,20 @@ function getReplayGainBackfillCandidatePaths(): string[] {
     .filter((value): value is string => value !== null)
 }
 
+function getFileCreatedAtBackfillCandidatePaths(): string[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT path
+    FROM tracks
+    WHERE source_type = 'local'
+      AND file_created_at IS NULL
+  `)
+  if (result.length === 0) return []
+  return result[0].values
+    .map((row) => (typeof row[0] === 'string' ? row[0] : null))
+    .filter((value): value is string => value !== null)
+}
+
 async function backfillTrackAudioMetadata(path: string): Promise<void> {
   if (!db) return
 
@@ -4820,6 +4853,17 @@ async function backfillTrackReplayGainMetadata(path: string): Promise<void> {
   )
 }
 
+async function backfillTrackFileCreatedAt(path: string): Promise<void> {
+  if (!db) return
+  const fileStat = await stat(path)
+  const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
+
+  db.run(
+    "UPDATE tracks SET file_created_at = ? WHERE path = ? AND source_type = 'local'",
+    [fileCreatedAt, path]
+  )
+}
+
 type BackfillProgressCallback = (current: number, total: number, path: string) => void
 
 async function backfillPaths(
@@ -4875,6 +4919,45 @@ export async function backfillMissingChannelCounts(
     includeLegacyAtmosHeuristic: true
   })
   return backfillPaths(paths, undefined, options)
+}
+
+export async function backfillMissingFileCreatedAt(
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
+  const { persist = true, signal, onIssue } = options
+  const paths = getFileCreatedAtBackfillCandidatePaths()
+  if (paths.length === 0) {
+    return { scanned: 0, updated: 0, errors: 0 }
+  }
+
+  let updated = 0
+  let errors = 0
+  const workerCount = resolveBackfillWorkerCount(paths.length)
+
+  await runWithConcurrency(paths, workerCount, async (path) => {
+    try {
+      throwIfScanCancelled(signal)
+      await backfillTrackFileCreatedAt(path)
+      updated += 1
+    } catch (err) {
+      if (isLibraryScanCancelledError(err)) {
+        throw err
+      }
+      const issue = createLibraryScanIssue('backfill', path, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Failed to backfill file creation time for ${path}:`, err)
+      }
+      errors += 1
+    }
+  }, { signal })
+
+  throwIfScanCancelled(signal)
+  if (persist && updated > 0) {
+    await saveDatabase()
+  }
+
+  return { scanned: paths.length, updated, errors }
 }
 
 export async function backfillMissingReplayGainMetadata(
@@ -5196,17 +5279,19 @@ async function writeTrackMetadataToFile(
 async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> {
   if (!db) return
   const metadata = await extractMetadata(trackPath)
+  const fileStat = await stat(trackPath)
+  const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, modified_at=?
+    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, now, trackPath
+    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath
   ])
 }
 

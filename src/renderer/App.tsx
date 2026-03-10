@@ -123,10 +123,14 @@ function App() {
     if (updatesStore.autoCheckEnabled) {
       void updatesStore.checkForUpdates()
     }
+    const unsubscribeFileCreatedAtBackfill = window.electronAPI.library.onFileCreatedAtBackfillComplete(() => {
+      void useLibraryStore.getState().loadLibrary()
+    })
     const unsubscribeBackfill = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })
     return () => {
+      unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeAssociatedOpenFiles()
     }

@@ -38,12 +38,14 @@ interface DbTrack {
   source_path: string | null
   is_available: number
   availability_reason: string | null
+  file_created_at: number | null
+  added_at: number
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key' | 'added'
 
 export interface TrackListSortState {
   key: TrackListSortKey
@@ -56,6 +58,7 @@ interface TrackListProps {
   queueContextLabel?: string | null
   showArtist?: boolean
   showAlbum?: boolean
+  showAddedDate?: boolean
   externalScroll?: boolean
   playlistSourceId?: number | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | null
@@ -71,6 +74,7 @@ interface TrackListRowSharedProps {
   showArtist: boolean
   showAlbum: boolean
   showTracklistBpmKey: boolean
+  showAddedDate: boolean
   currentTrackPath: string | null
   loadingTrackPath: string | null
   loadingTrackPercent: number | null
@@ -88,6 +92,8 @@ interface TrackListRowSharedProps {
   openArtistInLibrary: (artist: string) => void | Promise<void>
   openAlbumInLibrary: (albumName: string, trackArtist: string, albumArtist?: string | null) => void | Promise<void>
   formatBpm: (bpm: number | null | undefined) => string
+  formatAddedDate: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
+  formatAddedDateTitle: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
   formatDuration: (seconds: number) => string
   onTrackClick: (track: DbTrack, index: number) => Promise<void>
   onQueueInsertPointerDown: (event: React.PointerEvent<HTMLDivElement>, track: DbTrack, index: number) => void
@@ -102,6 +108,11 @@ interface TrackListRowSharedProps {
 
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_LIST_OVERSCAN_COUNT = 8
+const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'numeric',
+  day: 'numeric',
+  year: '2-digit'
+})
 
 interface TrackPlaylistPopupState {
   trackPath: string
@@ -168,6 +179,35 @@ function formatTrackBpm(bpm: number | null | undefined): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
+function resolveEffectiveAddedAt(track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>): number {
+  if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
+    return track.file_created_at
+  }
+  return track.added_at
+}
+
+function formatTrackAddedDate(track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>): string {
+  const timestamp = resolveEffectiveAddedAt(track)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '--'
+
+  try {
+    return trackAddedDateFormatter.format(new Date(timestamp))
+  } catch {
+    return '--'
+  }
+}
+
+function formatTrackAddedDateTitle(track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>): string {
+  const timestamp = resolveEffectiveAddedAt(track)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Added date unavailable'
+
+  try {
+    return new Date(timestamp).toLocaleString()
+  } catch {
+    return 'Added date unavailable'
+  }
+}
+
 function isUnavailableRemoteTrack(track: Pick<DbTrack, 'source_type' | 'is_available'>): boolean {
   return track.source_type !== 'local' && track.is_available !== 1
 }
@@ -180,6 +220,7 @@ function TrackListRowRenderer({
   showArtist,
   showAlbum,
   showTracklistBpmKey,
+  showAddedDate,
   currentTrackPath,
   loadingTrackPath,
   loadingTrackPercent,
@@ -197,6 +238,8 @@ function TrackListRowRenderer({
   openArtistInLibrary,
   openAlbumInLibrary,
   formatBpm,
+  formatAddedDate,
+  formatAddedDateTitle,
   formatDuration,
   onTrackClick,
   onQueueInsertPointerDown,
@@ -381,6 +424,13 @@ function TrackListRowRenderer({
         <div className="track-col track-col-codec">
           <span className="track-codec">{track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
+        {showAddedDate && (
+          <div className="track-col track-col-added">
+            <span className="track-added" title={formatAddedDateTitle(track)}>
+              {formatAddedDate(track)}
+            </span>
+          </div>
+        )}
         <div className="track-col track-col-duration">
           <span className="track-duration">{formatDuration(track.duration)}</span>
         </div>
@@ -459,6 +509,7 @@ export default function TrackList({
   queueContextLabel = null,
   showArtist = true,
   showAlbum = true,
+  showAddedDate = false,
   externalScroll = false,
   playlistSourceId = null,
   jumpToTrackRequest = null,
@@ -1052,6 +1103,7 @@ export default function TrackList({
   const queueInsertPreview = isQueueInsertDragOwner ? queueInsertDrag : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
+  const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (key === 'added' ? 'desc' : 'asc')
 
   const getAriaSort = (key: TrackListSortKey): 'none' | 'ascending' | 'descending' => {
     if (!isColumnSortingEnabled || !sortState || sortState.key !== key) return 'none'
@@ -1060,9 +1112,11 @@ export default function TrackList({
 
   const renderSortableHeader = (key: TrackListSortKey, label: string, className: string): ReactElement => {
     const isActive = Boolean(sortState && sortState.key === key)
-    const direction = isActive ? sortState!.direction : 'asc'
+    const direction = isActive ? sortState!.direction : getDefaultSortDirection(key)
     const currentDirectionLabel = isActive ? (direction === 'asc' ? 'ascending' : 'descending') : 'not sorted'
-    const nextDirectionLabel = isActive && direction === 'asc' ? 'descending' : 'ascending'
+    const nextDirectionLabel = isActive
+      ? (direction === 'asc' ? 'descending' : 'ascending')
+      : (direction === 'asc' ? 'ascending' : 'descending')
 
     if (!isColumnSortingEnabled || !onSortColumnToggle) {
       return <div className={`track-col ${className}`}>{label}</div>
@@ -1091,6 +1145,7 @@ export default function TrackList({
     showArtist,
     showAlbum,
     showTracklistBpmKey,
+    showAddedDate,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1108,6 +1163,8 @@ export default function TrackList({
     openArtistInLibrary,
     openAlbumInLibrary,
     formatBpm: formatTrackBpm,
+    formatAddedDate: formatTrackAddedDate,
+    formatAddedDateTitle: formatTrackAddedDateTitle,
     formatDuration,
     onTrackClick: handleTrackClick,
     onQueueInsertPointerDown: handleQueueInsertPointerDown,
@@ -1123,6 +1180,7 @@ export default function TrackList({
     showArtist,
     showAlbum,
     showTracklistBpmKey,
+    showAddedDate,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1140,6 +1198,8 @@ export default function TrackList({
     openArtistInLibrary,
     openAlbumInLibrary,
     formatTrackBpm,
+    formatTrackAddedDate,
+    formatTrackAddedDateTitle,
     formatDuration,
     handleTrackClick,
     handleQueueInsertPointerDown,
@@ -1183,6 +1243,7 @@ export default function TrackList({
         {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
         {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
         <div className="track-col track-col-codec">Codec</div>
+        {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
         {renderSortableHeader('duration', 'Length', 'track-col-duration')}
         <div className="track-col track-col-actions" />
       </div>

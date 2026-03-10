@@ -29,6 +29,7 @@ export interface DbTrack {
   source_path: string | null
   is_available: number
   availability_reason: string | null
+  file_created_at: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number
@@ -137,6 +138,7 @@ interface LibraryStore {
   favoriteTracks: DbTrack[]
   recentlyPlayed: DbTrack[]
   showTracklistBpmKey: boolean
+  showTracklistAddedDate: boolean
 
   // Actions
   loadLibrary: () => Promise<void>
@@ -183,6 +185,7 @@ interface LibraryStore {
   loadRecentlyPlayed: () => Promise<void>
   recordPlay: (trackPath: string) => Promise<void>
   setShowTracklistBpmKey: (enabled: boolean) => void
+  setShowTracklistAddedDate: (enabled: boolean) => void
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
@@ -191,6 +194,7 @@ const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
+const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
 const artworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
@@ -220,6 +224,14 @@ function appendSelectionHistory(
 function loadTracklistBpmKeyVisibilitySetting(): boolean {
   try {
     return localStorage.getItem(TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function loadTracklistAddedDateVisibilitySetting(): boolean {
+  try {
+    return localStorage.getItem(TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY) === '1'
   } catch {
     return false
   }
@@ -316,6 +328,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   favoriteTracks: [],
   recentlyPlayed: [],
   showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
+  showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
 
   // Load entire library
   loadLibrary: async () => {
@@ -937,6 +950,17 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     try {
       localStorage.setItem(TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  },
+
+  setShowTracklistAddedDate: (enabled: boolean) => {
+    const normalized = Boolean(enabled)
+    set({ showTracklistAddedDate: normalized })
+
+    try {
+      localStorage.setItem(TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
     } catch {
       // Ignore localStorage write failures in restricted environments.
     }

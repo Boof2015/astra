@@ -117,6 +117,7 @@ let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
 const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
 let mainWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
+let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -129,6 +130,8 @@ const associatedOpenPendingPaths: string[] = []
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
+const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
+const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
@@ -2075,6 +2078,45 @@ async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
   }
 }
 
+async function maybeRunFileCreatedAtBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(FILE_CREATED_AT_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingFileCreatedAt()
+    if (scanned > 0) {
+      console.log(`File creation time backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:fileCreatedAtBackfillComplete', { scanned, updated, errors })
+    }
+  } catch (err) {
+    console.warn('File creation time backfill failed:', err)
+  } finally {
+    try {
+      await library.setAppMeta(FILE_CREATED_AT_BACKFILL_MIGRATION_KEY, '1')
+    } catch (err) {
+      console.warn('Failed to persist file creation time backfill migration flag:', err)
+    }
+  }
+}
+
+function scheduleFileCreatedAtBackfillMigration(): void {
+  if (library.getAppMeta(FILE_CREATED_AT_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (fileCreatedAtBackfillTimer !== null) {
+    clearTimeout(fileCreatedAtBackfillTimer)
+  }
+
+  fileCreatedAtBackfillTimer = setTimeout(() => {
+    fileCreatedAtBackfillTimer = null
+    void maybeRunFileCreatedAtBackfillOnce()
+  }, FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS)
+}
+
 function scheduleAudioMetadataBackfillMigration(): void {
   if (library.getAppMeta(AUDIO_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
     return
@@ -2354,6 +2396,7 @@ app.whenReady().then(async () => {
       console.warn('Library cleanup on startup failed:', error)
     }
   })()
+  scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
 

@@ -63,6 +63,15 @@ function compareNullableDuration(a: number | null | undefined, b: number | null 
   return compareWithDirection(aValue - bValue, direction)
 }
 
+function resolveEffectiveAddedAt(
+  track: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number }
+): number {
+  if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
+    return track.file_created_at
+  }
+  return track.added_at
+}
+
 function compareNullableKey(
   a: string | null | undefined,
   b: string | null | undefined,
@@ -95,6 +104,9 @@ function comparePlaylistTracksBySort(a: PlaylistTrack, b: PlaylistTrack, sortSta
   }
   if (sortState.key === 'bpm') {
     return compareNullableBpm(a.bpm, b.bpm, sortState.direction)
+  }
+  if (sortState.key === 'added') {
+    return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), sortState.direction)
   }
   return compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
 }

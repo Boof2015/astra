@@ -204,6 +204,8 @@ export default function SettingsView() {
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
+  const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
+  const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
@@ -1056,6 +1058,15 @@ export default function SettingsView() {
                   onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
                 >
                   {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Tracklist Added Column</span>
+                <button
+                  className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
+                  onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
+                >
+                  {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
             </div>
