@@ -129,10 +129,6 @@ export function useKeyboardShortcuts(): void {
       if (e.code === 'Space') {
         e.preventDefault()
         if (e.repeat) return
-        // Remove focus from the button so it doesn't stay highlighted
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur()
-        }
         void player.togglePlay()
         return
       }

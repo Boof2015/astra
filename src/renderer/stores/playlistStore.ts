@@ -79,6 +79,7 @@ interface PlaylistStore {
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
   getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+  getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
 }
 
@@ -172,6 +173,12 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   getPlaylistsContainingTrack: async (trackPath: string) => {
     if (!trackPath) return []
     return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
+  },
+
+  getPlaylistTrackPaths: async (playlistId: number) => {
+    if (!Number.isInteger(playlistId) || playlistId <= 0) return []
+    const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
+    return tracks.map((track) => track.path)
   },
 
   importPlaylistFromFile: async () => {

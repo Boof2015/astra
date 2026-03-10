@@ -367,6 +367,25 @@ button, .titlebar {
   color: var(--text-primary);
 }
 
+.titlebar-button:focus-visible,
+.sidebar-icon-btn:focus-visible,
+.transport-fav-btn:focus-visible,
+.transport-mini-btn:focus-visible,
+.transport-lyrics-btn:focus-visible,
+.transport-eq-btn:focus-visible,
+.transport-qi-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.82),
+    0 0 0 1px rgba(var(--accent-rgb), 0.24);
+}
+
+.titlebar-button:focus-visible,
+.sidebar-icon-btn:focus-visible,
+.transport-fav-btn:focus-visible {
+  border-radius: var(--radius-sm);
+}
+
 .titlebar-button-close:hover {
   background: #e81123;
   color: white;
@@ -6138,7 +6157,7 @@ button, .titlebar {
   display: flex;
   align-items: center;
   height: 32px;
-  padding: 0 8px;
+  padding: 0 12px 0 0;
   cursor: pointer;
   gap: 0;
   transition: background var(--transition-fast);
@@ -6148,9 +6167,13 @@ button, .titlebar {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.folder-browse-node:focus-within {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .folder-browse-node.is-root {
   height: 40px;
-  padding: 0 10px;
+  padding: 0 12px 0 10px;
   background: var(--bg-secondary);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
@@ -6161,8 +6184,20 @@ button, .titlebar {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.folder-browse-name {
+.folder-browse-node.is-root:focus-within {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.folder-browse-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.folder-browse-name {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6172,9 +6207,55 @@ button, .titlebar {
   margin-left: 4px;
 }
 
+.folder-browse-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.folder-browse-node:hover .folder-browse-actions,
+.folder-browse-node:focus-within .folder-browse-actions,
+.folder-browse-actions.has-open-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.folder-browse-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.folder-browse-action-btn:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.folder-browse-action-btn.active {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.48);
+  background: rgba(var(--accent-rgb), 0.18);
+}
+
 .folder-browse-count {
   flex-shrink: 0;
-  margin-left: 8px;
+  margin-left: 12px;
   font-size: 11px;
   color: var(--text-tertiary);
   opacity: 0.7;
@@ -12215,6 +12296,16 @@ body::after {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.playlist-create-error {
+  border-radius: 9px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fda4af;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
 .track-playlist-trigger-open {
   color: var(--accent);
   border-color: rgba(var(--accent-rgb), 0.48);
@@ -12232,6 +12323,99 @@ body::after {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.folder-playlist-popup {
+  width: min(296px, calc(100vw - 20px));
+}
+
+.folder-playlist-popup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.folder-playlist-popup-header-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.folder-playlist-popup-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.folder-playlist-popup-subtitle {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.folder-playlist-popup-create-btn {
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid rgba(var(--accent-rgb), 0.36);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.folder-playlist-popup-create-btn:hover:not(:disabled) {
+  border-color: rgba(var(--accent-rgb), 0.52);
+  background: rgba(var(--accent-rgb), 0.2);
+}
+
+.folder-playlist-popup-create-btn:disabled {
+  opacity: 0.58;
+  cursor: default;
+}
+
+.folder-playlist-popup-notice {
+  margin: 0 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.folder-playlist-popup-notice.info {
+  margin-top: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.folder-playlist-popup-notice.error {
+  margin-top: 8px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fda4af;
+}
+
+.folder-playlist-popup-item {
+  justify-content: flex-start;
+}
+
+.folder-playlist-popup-item-count {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
 }
 
 .track-playlist-popup-search {

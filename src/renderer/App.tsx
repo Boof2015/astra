@@ -32,6 +32,7 @@ import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
+import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
 import type { Track } from './types/audio'
 
 function toAssociatedExternalTrack(filePath: string): Track {
@@ -60,6 +61,7 @@ function getAssociatedOpenSourceLabel(platform: NodeJS.Platform): string {
 }
 
 function App() {
+  usePointerFocusCleanup()
   useKeyboardShortcuts()
   useMediaSession()
   useDiscordPresence()

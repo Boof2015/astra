@@ -6,6 +6,7 @@ interface CreatePlaylistModalProps {
   onClose: () => void
   onCreate: (name: string, coverImagePath: string | null) => Promise<void>
   title?: string
+  initialName?: string
 }
 
 function toFilePreviewSource(filePath: string): string {
@@ -17,19 +18,28 @@ export default function CreatePlaylistModal({
   isOpen,
   onClose,
   onCreate,
-  title = 'Create Playlist'
+  title = 'Create Playlist',
+  initialName = ''
 }: CreatePlaylistModalProps) {
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isOpen) {
       setName('')
       setCoverImagePath(null)
       setIsSubmitting(false)
+      setSubmitError(null)
+      return
     }
-  }, [isOpen])
+
+    setName(initialName)
+    setCoverImagePath(null)
+    setIsSubmitting(false)
+    setSubmitError(null)
+  }, [initialName, isOpen])
 
   useEffect(() => {
     if (!isOpen) return
@@ -70,9 +80,12 @@ export default function CreatePlaylistModal({
     if (!trimmedName) return
 
     setIsSubmitting(true)
+    setSubmitError(null)
     try {
       await onCreate(trimmedName, coverImagePath)
       onClose()
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Failed to create playlist.')
     } finally {
       setIsSubmitting(false)
     }
@@ -153,6 +166,12 @@ export default function CreatePlaylistModal({
               )}
             </div>
           </div>
+
+          {submitError && (
+            <div className="playlist-create-error" role="alert">
+              {submitError}
+            </div>
+          )}
         </div>
 
         <div className="modal-footer playlist-create-modal-footer">
