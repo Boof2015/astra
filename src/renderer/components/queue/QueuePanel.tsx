@@ -28,6 +28,7 @@ interface QueueBoundaryRow {
   kind: 'boundary'
   key: string
   active: boolean
+  label: string | null
 }
 
 interface QueueTrackRow {
@@ -62,7 +63,7 @@ interface QueueRowSharedProps {
 
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
 const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
-const QUEUE_BOUNDARY_ROW_HEIGHT_PX = 16
+const QUEUE_BOUNDARY_ROW_HEIGHT_PX = 24
 const QUEUE_LIST_OVERSCAN_COUNT = 8
 const QUEUE_DRAG_SCROLL_EDGE_PX = 40
 
@@ -134,7 +135,10 @@ function QueueRowRenderer({
   if (row.kind === 'boundary') {
     return (
       <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
-        <div className={`queue-drop-boundary ${row.active ? 'queue-drop-boundary-active' : ''}`} />
+        <div className={`queue-drop-boundary ${row.active ? 'queue-drop-boundary-active' : ''}`}>
+          <div className="queue-drop-boundary-line" />
+          {row.label && <span className="queue-drop-boundary-label">{row.label}</span>}
+        </div>
       </div>
     )
   }
@@ -261,8 +265,13 @@ export default function QueuePanel() {
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [queueItemRowHeight, setQueueItemRowHeight] = useState(QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX)
   const [queueSectionRowHeight, setQueueSectionRowHeight] = useState(QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX)
+  const [queueScrollGlowEdge, setQueueScrollGlowEdge] = useState<'top' | 'bottom' | null>(null)
+  const [isDropSettling, setIsDropSettling] = useState(false)
   const dragNodeRef = useRef<HTMLDivElement | null>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
+  const previousDragActiveRef = useRef(false)
+  const previousUserQueueLengthRef = useRef(userQueue.length)
+  const settleTimerRef = useRef<number | null>(null)
   const autoUpcomingEntries = useMemo(
     () => getResolvedAutoUpcomingEntries(),
     [
@@ -279,6 +288,9 @@ export default function QueuePanel() {
   useEffect(() => {
     return () => {
       dragNodeRef.current?.classList.remove('dragging')
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current)
+      }
     }
   }, [])
 
@@ -318,6 +330,7 @@ export default function QueuePanel() {
     const drag = queueInsertDrag
     const element = queueContentRef.current
     if (!drag || !element) {
+      setQueueScrollGlowEdge(null)
       setQueueInsertDropTarget(null)
       return
     }
@@ -331,16 +344,24 @@ export default function QueuePanel() {
       || drag.pointerY < rect.top
       || drag.pointerY > rect.bottom
     ) {
+      setQueueScrollGlowEdge(null)
       setQueueInsertDropTarget(null)
       return
     }
 
     const distanceFromTop = drag.pointerY - rect.top
     const distanceFromBottom = rect.bottom - drag.pointerY
-    if (distanceFromTop < QUEUE_DRAG_SCROLL_EDGE_PX) {
+    if (distanceFromTop < QUEUE_DRAG_SCROLL_EDGE_PX && scrollElement.scrollTop > 0) {
+      setQueueScrollGlowEdge('top')
       scrollElement.scrollTop = Math.max(0, scrollElement.scrollTop - Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromTop) / 4))
-    } else if (distanceFromBottom < QUEUE_DRAG_SCROLL_EDGE_PX) {
+    } else if (
+      distanceFromBottom < QUEUE_DRAG_SCROLL_EDGE_PX
+      && scrollElement.scrollTop + scrollElement.clientHeight < scrollElement.scrollHeight
+    ) {
+      setQueueScrollGlowEdge('bottom')
       scrollElement.scrollTop += Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromBottom) / 4)
+    } else {
+      setQueueScrollGlowEdge(null)
     }
 
     const relativeY = drag.pointerY - rect.top + scrollElement.scrollTop
@@ -385,6 +406,26 @@ export default function QueuePanel() {
     userQueue.length
   ])
 
+  useEffect(() => {
+    const dragActive = Boolean(queueInsertDrag)
+    const hadDrag = previousDragActiveRef.current
+    const previousUserQueueLength = previousUserQueueLengthRef.current
+
+    if (hadDrag && !dragActive && userQueue.length > previousUserQueueLength) {
+      setIsDropSettling(true)
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current)
+      }
+      settleTimerRef.current = window.setTimeout(() => {
+        setIsDropSettling(false)
+        settleTimerRef.current = null
+      }, 220)
+    }
+
+    previousDragActiveRef.current = dragActive
+    previousUserQueueLengthRef.current = userQueue.length
+  }, [queueInsertDrag, userQueue.length])
+
   const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
     const mins = Math.floor(seconds / 60)
@@ -397,6 +438,9 @@ export default function QueuePanel() {
     : queueInsertDrag?.dropTarget?.kind === 'user'
       ? queueInsertDrag.dropTarget.index
       : null
+  const queueInsertTrackCount = queueInsertDrag?.tracks.length ?? 0
+  const isQueueDropActive = Boolean(queueInsertDrag)
+  const isQueueDropHover = Boolean(queueInsertDrag?.dropTarget)
 
   const rows = useMemo<QueueVirtualRow[]>(() => {
     const nextRows: QueueVirtualRow[] = []
@@ -446,7 +490,12 @@ export default function QueuePanel() {
       nextRows.push({
         kind: 'boundary',
         key: 'boundary-user-auto',
-        active: insertDropIndex === userQueue.length
+        active: insertDropIndex === userQueue.length,
+        label: insertDropIndex === userQueue.length
+          ? queueInsertTrackCount > 1
+            ? `Insert ${queueInsertTrackCount} tracks`
+            : 'Insert into your queue'
+          : null
       })
       nextRows.push({
         kind: 'section',
@@ -500,6 +549,7 @@ export default function QueuePanel() {
     currentTrack,
     insertDropIndex,
     playbackHistory,
+    queueInsertTrackCount,
     shuffle,
     userQueue
   ])
@@ -588,7 +638,7 @@ export default function QueuePanel() {
 
   if (rows.length === 0) {
     return (
-      <div className="queue-panel">
+      <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`}>
         <div className="queue-header">
           <h3>Queue</h3>
         </div>
@@ -607,7 +657,7 @@ export default function QueuePanel() {
   const listHeight = listViewportHeight > 0 ? listViewportHeight : queueItemRowHeight * 8
 
   return (
-    <div className="queue-panel">
+    <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`}>
       <div className="queue-header">
         <h3>Queue</h3>
         <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
@@ -616,6 +666,8 @@ export default function QueuePanel() {
       </div>
 
       <div className="queue-content" ref={queueContentRef}>
+        <div className={`queue-scroll-glow queue-scroll-glow-top ${queueScrollGlowEdge === 'top' ? 'active' : ''}`} />
+        <div className={`queue-scroll-glow queue-scroll-glow-bottom ${queueScrollGlowEdge === 'bottom' ? 'active' : ''}`} />
         <List
           className="queue-list-virtualized"
           defaultHeight={QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX * 8}

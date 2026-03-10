@@ -3668,7 +3668,7 @@ button, .titlebar {
   align-items: center;
   padding: 8px 16px;
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
   border-radius: var(--radius-sm);
   margin: 0;
   width: 100%;
@@ -3724,21 +3724,41 @@ button, .titlebar {
 }
 
 .track-row-queue-selected {
-  background: rgba(var(--accent-rgb), 0.05);
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.16);
+  background: rgba(var(--accent-rgb), 0.07);
 }
 
 .track-row-queue-selected:hover {
-  background: rgba(var(--accent-rgb), 0.08);
+  background: rgba(var(--accent-rgb), 0.09);
+}
+
+.track-row-queue-selected-start {
+  background: rgba(var(--accent-rgb), 0.09);
+}
+
+.track-row-queue-selected-end {
+  background: rgba(var(--accent-rgb), 0.09);
+}
+
+.track-row-queue-selected-start.track-row-queue-selected-end {
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .track-row-queue-armed {
-  background: rgba(var(--accent-rgb), 0.08);
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.22);
+  background: rgba(var(--accent-rgb), 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.24),
+    0 8px 18px rgba(0, 0, 0, 0.16);
+  transform: translate3d(2px, -1px, 0);
+  z-index: 1;
 }
 
 .track-row-queue-armed:hover {
-  background: rgba(var(--accent-rgb), 0.1);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.track-list-queue-insert-dragging,
+.track-list-queue-insert-dragging * {
+  cursor: grabbing !important;
 }
 
 .track-col {
@@ -3934,16 +3954,69 @@ button, .titlebar {
   z-index: 1200;
   display: flex;
   flex-direction: column;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  pointer-events: none;
+  animation: trackQueueInsertPreviewLift 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: visible;
+}
+
+.track-queue-insert-preview-content {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
   gap: 2px;
   min-width: 220px;
   max-width: min(320px, calc(100vw - 24px));
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  border: 1px solid rgba(var(--accent-rgb), 0.14);
   background: rgba(8, 11, 17, 0.92);
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(16px);
-  pointer-events: none;
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34);
+}
+
+.track-queue-insert-preview-stack-layer {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.14);
+  background: rgba(8, 11, 17, 0.92);
+  backdrop-filter: blur(16px);
+  z-index: 1;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.18);
+}
+
+.track-queue-insert-preview-stack-layer-mid {
+  transform: translate(7px, 7px);
+  z-index: 2;
+}
+
+.track-queue-insert-preview-stack-layer-back {
+  transform: translate(14px, 14px);
+  z-index: 1;
+}
+
+.track-queue-insert-preview-count {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 4;
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.92);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 12px 22px rgba(var(--accent-rgb), 0.24);
 }
 
 .track-queue-insert-preview-kicker {
@@ -3971,6 +4044,18 @@ button, .titlebar {
 .track-queue-insert-preview-artist {
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+@keyframes trackQueueInsertPreviewLift {
+  from {
+    opacity: 0;
+    filter: blur(1px);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
 }
 
 .track-list-empty {
@@ -4757,6 +4842,27 @@ button, .titlebar {
   height: 100%;
   background: var(--bg-secondary);
   border-left: 1px solid var(--glass-border);
+  position: relative;
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.queue-panel-drop-active {
+  border-left-color: rgba(var(--accent-rgb), 0.18);
+}
+
+.queue-panel-drop-active,
+.queue-panel-drop-active * {
+  cursor: grabbing !important;
+}
+
+.queue-panel-drop-hover {
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.035), transparent 28%), var(--bg-secondary);
+  box-shadow: inset 1px 0 0 rgba(var(--accent-rgb), 0.16);
+}
+
+.queue-panel-drop-settle .queue-content::after {
+  opacity: 1;
+  animation: queueDropSettlePulse 220ms ease-out;
 }
 
 .queue-header {
@@ -4799,6 +4905,16 @@ button, .titlebar {
   flex-direction: column;
   overflow: hidden;
   padding: 0;
+  position: relative;
+}
+
+.queue-content::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), transparent 35%);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .queue-list-virtualized {
@@ -4863,7 +4979,8 @@ button, .titlebar {
   gap: 8px;
   padding: 10px 16px;
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+  position: relative;
 }
 
 .queue-item:hover {
@@ -4898,7 +5015,21 @@ button, .titlebar {
 }
 
 .queue-item-insert-before {
-  box-shadow: inset 0 2px 0 rgba(var(--accent-rgb), 0.82);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.14),
+    inset 0 2px 0 rgba(var(--accent-rgb), 0.82);
+}
+
+.queue-item-insert-before::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.5), rgba(var(--accent-rgb), 0.96), rgba(var(--accent-rgb), 0.5));
+  box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.3);
 }
 
 .queue-item.dragging {
@@ -5032,17 +5163,15 @@ button, .titlebar {
   height: 100%;
   margin: 0 10px;
   opacity: 0.46;
-  transition: opacity var(--transition-fast);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  display: flex;
+  align-items: center;
 }
 
-.queue-drop-boundary::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
+.queue-drop-boundary-line {
+  width: 100%;
   height: 1px;
-  transform: translateY(-50%);
+  border-radius: 999px;
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -5055,9 +5184,10 @@ button, .titlebar {
 
 .queue-drop-boundary-active {
   opacity: 1;
+  transform: translateY(-1px);
 }
 
-.queue-drop-boundary-active::before {
+.queue-drop-boundary-active .queue-drop-boundary-line {
   height: 2px;
   background: linear-gradient(
     90deg,
@@ -5068,6 +5198,23 @@ button, .titlebar {
     transparent 100%
   );
   box-shadow: 0 0 18px rgba(var(--accent-rgb), 0.24);
+}
+
+.queue-drop-boundary-label {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  background: rgba(10, 13, 19, 0.92);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .queue-empty-drop-zone-wrap {
@@ -5102,6 +5249,45 @@ button, .titlebar {
   background: rgba(var(--accent-rgb), 0.1);
   color: var(--accent-text);
   box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.18);
+}
+
+.queue-scroll-glow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 44px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  z-index: 2;
+}
+
+.queue-scroll-glow-top {
+  top: 0;
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.16), transparent 72%);
+}
+
+.queue-scroll-glow-bottom {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(var(--accent-rgb), 0.16), transparent 72%);
+}
+
+.queue-scroll-glow.active {
+  opacity: 1;
+}
+
+@keyframes queueDropSettlePulse {
+  from {
+    opacity: 0;
+  }
+
+  40% {
+    opacity: 0.9;
+  }
+
+  to {
+    opacity: 0;
+  }
 }
 
 /* Queue toggle button in now playing */

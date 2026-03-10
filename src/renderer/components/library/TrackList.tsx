@@ -260,6 +260,8 @@ function TrackListRowRenderer({
   const isQueueInsertSelected = queueInsertSelectionRange !== null
     && index >= queueInsertSelectionRange.startIndex
     && index <= queueInsertSelectionRange.endIndex
+  const isQueueInsertSelectionStart = queueInsertSelectionRange?.startIndex === index
+  const isQueueInsertSelectionEnd = queueInsertSelectionRange?.endIndex === index
 
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
@@ -268,6 +270,8 @@ function TrackListRowRenderer({
           isUnavailable ? 'track-row-unavailable' : ''
         } ${showQueueInsertAffordance ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
+        } ${isQueueInsertSelectionStart ? 'track-row-queue-selected-start' : ''} ${
+          isQueueInsertSelectionEnd ? 'track-row-queue-selected-end' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
         data-track-index={index}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
@@ -1157,7 +1161,7 @@ export default function TrackList({
   }
 
   return (
-    <div className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''}`}>
+    <div className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}>
       <div className="track-list-header">
         {canResetDefaultOrder ? (
           <div className="track-col track-col-num">
@@ -1198,22 +1202,33 @@ export default function TrackList({
       </div>
       {queueInsertPreview && (
         <div
-          className="track-queue-insert-preview"
+          className={`track-queue-insert-preview ${queueInsertPreview.tracks.length > 1 ? 'track-queue-insert-preview-batch' : ''}`}
           style={{
             transform: `translate(${queueInsertPreview.pointerX + 14}px, ${queueInsertPreview.pointerY + 14}px)`
           }}
         >
-          <span className="track-queue-insert-preview-kicker">Queue</span>
-          <span className="track-queue-insert-preview-title">
-            {queueInsertPreview.tracks.length > 1
-              ? `${queueInsertPreview.tracks.length} tracks`
-              : queueInsertPreview.tracks[0]?.title ?? 'Track'}
-          </span>
-          <span className="track-queue-insert-preview-artist">
-            {queueInsertPreview.tracks.length > 1
-              ? 'In tracklist order'
-              : queueInsertPreview.tracks[0]?.artist ?? 'Unknown Artist'}
-          </span>
+          {queueInsertPreview.tracks.length > 1 && (
+            <>
+              <span className="track-queue-insert-preview-stack-layer track-queue-insert-preview-stack-layer-back" aria-hidden="true" />
+              <span className="track-queue-insert-preview-stack-layer track-queue-insert-preview-stack-layer-mid" aria-hidden="true" />
+            </>
+          )}
+          {queueInsertPreview.tracks.length > 1 && (
+            <span className="track-queue-insert-preview-count">{queueInsertPreview.tracks.length}</span>
+          )}
+          <div className="track-queue-insert-preview-content">
+            <span className="track-queue-insert-preview-kicker">Queue</span>
+            <span className="track-queue-insert-preview-title">
+              {queueInsertPreview.tracks.length > 1
+                ? `${queueInsertPreview.tracks.length} tracks`
+                : queueInsertPreview.tracks[0]?.title ?? 'Track'}
+            </span>
+            <span className="track-queue-insert-preview-artist">
+              {queueInsertPreview.tracks.length > 1
+                ? 'In tracklist order'
+                : queueInsertPreview.tracks[0]?.artist ?? 'Unknown Artist'}
+            </span>
+          </div>
         </div>
       )}
       {playlistPopup && (
