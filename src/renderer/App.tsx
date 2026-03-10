@@ -5,6 +5,7 @@ import AnalyzerDeck from './components/layout/AnalyzerDeck'
 import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
+import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
@@ -95,17 +96,11 @@ function App() {
 
       const queueTracks = queuePaths.map(toAssociatedExternalTrack)
       const player = usePlayerStore.getState()
-      player.setQueue(queueTracks, 0)
-
-      const firstTrack = queueTracks[0]
-      const loaded = await window.electronAPI.loadAudioFile(firstTrack.path, { metadataMode: 'none' })
-      if (!loaded) {
-        return
-      }
-
-      const didLoad = await player.loadTrack(firstTrack, loaded.data)
-      if (didLoad) {
-        await player.play()
+      await player.startPlaybackContext(queueTracks, 0, {
+        contextLabel: getAssociatedOpenSourceLabel(window.electronAPI.platform)
+      })
+      if (usePlayerStore.getState().currentTrack?.path === queueTracks[0]?.path) {
+        const firstTrack = queueTracks[0]
         player.showAssociatedOpenNotice({
           trackPath: firstTrack.path,
           title: firstTrack.title,
@@ -145,7 +140,9 @@ function App() {
           <ViewRouter />
           {showQueue && (
             <div className="queue-sidebar">
-              <QueuePanel />
+              <QueuePanelBoundary>
+                <QueuePanel />
+              </QueuePanelBoundary>
             </div>
           )}
           {showInfoSidebar && <InfoSidebar />}

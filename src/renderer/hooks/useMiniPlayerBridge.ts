@@ -37,7 +37,7 @@ export function useMiniPlayerBridge(): void {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const currentTime = usePlayerStore((s) => s.currentTime)
   const duration = usePlayerStore((s) => s.duration)
-  const queueLength = usePlayerStore((s) => s.queue.length)
+  const queueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const favorites = useLibraryStore((s) => s.favorites)
   const getArtwork = useLibraryStore((s) => s.getArtwork)

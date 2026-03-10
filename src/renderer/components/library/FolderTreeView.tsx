@@ -175,7 +175,7 @@ const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
 export default function FolderTreeView({ tracks, folders, searchQuery }: FolderTreeViewProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
-  const { setQueue, playTrackAt, currentTrack } = usePlayerStore()
+  const { startPlaybackContext, currentTrack } = usePlayerStore()
   const listBodyRef = useRef<HTMLDivElement>(null)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
@@ -291,9 +291,10 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
     const queueTracks = folderTracks.map(dbTrackToTrack)
     const index = folderTracks.findIndex((t) => t.path === track.path)
     const queueIndex = index >= 0 ? index : 0
-    setQueue(queueTracks, queueIndex)
-    await playTrackAt(queueIndex)
-  }, [playTrackAt, setQueue])
+    await startPlaybackContext(queueTracks, queueIndex, {
+      contextLabel: 'Folder'
+    })
+  }, [startPlaybackContext])
 
   const currentTrackPath = currentTrack?.path ?? null
 

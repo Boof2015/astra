@@ -3707,6 +3707,40 @@ button, .titlebar {
   text-decoration: line-through;
 }
 
+.track-row-queue-droppable {
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.track-row-queue-droppable * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.track-row-queue-droppable img,
+.track-row-queue-droppable svg {
+  -webkit-user-drag: none;
+}
+
+.track-row-queue-selected {
+  background: rgba(var(--accent-rgb), 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.16);
+}
+
+.track-row-queue-selected:hover {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.track-row-queue-armed {
+  background: rgba(var(--accent-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.22);
+}
+
+.track-row-queue-armed:hover {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
 .track-col {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3891,6 +3925,52 @@ button, .titlebar {
   font-family: var(--font-mono);
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.track-queue-insert-preview {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  background: rgba(8, 11, 17, 0.92);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(16px);
+  pointer-events: none;
+}
+
+.track-queue-insert-preview-kicker {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.track-queue-insert-preview-title,
+.track-queue-insert-preview-artist {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-queue-insert-preview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.track-queue-insert-preview-artist {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .track-list-empty {
@@ -4817,6 +4897,10 @@ button, .titlebar {
   border-top: 2px solid var(--accent);
 }
 
+.queue-item-insert-before {
+  box-shadow: inset 0 2px 0 rgba(var(--accent-rgb), 0.82);
+}
+
 .queue-item.dragging {
   opacity: 0.5;
 }
@@ -4941,6 +5025,83 @@ button, .titlebar {
 
 .queue-item-previous .queue-item-drag-handle {
   display: none;
+}
+
+.queue-drop-boundary {
+  position: relative;
+  height: 100%;
+  margin: 0 10px;
+  opacity: 0.46;
+  transition: opacity var(--transition-fast);
+}
+
+.queue-drop-boundary::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(var(--accent-rgb), 0.16) 8%,
+    rgba(var(--accent-rgb), 0.32) 50%,
+    rgba(var(--accent-rgb), 0.16) 92%,
+    transparent 100%
+  );
+}
+
+.queue-drop-boundary-active {
+  opacity: 1;
+}
+
+.queue-drop-boundary-active::before {
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(var(--accent-rgb), 0.34) 10%,
+    rgba(var(--accent-rgb), 0.88) 50%,
+    rgba(var(--accent-rgb), 0.34) 90%,
+    transparent 100%
+  );
+  box-shadow: 0 0 18px rgba(var(--accent-rgb), 0.24);
+}
+
+.queue-empty-drop-zone-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.queue-empty-drop-zone {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 16px;
+  padding: 28px 20px;
+  border-radius: 16px;
+  border: 1px dashed var(--glass-border);
+  background: rgba(255, 255, 255, 0.02);
+  text-align: center;
+  color: var(--text-tertiary);
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.queue-empty-drop-zone p {
+  margin: 0;
+}
+
+.queue-empty-drop-zone-active {
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.18);
 }
 
 /* Queue toggle button in now playing */

@@ -27,7 +27,6 @@ export default function TransportBar() {
     duration,
     volume,
     isMuted,
-    queue,
     togglePlay,
     seek,
     setVolume,
@@ -41,6 +40,7 @@ export default function TransportBar() {
     waveformData,
     remoteLoadProgress,
   } = usePlayerStore()
+  const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const {
     showQueue,
@@ -408,7 +408,7 @@ export default function TransportBar() {
             className="control-btn control-btn-skip"
             aria-label="Previous"
             onClick={playPrevious}
-            disabled={queue.length === 0}
+            disabled={resolvedQueueLength === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <line x1="6" y1="5" x2="6" y2="19" />
@@ -437,7 +437,7 @@ export default function TransportBar() {
             className="control-btn control-btn-skip"
             aria-label="Next"
             onClick={playNext}
-            disabled={queue.length === 0}
+            disabled={resolvedQueueLength === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="5" x2="18" y2="19" />

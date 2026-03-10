@@ -788,8 +788,7 @@ export default function HomeView() {
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
-  const playTrackAt = usePlayerStore((s) => s.playTrackAt)
-  const setQueue = usePlayerStore((s) => s.setQueue)
+  const startPlaybackContext = usePlayerStore((s) => s.startPlaybackContext)
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
@@ -1121,8 +1120,9 @@ export default function HomeView() {
       availabilityReason: recentTrack.availability_reason ?? undefined
     }))
 
-    setQueue(queueTracks, index)
-    await playTrackAt(index)
+    await startPlaybackContext(queueTracks, index, {
+      contextLabel: 'Recently Played'
+    })
   }
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {

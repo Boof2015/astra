@@ -1,11 +1,44 @@
 import { create } from 'zustand'
 import type { SettingsSectionId } from '../constants/settingsSections'
+import type { Track } from '../types/audio'
 
 export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
+}
+
+export interface QueueInsertDropTarget {
+  kind: 'empty' | 'user'
+  index: number
+}
+
+export interface QueueInsertDragState {
+  tracks: Track[]
+  pointerX: number
+  pointerY: number
+  dropTarget: QueueInsertDropTarget | null
+}
+
+function areQueueInsertDropTargetsEqual(
+  left: QueueInsertDropTarget | null,
+  right: QueueInsertDropTarget | null
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.kind === right.kind && left.index === right.index
+}
+
+function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.path !== right[index]?.path) {
+      return false
+    }
+  }
+  return true
 }
 
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
@@ -43,6 +76,7 @@ interface UIStore {
   isQuickLaunchOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
+  queueInsertDrag: QueueInsertDragState | null
   setActiveView: (view: AppView) => void
   toggleQueue: () => void
   toggleInfoSidebar: () => void
@@ -60,6 +94,11 @@ interface UIStore {
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
   consumePendingSettingsSection: () => SettingsSectionId | null
+  startQueueInsertDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
+  setQueueInsertDragTracks: (tracks: Track[]) => void
+  updateQueueInsertDragPointer: (pointerX: number, pointerY: number) => void
+  setQueueInsertDropTarget: (target: QueueInsertDropTarget | null) => void
+  clearQueueInsertDrag: () => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -75,6 +114,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isQuickLaunchOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
+  queueInsertDrag: null,
   setActiveView: (view) => set({ activeView: view }),
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
@@ -133,5 +173,51 @@ export const useUIStore = create<UIStore>((set, get) => ({
       set({ pendingSettingsSection: null })
     }
     return section
-  }
+  },
+  startQueueInsertDrag: (tracks, pointerX, pointerY) => set({
+    queueInsertDrag: {
+      tracks,
+      pointerX,
+      pointerY,
+      dropTarget: null
+    }
+  }),
+  setQueueInsertDragTracks: (tracks) => set((state) => {
+    if (!state.queueInsertDrag) return state
+    if (areQueueInsertTracksEqual(state.queueInsertDrag.tracks, tracks)) {
+      return state
+    }
+    return {
+      queueInsertDrag: {
+        ...state.queueInsertDrag,
+        tracks
+      }
+    }
+  }),
+  updateQueueInsertDragPointer: (pointerX, pointerY) => set((state) => {
+    if (!state.queueInsertDrag) return state
+    if (state.queueInsertDrag.pointerX === pointerX && state.queueInsertDrag.pointerY === pointerY) {
+      return state
+    }
+    return {
+      queueInsertDrag: {
+        ...state.queueInsertDrag,
+        pointerX,
+        pointerY
+      }
+    }
+  }),
+  setQueueInsertDropTarget: (target) => set((state) => {
+    if (!state.queueInsertDrag) return state
+    if (areQueueInsertDropTargetsEqual(state.queueInsertDrag.dropTarget, target)) {
+      return state
+    }
+    return {
+      queueInsertDrag: {
+        ...state.queueInsertDrag,
+        dropTarget: target
+      }
+    }
+  }),
+  clearQueueInsertDrag: () => set({ queueInsertDrag: null })
 }))

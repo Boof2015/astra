@@ -576,6 +576,7 @@ export default function PlaylistView() {
           <TrackList
             tracks={displayTracks}
             queueSeedTracks={displayTracks}
+            queueContextLabel={playlistName ?? 'Playlist'}
             playlistSourceId={selectedPlaylistId !== null && selectedPlaylistId > 0 ? selectedPlaylistId : null}
             enableColumnSorting
             sortState={sortState}

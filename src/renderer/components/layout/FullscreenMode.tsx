@@ -195,12 +195,8 @@ export default function FullscreenMode() {
     currentTime,
     duration,
     waveformData,
-    queue,
-    queueIndex,
     shuffle,
     repeat,
-    shuffledIndices,
-    shufflePosition,
     togglePlay,
     seek,
     playNext,
@@ -208,6 +204,8 @@ export default function FullscreenMode() {
     toggleShuffle,
     toggleRepeat,
   } = usePlayerStore()
+  const nextTrack = usePlayerStore((s) => s.getResolvedNextTrack())
+  const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
@@ -373,30 +371,6 @@ export default function FullscreenMode() {
     })
   }, [hasSyncedLyrics, showLyricsDock])
 
-  const nextQueueIndex = useMemo(() => {
-    if (queue.length === 0 || queueIndex < 0 || repeat === 'one') return -1
-
-    if (shuffle && shuffledIndices.length > 0) {
-      const nextShufflePosition = shufflePosition + 1
-      if (nextShufflePosition < shuffledIndices.length) {
-        return shuffledIndices[nextShufflePosition] ?? -1
-      }
-
-      if (repeat === 'all') {
-        const fallback = shuffledIndices.find((index) => index !== queueIndex)
-        return fallback ?? -1
-      }
-
-      return -1
-    }
-
-    const sequentialNext = queueIndex + 1
-    if (sequentialNext < queue.length) return sequentialNext
-    if (repeat === 'all') return 0
-    return -1
-  }, [queue, queueIndex, repeat, shuffle, shuffledIndices, shufflePosition])
-
-  const nextTrack = nextQueueIndex >= 0 ? queue[nextQueueIndex] ?? null : null
   const cueProgress = Math.max(0, Math.min(1, (10 - Math.min(10, remaining)) / 10))
   const cueCountdown = Math.max(0, Math.ceil(Math.min(10, remaining)))
   const canShowNextCue =
@@ -762,7 +736,7 @@ export default function FullscreenMode() {
                 aria-label="Shuffle"
                 title={shuffle ? 'Shuffle on' : 'Shuffle off'}
                 onClick={toggleShuffle}
-                disabled={queue.length === 0}
+                disabled={resolvedQueueLength === 0}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M16 3h5v5" />
@@ -777,7 +751,7 @@ export default function FullscreenMode() {
                 className="fullscreen-control-btn"
                 aria-label="Previous"
                 onClick={() => void playPrevious()}
-                disabled={queue.length === 0}
+                disabled={resolvedQueueLength === 0}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="6" y1="5" x2="6" y2="19" />
@@ -808,7 +782,7 @@ export default function FullscreenMode() {
                 className="fullscreen-control-btn"
                 aria-label="Next"
                 onClick={() => void playNext()}
-                disabled={queue.length === 0}
+                disabled={resolvedQueueLength === 0}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="5" x2="18" y2="19" />
@@ -821,7 +795,7 @@ export default function FullscreenMode() {
                 aria-label="Repeat"
                 title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
                 onClick={toggleRepeat}
-                disabled={queue.length === 0}
+                disabled={resolvedQueueLength === 0}
               >
                 {repeat === 'one' ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">

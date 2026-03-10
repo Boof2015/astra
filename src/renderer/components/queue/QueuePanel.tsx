@@ -13,6 +13,7 @@ import {
 } from 'react'
 import { List, RowComponentProps } from 'react-window'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
 
 interface QueueSectionRow {
@@ -23,22 +24,30 @@ interface QueueSectionRow {
   faded?: boolean
 }
 
+interface QueueBoundaryRow {
+  kind: 'boundary'
+  key: string
+  active: boolean
+}
+
 interface QueueTrackRow {
   kind: 'track'
   key: string
   track: Track
-  variant: 'current' | 'upcoming' | 'previous'
-  actualQueueIndex: number | null
+  variant: 'current' | 'user' | 'auto' | 'previous'
+  source: 'user' | 'auto' | null
+  actualIndex: number | null
   dragIndex: number | null
   draggable: boolean
   removable: boolean
 }
 
-type QueueVirtualRow = QueueSectionRow | QueueTrackRow
+type QueueVirtualRow = QueueSectionRow | QueueBoundaryRow | QueueTrackRow
 
 interface QueueRowSharedProps {
   rows: QueueVirtualRow[]
-  dragOverIndex: number | null
+  reorderDragOverIndex: number | null
+  insertDropIndex: number | null
   isCurrentLoading: boolean
   currentLoadingPercent: number | null
   currentLoadingChunkCount: number
@@ -47,13 +56,15 @@ interface QueueRowSharedProps {
   onDragOver: (event: DragEvent<HTMLDivElement>, index: number) => void
   onDragEnd: () => void
   onDragLeave: () => void
-  onPlayTrackAt: (index: number) => void
-  onRemoveFromQueue: (event: MouseEvent<HTMLButtonElement>, index: number) => void
+  onPlayQueuedTrack: (source: 'user' | 'auto', index: number) => void
+  onRemoveUserTrack: (event: MouseEvent<HTMLButtonElement>, index: number) => void
 }
 
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
 const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
+const QUEUE_BOUNDARY_ROW_HEIGHT_PX = 16
 const QUEUE_LIST_OVERSCAN_COUNT = 8
+const QUEUE_DRAG_SCROLL_EDGE_PX = 40
 
 function isUnavailableQueueTrack(track: Track): boolean {
   return track.sourceType !== undefined
@@ -93,7 +104,8 @@ function QueueRowRenderer({
   index,
   style,
   rows,
-  dragOverIndex,
+  reorderDragOverIndex,
+  insertDropIndex,
   isCurrentLoading,
   currentLoadingPercent,
   currentLoadingChunkCount,
@@ -102,8 +114,8 @@ function QueueRowRenderer({
   onDragOver,
   onDragEnd,
   onDragLeave,
-  onPlayTrackAt,
-  onRemoveFromQueue
+  onPlayQueuedTrack,
+  onRemoveUserTrack
 }: RowComponentProps<QueueRowSharedProps>): ReactElement | null {
   const row = rows[index]
   if (!row) return null
@@ -119,9 +131,18 @@ function QueueRowRenderer({
     )
   }
 
-  const isDragOver = row.dragIndex !== null && dragOverIndex === row.dragIndex
+  if (row.kind === 'boundary') {
+    return (
+      <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
+        <div className={`queue-drop-boundary ${row.active ? 'queue-drop-boundary-active' : ''}`} />
+      </div>
+    )
+  }
+
+  const isReorderDragOver = row.dragIndex !== null && reorderDragOverIndex === row.dragIndex
+  const isExternalDropBefore = row.source === 'user' && row.actualIndex !== null && insertDropIndex === row.actualIndex
   const isUnavailable = isUnavailableQueueTrack(row.track)
-  const canPlay = row.actualQueueIndex !== null && !isUnavailable
+  const canPlay = row.source !== null && row.actualIndex !== null && !isUnavailable
   const isLoadingRow = row.variant === 'current'
     && isCurrentLoading
     && row.track.sourceType !== undefined
@@ -140,18 +161,20 @@ function QueueRowRenderer({
       <div
         className={`queue-item ${row.variant === 'current' ? 'queue-item-current' : ''} ${
           row.variant === 'previous' ? 'queue-item-previous' : ''
-        } ${isDragOver ? 'queue-item-drag-over' : ''} ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
+        } ${isReorderDragOver ? 'queue-item-drag-over' : ''} ${
+          isExternalDropBefore ? 'queue-item-insert-before' : ''
+        } ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
         draggable={row.draggable}
         onDragStart={row.draggable && row.dragIndex !== null ? (event) => onDragStart(event, row.dragIndex!) : undefined}
         onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
         onDragEnd={row.draggable ? onDragEnd : undefined}
         onDragLeave={row.draggable ? onDragLeave : undefined}
-        onClick={canPlay ? () => onPlayTrackAt(row.actualQueueIndex!) : undefined}
+        onClick={canPlay && row.source && row.actualIndex !== null ? () => onPlayQueuedTrack(row.source!, row.actualIndex!) : undefined}
       >
         {row.draggable && (
           <div className="queue-item-drag-handle">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z"/>
+              <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z" />
             </svg>
           </div>
         )}
@@ -192,17 +215,15 @@ function QueueRowRenderer({
             </div>
           )}
         </div>
-        <div className="queue-item-duration">
-          {formatDuration(row.track.duration)}
-        </div>
-        {row.removable && row.actualQueueIndex !== null && (
+        <div className="queue-item-duration">{formatDuration(row.track.duration)}</div>
+        {row.removable && row.actualIndex !== null && (
           <button
             className="queue-item-remove"
-            onClick={(event) => onRemoveFromQueue(event, row.actualQueueIndex!)}
+            onClick={(event) => onRemoveUserTrack(event, row.actualIndex!)}
             title="Remove from queue"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
           </button>
         )}
@@ -216,26 +237,44 @@ const QueueRow = memo(QueueRowRenderer) as (
 ) => ReactElement | null
 
 export default function QueuePanel() {
-  const queue = usePlayerStore((state) => state.queue)
-  const queueIndex = usePlayerStore((state) => state.queueIndex)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
+  const currentTrackSource = usePlayerStore((state) => state.currentTrackSource)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
+  const userQueue = usePlayerStore((state) => state.userQueue)
+  const autoQueue = usePlayerStore((state) => state.autoQueue)
+  const autoQueueIndex = usePlayerStore((state) => state.autoQueueIndex)
+  const autoQueueContextLabel = usePlayerStore((state) => state.autoQueueContextLabel)
   const shuffle = usePlayerStore((state) => state.shuffle)
-  const shuffledIndices = usePlayerStore((state) => state.shuffledIndices)
-  const shufflePosition = usePlayerStore((state) => state.shufflePosition)
-  const playTrackAt = usePlayerStore((state) => state.playTrackAt)
-  const removeFromQueue = usePlayerStore((state) => state.removeFromQueue)
-  const moveInQueue = usePlayerStore((state) => state.moveInQueue)
-  const clearQueue = usePlayerStore((state) => state.clearQueue)
+  const shuffledAutoIndices = usePlayerStore((state) => state.shuffledAutoIndices)
+  const playbackHistory = usePlayerStore((state) => state.playbackHistory)
+  const getResolvedAutoUpcomingEntries = usePlayerStore((state) => state.getResolvedAutoUpcomingEntries)
+  const playQueuedTrack = usePlayerStore((state) => state.playQueuedTrack)
+  const removeUserTrack = usePlayerStore((state) => state.removeUserTrack)
+  const moveUserQueue = usePlayerStore((state) => state.moveUserQueue)
+  const clearAllQueues = usePlayerStore((state) => state.clearAllQueues)
+  const queueInsertDrag = useUIStore((state) => state.queueInsertDrag)
+  const setQueueInsertDropTarget = useUIStore((state) => state.setQueueInsertDropTarget)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const [reorderDragOverIndex, setReorderDragOverIndex] = useState<number | null>(null)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [queueItemRowHeight, setQueueItemRowHeight] = useState(QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX)
   const [queueSectionRowHeight, setQueueSectionRowHeight] = useState(QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX)
   const dragNodeRef = useRef<HTMLDivElement | null>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
+  const autoUpcomingEntries = useMemo(
+    () => getResolvedAutoUpcomingEntries(),
+    [
+      autoQueue,
+      autoQueueIndex,
+      currentTrack,
+      currentTrackSource,
+      getResolvedAutoUpcomingEntries,
+      shuffle,
+      shuffledAutoIndices
+    ]
+  )
 
   useEffect(() => {
     return () => {
@@ -275,6 +314,77 @@ export default function QueuePanel() {
     }
   }, [])
 
+  useEffect(() => {
+    const drag = queueInsertDrag
+    const element = queueContentRef.current
+    if (!drag || !element) {
+      setQueueInsertDropTarget(null)
+      return
+    }
+
+    const scrollElement = (element.querySelector('.queue-list-virtualized') as HTMLElement | null) ?? element
+    const rect = scrollElement.getBoundingClientRect()
+
+    if (
+      drag.pointerX < rect.left
+      || drag.pointerX > rect.right
+      || drag.pointerY < rect.top
+      || drag.pointerY > rect.bottom
+    ) {
+      setQueueInsertDropTarget(null)
+      return
+    }
+
+    const distanceFromTop = drag.pointerY - rect.top
+    const distanceFromBottom = rect.bottom - drag.pointerY
+    if (distanceFromTop < QUEUE_DRAG_SCROLL_EDGE_PX) {
+      scrollElement.scrollTop = Math.max(0, scrollElement.scrollTop - Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromTop) / 4))
+    } else if (distanceFromBottom < QUEUE_DRAG_SCROLL_EDGE_PX) {
+      scrollElement.scrollTop += Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromBottom) / 4)
+    }
+
+    const relativeY = drag.pointerY - rect.top + scrollElement.scrollTop
+    const hasVisibleQueue = Boolean(currentTrack) || userQueue.length > 0 || autoUpcomingEntries.length > 0
+    if (!hasVisibleQueue) {
+      setQueueInsertDropTarget({ kind: 'empty', index: 0 })
+      return
+    }
+
+    let userQueueStartOffset = 0
+    if (currentTrack) {
+      userQueueStartOffset += queueSectionRowHeight + queueItemRowHeight
+    }
+    if (userQueue.length > 0) {
+      userQueueStartOffset += queueSectionRowHeight
+    }
+
+    let targetIndex = 0
+    if (userQueue.length > 0) {
+      const localY = relativeY - userQueueStartOffset
+      targetIndex = userQueue.length
+      for (let index = 0; index < userQueue.length; index += 1) {
+        const midpoint = index * queueItemRowHeight + queueItemRowHeight / 2
+        if (localY < midpoint) {
+          targetIndex = index
+          break
+        }
+      }
+    }
+
+    setQueueInsertDropTarget({
+      kind: 'user',
+      index: targetIndex
+    })
+  }, [
+    autoUpcomingEntries.length,
+    currentTrack,
+    queueInsertDrag,
+    queueItemRowHeight,
+    queueSectionRowHeight,
+    setQueueInsertDropTarget,
+    userQueue.length
+  ])
+
   const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
     const mins = Math.floor(seconds / 60)
@@ -282,29 +392,11 @@ export default function QueuePanel() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }, [])
 
-  const upcomingTracks = useMemo(() => {
-    if (queue.length === 0) return []
-    if (shuffle && shuffledIndices.length > 0) {
-      return shuffledIndices
-        .slice(shufflePosition + 1)
-        .map((queueItemIndex) => queue[queueItemIndex])
-        .filter((track): track is Track => Boolean(track))
-    }
-
-    return queue.slice(queueIndex + 1)
-  }, [queue, queueIndex, shuffle, shuffledIndices, shufflePosition])
-
-  const previousTracks = useMemo(() => {
-    if (queue.length === 0) return []
-    if (shuffle && shuffledIndices.length > 0) {
-      return shuffledIndices
-        .slice(0, shufflePosition)
-        .map((queueItemIndex) => queue[queueItemIndex])
-        .filter((track): track is Track => Boolean(track))
-    }
-
-    return queue.slice(0, queueIndex)
-  }, [queue, queueIndex, shuffle, shuffledIndices, shufflePosition])
+  const insertDropIndex = queueInsertDrag?.dropTarget?.kind === 'empty'
+    ? 0
+    : queueInsertDrag?.dropTarget?.kind === 'user'
+      ? queueInsertDrag.dropTarget.index
+      : null
 
   const rows = useMemo<QueueVirtualRow[]>(() => {
     const nextRows: QueueVirtualRow[] = []
@@ -317,49 +409,68 @@ export default function QueuePanel() {
       })
       nextRows.push({
         kind: 'track',
-        key: `track-current-${currentTrack.id}-${queueIndex}`,
+        key: `track-current-${currentTrack.id}`,
         track: currentTrack,
         variant: 'current',
-        actualQueueIndex: null,
+        source: null,
+        actualIndex: null,
         dragIndex: null,
         draggable: false,
         removable: false
       })
     }
 
-    if (upcomingTracks.length > 0) {
+    if (userQueue.length > 0) {
       nextRows.push({
         kind: 'section',
-        key: 'section-up-next',
-        label: `Up Next (${upcomingTracks.length} ${upcomingTracks.length === 1 ? 'track' : 'tracks'})`,
-        showShuffled: shuffle
+        key: 'section-user-queue',
+        label: `Queued by You (${userQueue.length} ${userQueue.length === 1 ? 'track' : 'tracks'})`
       })
 
-      for (let index = 0; index < upcomingTracks.length; index += 1) {
-        const track = upcomingTracks[index]
-        const actualQueueIndex = shuffle && shuffledIndices.length > 0
-          ? shuffledIndices[shufflePosition + 1 + index]
-          : queueIndex + 1 + index
-        const nextDragIndex = shuffle && shuffledIndices.length > 0
-          ? shufflePosition + 1 + index
-          : queueIndex + 1 + index
-
-        if (!Number.isInteger(actualQueueIndex)) continue
-
+      userQueue.forEach((track, index) => {
         nextRows.push({
           kind: 'track',
-          key: `track-upcoming-${track.id}-${actualQueueIndex}`,
+          key: `track-user-${track.id}-${index}`,
           track,
-          variant: 'upcoming',
-          actualQueueIndex,
-          dragIndex: nextDragIndex,
+          variant: 'user',
+          source: 'user',
+          actualIndex: index,
+          dragIndex: index,
           draggable: true,
           removable: true
         })
-      }
+      })
     }
 
-    if (previousTracks.length > 0) {
+    if (autoUpcomingEntries.length > 0) {
+      nextRows.push({
+        kind: 'boundary',
+        key: 'boundary-user-auto',
+        active: insertDropIndex === userQueue.length
+      })
+      nextRows.push({
+        kind: 'section',
+        key: 'section-auto-queue',
+        label: `Next From ${autoQueueContextLabel ?? 'Current Selection'} (${autoUpcomingEntries.length} ${autoUpcomingEntries.length === 1 ? 'track' : 'tracks'})`,
+        showShuffled: shuffle
+      })
+
+      autoUpcomingEntries.forEach((entry) => {
+        nextRows.push({
+          kind: 'track',
+          key: `track-auto-${entry.track.id}-${entry.index}`,
+          track: entry.track,
+          variant: 'auto',
+          source: 'auto',
+          actualIndex: entry.index,
+          dragIndex: null,
+          draggable: false,
+          removable: false
+        })
+      })
+    }
+
+    if (playbackHistory.length > 0) {
       nextRows.push({
         kind: 'section',
         key: 'section-previously-played',
@@ -367,35 +478,36 @@ export default function QueuePanel() {
         faded: true
       })
 
-      for (let index = 0; index < previousTracks.length; index += 1) {
-        const track = previousTracks[index]
-        const actualQueueIndex = shuffle && shuffledIndices.length > 0
-          ? shuffledIndices[index]
-          : index
-
-        if (!Number.isInteger(actualQueueIndex)) continue
-
+      playbackHistory.forEach((entry, index) => {
         nextRows.push({
           kind: 'track',
-          key: `track-previous-${track.id}-${actualQueueIndex}`,
-          track,
+          key: `track-previous-${entry.track.id}-${index}`,
+          track: entry.track,
           variant: 'previous',
-          actualQueueIndex,
+          source: null,
+          actualIndex: null,
           dragIndex: null,
           draggable: false,
           removable: false
         })
-      }
+      })
     }
 
     return nextRows
-  }, [currentTrack, queueIndex, previousTracks, shuffle, shuffledIndices, shufflePosition, upcomingTracks])
+  }, [
+    autoQueueContextLabel,
+    autoUpcomingEntries,
+    currentTrack,
+    insertDropIndex,
+    playbackHistory,
+    shuffle,
+    userQueue
+  ])
 
   const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
     setDragIndex(index)
     dragNodeRef.current = event.currentTarget
     event.dataTransfer.effectAllowed = 'move'
-    // Add dragging class after a frame to avoid affecting the drag image
     setTimeout(() => {
       dragNodeRef.current?.classList.add('dragging')
     }, 0)
@@ -404,36 +516,38 @@ export default function QueuePanel() {
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
     event.preventDefault()
     if (dragIndex === null || dragIndex === index) return
-    setDragOverIndex(index)
+    setReorderDragOverIndex(index)
   }, [dragIndex])
 
   const handleDragEnd = useCallback(() => {
-    if (dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
-      moveInQueue(dragIndex, dragOverIndex)
+    if (dragIndex !== null && reorderDragOverIndex !== null && dragIndex !== reorderDragOverIndex) {
+      moveUserQueue(dragIndex, reorderDragOverIndex)
     }
     dragNodeRef.current?.classList.remove('dragging')
     setDragIndex(null)
-    setDragOverIndex(null)
-  }, [dragIndex, dragOverIndex, moveInQueue])
+    setReorderDragOverIndex(null)
+  }, [dragIndex, moveUserQueue, reorderDragOverIndex])
 
   const handleDragLeave = useCallback(() => {
-    setDragOverIndex(null)
+    setReorderDragOverIndex(null)
   }, [])
 
-  const handlePlayTrackAt = useCallback((index: number) => {
-    void playTrackAt(index)
-  }, [playTrackAt])
+  const handlePlayQueuedTrack = useCallback((source: 'user' | 'auto', index: number) => {
+    void playQueuedTrack({ source, index }, { manualStart: true })
+  }, [playQueuedTrack])
 
-  const handleRemoveFromQueue = useCallback((event: MouseEvent<HTMLButtonElement>, index: number) => {
+  const handleRemoveUserTrack = useCallback((event: MouseEvent<HTMLButtonElement>, index: number) => {
     event.stopPropagation()
-    removeFromQueue(index)
-  }, [removeFromQueue])
+    removeUserTrack(index)
+  }, [removeUserTrack])
 
   const resolveRowHeight = useCallback((index: number) => {
     const row = rows[index]
     if (!row) return queueItemRowHeight
-    return row.kind === 'section' ? queueSectionRowHeight : queueItemRowHeight
-  }, [rows, queueItemRowHeight, queueSectionRowHeight])
+    if (row.kind === 'section') return queueSectionRowHeight
+    if (row.kind === 'boundary') return QUEUE_BOUNDARY_ROW_HEIGHT_PX
+    return queueItemRowHeight
+  }, [queueItemRowHeight, queueSectionRowHeight, rows])
 
   const isCurrentLoading = playbackState === 'loading'
   const currentLoadingProgress = isCurrentLoading
@@ -445,7 +559,8 @@ export default function QueuePanel() {
 
   const rowProps = useMemo<QueueRowSharedProps>(() => ({
     rows,
-    dragOverIndex,
+    reorderDragOverIndex,
+    insertDropIndex,
     isCurrentLoading,
     currentLoadingPercent: currentLoadingProgress?.percent ?? null,
     currentLoadingChunkCount: currentLoadingProgress?.chunkCount ?? 0,
@@ -454,11 +569,12 @@ export default function QueuePanel() {
     onDragOver: handleDragOver,
     onDragEnd: handleDragEnd,
     onDragLeave: handleDragLeave,
-    onPlayTrackAt: handlePlayTrackAt,
-    onRemoveFromQueue: handleRemoveFromQueue
+    onPlayQueuedTrack: handlePlayQueuedTrack,
+    onRemoveUserTrack: handleRemoveUserTrack
   }), [
     rows,
-    dragOverIndex,
+    reorderDragOverIndex,
+    insertDropIndex,
     isCurrentLoading,
     currentLoadingProgress,
     formatDuration,
@@ -466,19 +582,23 @@ export default function QueuePanel() {
     handleDragOver,
     handleDragEnd,
     handleDragLeave,
-    handlePlayTrackAt,
-    handleRemoveFromQueue
+    handlePlayQueuedTrack,
+    handleRemoveUserTrack
   ])
 
-  if (queue.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="queue-panel">
         <div className="queue-header">
           <h3>Queue</h3>
         </div>
-        <div className="queue-empty">
-          <p>No tracks in queue</p>
-          <p className="queue-empty-hint">Play a track from your library to start</p>
+        <div className="queue-empty-drop-zone-wrap" ref={queueContentRef}>
+          <div className={`queue-empty-drop-zone ${queueInsertDrag?.dropTarget?.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
+            <p>No tracks in queue</p>
+            <p className="queue-empty-hint">
+              {queueInsertDrag ? 'Drop here to build a user queue' : 'Open the queue and long-press a track to drop it here'}
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -490,7 +610,7 @@ export default function QueuePanel() {
     <div className="queue-panel">
       <div className="queue-header">
         <h3>Queue</h3>
-        <button className="queue-clear-btn" onClick={clearQueue} title="Clear queue">
+        <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
           Clear
         </button>
       </div>

@@ -163,9 +163,8 @@ export default function QuickLaunchPalette() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
-  const addToQueueNext = usePlayerStore((state) => state.addToQueueNext)
-  const setQueue = usePlayerStore((state) => state.setQueue)
-  const playTrackAt = usePlayerStore((state) => state.playTrackAt)
+  const enqueueUserTrack = usePlayerStore((state) => state.enqueueUserTrack)
+  const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
@@ -588,7 +587,7 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        addToQueueNext(toQueueTrack(result.track))
+        enqueueUserTrack(toQueueTrack(result.track), 'next')
         closeQuickLaunch()
         return
       }
@@ -596,8 +595,9 @@ export default function QuickLaunchPalette() {
       const queueTracks = trackCorpus.map(toQueueTrack)
       const queueIndex = trackCorpus.findIndex((track) => track.path === result.track.path)
       if (queueIndex >= 0) {
-        setQueue(queueTracks, queueIndex)
-        await playTrackAt(queueIndex)
+        await startPlaybackContext(queueTracks, queueIndex, {
+          contextLabel: 'Search Results'
+        })
         closeQuickLaunch()
         return
       }
@@ -608,11 +608,10 @@ export default function QuickLaunchPalette() {
       setIsExecuting(false)
     }
   }, [
-    addToQueueNext,
+    enqueueUserTrack,
     clearSelection,
     closeQuickLaunch,
     isExecuting,
-    playTrackAt,
     selectAlbum,
     selectArtist,
     selectPlaylist,
@@ -621,8 +620,8 @@ export default function QuickLaunchPalette() {
     setActiveView,
     setPendingLibrarySearchQuery,
     setPendingSettingsSection,
-    setQueue,
     setViewMode,
+    startPlaybackContext,
     trackCorpus
   ])
 
