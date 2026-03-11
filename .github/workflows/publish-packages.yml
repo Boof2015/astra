@@ -23,9 +23,14 @@ jobs:
 
       - name: Compute AppImage SHA256
         id: sha256
+        shell: bash
         run: |
+          set -euo pipefail
           URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.ver }}-Linux.AppImage"
-          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          TMP_FILE="$(mktemp)"
+          trap 'rm -f "$TMP_FILE"' EXIT
+          curl -fsSL "$URL" -o "$TMP_FILE"
+          SHA=$(sha256sum "$TMP_FILE" | cut -d' ' -f1)
           echo "sha256=$SHA" >> $GITHUB_OUTPUT
 
       - name: Update PKGBUILD
