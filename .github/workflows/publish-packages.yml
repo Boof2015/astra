@@ -1,0 +1,60 @@
+name: Publish Packages
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-aur:
+    name: Publish to AUR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version strings
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VER="${TAG#v}"
+          AUR_VER="${VER//-/.}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "ver=$VER" >> $GITHUB_OUTPUT
+          echo "aur_ver=$AUR_VER" >> $GITHUB_OUTPUT
+
+      - name: Compute AppImage SHA256
+        id: sha256
+        run: |
+          URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.ver }}-Linux.AppImage"
+          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Update PKGBUILD
+        run: |
+          AUR_VER="${{ steps.ver.outputs.aur_ver }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          VER="${{ steps.ver.outputs.ver }}"
+          URL="https://github.com/Boof2015/astra/releases/download/${TAG}/Astra-${VER}-Linux.AppImage"
+          SHA="${{ steps.sha256.outputs.sha256 }}"
+          sed -i "s/^pkgver=.*/pkgver=${AUR_VER}/" .github/aur/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" .github/aur/PKGBUILD
+          sed -i "s|^source=.*|source=(\"astra-${AUR_VER}.AppImage::${URL}\")|" .github/aur/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" .github/aur/PKGBUILD
+
+      - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: astra-bin
+          pkgbuild: .github/aur/PKGBUILD
+          commit_username: Boof2015
+          commit_email: contact@novaml.ai
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          commit_message: "Update to ${{ steps.ver.outputs.ver }}"
+
+  publish-winget:
+    name: Publish to winget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Boof2015.Astra
+          token: ${{ secrets.WINGET_TOKEN }}
+          installers-regex: 'Astra\.Setup\..+\.Windows\.exe$'
