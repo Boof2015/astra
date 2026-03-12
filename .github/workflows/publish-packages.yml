@@ -56,6 +56,7 @@ jobs:
 
   publish-homebrew:
     name: Publish to Homebrew Cask
+    if: false # disabled until repo reaches 225 stars for official homebrew-cask submission
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
