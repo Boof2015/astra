@@ -67,6 +67,22 @@ jobs:
         run: |
           node -e 'const fs=require("fs"); const key=process.env.LASTFM_API_KEY ?? ""; const secret=process.env.LASTFM_SHARED_SECRET ?? ""; fs.writeFileSync(".env.local", `LASTFM_API_KEY=${key}\nLASTFM_SHARED_SECRET=${secret}\n`, "utf8")'
 
+      - name: Install macOS DMG tool
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 -m pip install --user dmgbuild
+          DMGBUILD_PATH="$(python3 - <<'PY'
+          import site
+          print(f"{site.USER_BASE}/bin/dmgbuild")
+          PY
+          )"
+          if [ ! -x "$DMGBUILD_PATH" ]; then
+            echo "ERROR: dmgbuild was installed, but the executable was not found at $DMGBUILD_PATH"
+            exit 1
+          fi
+          echo "CUSTOM_DMGBUILD_PATH=$DMGBUILD_PATH" >> "$GITHUB_ENV"
+
       - name: Build distributable
         run: npm run ${{ matrix.dist_cmd }}
 

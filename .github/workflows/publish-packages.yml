@@ -47,7 +47,7 @@ jobs:
 
       - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
-          pkgname: astra-music
+          pkgname: astra-music-bin
           pkgbuild: .github/aur/PKGBUILD
           commit_username: Boof2015
           commit_email: contact@novaml.ai
