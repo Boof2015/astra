@@ -49,5 +49,8 @@ jobs:
           fi
           echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
 
+      - name: Validate packaging config
+        run: npm run check:packaging-config
+
       - name: Build Project
         run: npm run build

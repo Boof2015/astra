@@ -7,6 +7,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
     "rebuild:native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
@@ -86,28 +87,28 @@
         ]
       }
     ],
-    "fileAssociations": [
-      {
-        "name": "Astra Audio File",
-        "description": "Audio file",
-        "role": "Viewer",
-        "ext": [
-          "mp3",
-          "flac",
-          "wav",
-          "ogg",
-          "aac",
-          "m4a",
-          "opus",
-          "wma",
-          "aiff",
-          "alac",
-          "ape",
-          "wv"
-        ]
-      }
-    ],
     "win": {
+      "fileAssociations": [
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "role": "Viewer",
+          "ext": [
+            "mp3",
+            "flac",
+            "wav",
+            "ogg",
+            "aac",
+            "m4a",
+            "opus",
+            "wma",
+            "aiff",
+            "alac",
+            "ape",
+            "wv"
+          ]
+        }
+      ],
       "target": [
         {
           "target": "nsis",
@@ -125,6 +126,27 @@
       "icon": "resources/icon.ico"
     },
     "mac": {
+      "fileAssociations": [
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "role": "Viewer",
+          "ext": [
+            "mp3",
+            "flac",
+            "wav",
+            "ogg",
+            "aac",
+            "m4a",
+            "opus",
+            "wma",
+            "aiff",
+            "alac",
+            "ape",
+            "wv"
+          ]
+        }
+      ],
       "target": [
         "dmg",
         "zip"
@@ -136,6 +158,68 @@
       "entitlementsInherit": "resources/entitlements.mac.inherit.plist"
     },
     "linux": {
+      "fileAssociations": [
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "mp3"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "flac"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "wav"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "ogg"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "aac"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "m4a"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "opus"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "wma"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "aiff"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "alac"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "ape"
+        },
+        {
+          "name": "Astra Audio File",
+          "description": "Audio file",
+          "ext": "wv"
+        }
+      ],
       "target": [
         "AppImage",
         "deb"
