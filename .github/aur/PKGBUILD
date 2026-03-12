@@ -1,5 +1,5 @@
 # Maintainer: Boof2015 <contact@novaml.ai>
-pkgname=astra-bin
+pkgname=astra-music
 pkgver=0.4.0.beta
 pkgrel=1
 pkgdesc="Audiophile music player with advanced visualization"

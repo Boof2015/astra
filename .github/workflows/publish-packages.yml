@@ -47,12 +47,65 @@ jobs:
 
       - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
-          pkgname: astra-bin
+          pkgname: astra-music
           pkgbuild: .github/aur/PKGBUILD
           commit_username: Boof2015
           commit_email: contact@novaml.ai
           ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
           commit_message: "Update to ${{ steps.ver.outputs.ver }}"
+
+  publish-homebrew:
+    name: Publish to Homebrew Cask
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version string
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VER="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "ver=$VER" >> $GITHUB_OUTPUT
+
+      - name: Compute DMG SHA256
+        id: sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.ver }}-Mac-arm64.dmg"
+          TMP_FILE="$(mktemp)"
+          trap 'rm -f "$TMP_FILE"' EXIT
+          curl -fsSL "$URL" -o "$TMP_FILE"
+          SHA=$(sha256sum "$TMP_FILE" | cut -d' ' -f1)
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Update cask file
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          SHA="${{ steps.sha256.outputs.sha256 }}"
+          sed -i "s/version \".*\"/version \"${VER}\"/" .github/homebrew/astra.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" .github/homebrew/astra.rb
+
+      - name: Submit PR to homebrew-cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
+        run: |
+          VER="${{ steps.ver.outputs.ver }}"
+          gh repo fork homebrew/homebrew-cask --clone
+          cd homebrew-cask
+          git checkout -b "astra-${VER}"
+          cp ../.github/homebrew/astra.rb Casks/a/astra.rb
+          git config user.name "Boof2015"
+          git config user.email "contact@novaml.ai"
+          git add Casks/a/astra.rb
+          git commit -m "Update astra to ${VER}"
+          git push origin "astra-${VER}"
+          gh pr create \
+            --repo homebrew/homebrew-cask \
+            --title "Update astra to ${VER}" \
+            --body "Update astra cask to version ${VER}." \
+            --head "Boof2015:astra-${VER}"
 
   publish-winget:
     name: Publish to winget
