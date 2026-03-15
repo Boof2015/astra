@@ -4,6 +4,7 @@ import {
   useVisualizerSettingsStore,
   type AnalyzerProfile,
   type FFTSize,
+  type VectorscopeMode,
 } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 
@@ -31,11 +32,22 @@ function scopeLabel(scope: ScopeKind): string {
   }
 }
 
+function vectorscopeModeLabel(mode: VectorscopeMode): string {
+  switch (mode) {
+    case 'lissajous': return 'Lissajous'
+    case 'polar-unipolar': return 'Polar (Uni)'
+    case 'polar-bipolar': return 'Polar (Bi)'
+    case 'linear-unipolar': return 'Linear (Uni)'
+    case 'linear-bipolar': return 'Linear (Bi)'
+  }
+}
+
 function scopeStateLabel(
   scope: ScopeKind,
   fftSize: FFTSize,
   pitchLock: boolean,
-  underfillEnabled: boolean
+  underfillEnabled: boolean,
+  vectorscopeMode: VectorscopeMode
 ): string {
   switch (scope) {
     case 'spectrum':
@@ -45,7 +57,7 @@ function scopeStateLabel(
         ? underfillEnabled ? 'Pitch-lock + underfill' : 'Pitch-lock'
         : underfillEnabled ? 'Free-run + underfill' : 'Free-run'
     case 'vectorscope':
-      return 'Stereo image'
+      return vectorscopeModeLabel(vectorscopeMode)
   }
 }
 
@@ -128,6 +140,8 @@ export default function AnalyzerEditOverlay({
   const setFftSize = useVisualizerSettingsStore((state) => state.setFftSize)
   const setPitchLock = useVisualizerSettingsStore((state) => state.setPitchLock)
   const setOscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.setOscilloscopeUnderfillEnabled)
+  const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
+  const setVectorscopeMode = useVisualizerSettingsStore((state) => state.setVectorscopeMode)
 
   const closeAnalyzerEditMode = useUIStore((state) => state.closeAnalyzerEditMode)
   const setActiveView = useUIStore((state) => state.setActiveView)
@@ -329,6 +343,21 @@ export default function AnalyzerEditOverlay({
         >
           Fill {oscilloscopeUnderfillEnabled ? 'On' : 'Off'}
         </button>
+
+        <div className="analyzer-edit-mini-control">
+          <span className="analyzer-edit-corner-label">SCOPE</span>
+          <select
+            className="analyzer-edit-select analyzer-edit-select-compact"
+            value={vectorscopeMode}
+            onChange={(event) => setVectorscopeMode(event.target.value as VectorscopeMode)}
+          >
+            <option value="lissajous">Lissajous</option>
+            <option value="polar-unipolar">Polar (Uni)</option>
+            <option value="polar-bipolar">Polar (Bi)</option>
+            <option value="linear-unipolar">Linear (Uni)</option>
+            <option value="linear-bipolar">Linear (Bi)</option>
+          </select>
+        </div>
       </div>
 
       {hiddenScopes.length === 0 ? (
@@ -353,7 +382,7 @@ export default function AnalyzerEditOverlay({
               <ScopeGhost scope={scope} />
             </div>
             <div className="analyzer-edit-stash-meta">
-              {scopeStateLabel(scope, fftSize, pitchLock, oscilloscopeUnderfillEnabled)}
+              {scopeStateLabel(scope, fftSize, pitchLock, oscilloscopeUnderfillEnabled, vectorscopeMode)}
             </div>
           </div>
         ))

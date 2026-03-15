@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type
 import { audioEngine } from '../../audio/AudioEngine'
 import { Oscilloscope, SpectrumAnalyzer, Vectorscope } from '../../audio/visualizers'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
-import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 
@@ -223,9 +223,11 @@ function DockedOscilloscopeTile({
 
 function DockedVectorscopeTile({
   lineColor,
+  vectorscopeMode,
   isRunning
 }: {
   lineColor: string
+  vectorscopeMode: VectorscopeMode
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -244,7 +246,8 @@ function DockedVectorscopeTile({
       visualizerRef.current = new Vectorscope(canvasRef.current, {
         lineColor,
         lineWidth: 1,
-        showGrid: true
+        showGrid: true,
+        mode: vectorscopeMode,
       })
     }
 
@@ -259,8 +262,8 @@ function DockedVectorscopeTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor })
-  }, [lineColor])
+    visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode })
+  }, [lineColor, vectorscopeMode])
 
   useEffect(() => {
     if (isRunning) {
@@ -290,6 +293,16 @@ function DockedVectorscopeTile({
       <canvas ref={canvasRef} className="visualizer-canvas" />
     </div>
   )
+}
+
+function vectorscopeModeLabelShort(mode: VectorscopeMode): string {
+  switch (mode) {
+    case 'lissajous': return 'LISSAJOUS'
+    case 'polar-unipolar': return 'POLAR UNI'
+    case 'polar-bipolar': return 'POLAR BI'
+    case 'linear-unipolar': return 'LINEAR UNI'
+    case 'linear-bipolar': return 'LINEAR BI'
+  }
 }
 
 function scopeLabel(scope: ScopeKind): string {
@@ -341,6 +354,7 @@ export default function VisualizerPanel({
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
+  const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const scopeOrder = useVisualizerSettingsStore((s) => s.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((s) => s.hiddenScopes)
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
@@ -603,7 +617,7 @@ export default function VisualizerPanel({
         case 'oscilloscope':
           return pitchLock ? 'PITCH-LOCK' : 'FREE-RUN'
         case 'vectorscope':
-          return isRunning ? 'LIVE' : 'PAUSED'
+          return isRunning ? vectorscopeModeLabelShort(vectorscopeMode) : 'PAUSED'
       }
     })()
 
@@ -667,6 +681,7 @@ export default function VisualizerPanel({
         ) : (
           <DockedVectorscopeTile
             lineColor={lineColor}
+            vectorscopeMode={vectorscopeMode}
             isRunning={isRunning}
           />
         )}

@@ -11,6 +11,8 @@ import {
   isScopeKind,
   type ScopeKind,
 } from '../../../types/scopePopout'
+import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import '../../styles/scope-popout.css'
 
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
@@ -459,32 +461,6 @@ function OscilloscopeScopeCanvas() {
   )
 }
 
-function drawVectorscopeGrid(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  const centerX = width / 2
-  const centerY = height / 2
-  const radius = Math.min(centerX, centerY) * 0.9
-
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
-  ctx.lineWidth = 1
-
-  const rings = [0.25, 0.5, 0.75, 1]
-  for (const scale of rings) {
-    ctx.beginPath()
-    ctx.arc(centerX, centerY, radius * scale, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-
-  ctx.beginPath()
-  ctx.moveTo(centerX, centerY - radius)
-  ctx.lineTo(centerX, centerY + radius)
-  ctx.stroke()
-
-  ctx.beginPath()
-  ctx.moveTo(centerX - radius, centerY)
-  ctx.lineTo(centerX + radius, centerY)
-  ctx.stroke()
-}
-
 function VectorscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -494,6 +470,7 @@ function VectorscopeScopeCanvas() {
   const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef('#38bdf8')
+  const vectorscopeModeRef = useRef<VectorscopeMode>('lissajous')
   const configuredSampleRateRef = useRef(0)
 
   useEffect(() => {
@@ -501,6 +478,10 @@ function VectorscopeScopeCanvas() {
       if (chunk.scope !== 'vectorscope') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       lineColorRef.current = chunk.lineColor
+
+      if ('vectorscopeMode' in chunk && isVectorscopeMode(chunk.vectorscopeMode)) {
+        vectorscopeModeRef.current = chunk.vectorscopeMode
+      }
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -526,12 +507,18 @@ function VectorscopeScopeCanvas() {
 
     const draw = () => {
       const { width, height } = canvasSizeRef.current
-      const centerX = width / 2
-      const centerY = height / 2
-      const scale = Math.min(centerX, centerY) * 0.9 * 2.5
 
       ctx.clearRect(0, 0, width, height)
-      drawVectorscopeGrid(ctx, width, height)
+
+      const mode = vectorscopeModeRef.current
+      const isPolar = mode === 'polar-unipolar' || mode === 'polar-bipolar'
+      const visualGain = isPolar ? 1.2 : 1.5
+      const layout = getVectorscopeLayout(width, height, mode)
+      const centerX = layout.centerX
+      const centerY = layout.centerY
+      const scale = layout.radius * visualGain
+
+      drawVectorscopeGridForMode(ctx, width, height, 'rgba(255, 255, 255, 0.08)', mode)
 
       const lineColor = lineColorRef.current
 
@@ -562,8 +549,12 @@ function VectorscopeScopeCanvas() {
             ctx.globalAlpha = 0.16 + 0.84 * (segment / Math.max(1, segments - 1))
 
             for (let i = start; i < end; i++) {
-              const px = centerX + points.x[i] * scale
-              const py = centerY - points.y[i] * scale
+              // Native returns x=Right, y=Left
+              const point = transformPoint(points.y[i], points.x[i], mode)
+              if (!point) continue
+
+              const px = centerX + point.dx * scale
+              const py = centerY - point.dy * scale
               ctx.fillRect(px - 1, py - 1, 2, 2)
             }
           }
@@ -577,8 +568,11 @@ function VectorscopeScopeCanvas() {
 
         for (const chunk of pendingChunks) {
           for (let i = 0; i < chunk.left.length; i++) {
-            const px = centerX + chunk.right[i] * scale
-            const py = centerY - chunk.left[i] * scale
+            const point = transformPoint(chunk.left[i], chunk.right[i], mode)
+            if (!point) continue
+
+            const px = centerX + point.dx * scale
+            const py = centerY - point.dy * scale
             ctx.fillRect(px - 1, py - 1, 2, 2)
           }
         }

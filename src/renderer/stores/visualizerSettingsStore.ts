@@ -4,7 +4,15 @@ import { SCOPE_KINDS, isScopeKind } from '../../types/scopePopout'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 export type OscilloscopeMode = 'classic' | 'locked'
-export type VectorscopeMode = 'stereo' | 'rotated'
+export type VectorscopeMode = 'lissajous' | 'polar-unipolar' | 'polar-bipolar' | 'linear-unipolar' | 'linear-bipolar'
+
+const VECTORSCOPE_MODES: readonly VectorscopeMode[] = [
+  'lissajous', 'polar-unipolar', 'polar-bipolar', 'linear-unipolar', 'linear-bipolar'
+]
+
+export function isVectorscopeMode(value: unknown): value is VectorscopeMode {
+  return typeof value === 'string' && VECTORSCOPE_MODES.includes(value as VectorscopeMode)
+}
 
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
@@ -66,6 +74,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setFftSize: (size: FFTSize) => void
   setPitchLock: (enabled: boolean) => void
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
+  setVectorscopeMode: (mode: VectorscopeMode) => void
   resetToDefaults: () => void
 }
 
@@ -92,7 +101,7 @@ const DEFAULT_FFT_SIZE: FFTSize = 4096
 const DEFAULT_PITCH_LOCK = true
 const DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED = false
 const DEFAULT_OSCILLOSCOPE_MODE: OscilloscopeMode = 'classic'
-const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'stereo'
+const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'lissajous'
 const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope']
 const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrum: 1,
@@ -284,7 +293,7 @@ function normalizeScopeSettings(
       mode: oscilloscopeModeValue === 'locked' ? 'locked' : DEFAULT_OSCILLOSCOPE_MODE,
     },
     vectorscope: {
-      mode: vectorscopeModeValue === 'rotated' ? 'rotated' : DEFAULT_VECTORSCOPE_MODE,
+      mode: isVectorscopeMode(vectorscopeModeValue) ? vectorscopeModeValue : DEFAULT_VECTORSCOPE_MODE,
     },
   }
 }
@@ -768,6 +777,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         oscilloscope: {
           ...state.workingState.scopeSettings.oscilloscope,
           underfillEnabled: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setVectorscopeMode: (mode) => {
+    if (!isVectorscopeMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        vectorscope: {
+          ...state.workingState.scopeSettings.vectorscope,
+          mode,
         },
       },
     })
