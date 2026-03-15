@@ -70,6 +70,7 @@ interface UIStore {
   showPipelineShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
+  isAnalyzerEditMode: boolean
   isFullscreen: boolean
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
@@ -84,6 +85,9 @@ interface UIStore {
   toggleLyricsShelf: () => void
   setLyricsShelfExpanded: (expanded: boolean) => void
   closeLyricsShelf: () => void
+  openAnalyzerEditMode: () => void
+  closeAnalyzerEditMode: () => void
+  toggleAnalyzerEditMode: () => void
   setFullscreen: (fs: boolean) => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
@@ -108,6 +112,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showPipelineShelf: false,
   showLyricsShelf: false,
   lyricsShelfExpanded: false,
+  isAnalyzerEditMode: false,
   isFullscreen: false,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
@@ -140,6 +145,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
     showLyricsShelf: false,
     lyricsShelfExpanded: false
   }),
+  openAnalyzerEditMode: () => set({ isAnalyzerEditMode: true }),
+  closeAnalyzerEditMode: () => set({ isAnalyzerEditMode: false }),
+  toggleAnalyzerEditMode: () => set((s) => ({ isAnalyzerEditMode: !s.isAnalyzerEditMode })),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'

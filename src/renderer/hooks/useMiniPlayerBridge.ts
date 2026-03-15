@@ -169,6 +169,17 @@ export function useMiniPlayerBridge(): void {
   }, [])
 
   useEffect(() => {
+    audioEngine.setVisualizerConsumerDemand('mini-player-bridge', {
+      miniSpectrum: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
+      miniOscilloscope: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
+    })
+
+    return () => {
+      audioEngine.clearVisualizerConsumerDemand('mini-player-bridge')
+    }
+  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode])
+
+  useEffect(() => {
     if (visualizerStreamTimerRef.current !== null) {
       window.clearInterval(visualizerStreamTimerRef.current)
       visualizerStreamTimerRef.current = null

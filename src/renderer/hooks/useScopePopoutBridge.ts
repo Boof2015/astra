@@ -61,6 +61,18 @@ export function useScopePopoutBridge(): void {
   }, [setScopePopoutState])
 
   useEffect(() => {
+    audioEngine.setVisualizerConsumerDemand('scope-popout-bridge', {
+      spectrum: isVisualizerRunning && scopePopoutState.spectrum,
+      oscilloscope: isVisualizerRunning && scopePopoutState.oscilloscope,
+      vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
+    })
+
+    return () => {
+      audioEngine.clearVisualizerConsumerDemand('scope-popout-bridge')
+    }
+  }, [isVisualizerRunning, scopePopoutState])
+
+  useEffect(() => {
     if (streamTimerRef.current !== null) {
       window.clearInterval(streamTimerRef.current)
       streamTimerRef.current = null

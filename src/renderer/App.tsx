@@ -72,6 +72,7 @@ function App() {
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
+  const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
 
   useEffect(() => {
@@ -137,7 +138,7 @@ function App() {
   }, [])
 
   return (
-    <div className="app">
+    <div className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}>
       <TitleBar />
       <AnalyzerDeck />
       <div className="app-body">

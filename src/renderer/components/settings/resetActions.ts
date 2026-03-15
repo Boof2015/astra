@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
+  ANALYZER_PROFILES_STORAGE_KEY,
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
   useVisualizerSettingsStore
 } from '../../stores/visualizerSettingsStore'
@@ -33,6 +34,7 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-discord-cover-art-cache-v2',
   'astra-discord-cover-art-cache-v3',
   'astra-discord-cover-art-cache-v4',
+  ANALYZER_PROFILES_STORAGE_KEY,
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   'astra-library-tracklist-bpm-key-visible-v1',
