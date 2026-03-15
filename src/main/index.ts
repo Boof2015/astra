@@ -108,6 +108,7 @@ const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   spectrum: null,
   oscilloscope: null,
   vectorscope: null,
+  spectrogram: null,
 }
 let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
@@ -368,6 +369,13 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
     minWidth: 300,
     minHeight: 300,
   },
+  spectrogram: {
+    title: 'Astra Spectrogram',
+    width: 760,
+    height: 320,
+    minWidth: 420,
+    minHeight: 220,
+  },
 }
 
 // Supported audio formats
@@ -535,6 +543,7 @@ function resolveScopePopoutPosition(scope: ScopeKind): Pick<Electron.BrowserWind
     spectrum: { x: 52, y: 56 },
     oscilloscope: { x: 88, y: 88 },
     vectorscope: { x: 120, y: 120 },
+    spectrogram: { x: 152, y: 152 },
   }
 
   const targetX = bounds.x + offsets[scope].x

@@ -1,3 +1,4 @@
 export { Oscilloscope, type OscilloscopeOptions } from './Oscilloscope'
 export { SpectrumAnalyzer, type SpectrumAnalyzerOptions } from './SpectrumAnalyzer'
+export { Spectrogram, type SpectrogramOptions } from './Spectrogram'
 export { Vectorscope, type VectorscopeOptions } from './Vectorscope'

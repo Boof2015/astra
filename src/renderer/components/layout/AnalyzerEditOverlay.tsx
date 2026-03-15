@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import {
+  MAX_SPECTROGRAM_SCROLL_SPEED,
+  MIN_SPECTROGRAM_SCROLL_SPEED,
+  SPECTROGRAM_SCROLL_SPEED_STEP,
+  type SpectrogramClarityMode,
+  type SpectrogramScaleMode,
+} from '../../../types/spectrogram'
+import {
   useVisualizerSettingsStore,
   type AnalyzerProfile,
   type FFTSize,
@@ -29,6 +36,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Oscilloscope'
     case 'vectorscope':
       return 'Vectorscope'
+    case 'spectrogram':
+      return 'Spectrogram'
   }
 }
 
@@ -42,22 +51,44 @@ function vectorscopeModeLabel(mode: VectorscopeMode): string {
   }
 }
 
+function spectrogramClarityLabel(mode: SpectrogramClarityMode): string {
+  switch (mode) {
+    case 'classic': return 'Classic'
+    case 'sharp': return 'Sharp'
+    case 'sharper': return 'Sharper'
+  }
+}
+
+function spectrogramScaleLabel(mode: SpectrogramScaleMode): string {
+  switch (mode) {
+    case 'mel': return 'Mel'
+    case 'log': return 'Log'
+    case 'linear': return 'Linear'
+  }
+}
+
 function scopeStateLabel(
   scope: ScopeKind,
-  fftSize: FFTSize,
+  spectrumFftSize: FFTSize,
+  spectrogramFftSize: FFTSize,
+  spectrogramScrollSpeed: number,
+  spectrogramClarityMode: SpectrogramClarityMode,
+  spectrogramScaleMode: SpectrogramScaleMode,
   pitchLock: boolean,
   underfillEnabled: boolean,
   vectorscopeMode: VectorscopeMode
 ): string {
   switch (scope) {
     case 'spectrum':
-      return `FFT ${fftSize}`
+      return `FFT ${spectrumFftSize}`
     case 'oscilloscope':
       return pitchLock
         ? underfillEnabled ? 'Pitch-lock + underfill' : 'Pitch-lock'
         : underfillEnabled ? 'Free-run + underfill' : 'Free-run'
     case 'vectorscope':
       return vectorscopeModeLabel(vectorscopeMode)
+    case 'spectrogram':
+      return `${spectrogramScaleLabel(spectrogramScaleMode)} · ${spectrogramClarityLabel(spectrogramClarityMode)} x${spectrogramScrollSpeed.toFixed(1)} · FFT ${spectrogramFftSize}`
   }
 }
 
@@ -84,6 +115,12 @@ function stashStyle(scope: ScopeKind): CSSProperties {
         bottom: '16%',
         left: '16%',
         transform: 'rotate(-2deg)',
+      }
+    case 'spectrogram':
+      return {
+        bottom: '14%',
+        right: '10%',
+        transform: 'rotate(2deg)',
       }
   }
 }
@@ -113,6 +150,22 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <path d="M54 58 L90 22" />
         </svg>
       )
+    case 'spectrogram':
+      return (
+        <svg viewBox="0 0 144 80" aria-hidden="true">
+          <rect x="10" y="10" width="124" height="60" rx="2" className="muted" />
+          <rect x="14" y="50" width="8" height="16" opacity="0.3" />
+          <rect x="26" y="40" width="8" height="26" opacity="0.4" />
+          <rect x="38" y="30" width="8" height="36" opacity="0.5" />
+          <rect x="50" y="20" width="8" height="46" opacity="0.6" />
+          <rect x="62" y="35" width="8" height="31" opacity="0.7" />
+          <rect x="74" y="25" width="8" height="41" opacity="0.8" />
+          <rect x="86" y="15" width="8" height="51" opacity="0.9" />
+          <rect x="98" y="30" width="8" height="36" opacity="0.7" />
+          <rect x="110" y="40" width="8" height="26" opacity="0.5" />
+          <rect x="122" y="45" width="8" height="21" opacity="0.4" />
+        </svg>
+      )
   }
 }
 
@@ -132,12 +185,20 @@ export default function AnalyzerEditOverlay({
   const activeProfileBuiltIn = useVisualizerSettingsStore((state) => state.activeProfileBuiltIn)
   const activeProfileCanDelete = useVisualizerSettingsStore((state) => state.activeProfileCanDelete)
   const fftSize = useVisualizerSettingsStore((state) => state.fftSize)
+  const spectrogramFftSize = useVisualizerSettingsStore((state) => state.spectrogramFftSize)
+  const spectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.spectrogramScrollSpeed)
+  const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
+  const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
   const setActiveProfile = useVisualizerSettingsStore((state) => state.setActiveProfile)
   const saveCurrentProfile = useVisualizerSettingsStore((state) => state.saveCurrentProfile)
   const deleteProfile = useVisualizerSettingsStore((state) => state.deleteProfile)
   const setFftSize = useVisualizerSettingsStore((state) => state.setFftSize)
+  const setSpectrogramFftSize = useVisualizerSettingsStore((state) => state.setSpectrogramFftSize)
+  const setSpectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.setSpectrogramScrollSpeed)
+  const setSpectrogramClarityMode = useVisualizerSettingsStore((state) => state.setSpectrogramClarityMode)
+  const setSpectrogramScaleMode = useVisualizerSettingsStore((state) => state.setSpectrogramScaleMode)
   const setPitchLock = useVisualizerSettingsStore((state) => state.setPitchLock)
   const setOscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.setOscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
@@ -316,7 +377,7 @@ export default function AnalyzerEditOverlay({
 
       <div className="analyzer-edit-corner analyzer-edit-corner-bottom-right">
         <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">FFT</span>
+          <span className="analyzer-edit-corner-label">SPEC</span>
           <select
             className="analyzer-edit-select analyzer-edit-select-compact"
             value={fftSize}
@@ -327,6 +388,60 @@ export default function AnalyzerEditOverlay({
                 {value}
               </option>
             ))}
+          </select>
+        </div>
+
+        <div className="analyzer-edit-mini-control">
+          <span className="analyzer-edit-corner-label">GRAM</span>
+          <select
+            className="analyzer-edit-select analyzer-edit-select-compact"
+            value={spectrogramFftSize}
+            onChange={(event) => setSpectrogramFftSize(Number(event.target.value) as FFTSize)}
+          >
+            {FFT_OPTIONS.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range">
+          <span className="analyzer-edit-corner-label">GRAM SPD x{spectrogramScrollSpeed.toFixed(1)}</span>
+          <input
+            type="range"
+            className="analyzer-edit-range"
+            min={MIN_SPECTROGRAM_SCROLL_SPEED}
+            max={MAX_SPECTROGRAM_SCROLL_SPEED}
+            step={SPECTROGRAM_SCROLL_SPEED_STEP}
+            value={spectrogramScrollSpeed}
+            onChange={(event) => setSpectrogramScrollSpeed(Number(event.target.value))}
+          />
+        </div>
+
+        <div className="analyzer-edit-mini-control">
+          <span className="analyzer-edit-corner-label">GRAM SCALE</span>
+          <select
+            className="analyzer-edit-select analyzer-edit-select-compact"
+            value={spectrogramScaleMode}
+            onChange={(event) => setSpectrogramScaleMode(event.target.value as SpectrogramScaleMode)}
+          >
+            <option value="mel">Mel</option>
+            <option value="log">Log</option>
+            <option value="linear">Linear</option>
+          </select>
+        </div>
+
+        <div className="analyzer-edit-mini-control">
+          <span className="analyzer-edit-corner-label">GRAM MODE</span>
+          <select
+            className="analyzer-edit-select analyzer-edit-select-compact"
+            value={spectrogramClarityMode}
+            onChange={(event) => setSpectrogramClarityMode(event.target.value as SpectrogramClarityMode)}
+          >
+            <option value="classic">Classic</option>
+            <option value="sharp">Sharp</option>
+            <option value="sharper">Sharper</option>
           </select>
         </div>
 
@@ -392,7 +507,17 @@ export default function AnalyzerEditOverlay({
               <ScopeGhost scope={scope} />
             </div>
             <div className="analyzer-edit-stash-meta">
-              {scopeStateLabel(scope, fftSize, pitchLock, oscilloscopeUnderfillEnabled, vectorscopeMode)}
+              {scopeStateLabel(
+                scope,
+                fftSize,
+                spectrogramFftSize,
+                spectrogramScrollSpeed,
+                spectrogramClarityMode,
+                spectrogramScaleMode,
+                pitchLock,
+                oscilloscopeUnderfillEnabled,
+                vectorscopeMode
+              )}
             </div>
           </div>
         ))

@@ -13,6 +13,7 @@ const EMPTY_RESET_STATE: ResetState = {
   spectrum: false,
   oscilloscope: false,
   vectorscope: false,
+  spectrogram: false,
 }
 
 function flushScopeQueue(scope: ScopeKind): void {
@@ -26,6 +27,9 @@ function flushScopeQueue(scope: ScopeKind): void {
     case 'vectorscope':
       audioEngine.flushPendingVectorscopeSamples()
       break
+    case 'spectrogram':
+      audioEngine.flushPendingSpectrogramSamples()
+      break
   }
 }
 
@@ -33,6 +37,10 @@ export function useScopePopoutBridge(): void {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
+  const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
+  const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
+  const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
+  const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
@@ -67,6 +75,7 @@ export function useScopePopoutBridge(): void {
       spectrum: isVisualizerRunning && scopePopoutState.spectrum,
       oscilloscope: isVisualizerRunning && scopePopoutState.oscilloscope,
       vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
+      spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
     })
 
     return () => {
@@ -124,6 +133,20 @@ export function useScopePopoutBridge(): void {
             stereoChunks: [],
             vectorscopeMode,
             vectorscopeMultiband,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'spectrogram':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'spectrogram',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            monoChunks: [],
+            fftSize: spectrogramFftSize,
+            spectrogramScrollSpeed,
+            spectrogramClarityMode,
+            spectrogramScaleMode,
             lineColor,
             reset: true,
           })
@@ -192,6 +215,24 @@ export function useScopePopoutBridge(): void {
             resetSentRef.current[scope] = false
             break
           }
+          case 'spectrogram': {
+            const monoChunks = audioEngine.flushPendingSpectrogramSamples()
+            if (monoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'spectrogram',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              monoChunks,
+              fftSize: spectrogramFftSize,
+              spectrogramScrollSpeed,
+              spectrogramClarityMode,
+              spectrogramScaleMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
         }
       }
     }, STREAM_INTERVAL_MS)
@@ -208,6 +249,10 @@ export function useScopePopoutBridge(): void {
     isVisualizerRunning,
     lineColor,
     fftSize,
+    spectrogramFftSize,
+    spectrogramScrollSpeed,
+    spectrogramClarityMode,
+    spectrogramScaleMode,
     pitchLock,
     oscilloscopeUnderfillEnabled,
     vectorscopeMode,

@@ -5,12 +5,20 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
-import { SpectrumAnalyzer } from '../../audio/visualizers'
+import { SpectrumAnalyzer, Spectrogram } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
   type ScopeKind,
 } from '../../../types/scopePopout'
+import {
+  DEFAULT_SPECTROGRAM_CLARITY_MODE,
+  DEFAULT_SPECTROGRAM_SCALE_MODE,
+  DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  clampSpectrogramScrollSpeed,
+  isSpectrogramClarityMode,
+  isSpectrogramScaleMode,
+} from '../../../types/spectrogram'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
@@ -89,6 +97,8 @@ function getScopeLabel(scope: ScopeKind): string {
       return 'Oscilloscope'
     case 'vectorscope':
       return 'Vectorscope'
+    case 'spectrogram':
+      return 'Spectrogram'
   }
 }
 
@@ -663,6 +673,121 @@ function VectorscopeScopeCanvas() {
   )
 }
 
+function SpectrogramScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<Spectrogram | null>(null)
+
+  const pendingChunksRef = useRef<Float32Array[]>([])
+  const sampleRateRef = useRef(48000)
+  const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const scrollSpeedRef = useRef(DEFAULT_SPECTROGRAM_SCROLL_SPEED)
+  const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
+  const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'spectrogram') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      const nextFftSize = Math.max(1024, chunk.fftSize)
+      const nextLineColor = chunk.lineColor
+      const nextScrollSpeed = clampSpectrogramScrollSpeed(chunk.spectrogramScrollSpeed)
+      const nextClarityMode = isSpectrogramClarityMode(chunk.spectrogramClarityMode)
+        ? chunk.spectrogramClarityMode
+        : DEFAULT_SPECTROGRAM_CLARITY_MODE
+      const nextScaleMode = isSpectrogramScaleMode(chunk.spectrogramScaleMode)
+        ? chunk.spectrogramScaleMode
+        : DEFAULT_SPECTROGRAM_SCALE_MODE
+
+      fftSizeRef.current = nextFftSize
+      lineColorRef.current = nextLineColor
+      scrollSpeedRef.current = nextScrollSpeed
+      clarityModeRef.current = nextClarityMode
+      scaleModeRef.current = nextScaleMode
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.monoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.monoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        fftSize: nextFftSize,
+        lineColor: nextLineColor,
+        scrollSpeed: nextScrollSpeed,
+        clarityMode: nextClarityMode,
+        scaleMode: nextScaleMode,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new Spectrogram(canvasRef.current, {
+        fftSize: fftSizeRef.current,
+        lineColor: lineColorRef.current,
+        scrollSpeed: scrollSpeedRef.current,
+        clarityMode: clarityModeRef.current,
+        scaleMode: scaleModeRef.current,
+        colorScheme: 'heat',
+        dataSource: {
+          getPendingSpectrogramSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
 function ScopeCanvas({ scope }: { scope: ScopeKind }) {
   switch (scope) {
     case 'spectrum':
@@ -671,6 +796,8 @@ function ScopeCanvas({ scope }: { scope: ScopeKind }) {
       return <OscilloscopeScopeCanvas />
     case 'vectorscope':
       return <VectorscopeScopeCanvas />
+    case 'spectrogram':
+      return <SpectrogramScopeCanvas />
   }
 }
 

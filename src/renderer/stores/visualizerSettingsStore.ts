@@ -1,6 +1,16 @@
 import { create } from 'zustand'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS, isScopeKind } from '../../types/scopePopout'
+import {
+  DEFAULT_SPECTROGRAM_CLARITY_MODE,
+  DEFAULT_SPECTROGRAM_SCALE_MODE,
+  DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  clampSpectrogramScrollSpeed,
+  isSpectrogramClarityMode,
+  isSpectrogramScaleMode,
+  type SpectrogramClarityMode,
+  type SpectrogramScaleMode,
+} from '../../types/spectrogram'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 export type OscilloscopeMode = 'classic' | 'locked'
@@ -25,6 +35,12 @@ export interface AnalyzerProfileScopeSettings {
   }
   vectorscope: {
     mode: VectorscopeMode
+  }
+  spectrogram: {
+    fftSize: FFTSize
+    scrollSpeed: number
+    clarityMode: SpectrogramClarityMode
+    scaleMode: SpectrogramScaleMode
   }
 }
 
@@ -55,6 +71,10 @@ interface VisualizerSettingsSnapshot {
   hiddenScopes: ScopeKind[]
   widthWeights: Record<ScopeKind, number>
   fftSize: FFTSize
+  spectrogramFftSize: FFTSize
+  spectrogramScrollSpeed: number
+  spectrogramClarityMode: SpectrogramClarityMode
+  spectrogramScaleMode: SpectrogramScaleMode
   pitchLock: boolean
   oscilloscopeUnderfillEnabled: boolean
   oscilloscopeMode: OscilloscopeMode
@@ -73,6 +93,10 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setScopeWidthWeight: (scope: ScopeKind, weight: number) => void
   setScopeWidthWeights: (weights: Partial<Record<ScopeKind, number>>) => void
   setFftSize: (size: FFTSize) => void
+  setSpectrogramFftSize: (size: FFTSize) => void
+  setSpectrogramScrollSpeed: (speed: number) => void
+  setSpectrogramClarityMode: (mode: SpectrogramClarityMode) => void
+  setSpectrogramScaleMode: (mode: SpectrogramScaleMode) => void
   setPitchLock: (enabled: boolean) => void
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
   setVectorscopeMode: (mode: VectorscopeMode) => void
@@ -105,11 +129,12 @@ const DEFAULT_PITCH_LOCK = true
 const DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED = false
 const DEFAULT_OSCILLOSCOPE_MODE: OscilloscopeMode = 'classic'
 const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'lissajous'
-const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope']
+const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram']
 const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrum: 1,
   oscilloscope: 1.4,
   vectorscope: 0,
+  spectrogram: 0,
 }
 
 const MIN_WEIGHT = 0.4
@@ -124,6 +149,7 @@ function cloneScopeSettings(settings: AnalyzerProfileScopeSettings): AnalyzerPro
     spectrum: { ...settings.spectrum },
     oscilloscope: { ...settings.oscilloscope },
     vectorscope: { ...settings.vectorscope },
+    spectrogram: { ...settings.spectrogram },
   }
 }
 
@@ -152,7 +178,7 @@ function buildProfile(id: string, name: string, builtIn: boolean, state: Analyze
 
 const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   order: [...DEFAULT_SCOPE_ORDER],
-  hiddenScopes: [],
+  hiddenScopes: ['spectrogram'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
     spectrum: { fftSize: DEFAULT_FFT_SIZE },
@@ -162,6 +188,12 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       mode: DEFAULT_OSCILLOSCOPE_MODE,
     },
     vectorscope: { mode: DEFAULT_VECTORSCOPE_MODE },
+    spectrogram: {
+      fftSize: 2048,
+      scrollSpeed: DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+      clarityMode: DEFAULT_SPECTROGRAM_CLARITY_MODE,
+      scaleMode: DEFAULT_SPECTROGRAM_SCALE_MODE,
+    },
   },
 }
 
@@ -222,7 +254,7 @@ function clampWidthWeight(scope: ScopeKind, value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_WIDTH_WEIGHTS[scope]
 
-  if (scope === 'vectorscope' && numeric <= 0) {
+  if ((scope === 'vectorscope' || scope === 'spectrogram') && numeric <= 0) {
     return 0
   }
 
@@ -282,6 +314,10 @@ function normalizeScopeSettings(
     ? raw.vectorscope as Record<string, unknown>
     : {}
 
+  const rawSpectrogram = raw.spectrogram && typeof raw.spectrogram === 'object' && !Array.isArray(raw.spectrogram)
+    ? raw.spectrogram as Record<string, unknown>
+    : {}
+
   const fallbackUnderfill = raw.oscilloscopeUnderfillEnabled
   const underfillEnabled = typeof rawOscilloscope.underfillEnabled === 'boolean'
     ? rawOscilloscope.underfillEnabled
@@ -314,6 +350,16 @@ function normalizeScopeSettings(
     vectorscope: {
       mode: isVectorscopeMode(vectorscopeModeValue) ? vectorscopeModeValue : DEFAULT_VECTORSCOPE_MODE,
     },
+    spectrogram: {
+      fftSize: isFFTSize(rawSpectrogram.fftSize) ? rawSpectrogram.fftSize : DEFAULT_FFT_SIZE,
+      scrollSpeed: clampSpectrogramScrollSpeed(rawSpectrogram.scrollSpeed),
+      clarityMode: isSpectrogramClarityMode(rawSpectrogram.clarityMode)
+        ? rawSpectrogram.clarityMode
+        : DEFAULT_SPECTROGRAM_CLARITY_MODE,
+      scaleMode: isSpectrogramScaleMode(rawSpectrogram.scaleMode)
+        ? rawSpectrogram.scaleMode
+        : DEFAULT_SPECTROGRAM_SCALE_MODE,
+    },
   }
 }
 
@@ -327,16 +373,26 @@ function normalizeWorkingState(
 
   const order = normalizeOrder(raw.order ?? raw.scopeOrder)
   const hiddenScopes = normalizeHiddenScopes(raw.hiddenScopes, order)
+  const rawWeights = raw.widthWeights && typeof raw.widthWeights === 'object'
+    ? raw.widthWeights as Record<string, unknown>
+    : {}
   const widthWeights = {
-    spectrum: clampWidthWeight('spectrum', raw.widthWeights && typeof raw.widthWeights === 'object'
-      ? (raw.widthWeights as Record<string, unknown>).spectrum
-      : undefined),
-    oscilloscope: clampWidthWeight('oscilloscope', raw.widthWeights && typeof raw.widthWeights === 'object'
-      ? (raw.widthWeights as Record<string, unknown>).oscilloscope
-      : undefined),
-    vectorscope: clampWidthWeight('vectorscope', raw.widthWeights && typeof raw.widthWeights === 'object'
-      ? (raw.widthWeights as Record<string, unknown>).vectorscope
-      : undefined),
+    spectrum: clampWidthWeight('spectrum', rawWeights.spectrum),
+    oscilloscope: clampWidthWeight('oscilloscope', rawWeights.oscilloscope),
+    vectorscope: clampWidthWeight('vectorscope', rawWeights.vectorscope),
+    spectrogram: clampWidthWeight('spectrogram', rawWeights.spectrogram),
+  }
+
+  // Auto-hide scopes that default to weight 0 and weren't explicitly saved
+  // in the profile (i.e., the profile predates this scope being added).
+  for (const scope of SCOPE_KINDS) {
+    if (
+      DEFAULT_WIDTH_WEIGHTS[scope] === 0 &&
+      !(scope in rawWeights) &&
+      !hiddenScopes.includes(scope)
+    ) {
+      hiddenScopes.push(scope)
+    }
   }
 
   return {
@@ -441,6 +497,10 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.oscilloscope.underfillEnabled === right.scopeSettings.oscilloscope.underfillEnabled
     && left.scopeSettings.oscilloscope.mode === right.scopeSettings.oscilloscope.mode
     && left.scopeSettings.vectorscope.mode === right.scopeSettings.vectorscope.mode
+    && left.scopeSettings.spectrogram.fftSize === right.scopeSettings.spectrogram.fftSize
+    && left.scopeSettings.spectrogram.scrollSpeed === right.scopeSettings.spectrogram.scrollSpeed
+    && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
+    && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
   )
 }
 
@@ -523,6 +583,10 @@ function buildSnapshot(
     hiddenScopes: [...workingState.hiddenScopes],
     widthWeights: { ...workingState.widthWeights },
     fftSize: workingState.scopeSettings.spectrum.fftSize,
+    spectrogramFftSize: workingState.scopeSettings.spectrogram.fftSize,
+    spectrogramScrollSpeed: workingState.scopeSettings.spectrogram.scrollSpeed,
+    spectrogramClarityMode: workingState.scopeSettings.spectrogram.clarityMode,
+    spectrogramScaleMode: workingState.scopeSettings.spectrogram.scaleMode,
     pitchLock: workingState.scopeSettings.oscilloscope.pitchLock,
     oscilloscopeUnderfillEnabled: workingState.scopeSettings.oscilloscope.underfillEnabled,
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
@@ -772,6 +836,80 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrum: {
           ...state.workingState.scopeSettings.spectrum,
           fftSize: size,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramFftSize: (size) => {
+    if (!isFFTSize(size)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          fftSize: size,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramScrollSpeed: (speed) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          scrollSpeed: clampSpectrogramScrollSpeed(speed),
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramClarityMode: (mode) => {
+    if (!isSpectrogramClarityMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          clarityMode: mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramScaleMode: (mode) => {
+    if (!isSpectrogramScaleMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          scaleMode: mode,
         },
       },
     })

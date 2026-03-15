@@ -78,6 +78,7 @@ export interface VisualizerConsumerDemand {
   spectrum?: boolean
   oscilloscope?: boolean
   vectorscope?: boolean
+  spectrogram?: boolean
   miniSpectrum?: boolean
   miniOscilloscope?: boolean
 }
@@ -191,6 +192,7 @@ export class AudioEngine {
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
+  private pendingSpectrogramSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
@@ -354,6 +356,7 @@ export class AudioEngine {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingMiniVisualizerChunks = []
     this.resetBitPerfectVisualizerGain()
@@ -366,6 +369,7 @@ export class AudioEngine {
       spectrum: Boolean(demand.spectrum),
       oscilloscope: Boolean(demand.oscilloscope),
       vectorscope: Boolean(demand.vectorscope),
+      spectrogram: Boolean(demand.spectrogram),
       miniSpectrum: Boolean(demand.miniSpectrum),
       miniOscilloscope: Boolean(demand.miniOscilloscope),
     }
@@ -412,6 +416,9 @@ export class AudioEngine {
     if (!this.hasVisualizerDemand('spectrum')) {
       this.pendingSpectrumSamples = []
     }
+    if (!this.hasVisualizerDemand('spectrogram')) {
+      this.pendingSpectrogramSamples = []
+    }
     if (!this.hasVisualizerDemand('vectorscope')) {
       this.pendingVectorscopeSamples = []
     }
@@ -432,11 +439,12 @@ export class AudioEngine {
 
     const oscilloscopeDemand = this.hasVisualizerDemand('oscilloscope')
     const spectrumDemand = this.hasVisualizerDemand('spectrum')
+    const spectrogramDemand = this.hasVisualizerDemand('spectrogram')
     const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
     const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
     const miniOscilloscopeDemand = this.hasMiniVisualizerDemand('oscilloscope')
 
-    const shouldComputeMono = spectrumDemand || miniSpectrumDemand
+    const shouldComputeMono = spectrumDemand || spectrogramDemand || miniSpectrumDemand
     let mono: Float32Array | null = null
     if (shouldComputeMono) {
       mono = new Float32Array(Math.min(normalizedLeft.length, normalizedRight.length))
@@ -460,6 +468,15 @@ export class AudioEngine {
         )
       }
       this.pendingSpectrumSamples.push(mono)
+    }
+
+    if (spectrogramDemand && mono) {
+      if (this.pendingSpectrogramSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingSpectrogramSamples = this.pendingSpectrogramSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingSpectrogramSamples.push(mono)
     }
 
     if (miniSpectrumDemand || miniOscilloscopeDemand) {
@@ -2933,6 +2950,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending mono chunks for spectrogram processing.
+  flushPendingSpectrogramSamples(): Float32Array[] {
+    const samples = this.pendingSpectrogramSamples
+    this.pendingSpectrogramSamples = []
+    return samples
+  }
+
   // Flush all pending stereo chunks for vectorscope processing.
   flushPendingVectorscopeSamples(): { left: Float32Array; right: Float32Array }[] {
     const samples = this.pendingVectorscopeSamples
@@ -3559,6 +3583,7 @@ export class AudioEngine {
     this.latestMonoChannel = new Float32Array(0)
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()

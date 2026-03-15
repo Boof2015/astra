@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
-import { Oscilloscope, SpectrumAnalyzer, Vectorscope } from '../../audio/visualizers'
+import { Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope } from '../../audio/visualizers'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { ScopeKind } from '../../../types/scopePopout'
+import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
 
 interface VisualizerPanelProps {
   className?: string
@@ -30,6 +31,7 @@ interface ResizeSession {
 
 const MIN_SCOPE_WIDTH_PX = 112
 const MIN_VECTORSCOPE_WIDTH_PX = 96
+const DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT = 1
 const MIN_PREVIEW_WEIGHT = 0.4
 const MAX_PREVIEW_WEIGHT = 2.6
 
@@ -71,6 +73,7 @@ function DockedSpectrumTile({
   const handleResize = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return
     resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
   }, [])
 
   useEffect(() => {
@@ -162,6 +165,7 @@ function DockedOscilloscopeTile({
   const handleResize = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return
     resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
   }, [])
 
   useEffect(() => {
@@ -239,6 +243,7 @@ function DockedVectorscopeTile({
   const handleResize = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return
     resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
   }, [])
 
   useEffect(() => {
@@ -298,6 +303,88 @@ function DockedVectorscopeTile({
   )
 }
 
+function DockedSpectrogramTile({
+  lineColor,
+  fftSize,
+  scrollSpeed,
+  clarityMode,
+  scaleMode,
+  isRunning
+}: {
+  lineColor: string
+  fftSize: number
+  scrollSpeed: number
+  clarityMode: SpectrogramClarityMode
+  scaleMode: SpectrogramScaleMode
+  isRunning: boolean
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<Spectrogram | null>(null)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new Spectrogram(canvasRef.current, {
+        lineColor,
+        fftSize,
+        scrollSpeed,
+        clarityMode,
+        scaleMode,
+      })
+    }
+
+    if (isRunning) {
+      visualizerRef.current?.start()
+    }
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    visualizerRef.current?.setOptions({ lineColor, fftSize, scrollSpeed, clarityMode, scaleMode })
+  }, [clarityMode, lineColor, fftSize, scrollSpeed, scaleMode])
+
+  useEffect(() => {
+    if (isRunning) {
+      visualizerRef.current?.start()
+    } else {
+      visualizerRef.current?.stop()
+    }
+  }, [isRunning])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="visualizer-surface">
+      <canvas ref={canvasRef} className="visualizer-canvas" />
+    </div>
+  )
+}
+
 function vectorscopeModeLabelShort(mode: VectorscopeMode): string {
   switch (mode) {
     case 'lissajous': return 'LISSAJOUS'
@@ -305,6 +392,22 @@ function vectorscopeModeLabelShort(mode: VectorscopeMode): string {
     case 'polar-bipolar': return 'POLAR BI'
     case 'linear-unipolar': return 'LINEAR UNI'
     case 'linear-bipolar': return 'LINEAR BI'
+  }
+}
+
+function spectrogramClarityLabelShort(mode: SpectrogramClarityMode): string {
+  switch (mode) {
+    case 'classic': return 'CLASSIC'
+    case 'sharp': return 'SHARP'
+    case 'sharper': return 'SHARPER'
+  }
+}
+
+function spectrogramScaleLabelShort(mode: SpectrogramScaleMode): string {
+  switch (mode) {
+    case 'mel': return 'MEL'
+    case 'log': return 'LOG'
+    case 'linear': return 'LIN'
   }
 }
 
@@ -316,6 +419,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Oscilloscope'
     case 'vectorscope':
       return 'Vectorscope'
+    case 'spectrogram':
+      return 'Spectrogram'
   }
 }
 
@@ -354,6 +459,10 @@ export default function VisualizerPanel({
 }: VisualizerPanelProps) {
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
+  const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
+  const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
+  const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
+  const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
@@ -404,6 +513,9 @@ export default function VisualizerPanel({
           return 'minmax(96px, clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)))'
         }
         return `minmax(clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)), ${weight}fr)`
+      }
+      if (scope === 'spectrogram' && weight <= 0) {
+        return `minmax(0, ${DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT}fr)`
       }
       return `minmax(0, ${weight}fr)`
     }).join(' ')
@@ -486,6 +598,7 @@ export default function VisualizerPanel({
       spectrum: isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
       oscilloscope: isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
+      spectrogram: isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
     })
 
     return () => {
@@ -610,6 +723,8 @@ export default function VisualizerPanel({
           return 'visualizer-item visualizer-item-scope'
         case 'vectorscope':
           return 'visualizer-item visualizer-item-vector'
+        case 'spectrogram':
+          return 'visualizer-item visualizer-item-spectrogram'
       }
     })()
 
@@ -622,6 +737,8 @@ export default function VisualizerPanel({
           return pitchLock ? 'PITCH-LOCK' : 'FREE-RUN'
         case 'vectorscope':
           return isRunning ? vectorscopeModeLabelShort(vectorscopeMode) : 'PAUSED'
+        case 'spectrogram':
+          return `${spectrogramScaleLabelShort(spectrogramScaleMode)} ${spectrogramClarityLabelShort(spectrogramClarityMode)} X${spectrogramScrollSpeed.toFixed(1)}`
       }
     })()
 
@@ -680,6 +797,15 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             pitchLock={pitchLock}
             underfillEnabled={oscilloscopeUnderfillEnabled}
+            isRunning={isRunning}
+          />
+        ) : scope === 'spectrogram' ? (
+          <DockedSpectrogramTile
+            lineColor={lineColor}
+            fftSize={spectrogramFftSize}
+            scrollSpeed={spectrogramScrollSpeed}
+            clarityMode={spectrogramClarityMode}
+            scaleMode={spectrogramScaleMode}
             isRunning={isRunning}
           />
         ) : (
