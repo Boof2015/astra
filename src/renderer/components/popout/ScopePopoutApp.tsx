@@ -13,6 +13,7 @@ import {
 } from '../../../types/scopePopout'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
+import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
 import '../../styles/scope-popout.css'
 
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
@@ -471,7 +472,10 @@ function VectorscopeScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef('#38bdf8')
   const vectorscopeModeRef = useRef<VectorscopeMode>('lissajous')
+  const vectorscopeMultibandRef = useRef(false)
   const configuredSampleRateRef = useRef(0)
+  const splitterRef = useRef<MultibandSplitter>(new MultibandSplitter())
+  const multibandBufferRef = useRef<MultibandBuffer>(new MultibandBuffer())
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -482,12 +486,17 @@ function VectorscopeScopeCanvas() {
       if ('vectorscopeMode' in chunk && isVectorscopeMode(chunk.vectorscopeMode)) {
         vectorscopeModeRef.current = chunk.vectorscopeMode
       }
+      if ('vectorscopeMultiband' in chunk) {
+        vectorscopeMultibandRef.current = Boolean(chunk.vectorscopeMultiband)
+      }
 
       if (chunk.reset) {
         pendingChunksRef.current = []
         if (isNativeAvailable()) {
           nativeVectorscope.reset()
         }
+        splitterRef.current.reset()
+        multibandBufferRef.current.reset()
         return
       }
 
@@ -521,16 +530,68 @@ function VectorscopeScopeCanvas() {
       drawVectorscopeGridForMode(ctx, width, height, 'rgba(255, 255, 255, 0.08)', mode)
 
       const lineColor = lineColorRef.current
+      const multiband = vectorscopeMultibandRef.current
+      const sampleRate = sampleRateRef.current
 
-      if (isNativeAvailable()) {
-        const sampleRate = sampleRateRef.current
-        if (configuredSampleRateRef.current !== sampleRate) {
-          nativeVectorscope.setSampleRate(sampleRate)
-          configuredSampleRateRef.current = sampleRate
+      // Configure native sample rate
+      if (isNativeAvailable() && configuredSampleRateRef.current !== sampleRate) {
+        nativeVectorscope.setSampleRate(sampleRate)
+        configuredSampleRateRef.current = sampleRate
+      }
+
+      const pendingChunks = pendingChunksRef.current
+      pendingChunksRef.current = []
+
+      if (multiband) {
+        // Multiband path: split into 3 bands, buffer, draw all with age-based opacity
+        if (sampleRate > 0) {
+          splitterRef.current.configure(sampleRate)
         }
 
-        const pendingChunks = pendingChunksRef.current
-        pendingChunksRef.current = []
+        // Also push to native so switching back is seamless
+        if (isNativeAvailable()) {
+          for (const chunk of pendingChunks) {
+            nativeVectorscope.pushSamples(chunk.left, chunk.right)
+          }
+        }
+
+        // Split and accumulate into circular buffer
+        for (const chunk of pendingChunks) {
+          const bands = splitterRef.current.split(chunk.left, chunk.right)
+          multibandBufferRef.current.push(bands)
+        }
+
+        // Draw all buffered points with age-based opacity
+        const result = multibandBufferRef.current.getPoints(4096)
+        if (result.count > 0) {
+          const bandOrder = ['low', 'mid', 'high'] as const
+          const segments = 8
+          const pointsPerSegment = Math.ceil(result.count / segments)
+
+          for (let seg = 0; seg < segments; seg++) {
+            const start = seg * pointsPerSegment
+            const end = Math.min((seg + 1) * pointsPerSegment, result.count)
+            if (start >= result.count) break
+
+            ctx.globalAlpha = 0.16 + 0.84 * (seg / Math.max(1, segments - 1))
+
+            for (const band of bandOrder) {
+              const bandData = result.bands[band]
+              ctx.fillStyle = BAND_COLORS[band]
+
+              for (let i = start; i < end; i++) {
+                const point = transformPoint(bandData.left[i], bandData.right[i], mode)
+                if (!point) continue
+
+                const px = centerX + point.dx * scale
+                const py = centerY - point.dy * scale
+                ctx.fillRect(px - 1, py - 1, 2, 2)
+              }
+            }
+          }
+          ctx.globalAlpha = 1
+        }
+      } else if (isNativeAvailable()) {
         for (const chunk of pendingChunks) {
           nativeVectorscope.pushSamples(chunk.left, chunk.right)
         }
@@ -561,8 +622,6 @@ function VectorscopeScopeCanvas() {
           ctx.globalAlpha = 1
         }
       } else {
-        const pendingChunks = pendingChunksRef.current
-        pendingChunksRef.current = []
         ctx.fillStyle = lineColor
         ctx.globalAlpha = 0.85
 

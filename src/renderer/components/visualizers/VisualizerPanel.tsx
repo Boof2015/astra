@@ -224,10 +224,12 @@ function DockedOscilloscopeTile({
 function DockedVectorscopeTile({
   lineColor,
   vectorscopeMode,
+  vectorscopeMultiband,
   isRunning
 }: {
   lineColor: string
   vectorscopeMode: VectorscopeMode
+  vectorscopeMultiband: boolean
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -248,6 +250,7 @@ function DockedVectorscopeTile({
         lineWidth: 1,
         showGrid: true,
         mode: vectorscopeMode,
+        multiband: vectorscopeMultiband,
       })
     }
 
@@ -262,8 +265,8 @@ function DockedVectorscopeTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode })
-  }, [lineColor, vectorscopeMode])
+    visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode, multiband: vectorscopeMultiband })
+  }, [lineColor, vectorscopeMode, vectorscopeMultiband])
 
   useEffect(() => {
     if (isRunning) {
@@ -355,6 +358,7 @@ export default function VisualizerPanel({
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
+  const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const scopeOrder = useVisualizerSettingsStore((s) => s.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((s) => s.hiddenScopes)
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
@@ -682,6 +686,7 @@ export default function VisualizerPanel({
           <DockedVectorscopeTile
             lineColor={lineColor}
             vectorscopeMode={vectorscopeMode}
+            vectorscopeMultiband={vectorscopeMultiband}
             isRunning={isRunning}
           />
         )}

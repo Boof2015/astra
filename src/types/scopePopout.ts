@@ -46,6 +46,7 @@ export interface ScopePopoutVectorscopeChunk extends ScopePopoutChunkBase {
     right: Float32Array
   }>
   vectorscopeMode: string
+  vectorscopeMultiband: boolean
 }
 
 export type ScopePopoutChunk =

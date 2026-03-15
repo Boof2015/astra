@@ -68,15 +68,16 @@ export function transformPoint(
 
   const isPolar = mode === 'polar-unipolar' || mode === 'polar-bipolar'
   if (isPolar) {
-    // Sqrt amplitude scaling: makes points follow circular contours.
-    // Quiet signals get pushed outward, filling the circle more evenly.
+    // Amplitude-compressed radial scaling: pushes points toward circular contours.
+    // Power < 1 compresses dynamic range — lower = more circular.
+    // 0.5 = sqrt (mild), 0.33 = cube root (moderate), 0.25 = fourth root (strong)
     const ampSq = mid * mid + side * side
     if (ampSq < 1e-12) {
       return { dx: 0, dy: 0 }
     }
     const amp = Math.sqrt(ampSq)
-    const scaledAmp = Math.sqrt(amp)
-    const factor = scaledAmp / amp // = 1/sqrt(amp)
+    const scaledAmp = Math.pow(amp, 0.35)
+    const factor = scaledAmp / amp
     return { dx: side * factor, dy: mid * factor }
   }
 

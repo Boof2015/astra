@@ -142,6 +142,8 @@ export default function AnalyzerEditOverlay({
   const setOscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.setOscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
   const setVectorscopeMode = useVisualizerSettingsStore((state) => state.setVectorscopeMode)
+  const vectorscopeMultiband = useVisualizerSettingsStore((state) => state.vectorscopeMultiband)
+  const setVectorscopeMultiband = useVisualizerSettingsStore((state) => state.setVectorscopeMultiband)
 
   const closeAnalyzerEditMode = useUIStore((state) => state.closeAnalyzerEditMode)
   const setActiveView = useUIStore((state) => state.setActiveView)
@@ -358,6 +360,14 @@ export default function AnalyzerEditOverlay({
             <option value="linear-bipolar">Linear (Bi)</option>
           </select>
         </div>
+
+        <button
+          type="button"
+          className={`analyzer-edit-button ${vectorscopeMultiband ? 'is-active' : ''}`.trim()}
+          onClick={() => setVectorscopeMultiband(!vectorscopeMultiband)}
+        >
+          RGB {vectorscopeMultiband ? 'On' : 'Off'}
+        </button>
       </div>
 
       {hiddenScopes.length === 0 ? (

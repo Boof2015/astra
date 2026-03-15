@@ -36,6 +36,7 @@ export function useScopePopoutBridge(): void {
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
+  const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
@@ -122,6 +123,7 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
             vectorscopeMode,
+            vectorscopeMultiband,
             lineColor,
             reset: true,
           })
@@ -183,6 +185,7 @@ export function useScopePopoutBridge(): void {
               sampleRate: audioEngine.getSampleRate(),
               stereoChunks,
               vectorscopeMode,
+              vectorscopeMultiband,
               lineColor,
               reset: false,
             })
@@ -207,6 +210,7 @@ export function useScopePopoutBridge(): void {
     fftSize,
     pitchLock,
     oscilloscopeUnderfillEnabled,
-    vectorscopeMode
+    vectorscopeMode,
+    vectorscopeMultiband
   ])
 }

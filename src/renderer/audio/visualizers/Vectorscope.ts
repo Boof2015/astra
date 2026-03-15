@@ -2,6 +2,7 @@ import { audioEngine } from '../AudioEngine'
 import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
+import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
 
 export interface VectorscopeOptions {
   lineColor?: string
@@ -12,6 +13,7 @@ export interface VectorscopeOptions {
   persistence?: number  // 0.0 (no trail) to 1.0 (infinite trail), default 0.10
   displayPoints?: number  // how many points to request from native, default 4096
   mode?: VectorscopeMode
+  multiband?: boolean
 }
 
 const defaultOptions: Required<VectorscopeOptions> = {
@@ -23,7 +25,10 @@ const defaultOptions: Required<VectorscopeOptions> = {
   persistence: 0.10,
   displayPoints: 4096,
   mode: 'lissajous',
+  multiband: false,
 }
+
+const BAND_ORDER = ['low', 'mid', 'high'] as const
 
 export class Vectorscope {
   private canvas: HTMLCanvasElement
@@ -36,6 +41,8 @@ export class Vectorscope {
   private nativeInitialized: boolean = false
   private lastSampleRate: number = 0
   private unsubscribeTrackChange: (() => void) | null = null
+  private splitter: MultibandSplitter = new MultibandSplitter()
+  private multibandBuffer: MultibandBuffer = new MultibandBuffer()
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
     this.canvas = canvas
@@ -74,11 +81,13 @@ export class Vectorscope {
   }
 
   private updateSampleRateIfNeeded(): void {
-    if (!isNativeAvailable()) return
     const currentRate = audioEngine.getSampleRate()
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.lastSampleRate = currentRate
-      nativeVectorscope.setSampleRate(currentRate)
+      if (isNativeAvailable()) {
+        nativeVectorscope.setSampleRate(currentRate)
+      }
+      this.splitter.configure(currentRate)
     }
   }
 
@@ -87,6 +96,8 @@ export class Vectorscope {
     if (isNativeAvailable()) {
       nativeVectorscope.reset()
     }
+    this.splitter.reset()
+    this.multibandBuffer.reset()
     this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height)
   }
 
@@ -135,17 +146,18 @@ export class Vectorscope {
     this.updateSampleRateIfNeeded()
 
     // ---- PERSISTENCE FADE ----
-    // Fade existing content by drawing semi-transparent white with destination-in
-    // This progressively reduces alpha of every existing pixel each frame
     offscreenCtx.globalCompositeOperation = 'destination-in'
     offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
     offscreenCtx.fillRect(0, 0, width, height)
     offscreenCtx.globalCompositeOperation = 'source-over'
 
-    // ---- FLUSH SAMPLES TO NATIVE ----
+    // ---- FLUSH SAMPLES ----
     const pendingSamples = audioEngine.flushPendingVectorscopeSamples()
 
-    if (isNativeAvailable()) {
+    if (options.multiband) {
+      // Multiband path: split into 3 bands, render each with its own color
+      this.drawMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+    } else if (isNativeAvailable()) {
       // Push all accumulated stereo chunks to native circular buffer
       for (const chunk of pendingSamples) {
         nativeVectorscope.pushSamples(chunk.left, chunk.right)
@@ -250,6 +262,69 @@ export class Vectorscope {
         const px = centerX + point.dx * scale
         const py = centerY - point.dy * scale
         ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+      }
+    }
+    ctx.globalAlpha = 1.0
+  }
+
+  private drawMultibandPoints(
+    ctx: CanvasRenderingContext2D,
+    pendingSamples: { left: Float32Array; right: Float32Array }[],
+    centerX: number,
+    centerY: number,
+    scale: number
+  ): void {
+    const { options } = this
+    const mode = options.mode
+    const dpr = window.devicePixelRatio || 1
+    const dotSize = options.lineWidth * dpr
+
+    // Ensure splitter is configured
+    const sampleRate = audioEngine.getSampleRate()
+    if (sampleRate > 0) {
+      this.splitter.configure(sampleRate)
+    }
+
+    // Also push to native so switching back to single-color is seamless
+    if (isNativeAvailable()) {
+      for (const chunk of pendingSamples) {
+        nativeVectorscope.pushSamples(chunk.left, chunk.right)
+      }
+    }
+
+    // Split new samples into bands and push into circular buffer
+    for (const chunk of pendingSamples) {
+      const bands = this.splitter.split(chunk.left, chunk.right)
+      this.multibandBuffer.push(bands)
+    }
+
+    // Read all buffered points and draw with age-based opacity (same as native path)
+    const result = this.multibandBuffer.getPoints(options.displayPoints)
+    if (result.count === 0) return
+
+    const segments = 8
+    const pointsPerSegment = Math.ceil(result.count / segments)
+
+    for (let seg = 0; seg < segments; seg++) {
+      const startIdx = seg * pointsPerSegment
+      const endIdx = Math.min((seg + 1) * pointsPerSegment, result.count)
+      if (startIdx >= result.count) break
+
+      const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
+      ctx.globalAlpha = alpha
+
+      for (const band of BAND_ORDER) {
+        const bandData = result.bands[band]
+        ctx.fillStyle = BAND_COLORS[band]
+
+        for (let i = startIdx; i < endIdx; i++) {
+          const point = transformPoint(bandData.left[i], bandData.right[i], mode)
+          if (!point) continue
+
+          const px = centerX + point.dx * scale
+          const py = centerY - point.dy * scale
+          ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+        }
       }
     }
     ctx.globalAlpha = 1.0
