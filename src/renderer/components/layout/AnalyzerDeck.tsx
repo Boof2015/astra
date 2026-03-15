@@ -167,24 +167,13 @@ export default function AnalyzerDeck() {
         <div className="analyzer-brand-dot" />
         <button
           type="button"
-          className={`analyzer-rail-edit-btn ${isAnalyzerEditMode ? 'active' : ''}`.trim()}
+          className={`analyzer-brand-label analyzer-brand-label-btn ${isAnalyzerEditMode ? 'active' : ''}`.trim()}
           onClick={toggleAnalyzerEditMode}
           aria-pressed={isAnalyzerEditMode}
           aria-label={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
         >
-          <svg
-            className="analyzer-rail-edit-icon"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path d="M4 7.5H13.5" />
-            <path d="M4 12H20" />
-            <path d="M10.5 16.5H20" />
-            <circle cx="16.5" cy="7.5" r="1.6" />
-            <circle cx="7.5" cy="16.5" r="1.6" />
-          </svg>
+          {isAnalyzerEditMode ? 'DONE' : 'EDIT'}
         </button>
-        <div className="analyzer-brand-label">SIGNAL PATH</div>
       </div>
 
       <div className="analyzer-visualizers">
