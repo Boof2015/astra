@@ -45,18 +45,47 @@ jobs:
           sed -i "s|^source=.*|source=(\"astra-${AUR_VER}.AppImage::${URL}\")|" .github/aur/PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" .github/aur/PKGBUILD
 
+      - name: Normalize AUR SSH key
+        id: aur_key
+        shell: bash
+        env:
+          RAW_AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          TMP_KEY="$(mktemp)"
+          trap 'rm -f "$TMP_KEY"' EXIT
+          if [ -z "${RAW_AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY is empty or missing." >&2
+            exit 1
+          fi
+          printf '%b' "$RAW_AUR_SSH_KEY" | tr -d '\r' > "$TMP_KEY"
+          if ! grep -Eq '^-----BEGIN ((OPENSSH|RSA|EC|DSA) PRIVATE KEY|PRIVATE KEY)-----$' "$TMP_KEY"; then
+            echo "AUR_SSH_KEY does not look like a supported private key." >&2
+            exit 1
+          fi
+          if grep -q '^-----BEGIN OPENSSH PRIVATE KEY-----$' "$TMP_KEY"; then
+            ssh-keygen -p -m PEM -N '' -P '' -f "$TMP_KEY" >/dev/null
+          fi
+          {
+            echo 'key<<EOF'
+            cat "$TMP_KEY"
+            echo
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: astra-music-bin
           pkgbuild: .github/aur/PKGBUILD
           commit_username: Boof2015
           commit_email: contact@novaml.ai
-          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          ssh_private_key: ${{ steps.aur_key.outputs.key }}
           commit_message: "Update to ${{ steps.ver.outputs.ver }}"
 
   publish-homebrew:
     name: Publish to Homebrew Cask
-    if: false # disabled until repo reaches 225 stars for official homebrew-cask submission
+    # Intentionally hard-disabled. Re-enable only when Homebrew publishing is explicitly wanted.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +139,8 @@ jobs:
 
   publish-winget:
     name: Publish to winget
+    # Disabled until the initial Boof2015.Astra manifest exists in winget-pkgs.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: vedantmgoyal9/winget-releaser@v2
