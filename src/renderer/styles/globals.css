@@ -6110,9 +6110,9 @@ button, .titlebar {
 .folder-tree-toggle-btn {
   height: 22px;
   border-radius: 3px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-tertiary);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
   padding: 0 7px;
   font-size: 10px;
   font-family: var(--font-mono);
@@ -6120,13 +6120,7 @@ button, .titlebar {
   transition: all var(--transition-fast);
   flex-shrink: 0;
   margin-left: 6px;
-  opacity: 0;
-}
-
-.folder-tree-node:hover .folder-tree-toggle-btn {
   opacity: 1;
-  border-color: var(--glass-border);
-  color: var(--text-secondary);
 }
 
 .folder-tree-toggle-btn:hover:not(:disabled) {
