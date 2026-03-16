@@ -60,11 +60,11 @@ const defaultSpectrogramDataSource: SpectrogramDataSource = {
 function getClarityProfile(mode: SpectrogramClarityMode): SpectrogramClarityProfile {
   switch (mode) {
     case 'classic':
-      return { gamma: 1.8, sharpness: 0, tiltDb: 2.0 }
+      return { gamma: 1.4, sharpness: 0, tiltDb: 2.0 }
     case 'sharp':
-      return { gamma: 2.0, sharpness: 2.5, tiltDb: 2.0 }
+      return { gamma: 1.5, sharpness: 2.5, tiltDb: 2.0 }
     case 'sharper':
-      return { gamma: 2.2, sharpness: 5.0, tiltDb: 2.0 }
+      return { gamma: 1.6, sharpness: 5.0, tiltDb: 2.0 }
   }
 }
 
