@@ -3,6 +3,12 @@ name: Publish Packages
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to publish packages from (e.g. v0.5.0-beta)'
+        required: true
+        type: string
 
 jobs:
   publish-aur:
@@ -14,7 +20,7 @@ jobs:
       - name: Compute version strings
         id: ver
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}"
           VER="${TAG#v}"
           AUR_VER="${VER//-/.}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
@@ -93,7 +99,7 @@ jobs:
       - name: Compute version string
         id: ver
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}"
           VER="${TAG#v}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "ver=$VER" >> $GITHUB_OUTPUT
