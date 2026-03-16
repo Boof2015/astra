@@ -33,16 +33,9 @@ export interface SpectrogramOptions {
 type ResolvedSpectrogramOptions = Required<Omit<SpectrogramOptions, 'dataSource'>>
 
 interface SpectrogramClarityProfile {
-  gamma: number
-  tiltDb: number
-  floor: number
-  hopDivisor: number
-  baseRadiusRows: number
-  peakRadiusRows: number
-  bodyBlend: number
-  peakBlend: number
-  peakProminenceDb: number
-  backgroundBlend: number
+  gamma: number      // contrast curve exponent
+  sharpness: number  // local peak suppression exponent (0 = off, higher = thinner lines)
+  tiltDb: number     // dB/octave frequency compensation
 }
 
 const defaultOptions: ResolvedSpectrogramOptions = {
@@ -67,44 +60,11 @@ const defaultSpectrogramDataSource: SpectrogramDataSource = {
 function getClarityProfile(mode: SpectrogramClarityMode): SpectrogramClarityProfile {
   switch (mode) {
     case 'classic':
-      return {
-        gamma: 0.8,
-        tiltDb: 4.5,
-        floor: 0.02,
-        hopDivisor: 2,
-        baseRadiusRows: 2.2,
-        peakRadiusRows: 1.1,
-        bodyBlend: 0.92,
-        peakBlend: 0.22,
-        peakProminenceDb: 0.3,
-        backgroundBlend: 0.34,
-      }
+      return { gamma: 1.8, sharpness: 0, tiltDb: 2.0 }
     case 'sharp':
-      return {
-        gamma: 0.8,
-        tiltDb: 4.5,
-        floor: 0.02,
-        hopDivisor: 2,
-        baseRadiusRows: 1.15,
-        peakRadiusRows: 0.5,
-        bodyBlend: 0.36,
-        peakBlend: 0.78,
-        peakProminenceDb: 0.7,
-        backgroundBlend: 0.2,
-      }
+      return { gamma: 2.0, sharpness: 2.5, tiltDb: 2.0 }
     case 'sharper':
-      return {
-        gamma: 0.8,
-        tiltDb: 4.5,
-        floor: 0.02,
-        hopDivisor: 4,
-        baseRadiusRows: 0.4,
-        peakRadiusRows: 0.28,
-        bodyBlend: 0.14,
-        peakBlend: 0.92,
-        peakProminenceDb: 0.9,
-        backgroundBlend: 0.14,
-      }
+      return { gamma: 2.2, sharpness: 5.0, tiltDb: 2.0 }
   }
 }
 
@@ -174,34 +134,11 @@ function frequencyFromScale(
   }
 }
 
-function normalizedPositionFromFrequency(
-  scaleMode: SpectrogramScaleMode,
-  minFrequency: number,
-  maxFrequency: number,
-  frequency: number
-): number {
-  const clampedFrequency = Math.max(minFrequency, Math.min(maxFrequency, frequency))
-  switch (scaleMode) {
-    case 'linear':
-      return (clampedFrequency - minFrequency) / Math.max(1e-6, maxFrequency - minFrequency)
-    case 'log': {
-      const logMin = Math.log10(minFrequency)
-      const logMax = Math.log10(maxFrequency)
-      return (Math.log10(clampedFrequency) - logMin) / Math.max(1e-6, logMax - logMin)
-    }
-    case 'mel': {
-      const melMin = hzToMelSlaney(minFrequency)
-      const melMax = hzToMelSlaney(maxFrequency)
-      return (hzToMelSlaney(clampedFrequency) - melMin) / Math.max(1e-6, melMax - melMin)
-    }
-  }
-}
-
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
-function fft(re: Float64Array, im: Float64Array): void {
+function fft(re: Float32Array, im: Float32Array): void {
   const n = re.length
   if (n <= 1) return
 
@@ -254,13 +191,13 @@ function fft(re: Float64Array, im: Float64Array): void {
   }
 }
 
-const hannWindowCache = new Map<number, Float64Array>()
+const hannWindowCache = new Map<number, Float32Array>()
 
-function getHannWindow(size: number): Float64Array {
+function getHannWindow(size: number): Float32Array {
   let window = hannWindowCache.get(size)
   if (window) return window
 
-  window = new Float64Array(size)
+  window = new Float32Array(size)
   for (let i = 0; i < size; i += 1) {
     window[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (size - 1)))
   }
@@ -325,6 +262,9 @@ function parseHexColor(hex: string): [number, number, number] {
   ]
 }
 
+// Zero-pad FFT for finer frequency resolution (visual interpolation)
+const FFT_PAD_FACTOR = 4
+
 export class Spectrogram {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -333,9 +273,9 @@ export class Spectrogram {
   private animationId: number | null = null
   private isRunning = false
 
-  private fftRe: Float64Array
-  private fftIm: Float64Array
-  private sampleBuffer: Float64Array
+  private fftRe: Float32Array
+  private fftIm: Float32Array
+  private sampleBuffer: Float32Array
   private sampleBufferPos = 0
 
   private waterfallCanvas: HTMLCanvasElement
@@ -345,10 +285,7 @@ export class Spectrogram {
   private rowBandStartBins = new Float32Array(0)
   private rowBandEndBins = new Float32Array(0)
   private columnValues = new Float32Array(0)
-  private pendingColumnValues = new Float32Array(0)
-  private blurBufferA = new Float32Array(0)
-  private blurBufferB = new Float32Array(0)
-  private powerValues = new Float64Array(0)
+  private rawColumnValues = new Float32Array(0)
   private columnImageData: ImageData | null = null
 
   private lastWidth = 0
@@ -358,7 +295,6 @@ export class Spectrogram {
   private lastMinFrequency = 0
   private lastMaxFrequency = 0
   private lastScaleMode: SpectrogramScaleMode | null = null
-  private columnAdvanceAccumulator = 0
 
   private unsubscribeTrackChange: (() => void) | null = null
 
@@ -372,10 +308,11 @@ export class Spectrogram {
     this.options = resolveOptions(defaultOptions, optionOverrides)
     this.dataSource = dataSource ?? defaultSpectrogramDataSource
 
-    const fftSize = this.options.fftSize
-    this.fftRe = new Float64Array(fftSize)
-    this.fftIm = new Float64Array(fftSize)
-    this.sampleBuffer = new Float64Array(fftSize)
+    const windowSize = this.options.fftSize
+    const paddedSize = windowSize * FFT_PAD_FACTOR
+    this.fftRe = new Float32Array(paddedSize)
+    this.fftIm = new Float32Array(paddedSize)
+    this.sampleBuffer = new Float32Array(windowSize)
 
     this.waterfallCanvas = document.createElement('canvas')
     this.waterfallCanvas.width = canvas.width
@@ -394,8 +331,6 @@ export class Spectrogram {
 
   private resetDisplay(): void {
     this.sampleBufferPos = 0
-    this.columnAdvanceAccumulator = 0
-    this.pendingColumnValues.fill(0)
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
   }
 
@@ -409,12 +344,15 @@ export class Spectrogram {
     }
 
     if (this.options.fftSize !== previousOptions.fftSize) {
-      const fftSize = this.options.fftSize
-      this.fftRe = new Float64Array(fftSize)
-      this.fftIm = new Float64Array(fftSize)
-      this.sampleBuffer = new Float64Array(fftSize)
+      const windowSize = this.options.fftSize
+      const paddedSize = windowSize * FFT_PAD_FACTOR
+      this.fftRe = new Float32Array(paddedSize)
+      this.fftIm = new Float32Array(paddedSize)
+      this.sampleBuffer = new Float32Array(windowSize)
       this.sampleBufferPos = 0
       this.lastFftSize = 0
+      this.resetDisplay()
+    } else if (this.options.scaleMode !== previousOptions.scaleMode) {
       this.resetDisplay()
     }
   }
@@ -445,192 +383,22 @@ export class Spectrogram {
     }
 
     this.columnValues = new Float32Array(height)
-    this.pendingColumnValues = new Float32Array(height)
-    this.blurBufferA = new Float32Array(height)
-    this.blurBufferB = new Float32Array(height)
+    this.rawColumnValues = new Float32Array(height)
     this.columnImageData = new ImageData(1, height)
   }
 
-  private ensurePowerBuffer(numBins: number): void {
-    if (this.powerValues.length === numBins) {
-      return
-    }
-
-    this.powerValues = new Float64Array(numBins)
-  }
-
-  private sampleMagnitudeAtBin(magnitudes: Float32Array, binPosition: number): number {
-    const lowerBin = Math.max(0, Math.min(magnitudes.length - 1, Math.floor(binPosition)))
-    const upperBin = Math.max(0, Math.min(magnitudes.length - 1, lowerBin + 1))
-    const mix = binPosition - lowerBin
-    if (upperBin === lowerBin || mix <= 0) {
-      return magnitudes[lowerBin]
-    }
-
-    // Interpolate in linear amplitude space so sub-bin peaks stay crisp.
-    const lowerMagnitude = 10 ** (magnitudes[lowerBin] / 20)
-    const upperMagnitude = 10 ** (magnitudes[upperBin] / 20)
-    const interpolatedMagnitude = (lowerMagnitude * (1 - mix)) + (upperMagnitude * mix)
-    return 20 * Math.log10(Math.max(interpolatedMagnitude, 1e-10))
-  }
-
-  private integrateBandPower(startBin: number, endBin: number): number {
-    const binCount = this.powerValues.length
-    if (binCount === 0) return 0
-
-    const clampedStart = Math.max(0, Math.min(binCount, startBin))
-    const clampedEnd = Math.max(clampedStart, Math.min(binCount, endBin))
-    if (clampedEnd <= clampedStart) return 0
-
-    const startIndex = Math.max(0, Math.floor(clampedStart))
-    const endIndexExclusive = Math.min(binCount, Math.ceil(clampedEnd))
-    let totalPower = 0
-
-    for (let binIndex = startIndex; binIndex < endIndexExclusive; binIndex += 1) {
-      const overlapStart = Math.max(clampedStart, binIndex)
-      const overlapEnd = Math.min(clampedEnd, binIndex + 1)
-      if (overlapEnd <= overlapStart) {
-        continue
-      }
-      totalPower += this.powerValues[binIndex] * (overlapEnd - overlapStart)
-    }
-
-    return totalPower / Math.max(1e-6, clampedEnd - clampedStart)
-  }
-
-  private estimatePeakBinPosition(magnitudes: Float32Array, binIndex: number): number {
-    if (binIndex <= 0 || binIndex >= magnitudes.length - 1) {
-      return binIndex
-    }
-
-    const left = magnitudes[binIndex - 1]
-    const center = magnitudes[binIndex]
-    const right = magnitudes[binIndex + 1]
-    const denominator = left - (2 * center) + right
-
-    if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-6) {
-      return binIndex
-    }
-
-    const delta = 0.5 * (left - right) / denominator
-    return binIndex + Math.max(-0.5, Math.min(0.5, delta))
-  }
-
-  private splatIntensity(
-    target: Float32Array,
-    rowPosition: number,
-    radiusRows: number,
-    intensity: number
-  ): void {
-    if (target.length === 0 || intensity <= 0) return
-
-    const lastRow = target.length - 1
-    const clampedRowPosition = Math.max(0, Math.min(lastRow, rowPosition))
-
-    if (radiusRows <= 0.6) {
-      const lowerRow = Math.floor(clampedRowPosition)
-      const upperRow = Math.min(lastRow, lowerRow + 1)
-      const mix = clampedRowPosition - lowerRow
-      const lowerValue = intensity * (1 - mix)
-      if (lowerValue > target[lowerRow]) {
-        target[lowerRow] = lowerValue
-      }
-      if (upperRow !== lowerRow) {
-        const upperValue = intensity * mix
-        if (upperValue > target[upperRow]) {
-          target[upperRow] = upperValue
-        }
-      }
-      return
-    }
-
-    const sigma = Math.max(0.45, radiusRows * 0.6)
-    const startRow = Math.max(0, Math.floor(clampedRowPosition - (radiusRows * 1.5)))
-    const endRow = Math.min(lastRow, Math.ceil(clampedRowPosition + (radiusRows * 1.5)))
-    const inverseTwoSigmaSquared = 1 / (2 * sigma * sigma)
-
-    for (let row = startRow; row <= endRow; row += 1) {
-      const distance = row - clampedRowPosition
-      const value = intensity * Math.exp(-(distance * distance) * inverseTwoSigmaSquared)
-      if (value > target[row]) {
-        target[row] = value
-      }
-    }
-  }
-
-  private blurRows(source: Float32Array, target: Float32Array, radiusRows: number): void {
-    if (source.length !== target.length) {
-      target.set(source.subarray(0, Math.min(source.length, target.length)))
-      return
-    }
-
-    if (radiusRows <= 0.55) {
-      target.set(source)
-      return
-    }
-
-    const sigma = Math.max(0.4, radiusRows * 0.6)
-    const kernelRadius = Math.max(1, Math.ceil(radiusRows * 2))
-    const weights = new Float64Array((kernelRadius * 2) + 1)
-
-    for (let offset = -kernelRadius; offset <= kernelRadius; offset += 1) {
-      weights[offset + kernelRadius] = Math.exp(-(offset * offset) / (2 * sigma * sigma))
-    }
-
-    const lastIndex = source.length - 1
-    for (let row = 0; row < source.length; row += 1) {
-      let weightedSum = 0
-      let totalWeight = 0
-
-      for (let offset = -kernelRadius; offset <= kernelRadius; offset += 1) {
-        const sampleRow = Math.max(0, Math.min(lastIndex, row + offset))
-        const weight = weights[offset + kernelRadius]
-        weightedSum += source[sampleRow] * weight
-        totalWeight += weight
-      }
-
-      target[row] = totalWeight > 0 ? weightedSum / totalWeight : source[row]
-    }
-  }
-
-  private normalizeMagnitude(
-    magnitudeDb: number,
-    rowPosition: number,
-    rowSpan: number,
-    minDecibels: number,
-    dbRange: number,
-    clarity: SpectrogramClarityProfile
-  ): number {
-    const tiltAmount = clarity.tiltDb * ((rowSpan - rowPosition) / rowSpan)
-    const normalized = ((magnitudeDb + tiltAmount) - minDecibels) / dbRange
-    return clamp01(normalized)
-  }
-
-  private accumulatePendingColumn(values: Float32Array): void {
-    for (let row = 0; row < values.length; row += 1) {
-      if (values[row] > this.pendingColumnValues[row]) {
-        this.pendingColumnValues[row] = values[row]
-      }
-    }
-  }
-
-  private flushPendingColumns(columnsToDraw: number): void {
-    if (!this.columnImageData || columnsToDraw <= 0) return
-
-    this.paintColumnImage(this.pendingColumnValues)
+  private shiftAndPaintColumn(values: Float32Array): void {
     const width = this.waterfallCanvas.width
     const height = this.waterfallCanvas.height
-    const safeColumns = Math.max(1, Math.min(width, columnsToDraw))
-    const rightEdge = width - safeColumns
+    if (width <= 0 || height <= 0 || !this.columnImageData) return
 
-    this.waterfallCtx.drawImage(this.waterfallCanvas, -safeColumns, 0)
-    this.waterfallCtx.clearRect(rightEdge, 0, safeColumns, height)
+    this.paintColumnImage(values)
 
-    for (let offset = 0; offset < safeColumns; offset += 1) {
-      this.waterfallCtx.putImageData(this.columnImageData, rightEdge + offset, 0)
-    }
+    // Shift existing content left by 1 pixel
+    this.waterfallCtx.drawImage(this.waterfallCanvas, -1, 0)
 
-    this.pendingColumnValues.fill(0)
+    // Paint new column at right edge
+    this.waterfallCtx.putImageData(this.columnImageData, width - 1, 0)
   }
 
   private ensureBandMapping(): void {
@@ -663,7 +431,7 @@ export class Spectrogram {
     this.lastMaxFrequency = maxFrequency
     this.lastScaleMode = options.scaleMode
 
-    const numBins = fftSize / 2
+    const numBins = (fftSize * FFT_PAD_FACTOR) / 2
     const rowSpan = Math.max(1, height - 1)
     const binWidth = nyquist / numBins
 
@@ -705,20 +473,26 @@ export class Spectrogram {
     this.ensureColumnBuffers(height)
   }
 
-  private processFFT(samples: Float64Array): Float32Array {
-    const size = samples.length
-    const window = getHannWindow(size)
+  private processFFT(samples: Float32Array): Float32Array {
+    const windowSize = samples.length
+    const paddedSize = windowSize * FFT_PAD_FACTOR
+    const window = getHannWindow(windowSize)
 
-    for (let index = 0; index < size; index += 1) {
+    // Apply window to audio samples
+    for (let index = 0; index < windowSize; index += 1) {
       this.fftRe[index] = samples[index] * window[index]
-      this.fftIm[index] = 0
     }
+    // Zero-pad the rest for finer frequency interpolation
+    for (let index = windowSize; index < paddedSize; index += 1) {
+      this.fftRe[index] = 0
+    }
+    this.fftIm.fill(0)
 
     fft(this.fftRe, this.fftIm)
 
-    const numBins = size / 2
+    const numBins = paddedSize / 2
     const magnitudes = new Float32Array(numBins)
-    const scale = 2 / size
+    const scale = 2 / windowSize  // normalize by window size, not padded size
 
     for (let index = 0; index < numBins; index += 1) {
       const re = this.fftRe[index]
@@ -728,14 +502,6 @@ export class Spectrogram {
     }
 
     return magnitudes
-  }
-
-  private populatePowerValues(magnitudes: Float32Array): void {
-    this.ensurePowerBuffer(magnitudes.length)
-
-    for (let index = 0; index < magnitudes.length; index += 1) {
-      this.powerValues[index] = 10 ** (magnitudes[index] / 10)
-    }
   }
 
   private paintColumnImage(values: Float32Array): void {
@@ -766,110 +532,77 @@ export class Spectrogram {
   }
 
   private drawColumn(magnitudes: Float32Array): Float32Array {
-    const width = this.waterfallCanvas.width
     const height = this.waterfallCanvas.height
-    if (width <= 0 || height <= 0) return this.columnValues
+    if (height <= 0) return this.columnValues
 
     this.ensureColumnBuffers(height)
     const values = this.columnValues
-    values.fill(0)
+    const raw = this.rawColumnValues
+    const numBins = magnitudes.length
 
     const clarity = getClarityProfile(this.options.clarityMode)
     const minDecibels = this.options.minDecibels
     const dbRange = Math.max(1e-6, this.options.maxDecibels - minDecibels)
-    const rowSpan = Math.max(1, height - 1)
+
+    // Compute bin width for frequency-based tilt
     const sampleRate = Math.max(1, this.dataSource.getSampleRate())
-    const nyquist = sampleRate / 2
-    const minFrequency = Math.max(1, Math.min(this.options.minFrequency, nyquist))
-    const maxFrequency = Math.max(minFrequency + 1, Math.min(this.options.maxFrequency, nyquist))
-    const binWidth = nyquist / magnitudes.length
-    const detailValues = this.blurBufferA
-    detailValues.fill(0)
-    this.populatePowerValues(magnitudes)
+    const binWidth = (sampleRate / 2) / numBins
+    const TILT_REFERENCE_HZ = 1000
 
+    // Pass 1: sub-bin interpolation + tilt → raw normalized values (no gamma yet)
     for (let row = 0; row < height; row += 1) {
-      const bandStartBin = this.rowBandStartBins[row]
-      const bandEndBin = this.rowBandEndBins[row]
-      const bandPower = this.integrateBandPower(bandStartBin, bandEndBin)
-      const bodyMagnitudeDb = 10 * Math.log10(Math.max(bandPower, 1e-12))
-      const bodyNormalized = this.normalizeMagnitude(
-        bodyMagnitudeDb,
-        row,
-        rowSpan,
-        minDecibels,
-        dbRange,
-        clarity
-      )
+      const centerBin = this.rowCenterBins[row]
 
-      values[row] = bodyNormalized
+      // Sub-bin interpolation in dB domain
+      const binLo = Math.floor(centerBin)
+      const binHi = Math.min(binLo + 1, numBins - 1)
+      const frac = centerBin - binLo
+      const db = magnitudes[binLo] * (1 - frac) + magnitudes[binHi] * frac
+
+      // Frequency-based tilt — dB per octave from reference, scale-mode independent
+      const centerFreq = Math.max(1, centerBin * binWidth)
+      const tiltAmount = clarity.tiltDb * Math.log2(centerFreq / TILT_REFERENCE_HZ)
+      raw[row] = clamp01(((db + tiltAmount) - minDecibels) / dbRange)
     }
 
-    const blurredBodyValues = this.blurBufferB
-    this.blurRows(values, blurredBodyValues, clarity.baseRadiusRows)
+    // Pass 2: local peak suppression — thin spectral lines for sharp/sharper modes
+    const sharpness = clarity.sharpness
+    if (sharpness > 0) {
+      // Hann mainlobe = 4 original bins = 4 * FFT_PAD_FACTOR padded bins
+      const mainlobePaddedBins = 4 * FFT_PAD_FACTOR
+      // Target visual line width in pixels — suppression scales to achieve this
+      const TARGET_LINE_WIDTH = 3
 
-    for (let binIndex = 1; binIndex < magnitudes.length - 1; binIndex += 1) {
-      const left = magnitudes[binIndex - 1]
-      const center = magnitudes[binIndex]
-      const right = magnitudes[binIndex + 1]
-      if (center < left || center < right) {
-        continue
-      }
+      for (let row = 0; row < height; row += 1) {
+        // Adaptive window: mainlobe width in pixel rows at this frequency
+        const bandWidthPerRow = Math.max(0.1, this.rowBandEndBins[row] - this.rowBandStartBins[row])
+        const mainlobePixels = mainlobePaddedBins / bandWidthPerRow
+        const halfWin = Math.max(2, Math.min(50, Math.round(mainlobePixels / 2)))
 
-      const prominenceDb = center - Math.max(left, right)
-      if (prominenceDb <= 0.01) {
-        continue
-      }
-      const prominenceWeight = clamp01(prominenceDb / Math.max(0.1, clarity.peakProminenceDb))
+        // Scale suppression by how wide the mainlobe is vs target width
+        // At low freqs (mainlobe=26px, target=3px): 8.7x stronger suppression
+        // At high freqs (mainlobe=2px, target=3px): 1x base suppression
+        const scaleFactor = Math.max(1, mainlobePixels / TARGET_LINE_WIDTH)
+        const effectiveSharpness = sharpness * scaleFactor
 
-      const peakBinPosition = this.estimatePeakBinPosition(magnitudes, binIndex)
-      const peakFrequency = peakBinPosition * binWidth
-      if (peakFrequency < minFrequency || peakFrequency > maxFrequency) {
-        continue
-      }
+        // Find local peak in neighborhood
+        let localMax = raw[row]
+        for (let d = 1; d <= halfWin; d += 1) {
+          if (row - d >= 0 && raw[row - d] > localMax) localMax = raw[row - d]
+          if (row + d < height && raw[row + d] > localMax) localMax = raw[row + d]
+        }
 
-      const peakNormalizedPosition = normalizedPositionFromFrequency(
-        this.options.scaleMode,
-        minFrequency,
-        maxFrequency,
-        peakFrequency
-      )
-      const peakRowPosition = rowSpan * (1 - peakNormalizedPosition)
-      const peakMagnitudeDb = this.sampleMagnitudeAtBin(magnitudes, peakBinPosition)
-      const peakNormalized = this.normalizeMagnitude(
-        peakMagnitudeDb,
-        peakRowPosition,
-        rowSpan,
-        minDecibels,
-        dbRange,
-        clarity
-      )
-      const peakIntensity = peakNormalized * (0.22 + (0.78 * Math.sqrt(prominenceWeight)))
-
-      if (peakIntensity > 0) {
-        this.splatIntensity(detailValues, peakRowPosition, clarity.peakRadiusRows, peakIntensity)
+        // Suppress off-peak values: peak stays bright, slopes get crushed
+        if (localMax > 1e-6) {
+          const ratio = raw[row] / localMax
+          raw[row] *= Math.pow(ratio, effectiveSharpness)
+        }
       }
     }
 
-    for (let row = 0; row < values.length; row += 1) {
-      const backgroundDb = this.sampleMagnitudeAtBin(magnitudes, this.rowCenterBins[row])
-      const background = this.normalizeMagnitude(
-        backgroundDb,
-        row,
-        rowSpan,
-        minDecibels,
-        dbRange,
-        clarity
-      ) * clarity.backgroundBlend
-      const body = blurredBodyValues[row] * clarity.bodyBlend
-      const base = Math.max(body, background)
-      const detail = detailValues[row]
-      let intensity = detail > 0
-        ? Math.max(base, (base * (1 - clarity.peakBlend)) + (detail * clarity.peakBlend))
-        : base
-
-      intensity = Math.max(0, intensity - clarity.floor)
-      intensity = intensity <= 0 ? 0 : intensity / (1 - clarity.floor)
-      values[row] = Math.pow(clamp01(intensity), clarity.gamma)
+    // Pass 3: apply gamma
+    for (let row = 0; row < height; row += 1) {
+      values[row] = Math.pow(raw[row], clarity.gamma)
     }
 
     return values
@@ -885,6 +618,9 @@ export class Spectrogram {
       return
     }
 
+    // Re-set after external resize resets context state
+    this.ctx.imageSmoothingEnabled = false
+
     if (this.waterfallCanvas.width !== width || this.waterfallCanvas.height !== height) {
       const previousCanvas = document.createElement('canvas')
       previousCanvas.width = this.waterfallCanvas.width
@@ -898,8 +634,16 @@ export class Spectrogram {
       this.waterfallCanvas.height = height
       this.waterfallCtx.imageSmoothingEnabled = false
 
+      // Anchor right edge — newest columns stay, old data crops naturally
       if (previousCtx && previousCanvas.width > 0 && previousCanvas.height > 0) {
-        this.waterfallCtx.drawImage(previousCanvas, 0, 0, width, height)
+        const srcX = Math.max(0, previousCanvas.width - width)
+        const srcW = Math.min(previousCanvas.width, width)
+        const dstX = Math.max(0, width - previousCanvas.width)
+        this.waterfallCtx.drawImage(
+          previousCanvas,
+          srcX, 0, srcW, previousCanvas.height,
+          dstX, 0, srcW, height
+        )
       }
 
       this.lastWidth = 0
@@ -909,19 +653,21 @@ export class Spectrogram {
 
     if (!this.dataSource.isPlaying()) {
       this.dataSource.getPendingSpectrogramSamples()
+      // Freeze waterfall in place instead of blanking
       this.ctx.clearRect(0, 0, width, height)
+      this.ctx.drawImage(this.waterfallCanvas, 0, 0)
       this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
     const pendingSamples = this.dataSource.getPendingSpectrogramSamples()
     const fftSize = this.options.fftSize
-    const clarity = getClarityProfile(this.options.clarityMode)
-    const hopSize = Math.max(32, Math.floor(fftSize / clarity.hopDivisor))
+
+    // Scroll speed solely controls temporal resolution (hop divisor)
+    const BASE_HOP_DIVISOR = 8
+    const effectiveHopDivisor = Math.max(2, Math.min(64, Math.round(BASE_HOP_DIVISOR * this.options.scrollSpeed)))
+    const hopSize = Math.max(1, Math.floor(fftSize / effectiveHopDivisor))
     const overlapSamples = fftSize - hopSize
-    const dpr = window.devicePixelRatio || 1
-    const baseHopSize = Math.max(32, Math.floor(fftSize / 2))
-    const advancePerFrame = this.options.scrollSpeed * dpr * (hopSize / baseHopSize)
 
     for (const chunk of pendingSamples) {
       for (let index = 0; index < chunk.length; index += 1) {
@@ -931,13 +677,8 @@ export class Spectrogram {
         if (this.sampleBufferPos >= fftSize) {
           const magnitudes = this.processFFT(this.sampleBuffer)
           const values = this.drawColumn(magnitudes)
-          this.accumulatePendingColumn(values)
-          this.columnAdvanceAccumulator += advancePerFrame
-          const columnsToDraw = Math.floor(this.columnAdvanceAccumulator)
-          if (columnsToDraw >= 1) {
-            this.flushPendingColumns(columnsToDraw)
-            this.columnAdvanceAccumulator -= columnsToDraw
-          }
+          // Each FFT hop = exactly 1 pixel column. No accumulation, no duplication.
+          this.shiftAndPaintColumn(values)
 
           this.sampleBuffer.copyWithin(0, hopSize)
           this.sampleBufferPos = overlapSamples
