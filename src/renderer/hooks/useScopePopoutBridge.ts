@@ -14,6 +14,7 @@ const EMPTY_RESET_STATE: ResetState = {
   oscilloscope: false,
   vectorscope: false,
   spectrogram: false,
+  vumeter: false,
 }
 
 function flushScopeQueue(scope: ScopeKind): void {
@@ -30,6 +31,9 @@ function flushScopeQueue(scope: ScopeKind): void {
     case 'spectrogram':
       audioEngine.flushPendingSpectrogramSamples()
       break
+    case 'vumeter':
+      audioEngine.flushPendingVUMeterSamples()
+      break
   }
 }
 
@@ -45,6 +49,7 @@ export function useScopePopoutBridge(): void {
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
+  const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
@@ -76,6 +81,7 @@ export function useScopePopoutBridge(): void {
       oscilloscope: isVisualizerRunning && scopePopoutState.oscilloscope,
       vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
       spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
+      vumeter: isVisualizerRunning && scopePopoutState.vumeter,
     })
 
     return () => {
@@ -147,6 +153,17 @@ export function useScopePopoutBridge(): void {
             spectrogramScrollSpeed,
             spectrogramClarityMode,
             spectrogramScaleMode,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'vumeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'vumeter',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            stereoChunks: [],
+            vuMeterMode,
             lineColor,
             reset: true,
           })
@@ -233,6 +250,21 @@ export function useScopePopoutBridge(): void {
             resetSentRef.current[scope] = false
             break
           }
+          case 'vumeter': {
+            const stereoChunks = audioEngine.flushPendingVUMeterSamples()
+            if (stereoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'vumeter',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              stereoChunks,
+              vuMeterMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
         }
       }
     }, STREAM_INTERVAL_MS)
@@ -256,6 +288,7 @@ export function useScopePopoutBridge(): void {
     pitchLock,
     oscilloscopeUnderfillEnabled,
     vectorscopeMode,
-    vectorscopeMultiband
+    vectorscopeMultiband,
+    vuMeterMode
   ])
 }

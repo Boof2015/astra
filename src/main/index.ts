@@ -109,6 +109,7 @@ const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   oscilloscope: null,
   vectorscope: null,
   spectrogram: null,
+  vumeter: null,
 }
 let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
@@ -376,6 +377,13 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
     minWidth: 420,
     minHeight: 220,
   },
+  vumeter: {
+    title: 'Astra VU Meter',
+    width: 480,
+    height: 240,
+    minWidth: 320,
+    minHeight: 180,
+  },
 }
 
 // Supported audio formats
@@ -544,6 +552,7 @@ function resolveScopePopoutPosition(scope: ScopeKind): Pick<Electron.BrowserWind
     oscilloscope: { x: 88, y: 88 },
     vectorscope: { x: 120, y: 120 },
     spectrogram: { x: 152, y: 152 },
+    vumeter: { x: 184, y: 184 },
   }
 
   const targetX = bounds.x + offsets[scope].x

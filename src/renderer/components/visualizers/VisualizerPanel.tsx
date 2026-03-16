@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
-import { Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope } from '../../audio/visualizers'
+import { Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter } from '../../audio/visualizers'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
+import type { VUMeterMode } from '../../../types/vumeter'
 
 interface VisualizerPanelProps {
   className?: string
@@ -385,6 +386,79 @@ function DockedSpectrogramTile({
   )
 }
 
+function DockedVUMeterTile({
+  lineColor,
+  vuMeterMode,
+  isRunning,
+}: {
+  lineColor: string
+  vuMeterMode: VUMeterMode
+  isRunning: boolean
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<VUMeter | null>(null)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new VUMeter(canvasRef.current, {
+        lineColor,
+        mode: vuMeterMode,
+      })
+    }
+
+    if (isRunning) {
+      visualizerRef.current?.start()
+    }
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode })
+  }, [lineColor, vuMeterMode])
+
+  useEffect(() => {
+    if (isRunning) {
+      visualizerRef.current?.start()
+    } else {
+      visualizerRef.current?.stop()
+    }
+  }, [isRunning])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="visualizer-surface">
+      <canvas ref={canvasRef} className="visualizer-canvas" />
+    </div>
+  )
+}
+
 function vectorscopeModeLabelShort(mode: VectorscopeMode): string {
   switch (mode) {
     case 'lissajous': return 'LISSAJOUS'
@@ -421,6 +495,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Vectorscope'
     case 'spectrogram':
       return 'Spectrogram'
+    case 'vumeter':
+      return 'VU Meter'
   }
 }
 
@@ -468,6 +544,7 @@ export default function VisualizerPanel({
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
+  const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
   const scopeOrder = useVisualizerSettingsStore((s) => s.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((s) => s.hiddenScopes)
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
@@ -514,7 +591,7 @@ export default function VisualizerPanel({
         }
         return `minmax(clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)), ${weight}fr)`
       }
-      if (scope === 'spectrogram' && weight <= 0) {
+      if ((scope === 'spectrogram' || scope === 'vumeter') && weight <= 0) {
         return `minmax(0, ${DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT}fr)`
       }
       return `minmax(0, ${weight}fr)`
@@ -599,6 +676,7 @@ export default function VisualizerPanel({
       oscilloscope: isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
+      vumeter: isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
     })
 
     return () => {
@@ -725,6 +803,8 @@ export default function VisualizerPanel({
           return 'visualizer-item visualizer-item-vector'
         case 'spectrogram':
           return 'visualizer-item visualizer-item-spectrogram'
+        case 'vumeter':
+          return 'visualizer-item visualizer-item-vumeter'
       }
     })()
 
@@ -739,6 +819,8 @@ export default function VisualizerPanel({
           return isRunning ? vectorscopeModeLabelShort(vectorscopeMode) : 'PAUSED'
         case 'spectrogram':
           return `${spectrogramScaleLabelShort(spectrogramScaleMode)} ${spectrogramClarityLabelShort(spectrogramClarityMode)} X${spectrogramScrollSpeed.toFixed(1)}`
+        case 'vumeter':
+          return vuMeterMode === 'needle' ? 'NEEDLE' : 'BAR'
       }
     })()
 
@@ -806,6 +888,12 @@ export default function VisualizerPanel({
             scrollSpeed={spectrogramScrollSpeed}
             clarityMode={spectrogramClarityMode}
             scaleMode={spectrogramScaleMode}
+            isRunning={isRunning}
+          />
+        ) : scope === 'vumeter' ? (
+          <DockedVUMeterTile
+            lineColor={lineColor}
+            vuMeterMode={vuMeterMode}
             isRunning={isRunning}
           />
         ) : (

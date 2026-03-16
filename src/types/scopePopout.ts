@@ -1,14 +1,16 @@
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
+import type { VUMeterMode } from './vumeter'
 
-export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram'
+export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter'
 
-export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram']
+export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter']
 
 export interface ScopePopoutState {
   spectrum: boolean
   oscilloscope: boolean
   vectorscope: boolean
   spectrogram: boolean
+  vumeter: boolean
 }
 
 export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
@@ -16,10 +18,11 @@ export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
   oscilloscope: false,
   vectorscope: false,
   spectrogram: false,
+  vumeter: false,
 }
 
 export function isScopeKind(value: unknown): value is ScopeKind {
-  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram'
+  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter'
 }
 
 interface ScopePopoutChunkBase {
@@ -62,8 +65,18 @@ export interface ScopePopoutSpectrogramChunk extends ScopePopoutChunkBase {
   spectrogramScaleMode: SpectrogramScaleMode
 }
 
+export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {
+  scope: 'vumeter'
+  stereoChunks: Array<{
+    left: Float32Array
+    right: Float32Array
+  }>
+  vuMeterMode: VUMeterMode
+}
+
 export type ScopePopoutChunk =
   | ScopePopoutSpectrumChunk
   | ScopePopoutOscilloscopeChunk
   | ScopePopoutVectorscopeChunk
   | ScopePopoutSpectrogramChunk
+  | ScopePopoutVUMeterChunk

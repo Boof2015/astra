@@ -5,7 +5,7 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
-import { SpectrumAnalyzer, Spectrogram } from '../../audio/visualizers'
+import { SpectrumAnalyzer, Spectrogram, VUMeter } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
@@ -19,6 +19,7 @@ import {
   isSpectrogramClarityMode,
   isSpectrogramScaleMode,
 } from '../../../types/spectrogram'
+import { DEFAULT_VU_METER_MODE, isVUMeterMode, type VUMeterMode } from '../../../types/vumeter'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
@@ -99,6 +100,8 @@ function getScopeLabel(scope: ScopeKind): string {
       return 'Vectorscope'
     case 'spectrogram':
       return 'Spectrogram'
+    case 'vumeter':
+      return 'VU Meter'
   }
 }
 
@@ -788,6 +791,101 @@ function SpectrogramScopeCanvas() {
   )
 }
 
+function VUMeterScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<VUMeter | null>(null)
+
+  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const sampleRateRef = useRef(48000)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const vuMeterModeRef = useRef<VUMeterMode>(DEFAULT_VU_METER_MODE)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'vumeter') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      lineColorRef.current = chunk.lineColor
+
+      if ('vuMeterMode' in chunk && isVUMeterMode(chunk.vuMeterMode)) {
+        vuMeterModeRef.current = chunk.vuMeterMode
+      }
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.stereoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.stereoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        lineColor: chunk.lineColor,
+        mode: vuMeterModeRef.current,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new VUMeter(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        mode: vuMeterModeRef.current,
+        dataSource: {
+          getPendingVUMeterSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
 function ScopeCanvas({ scope }: { scope: ScopeKind }) {
   switch (scope) {
     case 'spectrum':
@@ -798,6 +896,8 @@ function ScopeCanvas({ scope }: { scope: ScopeKind }) {
       return <VectorscopeScopeCanvas />
     case 'spectrogram':
       return <SpectrogramScopeCanvas />
+    case 'vumeter':
+      return <VUMeterScopeCanvas />
   }
 }
 

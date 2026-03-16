@@ -11,6 +11,11 @@ import {
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
 } from '../../types/spectrogram'
+import {
+  DEFAULT_VU_METER_MODE,
+  isVUMeterMode,
+  type VUMeterMode,
+} from '../../types/vumeter'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 export type OscilloscopeMode = 'classic' | 'locked'
@@ -41,6 +46,9 @@ export interface AnalyzerProfileScopeSettings {
     scrollSpeed: number
     clarityMode: SpectrogramClarityMode
     scaleMode: SpectrogramScaleMode
+  }
+  vumeter: {
+    mode: VUMeterMode
   }
 }
 
@@ -79,6 +87,7 @@ interface VisualizerSettingsSnapshot {
   oscilloscopeUnderfillEnabled: boolean
   oscilloscopeMode: OscilloscopeMode
   vectorscopeMode: VectorscopeMode
+  vuMeterMode: VUMeterMode
 }
 
 interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
@@ -101,6 +110,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
+  setVUMeterMode: (mode: VUMeterMode) => void
   resetToDefaults: () => void
 }
 
@@ -129,12 +139,13 @@ const DEFAULT_PITCH_LOCK = true
 const DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED = false
 const DEFAULT_OSCILLOSCOPE_MODE: OscilloscopeMode = 'classic'
 const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'lissajous'
-const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram']
+const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter']
 const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrum: 1,
   oscilloscope: 1.4,
   vectorscope: 0,
   spectrogram: 0,
+  vumeter: 0,
 }
 
 const MIN_WEIGHT = 0.4
@@ -150,6 +161,7 @@ function cloneScopeSettings(settings: AnalyzerProfileScopeSettings): AnalyzerPro
     oscilloscope: { ...settings.oscilloscope },
     vectorscope: { ...settings.vectorscope },
     spectrogram: { ...settings.spectrogram },
+    vumeter: { ...settings.vumeter },
   }
 }
 
@@ -178,7 +190,7 @@ function buildProfile(id: string, name: string, builtIn: boolean, state: Analyze
 
 const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   order: [...DEFAULT_SCOPE_ORDER],
-  hiddenScopes: ['spectrogram'],
+  hiddenScopes: ['spectrogram', 'vumeter'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
     spectrum: { fftSize: DEFAULT_FFT_SIZE },
@@ -193,6 +205,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       scrollSpeed: DEFAULT_SPECTROGRAM_SCROLL_SPEED,
       clarityMode: DEFAULT_SPECTROGRAM_CLARITY_MODE,
       scaleMode: DEFAULT_SPECTROGRAM_SCALE_MODE,
+    },
+    vumeter: {
+      mode: DEFAULT_VU_METER_MODE,
     },
   },
 }
@@ -254,7 +269,7 @@ function clampWidthWeight(scope: ScopeKind, value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_WIDTH_WEIGHTS[scope]
 
-  if ((scope === 'vectorscope' || scope === 'spectrogram') && numeric <= 0) {
+  if ((scope === 'vectorscope' || scope === 'spectrogram' || scope === 'vumeter') && numeric <= 0) {
     return 0
   }
 
@@ -318,6 +333,10 @@ function normalizeScopeSettings(
     ? raw.spectrogram as Record<string, unknown>
     : {}
 
+  const rawVumeter = raw.vumeter && typeof raw.vumeter === 'object' && !Array.isArray(raw.vumeter)
+    ? raw.vumeter as Record<string, unknown>
+    : {}
+
   const fallbackUnderfill = raw.oscilloscopeUnderfillEnabled
   const underfillEnabled = typeof rawOscilloscope.underfillEnabled === 'boolean'
     ? rawOscilloscope.underfillEnabled
@@ -360,6 +379,9 @@ function normalizeScopeSettings(
         ? rawSpectrogram.scaleMode
         : DEFAULT_SPECTROGRAM_SCALE_MODE,
     },
+    vumeter: {
+      mode: isVUMeterMode(rawVumeter.mode) ? rawVumeter.mode : DEFAULT_VU_METER_MODE,
+    },
   }
 }
 
@@ -381,6 +403,7 @@ function normalizeWorkingState(
     oscilloscope: clampWidthWeight('oscilloscope', rawWeights.oscilloscope),
     vectorscope: clampWidthWeight('vectorscope', rawWeights.vectorscope),
     spectrogram: clampWidthWeight('spectrogram', rawWeights.spectrogram),
+    vumeter: clampWidthWeight('vumeter', rawWeights.vumeter),
   }
 
   // Auto-hide scopes that default to weight 0 and weren't explicitly saved
@@ -501,6 +524,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrogram.scrollSpeed === right.scopeSettings.spectrogram.scrollSpeed
     && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
     && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
+    && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
   )
 }
 
@@ -591,6 +615,7 @@ function buildSnapshot(
     oscilloscopeUnderfillEnabled: workingState.scopeSettings.oscilloscope.underfillEnabled,
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
     vectorscopeMode: workingState.scopeSettings.vectorscope.mode,
+    vuMeterMode: workingState.scopeSettings.vumeter.mode,
   }
 }
 
@@ -974,6 +999,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
   setVectorscopeMultiband: (enabled) => {
     persistVectorscopeMultibandPreference(enabled)
     set({ vectorscopeMultiband: enabled })
+  },
+
+  setVUMeterMode: (mode) => {
+    if (!isVUMeterMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        vumeter: {
+          ...state.workingState.scopeSettings.vumeter,
+          mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
   },
 
   resetToDefaults: () => {

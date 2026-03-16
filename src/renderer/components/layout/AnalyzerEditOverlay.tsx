@@ -7,6 +7,7 @@ import {
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
 } from '../../../types/spectrogram'
+import type { VUMeterMode } from '../../../types/vumeter'
 import {
   useVisualizerSettingsStore,
   type AnalyzerProfile,
@@ -38,6 +39,15 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Vectorscope'
     case 'spectrogram':
       return 'Spectrogram'
+    case 'vumeter':
+      return 'VU Meter'
+  }
+}
+
+function vuMeterModeLabel(mode: VUMeterMode): string {
+  switch (mode) {
+    case 'needle': return 'Needle'
+    case 'bar': return 'Bar'
   }
 }
 
@@ -76,7 +86,8 @@ function scopeStateLabel(
   spectrogramScaleMode: SpectrogramScaleMode,
   pitchLock: boolean,
   underfillEnabled: boolean,
-  vectorscopeMode: VectorscopeMode
+  vectorscopeMode: VectorscopeMode,
+  vuMeterMode: VUMeterMode
 ): string {
   switch (scope) {
     case 'spectrum':
@@ -89,6 +100,8 @@ function scopeStateLabel(
       return vectorscopeModeLabel(vectorscopeMode)
     case 'spectrogram':
       return `${spectrogramScaleLabel(spectrogramScaleMode)} · ${spectrogramClarityLabel(spectrogramClarityMode)} x${spectrogramScrollSpeed.toFixed(1)} · FFT ${spectrogramFftSize}`
+    case 'vumeter':
+      return vuMeterModeLabel(vuMeterMode)
   }
 }
 
@@ -121,6 +134,12 @@ function stashStyle(scope: ScopeKind): CSSProperties {
         bottom: '14%',
         right: '10%',
         transform: 'rotate(2deg)',
+      }
+    case 'vumeter':
+      return {
+        top: '38%',
+        left: '38%',
+        transform: 'rotate(-1deg)',
       }
   }
 }
@@ -166,6 +185,20 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <rect x="122" y="45" width="8" height="21" opacity="0.4" />
         </svg>
       )
+    case 'vumeter':
+      return (
+        <svg viewBox="0 0 144 80" aria-hidden="true">
+          <rect x="22" y="20" width="70" height="8" rx="1" className="muted" />
+          <rect x="22" y="20" width="48" height="8" rx="1" opacity="0.7" />
+          <rect x="22" y="36" width="70" height="8" rx="1" className="muted" />
+          <rect x="22" y="36" width="38" height="8" rx="1" opacity="0.6" />
+          <text x="14" y="27" fontSize="8" opacity="0.5">L</text>
+          <text x="14" y="43" fontSize="8" opacity="0.5">R</text>
+          <rect x="22" y="56" width="70" height="5" rx="1" className="muted" />
+          <rect x="57" y="56" width="20" height="5" rx="1" opacity="0.5" />
+          <line x1="57" y1="54" x2="57" y2="63" className="muted" />
+        </svg>
+      )
   }
 }
 
@@ -205,6 +238,8 @@ export default function AnalyzerEditOverlay({
   const setVectorscopeMode = useVisualizerSettingsStore((state) => state.setVectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((state) => state.vectorscopeMultiband)
   const setVectorscopeMultiband = useVisualizerSettingsStore((state) => state.setVectorscopeMultiband)
+  const vuMeterMode = useVisualizerSettingsStore((state) => state.vuMeterMode)
+  const setVUMeterMode = useVisualizerSettingsStore((state) => state.setVUMeterMode)
 
   const closeAnalyzerEditMode = useUIStore((state) => state.closeAnalyzerEditMode)
   const setActiveView = useUIStore((state) => state.setActiveView)
@@ -483,6 +518,18 @@ export default function AnalyzerEditOverlay({
         >
           RGB {vectorscopeMultiband ? 'On' : 'Off'}
         </button>
+
+        <div className="analyzer-edit-mini-control">
+          <span className="analyzer-edit-corner-label">VU</span>
+          <select
+            className="analyzer-edit-select analyzer-edit-select-compact"
+            value={vuMeterMode}
+            onChange={(event) => setVUMeterMode(event.target.value as VUMeterMode)}
+          >
+            <option value="bar">Bar</option>
+            <option value="needle">Needle</option>
+          </select>
+        </div>
       </div>
 
       {hiddenScopes.length === 0 ? (
@@ -516,7 +563,8 @@ export default function AnalyzerEditOverlay({
                 spectrogramScaleMode,
                 pitchLock,
                 oscilloscopeUnderfillEnabled,
-                vectorscopeMode
+                vectorscopeMode,
+                vuMeterMode
               )}
             </div>
           </div>
