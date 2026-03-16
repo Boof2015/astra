@@ -58,20 +58,49 @@ jobs:
           RAW_AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           set -euo pipefail
-          TMP_KEY="$(mktemp)"
-          trap 'rm -f "$TMP_KEY"' EXIT
           if [ -z "${RAW_AUR_SSH_KEY:-}" ]; then
             echo "AUR_SSH_KEY is empty or missing." >&2
             exit 1
           fi
-          printf '%b' "$RAW_AUR_SSH_KEY" | tr -d '\r' > "$TMP_KEY"
-          if ! grep -Eq '^-----BEGIN ((OPENSSH|RSA|EC|DSA) PRIVATE KEY|PRIVATE KEY)-----$' "$TMP_KEY"; then
-            echo "AUR_SSH_KEY does not look like a supported private key." >&2
+          TMP_KEY="$(mktemp)"
+          TMP_ALT="$(mktemp)"
+          trap 'rm -f "$TMP_KEY" "$TMP_ALT"' EXIT
+
+          normalize_to_file() {
+            local source_value="$1"
+            local target_file="$2"
+            local unwrapped="$source_value"
+            case "$unwrapped" in
+              \"*\") unwrapped="${unwrapped:1:${#unwrapped}-2}" ;;
+              \'*\') unwrapped="${unwrapped:1:${#unwrapped}-2}" ;;
+            esac
+            printf '%b' "$unwrapped" | tr -d '\r' > "$target_file"
+          }
+
+          key_is_usable() {
+            local candidate_file="$1"
+            if ! grep -Eq '^-----BEGIN ((OPENSSH|RSA|EC|DSA) PRIVATE KEY|PRIVATE KEY)-----$' "$candidate_file"; then
+              return 1
+            fi
+            ssh-keygen -y -f "$candidate_file" >/dev/null 2>&1
+          }
+
+          normalize_to_file "$RAW_AUR_SSH_KEY" "$TMP_KEY"
+
+          if ! key_is_usable "$TMP_KEY"; then
+            if printf '%s' "$RAW_AUR_SSH_KEY" | tr -d '\r\n\t ' | base64 --decode > "$TMP_ALT" 2>/dev/null; then
+              if key_is_usable "$TMP_ALT"; then
+                mv "$TMP_ALT" "$TMP_KEY"
+                TMP_ALT="$(mktemp)"
+              fi
+            fi
+          fi
+
+          if ! key_is_usable "$TMP_KEY"; then
+            echo "AUR_SSH_KEY is not a usable private key. Supported inputs include raw multi-line keys, escaped newline keys, or base64-encoded keys." >&2
             exit 1
           fi
-          if grep -q '^-----BEGIN OPENSSH PRIVATE KEY-----$' "$TMP_KEY"; then
-            ssh-keygen -p -m PEM -N '' -P '' -f "$TMP_KEY" >/dev/null
-          fi
+
           {
             echo 'key<<EOF'
             cat "$TMP_KEY"
