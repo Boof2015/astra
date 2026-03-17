@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
+import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -10,8 +11,11 @@ import type { VUMeterMode } from '../../../types/vumeter'
 
 interface VisualizerPanelProps {
   className?: string
+  visibleScopes?: ScopeKind[]
+  gridTemplateColumns?: string
   isEditMode?: boolean
   draggedScope?: ScopeKind | null
+  highlightedScope?: ScopeKind | null
   rackDropIndex?: number | null
   onRackScopeDragStart?: (scope: ScopeKind, fromHidden: boolean, event: DragEvent<HTMLDivElement>) => void
   onRackScopeDragOver?: (index: number, event: DragEvent<HTMLDivElement>) => void
@@ -19,6 +23,9 @@ interface VisualizerPanelProps {
   onRackScopeDragEnd?: () => void
   onRackEmptyDragOver?: (event: DragEvent<HTMLDivElement>) => void
   onRackEmptyDrop?: (event: DragEvent<HTMLDivElement>) => void
+  onScopeHoverChange?: (scope: ScopeKind | null) => void
+  onScopeActivate?: (scope: ScopeKind) => void
+  onResizePreviewChange?: (weights: Partial<Record<ScopeKind, number>> | null) => void
 }
 
 interface ResizeSession {
@@ -32,7 +39,6 @@ interface ResizeSession {
 
 const MIN_SCOPE_WIDTH_PX = 112
 const MIN_VECTORSCOPE_WIDTH_PX = 96
-const DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT = 1
 const MIN_PREVIEW_WEIGHT = 0.4
 const MAX_PREVIEW_WEIGHT = 2.6
 
@@ -667,8 +673,11 @@ function PopoutPlaceholder({
 
 export default function VisualizerPanel({
   className = '',
+  visibleScopes: visibleScopesProp,
+  gridTemplateColumns: gridTemplateColumnsProp,
   isEditMode = false,
   draggedScope = null,
+  highlightedScope = null,
   rackDropIndex = null,
   onRackScopeDragStart,
   onRackScopeDragOver,
@@ -676,6 +685,9 @@ export default function VisualizerPanel({
   onRackScopeDragEnd,
   onRackEmptyDragOver,
   onRackEmptyDrop,
+  onScopeHoverChange,
+  onScopeActivate,
+  onResizePreviewChange,
 }: VisualizerPanelProps) {
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
@@ -712,9 +724,10 @@ export default function VisualizerPanel({
     void window.electronAPI.scopePopout.recall(scope)
   }, [])
 
-  const visibleScopes = useMemo(() => {
+  const visibleScopesFromStore = useMemo(() => {
     return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
   }, [hiddenScopes, scopeOrder])
+  const visibleScopes = visibleScopesProp ?? visibleScopesFromStore
 
   const effectiveWidthWeights = useMemo(() => {
     if (!resizePreviewWeights) return widthWeights
@@ -724,23 +737,10 @@ export default function VisualizerPanel({
     }
   }, [resizePreviewWeights, widthWeights])
 
-  const gridTemplateColumns = useMemo(() => {
-    if (visibleScopes.length === 0) return ''
-
-    return visibleScopes.map((scope) => {
-      const weight = effectiveWidthWeights[scope] ?? 1
-      if (scope === 'vectorscope') {
-        if (weight <= 0) {
-          return 'minmax(96px, clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)))'
-        }
-        return `minmax(clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)), ${weight}fr)`
-      }
-      if ((scope === 'spectrogram' || scope === 'vumeter' || scope === 'lufsmeter' || scope === 'waveform') && weight <= 0) {
-        return `minmax(0, ${DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT}fr)`
-      }
-      return `minmax(0, ${weight}fr)`
-    }).join(' ')
+  const derivedGridTemplateColumns = useMemo(() => {
+    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights)
   }, [effectiveWidthWeights, visibleScopes])
+  const gridTemplateColumns = gridTemplateColumnsProp ?? derivedGridTemplateColumns
 
   useEffect(() => {
     resizePreviewWeightsRef.current = resizePreviewWeights
@@ -754,11 +754,12 @@ export default function VisualizerPanel({
     resizeSessionRef.current = null
     resizePreviewWeightsRef.current = null
     setResizePreviewWeights(null)
+    onResizePreviewChange?.(null)
 
     if (commit && previewWeights) {
       setScopeWidthWeights(previewWeights)
     }
-  }, [setScopeWidthWeights])
+  }, [onResizePreviewChange, setScopeWidthWeights])
 
   useEffect(() => {
     if (isEditMode) return
@@ -916,6 +917,7 @@ export default function VisualizerPanel({
 
       resizePreviewWeightsRef.current = nextPreviewWeights
       setResizePreviewWeights(nextPreviewWeights)
+      onResizePreviewChange?.(nextPreviewWeights)
     }
 
     const handlePointerUp = () => {
@@ -934,7 +936,7 @@ export default function VisualizerPanel({
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', handlePointerUp)
     window.addEventListener('pointercancel', handlePointerUp)
-  }, [isEditMode, stopResize, visibleScopes, widthWeights])
+  }, [isEditMode, onResizePreviewChange, stopResize, visibleScopes, widthWeights])
 
   const renderScopeItem = (scope: ScopeKind) => {
     const isPoppedOut = scopePopoutState[scope]
@@ -988,6 +990,7 @@ export default function VisualizerPanel({
           itemClassName,
           isPoppedOut ? 'is-popped-out' : '',
           isEditMode ? 'is-edit-mode' : '',
+          isEditMode && highlightedScope === scope ? 'is-linked-highlight' : '',
           draggedScope === scope ? 'is-dragging' : '',
           rackDropIndex === itemIndex ? 'is-drop-before' : '',
           rackDropIndex === itemIndex + 1 ? 'is-drop-after' : '',
@@ -1004,6 +1007,12 @@ export default function VisualizerPanel({
           : undefined}
         onDragEnd={isEditMode && onRackScopeDragEnd
           ? () => onRackScopeDragEnd()
+          : undefined}
+        onMouseEnter={isEditMode && onScopeHoverChange
+          ? () => onScopeHoverChange(scope)
+          : undefined}
+        onClick={isEditMode && onScopeActivate
+          ? () => onScopeActivate(scope)
           : undefined}
       >
         <div className="visualizer-caption-left">{scopeLabel(scope).toUpperCase()}</div>

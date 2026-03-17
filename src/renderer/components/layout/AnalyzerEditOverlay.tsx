@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import {
   MAX_SPECTROGRAM_SCROLL_SPEED,
@@ -17,9 +17,15 @@ import {
 import { useUIStore } from '../../stores/uiStore'
 
 const FFT_OPTIONS: readonly FFTSize[] = [1024, 2048, 4096, 8192, 16384]
+const ACTIVE_SCOPE_EDGE_ALIGN_MIN_WIDTH = 560
+type ActiveScopeAlignment = 'start' | 'center' | 'end'
 
 interface AnalyzerEditOverlayProps {
+  visibleScopes: ScopeKind[]
   hiddenScopes: ScopeKind[]
+  gridTemplateColumns: string
+  activeScope: ScopeKind | null
+  isScopePinned: boolean
   draggedScope: ScopeKind | null
   isDraggingFromHidden: boolean
   isHiddenDropActive: boolean
@@ -27,6 +33,7 @@ interface AnalyzerEditOverlayProps {
   onDragEnd: () => void
   onHiddenDragOver: (event: DragEvent<HTMLDivElement>) => void
   onHiddenDrop: (event: DragEvent<HTMLDivElement>) => void
+  onScopeHoverChange: (scope: ScopeKind | null) => void
 }
 
 function scopeLabel(scope: ScopeKind): string {
@@ -117,50 +124,9 @@ function sortProfiles(profiles: Record<string, AnalyzerProfile>) {
   return Object.values(profiles).sort((left, right) => left.name.localeCompare(right.name))
 }
 
-function stashStyle(scope: ScopeKind): CSSProperties {
-  switch (scope) {
-    case 'spectrum':
-      return {
-        top: '12%',
-        left: '5%',
-        transform: 'rotate(-4deg)',
-      }
-    case 'oscilloscope':
-      return {
-        top: '16%',
-        right: '7%',
-        transform: 'rotate(3deg)',
-      }
-    case 'vectorscope':
-      return {
-        bottom: '16%',
-        left: '16%',
-        transform: 'rotate(-2deg)',
-      }
-    case 'spectrogram':
-      return {
-        bottom: '14%',
-        right: '10%',
-        transform: 'rotate(2deg)',
-      }
-    case 'vumeter':
-      return {
-        top: '38%',
-        left: '38%',
-        transform: 'rotate(-1deg)',
-      }
-    case 'lufsmeter':
-      return {
-        top: '14%',
-        left: '38%',
-        transform: 'rotate(1deg)',
-      }
-    case 'waveform':
-      return {
-        bottom: '38%',
-        right: '18%',
-        transform: 'rotate(-3deg)',
-      }
+function hiddenScopeGridStyle(index: number): CSSProperties {
+  return {
+    transitionDelay: `${index * 18}ms`,
   }
 }
 
@@ -256,7 +222,11 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
 }
 
 export default function AnalyzerEditOverlay({
+  visibleScopes,
   hiddenScopes,
+  gridTemplateColumns,
+  activeScope,
+  isScopePinned,
   draggedScope,
   isDraggingFromHidden,
   isHiddenDropActive,
@@ -264,6 +234,7 @@ export default function AnalyzerEditOverlay({
   onDragEnd,
   onHiddenDragOver,
   onHiddenDrop,
+  onScopeHoverChange,
 }: AnalyzerEditOverlayProps) {
   const profiles = useVisualizerSettingsStore((state) => state.profiles)
   const activeProfileId = useVisualizerSettingsStore((state) => state.activeProfileId)
@@ -300,6 +271,9 @@ export default function AnalyzerEditOverlay({
 
   const [showSaveInput, setShowSaveInput] = useState(false)
   const [saveName, setSaveName] = useState('')
+  const [activeScopeAlignment, setActiveScopeAlignment] = useState<ActiveScopeAlignment>('center')
+  const activeSlotRef = useRef<HTMLDivElement | null>(null)
+  const activeStripRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setShowSaveInput(false)
@@ -321,6 +295,76 @@ export default function AnalyzerEditOverlay({
     : activeProfileBuiltIn
       ? 'Built-in'
       : 'Saved'
+  const activeScopeIndex = activeScope ? visibleScopes.indexOf(activeScope) : -1
+
+  useEffect(() => {
+    if (activeScopeIndex === -1) {
+      setActiveScopeAlignment('center')
+      return
+    }
+
+    const measureAlignment = () => {
+      const slot = activeSlotRef.current
+      const strip = activeStripRef.current
+      if (!slot || !strip) return
+
+      const slotRect = slot.getBoundingClientRect()
+      const stripRect = strip.getBoundingClientRect()
+      const slotIsNarrow = slotRect.width < ACTIVE_SCOPE_EDGE_ALIGN_MIN_WIDTH
+      const stripNeedsJustify = stripRect.width > slotRect.width + 1
+
+      if (!slotIsNarrow && !stripNeedsJustify) {
+        setActiveScopeAlignment((current) => current === 'center' ? current : 'center')
+        return
+      }
+
+      const viewportWidth = window.innerWidth
+      const slotCenter = slotRect.left + (slotRect.width / 2)
+      let preferredAlignment: ActiveScopeAlignment = 'center'
+      if (slotCenter <= viewportWidth * 0.34) {
+        preferredAlignment = 'start'
+      } else if (slotCenter >= viewportWidth * 0.66) {
+        preferredAlignment = 'end'
+      }
+
+      if (preferredAlignment === 'center') {
+        setActiveScopeAlignment((current) => current === 'center' ? current : 'center')
+        return
+      }
+
+      const startFits = viewportWidth - slotRect.left >= stripRect.width
+      const endFits = slotRect.right >= stripRect.width
+
+      let nextAlignment = preferredAlignment
+      if (preferredAlignment === 'start' && !startFits && endFits) {
+        nextAlignment = 'end'
+      } else if (preferredAlignment === 'end' && !endFits && startFits) {
+        nextAlignment = 'start'
+      }
+
+      setActiveScopeAlignment((current) => current === nextAlignment ? current : nextAlignment)
+    }
+
+    const frameId = window.requestAnimationFrame(measureAlignment)
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => {
+          measureAlignment()
+        })
+
+    if (resizeObserver) {
+      if (activeSlotRef.current) resizeObserver.observe(activeSlotRef.current)
+      if (activeStripRef.current) resizeObserver.observe(activeStripRef.current)
+    }
+
+    window.addEventListener('resize', measureAlignment)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', measureAlignment)
+    }
+  }, [activeScopeIndex, activeScope, gridTemplateColumns, visibleScopes.length])
 
   const handleSave = () => {
     const trimmed = saveName.trim()
@@ -336,6 +380,150 @@ export default function AnalyzerEditOverlay({
     setPendingSettingsSection('analyzer')
   }
 
+  const renderActiveControls = (scope: ScopeKind) => {
+    switch (scope) {
+      case 'spectrum':
+        return (
+          <div className="analyzer-edit-active-controls">
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">FFT</span>
+              <select
+                className="analyzer-edit-select"
+                value={fftSize}
+                onChange={(event) => setFftSize(Number(event.target.value) as FFTSize)}
+              >
+                {FFT_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )
+      case 'oscilloscope':
+        return (
+          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
+            <button
+              type="button"
+              className={`analyzer-edit-button ${pitchLock ? 'is-active' : ''}`.trim()}
+              onClick={() => setPitchLock(!pitchLock)}
+            >
+              Pitch {pitchLock ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              className={`analyzer-edit-button ${oscilloscopeUnderfillEnabled ? 'is-active' : ''}`.trim()}
+              onClick={() => setOscilloscopeUnderfillEnabled(!oscilloscopeUnderfillEnabled)}
+            >
+              Fill {oscilloscopeUnderfillEnabled ? 'On' : 'Off'}
+            </button>
+          </div>
+        )
+      case 'vectorscope':
+        return (
+          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Scope</span>
+              <select
+                className="analyzer-edit-select"
+                value={vectorscopeMode}
+                onChange={(event) => setVectorscopeMode(event.target.value as VectorscopeMode)}
+              >
+                <option value="lissajous">Lissajous</option>
+                <option value="polar-unipolar">Polar (Uni)</option>
+                <option value="polar-bipolar">Polar (Bi)</option>
+                <option value="linear-unipolar">Linear (Uni)</option>
+                <option value="linear-bipolar">Linear (Bi)</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              className={`analyzer-edit-button ${vectorscopeMultiband ? 'is-active' : ''}`.trim()}
+              onClick={() => setVectorscopeMultiband(!vectorscopeMultiband)}
+            >
+              RGB {vectorscopeMultiband ? 'On' : 'Off'}
+            </button>
+          </div>
+        )
+      case 'spectrogram':
+        return (
+          <div className="analyzer-edit-active-controls">
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">FFT</span>
+              <select
+                className="analyzer-edit-select"
+                value={spectrogramFftSize}
+                onChange={(event) => setSpectrogramFftSize(Number(event.target.value) as FFTSize)}
+              >
+                {FFT_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Scale</span>
+              <select
+                className="analyzer-edit-select"
+                value={spectrogramScaleMode}
+                onChange={(event) => setSpectrogramScaleMode(event.target.value as SpectrogramScaleMode)}
+              >
+                <option value="mel">Mel</option>
+                <option value="log">Log</option>
+                <option value="linear">Linear</option>
+              </select>
+            </div>
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Mode</span>
+              <select
+                className="analyzer-edit-select"
+                value={spectrogramClarityMode}
+                onChange={(event) => setSpectrogramClarityMode(event.target.value as SpectrogramClarityMode)}
+              >
+                <option value="classic">Classic</option>
+                <option value="sharp">Sharp</option>
+                <option value="sharper">Sharper</option>
+              </select>
+            </div>
+            <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
+              <span className="analyzer-edit-corner-label">Speed x{spectrogramScrollSpeed.toFixed(1)}</span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTROGRAM_SCROLL_SPEED}
+                max={MAX_SPECTROGRAM_SCROLL_SPEED}
+                step={SPECTROGRAM_SCROLL_SPEED_STEP}
+                value={spectrogramScrollSpeed}
+                onChange={(event) => setSpectrogramScrollSpeed(Number(event.target.value))}
+              />
+            </div>
+          </div>
+        )
+      case 'vumeter':
+        return (
+          <div className="analyzer-edit-active-controls">
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">VU</span>
+              <select
+                className="analyzer-edit-select"
+                value={vuMeterMode}
+                onChange={(event) => setVUMeterMode(event.target.value as VUMeterMode)}
+              >
+                <option value="bar">Bar</option>
+                <option value="needle">Needle</option>
+              </select>
+            </div>
+          </div>
+        )
+      case 'lufsmeter':
+        return <div className="analyzer-edit-active-note">No extra controls here</div>
+      case 'waveform':
+        return <div className="analyzer-edit-active-note">No extra controls here</div>
+    }
+  }
+
   return (
     <div className="analyzer-edit-overlay-backdrop">
       {showHiddenDropField && (
@@ -349,36 +537,37 @@ export default function AnalyzerEditOverlay({
       )}
 
       <div className="analyzer-edit-corner analyzer-edit-corner-top-left">
-        <div className="analyzer-edit-corner-group">
-          <div className="analyzer-edit-corner-label">PROFILE</div>
-          <select
-            className="analyzer-edit-select"
-            value={activeProfileId ?? ''}
-            onChange={(event) => {
-              if (event.target.value) {
-                setActiveProfile(event.target.value)
-              }
-            }}
-          >
-            <option value="">Custom</option>
-            <optgroup label="Built-in">
-              {builtInProfiles.map((profile) => (
+        <label className="analyzer-edit-corner-label analyzer-edit-corner-label-inline" htmlFor="analyzer-edit-profile-select">
+          PROFILE
+        </label>
+        <select
+          id="analyzer-edit-profile-select"
+          className="analyzer-edit-select"
+          value={activeProfileId ?? ''}
+          onChange={(event) => {
+            if (event.target.value) {
+              setActiveProfile(event.target.value)
+            }
+          }}
+        >
+          <option value="">Custom</option>
+          <optgroup label="Built-in">
+            {builtInProfiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </optgroup>
+          {userProfiles.length > 0 && (
+            <optgroup label="My Profiles">
+              {userProfiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
                 </option>
               ))}
             </optgroup>
-            {userProfiles.length > 0 && (
-              <optgroup label="My Profiles">
-                {userProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-        </div>
+          )}
+        </select>
 
         {showSaveInput ? (
           <div className="analyzer-edit-save-inline">
@@ -450,138 +639,57 @@ export default function AnalyzerEditOverlay({
         </button>
       </div>
 
+      {activeScope && activeScopeIndex !== -1 && (
+        <div
+          className="analyzer-edit-active-track"
+          style={gridTemplateColumns ? { gridTemplateColumns } : undefined}
+        >
+          <div
+            className={`analyzer-edit-active-slot is-align-${activeScopeAlignment}`.trim()}
+            ref={activeSlotRef}
+            style={{ gridColumn: `${activeScopeIndex + 1}` }}
+          >
+            <div
+              className="analyzer-edit-active-strip"
+              ref={activeStripRef}
+              onMouseEnter={() => onScopeHoverChange(activeScope)}
+            >
+              <div className="analyzer-edit-active-headline">
+                <div className="analyzer-edit-active-title">{scopeLabel(activeScope).toUpperCase()}</div>
+                <div className="analyzer-edit-active-meta">
+                  {scopeStateLabel(
+                    activeScope,
+                    fftSize,
+                    spectrogramFftSize,
+                    spectrogramScrollSpeed,
+                    spectrogramClarityMode,
+                    spectrogramScaleMode,
+                    pitchLock,
+                    oscilloscopeUnderfillEnabled,
+                    vectorscopeMode,
+                    vuMeterMode
+                  )}
+                </div>
+                {isScopePinned && (
+                  <div className="analyzer-edit-active-pin-note">Pinned</div>
+                )}
+              </div>
+              {renderActiveControls(activeScope)}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="analyzer-edit-corner analyzer-edit-corner-bottom-left">
         <div className="analyzer-edit-help">
           <div className="analyzer-edit-corner-label">EDIT MODE</div>
           <div className="analyzer-edit-help-copy">
-            Drag the real scopes in the rack to reorder them.
+            Hover a scope to edit it.
             <br />
-            Drag one out into the blurred field to stash it.
+            Click a scope to pin its controls.
             <br />
-            Drag the seams between scopes to resize them.
+            Drag scopes to reorder, stash, or resize.
           </div>
-        </div>
-      </div>
-
-      <div className="analyzer-edit-corner analyzer-edit-corner-bottom-right">
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">SPEC</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={fftSize}
-            onChange={(event) => setFftSize(Number(event.target.value) as FFTSize)}
-          >
-            {FFT_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">GRAM</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={spectrogramFftSize}
-            onChange={(event) => setSpectrogramFftSize(Number(event.target.value) as FFTSize)}
-          >
-            {FFT_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range">
-          <span className="analyzer-edit-corner-label">GRAM SPD x{spectrogramScrollSpeed.toFixed(1)}</span>
-          <input
-            type="range"
-            className="analyzer-edit-range"
-            min={MIN_SPECTROGRAM_SCROLL_SPEED}
-            max={MAX_SPECTROGRAM_SCROLL_SPEED}
-            step={SPECTROGRAM_SCROLL_SPEED_STEP}
-            value={spectrogramScrollSpeed}
-            onChange={(event) => setSpectrogramScrollSpeed(Number(event.target.value))}
-          />
-        </div>
-
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">GRAM SCALE</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={spectrogramScaleMode}
-            onChange={(event) => setSpectrogramScaleMode(event.target.value as SpectrogramScaleMode)}
-          >
-            <option value="mel">Mel</option>
-            <option value="log">Log</option>
-            <option value="linear">Linear</option>
-          </select>
-        </div>
-
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">GRAM MODE</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={spectrogramClarityMode}
-            onChange={(event) => setSpectrogramClarityMode(event.target.value as SpectrogramClarityMode)}
-          >
-            <option value="classic">Classic</option>
-            <option value="sharp">Sharp</option>
-            <option value="sharper">Sharper</option>
-          </select>
-        </div>
-
-        <button
-          type="button"
-          className={`analyzer-edit-button ${pitchLock ? 'is-active' : ''}`.trim()}
-          onClick={() => setPitchLock(!pitchLock)}
-        >
-          Pitch {pitchLock ? 'On' : 'Off'}
-        </button>
-
-        <button
-          type="button"
-          className={`analyzer-edit-button ${oscilloscopeUnderfillEnabled ? 'is-active' : ''}`.trim()}
-          onClick={() => setOscilloscopeUnderfillEnabled(!oscilloscopeUnderfillEnabled)}
-        >
-          Fill {oscilloscopeUnderfillEnabled ? 'On' : 'Off'}
-        </button>
-
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">SCOPE</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={vectorscopeMode}
-            onChange={(event) => setVectorscopeMode(event.target.value as VectorscopeMode)}
-          >
-            <option value="lissajous">Lissajous</option>
-            <option value="polar-unipolar">Polar (Uni)</option>
-            <option value="polar-bipolar">Polar (Bi)</option>
-            <option value="linear-unipolar">Linear (Uni)</option>
-            <option value="linear-bipolar">Linear (Bi)</option>
-          </select>
-        </div>
-
-        <button
-          type="button"
-          className={`analyzer-edit-button ${vectorscopeMultiband ? 'is-active' : ''}`.trim()}
-          onClick={() => setVectorscopeMultiband(!vectorscopeMultiband)}
-        >
-          RGB {vectorscopeMultiband ? 'On' : 'Off'}
-        </button>
-
-        <div className="analyzer-edit-mini-control">
-          <span className="analyzer-edit-corner-label">VU</span>
-          <select
-            className="analyzer-edit-select analyzer-edit-select-compact"
-            value={vuMeterMode}
-            onChange={(event) => setVUMeterMode(event.target.value as VUMeterMode)}
-          >
-            <option value="bar">Bar</option>
-            <option value="needle">Needle</option>
-          </select>
         </div>
       </div>
 
@@ -590,38 +698,40 @@ export default function AnalyzerEditOverlay({
           Nothing is stashed right now.
         </div>
       ) : (
-        hiddenScopes.map((scope) => (
-          <div
-            key={scope}
-            className={`analyzer-edit-stash-scope ${draggedScope === scope ? 'is-dragging' : ''}`.trim()}
-            style={stashStyle(scope)}
-            draggable
-            onDragStart={(event) => onHiddenScopeDragStart(scope, event)}
-            onDragEnd={onDragEnd}
-          >
-            <div className="analyzer-edit-stash-header">
-              <span>{scopeLabel(scope).toUpperCase()}</span>
-              <span>STASHED</span>
+        <div className="analyzer-edit-stash-grid">
+          {hiddenScopes.map((scope, index) => (
+            <div
+              key={scope}
+              className={`analyzer-edit-stash-scope ${draggedScope === scope ? 'is-dragging' : ''}`.trim()}
+              style={hiddenScopeGridStyle(index)}
+              draggable
+              onDragStart={(event) => onHiddenScopeDragStart(scope, event)}
+              onDragEnd={onDragEnd}
+            >
+              <div className="analyzer-edit-stash-header">
+                <span>{scopeLabel(scope).toUpperCase()}</span>
+                <span>STASHED</span>
+              </div>
+              <div className="analyzer-edit-stash-preview">
+                <ScopeGhost scope={scope} />
+              </div>
+              <div className="analyzer-edit-stash-meta">
+                {scopeStateLabel(
+                  scope,
+                  fftSize,
+                  spectrogramFftSize,
+                  spectrogramScrollSpeed,
+                  spectrogramClarityMode,
+                  spectrogramScaleMode,
+                  pitchLock,
+                  oscilloscopeUnderfillEnabled,
+                  vectorscopeMode,
+                  vuMeterMode
+                )}
+              </div>
             </div>
-            <div className="analyzer-edit-stash-preview">
-              <ScopeGhost scope={scope} />
-            </div>
-            <div className="analyzer-edit-stash-meta">
-              {scopeStateLabel(
-                scope,
-                fftSize,
-                spectrogramFftSize,
-                spectrogramScrollSpeed,
-                spectrogramClarityMode,
-                spectrogramScaleMode,
-                pitchLock,
-                oscilloscopeUnderfillEnabled,
-                vectorscopeMode,
-                vuMeterMode
-              )}
-            </div>
-          </div>
-        ))
+          ))}
+        </div>
       )}
     </div>
   )

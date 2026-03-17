@@ -299,7 +299,7 @@ export class VUMeter {
 
   private drawDbLabel(
     ctx: CanvasRenderingContext2D,
-    x: number, y: number, w: number, h: number,
+    x: number, y: number, _w: number, h: number,
     db: number
   ): void {
     const displayDb = Math.max(METER_MIN_DB, Math.min(0, db))

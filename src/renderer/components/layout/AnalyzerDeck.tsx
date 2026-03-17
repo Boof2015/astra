@@ -4,6 +4,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import AnalyzerEditOverlay from './AnalyzerEditOverlay'
+import { buildAnalyzerGridTemplateColumns } from './analyzerLayout'
 
 interface ScopeEditDragState {
   scope: ScopeKind
@@ -17,11 +18,15 @@ export default function AnalyzerDeck() {
   const activeProfileId = useVisualizerSettingsStore((state) => state.activeProfileId)
   const scopeOrder = useVisualizerSettingsStore((state) => state.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((state) => state.hiddenScopes)
+  const widthWeights = useVisualizerSettingsStore((state) => state.widthWeights)
   const setScopeDeckLayout = useVisualizerSettingsStore((state) => state.setScopeDeckLayout)
 
   const [dragState, setDragState] = useState<ScopeEditDragState | null>(null)
   const [rackDropIndex, setRackDropIndex] = useState<number | null>(null)
   const [isHiddenDropActive, setIsHiddenDropActive] = useState(false)
+  const [resizePreviewWeights, setResizePreviewWeights] = useState<Partial<Record<ScopeKind, number>> | null>(null)
+  const [hoveredScope, setHoveredScope] = useState<ScopeKind | null>(null)
+  const [pinnedScope, setPinnedScope] = useState<ScopeKind | null>(null)
 
   const visibleScopes = useMemo(() => {
     return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
@@ -30,6 +35,24 @@ export default function AnalyzerDeck() {
   const hiddenOrderedScopes = useMemo(() => {
     return scopeOrder.filter((scope) => hiddenScopes.includes(scope))
   }, [hiddenScopes, scopeOrder])
+
+  const effectiveWidthWeights = useMemo(() => {
+    if (!resizePreviewWeights) return widthWeights
+    return {
+      ...widthWeights,
+      ...resizePreviewWeights,
+    }
+  }, [resizePreviewWeights, widthWeights])
+
+  const gridTemplateColumns = useMemo(() => {
+    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights)
+  }, [effectiveWidthWeights, visibleScopes])
+
+  const activeScope = useMemo(() => {
+    if (pinnedScope && visibleScopes.includes(pinnedScope)) return pinnedScope
+    if (hoveredScope && visibleScopes.includes(hoveredScope)) return hoveredScope
+    return visibleScopes[0] ?? null
+  }, [hoveredScope, pinnedScope, visibleScopes])
 
   const resetDragState = useCallback(() => {
     setDragState(null)
@@ -40,6 +63,9 @@ export default function AnalyzerDeck() {
   useEffect(() => {
     if (!isAnalyzerEditMode) {
       resetDragState()
+      setResizePreviewWeights(null)
+      setHoveredScope(null)
+      setPinnedScope(null)
     }
   }, [isAnalyzerEditMode, resetDragState])
 
@@ -60,7 +86,19 @@ export default function AnalyzerDeck() {
 
   useEffect(() => {
     resetDragState()
+    setResizePreviewWeights(null)
+    setHoveredScope(null)
+    setPinnedScope(null)
   }, [activeProfileId, resetDragState])
+
+  useEffect(() => {
+    if (hoveredScope && !visibleScopes.includes(hoveredScope)) {
+      setHoveredScope(null)
+    }
+    if (pinnedScope && !visibleScopes.includes(pinnedScope)) {
+      setPinnedScope(null)
+    }
+  }, [hoveredScope, pinnedScope, visibleScopes])
 
   const commitDeckLayout = useCallback((nextVisibleScopes: ScopeKind[], nextHiddenScopes: ScopeKind[]) => {
     const nextOrder = [...nextVisibleScopes, ...nextHiddenScopes]
@@ -78,7 +116,13 @@ export default function AnalyzerDeck() {
     setDragState({ scope, fromHidden })
     setRackDropIndex(fromHidden ? visibleScopes.length : visibleScopes.indexOf(scope))
     setIsHiddenDropActive(false)
+    setHoveredScope(scope)
   }, [isAnalyzerEditMode, visibleScopes])
+
+  const handleScopeActivate = useCallback((scope: ScopeKind) => {
+    setHoveredScope(scope)
+    setPinnedScope((current) => current === scope ? null : scope)
+  }, [])
 
   const handleRackDragOver = useCallback((index: number, event: DragEvent<HTMLDivElement>) => {
     if (!dragState) return
@@ -163,23 +207,28 @@ export default function AnalyzerDeck() {
 
   return (
     <header className="analyzer-deck">
-      <div className={`analyzer-brand-rail ${isAnalyzerEditMode ? 'is-editing' : ''}`.trim()}>
+      <button
+        type="button"
+        className={`analyzer-brand-rail ${isAnalyzerEditMode ? 'is-editing' : ''}`.trim()}
+        onClick={toggleAnalyzerEditMode}
+        aria-pressed={isAnalyzerEditMode}
+        aria-label={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
+      >
         <div className="analyzer-brand-dot" />
-        <button
-          type="button"
+        <div
           className={`analyzer-brand-label analyzer-brand-label-btn ${isAnalyzerEditMode ? 'active' : ''}`.trim()}
-          onClick={toggleAnalyzerEditMode}
-          aria-pressed={isAnalyzerEditMode}
-          aria-label={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
         >
           {isAnalyzerEditMode ? 'DONE' : 'EDIT'}
-        </button>
-      </div>
+        </div>
+      </button>
 
       <div className="analyzer-visualizers">
         <VisualizerPanel
+          visibleScopes={visibleScopes}
+          gridTemplateColumns={gridTemplateColumns}
           isEditMode={isAnalyzerEditMode}
           draggedScope={dragState?.scope ?? null}
+          highlightedScope={activeScope}
           rackDropIndex={rackDropIndex}
           onRackScopeDragStart={handleScopeDragStart}
           onRackScopeDragOver={handleRackDragOver}
@@ -187,12 +236,19 @@ export default function AnalyzerDeck() {
           onRackScopeDragEnd={resetDragState}
           onRackEmptyDragOver={handleRackEmptyDragOver}
           onRackEmptyDrop={handleRackDrop}
+          onScopeHoverChange={setHoveredScope}
+          onScopeActivate={handleScopeActivate}
+          onResizePreviewChange={setResizePreviewWeights}
         />
       </div>
 
       {isAnalyzerEditMode && (
         <AnalyzerEditOverlay
+          visibleScopes={visibleScopes}
           hiddenScopes={hiddenOrderedScopes}
+          gridTemplateColumns={gridTemplateColumns}
+          activeScope={activeScope}
+          isScopePinned={activeScope !== null && pinnedScope === activeScope}
           draggedScope={dragState?.scope ?? null}
           isDraggingFromHidden={dragState?.fromHidden ?? false}
           isHiddenDropActive={isHiddenDropActive}
@@ -200,6 +256,7 @@ export default function AnalyzerDeck() {
           onDragEnd={resetDragState}
           onHiddenDragOver={handleHiddenDragOver}
           onHiddenDrop={handleHiddenDrop}
+          onScopeHoverChange={setHoveredScope}
         />
       )}
     </header>
