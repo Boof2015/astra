@@ -15,6 +15,7 @@ const EMPTY_RESET_STATE: ResetState = {
   vectorscope: false,
   spectrogram: false,
   vumeter: false,
+  lufsmeter: false,
 }
 
 function flushScopeQueue(scope: ScopeKind): void {
@@ -34,6 +35,9 @@ function flushScopeQueue(scope: ScopeKind): void {
     case 'vumeter':
       audioEngine.flushPendingVUMeterSamples()
       break
+    case 'lufsmeter':
+      audioEngine.flushPendingLUFSMeterSamples()
+      break
   }
 }
 
@@ -50,6 +54,7 @@ export function useScopePopoutBridge(): void {
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
+  const lufsMeterMode = useVisualizerSettingsStore((s) => s.lufsMeterMode)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
@@ -82,6 +87,7 @@ export function useScopePopoutBridge(): void {
       vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
       spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
       vumeter: isVisualizerRunning && scopePopoutState.vumeter,
+      lufsmeter: isVisualizerRunning && scopePopoutState.lufsmeter,
     })
 
     return () => {
@@ -164,6 +170,17 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
             vuMeterMode,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'lufsmeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'lufsmeter',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            stereoChunks: [],
+            lufsMeterMode,
             lineColor,
             reset: true,
           })
@@ -265,6 +282,21 @@ export function useScopePopoutBridge(): void {
             resetSentRef.current[scope] = false
             break
           }
+          case 'lufsmeter': {
+            const stereoChunks = audioEngine.flushPendingLUFSMeterSamples()
+            if (stereoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'lufsmeter',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              stereoChunks,
+              lufsMeterMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
         }
       }
     }, STREAM_INTERVAL_MS)
@@ -289,6 +321,7 @@ export function useScopePopoutBridge(): void {
     oscilloscopeUnderfillEnabled,
     vectorscopeMode,
     vectorscopeMultiband,
-    vuMeterMode
+    vuMeterMode,
+    lufsMeterMode
   ])
 }

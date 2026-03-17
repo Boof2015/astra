@@ -1,9 +1,10 @@
+import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
 import type { VUMeterMode } from './vumeter'
 
-export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter'
+export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter'
 
-export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter']
+export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter']
 
 export interface ScopePopoutState {
   spectrum: boolean
@@ -11,6 +12,7 @@ export interface ScopePopoutState {
   vectorscope: boolean
   spectrogram: boolean
   vumeter: boolean
+  lufsmeter: boolean
 }
 
 export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
@@ -19,10 +21,11 @@ export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
   vectorscope: false,
   spectrogram: false,
   vumeter: false,
+  lufsmeter: false,
 }
 
 export function isScopeKind(value: unknown): value is ScopeKind {
-  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter'
+  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter' || value === 'lufsmeter'
 }
 
 interface ScopePopoutChunkBase {
@@ -74,9 +77,19 @@ export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {
   vuMeterMode: VUMeterMode
 }
 
+export interface ScopePopoutLUFSMeterChunk extends ScopePopoutChunkBase {
+  scope: 'lufsmeter'
+  stereoChunks: Array<{
+    left: Float32Array
+    right: Float32Array
+  }>
+  lufsMeterMode: LUFSMeterMode
+}
+
 export type ScopePopoutChunk =
   | ScopePopoutSpectrumChunk
   | ScopePopoutOscilloscopeChunk
   | ScopePopoutVectorscopeChunk
   | ScopePopoutSpectrogramChunk
   | ScopePopoutVUMeterChunk
+  | ScopePopoutLUFSMeterChunk

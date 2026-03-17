@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
-import { Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter } from '../../audio/visualizers'
+import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter } from '../../audio/visualizers'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -459,6 +459,76 @@ function DockedVUMeterTile({
   )
 }
 
+function DockedLUFSMeterTile({
+  lineColor,
+  isRunning,
+}: {
+  lineColor: string
+  isRunning: boolean
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<LUFSMeter | null>(null)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new LUFSMeter(canvasRef.current, {
+        lineColor,
+      })
+    }
+
+    if (isRunning) {
+      visualizerRef.current?.start()
+    }
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    visualizerRef.current?.setOptions({ lineColor })
+  }, [lineColor])
+
+  useEffect(() => {
+    if (isRunning) {
+      visualizerRef.current?.start()
+    } else {
+      visualizerRef.current?.stop()
+    }
+  }, [isRunning])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="visualizer-surface">
+      <canvas ref={canvasRef} className="visualizer-canvas" />
+    </div>
+  )
+}
+
 function vectorscopeModeLabelShort(mode: VectorscopeMode): string {
   switch (mode) {
     case 'lissajous': return 'LISSAJOUS'
@@ -497,6 +567,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Spectrogram'
     case 'vumeter':
       return 'VU Meter'
+    case 'lufsmeter':
+      return 'LUFS Meter'
   }
 }
 
@@ -591,7 +663,7 @@ export default function VisualizerPanel({
         }
         return `minmax(clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)), ${weight}fr)`
       }
-      if ((scope === 'spectrogram' || scope === 'vumeter') && weight <= 0) {
+      if ((scope === 'spectrogram' || scope === 'vumeter' || scope === 'lufsmeter') && weight <= 0) {
         return `minmax(0, ${DEFAULT_SPECTROGRAM_VISIBLE_WEIGHT}fr)`
       }
       return `minmax(0, ${weight}fr)`
@@ -677,6 +749,7 @@ export default function VisualizerPanel({
       vectorscope: isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
       vumeter: isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
+      lufsmeter: isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
     })
 
     return () => {
@@ -805,6 +878,8 @@ export default function VisualizerPanel({
           return 'visualizer-item visualizer-item-spectrogram'
         case 'vumeter':
           return 'visualizer-item visualizer-item-vumeter'
+        case 'lufsmeter':
+          return 'visualizer-item visualizer-item-lufsmeter'
       }
     })()
 
@@ -821,6 +896,8 @@ export default function VisualizerPanel({
           return `${spectrogramScaleLabelShort(spectrogramScaleMode)} ${spectrogramClarityLabelShort(spectrogramClarityMode)} X${spectrogramScrollSpeed.toFixed(1)}`
         case 'vumeter':
           return vuMeterMode === 'needle' ? 'NEEDLE' : 'BAR'
+        case 'lufsmeter':
+          return 'LUFS'
       }
     })()
 
@@ -894,6 +971,11 @@ export default function VisualizerPanel({
           <DockedVUMeterTile
             lineColor={lineColor}
             vuMeterMode={vuMeterMode}
+            isRunning={isRunning}
+          />
+        ) : scope === 'lufsmeter' ? (
+          <DockedLUFSMeterTile
+            lineColor={lineColor}
             isRunning={isRunning}
           />
         ) : (

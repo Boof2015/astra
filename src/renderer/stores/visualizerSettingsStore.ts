@@ -12,6 +12,11 @@ import {
   type SpectrogramScaleMode,
 } from '../../types/spectrogram'
 import {
+  DEFAULT_LUFS_METER_MODE,
+  isLUFSMeterMode,
+  type LUFSMeterMode,
+} from '../../types/lufsmeter'
+import {
   DEFAULT_VU_METER_MODE,
   isVUMeterMode,
   type VUMeterMode,
@@ -49,6 +54,9 @@ export interface AnalyzerProfileScopeSettings {
   }
   vumeter: {
     mode: VUMeterMode
+  }
+  lufsmeter: {
+    mode: LUFSMeterMode
   }
 }
 
@@ -88,6 +96,7 @@ interface VisualizerSettingsSnapshot {
   oscilloscopeMode: OscilloscopeMode
   vectorscopeMode: VectorscopeMode
   vuMeterMode: VUMeterMode
+  lufsMeterMode: LUFSMeterMode
 }
 
 interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
@@ -111,6 +120,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
   setVUMeterMode: (mode: VUMeterMode) => void
+  setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
 }
 
@@ -139,13 +149,14 @@ const DEFAULT_PITCH_LOCK = true
 const DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED = false
 const DEFAULT_OSCILLOSCOPE_MODE: OscilloscopeMode = 'classic'
 const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'lissajous'
-const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter']
+const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter']
 const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrum: 1,
   oscilloscope: 1.4,
   vectorscope: 0,
   spectrogram: 0,
   vumeter: 0,
+  lufsmeter: 0,
 }
 
 const MIN_WEIGHT = 0.4
@@ -162,6 +173,7 @@ function cloneScopeSettings(settings: AnalyzerProfileScopeSettings): AnalyzerPro
     vectorscope: { ...settings.vectorscope },
     spectrogram: { ...settings.spectrogram },
     vumeter: { ...settings.vumeter },
+    lufsmeter: { ...settings.lufsmeter },
   }
 }
 
@@ -190,7 +202,7 @@ function buildProfile(id: string, name: string, builtIn: boolean, state: Analyze
 
 const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   order: [...DEFAULT_SCOPE_ORDER],
-  hiddenScopes: ['spectrogram', 'vumeter'],
+  hiddenScopes: ['spectrogram', 'vumeter', 'lufsmeter'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
     spectrum: { fftSize: DEFAULT_FFT_SIZE },
@@ -208,6 +220,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     },
     vumeter: {
       mode: DEFAULT_VU_METER_MODE,
+    },
+    lufsmeter: {
+      mode: DEFAULT_LUFS_METER_MODE,
     },
   },
 }
@@ -269,7 +284,7 @@ function clampWidthWeight(scope: ScopeKind, value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_WIDTH_WEIGHTS[scope]
 
-  if ((scope === 'vectorscope' || scope === 'spectrogram' || scope === 'vumeter') && numeric <= 0) {
+  if ((scope === 'vectorscope' || scope === 'spectrogram' || scope === 'vumeter' || scope === 'lufsmeter') && numeric <= 0) {
     return 0
   }
 
@@ -337,6 +352,10 @@ function normalizeScopeSettings(
     ? raw.vumeter as Record<string, unknown>
     : {}
 
+  const rawLufsmeter = raw.lufsmeter && typeof raw.lufsmeter === 'object' && !Array.isArray(raw.lufsmeter)
+    ? raw.lufsmeter as Record<string, unknown>
+    : {}
+
   const fallbackUnderfill = raw.oscilloscopeUnderfillEnabled
   const underfillEnabled = typeof rawOscilloscope.underfillEnabled === 'boolean'
     ? rawOscilloscope.underfillEnabled
@@ -382,6 +401,9 @@ function normalizeScopeSettings(
     vumeter: {
       mode: isVUMeterMode(rawVumeter.mode) ? rawVumeter.mode : DEFAULT_VU_METER_MODE,
     },
+    lufsmeter: {
+      mode: isLUFSMeterMode(rawLufsmeter.mode) ? rawLufsmeter.mode : DEFAULT_LUFS_METER_MODE,
+    },
   }
 }
 
@@ -404,6 +426,7 @@ function normalizeWorkingState(
     vectorscope: clampWidthWeight('vectorscope', rawWeights.vectorscope),
     spectrogram: clampWidthWeight('spectrogram', rawWeights.spectrogram),
     vumeter: clampWidthWeight('vumeter', rawWeights.vumeter),
+    lufsmeter: clampWidthWeight('lufsmeter', rawWeights.lufsmeter),
   }
 
   // Auto-hide scopes that default to weight 0 and weren't explicitly saved
@@ -525,6 +548,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
     && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
     && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
+    && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
   )
 }
 
@@ -616,6 +640,7 @@ function buildSnapshot(
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
     vectorscopeMode: workingState.scopeSettings.vectorscope.mode,
     vuMeterMode: workingState.scopeSettings.vumeter.mode,
+    lufsMeterMode: workingState.scopeSettings.lufsmeter.mode,
   }
 }
 
@@ -1011,6 +1036,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         ...state.workingState.scopeSettings,
         vumeter: {
           ...state.workingState.scopeSettings.vumeter,
+          mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setLUFSMeterMode: (mode) => {
+    if (!isLUFSMeterMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        lufsmeter: {
+          ...state.workingState.scopeSettings.lufsmeter,
           mode,
         },
       },

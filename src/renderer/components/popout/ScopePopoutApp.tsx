@@ -5,7 +5,7 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
-import { SpectrumAnalyzer, Spectrogram, VUMeter } from '../../audio/visualizers'
+import { LUFSMeter, SpectrumAnalyzer, Spectrogram, VUMeter } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
@@ -102,6 +102,8 @@ function getScopeLabel(scope: ScopeKind): string {
       return 'Spectrogram'
     case 'vumeter':
       return 'VU Meter'
+    case 'lufsmeter':
+      return 'LUFS Meter'
   }
 }
 
@@ -886,6 +888,94 @@ function VUMeterScopeCanvas() {
   )
 }
 
+function LUFSMeterScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<LUFSMeter | null>(null)
+
+  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const sampleRateRef = useRef(48000)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'lufsmeter') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      lineColorRef.current = chunk.lineColor
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.stereoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.stereoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        lineColor: chunk.lineColor,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new LUFSMeter(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        dataSource: {
+          getPendingLUFSMeterSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
 function ScopeCanvas({ scope }: { scope: ScopeKind }) {
   switch (scope) {
     case 'spectrum':
@@ -898,6 +988,8 @@ function ScopeCanvas({ scope }: { scope: ScopeKind }) {
       return <SpectrogramScopeCanvas />
     case 'vumeter':
       return <VUMeterScopeCanvas />
+    case 'lufsmeter':
+      return <LUFSMeterScopeCanvas />
   }
 }
 

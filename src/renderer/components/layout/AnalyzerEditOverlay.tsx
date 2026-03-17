@@ -41,6 +41,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'Spectrogram'
     case 'vumeter':
       return 'VU Meter'
+    case 'lufsmeter':
+      return 'LUFS Meter'
   }
 }
 
@@ -102,6 +104,8 @@ function scopeStateLabel(
       return `${spectrogramScaleLabel(spectrogramScaleMode)} · ${spectrogramClarityLabel(spectrogramClarityMode)} x${spectrogramScrollSpeed.toFixed(1)} · FFT ${spectrogramFftSize}`
     case 'vumeter':
       return vuMeterModeLabel(vuMeterMode)
+    case 'lufsmeter':
+      return 'LUFS'
   }
 }
 
@@ -140,6 +144,12 @@ function stashStyle(scope: ScopeKind): CSSProperties {
         top: '38%',
         left: '38%',
         transform: 'rotate(-1deg)',
+      }
+    case 'lufsmeter':
+      return {
+        top: '14%',
+        left: '38%',
+        transform: 'rotate(1deg)',
       }
   }
 }
@@ -197,6 +207,21 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <rect x="22" y="56" width="70" height="5" rx="1" className="muted" />
           <rect x="57" y="56" width="20" height="5" rx="1" opacity="0.5" />
           <line x1="57" y1="54" x2="57" y2="63" className="muted" />
+        </svg>
+      )
+    case 'lufsmeter':
+      return (
+        <svg viewBox="0 0 144 80" aria-hidden="true">
+          <rect x="24" y="14" width="16" height="52" rx="1" className="muted" />
+          <rect x="24" y="30" width="16" height="36" rx="1" opacity="0.7" />
+          <rect x="54" y="14" width="16" height="52" rx="1" className="muted" />
+          <rect x="54" y="38" width="16" height="28" rx="1" opacity="0.6" />
+          <rect x="84" y="14" width="16" height="52" rx="1" className="muted" />
+          <rect x="84" y="42" width="16" height="24" rx="1" opacity="0.5" />
+          <text x="29" y="76" fontSize="8" textAnchor="middle" opacity="0.5">M</text>
+          <text x="59" y="76" fontSize="8" textAnchor="middle" opacity="0.5">S</text>
+          <text x="89" y="76" fontSize="8" textAnchor="middle" opacity="0.5">I</text>
+          <line x1="20" y1="34" x2="104" y2="34" className="muted" strokeDasharray="3 2" />
         </svg>
       )
   }
