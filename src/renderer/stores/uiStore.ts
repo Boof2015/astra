@@ -4,6 +4,10 @@ import type { Track } from '../types/audio'
 
 export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
+export const DEFAULT_ANALYZER_HEIGHT_PX = 196
+export const MIN_ANALYZER_HEIGHT_PX = 144
+export const MAX_ANALYZER_HEIGHT_PX = 320
+
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
@@ -42,6 +46,15 @@ function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
 }
 
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
+const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
+
+export function normalizeAnalyzerHeightPx(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_ANALYZER_HEIGHT_PX
+
+  const snapped = Math.round(numeric / 4) * 4
+  return Math.min(MAX_ANALYZER_HEIGHT_PX, Math.max(MIN_ANALYZER_HEIGHT_PX, snapped))
+}
 
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
@@ -60,7 +73,24 @@ function persistWaveformTimeDisplayModePreference(mode: WaveformTimeDisplayMode)
   }
 }
 
+function readAnalyzerHeightPreference(): number {
+  try {
+    return normalizeAnalyzerHeightPx(localStorage.getItem(ANALYZER_HEIGHT_STORAGE_KEY))
+  } catch {
+    return DEFAULT_ANALYZER_HEIGHT_PX
+  }
+}
+
+function persistAnalyzerHeightPreference(heightPx: number): void {
+  try {
+    localStorage.setItem(ANALYZER_HEIGHT_STORAGE_KEY, String(normalizeAnalyzerHeightPx(heightPx)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
+const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -72,6 +102,7 @@ interface UIStore {
   lyricsShelfExpanded: boolean
   isAnalyzerEditMode: boolean
   isFullscreen: boolean
+  analyzerHeightPx: number
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
@@ -89,6 +120,8 @@ interface UIStore {
   closeAnalyzerEditMode: () => void
   toggleAnalyzerEditMode: () => void
   setFullscreen: (fs: boolean) => void
+  setAnalyzerHeightPx: (heightPx: number) => void
+  resetAnalyzerHeightPx: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -114,6 +147,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   lyricsShelfExpanded: false,
   isAnalyzerEditMode: false,
   isFullscreen: false,
+  analyzerHeightPx: initialAnalyzerHeightPx,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
@@ -149,6 +183,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
   closeAnalyzerEditMode: () => set({ isAnalyzerEditMode: false }),
   toggleAnalyzerEditMode: () => set((s) => ({ isAnalyzerEditMode: !s.isAnalyzerEditMode })),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
+  setAnalyzerHeightPx: (heightPx) => {
+    const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
+    persistAnalyzerHeightPreference(nextHeightPx)
+    set({ analyzerHeightPx: nextHeightPx })
+  },
+  resetAnalyzerHeightPx: () => {
+    persistAnalyzerHeightPreference(DEFAULT_ANALYZER_HEIGHT_PX)
+    set({ analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX })
+  },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'
     persistWaveformTimeDisplayModePreference(nextMode)

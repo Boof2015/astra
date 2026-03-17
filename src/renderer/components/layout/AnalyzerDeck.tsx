@@ -1,19 +1,31 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
-import { useUIStore } from '../../stores/uiStore'
+import { DEFAULT_ANALYZER_HEIGHT_PX, normalizeAnalyzerHeightPx, useUIStore } from '../../stores/uiStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import AnalyzerEditOverlay from './AnalyzerEditOverlay'
 import { buildAnalyzerGridTemplateColumns } from './analyzerLayout'
+
+interface AnalyzerDeckProps {
+  onAnalyzerHeightPreviewChange?: (heightPx: number | null) => void
+}
 
 interface ScopeEditDragState {
   scope: ScopeKind
   fromHidden: boolean
 }
 
-export default function AnalyzerDeck() {
+interface HeightResizeSession {
+  startClientY: number
+  startHeightPx: number
+}
+
+export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: AnalyzerDeckProps) {
   const isAnalyzerEditMode = useUIStore((state) => state.isAnalyzerEditMode)
   const toggleAnalyzerEditMode = useUIStore((state) => state.toggleAnalyzerEditMode)
+  const analyzerHeightPx = useUIStore((state) => state.analyzerHeightPx)
+  const setAnalyzerHeightPx = useUIStore((state) => state.setAnalyzerHeightPx)
+  const resetAnalyzerHeightPx = useUIStore((state) => state.resetAnalyzerHeightPx)
 
   const activeProfileId = useVisualizerSettingsStore((state) => state.activeProfileId)
   const scopeOrder = useVisualizerSettingsStore((state) => state.scopeOrder)
@@ -27,6 +39,10 @@ export default function AnalyzerDeck() {
   const [resizePreviewWeights, setResizePreviewWeights] = useState<Partial<Record<ScopeKind, number>> | null>(null)
   const [hoveredScope, setHoveredScope] = useState<ScopeKind | null>(null)
   const [pinnedScope, setPinnedScope] = useState<ScopeKind | null>(null)
+  const [heightPreviewPx, setHeightPreviewPx] = useState<number | null>(null)
+  const heightResizeSessionRef = useRef<HeightResizeSession | null>(null)
+  const heightResizeCleanupRef = useRef<(() => void) | null>(null)
+  const heightPreviewPxRef = useRef<number | null>(null)
 
   const visibleScopes = useMemo(() => {
     return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
@@ -61,13 +77,33 @@ export default function AnalyzerDeck() {
   }, [])
 
   useEffect(() => {
+    heightPreviewPxRef.current = heightPreviewPx
+    onAnalyzerHeightPreviewChange?.(heightPreviewPx)
+  }, [heightPreviewPx, onAnalyzerHeightPreviewChange])
+
+  const stopHeightResize = useCallback((commit: boolean) => {
+    heightResizeCleanupRef.current?.()
+    heightResizeCleanupRef.current = null
+
+    const previewHeightPx = heightPreviewPxRef.current
+    heightResizeSessionRef.current = null
+    heightPreviewPxRef.current = null
+    setHeightPreviewPx(null)
+
+    if (commit && previewHeightPx !== null) {
+      setAnalyzerHeightPx(previewHeightPx)
+    }
+  }, [setAnalyzerHeightPx])
+
+  useEffect(() => {
     if (!isAnalyzerEditMode) {
+      stopHeightResize(false)
       resetDragState()
       setResizePreviewWeights(null)
       setHoveredScope(null)
       setPinnedScope(null)
     }
-  }, [isAnalyzerEditMode, resetDragState])
+  }, [isAnalyzerEditMode, resetDragState, stopHeightResize])
 
   useEffect(() => {
     if (!isAnalyzerEditMode) return
@@ -205,6 +241,59 @@ export default function AnalyzerDeck() {
     resetDragState()
   }, [commitDeckLayout, dragState, hiddenOrderedScopes, resetDragState, visibleScopes])
 
+  const startHeightResizeDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!isAnalyzerEditMode) return
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    heightResizeSessionRef.current = {
+      startClientY: event.clientY,
+      startHeightPx: heightPreviewPxRef.current ?? analyzerHeightPx,
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const session = heightResizeSessionRef.current
+      if (!session) return
+
+      const nextHeightPx = normalizeAnalyzerHeightPx(
+        session.startHeightPx + (moveEvent.clientY - session.startClientY)
+      )
+
+      heightPreviewPxRef.current = nextHeightPx
+      setHeightPreviewPx((current) => current === nextHeightPx ? current : nextHeightPx)
+    }
+
+    const handlePointerUp = () => {
+      stopHeightResize(true)
+    }
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+
+    heightResizeCleanupRef.current = cleanup
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+  }, [analyzerHeightPx, isAnalyzerEditMode, stopHeightResize])
+
+  const handleHeightReset = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    stopHeightResize(false)
+    resetAnalyzerHeightPx()
+  }, [resetAnalyzerHeightPx, stopHeightResize])
+
   return (
     <header className="analyzer-deck">
       <button
@@ -258,6 +347,19 @@ export default function AnalyzerDeck() {
           onHiddenDrop={handleHiddenDrop}
           onScopeHoverChange={setHoveredScope}
         />
+      )}
+
+      {isAnalyzerEditMode && (
+        <button
+          type="button"
+          className="analyzer-deck-height-seam"
+          onPointerDown={startHeightResizeDrag}
+          onDoubleClick={handleHeightReset}
+          aria-label={`Resize analyzer rack height. Double-click to reset to ${DEFAULT_ANALYZER_HEIGHT_PX}px.`}
+        >
+          <span className="analyzer-deck-height-seam-line" aria-hidden="true" />
+          <span className="analyzer-deck-height-seam-grip" aria-hidden="true" />
+        </button>
       )}
     </header>
   )

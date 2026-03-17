@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
 import AnalyzerDeck from './components/layout/AnalyzerDeck'
@@ -74,6 +74,12 @@ function App() {
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
+  const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
+  const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
+
+  const appStyle = useMemo(() => ({
+    '--analyzer-height': `${analyzerHeightPreviewPx ?? analyzerHeightPx}px`,
+  }) as CSSProperties, [analyzerHeightPreviewPx, analyzerHeightPx])
 
   useEffect(() => {
     useThemeStore.getState().initFromSaved()
@@ -138,9 +144,12 @@ function App() {
   }, [])
 
   return (
-    <div className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}>
+    <div
+      className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
+      style={appStyle}
+    >
       <TitleBar />
-      <AnalyzerDeck />
+      <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
       <div className="app-body">
         <Sidebar />
         <div className="app-content">
