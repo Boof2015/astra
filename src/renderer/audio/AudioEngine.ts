@@ -81,6 +81,7 @@ export interface VisualizerConsumerDemand {
   spectrogram?: boolean
   vumeter?: boolean
   lufsmeter?: boolean
+  waveform?: boolean
   miniSpectrum?: boolean
   miniOscilloscope?: boolean
 }
@@ -198,6 +199,7 @@ export class AudioEngine {
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingVUMeterSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingLUFSMeterSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingWaveformSamples: Float32Array[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
@@ -364,6 +366,7 @@ export class AudioEngine {
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
+    this.pendingWaveformSamples = []
     this.pendingMiniVisualizerChunks = []
     this.resetBitPerfectVisualizerGain()
     this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
@@ -378,6 +381,7 @@ export class AudioEngine {
       spectrogram: Boolean(demand.spectrogram),
       vumeter: Boolean(demand.vumeter),
       lufsmeter: Boolean(demand.lufsmeter),
+      waveform: Boolean(demand.waveform),
       miniSpectrum: Boolean(demand.miniSpectrum),
       miniOscilloscope: Boolean(demand.miniOscilloscope),
     }
@@ -436,6 +440,9 @@ export class AudioEngine {
     if (!this.hasVisualizerDemand('lufsmeter')) {
       this.pendingLUFSMeterSamples = []
     }
+    if (!this.hasVisualizerDemand('waveform')) {
+      this.pendingWaveformSamples = []
+    }
     if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
       this.pendingMiniVisualizerChunks = []
     }
@@ -457,6 +464,7 @@ export class AudioEngine {
     const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
     const vuMeterDemand = this.hasVisualizerDemand('vumeter')
     const lufsMeterDemand = this.hasVisualizerDemand('lufsmeter')
+    const waveformDemand = this.hasVisualizerDemand('waveform')
     const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
     const miniOscilloscopeDemand = this.hasMiniVisualizerDemand('oscilloscope')
 
@@ -541,6 +549,15 @@ export class AudioEngine {
         left: new Float32Array(normalizedLeft),
         right: new Float32Array(normalizedRight)
       })
+    }
+
+    if (waveformDemand) {
+      if (this.pendingWaveformSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingWaveformSamples = this.pendingWaveformSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingWaveformSamples.push(new Float32Array(normalizedLeft))
     }
   }
 
@@ -3018,6 +3035,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending mono chunks for scrolling waveform processing.
+  flushPendingWaveformSamples(): Float32Array[] {
+    const samples = this.pendingWaveformSamples
+    this.pendingWaveformSamples = []
+    return samples
+  }
+
   // Flush all pending chunks for mini-player real-time visualizer stream.
   flushPendingMiniVisualizerChunks(): { left: Float32Array; mono: Float32Array }[] {
     const samples = this.pendingMiniVisualizerChunks
@@ -3641,6 +3665,7 @@ export class AudioEngine {
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
+    this.pendingWaveformSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }

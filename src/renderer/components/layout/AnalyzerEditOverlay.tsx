@@ -43,6 +43,8 @@ function scopeLabel(scope: ScopeKind): string {
       return 'VU Meter'
     case 'lufsmeter':
       return 'LUFS Meter'
+    case 'waveform':
+      return 'Waveform'
   }
 }
 
@@ -106,6 +108,8 @@ function scopeStateLabel(
       return vuMeterModeLabel(vuMeterMode)
     case 'lufsmeter':
       return 'LUFS'
+    case 'waveform':
+      return 'Scrolling'
   }
 }
 
@@ -150,6 +154,12 @@ function stashStyle(scope: ScopeKind): CSSProperties {
         top: '14%',
         left: '38%',
         transform: 'rotate(1deg)',
+      }
+    case 'waveform':
+      return {
+        bottom: '38%',
+        right: '18%',
+        transform: 'rotate(-3deg)',
       }
   }
 }
@@ -222,6 +232,24 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <text x="59" y="76" fontSize="8" textAnchor="middle" opacity="0.5">S</text>
           <text x="89" y="76" fontSize="8" textAnchor="middle" opacity="0.5">I</text>
           <line x1="20" y1="34" x2="104" y2="34" className="muted" strokeDasharray="3 2" />
+        </svg>
+      )
+    case 'waveform':
+      return (
+        <svg viewBox="0 0 144 80" aria-hidden="true">
+          <path d="M10 40 H134" className="muted" />
+          <line x1="18" y1="34" x2="18" y2="46" opacity="0.3" />
+          <line x1="28" y1="28" x2="28" y2="52" opacity="0.4" />
+          <line x1="38" y1="22" x2="38" y2="58" opacity="0.5" />
+          <line x1="48" y1="18" x2="48" y2="62" opacity="0.6" />
+          <line x1="58" y1="24" x2="58" y2="56" opacity="0.7" />
+          <line x1="68" y1="14" x2="68" y2="66" opacity="0.8" />
+          <line x1="78" y1="20" x2="78" y2="60" opacity="0.9" />
+          <line x1="88" y1="26" x2="88" y2="54" opacity="0.7" />
+          <line x1="98" y1="30" x2="98" y2="50" opacity="0.5" />
+          <line x1="108" y1="32" x2="108" y2="48" opacity="0.4" />
+          <line x1="118" y1="28" x2="118" y2="52" opacity="0.6" />
+          <line x1="128" y1="22" x2="128" y2="58" opacity="0.8" />
         </svg>
       )
   }

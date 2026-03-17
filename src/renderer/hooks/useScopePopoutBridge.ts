@@ -16,6 +16,7 @@ const EMPTY_RESET_STATE: ResetState = {
   spectrogram: false,
   vumeter: false,
   lufsmeter: false,
+  waveform: false,
 }
 
 function flushScopeQueue(scope: ScopeKind): void {
@@ -37,6 +38,9 @@ function flushScopeQueue(scope: ScopeKind): void {
       break
     case 'lufsmeter':
       audioEngine.flushPendingLUFSMeterSamples()
+      break
+    case 'waveform':
+      audioEngine.flushPendingWaveformSamples()
       break
   }
 }
@@ -88,6 +92,7 @@ export function useScopePopoutBridge(): void {
       spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
       vumeter: isVisualizerRunning && scopePopoutState.vumeter,
       lufsmeter: isVisualizerRunning && scopePopoutState.lufsmeter,
+      waveform: isVisualizerRunning && scopePopoutState.waveform,
     })
 
     return () => {
@@ -181,6 +186,16 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
             lufsMeterMode,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'waveform':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'waveform',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            monoChunks: [],
             lineColor,
             reset: true,
           })
@@ -291,6 +306,20 @@ export function useScopePopoutBridge(): void {
               sampleRate: audioEngine.getSampleRate(),
               stereoChunks,
               lufsMeterMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
+          case 'waveform': {
+            const monoChunks = audioEngine.flushPendingWaveformSamples()
+            if (monoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'waveform',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              monoChunks,
               lineColor,
               reset: false,
             })

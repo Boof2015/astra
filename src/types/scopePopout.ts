@@ -2,9 +2,9 @@ import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
 import type { VUMeterMode } from './vumeter'
 
-export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter'
+export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter' | 'waveform'
 
-export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter']
+export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter', 'waveform']
 
 export interface ScopePopoutState {
   spectrum: boolean
@@ -13,6 +13,7 @@ export interface ScopePopoutState {
   spectrogram: boolean
   vumeter: boolean
   lufsmeter: boolean
+  waveform: boolean
 }
 
 export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
@@ -22,10 +23,11 @@ export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
   spectrogram: false,
   vumeter: false,
   lufsmeter: false,
+  waveform: false,
 }
 
 export function isScopeKind(value: unknown): value is ScopeKind {
-  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter' || value === 'lufsmeter'
+  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter' || value === 'lufsmeter' || value === 'waveform'
 }
 
 interface ScopePopoutChunkBase {
@@ -86,6 +88,11 @@ export interface ScopePopoutLUFSMeterChunk extends ScopePopoutChunkBase {
   lufsMeterMode: LUFSMeterMode
 }
 
+export interface ScopePopoutWaveformChunk extends ScopePopoutChunkBase {
+  scope: 'waveform'
+  monoChunks: Float32Array[]
+}
+
 export type ScopePopoutChunk =
   | ScopePopoutSpectrumChunk
   | ScopePopoutOscilloscopeChunk
@@ -93,3 +100,4 @@ export type ScopePopoutChunk =
   | ScopePopoutSpectrogramChunk
   | ScopePopoutVUMeterChunk
   | ScopePopoutLUFSMeterChunk
+  | ScopePopoutWaveformChunk

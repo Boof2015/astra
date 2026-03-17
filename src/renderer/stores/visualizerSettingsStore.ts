@@ -58,6 +58,7 @@ export interface AnalyzerProfileScopeSettings {
   lufsmeter: {
     mode: LUFSMeterMode
   }
+  waveform: Record<string, never>
 }
 
 export interface AnalyzerWorkingState {
@@ -149,7 +150,7 @@ const DEFAULT_PITCH_LOCK = true
 const DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED = false
 const DEFAULT_OSCILLOSCOPE_MODE: OscilloscopeMode = 'classic'
 const DEFAULT_VECTORSCOPE_MODE: VectorscopeMode = 'lissajous'
-const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter']
+const DEFAULT_SCOPE_ORDER: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'waveform', 'vumeter', 'lufsmeter']
 const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrum: 1,
   oscilloscope: 1.4,
@@ -157,6 +158,7 @@ const DEFAULT_WIDTH_WEIGHTS: Record<ScopeKind, number> = {
   spectrogram: 0,
   vumeter: 0,
   lufsmeter: 0,
+  waveform: 0,
 }
 
 const MIN_WEIGHT = 0.4
@@ -174,6 +176,7 @@ function cloneScopeSettings(settings: AnalyzerProfileScopeSettings): AnalyzerPro
     spectrogram: { ...settings.spectrogram },
     vumeter: { ...settings.vumeter },
     lufsmeter: { ...settings.lufsmeter },
+    waveform: { ...settings.waveform },
   }
 }
 
@@ -202,7 +205,7 @@ function buildProfile(id: string, name: string, builtIn: boolean, state: Analyze
 
 const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   order: [...DEFAULT_SCOPE_ORDER],
-  hiddenScopes: ['spectrogram', 'vumeter', 'lufsmeter'],
+  hiddenScopes: ['spectrogram', 'waveform', 'vumeter', 'lufsmeter'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
     spectrum: { fftSize: DEFAULT_FFT_SIZE },
@@ -224,6 +227,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     lufsmeter: {
       mode: DEFAULT_LUFS_METER_MODE,
     },
+    waveform: {},
   },
 }
 
@@ -284,7 +288,7 @@ function clampWidthWeight(scope: ScopeKind, value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_WIDTH_WEIGHTS[scope]
 
-  if ((scope === 'vectorscope' || scope === 'spectrogram' || scope === 'vumeter' || scope === 'lufsmeter') && numeric <= 0) {
+  if ((scope === 'vectorscope' || scope === 'spectrogram' || scope === 'waveform' || scope === 'vumeter' || scope === 'lufsmeter') && numeric <= 0) {
     return 0
   }
 
@@ -404,6 +408,7 @@ function normalizeScopeSettings(
     lufsmeter: {
       mode: isLUFSMeterMode(rawLufsmeter.mode) ? rawLufsmeter.mode : DEFAULT_LUFS_METER_MODE,
     },
+    waveform: {},
   }
 }
 
@@ -427,6 +432,7 @@ function normalizeWorkingState(
     spectrogram: clampWidthWeight('spectrogram', rawWeights.spectrogram),
     vumeter: clampWidthWeight('vumeter', rawWeights.vumeter),
     lufsmeter: clampWidthWeight('lufsmeter', rawWeights.lufsmeter),
+    waveform: clampWidthWeight('waveform', rawWeights.waveform),
   }
 
   // Auto-hide scopes that default to weight 0 and weren't explicitly saved

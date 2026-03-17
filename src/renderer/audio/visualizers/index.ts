@@ -4,3 +4,4 @@ export { SpectrumAnalyzer, type SpectrumAnalyzerOptions } from './SpectrumAnalyz
 export { Spectrogram, type SpectrogramOptions } from './Spectrogram'
 export { Vectorscope, type VectorscopeOptions } from './Vectorscope'
 export { VUMeter, type VUMeterOptions } from './VUMeter'
+export { Waveform, type WaveformOptions } from './Waveform'

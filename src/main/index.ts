@@ -111,6 +111,7 @@ const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   spectrogram: null,
   vumeter: null,
   lufsmeter: null,
+  waveform: null,
 }
 let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
@@ -392,6 +393,13 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
     minWidth: 320,
     minHeight: 220,
   },
+  waveform: {
+    title: 'Astra Waveform',
+    width: 760,
+    height: 320,
+    minWidth: 420,
+    minHeight: 220,
+  },
 }
 
 // Supported audio formats
@@ -562,6 +570,7 @@ function resolveScopePopoutPosition(scope: ScopeKind): Pick<Electron.BrowserWind
     spectrogram: { x: 152, y: 152 },
     vumeter: { x: 184, y: 184 },
     lufsmeter: { x: 216, y: 216 },
+    waveform: { x: 248, y: 248 },
   }
 
   const targetX = bounds.x + offsets[scope].x
