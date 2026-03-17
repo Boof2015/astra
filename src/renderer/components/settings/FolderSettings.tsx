@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { type FolderSubdirectoryEntry, type ScanIssueEntry, useLibraryStore } from '../../stores/libraryStore'
 
 interface FolderSettingsProps {
@@ -44,25 +45,28 @@ function makeNodeKey(folderPath: string, relativePath: string): string {
   return `${folderPath}::${relativePath}`
 }
 
+function stopSyntheticEventPropagation(event: { preventDefault: () => void; stopPropagation: () => void }): void {
+  event.preventDefault()
+  event.stopPropagation()
+}
+
 export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps) {
-  const {
-    folders,
-    loadFolders,
-    addFolderWithoutScan,
-    removeFolder,
-    isScanning,
-    isCancelingScan,
-    scanProgress,
-    scanStage,
-    folderWarnings,
-    lastScanIssueLog,
-    folderSubfolderSummaries,
-    loadFolderSubfolderSummary,
-    listFolderSubdirectories,
-    setFolderSubfolderExcluded,
-    scanFolders,
-    cancelScan,
-  } = useLibraryStore()
+  const folders = useLibraryStore((state) => state.folders)
+  const loadFolders = useLibraryStore((state) => state.loadFolders)
+  const addFolderWithoutScan = useLibraryStore((state) => state.addFolderWithoutScan)
+  const removeFolder = useLibraryStore((state) => state.removeFolder)
+  const isScanning = useLibraryStore((state) => state.isScanning)
+  const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
+  const scanProgress = useLibraryStore((state) => state.scanProgress)
+  const scanStage = useLibraryStore((state) => state.scanStage)
+  const folderWarnings = useLibraryStore((state) => state.folderWarnings)
+  const lastScanIssueLog = useLibraryStore((state) => state.lastScanIssueLog)
+  const folderSubfolderSummaries = useLibraryStore((state) => state.folderSubfolderSummaries)
+  const loadFolderSubfolderSummary = useLibraryStore((state) => state.loadFolderSubfolderSummary)
+  const listFolderSubdirectories = useLibraryStore((state) => state.listFolderSubdirectories)
+  const setFolderSubfolderExcluded = useLibraryStore((state) => state.setFolderSubfolderExcluded)
+  const scanFolders = useLibraryStore((state) => state.scanFolders)
+  const cancelScan = useLibraryStore((state) => state.cancelScan)
 
   const [removingPath, setRemovingPath] = useState<string | null>(null)
   const [pendingExclusionChangesByFolder, setPendingExclusionChangesByFolder] = useState<Record<string, Record<string, boolean>>>({})
@@ -144,6 +148,34 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [cancelScan, isOpen, isScanning])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const body = document.body
+    const appElement = document.querySelector('.app')
+    const previousAriaHidden = appElement?.getAttribute('aria-hidden') ?? null
+    const hadInert = appElement?.hasAttribute('inert') ?? false
+
+    body.classList.add('folder-settings-open')
+    appElement?.setAttribute('aria-hidden', 'true')
+    appElement?.setAttribute('inert', '')
+
+    return () => {
+      body.classList.remove('folder-settings-open')
+
+      if (!appElement) return
+      if (previousAriaHidden === null) {
+        appElement.removeAttribute('aria-hidden')
+      } else {
+        appElement.setAttribute('aria-hidden', previousAriaHidden)
+      }
+
+      if (!hadInert) {
+        appElement.removeAttribute('inert')
+      }
+    }
+  }, [isOpen])
 
   const pendingScanFolderPaths = useMemo(() => {
     const paths = new Set<string>(pendingFolderScans)
@@ -271,6 +303,21 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
   const handleClose = () => {
     if (!canClose) return
     onClose()
+  }
+
+  const isolateModalShellEvent = (event: React.MouseEvent | React.PointerEvent) => {
+    event.stopPropagation()
+  }
+
+  const handleActionButtonClick = (
+    action: () => void | Promise<void>
+  ) => (event: React.MouseEvent<HTMLButtonElement>) => {
+    stopSyntheticEventPropagation(event)
+    void action()
+  }
+
+  const handleActionButtonPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
   }
 
   const getEffectiveExcludedState = (folderPath: string, entry: FolderSubdirectoryEntry): boolean => {
@@ -474,12 +521,19 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     }
   }
 
-  function TreeNode({ folderPath, entry, guideMask, isLast }: {
+  const renderTreeNode = ({
+    elementKey,
+    folderPath,
+    entry,
+    guideMask,
+    isLast,
+  }: {
+    elementKey: string
     folderPath: string
     entry: FolderSubdirectoryEntry
     guideMask: boolean[]
     isLast: boolean
-  }) {
+  }) => {
     const key = makeNodeKey(folderPath, entry.relativePath)
     const isExpanded = expandedNodes.has(key)
     const isLoading = loadingNodes.has(key)
@@ -493,11 +547,10 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
 
     const issueCount = subfolderIssueMap.get(key) ?? 0
     const isInaccessible = inaccessibleNodeKeys.has(key)
-    // subfolderIssueMap has key with value 0 = "contains child issues", value > 0 = "has direct scan errors"
     const hasChildIssues = !isInaccessible && issueCount === 0 && subfolderIssueMap.has(key)
 
     return (
-      <>
+      <Fragment key={elementKey}>
         <div className={`folder-tree-node ${effectiveExcluded ? 'is-excluded' : ''} ${hasPendingOverride ? 'has-pending-change' : ''}`}>
           <span className="folder-tree-guide">
             {guideMask.map((hasLine, i) => (
@@ -508,7 +561,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
           {entry.hasChildren ? (
             <button
               className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
-              onClick={() => void handleToggleExpand(folderPath, entry.relativePath)}
+              onClick={handleActionButtonClick(() => handleToggleExpand(folderPath, entry.relativePath))}
+              onPointerDown={handleActionButtonPointerDown}
               disabled={isScanning || isSavingChanges}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -540,7 +594,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
           {hasPendingOverride && <span className="folder-tree-badge unsaved">Unsaved</span>}
           <button
             className="folder-tree-toggle-btn"
-            onClick={() => handleToggleExcluded(folderPath, entry)}
+            onClick={handleActionButtonClick(() => handleToggleExcluded(folderPath, entry))}
+            onPointerDown={handleActionButtonPointerDown}
             disabled={isScanning || isSavingChanges}
           >
             {effectiveExcluded ? 'Include' : 'Exclude'}
@@ -583,233 +638,241 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
               </div>
             ) : (
               children.map((child, index) => (
-                <TreeNode
-                  key={child.relativePath}
-                  folderPath={folderPath}
-                  entry={child}
-                  guideMask={childMask}
-                  isLast={index === children.length - 1}
-                />
+                renderTreeNode({
+                  elementKey: child.relativePath,
+                  folderPath,
+                  entry: child,
+                  guideMask: childMask,
+                  isLast: index === children.length - 1,
+                })
               ))
             )}
           </div>
         )}
-      </>
+      </Fragment>
     )
   }
 
   if (!isOpen) return null
-
-  return (
-    <div className="modal-overlay" onClick={handleClose}>
-      <div className="folder-settings-shell" onClick={(event) => event.stopPropagation()}>
-      <div className={`modal-content folder-settings ${showScanIssuePopout ? 'has-detached-issues' : ''}`}>
-        <div className="folder-settings-main">
-          <div className="modal-header">
-            <h2>Library Folders</h2>
-            <button className="modal-close" onClick={handleClose} aria-label="Close" disabled={!canClose}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-              </svg>
-            </button>
-          </div>
-
-          <div className="modal-body folder-settings-body">
-            {hasPendingChanges && (
-              <div className="folder-settings-pending-overview">
-                {pendingScanCount} folder{pendingScanCount === 1 ? '' : 's'} queued for scan.
-              </div>
-            )}
-
-            {folders.length === 0 ? (
-              <div className="folder-empty">
-                <p>No folders added to library</p>
-                <p className="folder-empty-hint">Add a folder to start scanning your music collection</p>
-              </div>
-            ) : (
-              <div className="folder-tree">
-                {folders.map((folder) => {
-                  const rootKey = makeNodeKey(folder.path, '')
-                  const isExpanded = expandedNodes.has(rootKey)
-                  const isLoading = loadingNodes.has(rootKey)
-                  const children = childrenCache.get(rootKey)
-                  const summary = folderSubfolderSummaries[folder.path]
-                  const needsScan = pendingScanFolderSet.has(folder.path)
-                  const rootError = nodeErrors.get(rootKey)
-                  const rootIssueCount = folderIssueCountMap[folder.path] ?? 0
-
-                  return (
-                    <div key={folder.path} className="folder-tree-root-group">
-                      <div className="folder-tree-node is-root">
-                        <button
-                          className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
-                          onClick={() => void handleToggleExpand(folder.path, '')}
-                          disabled={isScanning || isSavingChanges}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
-                        </button>
-                        <svg className="folder-tree-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
-                        </svg>
-                        <div className="folder-tree-label">
-                          <span className="folder-tree-name" title={folder.path}>{folder.path}</span>
-                          <span className="folder-tree-meta">
-                            {summary
-                              ? formatSubfolderSummary(summary.totalSubfolders, summary.excludedSubfolders)
-                              : 'Loading...'}
-                          </span>
-                        </div>
-                        {rootIssueCount > 0 && (
-                          <span className="folder-tree-issue-count" title={`${rootIssueCount} scan error${rootIssueCount !== 1 ? 's' : ''}`}>
-                            {rootIssueCount}
-                          </span>
-                        )}
-                        {needsScan && <span className="folder-tree-badge needs-scan">Needs Scan</span>}
-                        <button
-                          className="folder-remove"
-                          onClick={() => void handleRemoveFolder(folder.path)}
-                          disabled={removingPath === folder.path || isScanning || isSavingChanges}
-                          title="Remove folder"
-                        >
-                          {removingPath === folder.path ? (
-                            <div className="loading-spinner-small" />
-                          ) : (
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                            </svg>
-                          )}
-                        </button>
-                      </div>
-
-                      {isLoading && (
-                        <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
-                          <div className="loading-spinner-small" />
-                          <span>Loading...</span>
-                        </div>
-                      )}
-
-                      {rootError && (
-                        <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
-                          {rootError}
-                        </div>
-                      )}
-
-                      {isExpanded && children && (
-                        <div className="folder-tree-children">
-                          {children.length === 0 ? (
-                            <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
-                              <span style={{ opacity: 0.5 }}>(empty)</span>
-                            </div>
-                          ) : (
-                            children.map((entry, index) => (
-                              <TreeNode
-                                key={entry.relativePath}
-                                folderPath={folder.path}
-                                entry={entry}
-                                guideMask={[]}
-                                isLast={index === children.length - 1}
-                              />
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="modal-footer folder-settings-footer">
-            <div className={`folder-settings-feedback ${saveStatus ? `is-${saveStatus.tone}` : ''}`}>
-              {saveStatus?.message ?? (hasPendingChanges ? 'Review changes, then save to start scanning.' : '')}
+  const modalContent = (
+    <div className="modal-overlay folder-settings-overlay" onClick={handleClose}>
+      <div
+        className="folder-settings-shell"
+        onClick={isolateModalShellEvent}
+        onMouseDown={isolateModalShellEvent}
+        onPointerDown={isolateModalShellEvent}
+      >
+        <div className={`modal-content folder-settings ${showScanIssuePopout ? 'has-detached-issues' : ''}`}>
+          <div className="folder-settings-main">
+            <div className="modal-header">
+              <h2>Library Folders</h2>
+              <button className="modal-close" onClick={handleClose} aria-label="Close" disabled={!canClose}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
             </div>
 
-            <div className="folder-settings-footer-actions">
-              {totalPendingChangeCount > 0 && (
-                <button
-                  className="settings-btn"
-                  onClick={handleDiscardAllPendingChanges}
-                  disabled={isSavingChanges || isScanning}
-                >
-                  Discard
-                </button>
+            <div className="modal-body folder-settings-body">
+              {hasPendingChanges && (
+                <div className="folder-settings-pending-overview">
+                  {pendingScanCount} folder{pendingScanCount === 1 ? '' : 's'} queued for scan.
+                </div>
               )}
 
-              <button
-                className="add-folder-btn"
-                onClick={() => void handleAddFolder()}
-                disabled={isScanning || isSavingChanges}
-              >
-                <span>+</span> Add Folder
-              </button>
-
-              <button
-                className="settings-btn settings-btn-primary"
-                onClick={() => void handleSaveAndScan()}
-                disabled={isSavingChanges || isScanning || pendingScanCount === 0}
-              >
-                {(isSavingChanges || isScanning)
-                  ? 'Saving...'
-                  : `Save & Scan${pendingScanCount > 0 ? ` (${pendingScanCount})` : ''}`}
-              </button>
-            </div>
-          </div>
-
-          {isScanning && scanProgress && (
-            <div className="scan-overlay folder-settings-scan-overlay">
-              <div className="scan-progress">
-                <button
-                  className="scan-cancel-btn"
-                  onClick={() => void cancelScan()}
-                  disabled={isCancelingScan}
-                  aria-label="Cancel scan"
-                  title="Cancel scan (Esc)"
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-                  </svg>
-                </button>
-                <div className="loading-spinner" />
-                <div className="scan-title">{scanTitle}</div>
-                {showCount && <div className="scan-count">{scanProgress.current} / {scanProgress.total} {countUnit}</div>}
-                <div className="scan-bar">
-                  <div className="scan-bar-fill" style={{ width: `${displayScanPercent}%` }} />
+              {folders.length === 0 ? (
+                <div className="folder-empty">
+                  <p>No folders added to library</p>
+                  <p className="folder-empty-hint">Add a folder to start scanning your music collection</p>
                 </div>
-                {scanDetail && <div className="scan-file">{scanDetail}</div>}
-                <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
+              ) : (
+                <div className="folder-tree">
+                  {folders.map((folder) => {
+                    const rootKey = makeNodeKey(folder.path, '')
+                    const isExpanded = expandedNodes.has(rootKey)
+                    const isLoading = loadingNodes.has(rootKey)
+                    const children = childrenCache.get(rootKey)
+                    const summary = folderSubfolderSummaries[folder.path]
+                    const needsScan = pendingScanFolderSet.has(folder.path)
+                    const rootError = nodeErrors.get(rootKey)
+                    const rootIssueCount = folderIssueCountMap[folder.path] ?? 0
+
+                    return (
+                      <div key={folder.path} className="folder-tree-root-group">
+                        <div className="folder-tree-node is-root">
+                          <button
+                            className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
+                            onClick={handleActionButtonClick(() => handleToggleExpand(folder.path, ''))}
+                            onPointerDown={handleActionButtonPointerDown}
+                            disabled={isScanning || isSavingChanges}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </button>
+                          <svg className="folder-tree-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                          </svg>
+                          <div className="folder-tree-label">
+                            <span className="folder-tree-name" title={folder.path}>{folder.path}</span>
+                            <span className="folder-tree-meta">
+                              {summary
+                                ? formatSubfolderSummary(summary.totalSubfolders, summary.excludedSubfolders)
+                                : 'Loading...'}
+                            </span>
+                          </div>
+                          {rootIssueCount > 0 && (
+                            <span className="folder-tree-issue-count" title={`${rootIssueCount} scan error${rootIssueCount !== 1 ? 's' : ''}`}>
+                              {rootIssueCount}
+                            </span>
+                          )}
+                          {needsScan && <span className="folder-tree-badge needs-scan">Needs Scan</span>}
+                          <button
+                            className="folder-remove"
+                            onClick={handleActionButtonClick(() => handleRemoveFolder(folder.path))}
+                            onPointerDown={handleActionButtonPointerDown}
+                            disabled={removingPath === folder.path || isScanning || isSavingChanges}
+                            title="Remove folder"
+                          >
+                            {removingPath === folder.path ? (
+                              <div className="loading-spinner-small" />
+                            ) : (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+
+                        {isLoading && (
+                          <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                            <div className="loading-spinner-small" />
+                            <span>Loading...</span>
+                          </div>
+                        )}
+
+                        {rootError && (
+                          <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                            {rootError}
+                          </div>
+                        )}
+
+                        {isExpanded && children && (
+                          <div className="folder-tree-children">
+                            {children.length === 0 ? (
+                              <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
+                                <span style={{ opacity: 0.5 }}>(empty)</span>
+                              </div>
+                            ) : (
+                              children.map((entry, index) => (
+                                renderTreeNode({
+                                  elementKey: entry.relativePath,
+                                  folderPath: folder.path,
+                                  entry,
+                                  guideMask: [],
+                                  isLast: index === children.length - 1,
+                                })
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer folder-settings-footer">
+              <div className={`folder-settings-feedback ${saveStatus ? `is-${saveStatus.tone}` : ''}`}>
+                {saveStatus?.message ?? (hasPendingChanges ? 'Review changes, then save to start scanning.' : '')}
+              </div>
+
+              <div className="folder-settings-footer-actions">
+                {totalPendingChangeCount > 0 && (
+                  <button
+                    className="settings-btn"
+                    onClick={handleDiscardAllPendingChanges}
+                    disabled={isSavingChanges || isScanning}
+                  >
+                    Discard
+                  </button>
+                )}
+
+                <button
+                  className="add-folder-btn"
+                  onClick={() => void handleAddFolder()}
+                  disabled={isScanning || isSavingChanges}
+                >
+                  <span>+</span> Add Folder
+                </button>
+
+                <button
+                  className="settings-btn settings-btn-primary"
+                  onClick={() => void handleSaveAndScan()}
+                  disabled={isSavingChanges || isScanning || pendingScanCount === 0}
+                >
+                  {(isSavingChanges || isScanning)
+                    ? 'Saving...'
+                    : `Save & Scan${pendingScanCount > 0 ? ` (${pendingScanCount})` : ''}`}
+                </button>
               </div>
             </div>
-          )}
-        </div>
-      </div>
 
-      {showScanIssuePopout && lastScanIssueLog && (
-        <div className="modal-content folder-scan-issues-window" aria-live="polite">
-          <div className="folder-scan-issues-header">
-            <h3>Scan Errors</h3>
-            <p>{lastScanIssueLog.total} file{lastScanIssueLog.total === 1 ? '' : 's'} skipped and not indexed.</p>
-            {lastScanIssueLog.truncated && (
-              <p className="folder-scan-issues-subtle">Showing {lastScanIssueLog.shown} of {lastScanIssueLog.total}.</p>
+            {isScanning && scanProgress && (
+              <div className="scan-overlay folder-settings-scan-overlay">
+                <div className="scan-progress">
+                  <button
+                    className="scan-cancel-btn"
+                    onClick={() => void cancelScan()}
+                    disabled={isCancelingScan}
+                    aria-label="Cancel scan"
+                    title="Cancel scan (Esc)"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                    </svg>
+                  </button>
+                  <div className="loading-spinner" />
+                  <div className="scan-title">{scanTitle}</div>
+                  {showCount && <div className="scan-count">{scanProgress.current} / {scanProgress.total} {countUnit}</div>}
+                  <div className="scan-bar">
+                    <div className="scan-bar-fill" style={{ width: `${displayScanPercent}%` }} />
+                  </div>
+                  {scanDetail && <div className="scan-file">{scanDetail}</div>}
+                  <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
+                </div>
+              </div>
             )}
           </div>
-          <div className="folder-scan-issues-list">
-            {lastScanIssueLog.entries.map((issue, index) => (
-              <div key={`${issue.phase}:${issue.path}:${index}`} className="folder-scan-issue-item">
-                <div className="folder-scan-issue-top">
-                  <span className={`folder-scan-issue-phase phase-${issue.phase}`}>{formatScanIssuePhase(issue.phase)}</span>
-                  {issue.code && <span className="folder-scan-issue-code">{issue.code}</span>}
-                </div>
-                <div className="folder-scan-issue-path" title={issue.path}>{issue.path}</div>
-                <div className="folder-scan-issue-message" title={issue.message}>{issue.message}</div>
-              </div>
-            ))}
-          </div>
         </div>
-      )}
+
+        {showScanIssuePopout && lastScanIssueLog && (
+          <div className="modal-content folder-scan-issues-window" aria-live="polite">
+            <div className="folder-scan-issues-header">
+              <h3>Scan Errors</h3>
+              <p>{lastScanIssueLog.total} file{lastScanIssueLog.total === 1 ? '' : 's'} skipped and not indexed.</p>
+              {lastScanIssueLog.truncated && (
+                <p className="folder-scan-issues-subtle">Showing {lastScanIssueLog.shown} of {lastScanIssueLog.total}.</p>
+              )}
+            </div>
+            <div className="folder-scan-issues-list">
+              {lastScanIssueLog.entries.map((issue, index) => (
+                <div key={`${issue.phase}:${issue.path}:${index}`} className="folder-scan-issue-item">
+                  <div className="folder-scan-issue-top">
+                    <span className={`folder-scan-issue-phase phase-${issue.phase}`}>{formatScanIssuePhase(issue.phase)}</span>
+                    {issue.code && <span className="folder-scan-issue-code">{issue.code}</span>}
+                  </div>
+                  <div className="folder-scan-issue-path" title={issue.path}>{issue.path}</div>
+                  <div className="folder-scan-issue-message" title={issue.message}>{issue.message}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
+
+  return createPortal(modalContent, document.body)
 }
