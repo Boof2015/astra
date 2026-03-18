@@ -7,6 +7,8 @@ export type WaveformTimeDisplayMode = 'remaining' | 'duration'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
+export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
+export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -46,8 +48,6 @@ function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
 }
 
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
-const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
-const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
 
 export function normalizeAnalyzerHeightPx(value: unknown): number {
   const numeric = Number(value)
@@ -144,6 +144,7 @@ interface UIStore {
   setFullscreen: (fs: boolean) => void
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
+  resetAnalyzerRackPreferences: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -233,6 +234,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetAnalyzerHeightPx: () => {
     persistAnalyzerHeightPreference(DEFAULT_ANALYZER_HEIGHT_PX)
     set({ analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX })
+  },
+  resetAnalyzerRackPreferences: () => {
+    persistAnalyzerRackVisibilityPreference(true)
+    persistAnalyzerHeightPreference(DEFAULT_ANALYZER_HEIGHT_PX)
+    set({
+      isAnalyzerRackVisible: true,
+      isAnalyzerEditMode: false,
+      analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX,
+    })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'

@@ -725,8 +725,7 @@ export default function VisualizerPanel({
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
   const setScopeWidthWeights = useVisualizerSettingsStore((s) => s.setScopeWidthWeights)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
-  const setActiveView = useUIStore((s) => s.setActiveView)
-  const setPendingSettingsSection = useUIStore((s) => s.setPendingSettingsSection)
+  const openAnalyzerEditMode = useUIStore((s) => s.openAnalyzerEditMode)
   const gridRef = useRef<HTMLDivElement>(null)
   const scopeElementRefs = useRef<Partial<Record<ScopeKind, HTMLDivElement | null>>>({})
   const resizeSessionRef = useRef<ResizeSession | null>(null)
@@ -850,10 +849,9 @@ export default function VisualizerPanel({
     }
   }, [isRunning, scopePopoutState, visibleScopes])
 
-  const openAnalyzerSettings = useCallback(() => {
-    setActiveView('settings')
-    setPendingSettingsSection('analyzer')
-  }, [setActiveView, setPendingSettingsSection])
+  const openScopeEditor = useCallback(() => {
+    openAnalyzerEditMode()
+  }, [openAnalyzerEditMode])
 
   const startResizeDrag = useCallback((handleIndex: number, event: ReactPointerEvent<HTMLButtonElement>) => {
     if (!isEditMode) return
@@ -1147,13 +1145,13 @@ export default function VisualizerPanel({
             ) : (
               <>
                 <div className="visualizer-empty-state-title">All docked scopes are hidden</div>
-                <div className="visualizer-empty-state-copy">Restore them from Settings → Analyzer.</div>
+                <div className="visualizer-empty-state-copy">Open the scope editor to drag stashed scopes back into the rack.</div>
                 <button
                   type="button"
                   className="visualizer-empty-state-btn"
-                  onClick={openAnalyzerSettings}
+                  onClick={openScopeEditor}
                 >
-                  Open Analyzer Settings
+                  Open Scope Editor
                 </button>
               </>
             )}

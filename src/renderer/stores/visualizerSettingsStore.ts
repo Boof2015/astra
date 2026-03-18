@@ -88,6 +88,12 @@ export interface AnalyzerProfile extends AnalyzerWorkingState {
   builtIn: boolean
 }
 
+interface LegacyAnalyzerPrefs {
+  spectrumHeatmap: boolean
+  vectorscopeMultiband: boolean
+  waveformMultiband: boolean
+}
+
 interface VisualizerSettingsSnapshot {
   lineColor: string
   isRunning: boolean
@@ -323,6 +329,40 @@ function readSpectrumHeatmapPreference(): boolean {
   }
 }
 
+function readLegacyAnalyzerPrefs(): LegacyAnalyzerPrefs {
+  return {
+    spectrumHeatmap: readSpectrumHeatmapPreference(),
+    vectorscopeMultiband: readVectorscopeMultibandPreference(),
+    waveformMultiband: readWaveformMultibandPreference(),
+  }
+}
+
+function buildDefaultWorkingState(legacyAnalyzerPrefs: LegacyAnalyzerPrefs): AnalyzerWorkingState {
+  return {
+    order: [...DEFAULT_WORKING_STATE.order],
+    hiddenScopes: [...DEFAULT_WORKING_STATE.hiddenScopes],
+    widthWeights: { ...DEFAULT_WORKING_STATE.widthWeights },
+    scopeSettings: {
+      spectrum: {
+        ...DEFAULT_WORKING_STATE.scopeSettings.spectrum,
+        heatmap: legacyAnalyzerPrefs.spectrumHeatmap,
+      },
+      oscilloscope: { ...DEFAULT_WORKING_STATE.scopeSettings.oscilloscope },
+      vectorscope: {
+        ...DEFAULT_WORKING_STATE.scopeSettings.vectorscope,
+        multiband: legacyAnalyzerPrefs.vectorscopeMultiband,
+      },
+      spectrogram: { ...DEFAULT_WORKING_STATE.scopeSettings.spectrogram },
+      vumeter: { ...DEFAULT_WORKING_STATE.scopeSettings.vumeter },
+      lufsmeter: { ...DEFAULT_WORKING_STATE.scopeSettings.lufsmeter },
+      waveform: {
+        ...DEFAULT_WORKING_STATE.scopeSettings.waveform,
+        multiband: legacyAnalyzerPrefs.waveformMultiband,
+      },
+    },
+  }
+}
+
 function clampWidthWeight(scope: ScopeKind, value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_WIDTH_WEIGHTS[scope]
@@ -369,7 +409,8 @@ function normalizeHiddenScopes(value: unknown, order: ScopeKind[]): ScopeKind[] 
 
 function normalizeScopeSettings(
   value: unknown,
-  legacyUnderfillEnabled: boolean
+  legacyUnderfillEnabled: boolean,
+  legacyAnalyzerPrefs?: LegacyAnalyzerPrefs
 ): AnalyzerProfileScopeSettings {
   const raw = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -422,7 +463,9 @@ function normalizeScopeSettings(
   return {
     spectrum: {
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
-      heatmap: typeof rawSpectrum.heatmap === 'boolean' ? rawSpectrum.heatmap : false,
+      heatmap: typeof rawSpectrum.heatmap === 'boolean'
+        ? rawSpectrum.heatmap
+        : legacyAnalyzerPrefs?.spectrumHeatmap ?? false,
       heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(rawSpectrum.heatmapTiltDbPerOctave),
     },
     oscilloscope: {
@@ -436,7 +479,9 @@ function normalizeScopeSettings(
     },
     vectorscope: {
       mode: isVectorscopeMode(vectorscopeModeValue) ? vectorscopeModeValue : DEFAULT_VECTORSCOPE_MODE,
-      multiband: typeof rawVectorscope.multiband === 'boolean' ? rawVectorscope.multiband : false,
+      multiband: typeof rawVectorscope.multiband === 'boolean'
+        ? rawVectorscope.multiband
+        : legacyAnalyzerPrefs?.vectorscopeMultiband ?? false,
     },
     spectrogram: {
       fftSize: isFFTSize(rawSpectrogram.fftSize) ? rawSpectrogram.fftSize : DEFAULT_FFT_SIZE,
@@ -456,14 +501,17 @@ function normalizeScopeSettings(
     },
     waveform: {
       scrollSpeed: clampWaveformScrollSpeed(rawWaveform.scrollSpeed),
-      multiband: typeof rawWaveform.multiband === 'boolean' ? rawWaveform.multiband : false,
+      multiband: typeof rawWaveform.multiband === 'boolean'
+        ? rawWaveform.multiband
+        : legacyAnalyzerPrefs?.waveformMultiband ?? false,
     },
   }
 }
 
 function normalizeWorkingState(
   value: unknown,
-  legacyUnderfillEnabled = DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED
+  legacyUnderfillEnabled = DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED,
+  legacyAnalyzerPrefs?: LegacyAnalyzerPrefs
 ): AnalyzerWorkingState {
   const raw = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -500,13 +548,14 @@ function normalizeWorkingState(
     order,
     hiddenScopes,
     widthWeights,
-    scopeSettings: normalizeScopeSettings(raw.scopeSettings ?? raw, legacyUnderfillEnabled),
+    scopeSettings: normalizeScopeSettings(raw.scopeSettings ?? raw, legacyUnderfillEnabled, legacyAnalyzerPrefs),
   }
 }
 
 function normalizeProfile(
   value: unknown,
   legacyUnderfillEnabled: boolean,
+  legacyAnalyzerPrefs?: LegacyAnalyzerPrefs,
   fallbackId?: string
 ): AnalyzerProfile | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -521,19 +570,20 @@ function normalizeProfile(
     id,
     normalizeProfileName(raw.name, id),
     Boolean(raw.builtIn),
-    normalizeWorkingState(raw, legacyUnderfillEnabled)
+    normalizeWorkingState(raw, legacyUnderfillEnabled, legacyAnalyzerPrefs)
   )
 }
 
 function normalizePersistedProfiles(
   value: unknown,
-  legacyUnderfillEnabled: boolean
+  legacyUnderfillEnabled: boolean,
+  legacyAnalyzerPrefs?: LegacyAnalyzerPrefs
 ): Record<string, AnalyzerProfile> {
   const out: Record<string, AnalyzerProfile> = {}
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const profile = normalizeProfile(item, legacyUnderfillEnabled)
+      const profile = normalizeProfile(item, legacyUnderfillEnabled, legacyAnalyzerPrefs)
       if (!profile) continue
       out[profile.id] = profile
     }
@@ -545,7 +595,7 @@ function normalizePersistedProfiles(
   }
 
   for (const [profileId, rawProfile] of Object.entries(value as Record<string, unknown>)) {
-    const profile = normalizeProfile(rawProfile, legacyUnderfillEnabled, profileId)
+    const profile = normalizeProfile(rawProfile, legacyUnderfillEnabled, legacyAnalyzerPrefs, profileId)
     if (!profile) continue
     out[profile.id] = profile
   }
@@ -707,44 +757,14 @@ function buildSnapshot(
   }
 }
 
-// Migrate legacy global prefs into working state scope settings.
-// If the scope settings already have these fields persisted, they take precedence
-// (the normalize function reads them from the persisted data). If they were never
-// persisted (old format), fall back to the global localStorage prefs.
-function applyLegacyPrefsToWorkingState(state: AnalyzerWorkingState): AnalyzerWorkingState {
-  const legacyVectorscopeMultiband = readVectorscopeMultibandPreference()
-  const legacyWaveformMultiband = readWaveformMultibandPreference()
-  const legacySpectrumHeatmap = readSpectrumHeatmapPreference()
-
-  return {
-    ...state,
-    scopeSettings: {
-      ...state.scopeSettings,
-      spectrum: {
-        ...state.scopeSettings.spectrum,
-        heatmap: state.scopeSettings.spectrum.heatmap || legacySpectrumHeatmap,
-      },
-      vectorscope: {
-        ...state.scopeSettings.vectorscope,
-        multiband: state.scopeSettings.vectorscope.multiband || legacyVectorscopeMultiband,
-      },
-      waveform: {
-        ...state.scopeSettings.waveform,
-        multiband: state.scopeSettings.waveform.multiband || legacyWaveformMultiband,
-      },
-    },
-  }
-}
-
 function loadInitialSnapshot(): VisualizerSettingsSnapshot {
   const legacyUnderfillEnabled = readLegacyOscilloscopeUnderfillPreference()
+  const legacyAnalyzerPrefs = readLegacyAnalyzerPrefs()
 
   try {
     const raw = localStorage.getItem(ANALYZER_PROFILES_STORAGE_KEY)
     if (!raw) {
-      const workingState = applyLegacyPrefsToWorkingState(
-        normalizeWorkingState(DEFAULT_WORKING_STATE)
-      )
+      const workingState = buildDefaultWorkingState(legacyAnalyzerPrefs)
       return buildSnapshot(
         DEFAULT_LINE_COLOR,
         DEFAULT_RUNNING,
@@ -755,29 +775,27 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
     }
 
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    const persistedProfiles = normalizePersistedProfiles(parsed.profiles, legacyUnderfillEnabled)
+    const persistedProfiles = normalizePersistedProfiles(parsed.profiles, legacyUnderfillEnabled, legacyAnalyzerPrefs)
     const mergedProfiles = mergeProfiles(persistedProfiles)
 
     const requestedActiveProfileId = normalizeProfileId(parsed.activeProfileId) ?? DEFAULT_PROFILE_ID
     const baseWorkingState = parsed.workingState !== undefined
-      ? normalizeWorkingState(parsed.workingState, legacyUnderfillEnabled)
+      ? normalizeWorkingState(parsed.workingState, legacyUnderfillEnabled, legacyAnalyzerPrefs)
       : requestedActiveProfileId && mergedProfiles[requestedActiveProfileId]
-        ? workingStateFromProfile(mergedProfiles[requestedActiveProfileId])
-        : cloneWorkingState(DEFAULT_WORKING_STATE)
-
-    const workingState = applyLegacyPrefsToWorkingState(baseWorkingState)
+        ? requestedActiveProfileId in BUILT_IN_PROFILES
+          ? buildDefaultWorkingState(legacyAnalyzerPrefs)
+          : workingStateFromProfile(mergedProfiles[requestedActiveProfileId])
+        : buildDefaultWorkingState(legacyAnalyzerPrefs)
 
     return buildSnapshot(
       DEFAULT_LINE_COLOR,
       DEFAULT_RUNNING,
       mergedProfiles,
       requestedActiveProfileId,
-      workingState
+      baseWorkingState
     )
   } catch {
-    const workingState = applyLegacyPrefsToWorkingState(
-      normalizeWorkingState(DEFAULT_WORKING_STATE)
-    )
+    const workingState = buildDefaultWorkingState(legacyAnalyzerPrefs)
     return buildSnapshot(
       DEFAULT_LINE_COLOR,
       DEFAULT_RUNNING,
