@@ -73,13 +73,20 @@ function App() {
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
+  const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
 
   const appStyle = useMemo(() => ({
-    '--analyzer-height': `${analyzerHeightPreviewPx ?? analyzerHeightPx}px`,
-  }) as CSSProperties, [analyzerHeightPreviewPx, analyzerHeightPx])
+    '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
+  }) as CSSProperties, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible])
+
+  useEffect(() => {
+    if (!isAnalyzerRackVisible) {
+      setAnalyzerHeightPreviewPx(null)
+    }
+  }, [isAnalyzerRackVisible])
 
   useEffect(() => {
     useThemeStore.getState().initFromSaved()
@@ -149,7 +156,9 @@ function App() {
       style={appStyle}
     >
       <TitleBar />
-      <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+      {isAnalyzerRackVisible && (
+        <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+      )}
       <div className="app-body">
         <Sidebar />
         <div className="app-content">

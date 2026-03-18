@@ -47,6 +47,7 @@ function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
 
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
 const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
+const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
 
 export function normalizeAnalyzerHeightPx(value: unknown): number {
   const numeric = Number(value)
@@ -89,8 +90,25 @@ function persistAnalyzerHeightPreference(heightPx: number): void {
   }
 }
 
+function readAnalyzerRackVisibilityPreference(): boolean {
+  try {
+    return localStorage.getItem(ANALYZER_RACK_VISIBILITY_STORAGE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
+  try {
+    localStorage.setItem(ANALYZER_RACK_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
+const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -101,6 +119,7 @@ interface UIStore {
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
   isAnalyzerEditMode: boolean
+  isAnalyzerRackVisible: boolean
   isFullscreen: boolean
   analyzerHeightPx: number
   waveformTimeDisplayMode: WaveformTimeDisplayMode
@@ -119,6 +138,9 @@ interface UIStore {
   openAnalyzerEditMode: () => void
   closeAnalyzerEditMode: () => void
   toggleAnalyzerEditMode: () => void
+  showAnalyzerRack: () => void
+  hideAnalyzerRack: () => void
+  toggleAnalyzerRack: () => void
   setFullscreen: (fs: boolean) => void
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
@@ -146,6 +168,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showLyricsShelf: false,
   lyricsShelfExpanded: false,
   isAnalyzerEditMode: false,
+  isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
   analyzerHeightPx: initialAnalyzerHeightPx,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
@@ -182,6 +205,25 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openAnalyzerEditMode: () => set({ isAnalyzerEditMode: true }),
   closeAnalyzerEditMode: () => set({ isAnalyzerEditMode: false }),
   toggleAnalyzerEditMode: () => set((s) => ({ isAnalyzerEditMode: !s.isAnalyzerEditMode })),
+  showAnalyzerRack: () => {
+    persistAnalyzerRackVisibilityPreference(true)
+    set({ isAnalyzerRackVisible: true })
+  },
+  hideAnalyzerRack: () => {
+    persistAnalyzerRackVisibilityPreference(false)
+    set({
+      isAnalyzerRackVisible: false,
+      isAnalyzerEditMode: false,
+    })
+  },
+  toggleAnalyzerRack: () => set((s) => {
+    const nextVisible = !s.isAnalyzerRackVisible
+    persistAnalyzerRackVisibilityPreference(nextVisible)
+    return {
+      isAnalyzerRackVisible: nextVisible,
+      isAnalyzerEditMode: nextVisible ? s.isAnalyzerEditMode : false,
+    }
+  }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
   setAnalyzerHeightPx: (heightPx) => {
     const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
