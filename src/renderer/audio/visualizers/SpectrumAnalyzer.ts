@@ -1,5 +1,9 @@
 import { audioEngine } from '../AudioEngine'
 import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
+import {
+  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  clampSpectrumHeatmapTiltDbPerOctave,
+} from '../../../types/spectrum'
 
 export interface SpectrumAnalyzerDataSource {
   getPendingSpectrumSamples: () => Float32Array[]
@@ -23,6 +27,7 @@ export interface SpectrumAnalyzerOptions {
   minFrequency?: number
   maxFrequency?: number
   tiltDbPerOctave?: number
+  heatmapTiltDbPerOctave?: number
   tiltReferenceHz?: number
   fftSize?: number
   dataSource?: SpectrumAnalyzerDataSource
@@ -76,6 +81,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   minFrequency: 20,
   maxFrequency: 20000,
   tiltDbPerOctave: 2.0,
+  heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   tiltReferenceHz: 1000,
   fftSize: 2048
 }
@@ -103,7 +109,13 @@ export class SpectrumAnalyzer {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
     const { dataSource, ...optionOverrides } = options
-    this.options = { ...defaultOptions, ...optionOverrides }
+    this.options = {
+      ...defaultOptions,
+      ...optionOverrides,
+      heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(
+        optionOverrides.heatmapTiltDbPerOctave ?? defaultOptions.heatmapTiltDbPerOctave
+      ),
+    }
     this.dataSource = dataSource ?? defaultSpectrumDataSource
 
     // Initialize native module
@@ -143,7 +155,11 @@ export class SpectrumAnalyzer {
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
     const { dataSource, ...optionUpdates } = options
-    this.options = { ...this.options, ...optionUpdates }
+    const nextOptions = { ...this.options, ...optionUpdates }
+    if (optionUpdates.heatmapTiltDbPerOctave !== undefined) {
+      nextOptions.heatmapTiltDbPerOctave = clampSpectrumHeatmapTiltDbPerOctave(optionUpdates.heatmapTiltDbPerOctave)
+    }
+    this.options = nextOptions
     if (dataSource) {
       this.dataSource = dataSource
     }
@@ -221,11 +237,11 @@ export class SpectrumAnalyzer {
     )
   }
 
-  private applyTilt(db: number, frequency: number): number {
+  private applyTilt(db: number, frequency: number, tiltDbPerOctave = this.options.tiltDbPerOctave): number {
     const safeFreq = Math.max(1, frequency)
     const reference = Math.max(1, this.options.tiltReferenceHz)
     const octaves = Math.log2(safeFreq / reference)
-    return db + this.options.tiltDbPerOctave * octaves
+    return db + tiltDbPerOctave * octaves
   }
 
   private mergePendingSpectrumChunks(pendingSpectrum: Float32Array[]): Float32Array | null {
@@ -329,7 +345,7 @@ export class SpectrumAnalyzer {
     const binWidth = nyquist / bufferLength
 
     // Build one point per horizontal pixel and preserve local peaks.
-    const points: { x: number; y: number }[] = []
+    const points: { x: number; y: number; heatmapIntensity: number }[] = []
     const numPoints = Math.max(2, Math.floor(width))
 
     for (let i = 0; i < numPoints; i++) {
@@ -352,12 +368,15 @@ export class SpectrumAnalyzer {
         ? this.getInterpolatedValue(frequencyData, Math.min(centerBin, bufferLength - 1))
         : this.getPeakInRange(frequencyData, bin0, bin1)
       const db = this.applyTilt(rawDb, centerFrequency)
+      const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
 
       // Normalize to 0-1 range
       const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
+      const heatmapNormalized = (heatmapDb - options.minDecibels) / (options.maxDecibels - options.minDecibels)
       const y = height - Math.max(0, Math.min(1, normalized)) * height
+      const heatmapIntensity = Math.pow(Math.max(0, Math.min(1, heatmapNormalized)), HEATMAP_GAMMA)
 
-      points.push({ x, y })
+      points.push({ x, y, heatmapIntensity })
     }
 
     // Draw filled area
@@ -371,8 +390,7 @@ export class SpectrumAnalyzer {
         const fillHeight = height - y
         if (fillHeight <= 0) continue
 
-        // Intensity from the point's normalized position (0 at bottom, 1 at top)
-        const intensity = Math.pow(Math.max(0, Math.min(1, 1 - y / height)), HEATMAP_GAMMA)
+        const intensity = points[i].heatmapIntensity
         const li = Math.round(intensity * 255)
         const r = HEAT_LUT[li * 3]
         const g = HEAT_LUT[li * 3 + 1]

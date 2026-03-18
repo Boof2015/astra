@@ -8812,6 +8812,25 @@ body::after {
   min-width: 0;
 }
 
+.analyzer-edit-active-controls .analyzer-edit-mini-control-range.is-disabled {
+  opacity: 0.52;
+}
+
+.analyzer-edit-range:disabled {
+  cursor: not-allowed;
+}
+
+.analyzer-edit-range:disabled::-webkit-slider-runnable-track,
+.analyzer-edit-range:disabled::-moz-range-track {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.14));
+}
+
+.analyzer-edit-range:disabled::-webkit-slider-thumb,
+.analyzer-edit-range:disabled::-moz-range-thumb {
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: none;
+}
+
 .analyzer-edit-active-strip .analyzer-edit-button,
 .analyzer-edit-active-strip .analyzer-edit-select,
 .analyzer-edit-active-strip .analyzer-edit-input {

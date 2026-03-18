@@ -25,6 +25,10 @@ import {
   DEFAULT_WAVEFORM_SCROLL_SPEED,
   clampWaveformScrollSpeed,
 } from '../../types/waveform'
+import {
+  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  clampSpectrumHeatmapTiltDbPerOctave,
+} from '../../types/spectrum'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 export type OscilloscopeMode = 'classic' | 'locked'
@@ -42,6 +46,7 @@ export interface AnalyzerProfileScopeSettings {
   spectrum: {
     fftSize: FFTSize
     heatmap: boolean
+    heatmapTiltDbPerOctave: number
   }
   oscilloscope: {
     pitchLock: boolean
@@ -89,6 +94,7 @@ interface VisualizerSettingsSnapshot {
   vectorscopeMultiband: boolean
   waveformMultiband: boolean
   spectrumHeatmap: boolean
+  spectrumHeatmapTiltDbPerOctave: number
   profiles: Record<string, AnalyzerProfile>
   activeProfileId: string | null
   activeProfileName: string
@@ -135,6 +141,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMultiband: (enabled: boolean) => void
   setWaveformMultiband: (enabled: boolean) => void
   setSpectrumHeatmap: (enabled: boolean) => void
+  setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
   setVUMeterMode: (mode: VUMeterMode) => void
   setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
@@ -225,7 +232,11 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   hiddenScopes: ['spectrogram', 'waveform', 'vumeter', 'lufsmeter'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
-    spectrum: { fftSize: DEFAULT_FFT_SIZE, heatmap: false },
+    spectrum: {
+      fftSize: DEFAULT_FFT_SIZE,
+      heatmap: false,
+      heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+    },
     oscilloscope: {
       pitchLock: DEFAULT_PITCH_LOCK,
       underfillEnabled: DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED,
@@ -296,14 +307,6 @@ function readVectorscopeMultibandPreference(): boolean {
   }
 }
 
-function persistVectorscopeMultibandPreference(enabled: boolean): void {
-  try {
-    localStorage.setItem(VECTORSCOPE_MULTIBAND_STORAGE_KEY, enabled ? '1' : '0')
-  } catch {
-    // ignore persistence failures
-  }
-}
-
 function readWaveformMultibandPreference(): boolean {
   try {
     return localStorage.getItem(WAVEFORM_MULTIBAND_STORAGE_KEY) === '1'
@@ -312,27 +315,11 @@ function readWaveformMultibandPreference(): boolean {
   }
 }
 
-function persistWaveformMultibandPreference(enabled: boolean): void {
-  try {
-    localStorage.setItem(WAVEFORM_MULTIBAND_STORAGE_KEY, enabled ? '1' : '0')
-  } catch {
-    // ignore persistence failures
-  }
-}
-
 function readSpectrumHeatmapPreference(): boolean {
   try {
     return localStorage.getItem(SPECTRUM_HEATMAP_STORAGE_KEY) === '1'
   } catch {
     return false
-  }
-}
-
-function persistSpectrumHeatmapPreference(enabled: boolean): void {
-  try {
-    localStorage.setItem(SPECTRUM_HEATMAP_STORAGE_KEY, enabled ? '1' : '0')
-  } catch {
-    // ignore persistence failures
   }
 }
 
@@ -436,6 +423,7 @@ function normalizeScopeSettings(
     spectrum: {
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
       heatmap: typeof rawSpectrum.heatmap === 'boolean' ? rawSpectrum.heatmap : false,
+      heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(rawSpectrum.heatmapTiltDbPerOctave),
     },
     oscilloscope: {
       pitchLock: typeof rawOscilloscope.pitchLock === 'boolean'
@@ -607,6 +595,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
   return (
     left.scopeSettings.spectrum.fftSize === right.scopeSettings.spectrum.fftSize
     && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
+    && left.scopeSettings.spectrum.heatmapTiltDbPerOctave === right.scopeSettings.spectrum.heatmapTiltDbPerOctave
     && left.scopeSettings.oscilloscope.pitchLock === right.scopeSettings.oscilloscope.pitchLock
     && left.scopeSettings.oscilloscope.underfillEnabled === right.scopeSettings.oscilloscope.underfillEnabled
     && left.scopeSettings.oscilloscope.mode === right.scopeSettings.oscilloscope.mode
@@ -693,6 +682,7 @@ function buildSnapshot(
     vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
     waveformMultiband: workingState.scopeSettings.waveform.multiband,
     spectrumHeatmap: workingState.scopeSettings.spectrum.heatmap,
+    spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
     profiles,
     activeProfileId,
     activeProfileName: activeProfileId ? profiles[activeProfileId].name : CUSTOM_PROFILE_NAME,
@@ -1189,6 +1179,23 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrum: {
           ...state.workingState.scopeSettings.spectrum,
           heatmap: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumHeatmapTiltDbPerOctave: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(value),
         },
       },
     })

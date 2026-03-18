@@ -54,6 +54,7 @@ export function useScopePopoutBridge(): void {
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
@@ -130,6 +131,7 @@ export function useScopePopoutBridge(): void {
             monoChunks: [],
             fftSize,
             spectrumHeatmap,
+            spectrumHeatmapTiltDbPerOctave,
             lineColor,
             reset: true,
           })
@@ -233,6 +235,7 @@ export function useScopePopoutBridge(): void {
               monoChunks,
               fftSize,
               spectrumHeatmap,
+              spectrumHeatmapTiltDbPerOctave,
               lineColor,
               reset: false,
             })
@@ -352,6 +355,7 @@ export function useScopePopoutBridge(): void {
     lineColor,
     fftSize,
     spectrumHeatmap,
+    spectrumHeatmapTiltDbPerOctave,
     spectrogramFftSize,
     spectrogramScrollSpeed,
     spectrogramClarityMode,

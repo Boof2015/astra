@@ -68,11 +68,13 @@ function DockedSpectrumTile({
   lineColor,
   fftSize,
   heatmapFill,
+  heatmapTiltDbPerOctave,
   isRunning
 }: {
   lineColor: string
   fftSize: number
   heatmapFill: boolean
+  heatmapTiltDbPerOctave: number
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -94,6 +96,7 @@ function DockedSpectrumTile({
         lineWidth: 2,
         fillGradient: !heatmapFill,
         heatmapFill,
+        heatmapTiltDbPerOctave,
         fftSize,
         gradientColors: [
           'rgba(0, 255, 255, 0)',
@@ -121,13 +124,14 @@ function DockedSpectrumTile({
       fftSize,
       fillGradient: !heatmapFill,
       heatmapFill,
+      heatmapTiltDbPerOctave,
       gradientColors: [
         'rgba(0, 255, 255, 0)',
         `${lineColor}33`,
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize, heatmapFill])
+  }, [lineColor, fftSize, heatmapFill, heatmapTiltDbPerOctave])
 
   useEffect(() => {
     if (isRunning) {
@@ -707,6 +711,7 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
@@ -1050,6 +1055,7 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             fftSize={fftSize}
             heatmapFill={spectrumHeatmap}
+            heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}
             isRunning={isRunning}
           />
         ) : scope === 'oscilloscope' ? (
