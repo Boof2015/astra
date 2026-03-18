@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
 
 export interface WaveformDataSource {
   getPendingWaveformSamples: () => Float32Array[]
@@ -8,6 +9,7 @@ export interface WaveformDataSource {
 
 export interface WaveformOptions {
   lineColor?: string
+  scrollSpeed?: number
   dataSource?: WaveformDataSource
 }
 
@@ -15,6 +17,7 @@ type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource'>>
 
 const defaultOptions: ResolvedWaveformOptions = {
   lineColor: '#38bdf8',
+  scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
 }
 
 const defaultWaveformDataSource: WaveformDataSource = {
@@ -23,7 +26,9 @@ const defaultWaveformDataSource: WaveformDataSource = {
   isPlaying: () => audioEngine.playbackState === 'playing',
 }
 
-const HISTORY_DURATION_S = 8
+// Calibrate 1.0x to the prior 8s window at roughly 512px wide,
+// while keeping scroll speed independent from panel width.
+const BASE_PIXELS_PER_SECOND = 64
 
 function parseHexColor(hex: string): [number, number, number] {
   const h = hex.replace('#', '')
@@ -62,7 +67,11 @@ export class Waveform {
     this.ctx.imageSmoothingEnabled = false
 
     const { dataSource, ...optionOverrides } = options
-    this.options = { ...defaultOptions, ...optionOverrides }
+    this.options = {
+      ...defaultOptions,
+      ...optionOverrides,
+      scrollSpeed: clampWaveformScrollSpeed(optionOverrides.scrollSpeed ?? defaultOptions.scrollSpeed),
+    }
     this.dataSource = dataSource ?? defaultWaveformDataSource
 
     this.waterfallCanvas = document.createElement('canvas')
@@ -87,8 +96,8 @@ export class Waveform {
 
   private recomputeSamplesPerColumn(): void {
     const sampleRate = Math.max(1, this.dataSource.getSampleRate())
-    const width = Math.max(1, this.waterfallCanvas.width)
-    const next = Math.max(1, Math.round((sampleRate * HISTORY_DURATION_S) / width))
+    const pixelsPerSecond = BASE_PIXELS_PER_SECOND * this.options.scrollSpeed
+    const next = Math.max(1, Math.round(sampleRate / pixelsPerSecond))
     if (next !== this.samplesPerColumn) {
       this.samplesPerColumn = next
       this.columnAccumulator = new Float32Array(next)
@@ -99,9 +108,21 @@ export class Waveform {
 
   setOptions(options: Partial<WaveformOptions>): void {
     const { dataSource, ...optionUpdates } = options
-    this.options = { ...this.options, ...optionUpdates }
+    const nextOptions: ResolvedWaveformOptions = {
+      ...this.options,
+      ...optionUpdates,
+      lineColor: optionUpdates.lineColor ?? this.options.lineColor,
+      scrollSpeed: clampWaveformScrollSpeed(optionUpdates.scrollSpeed ?? this.options.scrollSpeed),
+    }
+    const speedChanged = nextOptions.scrollSpeed !== this.options.scrollSpeed
+
+    this.options = nextOptions
     if (dataSource) {
       this.dataSource = dataSource
+    }
+    if (speedChanged) {
+      this.recomputeSamplesPerColumn()
+      this.resetDisplay()
     }
   }
 

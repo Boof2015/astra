@@ -21,6 +21,10 @@ import {
   isVUMeterMode,
   type VUMeterMode,
 } from '../../types/vumeter'
+import {
+  DEFAULT_WAVEFORM_SCROLL_SPEED,
+  clampWaveformScrollSpeed,
+} from '../../types/waveform'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
 export type OscilloscopeMode = 'classic' | 'locked'
@@ -58,7 +62,9 @@ export interface AnalyzerProfileScopeSettings {
   lufsmeter: {
     mode: LUFSMeterMode
   }
-  waveform: Record<string, never>
+  waveform: {
+    scrollSpeed: number
+  }
 }
 
 export interface AnalyzerWorkingState {
@@ -92,6 +98,7 @@ interface VisualizerSettingsSnapshot {
   spectrogramScrollSpeed: number
   spectrogramClarityMode: SpectrogramClarityMode
   spectrogramScaleMode: SpectrogramScaleMode
+  waveformScrollSpeed: number
   pitchLock: boolean
   oscilloscopeUnderfillEnabled: boolean
   oscilloscopeMode: OscilloscopeMode
@@ -116,6 +123,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setSpectrogramScrollSpeed: (speed: number) => void
   setSpectrogramClarityMode: (mode: SpectrogramClarityMode) => void
   setSpectrogramScaleMode: (mode: SpectrogramScaleMode) => void
+  setWaveformScrollSpeed: (speed: number) => void
   setPitchLock: (enabled: boolean) => void
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
   setVectorscopeMode: (mode: VectorscopeMode) => void
@@ -227,7 +235,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     lufsmeter: {
       mode: DEFAULT_LUFS_METER_MODE,
     },
-    waveform: {},
+    waveform: {
+      scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
+    },
   },
 }
 
@@ -360,6 +370,10 @@ function normalizeScopeSettings(
     ? raw.lufsmeter as Record<string, unknown>
     : {}
 
+  const rawWaveform = raw.waveform && typeof raw.waveform === 'object' && !Array.isArray(raw.waveform)
+    ? raw.waveform as Record<string, unknown>
+    : {}
+
   const fallbackUnderfill = raw.oscilloscopeUnderfillEnabled
   const underfillEnabled = typeof rawOscilloscope.underfillEnabled === 'boolean'
     ? rawOscilloscope.underfillEnabled
@@ -408,7 +422,9 @@ function normalizeScopeSettings(
     lufsmeter: {
       mode: isLUFSMeterMode(rawLufsmeter.mode) ? rawLufsmeter.mode : DEFAULT_LUFS_METER_MODE,
     },
-    waveform: {},
+    waveform: {
+      scrollSpeed: clampWaveformScrollSpeed(rawWaveform.scrollSpeed),
+    },
   }
 }
 
@@ -555,6 +571,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
     && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
     && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
+    && left.scopeSettings.waveform.scrollSpeed === right.scopeSettings.waveform.scrollSpeed
   )
 }
 
@@ -641,6 +658,7 @@ function buildSnapshot(
     spectrogramScrollSpeed: workingState.scopeSettings.spectrogram.scrollSpeed,
     spectrogramClarityMode: workingState.scopeSettings.spectrogram.clarityMode,
     spectrogramScaleMode: workingState.scopeSettings.spectrogram.scaleMode,
+    waveformScrollSpeed: workingState.scopeSettings.waveform.scrollSpeed,
     pitchLock: workingState.scopeSettings.oscilloscope.pitchLock,
     oscilloscopeUnderfillEnabled: workingState.scopeSettings.oscilloscope.underfillEnabled,
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
@@ -966,6 +984,23 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrogram: {
           ...state.workingState.scopeSettings.spectrogram,
           scaleMode: mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setWaveformScrollSpeed: (speed) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        waveform: {
+          ...state.workingState.scopeSettings.waveform,
+          scrollSpeed: clampWaveformScrollSpeed(speed),
         },
       },
     })

@@ -91,6 +91,7 @@ export interface ScopePopoutLUFSMeterChunk extends ScopePopoutChunkBase {
 export interface ScopePopoutWaveformChunk extends ScopePopoutChunkBase {
   scope: 'waveform'
   monoChunks: Float32Array[]
+  waveformScrollSpeed: number
 }
 
 export type ScopePopoutChunk =

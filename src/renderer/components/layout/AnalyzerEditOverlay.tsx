@@ -9,6 +9,11 @@ import {
 } from '../../../types/spectrogram'
 import type { VUMeterMode } from '../../../types/vumeter'
 import {
+  MAX_WAVEFORM_SCROLL_SPEED,
+  MIN_WAVEFORM_SCROLL_SPEED,
+  WAVEFORM_SCROLL_SPEED_STEP,
+} from '../../../types/waveform'
+import {
   useVisualizerSettingsStore,
   type AnalyzerProfile,
   type FFTSize,
@@ -93,6 +98,7 @@ function scopeStateLabel(
   spectrumFftSize: FFTSize,
   spectrogramFftSize: FFTSize,
   spectrogramScrollSpeed: number,
+  waveformScrollSpeed: number,
   spectrogramClarityMode: SpectrogramClarityMode,
   spectrogramScaleMode: SpectrogramScaleMode,
   pitchLock: boolean,
@@ -116,7 +122,7 @@ function scopeStateLabel(
     case 'lufsmeter':
       return 'LUFS'
     case 'waveform':
-      return 'Scrolling'
+      return `Speed x${waveformScrollSpeed.toFixed(1)}`
   }
 }
 
@@ -246,6 +252,7 @@ export default function AnalyzerEditOverlay({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
+  const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
   const setActiveProfile = useVisualizerSettingsStore((state) => state.setActiveProfile)
@@ -256,6 +263,7 @@ export default function AnalyzerEditOverlay({
   const setSpectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.setSpectrogramScrollSpeed)
   const setSpectrogramClarityMode = useVisualizerSettingsStore((state) => state.setSpectrogramClarityMode)
   const setSpectrogramScaleMode = useVisualizerSettingsStore((state) => state.setSpectrogramScaleMode)
+  const setWaveformScrollSpeed = useVisualizerSettingsStore((state) => state.setWaveformScrollSpeed)
   const setPitchLock = useVisualizerSettingsStore((state) => state.setPitchLock)
   const setOscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.setOscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
@@ -520,7 +528,22 @@ export default function AnalyzerEditOverlay({
       case 'lufsmeter':
         return <div className="analyzer-edit-active-note">No extra controls here</div>
       case 'waveform':
-        return <div className="analyzer-edit-active-note">No extra controls here</div>
+        return (
+          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-waveform">
+            <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
+              <span className="analyzer-edit-corner-label">Speed x{waveformScrollSpeed.toFixed(1)}</span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_WAVEFORM_SCROLL_SPEED}
+                max={MAX_WAVEFORM_SCROLL_SPEED}
+                step={WAVEFORM_SCROLL_SPEED_STEP}
+                value={waveformScrollSpeed}
+                onChange={(event) => setWaveformScrollSpeed(Number(event.target.value))}
+              />
+            </div>
+          </div>
+        )
     }
   }
 
@@ -650,7 +673,7 @@ export default function AnalyzerEditOverlay({
             style={{ gridColumn: `${activeScopeIndex + 1}` }}
           >
             <div
-              className="analyzer-edit-active-strip"
+              className={`analyzer-edit-active-strip ${activeScope === 'waveform' ? 'is-waveform-active' : ''}`.trim()}
               ref={activeStripRef}
               onMouseEnter={() => onScopeHoverChange(activeScope)}
             >
@@ -662,6 +685,7 @@ export default function AnalyzerEditOverlay({
                     fftSize,
                     spectrogramFftSize,
                     spectrogramScrollSpeed,
+                    waveformScrollSpeed,
                     spectrogramClarityMode,
                     spectrogramScaleMode,
                     pitchLock,
@@ -721,6 +745,7 @@ export default function AnalyzerEditOverlay({
                   fftSize,
                   spectrogramFftSize,
                   spectrogramScrollSpeed,
+                  waveformScrollSpeed,
                   spectrogramClarityMode,
                   spectrogramScaleMode,
                   pitchLock,

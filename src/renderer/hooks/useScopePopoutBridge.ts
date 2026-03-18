@@ -53,6 +53,7 @@ export function useScopePopoutBridge(): void {
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
@@ -196,6 +197,7 @@ export function useScopePopoutBridge(): void {
             capturedAt: Date.now(),
             sampleRate: audioEngine.getSampleRate(),
             monoChunks: [],
+            waveformScrollSpeed,
             lineColor,
             reset: true,
           })
@@ -320,6 +322,7 @@ export function useScopePopoutBridge(): void {
               capturedAt: Date.now(),
               sampleRate: audioEngine.getSampleRate(),
               monoChunks,
+              waveformScrollSpeed,
               lineColor,
               reset: false,
             })
@@ -346,6 +349,7 @@ export function useScopePopoutBridge(): void {
     spectrogramScrollSpeed,
     spectrogramClarityMode,
     spectrogramScaleMode,
+    waveformScrollSpeed,
     pitchLock,
     oscilloscopeUnderfillEnabled,
     vectorscopeMode,

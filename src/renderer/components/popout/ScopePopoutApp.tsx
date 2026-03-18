@@ -20,6 +20,7 @@ import {
   isSpectrogramScaleMode,
 } from '../../../types/spectrogram'
 import { DEFAULT_VU_METER_MODE, isVUMeterMode, type VUMeterMode } from '../../../types/vumeter'
+import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
@@ -986,6 +987,7 @@ function WaveformScopeCanvas() {
   const pendingChunksRef = useRef<Float32Array[]>([])
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const scrollSpeedRef = useRef(DEFAULT_WAVEFORM_SCROLL_SPEED)
   const isPlayingRef = useRef(false)
 
   const handleResize = useCallback(() => {
@@ -999,6 +1001,7 @@ function WaveformScopeCanvas() {
       if (chunk.scope !== 'waveform') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       lineColorRef.current = chunk.lineColor
+      scrollSpeedRef.current = clampWaveformScrollSpeed(chunk.waveformScrollSpeed)
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -1010,6 +1013,7 @@ function WaveformScopeCanvas() {
 
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
+        scrollSpeed: scrollSpeedRef.current,
       })
     })
 
@@ -1022,6 +1026,7 @@ function WaveformScopeCanvas() {
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor: lineColorRef.current,
+        scrollSpeed: scrollSpeedRef.current,
         dataSource: {
           getPendingWaveformSamples: () => {
             const chunks = pendingChunksRef.current

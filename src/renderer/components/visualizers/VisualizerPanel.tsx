@@ -537,9 +537,11 @@ function DockedLUFSMeterTile({
 
 function DockedWaveformTile({
   lineColor,
+  scrollSpeed,
   isRunning,
 }: {
   lineColor: string
+  scrollSpeed: number
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -558,6 +560,7 @@ function DockedWaveformTile({
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor,
+        scrollSpeed,
       })
     }
 
@@ -572,8 +575,8 @@ function DockedWaveformTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor })
-  }, [lineColor])
+    visualizerRef.current?.setOptions({ lineColor, scrollSpeed })
+  }, [lineColor, scrollSpeed])
 
   useEffect(() => {
     if (isRunning) {
@@ -695,6 +698,7 @@ export default function VisualizerPanel({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
@@ -976,7 +980,7 @@ export default function VisualizerPanel({
         case 'lufsmeter':
           return 'LUFS'
         case 'waveform':
-          return 'SCROLL'
+          return `SPEED X${waveformScrollSpeed.toFixed(1)}`
       }
     })()
 
@@ -1067,6 +1071,7 @@ export default function VisualizerPanel({
         ) : scope === 'waveform' ? (
           <DockedWaveformTile
             lineColor={lineColor}
+            scrollSpeed={waveformScrollSpeed}
             isRunning={isRunning}
           />
         ) : (

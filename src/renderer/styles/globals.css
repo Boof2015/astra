@@ -8695,6 +8695,15 @@ body::after {
   pointer-events: auto;
 }
 
+.analyzer-edit-active-strip.is-waveform-active {
+  width: min(620px, calc(100vw - 64px));
+}
+
+.analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-headline,
+.analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-controls {
+  width: 100%;
+}
+
 .analyzer-edit-active-slot.is-align-start .analyzer-edit-active-strip {
   margin-right: auto;
 }
@@ -8746,6 +8755,10 @@ body::after {
   max-width: 100%;
 }
 
+.analyzer-edit-active-controls-waveform {
+  width: min(560px, 100%);
+}
+
 .analyzer-edit-active-controls-inline .analyzer-edit-button {
   flex: 0 0 auto;
   min-width: 128px;
@@ -8789,6 +8802,10 @@ body::after {
 
 .analyzer-edit-active-controls .analyzer-edit-mini-control-range {
   width: min(420px, 100%);
+}
+
+.analyzer-edit-active-controls-waveform .analyzer-edit-mini-control-range {
+  width: 100%;
 }
 
 .analyzer-edit-active-controls .analyzer-edit-range {
