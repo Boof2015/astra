@@ -41,6 +41,7 @@ export function isVectorscopeMode(value: unknown): value is VectorscopeMode {
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
     fftSize: FFTSize
+    heatmap: boolean
   }
   oscilloscope: {
     pitchLock: boolean
@@ -49,6 +50,7 @@ export interface AnalyzerProfileScopeSettings {
   }
   vectorscope: {
     mode: VectorscopeMode
+    multiband: boolean
   }
   spectrogram: {
     fftSize: FFTSize
@@ -64,6 +66,7 @@ export interface AnalyzerProfileScopeSettings {
   }
   waveform: {
     scrollSpeed: number
+    multiband: boolean
   }
 }
 
@@ -222,13 +225,13 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   hiddenScopes: ['spectrogram', 'waveform', 'vumeter', 'lufsmeter'],
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
-    spectrum: { fftSize: DEFAULT_FFT_SIZE },
+    spectrum: { fftSize: DEFAULT_FFT_SIZE, heatmap: false },
     oscilloscope: {
       pitchLock: DEFAULT_PITCH_LOCK,
       underfillEnabled: DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED,
       mode: DEFAULT_OSCILLOSCOPE_MODE,
     },
-    vectorscope: { mode: DEFAULT_VECTORSCOPE_MODE },
+    vectorscope: { mode: DEFAULT_VECTORSCOPE_MODE, multiband: false },
     spectrogram: {
       fftSize: 2048,
       scrollSpeed: DEFAULT_SPECTROGRAM_SCROLL_SPEED,
@@ -243,6 +246,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     },
     waveform: {
       scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
+      multiband: false,
     },
   },
 }
@@ -431,6 +435,7 @@ function normalizeScopeSettings(
   return {
     spectrum: {
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
+      heatmap: typeof rawSpectrum.heatmap === 'boolean' ? rawSpectrum.heatmap : false,
     },
     oscilloscope: {
       pitchLock: typeof rawOscilloscope.pitchLock === 'boolean'
@@ -443,6 +448,7 @@ function normalizeScopeSettings(
     },
     vectorscope: {
       mode: isVectorscopeMode(vectorscopeModeValue) ? vectorscopeModeValue : DEFAULT_VECTORSCOPE_MODE,
+      multiband: typeof rawVectorscope.multiband === 'boolean' ? rawVectorscope.multiband : false,
     },
     spectrogram: {
       fftSize: isFFTSize(rawSpectrogram.fftSize) ? rawSpectrogram.fftSize : DEFAULT_FFT_SIZE,
@@ -462,6 +468,7 @@ function normalizeScopeSettings(
     },
     waveform: {
       scrollSpeed: clampWaveformScrollSpeed(rawWaveform.scrollSpeed),
+      multiband: typeof rawWaveform.multiband === 'boolean' ? rawWaveform.multiband : false,
     },
   }
 }
@@ -599,10 +606,12 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
 
   return (
     left.scopeSettings.spectrum.fftSize === right.scopeSettings.spectrum.fftSize
+    && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
     && left.scopeSettings.oscilloscope.pitchLock === right.scopeSettings.oscilloscope.pitchLock
     && left.scopeSettings.oscilloscope.underfillEnabled === right.scopeSettings.oscilloscope.underfillEnabled
     && left.scopeSettings.oscilloscope.mode === right.scopeSettings.oscilloscope.mode
     && left.scopeSettings.vectorscope.mode === right.scopeSettings.vectorscope.mode
+    && left.scopeSettings.vectorscope.multiband === right.scopeSettings.vectorscope.multiband
     && left.scopeSettings.spectrogram.fftSize === right.scopeSettings.spectrogram.fftSize
     && left.scopeSettings.spectrogram.scrollSpeed === right.scopeSettings.spectrogram.scrollSpeed
     && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
@@ -610,6 +619,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
     && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
     && left.scopeSettings.waveform.scrollSpeed === right.scopeSettings.waveform.scrollSpeed
+    && left.scopeSettings.waveform.multiband === right.scopeSettings.waveform.multiband
   )
 }
 
@@ -665,9 +675,6 @@ function buildSnapshot(
   profilesInput: Record<string, AnalyzerProfile>,
   requestedActiveProfileId: string | null,
   workingStateInput: AnalyzerWorkingState,
-  vectorscopeMultiband = false,
-  waveformMultiband = false,
-  spectrumHeatmap = false
 ): VisualizerSettingsSnapshot {
   const profiles = mergeProfiles(profilesInput)
   const workingState = normalizeWorkingState(workingStateInput)
@@ -683,9 +690,9 @@ function buildSnapshot(
   return {
     lineColor,
     isRunning,
-    vectorscopeMultiband,
-    waveformMultiband,
-    spectrumHeatmap,
+    vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
+    waveformMultiband: workingState.scopeSettings.waveform.multiband,
+    spectrumHeatmap: workingState.scopeSettings.spectrum.heatmap,
     profiles,
     activeProfileId,
     activeProfileName: activeProfileId ? profiles[activeProfileId].name : CUSTOM_PROFILE_NAME,
@@ -710,24 +717,50 @@ function buildSnapshot(
   }
 }
 
+// Migrate legacy global prefs into working state scope settings.
+// If the scope settings already have these fields persisted, they take precedence
+// (the normalize function reads them from the persisted data). If they were never
+// persisted (old format), fall back to the global localStorage prefs.
+function applyLegacyPrefsToWorkingState(state: AnalyzerWorkingState): AnalyzerWorkingState {
+  const legacyVectorscopeMultiband = readVectorscopeMultibandPreference()
+  const legacyWaveformMultiband = readWaveformMultibandPreference()
+  const legacySpectrumHeatmap = readSpectrumHeatmapPreference()
+
+  return {
+    ...state,
+    scopeSettings: {
+      ...state.scopeSettings,
+      spectrum: {
+        ...state.scopeSettings.spectrum,
+        heatmap: state.scopeSettings.spectrum.heatmap || legacySpectrumHeatmap,
+      },
+      vectorscope: {
+        ...state.scopeSettings.vectorscope,
+        multiband: state.scopeSettings.vectorscope.multiband || legacyVectorscopeMultiband,
+      },
+      waveform: {
+        ...state.scopeSettings.waveform,
+        multiband: state.scopeSettings.waveform.multiband || legacyWaveformMultiband,
+      },
+    },
+  }
+}
+
 function loadInitialSnapshot(): VisualizerSettingsSnapshot {
   const legacyUnderfillEnabled = readLegacyOscilloscopeUnderfillPreference()
-  const multibandEnabled = readVectorscopeMultibandPreference()
-  const waveformMultibandEnabled = readWaveformMultibandPreference()
-  const spectrumHeatmapEnabled = readSpectrumHeatmapPreference()
 
   try {
     const raw = localStorage.getItem(ANALYZER_PROFILES_STORAGE_KEY)
     if (!raw) {
+      const workingState = applyLegacyPrefsToWorkingState(
+        normalizeWorkingState(DEFAULT_WORKING_STATE)
+      )
       return buildSnapshot(
         DEFAULT_LINE_COLOR,
         DEFAULT_RUNNING,
         BUILT_IN_PROFILES,
         DEFAULT_PROFILE_ID,
-        DEFAULT_WORKING_STATE,
-        multibandEnabled,
-        waveformMultibandEnabled,
-        spectrumHeatmapEnabled
+        workingState
       )
     }
 
@@ -736,30 +769,31 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
     const mergedProfiles = mergeProfiles(persistedProfiles)
 
     const requestedActiveProfileId = normalizeProfileId(parsed.activeProfileId) ?? DEFAULT_PROFILE_ID
-    const workingState = parsed.workingState !== undefined
+    const baseWorkingState = parsed.workingState !== undefined
       ? normalizeWorkingState(parsed.workingState, legacyUnderfillEnabled)
       : requestedActiveProfileId && mergedProfiles[requestedActiveProfileId]
         ? workingStateFromProfile(mergedProfiles[requestedActiveProfileId])
         : cloneWorkingState(DEFAULT_WORKING_STATE)
+
+    const workingState = applyLegacyPrefsToWorkingState(baseWorkingState)
 
     return buildSnapshot(
       DEFAULT_LINE_COLOR,
       DEFAULT_RUNNING,
       mergedProfiles,
       requestedActiveProfileId,
-      workingState,
-      multibandEnabled,
-      waveformMultibandEnabled
+      workingState
     )
   } catch {
+    const workingState = applyLegacyPrefsToWorkingState(
+      normalizeWorkingState(DEFAULT_WORKING_STATE)
+    )
     return buildSnapshot(
       DEFAULT_LINE_COLOR,
       DEFAULT_RUNNING,
       BUILT_IN_PROFILES,
       DEFAULT_PROFILE_ID,
-      DEFAULT_WORKING_STATE,
-      multibandEnabled,
-      waveformMultibandEnabled
+      workingState
     )
   }
 }
@@ -774,10 +808,7 @@ function updateWorkingState(
     state.isRunning,
     state.profiles,
     state.activeProfileId,
-    nextWorkingState,
-    state.vectorscopeMultiband,
-    state.waveformMultiband,
-    state.spectrumHeatmap
+    nextWorkingState
   )
 }
 
@@ -807,9 +838,7 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       state.isRunning,
       state.profiles,
       targetId,
-      workingStateFromProfile(profile),
-      state.vectorscopeMultiband,
-      state.waveformMultiband
+      workingStateFromProfile(profile)
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -821,7 +850,13 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
     if (!trimmed) return
 
     const state = get()
-    const profileId = makeProfileId(state.profiles)
+
+    // If a non-built-in profile with the same name already exists, overwrite it
+    const existingEntry = Object.values(state.profiles).find(
+      (p) => !p.builtIn && p.name.toLowerCase() === trimmed.toLowerCase()
+    )
+    const profileId = existingEntry ? existingEntry.id : makeProfileId(state.profiles)
+
     const nextProfiles = {
       ...state.profiles,
       [profileId]: buildProfile(profileId, trimmed, false, state.workingState),
@@ -832,9 +867,7 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       state.isRunning,
       nextProfiles,
       profileId,
-      state.workingState,
-      state.vectorscopeMultiband,
-      state.waveformMultiband
+      state.workingState
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -855,9 +888,7 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       state.isRunning,
       remainingProfiles,
       state.activeProfileId === targetId ? null : state.activeProfileId,
-      state.workingState,
-      state.vectorscopeMultiband,
-      state.waveformMultiband
+      state.workingState
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -1116,18 +1147,54 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
   },
 
   setVectorscopeMultiband: (enabled) => {
-    persistVectorscopeMultibandPreference(enabled)
-    set({ vectorscopeMultiband: enabled })
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        vectorscope: {
+          ...state.workingState.scopeSettings.vectorscope,
+          multiband: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
   },
 
   setWaveformMultiband: (enabled) => {
-    persistWaveformMultibandPreference(enabled)
-    set({ waveformMultiband: enabled })
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        waveform: {
+          ...state.workingState.scopeSettings.waveform,
+          multiband: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
   },
 
   setSpectrumHeatmap: (enabled) => {
-    persistSpectrumHeatmapPreference(enabled)
-    set({ spectrumHeatmap: enabled })
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          heatmap: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
   },
 
   setVUMeterMode: (mode) => {
