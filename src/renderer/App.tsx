@@ -74,6 +74,8 @@ function App() {
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
+  const showAnalyzerRack = useUIStore((s) => s.showAnalyzerRack)
+  const hideAnalyzerRack = useUIStore((s) => s.hideAnalyzerRack)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
@@ -157,7 +159,47 @@ function App() {
     >
       <TitleBar />
       {isAnalyzerRackVisible && (
-        <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+        <div className="analyzer-rack-shell">
+          <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+          {!isAnalyzerEditMode && (
+            <button
+              type="button"
+              className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
+              onClick={hideAnalyzerRack}
+              title="Hide analyzer rack"
+              aria-label="Hide analyzer rack"
+            >
+              <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+                <path
+                  d="M1 7l6-5 6 5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
+      {!isAnalyzerRackVisible && (
+        <button
+          type="button"
+          className="analyzer-rack-toggle analyzer-rack-restore-toggle"
+          onClick={showAnalyzerRack}
+          title="Show analyzer rack"
+          aria-label="Show analyzer rack"
+        >
+          <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+            <path
+              d="M1 7l6-5 6 5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
       )}
       <div className="app-body">
         <Sidebar />

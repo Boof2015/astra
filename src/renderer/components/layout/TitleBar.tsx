@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
-import { useUIStore } from '../../stores/uiStore'
 import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
@@ -20,8 +19,6 @@ export default function TitleBar() {
   const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
   const localApiStatus = useLocalApiSettingsStore((s) => s.status)
   const initLocalApi = useLocalApiSettingsStore((s) => s.init)
-  const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
-  const toggleAnalyzerRack = useUIStore((s) => s.toggleAnalyzerRack)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
 
@@ -184,16 +181,6 @@ export default function TitleBar() {
             <span>{apiIndicatorLabel}</span>
           </span>
         )}
-
-        <button
-          type="button"
-          className={`titlebar-analyzer-pill ${isAnalyzerRackVisible ? 'is-active' : ''}`.trim()}
-          onClick={toggleAnalyzerRack}
-          aria-pressed={isAnalyzerRackVisible}
-          title={isAnalyzerRackVisible ? 'Hide analyzer rack' : 'Show analyzer rack'}
-        >
-          Analyzer
-        </button>
 
         <div className="titlebar-stats" aria-label="Astra performance stats">
           <span className="titlebar-stat">
