@@ -7,7 +7,7 @@ import {
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
 } from '../../../types/spectrogram'
-import type { VUMeterMode } from '../../../types/vumeter'
+import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import {
   MAX_WAVEFORM_SCROLL_SPEED,
   MIN_WAVEFORM_SCROLL_SPEED,
@@ -73,6 +73,18 @@ function vuMeterModeLabel(mode: VUMeterMode): string {
   }
 }
 
+function vuMeterOrientationLabel(orientation: VUMeterOrientation): string {
+  switch (orientation) {
+    case 'horizontal': return 'Horizontal'
+    case 'vertical': return 'Vertical'
+  }
+}
+
+function vuMeterStateLabel(mode: VUMeterMode, orientation: VUMeterOrientation): string {
+  if (mode === 'needle') return vuMeterModeLabel(mode)
+  return `${vuMeterModeLabel(mode)} · ${vuMeterOrientationLabel(orientation)}`
+}
+
 function vectorscopeModeLabel(mode: VectorscopeMode): string {
   switch (mode) {
     case 'lissajous': return 'Lissajous'
@@ -111,7 +123,8 @@ function scopeStateLabel(
   pitchLock: boolean,
   underfillEnabled: boolean,
   vectorscopeMode: VectorscopeMode,
-  vuMeterMode: VUMeterMode
+  vuMeterMode: VUMeterMode,
+  vuMeterOrientation: VUMeterOrientation
 ): string {
   switch (scope) {
     case 'spectrum':
@@ -125,7 +138,7 @@ function scopeStateLabel(
     case 'spectrogram':
       return `${spectrogramScaleLabel(spectrogramScaleMode)} · ${spectrogramClarityLabel(spectrogramClarityMode)} x${spectrogramScrollSpeed.toFixed(1)} · FFT ${spectrogramFftSize}`
     case 'vumeter':
-      return vuMeterModeLabel(vuMeterMode)
+      return vuMeterStateLabel(vuMeterMode, vuMeterOrientation)
     case 'lufsmeter':
       return 'LUFS'
     case 'waveform':
@@ -284,7 +297,9 @@ export default function AnalyzerEditOverlay({
   const vectorscopeMultiband = useVisualizerSettingsStore((state) => state.vectorscopeMultiband)
   const setVectorscopeMultiband = useVisualizerSettingsStore((state) => state.setVectorscopeMultiband)
   const vuMeterMode = useVisualizerSettingsStore((state) => state.vuMeterMode)
+  const vuMeterOrientation = useVisualizerSettingsStore((state) => state.vuMeterOrientation)
   const setVUMeterMode = useVisualizerSettingsStore((state) => state.setVUMeterMode)
+  const setVUMeterOrientation = useVisualizerSettingsStore((state) => state.setVUMeterOrientation)
 
   const closeAnalyzerEditMode = useUIStore((state) => state.closeAnalyzerEditMode)
   const setActiveView = useUIStore((state) => state.setActiveView)
@@ -563,6 +578,18 @@ export default function AnalyzerEditOverlay({
                 <option value="needle">Needle</option>
               </select>
             </div>
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Orientation</span>
+              <select
+                className="analyzer-edit-select"
+                value={vuMeterOrientation}
+                disabled={vuMeterMode !== 'bar'}
+                onChange={(event) => setVUMeterOrientation(event.target.value as VUMeterOrientation)}
+              >
+                <option value="horizontal">Horizontal</option>
+                <option value="vertical">Vertical</option>
+              </select>
+            </div>
           </div>
         )
       case 'lufsmeter':
@@ -739,7 +766,8 @@ export default function AnalyzerEditOverlay({
                     pitchLock,
                     oscilloscopeUnderfillEnabled,
                     vectorscopeMode,
-                    vuMeterMode
+                    vuMeterMode,
+                    vuMeterOrientation
                   )}
                 </div>
                 {isScopePinned && (
@@ -800,7 +828,8 @@ export default function AnalyzerEditOverlay({
                   pitchLock,
                   oscilloscopeUnderfillEnabled,
                   vectorscopeMode,
-                  vuMeterMode
+                  vuMeterMode,
+                  vuMeterOrientation
                 )}
               </div>
             </div>

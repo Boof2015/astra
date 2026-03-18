@@ -18,8 +18,11 @@ import {
 } from '../../types/lufsmeter'
 import {
   DEFAULT_VU_METER_MODE,
+  DEFAULT_VU_METER_ORIENTATION,
+  isVUMeterOrientation,
   isVUMeterMode,
   type VUMeterMode,
+  type VUMeterOrientation,
 } from '../../types/vumeter'
 import {
   DEFAULT_WAVEFORM_SCROLL_SPEED,
@@ -65,6 +68,7 @@ export interface AnalyzerProfileScopeSettings {
   }
   vumeter: {
     mode: VUMeterMode
+    orientation: VUMeterOrientation
   }
   lufsmeter: {
     mode: LUFSMeterMode
@@ -121,6 +125,7 @@ interface VisualizerSettingsSnapshot {
   oscilloscopeMode: OscilloscopeMode
   vectorscopeMode: VectorscopeMode
   vuMeterMode: VUMeterMode
+  vuMeterOrientation: VUMeterOrientation
   lufsMeterMode: LUFSMeterMode
 }
 
@@ -149,6 +154,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setSpectrumHeatmap: (enabled: boolean) => void
   setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
   setVUMeterMode: (mode: VUMeterMode) => void
+  setVUMeterOrientation: (orientation: VUMeterOrientation) => void
   setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
 }
@@ -257,6 +263,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     },
     vumeter: {
       mode: DEFAULT_VU_METER_MODE,
+      orientation: DEFAULT_VU_METER_ORIENTATION,
     },
     lufsmeter: {
       mode: DEFAULT_LUFS_METER_MODE,
@@ -495,6 +502,9 @@ function normalizeScopeSettings(
     },
     vumeter: {
       mode: isVUMeterMode(rawVumeter.mode) ? rawVumeter.mode : DEFAULT_VU_METER_MODE,
+      orientation: isVUMeterOrientation(rawVumeter.orientation)
+        ? rawVumeter.orientation
+        : DEFAULT_VU_METER_ORIENTATION,
     },
     lufsmeter: {
       mode: isLUFSMeterMode(rawLufsmeter.mode) ? rawLufsmeter.mode : DEFAULT_LUFS_METER_MODE,
@@ -656,6 +666,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
     && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
     && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
+    && left.scopeSettings.vumeter.orientation === right.scopeSettings.vumeter.orientation
     && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
     && left.scopeSettings.waveform.scrollSpeed === right.scopeSettings.waveform.scrollSpeed
     && left.scopeSettings.waveform.multiband === right.scopeSettings.waveform.multiband
@@ -753,6 +764,7 @@ function buildSnapshot(
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
     vectorscopeMode: workingState.scopeSettings.vectorscope.mode,
     vuMeterMode: workingState.scopeSettings.vumeter.mode,
+    vuMeterOrientation: workingState.scopeSettings.vumeter.orientation,
     lufsMeterMode: workingState.scopeSettings.lufsmeter.mode,
   }
 }
@@ -1233,6 +1245,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         vumeter: {
           ...state.workingState.scopeSettings.vumeter,
           mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setVUMeterOrientation: (orientation) => {
+    if (!isVUMeterOrientation(orientation)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        vumeter: {
+          ...state.workingState.scopeSettings.vumeter,
+          orientation,
         },
       },
     })

@@ -62,6 +62,7 @@ export function useScopePopoutBridge(): void {
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
+  const vuMeterOrientation = useVisualizerSettingsStore((s) => s.vuMeterOrientation)
   const lufsMeterMode = useVisualizerSettingsStore((s) => s.lufsMeterMode)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
@@ -181,6 +182,7 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
             vuMeterMode,
+            vuMeterOrientation,
             lineColor,
             reset: true,
           })
@@ -301,6 +303,7 @@ export function useScopePopoutBridge(): void {
               sampleRate: audioEngine.getSampleRate(),
               stereoChunks,
               vuMeterMode,
+              vuMeterOrientation,
               lineColor,
               reset: false,
             })
@@ -367,6 +370,7 @@ export function useScopePopoutBridge(): void {
     vectorscopeMode,
     vectorscopeMultiband,
     vuMeterMode,
+    vuMeterOrientation,
     lufsMeterMode
   ])
 }

@@ -19,7 +19,14 @@ import {
   isSpectrogramClarityMode,
   isSpectrogramScaleMode,
 } from '../../../types/spectrogram'
-import { DEFAULT_VU_METER_MODE, isVUMeterMode, type VUMeterMode } from '../../../types/vumeter'
+import {
+  DEFAULT_VU_METER_MODE,
+  DEFAULT_VU_METER_ORIENTATION,
+  isVUMeterMode,
+  isVUMeterOrientation,
+  type VUMeterMode,
+  type VUMeterOrientation,
+} from '../../../types/vumeter'
 import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
 import { DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE } from '../../../types/spectrum'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
@@ -819,6 +826,7 @@ function VUMeterScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const vuMeterModeRef = useRef<VUMeterMode>(DEFAULT_VU_METER_MODE)
+  const vuMeterOrientationRef = useRef<VUMeterOrientation>(DEFAULT_VU_METER_ORIENTATION)
   const isPlayingRef = useRef(false)
 
   const handleResize = useCallback(() => {
@@ -836,6 +844,9 @@ function VUMeterScopeCanvas() {
       if ('vuMeterMode' in chunk && isVUMeterMode(chunk.vuMeterMode)) {
         vuMeterModeRef.current = chunk.vuMeterMode
       }
+      if ('vuMeterOrientation' in chunk && isVUMeterOrientation(chunk.vuMeterOrientation)) {
+        vuMeterOrientationRef.current = chunk.vuMeterOrientation
+      }
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -848,6 +859,7 @@ function VUMeterScopeCanvas() {
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
         mode: vuMeterModeRef.current,
+        orientation: vuMeterOrientationRef.current,
       })
     })
 
@@ -861,6 +873,7 @@ function VUMeterScopeCanvas() {
       visualizerRef.current = new VUMeter(canvasRef.current, {
         lineColor: lineColorRef.current,
         mode: vuMeterModeRef.current,
+        orientation: vuMeterOrientationRef.current,
         dataSource: {
           getPendingVUMeterSamples: () => {
             const chunks = pendingChunksRef.current

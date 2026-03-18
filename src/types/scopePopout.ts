@@ -1,6 +1,6 @@
 import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
-import type { VUMeterMode } from './vumeter'
+import type { VUMeterMode, VUMeterOrientation } from './vumeter'
 
 export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter' | 'waveform'
 
@@ -79,6 +79,7 @@ export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {
     right: Float32Array
   }>
   vuMeterMode: VUMeterMode
+  vuMeterOrientation: VUMeterOrientation
 }
 
 export interface ScopePopoutLUFSMeterChunk extends ScopePopoutChunkBase {

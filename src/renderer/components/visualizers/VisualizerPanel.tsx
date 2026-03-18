@@ -7,7 +7,7 @@ import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/v
 import { useUIStore } from '../../stores/uiStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
-import type { VUMeterMode } from '../../../types/vumeter'
+import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 
 interface VisualizerPanelProps {
   className?: string
@@ -404,10 +404,12 @@ function DockedSpectrogramTile({
 function DockedVUMeterTile({
   lineColor,
   vuMeterMode,
+  vuMeterOrientation,
   isRunning,
 }: {
   lineColor: string
   vuMeterMode: VUMeterMode
+  vuMeterOrientation: VUMeterOrientation
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -427,6 +429,7 @@ function DockedVUMeterTile({
       visualizerRef.current = new VUMeter(canvasRef.current, {
         lineColor,
         mode: vuMeterMode,
+        orientation: vuMeterOrientation,
       })
     }
 
@@ -441,8 +444,8 @@ function DockedVUMeterTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode })
-  }, [lineColor, vuMeterMode])
+    visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode, orientation: vuMeterOrientation })
+  }, [lineColor, vuMeterMode, vuMeterOrientation])
 
   useEffect(() => {
     if (isRunning) {
@@ -646,6 +649,11 @@ function spectrogramScaleLabelShort(mode: SpectrogramScaleMode): string {
   }
 }
 
+function vuMeterLabelShort(mode: VUMeterMode, orientation: VUMeterOrientation): string {
+  if (mode === 'needle') return 'NEEDLE'
+  return orientation === 'vertical' ? 'BAR VERT' : 'BAR HORZ'
+}
+
 function scopeLabel(scope: ScopeKind): string {
   switch (scope) {
     case 'spectrum':
@@ -720,6 +728,7 @@ export default function VisualizerPanel({
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
+  const vuMeterOrientation = useVisualizerSettingsStore((s) => s.vuMeterOrientation)
   const scopeOrder = useVisualizerSettingsStore((s) => s.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((s) => s.hiddenScopes)
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
@@ -989,7 +998,7 @@ export default function VisualizerPanel({
         case 'spectrogram':
           return `${spectrogramScaleLabelShort(spectrogramScaleMode)} ${spectrogramClarityLabelShort(spectrogramClarityMode)} X${spectrogramScrollSpeed.toFixed(1)}`
         case 'vumeter':
-          return vuMeterMode === 'needle' ? 'NEEDLE' : 'BAR'
+          return vuMeterLabelShort(vuMeterMode, vuMeterOrientation)
         case 'lufsmeter':
           return 'LUFS'
         case 'waveform':
@@ -1076,6 +1085,7 @@ export default function VisualizerPanel({
           <DockedVUMeterTile
             lineColor={lineColor}
             vuMeterMode={vuMeterMode}
+            vuMeterOrientation={vuMeterOrientation}
             isRunning={isRunning}
           />
         ) : scope === 'lufsmeter' ? (

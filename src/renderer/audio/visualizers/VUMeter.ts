@@ -1,5 +1,9 @@
 import { audioEngine } from '../AudioEngine'
-import type { VUMeterMode } from '../../../types/vumeter'
+import {
+  DEFAULT_VU_METER_ORIENTATION,
+  type VUMeterMode,
+  type VUMeterOrientation,
+} from '../../../types/vumeter'
 
 export interface VUMeterDataSource {
   getPendingVUMeterSamples: () => Array<{ left: Float32Array; right: Float32Array }>
@@ -9,6 +13,7 @@ export interface VUMeterDataSource {
 
 export interface VUMeterOptions {
   mode?: VUMeterMode
+  orientation?: VUMeterOrientation
   lineColor?: string
   dataSource?: VUMeterDataSource
 }
@@ -17,6 +22,7 @@ type ResolvedVUMeterOptions = Required<Omit<VUMeterOptions, 'dataSource'>>
 
 const defaultOptions: ResolvedVUMeterOptions = {
   mode: 'bar',
+  orientation: DEFAULT_VU_METER_ORIENTATION,
   lineColor: '#38bdf8',
 }
 
@@ -199,6 +205,15 @@ export class VUMeter {
   }
 
   private drawBarMode(width: number, height: number): void {
+    if (this.options.orientation === 'vertical') {
+      this.drawVerticalBarMode(width, height)
+      return
+    }
+
+    this.drawHorizontalBarMode(width, height)
+  }
+
+  private drawHorizontalBarMode(width: number, height: number): void {
     const ctx = this.ctx
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
 
@@ -217,13 +232,13 @@ export class VUMeter {
 
     // ---- L meter ----
     const lY = topOffset
-    this.drawMeterBar(ctx, barLeft, lY, barWidth, meterHeight, this.rmsL, this.peakL, cr, cg, cb)
+    this.drawHorizontalMeterBar(ctx, barLeft, lY, barWidth, meterHeight, this.rmsL, this.peakL, cr, cg, cb)
     this.drawMeterLabel(ctx, 0, lY, labelWidth, meterHeight, 'L')
     this.drawDbLabel(ctx, barRight + 4, lY, dbLabelWidth, meterHeight, this.rmsL)
 
     // ---- R meter ----
     const rY = lY + meterHeight + gap
-    this.drawMeterBar(ctx, barLeft, rY, barWidth, meterHeight, this.rmsR, this.peakR, cr, cg, cb)
+    this.drawHorizontalMeterBar(ctx, barLeft, rY, barWidth, meterHeight, this.rmsR, this.peakR, cr, cg, cb)
     this.drawMeterLabel(ctx, 0, rY, labelWidth, meterHeight, 'R')
     this.drawDbLabel(ctx, barRight + 4, rY, dbLabelWidth, meterHeight, this.rmsR)
 
@@ -232,7 +247,43 @@ export class VUMeter {
     this.drawCorrelationBar(ctx, barLeft, corrY, barWidth, corrHeight, cr, cg, cb)
   }
 
-  private drawMeterBar(
+  private drawVerticalBarMode(width: number, height: number): void {
+    const ctx = this.ctx
+    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+
+    const sidePadding = Math.max(4, Math.floor(width * 0.08))
+    const channelGap = Math.max(4, Math.floor(width * 0.08))
+    const labelHeight = Math.max(14, Math.floor(height * 0.08))
+    const dbHeight = Math.max(14, Math.floor(height * 0.1))
+    const corrHeight = Math.max(10, Math.floor(height * 0.11))
+    const gapY = Math.max(4, Math.floor(height * 0.03))
+    const maxMeterWidth = Math.max(4, Math.floor((width - channelGap) / 2))
+    const availableMeterWidth = Math.max(8, width - sidePadding * 2 - channelGap)
+    const meterWidth = Math.min(Math.max(6, Math.floor(availableMeterWidth / 2)), maxMeterWidth)
+    const totalMeterWidth = meterWidth * 2 + channelGap
+    const meterLeft = Math.max(0, Math.floor((width - totalMeterWidth) / 2))
+    const meterTop = gapY + labelHeight
+    const meterHeight = Math.max(1, height - labelHeight - dbHeight - corrHeight - gapY * 4)
+    const dbY = meterTop + meterHeight + gapY
+    const corrY = dbY + dbHeight + gapY
+    const corrX = Math.max(4, Math.floor(width * 0.06))
+    const corrWidth = Math.max(1, width - corrX * 2)
+
+    const lX = meterLeft
+    const rX = meterLeft + meterWidth + channelGap
+
+    this.drawMeterLabel(ctx, lX, 0, meterWidth, labelHeight, 'L')
+    this.drawVerticalMeterBar(ctx, lX, meterTop, meterWidth, meterHeight, this.rmsL, this.peakL, cr, cg, cb)
+    this.drawCenteredDbLabel(ctx, lX, dbY, meterWidth, dbHeight, this.rmsL)
+
+    this.drawMeterLabel(ctx, rX, 0, meterWidth, labelHeight, 'R')
+    this.drawVerticalMeterBar(ctx, rX, meterTop, meterWidth, meterHeight, this.rmsR, this.peakR, cr, cg, cb)
+    this.drawCenteredDbLabel(ctx, rX, dbY, meterWidth, dbHeight, this.rmsR)
+
+    this.drawCorrelationBar(ctx, corrX, corrY, corrWidth, corrHeight, cr, cg, cb)
+  }
+
+  private drawHorizontalMeterBar(
     ctx: CanvasRenderingContext2D,
     x: number, y: number, w: number, h: number,
     rmsDb: number, peakDb: number,
@@ -257,7 +308,7 @@ export class VUMeter {
       if (rmsWidth > hotThreshold) {
         // Hot zone: transition to warm/red
         const hotWidth = rmsWidth - hotThreshold
-        const hotProgress = Math.min(1, hotWidth / (w - hotThreshold))
+        const hotProgress = Math.min(1, hotWidth / Math.max(1, w - hotThreshold))
         const hotR = Math.round(cr + (255 - cr) * hotProgress * 0.7)
         const hotG = Math.round(cg * (1 - hotProgress * 0.6))
         const hotB = Math.round(cb * (1 - hotProgress * 0.7))
@@ -285,6 +336,54 @@ export class VUMeter {
     }
   }
 
+  private drawVerticalMeterBar(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number,
+    rmsDb: number, peakDb: number,
+    cr: number, cg: number, cb: number
+  ): void {
+    const rmsNorm = this.dbToNormalized(rmsDb)
+    const peakNorm = this.dbToNormalized(peakDb)
+    const rmsHeight = rmsNorm * h
+    const hotThreshold = this.dbToNormalized(-6) * h
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)'
+    ctx.fillRect(x, y, w, h)
+
+    if (rmsHeight > 0) {
+      const safeHeight = Math.min(rmsHeight, hotThreshold)
+      if (safeHeight > 0) {
+        ctx.fillStyle = colorWithAlpha(cr, cg, cb, 0.82)
+        ctx.fillRect(x, y + h - safeHeight, w, safeHeight)
+      }
+      if (rmsHeight > hotThreshold) {
+        const hotHeight = rmsHeight - hotThreshold
+        const hotProgress = Math.min(1, hotHeight / Math.max(1, h - hotThreshold))
+        const hotR = Math.round(cr + (255 - cr) * hotProgress * 0.7)
+        const hotG = Math.round(cg * (1 - hotProgress * 0.6))
+        const hotB = Math.round(cb * (1 - hotProgress * 0.7))
+        ctx.fillStyle = colorWithAlpha(hotR, hotG, hotB, 0.82)
+        ctx.fillRect(x, y + h - rmsHeight, w, hotHeight)
+      }
+    }
+
+    if (peakNorm > 0.001) {
+      const peakY = y + h - peakNorm * h
+      const peakInHot = peakDb > -6
+      ctx.fillStyle = peakInHot
+        ? 'rgba(255, 120, 80, 0.9)'
+        : colorWithAlpha(cr, cg, cb, 0.9)
+      ctx.fillRect(x, peakY - 1, w, 2)
+    }
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+    const tickDbs = [-48, -36, -24, -18, -12, -6, -3, 0]
+    for (const db of tickDbs) {
+      const tickY = y + h - this.dbToNormalized(db) * h
+      ctx.fillRect(x, tickY, w, 1)
+    }
+  }
+
   private drawMeterLabel(
     ctx: CanvasRenderingContext2D,
     x: number, y: number, w: number, h: number,
@@ -309,6 +408,20 @@ export class VUMeter {
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
     ctx.fillText(text, x, y + h / 2)
+  }
+
+  private drawCenteredDbLabel(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number,
+    db: number
+  ): void {
+    const displayDb = Math.max(METER_MIN_DB, Math.min(0, db))
+    const text = displayDb <= METER_MIN_DB + 1 ? '-∞' : `${displayDb.toFixed(1)}`
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.font = `${Math.min(16, Math.max(8, h * 0.5))}px "JetBrains Mono", monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(text, x + w / 2, y + h / 2)
   }
 
   private drawCorrelationBar(
