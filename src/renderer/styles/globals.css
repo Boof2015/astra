@@ -8030,6 +8030,7 @@ body::after {
   position: absolute;
   left: 50%;
   top: calc(100% - 1px);
+  border-color: rgba(var(--accent-rgb), 0.24);
   transform: translateX(-50%);
   opacity: 0;
   pointer-events: none;
