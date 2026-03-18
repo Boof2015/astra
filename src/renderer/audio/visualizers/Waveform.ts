@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
+import { MultibandSplitter } from './multibandSplitter'
 
 export interface WaveformDataSource {
   getPendingWaveformSamples: () => Float32Array[]
@@ -10,6 +11,7 @@ export interface WaveformDataSource {
 export interface WaveformOptions {
   lineColor?: string
   scrollSpeed?: number
+  multiband?: boolean
   dataSource?: WaveformDataSource
 }
 
@@ -18,7 +20,13 @@ type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource'>>
 const defaultOptions: ResolvedWaveformOptions = {
   lineColor: '#38bdf8',
   scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
+  multiband: false,
 }
+
+// Band colors for multiband mode — same hues as vectorscope RGB
+const BAND_LOW:  [number, number, number] = [255, 68, 68]   // red — bass
+const BAND_MID:  [number, number, number] = [68, 221, 68]   // green — mids
+const BAND_HIGH: [number, number, number] = [68, 136, 255]  // blue — highs
 
 const defaultWaveformDataSource: WaveformDataSource = {
   getPendingWaveformSamples: () => audioEngine.flushPendingWaveformSamples(),
@@ -57,6 +65,12 @@ export class Waveform {
   private samplesPerColumn = 0
   private lastSampleRate = 0
 
+  // Multiband analysis
+  private splitter = new MultibandSplitter()
+  private bandLowAcc: Float32Array = new Float32Array(0)
+  private bandMidAcc: Float32Array = new Float32Array(0)
+  private bandHighAcc: Float32Array = new Float32Array(0)
+
   private unsubscribeTrackChange: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: WaveformOptions = {}) {
@@ -71,6 +85,7 @@ export class Waveform {
       ...defaultOptions,
       ...optionOverrides,
       scrollSpeed: clampWaveformScrollSpeed(optionOverrides.scrollSpeed ?? defaultOptions.scrollSpeed),
+      multiband: optionOverrides.multiband ?? defaultOptions.multiband,
     }
     this.dataSource = dataSource ?? defaultWaveformDataSource
 
@@ -92,6 +107,7 @@ export class Waveform {
   private resetDisplay(): void {
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
     this.columnAccumulatorPos = 0
+    this.splitter.reset()
   }
 
   private recomputeSamplesPerColumn(): void {
@@ -101,9 +117,13 @@ export class Waveform {
     if (next !== this.samplesPerColumn) {
       this.samplesPerColumn = next
       this.columnAccumulator = new Float32Array(next)
+      this.bandLowAcc = new Float32Array(next)
+      this.bandMidAcc = new Float32Array(next)
+      this.bandHighAcc = new Float32Array(next)
       this.columnAccumulatorPos = 0
     }
     this.lastSampleRate = sampleRate
+    this.splitter.configure(sampleRate)
   }
 
   setOptions(options: Partial<WaveformOptions>): void {
@@ -113,8 +133,10 @@ export class Waveform {
       ...optionUpdates,
       lineColor: optionUpdates.lineColor ?? this.options.lineColor,
       scrollSpeed: clampWaveformScrollSpeed(optionUpdates.scrollSpeed ?? this.options.scrollSpeed),
+      multiband: optionUpdates.multiband ?? this.options.multiband,
     }
     const speedChanged = nextOptions.scrollSpeed !== this.options.scrollSpeed
+    const multibandChanged = nextOptions.multiband !== this.options.multiband
 
     this.options = nextOptions
     if (dataSource) {
@@ -122,6 +144,10 @@ export class Waveform {
     }
     if (speedChanged) {
       this.recomputeSamplesPerColumn()
+      this.resetDisplay()
+    }
+    if (multibandChanged) {
+      this.splitter.reset()
       this.resetDisplay()
     }
   }
@@ -155,6 +181,43 @@ export class Waveform {
     return { min, max }
   }
 
+  private computeBandColor(): [number, number, number] {
+    const n = this.columnAccumulatorPos
+    if (n === 0) return BAND_MID
+
+    // Compute RMS energy for each band
+    let lowSum = 0
+    let midSum = 0
+    let highSum = 0
+    for (let i = 0; i < n; i++) {
+      const l = this.bandLowAcc[i]
+      const m = this.bandMidAcc[i]
+      const h = this.bandHighAcc[i]
+      lowSum += l * l
+      midSum += m * m
+      highSum += h * h
+    }
+
+    const lowRms = Math.sqrt(lowSum / n)
+    const midRms = Math.sqrt(midSum / n)
+    const highRms = Math.sqrt(highSum / n)
+    const total = lowRms + midRms + highRms
+
+    if (total < 1e-10) return BAND_MID
+
+    // Relative weight of each band
+    const lw = lowRms / total
+    const mw = midRms / total
+    const hw = highRms / total
+
+    // Mix band colors by their weight
+    return [
+      Math.round(BAND_LOW[0] * lw + BAND_MID[0] * mw + BAND_HIGH[0] * hw),
+      Math.round(BAND_LOW[1] * lw + BAND_MID[1] * mw + BAND_HIGH[1] * hw),
+      Math.round(BAND_LOW[2] * lw + BAND_MID[2] * mw + BAND_HIGH[2] * hw),
+    ]
+  }
+
   private shiftAndPaintColumn(min: number, max: number, width: number, height: number): void {
     // Shift existing content left by 1 pixel — use 'copy' to avoid
     // alpha accumulation from source-over compositing on semi-transparent pixels
@@ -168,7 +231,12 @@ export class Waveform {
     const yBottom = Math.round(centerY - min * centerY * gain)
     const lineHeight = Math.max(1, yBottom - yTop)
 
-    const [r, g, b] = parseHexColor(this.options.lineColor)
+    let r: number, g: number, b: number
+    if (this.options.multiband) {
+      ;[r, g, b] = this.computeBandColor()
+    } else {
+      ;[r, g, b] = parseHexColor(this.options.lineColor)
+    }
 
     // Draw the amplitude column — brighter at the edges, dimmer in the middle
     this.waterfallCtx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.55)`
@@ -264,11 +332,28 @@ export class Waveform {
 
     const pending = this.dataSource.getPendingWaveformSamples()
     const samplesPerCol = this.samplesPerColumn
+    const multiband = this.options.multiband
 
     if (samplesPerCol > 0) {
       for (const chunk of pending) {
+        // When multiband is enabled, split each chunk through the crossover filters
+        let lowBand: Float32Array | null = null
+        let midBand: Float32Array | null = null
+        let highBand: Float32Array | null = null
+        if (multiband) {
+          const bands = this.splitter.split(chunk, chunk)
+          lowBand = bands.low.left
+          midBand = bands.mid.left
+          highBand = bands.high.left
+        }
+
         for (let i = 0; i < chunk.length; i++) {
           this.columnAccumulator[this.columnAccumulatorPos] = chunk[i]
+          if (multiband && lowBand && midBand && highBand) {
+            this.bandLowAcc[this.columnAccumulatorPos] = lowBand[i]
+            this.bandMidAcc[this.columnAccumulatorPos] = midBand[i]
+            this.bandHighAcc[this.columnAccumulatorPos] = highBand[i]
+          }
           this.columnAccumulatorPos++
 
           if (this.columnAccumulatorPos >= samplesPerCol) {

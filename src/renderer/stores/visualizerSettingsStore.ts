@@ -84,6 +84,7 @@ interface VisualizerSettingsSnapshot {
   lineColor: string
   isRunning: boolean
   vectorscopeMultiband: boolean
+  waveformMultiband: boolean
   profiles: Record<string, AnalyzerProfile>
   activeProfileId: string | null
   activeProfileName: string
@@ -128,6 +129,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
+  setWaveformMultiband: (enabled: boolean) => void
   setVUMeterMode: (mode: VUMeterMode) => void
   setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
@@ -146,6 +148,7 @@ const ANALYZER_PROFILE_STORAGE_VERSION = 2
 export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'
 export const VECTORSCOPE_MULTIBAND_STORAGE_KEY = 'astra-vectorscope-multiband'
+export const WAVEFORM_MULTIBAND_STORAGE_KEY = 'astra-waveform-multiband'
 
 const DEFAULT_PROFILE_ID = 'default'
 const DEFAULT_PROFILE_NAME = 'Default'
@@ -289,6 +292,22 @@ function readVectorscopeMultibandPreference(): boolean {
 function persistVectorscopeMultibandPreference(enabled: boolean): void {
   try {
     localStorage.setItem(VECTORSCOPE_MULTIBAND_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // ignore persistence failures
+  }
+}
+
+function readWaveformMultibandPreference(): boolean {
+  try {
+    return localStorage.getItem(WAVEFORM_MULTIBAND_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistWaveformMultibandPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(WAVEFORM_MULTIBAND_STORAGE_KEY, enabled ? '1' : '0')
   } catch {
     // ignore persistence failures
   }
@@ -627,7 +646,8 @@ function buildSnapshot(
   profilesInput: Record<string, AnalyzerProfile>,
   requestedActiveProfileId: string | null,
   workingStateInput: AnalyzerWorkingState,
-  vectorscopeMultiband = false
+  vectorscopeMultiband = false,
+  waveformMultiband = false
 ): VisualizerSettingsSnapshot {
   const profiles = mergeProfiles(profilesInput)
   const workingState = normalizeWorkingState(workingStateInput)
@@ -644,6 +664,7 @@ function buildSnapshot(
     lineColor,
     isRunning,
     vectorscopeMultiband,
+    waveformMultiband,
     profiles,
     activeProfileId,
     activeProfileName: activeProfileId ? profiles[activeProfileId].name : CUSTOM_PROFILE_NAME,
@@ -671,6 +692,7 @@ function buildSnapshot(
 function loadInitialSnapshot(): VisualizerSettingsSnapshot {
   const legacyUnderfillEnabled = readLegacyOscilloscopeUnderfillPreference()
   const multibandEnabled = readVectorscopeMultibandPreference()
+  const waveformMultibandEnabled = readWaveformMultibandPreference()
 
   try {
     const raw = localStorage.getItem(ANALYZER_PROFILES_STORAGE_KEY)
@@ -681,7 +703,8 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
         BUILT_IN_PROFILES,
         DEFAULT_PROFILE_ID,
         DEFAULT_WORKING_STATE,
-        multibandEnabled
+        multibandEnabled,
+        waveformMultibandEnabled
       )
     }
 
@@ -702,7 +725,8 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
       mergedProfiles,
       requestedActiveProfileId,
       workingState,
-      multibandEnabled
+      multibandEnabled,
+      waveformMultibandEnabled
     )
   } catch {
     return buildSnapshot(
@@ -711,7 +735,8 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
       BUILT_IN_PROFILES,
       DEFAULT_PROFILE_ID,
       DEFAULT_WORKING_STATE,
-      multibandEnabled
+      multibandEnabled,
+      waveformMultibandEnabled
     )
   }
 }
@@ -727,7 +752,8 @@ function updateWorkingState(
     state.profiles,
     state.activeProfileId,
     nextWorkingState,
-    state.vectorscopeMultiband
+    state.vectorscopeMultiband,
+    state.waveformMultiband
   )
 }
 
@@ -758,7 +784,8 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       state.profiles,
       targetId,
       workingStateFromProfile(profile),
-      state.vectorscopeMultiband
+      state.vectorscopeMultiband,
+      state.waveformMultiband
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -782,7 +809,8 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       nextProfiles,
       profileId,
       state.workingState,
-      state.vectorscopeMultiband
+      state.vectorscopeMultiband,
+      state.waveformMultiband
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -804,7 +832,8 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       remainingProfiles,
       state.activeProfileId === targetId ? null : state.activeProfileId,
       state.workingState,
-      state.vectorscopeMultiband
+      state.vectorscopeMultiband,
+      state.waveformMultiband
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -1065,6 +1094,11 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
   setVectorscopeMultiband: (enabled) => {
     persistVectorscopeMultibandPreference(enabled)
     set({ vectorscopeMultiband: enabled })
+  },
+
+  setWaveformMultiband: (enabled) => {
+    persistWaveformMultibandPreference(enabled)
+    set({ waveformMultiband: enabled })
   },
 
   setVUMeterMode: (mode) => {

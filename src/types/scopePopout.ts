@@ -92,6 +92,7 @@ export interface ScopePopoutWaveformChunk extends ScopePopoutChunkBase {
   scope: 'waveform'
   monoChunks: Float32Array[]
   waveformScrollSpeed: number
+  waveformMultiband: boolean
 }
 
 export type ScopePopoutChunk =

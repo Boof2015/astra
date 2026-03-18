@@ -988,6 +988,7 @@ function WaveformScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const scrollSpeedRef = useRef(DEFAULT_WAVEFORM_SCROLL_SPEED)
+  const multibandRef = useRef(false)
   const isPlayingRef = useRef(false)
 
   const handleResize = useCallback(() => {
@@ -1002,6 +1003,7 @@ function WaveformScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       lineColorRef.current = chunk.lineColor
       scrollSpeedRef.current = clampWaveformScrollSpeed(chunk.waveformScrollSpeed)
+      multibandRef.current = Boolean(chunk.waveformMultiband)
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -1014,6 +1016,7 @@ function WaveformScopeCanvas() {
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
         scrollSpeed: scrollSpeedRef.current,
+        multiband: multibandRef.current,
       })
     })
 
@@ -1027,6 +1030,7 @@ function WaveformScopeCanvas() {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor: lineColorRef.current,
         scrollSpeed: scrollSpeedRef.current,
+        multiband: multibandRef.current,
         dataSource: {
           getPendingWaveformSamples: () => {
             const chunks = pendingChunksRef.current

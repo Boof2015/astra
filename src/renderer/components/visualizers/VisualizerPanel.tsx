@@ -538,10 +538,12 @@ function DockedLUFSMeterTile({
 function DockedWaveformTile({
   lineColor,
   scrollSpeed,
+  multiband,
   isRunning,
 }: {
   lineColor: string
   scrollSpeed: number
+  multiband: boolean
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -561,6 +563,7 @@ function DockedWaveformTile({
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor,
         scrollSpeed,
+        multiband,
       })
     }
 
@@ -575,8 +578,8 @@ function DockedWaveformTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, scrollSpeed })
-  }, [lineColor, scrollSpeed])
+    visualizerRef.current?.setOptions({ lineColor, scrollSpeed, multiband })
+  }, [lineColor, scrollSpeed, multiband])
 
   useEffect(() => {
     if (isRunning) {
@@ -699,6 +702,7 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
+  const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
@@ -980,7 +984,7 @@ export default function VisualizerPanel({
         case 'lufsmeter':
           return 'LUFS'
         case 'waveform':
-          return `SPEED X${waveformScrollSpeed.toFixed(1)}`
+          return waveformMultiband ? `RGB X${waveformScrollSpeed.toFixed(1)}` : `SPEED X${waveformScrollSpeed.toFixed(1)}`
       }
     })()
 
@@ -1072,6 +1076,7 @@ export default function VisualizerPanel({
           <DockedWaveformTile
             lineColor={lineColor}
             scrollSpeed={waveformScrollSpeed}
+            multiband={waveformMultiband}
             isRunning={isRunning}
           />
         ) : (

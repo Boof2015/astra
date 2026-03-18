@@ -99,6 +99,7 @@ function scopeStateLabel(
   spectrogramFftSize: FFTSize,
   spectrogramScrollSpeed: number,
   waveformScrollSpeed: number,
+  waveformMultiband: boolean,
   spectrogramClarityMode: SpectrogramClarityMode,
   spectrogramScaleMode: SpectrogramScaleMode,
   pitchLock: boolean,
@@ -122,7 +123,7 @@ function scopeStateLabel(
     case 'lufsmeter':
       return 'LUFS'
     case 'waveform':
-      return `Speed x${waveformScrollSpeed.toFixed(1)}`
+      return waveformMultiband ? `RGB · Speed x${waveformScrollSpeed.toFixed(1)}` : `Speed x${waveformScrollSpeed.toFixed(1)}`
   }
 }
 
@@ -253,6 +254,8 @@ export default function AnalyzerEditOverlay({
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
+  const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
+  const setWaveformMultiband = useVisualizerSettingsStore((state) => state.setWaveformMultiband)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
   const setActiveProfile = useVisualizerSettingsStore((state) => state.setActiveProfile)
@@ -530,6 +533,13 @@ export default function AnalyzerEditOverlay({
       case 'waveform':
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-waveform">
+            <button
+              type="button"
+              className={`analyzer-edit-button ${waveformMultiband ? 'is-active' : ''}`.trim()}
+              onClick={() => setWaveformMultiband(!waveformMultiband)}
+            >
+              RGB {waveformMultiband ? 'On' : 'Off'}
+            </button>
             <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
               <span className="analyzer-edit-corner-label">Speed x{waveformScrollSpeed.toFixed(1)}</span>
               <input
@@ -686,6 +696,7 @@ export default function AnalyzerEditOverlay({
                     spectrogramFftSize,
                     spectrogramScrollSpeed,
                     waveformScrollSpeed,
+                    waveformMultiband,
                     spectrogramClarityMode,
                     spectrogramScaleMode,
                     pitchLock,
