@@ -231,11 +231,12 @@ declare global {
             openAudioFolder: () => Promise<string | null>
             loadAudioFile: (
                 filePath: string,
-                options?: { metadataMode?: 'full' | 'none' }
+                options?: { metadataMode?: 'full' | 'none'; preferStreamUrl?: boolean }
             ) => Promise<{
                 path: string
                 name: string
-                data: ArrayBuffer
+                data?: ArrayBuffer
+                streamUrl?: string
                 metadata?: {
                     title?: string
                     artist?: string

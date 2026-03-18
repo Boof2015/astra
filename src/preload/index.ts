@@ -78,12 +78,14 @@ export interface AudioFileMetadata {
 export interface AudioFileResult {
   path: string
   name: string
-  data: ArrayBuffer
+  data?: ArrayBuffer
+  streamUrl?: string
   metadata?: AudioFileMetadata
 }
 
 export interface AudioLoadOptions {
   metadataMode?: 'full' | 'none'
+  preferStreamUrl?: boolean
 }
 
 export interface RemoteAudioLoadProgress {

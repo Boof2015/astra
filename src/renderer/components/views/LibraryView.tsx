@@ -784,7 +784,9 @@ export default function LibraryView() {
         replayGainTrackDb: result.metadata?.replayGainTrackDb,
         replayGainAlbumDb: result.metadata?.replayGainAlbumDb,
       }
-      await loadTrack(track, result.data)
+      if (result.data) {
+        await loadTrack(track, result.data)
+      }
     }
   }
 

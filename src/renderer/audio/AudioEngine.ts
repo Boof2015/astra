@@ -77,6 +77,11 @@ interface AudioLoadDataOptions {
   replayGainDb?: number | null
 }
 
+interface RemoteStreamLoadOptions {
+  replayGainDb?: number | null
+  durationHintSeconds?: number | null
+}
+
 interface PlaybackModeSwitchResult {
   activeMode: PlaybackOutputMode
   capabilities: NativeAudioCapabilities
@@ -154,6 +159,10 @@ interface CalibrationToneSignal {
 export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
+  private mediaElement: HTMLAudioElement | null = null
+  private mediaElementSourceNode: MediaElementAudioSourceNode | null = null
+  private remoteStreamActive: boolean = false
+  private remoteStreamDuration: number = 0
   private gainNode: GainNode | null = null
   private normalizationGainNode: GainNode | null = null
   private analysisNormalizationGainNode: GainNode | null = null
@@ -219,7 +228,7 @@ export class AudioEngine {
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
   private multichannelEnabled: boolean = false
   private manualChannelRoutingMap: number[] | null = null
-  private sourceRoutingNodes: WeakMap<AudioBufferSourceNode, {
+  private sourceRoutingNodes: WeakMap<AudioNode, {
     splitter: ChannelSplitterNode
     merger: ChannelMergerNode
   }> = new WeakMap()
@@ -823,7 +832,7 @@ export class AudioEngine {
     })
   }
 
-  private connectSourceWithRouting(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+  private connectSourceWithRouting(sourceNode: AudioNode, sourceChannels: number): void {
     if (!this.context || !this.normalizationGainNode) return
 
     this.applyChannelRoutingPreferences(sourceChannels)
@@ -863,7 +872,7 @@ export class AudioEngine {
     this.sourceRoutingNodes.set(sourceNode, { splitter, merger })
   }
 
-  private connectSourceToAnalysisTap(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+  private connectSourceToAnalysisTap(sourceNode: AudioNode, sourceChannels: number): void {
     if (!this.analysisNormalizationGainNode) return
 
     this.applyNodeRoutingMode(
@@ -876,7 +885,7 @@ export class AudioEngine {
     sourceNode.connect(this.analysisNormalizationGainNode)
   }
 
-  private disconnectSourceRouting(sourceNode: AudioBufferSourceNode | null): void {
+  private disconnectSourceRouting(sourceNode: AudioNode | null): void {
     if (!sourceNode) return
 
     const routingNodes = this.sourceRoutingNodes.get(sourceNode)
@@ -1168,6 +1177,124 @@ export class AudioEngine {
     this.applyGainState(normalization)
   }
 
+  private applyNormalizationForRemoteStream(): void {
+    if (!this._normalizationEnabled) {
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
+      return
+    }
+
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+      const clampedGainDb = this.clampGainDb(this.currentReplayGainDb)
+      this.applyGainState({
+        gainDb: clampedGainDb,
+        linearGain: this.toLinearGain(clampedGainDb),
+        mode: 'replaygain'
+      })
+      return
+    }
+
+    this.applyGainState({
+      gainDb: 0,
+      linearGain: 1,
+      mode: 'off'
+    })
+  }
+
+  private ensureRemoteMediaElement(): HTMLAudioElement {
+    if (this.mediaElement) {
+      return this.mediaElement
+    }
+
+    const element = new Audio()
+    // Remote streams must be CORS-enabled for MediaElementAudioSourceNode to output
+    // audio into the WebAudio graph (playback + visualizer path).
+    element.crossOrigin = 'anonymous'
+    element.preload = 'auto'
+    this.mediaElement = element
+    return element
+  }
+
+  private clearRemoteMediaElementSource(): void {
+    if (!this.mediaElement) return
+
+    try {
+      this.mediaElement.pause()
+    } catch {
+      // Ignore pause failures during teardown.
+    }
+    try {
+      this.mediaElement.removeAttribute('src')
+      this.mediaElement.load()
+    } catch {
+      // Ignore load failures during teardown.
+    }
+  }
+
+  private syncRemoteDurationFromMediaElement(): void {
+    if (!this.mediaElement || !this.remoteStreamActive) return
+    const nextDuration = Number(this.mediaElement.duration)
+    if (!Number.isFinite(nextDuration) || nextDuration <= 0) return
+    this.remoteStreamDuration = nextDuration
+    this.emit('durationChange', this.remoteStreamDuration)
+  }
+
+  private waitForRemoteStreamReady(element: HTMLAudioElement, timeoutMs: number = 12000): Promise<void> {
+    if (element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let timerId: number | null = null
+
+      const cleanup = () => {
+        element.removeEventListener('canplay', onCanPlay)
+        element.removeEventListener('error', onError)
+        if (timerId != null) {
+          window.clearTimeout(timerId)
+          timerId = null
+        }
+      }
+
+      const finishResolve = () => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve()
+      }
+
+      const finishReject = (error: Error) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(error)
+      }
+
+      const onCanPlay = () => {
+        finishResolve()
+      }
+
+      const onError = () => {
+        const mediaError = element.error
+        const details = mediaError
+          ? `code=${mediaError.code}${mediaError.message ? ` message=${mediaError.message}` : ''}`
+          : 'unknown media error'
+        finishReject(new Error(`Remote stream failed before playback (${details}).`))
+      }
+
+      timerId = window.setTimeout(() => {
+        finishReject(new Error('Timed out waiting for remote stream to become playable.'))
+      }, timeoutMs)
+
+      element.addEventListener('canplay', onCanPlay, { once: true })
+      element.addEventListener('error', onError, { once: true })
+    })
+  }
+
   // Normalization settings
   get normalizationEnabled(): boolean {
     return this._normalizationEnabled
@@ -1178,7 +1305,9 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
-    if (!enabled) {
+    if (this.remoteStreamActive) {
+      this.applyNormalizationForRemoteStream()
+    } else if (!enabled) {
       this.applyGainState({
         gainDb: 0,
         linearGain: 1,
@@ -1209,7 +1338,9 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
-    if (this._normalizationEnabled && this.audioBuffer) {
+    if (this.remoteStreamActive) {
+      this.applyNormalizationForRemoteStream()
+    } else if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     }
 
@@ -1236,7 +1367,9 @@ export class AudioEngine {
       return
     }
 
-    if (this.audioBuffer) {
+    if (this.remoteStreamActive) {
+      this.applyNormalizationForRemoteStream()
+    } else if (this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
@@ -1261,7 +1394,9 @@ export class AudioEngine {
       return
     }
 
-    if (this.audioBuffer) {
+    if (this.remoteStreamActive) {
+      this.applyNormalizationForRemoteStream()
+    } else if (this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
@@ -1310,6 +1445,11 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.currentTime ?? 0
     }
+    if (this.remoteStreamActive && this.mediaElement) {
+      if (this._playbackState === 'stopped') return 0
+      const current = Number(this.mediaElement.currentTime)
+      return Number.isFinite(current) ? Math.max(0, current) : 0
+    }
     if (!this.context || this._playbackState === 'stopped') return 0
     if (this._playbackState === 'paused') return this.pauseTime
     return this.context.currentTime - this.startTime
@@ -1318,6 +1458,9 @@ export class AudioEngine {
   get duration(): number {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.duration ?? 0
+    }
+    if (this.remoteStreamActive) {
+      return this.remoteStreamDuration
     }
     return this.audioBuffer?.duration ?? 0
   }
@@ -1329,6 +1472,9 @@ export class AudioEngine {
   getCurrentTrackChannelCount(): number | null {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.channels ?? null
+    }
+    if (this.remoteStreamActive) {
+      return 2
     }
     return this.audioBuffer?.numberOfChannels ?? null
   }
@@ -2877,6 +3023,9 @@ export class AudioEngine {
       // Stop any current playback
       this.stopSource()
       this.clearNextBuffer()
+      this.remoteStreamActive = false
+      this.remoteStreamDuration = 0
+      this.clearRemoteMediaElementSource()
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
       this.pauseTime = 0
@@ -2904,6 +3053,81 @@ export class AudioEngine {
       this.emit('stateChange', this._playbackState)
       this.emit('durationChange', 0)
       this.emit('error', err instanceof Error ? err : new Error('Failed to decode audio'))
+      throw err
+    }
+  }
+
+  async loadStreamUrl(streamUrl: string, options: RemoteStreamLoadOptions = {}): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native loading.')
+    }
+    await this.initContext()
+    if (!this.context) throw new Error('AudioContext not initialized')
+
+    const normalizedUrl = streamUrl.trim()
+    if (!normalizedUrl) {
+      throw new Error('Remote stream URL is required.')
+    }
+
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+
+    try {
+      this.stopSource()
+      this.clearNextBuffer()
+      this.audioBuffer = null
+      this.pauseTime = 0
+      this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+      this.remoteStreamActive = true
+      this.remoteStreamDuration = Number.isFinite(options.durationHintSeconds)
+        ? Math.max(0, Number(options.durationHintSeconds))
+        : 0
+
+      const element = this.ensureRemoteMediaElement()
+
+      if (!this.mediaElementSourceNode) {
+        this.mediaElementSourceNode = this.context.createMediaElementSource(element)
+        this.connectSourceWithRouting(this.mediaElementSourceNode, 2)
+        this.connectSourceToAnalysisTap(this.mediaElementSourceNode, 2)
+      }
+
+      element.onended = () => {
+        if (this._playbackState === 'playing') {
+          this.performGaplessTransition()
+        }
+      }
+      element.onerror = () => {
+        const message = element.error?.message ?? 'Failed to play remote stream.'
+        this.emit('error', new Error(message))
+      }
+      element.onloadedmetadata = () => {
+        this.syncRemoteDurationFromMediaElement()
+      }
+      element.ondurationchange = () => {
+        this.syncRemoteDurationFromMediaElement()
+      }
+
+      this.clearRemoteMediaElementSource()
+      element.src = normalizedUrl
+      element.load()
+      await this.waitForRemoteStreamReady(element)
+
+      this.notifyTrackChange()
+      this.applyNormalizationForRemoteStream()
+
+      this._playbackState = 'stopped'
+      this.pauseTime = 0
+      this.emit('stateChange', this._playbackState)
+      this.emit('durationChange', this.remoteStreamDuration)
+    } catch (err) {
+      this.remoteStreamActive = false
+      this.remoteStreamDuration = 0
+      this.pauseTime = 0
+      this.currentReplayGainDb = null
+      this._playbackState = 'stopped'
+      this.emit('stateChange', this._playbackState)
+      this.emit('durationChange', 0)
+      this.emit('error', err instanceof Error ? err : new Error('Failed to load remote stream'))
       throw err
     }
   }
@@ -3078,6 +3302,22 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamActive) {
+      if (!this.mediaElement || !this.context) return
+
+      if (this.context.state === 'suspended') {
+        await this.context.resume()
+      }
+
+      if (this._playbackState === 'playing') return
+
+      await this.mediaElement.play()
+      this._playbackState = 'playing'
+      this.emit('stateChange', this._playbackState)
+      this.startTimeUpdate()
+      return
+    }
+
     if (!this.audioBuffer || !this.context) return
 
     // Resume context if suspended (autoplay policy)
@@ -3132,6 +3372,16 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamActive) {
+      if (!this.mediaElement || this._playbackState !== 'playing') return
+      this.mediaElement.pause()
+      this.pauseTime = this.currentTime
+      this._playbackState = 'paused'
+      this.emit('stateChange', this._playbackState)
+      this.stopTimeUpdate()
+      return
+    }
+
     if (this._playbackState !== 'playing' || !this.context) return
 
     this.pauseTime = this.context.currentTime - this.startTime
@@ -3169,6 +3419,24 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamActive) {
+      if (this.mediaElement) {
+        this.mediaElement.pause()
+        try {
+          this.mediaElement.currentTime = 0
+        } catch {
+          // Ignore seek failures while stopping remote streams.
+        }
+      }
+      this.cancelScheduledNext()
+      this.pauseTime = 0
+      this._playbackState = 'stopped'
+      this.emit('stateChange', this._playbackState)
+      this.emit('timeUpdate', 0)
+      this.stopTimeUpdate()
+      return
+    }
+
     this.stopSource()
     this.cancelScheduledNext()
     this.pauseTime = 0
@@ -3186,6 +3454,24 @@ export class AudioEngine {
       this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
       this.emit('timeUpdate', this.nativeSnapshot.currentTime)
       this.notifyTrackChange()
+      return
+    }
+
+    if (this.remoteStreamActive) {
+      if (!this.mediaElement) return
+      const maxDuration = Number(this.mediaElement.duration)
+      const knownDuration = Number.isFinite(maxDuration) && maxDuration > 0
+        ? maxDuration
+        : this.remoteStreamDuration
+      const clampedTime = Number.isFinite(knownDuration) && knownDuration > 0
+        ? Math.max(0, Math.min(time, knownDuration))
+        : Math.max(0, time)
+      try {
+        this.mediaElement.currentTime = clampedTime
+      } catch {
+        // Ignore seek failures for streams that are not seekable.
+      }
+      this.emit('timeUpdate', clampedTime)
       return
     }
 
@@ -3445,6 +3731,23 @@ export class AudioEngine {
       try { this.analysisDelayNode.disconnect() } catch { /* ignore */ }
       this.analysisDelayNode = null
     }
+    if (this.mediaElementSourceNode) {
+      try {
+        this.disconnectSourceRouting(this.mediaElementSourceNode)
+        this.mediaElementSourceNode.disconnect()
+      } catch {
+        // Ignore disconnect failures during teardown.
+      }
+      this.mediaElementSourceNode = null
+    }
+    if (this.mediaElement) {
+      this.mediaElement.onended = null
+      this.mediaElement.onerror = null
+      this.mediaElement.onloadedmetadata = null
+      this.mediaElement.ondurationchange = null
+      this.clearRemoteMediaElementSource()
+      this.mediaElement = null
+    }
 
     if (this.context) {
       this.context.close()
@@ -3462,6 +3765,8 @@ export class AudioEngine {
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
     this.audioBuffer = null
+    this.remoteStreamActive = false
+    this.remoteStreamDuration = 0
     this.latestLeftChannel = new Float32Array(0)
     this.latestRightChannel = new Float32Array(0)
     this.latestMonoChannel = new Float32Array(0)

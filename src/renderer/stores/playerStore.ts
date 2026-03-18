@@ -1307,7 +1307,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         const fileLoadStart = performance.now()
         // Load audio file from path
-        const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+        const result = await window.electronAPI.loadAudioFile(track.path, {
+          metadataMode: 'none',
+          preferStreamUrl: Boolean(track.sourceType && track.sourceType !== 'local')
+        })
         const fileLoadMs = Math.round(performance.now() - fileLoadStart)
         if (!result) {
           console.error('Failed to load audio file:', track.path)
@@ -1320,11 +1323,71 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return false
         }
 
-        let usedFfmpegFallback = false
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
+        let decodeCandidate = result
+        let streamFallbackUsed = false
+        if (result.streamUrl) {
+          try {
+            await audioEngine.loadStreamUrl(result.streamUrl, {
+              replayGainDb,
+              durationHintSeconds: track.duration
+            })
+            const detectedChannels = audioEngine.getCurrentTrackChannelCount()
+            const resolvedTrack: Track = {
+              ...track,
+              title: result.metadata?.title ?? track.title,
+              artist: result.metadata?.artist ?? track.artist,
+              album: result.metadata?.album ?? track.album,
+              albumArtist: result.metadata?.albumArtist ?? track.albumArtist,
+              duration: result.metadata?.duration ?? track.duration,
+              channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
+              codec: result.metadata?.codec ?? track.codec,
+              codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
+              isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+              replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
+              replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
+            }
+            set({
+              duration: audioEngine.duration,
+              currentTrack: resolvedTrack,
+              remoteLoadProgress: null,
+              currentTime: 0
+            })
+            hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+            if (manualStart) {
+              showOutputDelayNotice(resolvedTrack)
+            }
+            await audioEngine.play()
+            startRecentPlaySession(resolvedTrack.path)
+            get()._preBufferNextTrack()
+            logSlowPath('queueLoadAndPlayTrack', loadStart, {
+              trackPath: track.path,
+              fileLoadMs,
+              progressiveStream: true
+            })
+            return true
+          } catch (streamError) {
+            console.warn(`Progressive stream failed for ${track.path}; retrying buffered decode path.`, streamError)
+            const bufferedRemoteResult = await window.electronAPI.loadAudioFile(track.path, {
+              metadataMode: 'none',
+              preferStreamUrl: false
+            })
+            if (!bufferedRemoteResult) {
+              throw streamError
+            }
+            decodeCandidate = bufferedRemoteResult
+            streamFallbackUsed = true
+          }
+        }
+
+        if (!decodeCandidate.data) {
+          throw new Error(`No audio data returned for ${track.path}`)
+        }
+
+        let usedFfmpegFallback = false
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(result.data, { replayGainDb })
+          await audioEngine.loadAudioData(decodeCandidate.data, { replayGainDb })
         } catch (primaryDecodeError) {
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           if (!fallbackData) {
@@ -1339,17 +1402,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const resolvedTrack: Track = {
           ...track,
-          title: result.metadata?.title ?? track.title,
-          artist: result.metadata?.artist ?? track.artist,
-          album: result.metadata?.album ?? track.album,
-          albumArtist: result.metadata?.albumArtist ?? track.albumArtist,
-          duration: result.metadata?.duration ?? track.duration,
-          channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
-          codec: result.metadata?.codec ?? track.codec,
-          codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
-          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
-          replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
-          replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
+          title: decodeCandidate.metadata?.title ?? track.title,
+          artist: decodeCandidate.metadata?.artist ?? track.artist,
+          album: decodeCandidate.metadata?.album ?? track.album,
+          albumArtist: decodeCandidate.metadata?.albumArtist ?? track.albumArtist,
+          duration: decodeCandidate.metadata?.duration ?? track.duration,
+          channels: detectedChannels ?? decodeCandidate.metadata?.channels ?? track.channels,
+          codec: decodeCandidate.metadata?.codec ?? track.codec,
+          codecProfile: decodeCandidate.metadata?.codecProfile ?? track.codecProfile,
+          isAtmosJoc: decodeCandidate.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+          replayGainTrackDb: decodeCandidate.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
+          replayGainAlbumDb: decodeCandidate.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }
         set({
           duration: audioEngine.duration,
@@ -1373,7 +1436,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           trackPath: track.path,
           fileLoadMs,
           decodeMs,
-          usedFfmpegFallback
+          usedFfmpegFallback,
+          streamFallbackUsed
         })
         return true
       } catch (error) {
@@ -1427,7 +1491,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           if (get().repeat === 'one') {
             return
           }
-          if (result) {
+          if (result?.data) {
             await audioEngine.preBufferNext(result.data, {
               replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
             })

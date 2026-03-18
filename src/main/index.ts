@@ -3993,6 +3993,7 @@ interface LoadedAudioMetadata {
 
 interface LoadAudioFileOptions {
   metadataMode?: 'full' | 'none'
+  preferStreamUrl?: boolean
 }
 
 interface RemoteAudioLoadProgressPayload {
@@ -4486,6 +4487,36 @@ async function resolveSubsonicAudioPayload(
   }
 }
 
+async function resolveSubsonicStreamContext(
+  filePath: string
+): Promise<{
+  parsed: { sourceId: number; sourceTrackId: string }
+  track: library.DbTrack | null
+  streamUrl: string
+}> {
+  const parsed = parseSubsonicTrackPath(filePath)
+  if (!parsed) {
+    throw new Error('Invalid Subsonic track path.')
+  }
+
+  const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+  if (credentials.source.enabled !== 1) {
+    await library.setTrackAvailability(filePath, false, 'source_disabled')
+    throw new Error(`Subsonic source "${credentials.source.name}" is disabled.`)
+  }
+
+  const streamUrl = buildSubsonicStreamUrl(credentials.connection, parsed.sourceTrackId, {
+    maxBitRateKbps: SUBSONIC_STREAM_MAX_BITRATE_KBPS
+  })
+
+  await library.setTrackAvailability(filePath, true, null, { persist: false })
+  return {
+    parsed,
+    track: library.getTrackByPath(filePath),
+    streamUrl
+  }
+}
+
 async function resolveJellyfinAudioPayload(
   filePath: string,
   options: {
@@ -4646,6 +4677,35 @@ async function resolveJellyfinAudioPayload(
     )
     await library.setTrackAvailability(filePath, false, 'source_unavailable')
     throw error
+  }
+}
+
+async function resolveJellyfinStreamContext(
+  filePath: string
+): Promise<{
+  parsed: { sourceId: number; sourceTrackId: string }
+  track: library.DbTrack | null
+  streamUrl: string
+}> {
+  const parsed = parseJellyfinTrackPath(filePath)
+  if (!parsed) {
+    throw new Error('Invalid Jellyfin track path.')
+  }
+
+  const credentials = requireJellyfinSourceCredentials(parsed.sourceId)
+  if (credentials.source.enabled !== 1) {
+    await library.setTrackAvailability(filePath, false, 'source_disabled')
+    throw new Error(`Jellyfin source "${credentials.source.name}" is disabled.`)
+  }
+
+  const authContext = await getJellyfinAuthContext(parsed.sourceId, credentials.connection)
+  const streamUrl = buildJellyfinStreamUrl(credentials.connection, parsed.sourceTrackId, authContext.accessToken)
+
+  await library.setTrackAvailability(filePath, true, null, { persist: false })
+  return {
+    parsed,
+    track: library.getTrackByPath(filePath),
+    streamUrl
   }
 }
 
@@ -4827,18 +4887,28 @@ async function loadAudioFile(
   const loadStartMs = Date.now()
   try {
     if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
-      const payload = isSubsonicPath(filePath)
-        ? await resolveSubsonicAudioPayload(filePath, {
-            onDownloadProgress: runtime.onRemoteLoadProgress
-          })
-        : await resolveJellyfinAudioPayload(filePath, {
-            onDownloadProgress: runtime.onRemoteLoadProgress
-          })
-      const name = payload.track?.title ?? payload.parsed.sourceTrackId
+      const preferStreamUrl = options.preferStreamUrl === true
+      const remotePayload = preferStreamUrl
+        ? (
+            isSubsonicPath(filePath)
+              ? await resolveSubsonicStreamContext(filePath)
+              : await resolveJellyfinStreamContext(filePath)
+          )
+        : (
+            isSubsonicPath(filePath)
+              ? await resolveSubsonicAudioPayload(filePath, {
+                  onDownloadProgress: runtime.onRemoteLoadProgress
+                })
+              : await resolveJellyfinAudioPayload(filePath, {
+                  onDownloadProgress: runtime.onRemoteLoadProgress
+                })
+          )
+      const name = remotePayload.track?.title ?? remotePayload.parsed.sourceTrackId
       const response = {
         path: filePath,
         name,
-        data: payload.data,
+        data: 'data' in remotePayload ? remotePayload.data : undefined,
+        streamUrl: remotePayload.streamUrl,
         metadata: options.metadataMode === 'none'
           ? undefined
           : (await loadAudioMetadata(filePath)) ?? undefined
