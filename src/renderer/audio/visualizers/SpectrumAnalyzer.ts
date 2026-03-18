@@ -11,6 +11,7 @@ export interface SpectrumAnalyzerOptions {
   lineColor?: string
   lineWidth?: number
   fillGradient?: boolean
+  heatmapFill?: boolean
   gradientColors?: string[]  // Bottom to top
   backgroundColor?: string
   showGrid?: boolean
@@ -29,10 +30,41 @@ export interface SpectrumAnalyzerOptions {
 
 type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource'>>
 
+// ---- Heat LUT for heatmap fill (same palette as Spectrogram) ----
+type HeatStop = { at: number; color: [number, number, number] }
+const HEAT_STOPS: readonly HeatStop[] = [
+  { at: 0, color: [0, 0, 0] },
+  { at: 0.14, color: [15, 7, 33] },
+  { at: 0.32, color: [61, 11, 94] },
+  { at: 0.54, color: [163, 26, 121] },
+  { at: 0.74, color: [255, 82, 87] },
+  { at: 0.9, color: [255, 166, 63] },
+  { at: 1, color: [255, 241, 209] },
+]
+
+function buildHeatLUT(): Uint8Array {
+  const lut = new Uint8Array(256 * 3)
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255
+    let s = HEAT_STOPS[0], e = HEAT_STOPS[HEAT_STOPS.length - 1]
+    for (let si = 0; si < HEAT_STOPS.length - 1; si++) {
+      if (t <= HEAT_STOPS[si + 1].at) { s = HEAT_STOPS[si]; e = HEAT_STOPS[si + 1]; break }
+    }
+    const a = Math.max(0, Math.min(1, (t - s.at) / Math.max(1e-6, e.at - s.at)))
+    lut[i * 3] = Math.round(s.color[0] + (e.color[0] - s.color[0]) * a)
+    lut[i * 3 + 1] = Math.round(s.color[1] + (e.color[1] - s.color[1]) * a)
+    lut[i * 3 + 2] = Math.round(s.color[2] + (e.color[2] - s.color[2]) * a)
+  }
+  return lut
+}
+const HEAT_LUT = buildHeatLUT()
+const HEATMAP_GAMMA = 1.4
+
 const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   lineColor: '#00ffff',
   lineWidth: 2,
   fillGradient: true,
+  heatmapFill: false,
   gradientColors: ['rgba(0, 255, 255, 0)', 'rgba(0, 255, 255, 0.3)', 'rgba(138, 43, 226, 0.5)'],
   backgroundColor: 'transparent',
   showGrid: true,
@@ -328,8 +360,28 @@ export class SpectrumAnalyzer {
       points.push({ x, y })
     }
 
-    // Draw filled area with gradient
-    if (options.fillGradient && points.length > 0) {
+    // Draw filled area
+    if (options.heatmapFill && points.length > 0) {
+      // Per-column heat-colored fill — each frequency colored by its intensity
+      for (let i = 0; i < points.length; i++) {
+        const x = Math.floor(points[i].x)
+        const y = points[i].y
+        const nextX = i < points.length - 1 ? Math.floor(points[i + 1].x) : width
+        const colWidth = Math.max(1, nextX - x)
+        const fillHeight = height - y
+        if (fillHeight <= 0) continue
+
+        // Intensity from the point's normalized position (0 at bottom, 1 at top)
+        const intensity = Math.pow(Math.max(0, Math.min(1, 1 - y / height)), HEATMAP_GAMMA)
+        const li = Math.round(intensity * 255)
+        const r = HEAT_LUT[li * 3]
+        const g = HEAT_LUT[li * 3 + 1]
+        const b = HEAT_LUT[li * 3 + 2]
+
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`
+        ctx.fillRect(x, Math.floor(y), colWidth, Math.ceil(fillHeight))
+      }
+    } else if (options.fillGradient && points.length > 0) {
       ctx.beginPath()
       ctx.moveTo(points[0].x, points[0].y)
 

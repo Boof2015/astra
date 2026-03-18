@@ -67,10 +67,12 @@ function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivEl
 function DockedSpectrumTile({
   lineColor,
   fftSize,
+  heatmapFill,
   isRunning
 }: {
   lineColor: string
   fftSize: number
+  heatmapFill: boolean
   isRunning: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -90,7 +92,8 @@ function DockedSpectrumTile({
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
         lineColor,
         lineWidth: 2,
-        fillGradient: true,
+        fillGradient: !heatmapFill,
+        heatmapFill,
         fftSize,
         gradientColors: [
           'rgba(0, 255, 255, 0)',
@@ -116,13 +119,15 @@ function DockedSpectrumTile({
     visualizerRef.current?.setOptions({
       lineColor,
       fftSize,
+      fillGradient: !heatmapFill,
+      heatmapFill,
       gradientColors: [
         'rgba(0, 255, 255, 0)',
         `${lineColor}33`,
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize])
+  }, [lineColor, fftSize, heatmapFill])
 
   useEffect(() => {
     if (isRunning) {
@@ -701,6 +706,7 @@ export default function VisualizerPanel({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
@@ -1043,6 +1049,7 @@ export default function VisualizerPanel({
           <DockedSpectrumTile
             lineColor={lineColor}
             fftSize={fftSize}
+            heatmapFill={spectrumHeatmap}
             isRunning={isRunning}
           />
         ) : scope === 'oscilloscope' ? (

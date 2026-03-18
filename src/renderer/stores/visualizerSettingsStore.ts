@@ -85,6 +85,7 @@ interface VisualizerSettingsSnapshot {
   isRunning: boolean
   vectorscopeMultiband: boolean
   waveformMultiband: boolean
+  spectrumHeatmap: boolean
   profiles: Record<string, AnalyzerProfile>
   activeProfileId: string | null
   activeProfileName: string
@@ -130,6 +131,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
   setWaveformMultiband: (enabled: boolean) => void
+  setSpectrumHeatmap: (enabled: boolean) => void
   setVUMeterMode: (mode: VUMeterMode) => void
   setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
@@ -149,6 +151,7 @@ export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'
 export const VECTORSCOPE_MULTIBAND_STORAGE_KEY = 'astra-vectorscope-multiband'
 export const WAVEFORM_MULTIBAND_STORAGE_KEY = 'astra-waveform-multiband'
+export const SPECTRUM_HEATMAP_STORAGE_KEY = 'astra-spectrum-heatmap'
 
 const DEFAULT_PROFILE_ID = 'default'
 const DEFAULT_PROFILE_NAME = 'Default'
@@ -308,6 +311,22 @@ function readWaveformMultibandPreference(): boolean {
 function persistWaveformMultibandPreference(enabled: boolean): void {
   try {
     localStorage.setItem(WAVEFORM_MULTIBAND_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // ignore persistence failures
+  }
+}
+
+function readSpectrumHeatmapPreference(): boolean {
+  try {
+    return localStorage.getItem(SPECTRUM_HEATMAP_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistSpectrumHeatmapPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(SPECTRUM_HEATMAP_STORAGE_KEY, enabled ? '1' : '0')
   } catch {
     // ignore persistence failures
   }
@@ -647,7 +666,8 @@ function buildSnapshot(
   requestedActiveProfileId: string | null,
   workingStateInput: AnalyzerWorkingState,
   vectorscopeMultiband = false,
-  waveformMultiband = false
+  waveformMultiband = false,
+  spectrumHeatmap = false
 ): VisualizerSettingsSnapshot {
   const profiles = mergeProfiles(profilesInput)
   const workingState = normalizeWorkingState(workingStateInput)
@@ -665,6 +685,7 @@ function buildSnapshot(
     isRunning,
     vectorscopeMultiband,
     waveformMultiband,
+    spectrumHeatmap,
     profiles,
     activeProfileId,
     activeProfileName: activeProfileId ? profiles[activeProfileId].name : CUSTOM_PROFILE_NAME,
@@ -693,6 +714,7 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
   const legacyUnderfillEnabled = readLegacyOscilloscopeUnderfillPreference()
   const multibandEnabled = readVectorscopeMultibandPreference()
   const waveformMultibandEnabled = readWaveformMultibandPreference()
+  const spectrumHeatmapEnabled = readSpectrumHeatmapPreference()
 
   try {
     const raw = localStorage.getItem(ANALYZER_PROFILES_STORAGE_KEY)
@@ -704,7 +726,8 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
         DEFAULT_PROFILE_ID,
         DEFAULT_WORKING_STATE,
         multibandEnabled,
-        waveformMultibandEnabled
+        waveformMultibandEnabled,
+        spectrumHeatmapEnabled
       )
     }
 
@@ -753,7 +776,8 @@ function updateWorkingState(
     state.activeProfileId,
     nextWorkingState,
     state.vectorscopeMultiband,
-    state.waveformMultiband
+    state.waveformMultiband,
+    state.spectrumHeatmap
   )
 }
 
@@ -1099,6 +1123,11 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
   setWaveformMultiband: (enabled) => {
     persistWaveformMultibandPreference(enabled)
     set({ waveformMultiband: enabled })
+  },
+
+  setSpectrumHeatmap: (enabled) => {
+    persistSpectrumHeatmapPreference(enabled)
+    set({ spectrumHeatmap: enabled })
   },
 
   setVUMeterMode: (mode) => {

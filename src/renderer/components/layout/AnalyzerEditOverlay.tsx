@@ -253,6 +253,8 @@ export default function AnalyzerEditOverlay({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
+  const spectrumHeatmap = useVisualizerSettingsStore((state) => state.spectrumHeatmap)
+  const setSpectrumHeatmap = useVisualizerSettingsStore((state) => state.setSpectrumHeatmap)
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
   const setWaveformMultiband = useVisualizerSettingsStore((state) => state.setWaveformMultiband)
@@ -395,7 +397,7 @@ export default function AnalyzerEditOverlay({
     switch (scope) {
       case 'spectrum':
         return (
-          <div className="analyzer-edit-active-controls">
+          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
             <div className="analyzer-edit-mini-control">
               <span className="analyzer-edit-corner-label">FFT</span>
               <select
@@ -410,6 +412,13 @@ export default function AnalyzerEditOverlay({
                 ))}
               </select>
             </div>
+            <button
+              type="button"
+              className={`analyzer-edit-button ${spectrumHeatmap ? 'is-active' : ''}`.trim()}
+              onClick={() => setSpectrumHeatmap(!spectrumHeatmap)}
+            >
+              Heat {spectrumHeatmap ? 'On' : 'Off'}
+            </button>
           </div>
         )
       case 'oscilloscope':

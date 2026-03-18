@@ -202,6 +202,7 @@ function SpectrumScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const heatmapRef = useRef(false)
   const isPlayingRef = useRef(false)
 
   const handleResize = useCallback(() => {
@@ -215,12 +216,15 @@ function SpectrumScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       const nextFftSize = Math.max(1024, chunk.fftSize)
       const nextLineColor = chunk.lineColor
+      const nextHeatmap = Boolean(chunk.spectrumHeatmap)
       const optionsChanged =
         nextFftSize !== fftSizeRef.current ||
-        nextLineColor !== lineColorRef.current
+        nextLineColor !== lineColorRef.current ||
+        nextHeatmap !== heatmapRef.current
 
       fftSizeRef.current = nextFftSize
       lineColorRef.current = nextLineColor
+      heatmapRef.current = nextHeatmap
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -234,6 +238,8 @@ function SpectrumScopeCanvas() {
         visualizerRef.current?.setOptions({
           lineColor: nextLineColor,
           fftSize: nextFftSize,
+          fillGradient: !nextHeatmap,
+          heatmapFill: nextHeatmap,
           gradientColors: getSpectrumGradientColors(nextLineColor),
         })
       }
