@@ -9,8 +9,12 @@ import {
 } from '../../../types/spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import {
+  DEFAULT_WAVEFORM_GAIN_DB,
+  MAX_WAVEFORM_GAIN_DB,
+  MIN_WAVEFORM_GAIN_DB,
   MAX_WAVEFORM_SCROLL_SPEED,
   MIN_WAVEFORM_SCROLL_SPEED,
+  WAVEFORM_GAIN_DB_STEP,
   WAVEFORM_SCROLL_SPEED_STEP,
 } from '../../../types/waveform'
 import {
@@ -160,6 +164,10 @@ function hiddenScopeGridStyle(index: number): CSSProperties {
   }
 }
 
+function formatSignedDb(value: number): string {
+  return value >= 0 ? `+${value.toFixed(1)}` : value.toFixed(1)
+}
+
 function ScopeGhost({ scope }: { scope: ScopeKind }) {
   switch (scope) {
     case 'spectrum':
@@ -283,7 +291,9 @@ export default function AnalyzerEditOverlay({
   const setSpectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumTiltDbPerOctave)
   const setSpectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
+  const waveformGainDb = useVisualizerSettingsStore((state) => state.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
+  const setWaveformGainDb = useVisualizerSettingsStore((state) => state.setWaveformGainDb)
   const setWaveformMultiband = useVisualizerSettingsStore((state) => state.setWaveformMultiband)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
@@ -629,6 +639,23 @@ export default function AnalyzerEditOverlay({
             >
               RGB {waveformMultiband ? 'On' : 'Off'}
             </button>
+            <div
+              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+              onDoubleClick={() => setWaveformGainDb(DEFAULT_WAVEFORM_GAIN_DB)}
+              title={`Double-click to reset to ${formatSignedDb(DEFAULT_WAVEFORM_GAIN_DB)} dB`}
+            >
+              <span className="analyzer-edit-corner-label">Gain {formatSignedDb(waveformGainDb)} dB</span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_WAVEFORM_GAIN_DB}
+                max={MAX_WAVEFORM_GAIN_DB}
+                step={WAVEFORM_GAIN_DB_STEP}
+                value={waveformGainDb}
+                aria-label="Waveform gain"
+                onChange={(event) => setWaveformGainDb(Number(event.target.value))}
+              />
+            </div>
             <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
               <span className="analyzer-edit-corner-label">Speed x{waveformScrollSpeed.toFixed(1)}</span>
               <input

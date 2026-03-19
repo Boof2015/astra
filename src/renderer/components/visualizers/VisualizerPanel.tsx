@@ -554,11 +554,13 @@ function DockedLUFSMeterTile({
 function DockedWaveformTile({
   lineColor,
   scrollSpeed,
+  gainDb,
   multiband,
   isRunning,
 }: {
   lineColor: string
   scrollSpeed: number
+  gainDb: number
   multiband: boolean
   isRunning: boolean
 }) {
@@ -579,6 +581,7 @@ function DockedWaveformTile({
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor,
         scrollSpeed,
+        gainDb,
         multiband,
       })
     }
@@ -594,8 +597,8 @@ function DockedWaveformTile({
   }, [handleResize])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, scrollSpeed, multiband })
-  }, [lineColor, scrollSpeed, multiband])
+    visualizerRef.current?.setOptions({ lineColor, scrollSpeed, gainDb, multiband })
+  }, [lineColor, scrollSpeed, gainDb, multiband])
 
   useEffect(() => {
     if (isRunning) {
@@ -726,6 +729,7 @@ export default function VisualizerPanel({
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
+  const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
@@ -1103,6 +1107,7 @@ export default function VisualizerPanel({
           <DockedWaveformTile
             lineColor={lineColor}
             scrollSpeed={waveformScrollSpeed}
+            gainDb={waveformGainDb}
             multiband={waveformMultiband}
             isRunning={isRunning}
           />

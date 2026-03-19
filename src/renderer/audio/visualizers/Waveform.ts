@@ -1,5 +1,10 @@
 import { audioEngine } from '../AudioEngine'
-import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
+import {
+  DEFAULT_WAVEFORM_GAIN_DB,
+  DEFAULT_WAVEFORM_SCROLL_SPEED,
+  clampWaveformGainDb,
+  clampWaveformScrollSpeed,
+} from '../../../types/waveform'
 import { MultibandSplitter } from './multibandSplitter'
 
 export interface WaveformDataSource {
@@ -11,6 +16,7 @@ export interface WaveformDataSource {
 export interface WaveformOptions {
   lineColor?: string
   scrollSpeed?: number
+  gainDb?: number
   multiband?: boolean
   dataSource?: WaveformDataSource
 }
@@ -20,6 +26,7 @@ type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource'>>
 const defaultOptions: ResolvedWaveformOptions = {
   lineColor: '#38bdf8',
   scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
+  gainDb: DEFAULT_WAVEFORM_GAIN_DB,
   multiband: false,
 }
 
@@ -85,6 +92,7 @@ export class Waveform {
       ...defaultOptions,
       ...optionOverrides,
       scrollSpeed: clampWaveformScrollSpeed(optionOverrides.scrollSpeed ?? defaultOptions.scrollSpeed),
+      gainDb: clampWaveformGainDb(optionOverrides.gainDb ?? defaultOptions.gainDb),
       multiband: optionOverrides.multiband ?? defaultOptions.multiband,
     }
     this.dataSource = dataSource ?? defaultWaveformDataSource
@@ -133,6 +141,7 @@ export class Waveform {
       ...optionUpdates,
       lineColor: optionUpdates.lineColor ?? this.options.lineColor,
       scrollSpeed: clampWaveformScrollSpeed(optionUpdates.scrollSpeed ?? this.options.scrollSpeed),
+      gainDb: clampWaveformGainDb(optionUpdates.gainDb ?? this.options.gainDb),
       multiband: optionUpdates.multiband ?? this.options.multiband,
     }
     const speedChanged = nextOptions.scrollSpeed !== this.options.scrollSpeed
@@ -226,9 +235,12 @@ export class Waveform {
     this.waterfallCtx.globalCompositeOperation = 'source-over'
 
     const centerY = height / 2
-    const gain = 0.95 // slight margin so full-scale doesn't clip at edge
-    const yTop = Math.round(centerY - max * centerY * gain)
-    const yBottom = Math.round(centerY - min * centerY * gain)
+    const amplitudeGain = Math.pow(10, this.options.gainDb / 20)
+    const scaledMin = Math.max(-1, Math.min(1, min * amplitudeGain))
+    const scaledMax = Math.max(-1, Math.min(1, max * amplitudeGain))
+    const displayMargin = 0.95 // slight margin so full-scale doesn't clip at edge
+    const yTop = Math.round(centerY - scaledMax * centerY * displayMargin)
+    const yBottom = Math.round(centerY - scaledMin * centerY * displayMargin)
     const lineHeight = Math.max(1, yBottom - yTop)
 
     let r: number, g: number, b: number

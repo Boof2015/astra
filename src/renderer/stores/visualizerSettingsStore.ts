@@ -25,7 +25,9 @@ import {
   type VUMeterOrientation,
 } from '../../types/vumeter'
 import {
+  DEFAULT_WAVEFORM_GAIN_DB,
   DEFAULT_WAVEFORM_SCROLL_SPEED,
+  clampWaveformGainDb,
   clampWaveformScrollSpeed,
 } from '../../types/waveform'
 import {
@@ -78,6 +80,7 @@ export interface AnalyzerProfileScopeSettings {
   }
   waveform: {
     scrollSpeed: number
+    gainDb: number
     multiband: boolean
   }
 }
@@ -124,6 +127,7 @@ interface VisualizerSettingsSnapshot {
   spectrogramClarityMode: SpectrogramClarityMode
   spectrogramScaleMode: SpectrogramScaleMode
   waveformScrollSpeed: number
+  waveformGainDb: number
   pitchLock: boolean
   oscilloscopeUnderfillEnabled: boolean
   oscilloscopeMode: OscilloscopeMode
@@ -150,6 +154,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setSpectrogramClarityMode: (mode: SpectrogramClarityMode) => void
   setSpectrogramScaleMode: (mode: SpectrogramScaleMode) => void
   setWaveformScrollSpeed: (speed: number) => void
+  setWaveformGainDb: (gainDb: number) => void
   setPitchLock: (enabled: boolean) => void
   setOscilloscopeUnderfillEnabled: (enabled: boolean) => void
   setVectorscopeMode: (mode: VectorscopeMode) => void
@@ -276,6 +281,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
     },
     waveform: {
       scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
+      gainDb: DEFAULT_WAVEFORM_GAIN_DB,
       multiband: false,
     },
   },
@@ -518,6 +524,7 @@ function normalizeScopeSettings(
     },
     waveform: {
       scrollSpeed: clampWaveformScrollSpeed(rawWaveform.scrollSpeed),
+      gainDb: clampWaveformGainDb(rawWaveform.gainDb),
       multiband: typeof rawWaveform.multiband === 'boolean'
         ? rawWaveform.multiband
         : legacyAnalyzerPrefs?.waveformMultiband ?? false,
@@ -677,6 +684,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.vumeter.orientation === right.scopeSettings.vumeter.orientation
     && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
     && left.scopeSettings.waveform.scrollSpeed === right.scopeSettings.waveform.scrollSpeed
+    && left.scopeSettings.waveform.gainDb === right.scopeSettings.waveform.gainDb
     && left.scopeSettings.waveform.multiband === right.scopeSettings.waveform.multiband
   )
 }
@@ -768,6 +776,7 @@ function buildSnapshot(
     spectrogramClarityMode: workingState.scopeSettings.spectrogram.clarityMode,
     spectrogramScaleMode: workingState.scopeSettings.spectrogram.scaleMode,
     waveformScrollSpeed: workingState.scopeSettings.waveform.scrollSpeed,
+    waveformGainDb: workingState.scopeSettings.waveform.gainDb,
     pitchLock: workingState.scopeSettings.oscilloscope.pitchLock,
     oscilloscopeUnderfillEnabled: workingState.scopeSettings.oscilloscope.underfillEnabled,
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
@@ -1114,6 +1123,23 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         waveform: {
           ...state.workingState.scopeSettings.waveform,
           scrollSpeed: clampWaveformScrollSpeed(speed),
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setWaveformGainDb: (gainDb) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        waveform: {
+          ...state.workingState.scopeSettings.waveform,
+          gainDb: clampWaveformGainDb(gainDb),
         },
       },
     })

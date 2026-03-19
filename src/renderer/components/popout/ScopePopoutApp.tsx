@@ -27,7 +27,12 @@ import {
   type VUMeterMode,
   type VUMeterOrientation,
 } from '../../../types/vumeter'
-import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
+import {
+  DEFAULT_WAVEFORM_GAIN_DB,
+  DEFAULT_WAVEFORM_SCROLL_SPEED,
+  clampWaveformGainDb,
+  clampWaveformScrollSpeed,
+} from '../../../types/waveform'
 import {
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE
@@ -1024,6 +1029,7 @@ function WaveformScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const scrollSpeedRef = useRef(DEFAULT_WAVEFORM_SCROLL_SPEED)
+  const gainDbRef = useRef(DEFAULT_WAVEFORM_GAIN_DB)
   const multibandRef = useRef(false)
   const isPlayingRef = useRef(false)
 
@@ -1039,6 +1045,7 @@ function WaveformScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       lineColorRef.current = chunk.lineColor
       scrollSpeedRef.current = clampWaveformScrollSpeed(chunk.waveformScrollSpeed)
+      gainDbRef.current = clampWaveformGainDb(chunk.waveformGainDb)
       multibandRef.current = Boolean(chunk.waveformMultiband)
 
       if (chunk.reset) {
@@ -1052,6 +1059,7 @@ function WaveformScopeCanvas() {
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
         scrollSpeed: scrollSpeedRef.current,
+        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
       })
     })
@@ -1066,6 +1074,7 @@ function WaveformScopeCanvas() {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor: lineColorRef.current,
         scrollSpeed: scrollSpeedRef.current,
+        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
         dataSource: {
           getPendingWaveformSamples: () => {
