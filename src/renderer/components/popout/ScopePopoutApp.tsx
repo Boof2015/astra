@@ -28,7 +28,10 @@ import {
   type VUMeterOrientation,
 } from '../../../types/vumeter'
 import { DEFAULT_WAVEFORM_SCROLL_SPEED, clampWaveformScrollSpeed } from '../../../types/waveform'
-import { DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE } from '../../../types/spectrum'
+import {
+  DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE
+} from '../../../types/spectrum'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
@@ -210,6 +213,7 @@ function SpectrumScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)
   const heatmapRef = useRef(false)
   const heatmapTiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)
   const isPlayingRef = useRef(false)
@@ -225,16 +229,19 @@ function SpectrumScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       const nextFftSize = Math.max(1024, chunk.fftSize)
       const nextLineColor = chunk.lineColor
+      const nextTiltDbPerOctave = chunk.spectrumTiltDbPerOctave
       const nextHeatmap = Boolean(chunk.spectrumHeatmap)
       const nextHeatmapTiltDbPerOctave = chunk.spectrumHeatmapTiltDbPerOctave
       const optionsChanged =
         nextFftSize !== fftSizeRef.current ||
         nextLineColor !== lineColorRef.current ||
+        nextTiltDbPerOctave !== tiltDbPerOctaveRef.current ||
         nextHeatmap !== heatmapRef.current ||
         nextHeatmapTiltDbPerOctave !== heatmapTiltDbPerOctaveRef.current
 
       fftSizeRef.current = nextFftSize
       lineColorRef.current = nextLineColor
+      tiltDbPerOctaveRef.current = nextTiltDbPerOctave
       heatmapRef.current = nextHeatmap
       heatmapTiltDbPerOctaveRef.current = nextHeatmapTiltDbPerOctave
 
@@ -252,6 +259,7 @@ function SpectrumScopeCanvas() {
           fftSize: nextFftSize,
           fillGradient: !nextHeatmap,
           heatmapFill: nextHeatmap,
+          tiltDbPerOctave: nextTiltDbPerOctave,
           heatmapTiltDbPerOctave: nextHeatmapTiltDbPerOctave,
           gradientColors: getSpectrumGradientColors(nextLineColor),
         })
@@ -270,6 +278,7 @@ function SpectrumScopeCanvas() {
         lineWidth: 2,
         fillGradient: !heatmapRef.current,
         heatmapFill: heatmapRef.current,
+        tiltDbPerOctave: tiltDbPerOctaveRef.current,
         heatmapTiltDbPerOctave: heatmapTiltDbPerOctaveRef.current,
         fftSize: fftSizeRef.current,
         gradientColors: getSpectrumGradientColors(lineColorRef.current),

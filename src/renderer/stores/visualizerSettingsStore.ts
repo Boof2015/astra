@@ -29,7 +29,9 @@ import {
   clampWaveformScrollSpeed,
 } from '../../types/waveform'
 import {
+  DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
 } from '../../types/spectrum'
 
@@ -48,6 +50,7 @@ export function isVectorscopeMode(value: unknown): value is VectorscopeMode {
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
     fftSize: FFTSize
+    tiltDbPerOctave: number
     heatmap: boolean
     heatmapTiltDbPerOctave: number
   }
@@ -104,6 +107,7 @@ interface VisualizerSettingsSnapshot {
   vectorscopeMultiband: boolean
   waveformMultiband: boolean
   spectrumHeatmap: boolean
+  spectrumTiltDbPerOctave: number
   spectrumHeatmapTiltDbPerOctave: number
   profiles: Record<string, AnalyzerProfile>
   activeProfileId: string | null
@@ -152,6 +156,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMultiband: (enabled: boolean) => void
   setWaveformMultiband: (enabled: boolean) => void
   setSpectrumHeatmap: (enabled: boolean) => void
+  setSpectrumTiltDbPerOctave: (value: number) => void
   setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
   setVUMeterMode: (mode: VUMeterMode) => void
   setVUMeterOrientation: (orientation: VUMeterOrientation) => void
@@ -246,6 +251,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   scopeSettings: {
     spectrum: {
       fftSize: DEFAULT_FFT_SIZE,
+      tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
       heatmap: false,
       heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
     },
@@ -470,6 +476,7 @@ function normalizeScopeSettings(
   return {
     spectrum: {
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
+      tiltDbPerOctave: clampSpectrumTiltDbPerOctave(rawSpectrum.tiltDbPerOctave),
       heatmap: typeof rawSpectrum.heatmap === 'boolean'
         ? rawSpectrum.heatmap
         : legacyAnalyzerPrefs?.spectrumHeatmap ?? false,
@@ -654,6 +661,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
 
   return (
     left.scopeSettings.spectrum.fftSize === right.scopeSettings.spectrum.fftSize
+    && left.scopeSettings.spectrum.tiltDbPerOctave === right.scopeSettings.spectrum.tiltDbPerOctave
     && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
     && left.scopeSettings.spectrum.heatmapTiltDbPerOctave === right.scopeSettings.spectrum.heatmapTiltDbPerOctave
     && left.scopeSettings.oscilloscope.pitchLock === right.scopeSettings.oscilloscope.pitchLock
@@ -743,6 +751,7 @@ function buildSnapshot(
     vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
     waveformMultiband: workingState.scopeSettings.waveform.multiband,
     spectrumHeatmap: workingState.scopeSettings.spectrum.heatmap,
+    spectrumTiltDbPerOctave: workingState.scopeSettings.spectrum.tiltDbPerOctave,
     spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
     profiles,
     activeProfileId,
@@ -1209,6 +1218,23 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrum: {
           ...state.workingState.scopeSettings.spectrum,
           heatmap: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumTiltDbPerOctave: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          tiltDbPerOctave: clampSpectrumTiltDbPerOctave(value),
         },
       },
     })

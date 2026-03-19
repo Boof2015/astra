@@ -54,6 +54,7 @@ export function useScopePopoutBridge(): void {
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
@@ -131,6 +132,7 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             monoChunks: [],
             fftSize,
+            spectrumTiltDbPerOctave,
             spectrumHeatmap,
             spectrumHeatmapTiltDbPerOctave,
             lineColor,
@@ -236,6 +238,7 @@ export function useScopePopoutBridge(): void {
               sampleRate: audioEngine.getSampleRate(),
               monoChunks,
               fftSize,
+              spectrumTiltDbPerOctave,
               spectrumHeatmap,
               spectrumHeatmapTiltDbPerOctave,
               lineColor,
@@ -357,6 +360,7 @@ export function useScopePopoutBridge(): void {
     isVisualizerRunning,
     lineColor,
     fftSize,
+    spectrumTiltDbPerOctave,
     spectrumHeatmap,
     spectrumHeatmapTiltDbPerOctave,
     spectrogramFftSize,

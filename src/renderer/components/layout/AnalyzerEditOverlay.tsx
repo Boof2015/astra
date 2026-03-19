@@ -14,6 +14,10 @@ import {
   WAVEFORM_SCROLL_SPEED_STEP,
 } from '../../../types/waveform'
 import {
+  DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
+  MAX_SPECTRUM_TILT_DB_PER_OCTAVE,
+  MIN_SPECTRUM_TILT_DB_PER_OCTAVE,
+  SPECTRUM_TILT_STEP,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   MAX_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   MIN_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
@@ -273,8 +277,10 @@ export default function AnalyzerEditOverlay({
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((state) => state.spectrumHeatmap)
+  const spectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumHeatmapTiltDbPerOctave)
   const setSpectrumHeatmap = useVisualizerSettingsStore((state) => state.setSpectrumHeatmap)
+  const setSpectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumTiltDbPerOctave)
   const setSpectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
@@ -442,6 +448,25 @@ export default function AnalyzerEditOverlay({
             >
               Heat {spectrumHeatmap ? 'On' : 'Off'}
             </button>
+            <div
+              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+              onDoubleClick={() => setSpectrumTiltDbPerOctave(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)}
+              title={`Double-click to reset to ${DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+            >
+              <span className="analyzer-edit-corner-label">
+                Tilt {spectrumTiltDbPerOctave.toFixed(1)} dB/oct
+              </span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTRUM_TILT_DB_PER_OCTAVE}
+                max={MAX_SPECTRUM_TILT_DB_PER_OCTAVE}
+                step={SPECTRUM_TILT_STEP}
+                value={spectrumTiltDbPerOctave}
+                aria-label="Spectrum tilt"
+                onChange={(event) => setSpectrumTiltDbPerOctave(Number(event.target.value))}
+              />
+            </div>
             <div
               className={`analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
               onDoubleClick={() => setSpectrumHeatmapTiltDbPerOctave(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)}

@@ -67,12 +67,14 @@ function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivEl
 function DockedSpectrumTile({
   lineColor,
   fftSize,
+  tiltDbPerOctave,
   heatmapFill,
   heatmapTiltDbPerOctave,
   isRunning
 }: {
   lineColor: string
   fftSize: number
+  tiltDbPerOctave: number
   heatmapFill: boolean
   heatmapTiltDbPerOctave: number
   isRunning: boolean
@@ -96,6 +98,7 @@ function DockedSpectrumTile({
         lineWidth: 2,
         fillGradient: !heatmapFill,
         heatmapFill,
+        tiltDbPerOctave,
         heatmapTiltDbPerOctave,
         fftSize,
         gradientColors: [
@@ -124,6 +127,7 @@ function DockedSpectrumTile({
       fftSize,
       fillGradient: !heatmapFill,
       heatmapFill,
+      tiltDbPerOctave,
       heatmapTiltDbPerOctave,
       gradientColors: [
         'rgba(0, 255, 255, 0)',
@@ -131,7 +135,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize, heatmapFill, heatmapTiltDbPerOctave])
+  }, [lineColor, fftSize, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
 
   useEffect(() => {
     if (isRunning) {
@@ -719,6 +723,7 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
@@ -1061,6 +1066,7 @@ export default function VisualizerPanel({
           <DockedSpectrumTile
             lineColor={lineColor}
             fftSize={fftSize}
+            tiltDbPerOctave={spectrumTiltDbPerOctave}
             heatmapFill={spectrumHeatmap}
             heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}
             isRunning={isRunning}

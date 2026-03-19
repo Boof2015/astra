@@ -1,7 +1,9 @@
 import { audioEngine } from '../AudioEngine'
 import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
 import {
+  DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
 } from '../../../types/spectrum'
 
@@ -80,7 +82,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   maxDecibels: -10,
   minFrequency: 20,
   maxFrequency: 20000,
-  tiltDbPerOctave: 2.0,
+  tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   tiltReferenceHz: 1000,
   fftSize: 2048
@@ -112,6 +114,9 @@ export class SpectrumAnalyzer {
     this.options = {
       ...defaultOptions,
       ...optionOverrides,
+      tiltDbPerOctave: clampSpectrumTiltDbPerOctave(
+        optionOverrides.tiltDbPerOctave ?? defaultOptions.tiltDbPerOctave
+      ),
       heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(
         optionOverrides.heatmapTiltDbPerOctave ?? defaultOptions.heatmapTiltDbPerOctave
       ),
@@ -156,6 +161,9 @@ export class SpectrumAnalyzer {
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
     const { dataSource, ...optionUpdates } = options
     const nextOptions = { ...this.options, ...optionUpdates }
+    if (optionUpdates.tiltDbPerOctave !== undefined) {
+      nextOptions.tiltDbPerOctave = clampSpectrumTiltDbPerOctave(optionUpdates.tiltDbPerOctave)
+    }
     if (optionUpdates.heatmapTiltDbPerOctave !== undefined) {
       nextOptions.heatmapTiltDbPerOctave = clampSpectrumHeatmapTiltDbPerOctave(optionUpdates.heatmapTiltDbPerOctave)
     }

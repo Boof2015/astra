@@ -42,6 +42,7 @@ export interface ScopePopoutSpectrumChunk extends ScopePopoutChunkBase {
   scope: 'spectrum'
   monoChunks: Float32Array[]
   fftSize: number
+  spectrumTiltDbPerOctave: number
   spectrumHeatmap: boolean
   spectrumHeatmapTiltDbPerOctave: number
 }
