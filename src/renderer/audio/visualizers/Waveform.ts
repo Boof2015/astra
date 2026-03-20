@@ -34,6 +34,11 @@ const defaultOptions: ResolvedWaveformOptions = {
 const BAND_LOW:  [number, number, number] = [255, 68, 68]   // red — bass
 const BAND_MID:  [number, number, number] = [68, 221, 68]   // green — mids
 const BAND_HIGH: [number, number, number] = [68, 136, 255]  // blue — highs
+const MULTIBAND_WEIGHT_EMPHASIS = 2.6
+const MULTIBAND_DOMINANCE_SENSITIVITY = 5
+const MULTIBAND_FOCUSED_BLEND = 0.68
+const MULTIBAND_FILL_ALPHA = 0.72
+const MULTIBAND_EDGE_ALPHA = 1.0
 
 const defaultWaveformDataSource: WaveformDataSource = {
   getPendingWaveformSamples: () => audioEngine.flushPendingWaveformSamples(),
@@ -214,16 +219,41 @@ export class Waveform {
 
     if (total < 1e-10) return BAND_MID
 
-    // Relative weight of each band
-    const lw = lowRms / total
-    const mw = midRms / total
-    const hw = highRms / total
+    const emphasizedWeights = [
+      Math.pow(lowRms / total, MULTIBAND_WEIGHT_EMPHASIS),
+      Math.pow(midRms / total, MULTIBAND_WEIGHT_EMPHASIS),
+      Math.pow(highRms / total, MULTIBAND_WEIGHT_EMPHASIS),
+    ] as const
+    const emphasizedTotal = emphasizedWeights[0] + emphasizedWeights[1] + emphasizedWeights[2]
+    if (emphasizedTotal < 1e-10) return BAND_MID
 
-    // Mix band colors by their weight
+    const normalizedBands = [
+      { color: BAND_LOW, weight: emphasizedWeights[0] / emphasizedTotal },
+      { color: BAND_MID, weight: emphasizedWeights[1] / emphasizedTotal },
+      { color: BAND_HIGH, weight: emphasizedWeights[2] / emphasizedTotal },
+    ] as const
+
+    const blended: [number, number, number] = [
+      Math.round(normalizedBands[0].color[0] * normalizedBands[0].weight + normalizedBands[1].color[0] * normalizedBands[1].weight + normalizedBands[2].color[0] * normalizedBands[2].weight),
+      Math.round(normalizedBands[0].color[1] * normalizedBands[0].weight + normalizedBands[1].color[1] * normalizedBands[1].weight + normalizedBands[2].color[1] * normalizedBands[2].weight),
+      Math.round(normalizedBands[0].color[2] * normalizedBands[0].weight + normalizedBands[1].color[2] * normalizedBands[1].weight + normalizedBands[2].color[2] * normalizedBands[2].weight),
+    ]
+
+    const sortedBands = [...normalizedBands].sort((left, right) => right.weight - left.weight)
+    const dominance = Math.max(0, Math.min(1, (sortedBands[0].weight - sortedBands[1].weight) * MULTIBAND_DOMINANCE_SENSITIVITY))
+    const dominantMix = 0.78 + (0.14 * dominance)
+    const secondaryMix = 1 - dominantMix
+    const focused: [number, number, number] = [
+      Math.round(sortedBands[0].color[0] * dominantMix + sortedBands[1].color[0] * secondaryMix),
+      Math.round(sortedBands[0].color[1] * dominantMix + sortedBands[1].color[1] * secondaryMix),
+      Math.round(sortedBands[0].color[2] * dominantMix + sortedBands[1].color[2] * secondaryMix),
+    ]
+
+    const focusBlend = MULTIBAND_FOCUSED_BLEND + ((1 - MULTIBAND_FOCUSED_BLEND) * dominance)
     return [
-      Math.round(BAND_LOW[0] * lw + BAND_MID[0] * mw + BAND_HIGH[0] * hw),
-      Math.round(BAND_LOW[1] * lw + BAND_MID[1] * mw + BAND_HIGH[1] * hw),
-      Math.round(BAND_LOW[2] * lw + BAND_MID[2] * mw + BAND_HIGH[2] * hw),
+      Math.round(blended[0] * (1 - focusBlend) + focused[0] * focusBlend),
+      Math.round(blended[1] * (1 - focusBlend) + focused[1] * focusBlend),
+      Math.round(blended[2] * (1 - focusBlend) + focused[2] * focusBlend),
     ]
   }
 
@@ -250,12 +280,15 @@ export class Waveform {
       ;[r, g, b] = parseHexColor(this.options.lineColor)
     }
 
+    const fillAlpha = this.options.multiband ? MULTIBAND_FILL_ALPHA : 0.55
+    const edgeAlpha = this.options.multiband ? MULTIBAND_EDGE_ALPHA : 0.9
+
     // Draw the amplitude column — brighter at the edges, dimmer in the middle
-    this.waterfallCtx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.55)`
+    this.waterfallCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${fillAlpha})`
     this.waterfallCtx.fillRect(width - 1, yTop, 1, lineHeight)
 
     // Bright edge pixels at min/max
-    this.waterfallCtx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`
+    this.waterfallCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${edgeAlpha})`
     this.waterfallCtx.fillRect(width - 1, yTop, 1, 1)
     if (lineHeight > 1) {
       this.waterfallCtx.fillRect(width - 1, yBottom - 1, 1, 1)
