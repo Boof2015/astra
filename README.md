@@ -1,12 +1,16 @@
 # Astra
 
-A desktop music player for people who still have a music library.
+A desktop music player for people who still have a music library. <a href="https://repology.org/project/astra-music/versions">
+    <img src="https://repology.org/badge/vertical-allrepos/astra-music.svg" alt="Packaging status" align="right">
+</a>
 
 ![code size](https://img.shields.io/github/languages/code-size/Boof2015/astra)
 ![GitHub Release](https://img.shields.io/github/v/release/Boof2015/astra?include_prereleases)
 ![GitHub License](https://img.shields.io/github/license/Boof2015/astra)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Boof2015/astra/main.yml)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/boof2015/astra/total)
+
+
 
 
 ![Astra home page](assets/home.png)
