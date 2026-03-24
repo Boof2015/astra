@@ -1366,6 +1366,8 @@ export async function initDatabase(): Promise<void> {
     )
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
+  normalizePlaylistTrackMemberships()
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
 
   // Generic app metadata table (schema/migration flags, etc.)
   db.run(`
@@ -1410,6 +1412,63 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
     [key, value, now]
   )
   await saveDatabase()
+}
+
+function normalizePlaylistTrackMemberships(): void {
+  if (!db) return
+
+  const stmt = db.prepare(`
+    SELECT id, playlist_id, track_path
+    FROM playlist_tracks
+    ORDER BY playlist_id ASC, position ASC, id ASC
+  `)
+
+  const playlistRowIds = new Map<number, number[]>()
+  const playlistTrackPaths = new Map<number, Set<string>>()
+  const duplicateRowIds: number[] = []
+
+  try {
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { id?: unknown; playlist_id?: unknown; track_path?: unknown }
+      const rowId = Number(row.id)
+      const playlistId = Number(row.playlist_id)
+      const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
+      if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0 || !trackPath) {
+        continue
+      }
+
+      let seenTrackPaths = playlistTrackPaths.get(playlistId)
+      if (!seenTrackPaths) {
+        seenTrackPaths = new Set<string>()
+        playlistTrackPaths.set(playlistId, seenTrackPaths)
+      }
+
+      if (seenTrackPaths.has(trackPath)) {
+        duplicateRowIds.push(rowId)
+        continue
+      }
+
+      seenTrackPaths.add(trackPath)
+      const rowIds = playlistRowIds.get(playlistId)
+      if (rowIds) {
+        rowIds.push(rowId)
+      } else {
+        playlistRowIds.set(playlistId, [rowId])
+      }
+    }
+  } finally {
+    stmt.free()
+  }
+
+  for (const rowId of duplicateRowIds) {
+    db.run('DELETE FROM playlist_tracks WHERE id = ?', [rowId])
+  }
+
+  for (const rowIds of playlistRowIds.values()) {
+    for (let index = 0; index < rowIds.length; index += 1) {
+      db.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, rowIds[index]])
+    }
+  }
 }
 
 function normalizeSubsonicLastStatus(value: unknown): SubsonicSourceLastStatus {
@@ -5629,12 +5688,39 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
     INNER JOIN playlist_tracks pt ON pt.track_path = t.path
     WHERE pt.playlist_id = ${playlistId}
-    ORDER BY pt.position
+    ORDER BY pt.position ASC, pt.id ASC
   `)
 }
 
 export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
   if (!db || trackPaths.length === 0) return
+
+  const uniqueTrackPaths: string[] = []
+  const seenTrackPaths = new Set<string>()
+  for (const trackPath of trackPaths) {
+    if (typeof trackPath !== 'string' || trackPath.length === 0 || seenTrackPaths.has(trackPath)) continue
+    seenTrackPaths.add(trackPath)
+    uniqueTrackPaths.push(trackPath)
+  }
+  if (uniqueTrackPaths.length === 0) return
+
+  const existingStmt = db.prepare('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?')
+  const existingTrackPaths = new Set<string>()
+  try {
+    existingStmt.bind([playlistId])
+    while (existingStmt.step()) {
+      const row = existingStmt.getAsObject() as { track_path?: unknown }
+      if (typeof row.track_path === 'string' && row.track_path.length > 0) {
+        existingTrackPaths.add(row.track_path)
+      }
+    }
+  } finally {
+    existingStmt.free()
+  }
+
+  const pendingTrackPaths = uniqueTrackPaths.filter((trackPath) => !existingTrackPaths.has(trackPath))
+  if (pendingTrackPaths.length === 0) return
+
   // Get current max position
   const maxStmt = db.prepare('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?')
   maxStmt.bind([playlistId])
@@ -5643,7 +5729,7 @@ export async function addToPlaylist(playlistId: number, trackPaths: string[]): P
   maxStmt.free()
   let position = maxPos + 1
   const now = Date.now()
-  for (const trackPath of trackPaths) {
+  for (const trackPath of pendingTrackPaths) {
     db.run(
       'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at) VALUES (?, ?, ?, ?)',
       [playlistId, trackPath, position++, now]
@@ -5657,7 +5743,7 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   if (!db) return
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_path = ?', [playlistId, trackPath])
   // Reorder positions
-  const idStmt = db.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position')
+  const idStmt = db.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC')
   idStmt.bind([playlistId])
   const idRows: Array<{ id?: unknown }> = []
   while (idStmt.step()) {
@@ -5790,7 +5876,7 @@ export async function clearPlaylistCustomCover(playlistId: number): Promise<void
 
 export function getPlaylistsContainingTrack(trackPath: string): number[] {
   if (!db) return []
-  const stmt = db.prepare('SELECT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id')
+  const stmt = db.prepare('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id')
   stmt.bind([trackPath])
 
   const ids: number[] = []

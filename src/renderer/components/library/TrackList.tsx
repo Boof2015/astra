@@ -11,6 +11,7 @@ import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
+import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
 interface DbTrack {
@@ -123,6 +124,15 @@ interface TrackPlaylistPopupState {
     bottom: number
     height: number
   }
+}
+
+interface TrackPlaylistFeedback {
+  kind: 'info' | 'error'
+  message: string
+}
+
+interface TrackPlaylistCreateState {
+  trackPath: string
 }
 
 // Convert DbTrack to Track
@@ -541,6 +551,7 @@ export default function TrackList({
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
+  const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
   const removeFromPlaylist = usePlaylistStore((state) => state.removeFromPlaylist)
   const getPlaylistsContainingTrack = usePlaylistStore((state) => state.getPlaylistsContainingTrack)
   const openArtistInLibrary = useOpenArtistInLibrary()
@@ -548,9 +559,11 @@ export default function TrackList({
 
   const [playlistPopup, setPlaylistPopup] = useState<TrackPlaylistPopupState | null>(null)
   const [playlistPopupSearch, setPlaylistPopupSearch] = useState('')
+  const [playlistPopupFeedback, setPlaylistPopupFeedback] = useState<TrackPlaylistFeedback | null>(null)
   const [playlistMemberships, setPlaylistMemberships] = useState<Set<number>>(new Set())
   const [isPlaylistMembershipLoading, setIsPlaylistMembershipLoading] = useState(false)
   const [isPlaylistMembershipMutating, setIsPlaylistMembershipMutating] = useState(false)
+  const [createPlaylistTarget, setCreatePlaylistTarget] = useState<TrackPlaylistCreateState | null>(null)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
   const [queueInsertArmedTrackPath, setQueueInsertArmedTrackPath] = useState<string | null>(null)
   const [queueInsertSelectionRange, setQueueInsertSelectionRange] = useState<{ startIndex: number; endIndex: number } | null>(null)
@@ -931,9 +944,11 @@ export default function TrackList({
     playlistMembershipRequestIdRef.current += 1
     setPlaylistPopup(null)
     setPlaylistPopupSearch('')
+    setPlaylistPopupFeedback(null)
     setPlaylistMemberships(new Set())
     setIsPlaylistMembershipLoading(false)
     setIsPlaylistMembershipMutating(false)
+    setCreatePlaylistTarget(null)
     playlistPopupTriggerRef.current = null
   }, [])
 
@@ -966,6 +981,7 @@ export default function TrackList({
 
     playlistPopupTriggerRef.current = trigger
     setPlaylistPopupSearch('')
+    setPlaylistPopupFeedback(null)
     setPlaylistMemberships(new Set())
     setIsPlaylistMembershipMutating(false)
     setPlaylistPopup({
@@ -986,6 +1002,7 @@ export default function TrackList({
     if (isPlaylistMembershipMutating) return
 
     const isMember = playlistMemberships.has(playlistId)
+    setPlaylistPopupFeedback(null)
     setIsPlaylistMembershipMutating(true)
     try {
       if (isMember) {
@@ -1007,6 +1024,36 @@ export default function TrackList({
       setIsPlaylistMembershipMutating(false)
     }
   }, [addToPlaylist, isPlaylistMembershipMutating, playlistMemberships, removeFromPlaylist])
+
+  const handleOpenCreatePlaylistModal = useCallback(() => {
+    if (!playlistPopup) return
+    setPlaylistPopupFeedback(null)
+    setCreatePlaylistTarget({ trackPath: playlistPopup.trackPath })
+  }, [playlistPopup])
+
+  const handleCloseCreatePlaylistModal = useCallback(() => {
+    setCreatePlaylistTarget(null)
+  }, [])
+
+  const handleCreatePlaylistForTrack = useCallback(async (name: string, coverImagePath: string | null) => {
+    if (!createPlaylistTarget) {
+      throw new Error('No track is selected for playlist creation.')
+    }
+
+    const playlist = await createPlaylistWithOptions({
+      name,
+      coverImagePath,
+      trackPaths: [createPlaylistTarget.trackPath]
+    })
+
+    setPlaylistPopupSearch('')
+    setPlaylistPopupFeedback({
+      kind: 'info',
+      message: `Created "${playlist.name}" and added this track.`
+    })
+    await refreshPlaylistMembership(createPlaylistTarget.trackPath)
+    return playlist
+  }, [createPlaylistTarget, createPlaylistWithOptions, refreshPlaylistMembership])
 
   const handleListScroll = useCallback(() => {
     closePlaylistPopup()
@@ -1071,13 +1118,18 @@ export default function TrackList({
     return playlists.filter((playlist) => playlist.name.toLocaleLowerCase().includes(query))
   }, [playlistPopupSearch, playlists])
 
+  const playlistPopupTrack = useMemo(() => {
+    if (!playlistPopup) return null
+    return tracks.find((track) => track.path === playlistPopup.trackPath) ?? null
+  }, [playlistPopup, tracks])
+
   const playlistPopupStyle = useMemo(() => {
     if (!playlistPopup) return undefined
 
-    const panelWidth = 268
+    const panelWidth = 296
     const gap = 8
     const edgePadding = 10
-    const estimatedHeight = 280
+    const estimatedHeight = 344
 
     let left = playlistPopup.anchor.right + gap
     if (left + panelWidth > window.innerWidth - edgePadding) {
@@ -1299,6 +1351,24 @@ export default function TrackList({
           ref={playlistPopupRef}
           onClick={(event) => event.stopPropagation()}
         >
+          <div className="track-playlist-popup-header">
+            <div className="track-playlist-popup-header-copy">
+              <div className="track-playlist-popup-title" title={playlistPopupTrack?.title ?? 'Track'}>
+                {playlistPopupTrack?.title ?? 'Track'}
+              </div>
+              <div className="track-playlist-popup-subtitle">
+                Add or remove this track from playlists
+              </div>
+            </div>
+            <button
+              type="button"
+              className="track-playlist-popup-create-btn"
+              onClick={() => handleOpenCreatePlaylistModal()}
+              disabled={isPlaylistMembershipLoading || isPlaylistMembershipMutating}
+            >
+              New playlist
+            </button>
+          </div>
           <div className="track-playlist-popup-search">
             <input
               type="text"
@@ -1309,6 +1379,14 @@ export default function TrackList({
               autoFocus
             />
           </div>
+          {playlistPopupFeedback && (
+            <div
+              className={`track-playlist-popup-notice ${playlistPopupFeedback.kind}`}
+              role={playlistPopupFeedback.kind === 'error' ? 'alert' : 'status'}
+            >
+              {playlistPopupFeedback.message}
+            </div>
+          )}
           <div className="track-playlist-popup-list">
             {isPlaylistMembershipLoading ? (
               <div className="track-playlist-popup-empty">Loading...</div>
@@ -1346,6 +1424,12 @@ export default function TrackList({
           </div>
         </div>
       )}
+      <CreatePlaylistModal
+        isOpen={createPlaylistTarget !== null}
+        onClose={handleCloseCreatePlaylistModal}
+        onCreate={handleCreatePlaylistForTrack}
+        title="Create Playlist for Track"
+      />
     </div>
   )
 }

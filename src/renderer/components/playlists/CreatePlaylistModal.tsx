@@ -4,7 +4,7 @@ import PlaylistCover from './PlaylistCover'
 interface CreatePlaylistModalProps {
   isOpen: boolean
   onClose: () => void
-  onCreate: (name: string, coverImagePath: string | null) => Promise<void>
+  onCreate: (name: string, coverImagePath: string | null) => Promise<unknown>
   title?: string
   initialName?: string
 }

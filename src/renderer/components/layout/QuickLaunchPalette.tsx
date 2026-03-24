@@ -167,6 +167,7 @@ export default function QuickLaunchPalette() {
   const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
+  const clearPlaylistSelection = usePlaylistStore((state) => state.clearSelection)
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
 
   const [query, setQuery] = useState('')
@@ -539,6 +540,9 @@ export default function QuickLaunchPalette() {
       }
 
       if (result.kind === 'nav') {
+        if (result.view === 'playlist') {
+          clearPlaylistSelection()
+        }
         setActiveView(result.view as Parameters<typeof setActiveView>[0])
         closeQuickLaunch()
         return
@@ -608,6 +612,7 @@ export default function QuickLaunchPalette() {
       setIsExecuting(false)
     }
   }, [
+    clearPlaylistSelection,
     enqueueUserTrack,
     clearSelection,
     closeQuickLaunch,

@@ -792,8 +792,7 @@ export default function HomeView() {
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
-  const createPlaylist = usePlaylistStore((s) => s.createPlaylist)
-  const setPlaylistCustomCoverFromFile = usePlaylistStore((s) => s.setPlaylistCustomCoverFromFile)
+  const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
@@ -1126,10 +1125,9 @@ export default function HomeView() {
   }
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
-    const playlist = await createPlaylist(name)
-    if (coverImagePath && playlist.id > 0) {
-      await setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
-    }
+    const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
   }
 
   const handleOpenPlaylist = async (playlistId: number) => {

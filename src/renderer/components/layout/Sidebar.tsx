@@ -3,6 +3,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore, type AppView } from '../../stores/uiStore'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
+import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
 const navItems: { id: AppView; label: string; icon: ReactNode }[] = [
@@ -44,6 +45,20 @@ const navItems: { id: AppView; label: string; icon: ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    id: 'playlist',
+    label: 'Playlists',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="8" y1="6" x2="21" y2="6" />
+        <line x1="8" y1="12" x2="21" y2="12" />
+        <line x1="8" y1="18" x2="21" y2="18" />
+        <line x1="3" y1="6" x2="3.01" y2="6" />
+        <line x1="3" y1="12" x2="3.01" y2="12" />
+        <line x1="3" y1="18" x2="3.01" y2="18" />
+      </svg>
+    ),
+  },
 ]
 
 const settingsIcon = (
@@ -68,10 +83,13 @@ export default function Sidebar() {
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
+  const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
+  const clearPlaylistSelection = usePlaylistStore((s) => s.clearSelection)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const favoriteTracks = useLibraryStore((s) => s.favoriteTracks)
 
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
+  const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null)
   const popoutRef = useRef<HTMLDivElement | null>(null)
   const [overflowPopoutStyle, setOverflowPopoutStyle] = useState<{
@@ -176,6 +194,24 @@ export default function Sidebar() {
     setIsOverflowOpen(false)
   }
 
+  const handleCreatePlaylist = useCallback(async (name: string, coverImagePath: string | null) => {
+    const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
+    setIsOverflowOpen(false)
+  }, [createPlaylistWithOptions, selectPlaylist, setActiveView])
+
+  const handleNavClick = useCallback((view: AppView) => {
+    if (view === 'playlist') {
+      clearPlaylistSelection()
+      setActiveView('playlist')
+      setIsOverflowOpen(false)
+      return
+    }
+
+    setActiveView(view)
+  }, [clearPlaylistSelection, setActiveView])
+
   return (
     <aside className="sidebar">
       <nav className="sidebar-nav">
@@ -183,7 +219,7 @@ export default function Sidebar() {
           <button
             key={item.id}
             className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
-            onClick={() => setActiveView(item.id)}
+            onClick={() => handleNavClick(item.id)}
             aria-label={item.label}
           >
             {item.icon}
@@ -192,54 +228,69 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {(sidebarQuickPlaylists.length > 0 || sidebarOverflowPlaylists.length > 0) && (
-        <div className="sidebar-playlist-quick">
-          {sidebarQuickPlaylists.map((playlist) => (
-            <button
-              key={playlist.id}
-              className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
-              onClick={() => void handleOpenPlaylist(playlist.id)}
-              aria-label={playlist.name}
-            >
-              {playlist.isSystemFavorites ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                </svg>
-              ) : (
-                <PlaylistCover
-                  hash={playlist.cover_hash}
-                  name={playlist.name}
-                  className="sidebar-playlist-btn-cover"
-                />
-              )}
-              <span className="nav-tooltip">{playlist.name}</span>
-            </button>
-          ))}
+      <div className="sidebar-playlist-cluster">
+        {(sidebarQuickPlaylists.length > 0 || sidebarOverflowPlaylists.length > 0) && (
+          <div className="sidebar-playlist-quick">
+            {sidebarQuickPlaylists.map((playlist) => (
+              <button
+                key={playlist.id}
+                className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
+                onClick={() => void handleOpenPlaylist(playlist.id)}
+                aria-label={playlist.name}
+              >
+                {playlist.isSystemFavorites ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                  </svg>
+                ) : (
+                  <PlaylistCover
+                    hash={playlist.cover_hash}
+                    name={playlist.name}
+                    className="sidebar-playlist-btn-cover"
+                  />
+                )}
+                <span className="nav-tooltip">{playlist.name}</span>
+              </button>
+            ))}
 
-          {sidebarOverflowPlaylists.length > 0 && (
-            <button
-              ref={overflowButtonRef}
-              className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen ? 'active' : ''}`}
-              onClick={() => {
-                setIsOverflowOpen((value) => !value)
-                requestAnimationFrame(() => {
-                  updateOverflowPopoutPosition()
-                })
-              }}
-              aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="5" cy="12" r="1.8" />
-                <circle cx="12" cy="12" r="1.8" />
-                <circle cx="19" cy="12" r="1.8" />
-              </svg>
-              <span className="nav-tooltip">
-                {isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
-              </span>
-            </button>
-          )}
-        </div>
-      )}
+            {sidebarOverflowPlaylists.length > 0 && (
+              <button
+                ref={overflowButtonRef}
+                className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen ? 'active' : ''}`}
+                onClick={() => {
+                  setIsOverflowOpen((value) => !value)
+                  requestAnimationFrame(() => {
+                    updateOverflowPopoutPosition()
+                  })
+                }}
+                aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.8" />
+                  <circle cx="12" cy="12" r="1.8" />
+                  <circle cx="19" cy="12" r="1.8" />
+                </svg>
+                <span className="nav-tooltip">
+                  {isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          className="sidebar-playlist-create-btn"
+          onClick={() => setIsCreatePlaylistModalOpen(true)}
+          aria-label="Create playlist"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span className="nav-tooltip">Create playlist</span>
+        </button>
+      </div>
 
       <div className="sidebar-bottom-actions">
         <button
@@ -300,6 +351,11 @@ export default function Sidebar() {
           </div>
         </>
       )}
+      <CreatePlaylistModal
+        isOpen={isCreatePlaylistModalOpen}
+        onClose={() => setIsCreatePlaylistModalOpen(false)}
+        onCreate={handleCreatePlaylist}
+      />
     </aside>
   )
 }

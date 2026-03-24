@@ -30,6 +30,12 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export interface CreatePlaylistOptions {
+  name: string
+  coverImagePath?: string | null
+  trackPaths?: string[]
+}
+
 interface DbTrack {
   id: number
   path: string
@@ -70,6 +76,7 @@ interface PlaylistStore {
 
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
+  createPlaylistWithOptions: (options: CreatePlaylistOptions) => Promise<Playlist>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
   selectPlaylist: (id: number) => Promise<void>
@@ -84,119 +91,145 @@ interface PlaylistStore {
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
 }
 
-export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
-  playlists: [],
-  selectedPlaylistId: null,
-  selectedPlaylistTracks: [],
-
-  loadPlaylists: async () => {
-    const playlists = await window.electronAPI.library.getPlaylists()
-    set({ playlists })
-  },
-
-  createPlaylist: async (name: string) => {
-    const playlist = await window.electronAPI.library.createPlaylist(name)
-    await get().loadPlaylists()
-    return playlist
-  },
-
-  renamePlaylist: async (id: number, name: string) => {
-    if (isSystemFavoritesPlaylistId(id)) return
-    await window.electronAPI.library.renamePlaylist(id, name)
-    await get().loadPlaylists()
-  },
-
-  deletePlaylist: async (id: number) => {
-    if (isSystemFavoritesPlaylistId(id)) return
-    await window.electronAPI.library.deletePlaylist(id)
-    if (get().selectedPlaylistId === id) {
-      set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
-    }
-    await get().loadPlaylists()
-  },
-
-  selectPlaylist: async (id: number) => {
-    const tracks = id === FAVORITES_PLAYLIST_ID
-      ? await window.electronAPI.library.getFavorites()
-      : await window.electronAPI.library.getPlaylistTracks(id)
-    set({ selectedPlaylistId: id, selectedPlaylistTracks: tracks })
-  },
-
-  clearSelection: () => {
-    set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
-  },
-
-  addToPlaylist: async (playlistId: number, trackPaths: string[]) => {
-    await window.electronAPI.library.addToPlaylist(playlistId, trackPaths)
-    await get().loadPlaylists()
-    // Refresh tracks if this playlist is currently selected
-    if (get().selectedPlaylistId === playlistId) {
-      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-      set({ selectedPlaylistTracks: tracks })
-    }
-  },
-
-  removeFromPlaylist: async (playlistId: number, trackPath: string) => {
-    await window.electronAPI.library.removeFromPlaylist(playlistId, trackPath)
-    await get().loadPlaylists()
-    // Refresh tracks if this playlist is currently selected
-    if (get().selectedPlaylistId === playlistId) {
-      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-      set({ selectedPlaylistTracks: tracks })
-    }
-  },
-
-  reorderPlaylistTracks: async (playlistId: number, orderedTrackPaths: string[]) => {
-    if (isSystemFavoritesPlaylistId(playlistId)) return
-    if (playlistId <= 0) return
-    if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
-
-    await window.electronAPI.library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
-    await get().loadPlaylists()
-    if (get().selectedPlaylistId === playlistId) {
-      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-      set({ selectedPlaylistTracks: tracks })
-    }
-  },
-
-  setPlaylistCustomCoverFromFile: async (playlistId: number, imagePath: string) => {
-    if (isSystemFavoritesPlaylistId(playlistId)) return
-    await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlistId, imagePath)
-    await get().loadPlaylists()
-  },
-
-  clearPlaylistCustomCover: async (playlistId: number) => {
-    if (isSystemFavoritesPlaylistId(playlistId)) return
-    await window.electronAPI.library.clearPlaylistCustomCover(playlistId)
-    await get().loadPlaylists()
-  },
-
-  getPlaylistsContainingTrack: async (trackPath: string) => {
-    if (!trackPath) return []
-    return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
-  },
-
-  getPlaylistTrackPaths: async (playlistId: number) => {
-    if (!Number.isInteger(playlistId) || playlistId <= 0) return []
+export const usePlaylistStore = create<PlaylistStore>((set, get) => {
+  const refreshSelectedPlaylistTracks = async (playlistId: number) => {
+    if (get().selectedPlaylistId !== playlistId) return
     const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-    return tracks.map((track) => track.path)
-  },
-
-  importPlaylistFromFile: async () => {
-    const filePath = await window.electronAPI.openFileDialog({
-      title: 'Import Playlist',
-      filters: [
-        { name: 'Playlist Files', extensions: ['csv', 'm3u', 'm3u8', 'xspf', 'xml', 'wpl', 'asx'] },
-        { name: 'CSV Files', extensions: ['csv'] },
-        { name: 'M3U Playlists', extensions: ['m3u', 'm3u8'] },
-        { name: 'XSPF Playlists', extensions: ['xspf'] },
-        { name: 'XML Playlists', extensions: ['xml', 'wpl', 'asx'] }
-      ]
-    })
-    if (!filePath) return null
-
-    const result = await window.electronAPI.library.importPlaylistFromFile(filePath)
-    await get().loadPlaylists()
-    return result
+    set({ selectedPlaylistTracks: tracks })
   }
-}))
+
+  return {
+    playlists: [],
+    selectedPlaylistId: null,
+    selectedPlaylistTracks: [],
+
+    loadPlaylists: async () => {
+      const playlists = await window.electronAPI.library.getPlaylists()
+      set({ playlists })
+    },
+
+    createPlaylist: async (name: string) => {
+      return get().createPlaylistWithOptions({ name })
+    },
+
+    createPlaylistWithOptions: async ({ name, coverImagePath = null, trackPaths = [] }) => {
+      const trimmedName = name.trim()
+      if (!trimmedName) {
+        throw new Error('Playlist name is required.')
+      }
+
+      const playlist = await window.electronAPI.library.createPlaylist(trimmedName)
+
+      try {
+        if (coverImagePath && playlist.id > 0) {
+          await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
+        }
+        if (trackPaths.length > 0 && playlist.id > 0) {
+          await window.electronAPI.library.addToPlaylist(playlist.id, trackPaths)
+        }
+      } catch (error) {
+        if (playlist.id > 0) {
+          try {
+            await window.electronAPI.library.deletePlaylist(playlist.id)
+          } catch {
+            // Ignore rollback failures and surface the original error.
+          }
+        }
+        await get().loadPlaylists()
+        throw error
+      }
+
+      await get().loadPlaylists()
+      return playlist
+    },
+
+    renamePlaylist: async (id: number, name: string) => {
+      if (isSystemFavoritesPlaylistId(id)) return
+      await window.electronAPI.library.renamePlaylist(id, name)
+      await get().loadPlaylists()
+    },
+
+    deletePlaylist: async (id: number) => {
+      if (isSystemFavoritesPlaylistId(id)) return
+      await window.electronAPI.library.deletePlaylist(id)
+      if (get().selectedPlaylistId === id) {
+        set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
+      }
+      await get().loadPlaylists()
+    },
+
+    selectPlaylist: async (id: number) => {
+      const tracks = id === FAVORITES_PLAYLIST_ID
+        ? await window.electronAPI.library.getFavorites()
+        : await window.electronAPI.library.getPlaylistTracks(id)
+      set({ selectedPlaylistId: id, selectedPlaylistTracks: tracks })
+    },
+
+    clearSelection: () => {
+      set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
+    },
+
+    addToPlaylist: async (playlistId: number, trackPaths: string[]) => {
+      await window.electronAPI.library.addToPlaylist(playlistId, trackPaths)
+      await get().loadPlaylists()
+      await refreshSelectedPlaylistTracks(playlistId)
+    },
+
+    removeFromPlaylist: async (playlistId: number, trackPath: string) => {
+      await window.electronAPI.library.removeFromPlaylist(playlistId, trackPath)
+      await get().loadPlaylists()
+      await refreshSelectedPlaylistTracks(playlistId)
+    },
+
+    reorderPlaylistTracks: async (playlistId: number, orderedTrackPaths: string[]) => {
+      if (isSystemFavoritesPlaylistId(playlistId)) return
+      if (playlistId <= 0) return
+      if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
+
+      await window.electronAPI.library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+      await get().loadPlaylists()
+      await refreshSelectedPlaylistTracks(playlistId)
+    },
+
+    setPlaylistCustomCoverFromFile: async (playlistId: number, imagePath: string) => {
+      if (isSystemFavoritesPlaylistId(playlistId)) return
+      await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlistId, imagePath)
+      await get().loadPlaylists()
+    },
+
+    clearPlaylistCustomCover: async (playlistId: number) => {
+      if (isSystemFavoritesPlaylistId(playlistId)) return
+      await window.electronAPI.library.clearPlaylistCustomCover(playlistId)
+      await get().loadPlaylists()
+    },
+
+    getPlaylistsContainingTrack: async (trackPath: string) => {
+      if (!trackPath) return []
+      return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
+    },
+
+    getPlaylistTrackPaths: async (playlistId: number) => {
+      if (!Number.isInteger(playlistId) || playlistId <= 0) return []
+      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
+      return tracks.map((track) => track.path)
+    },
+
+    importPlaylistFromFile: async () => {
+      const filePath = await window.electronAPI.openFileDialog({
+        title: 'Import Playlist',
+        filters: [
+          { name: 'Playlist Files', extensions: ['csv', 'm3u', 'm3u8', 'xspf', 'xml', 'wpl', 'asx'] },
+          { name: 'CSV Files', extensions: ['csv'] },
+          { name: 'M3U Playlists', extensions: ['m3u', 'm3u8'] },
+          { name: 'XSPF Playlists', extensions: ['xspf'] },
+          { name: 'XML Playlists', extensions: ['xml', 'wpl', 'asx'] }
+        ]
+      })
+      if (!filePath) return null
+
+      const result = await window.electronAPI.library.importPlaylistFromFile(filePath)
+      await get().loadPlaylists()
+      return result
+    }
+  }
+})

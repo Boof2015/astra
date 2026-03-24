@@ -269,8 +269,7 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
   const toggleShuffle = usePlayerStore((state) => state.toggleShuffle)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
-  const createPlaylist = usePlaylistStore((state) => state.createPlaylist)
-  const setPlaylistCustomCoverFromFile = usePlaylistStore((state) => state.setPlaylistCustomCoverFromFile)
+  const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
   const getPlaylistTrackPaths = usePlaylistStore((state) => state.getPlaylistTrackPaths)
 
   const folderPlaylistPopupRef = useRef<HTMLDivElement | null>(null)
@@ -596,17 +595,14 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
       throw new Error('No folder is selected for playlist creation.')
     }
 
-    const playlist = await createPlaylist(name)
-    if (coverImagePath && playlist.id > 0) {
-      await setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
-    }
-    if (createPlaylistTarget.trackPaths.length > 0) {
-      await addToPlaylist(playlist.id, createPlaylistTarget.trackPaths)
-    }
-
+    await createPlaylistWithOptions({
+      name,
+      coverImagePath,
+      trackPaths: createPlaylistTarget.trackPaths
+    })
     setCreatePlaylistTarget(null)
     closeFolderPlaylistPopup()
-  }, [addToPlaylist, closeFolderPlaylistPopup, createPlaylist, createPlaylistTarget, setPlaylistCustomCoverFromFile])
+  }, [closeFolderPlaylistPopup, createPlaylistTarget, createPlaylistWithOptions])
 
   const handleListScroll = useCallback(() => {
     closeFolderPlaylistPopup()
