@@ -11,21 +11,31 @@ on:
         type: string
 
 jobs:
-  publish-aur:
-    name: Publish to AUR
+  validate-aur:
+    name: Validate AUR package
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Arch validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed curl git sudo
+
       - name: Compute version strings
         id: ver
+        shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}"
           VER="${TAG#v}"
           AUR_VER="${VER//-/.}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "ver=$VER" >> $GITHUB_OUTPUT
-          echo "aur_ver=$AUR_VER" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "aur_ver=$AUR_VER" >> "$GITHUB_OUTPUT"
 
       - name: Compute AppImage SHA256
         id: sha256
@@ -36,20 +46,124 @@ jobs:
           TMP_FILE="$(mktemp)"
           trap 'rm -f "$TMP_FILE"' EXIT
           curl -fsSL "$URL" -o "$TMP_FILE"
-          SHA=$(sha256sum "$TMP_FILE" | cut -d' ' -f1)
-          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          SHA="$(sha256sum "$TMP_FILE" | cut -d' ' -f1)"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Update PKGBUILD
+      - name: Rewrite PKGBUILD
+        shell: bash
         run: |
-          AUR_VER="${{ steps.ver.outputs.aur_ver }}"
+          set -euo pipefail
           TAG="${{ steps.ver.outputs.tag }}"
           VER="${{ steps.ver.outputs.ver }}"
+          AUR_VER="${{ steps.ver.outputs.aur_ver }}"
           URL="https://github.com/Boof2015/astra/releases/download/${TAG}/Astra-${VER}-Linux.AppImage"
-          SHA="${{ steps.sha256.outputs.sha256 }}"
-          sed -i "s/^pkgver=.*/pkgver=${AUR_VER}/" .github/aur/PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" .github/aur/PKGBUILD
-          sed -i "s|^source=.*|source=(\"astra-${AUR_VER}.AppImage::${URL}\")|" .github/aur/PKGBUILD
-          sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" .github/aur/PKGBUILD
+          bash ./scripts/release/update-aur-pkgbuild.sh \
+            "$TAG" \
+            "$AUR_VER" \
+            "$URL" \
+            "${{ steps.sha256.outputs.sha256 }}"
+
+      - name: Create Arch build user
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd --create-home --shell /bin/bash builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chmod 0440 /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Generate .SRCINFO
+        shell: bash
+        run: |
+          set -euo pipefail
+          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Build AUR package
+        shell: bash
+        run: |
+          set -euo pipefail
+          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --syncdeps --noconfirm --cleanbuild"
+
+      - name: Verify package contents
+        shell: bash
+        working-directory: .github/aur
+        run: |
+          set -euo pipefail
+          PKG_FILE="$(find . -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
+          if [ -z "$PKG_FILE" ]; then
+            echo "Built package archive not found." >&2
+            exit 1
+          fi
+          bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/bin/astra'
+          bsdtar -tf "$PKG_FILE" | grep -Fx 'opt/astra/AppRun'
+          bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/share/applications/astra.desktop'
+          bsdtar -tf "$PKG_FILE" | grep -Eq '^usr/share/icons/hicolor/.+/apps/astra\.(png|svg)$'
+
+  publish-aur:
+    name: Publish to AUR
+    needs: validate-aur
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AUR publishing dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed curl git openssh
+
+      - name: Create Arch packaging user
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd --create-home --shell /bin/bash builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Compute version strings
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}"
+          VER="${TAG#v}"
+          AUR_VER="${VER//-/.}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "aur_ver=$AUR_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Compute AppImage SHA256
+        id: sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.ver }}-Linux.AppImage"
+          TMP_FILE="$(mktemp)"
+          trap 'rm -f "$TMP_FILE"' EXIT
+          curl -fsSL "$URL" -o "$TMP_FILE"
+          SHA="$(sha256sum "$TMP_FILE" | cut -d' ' -f1)"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite PKGBUILD
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          VER="${{ steps.ver.outputs.ver }}"
+          AUR_VER="${{ steps.ver.outputs.aur_ver }}"
+          URL="https://github.com/Boof2015/astra/releases/download/${TAG}/Astra-${VER}-Linux.AppImage"
+          bash ./scripts/release/update-aur-pkgbuild.sh \
+            "$TAG" \
+            "$AUR_VER" \
+            "$URL" \
+            "${{ steps.sha256.outputs.sha256 }}"
+
+      - name: Generate .SRCINFO
+        shell: bash
+        run: |
+          set -euo pipefail
+          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Normalize AUR SSH key
         id: aur_key
