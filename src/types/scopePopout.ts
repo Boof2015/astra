@@ -1,21 +1,33 @@
-export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope'
+import type { LUFSMeterMode } from './lufsmeter'
+import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
+import type { VUMeterMode, VUMeterOrientation } from './vumeter'
 
-export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope']
+export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter' | 'waveform'
+
+export const SCOPE_KINDS: ScopeKind[] = ['spectrum', 'oscilloscope', 'vectorscope', 'spectrogram', 'vumeter', 'lufsmeter', 'waveform']
 
 export interface ScopePopoutState {
   spectrum: boolean
   oscilloscope: boolean
   vectorscope: boolean
+  spectrogram: boolean
+  vumeter: boolean
+  lufsmeter: boolean
+  waveform: boolean
 }
 
 export const DEFAULT_SCOPE_POPOUT_STATE: ScopePopoutState = {
   spectrum: false,
   oscilloscope: false,
   vectorscope: false,
+  spectrogram: false,
+  vumeter: false,
+  lufsmeter: false,
+  waveform: false,
 }
 
 export function isScopeKind(value: unknown): value is ScopeKind {
-  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope'
+  return value === 'spectrum' || value === 'oscilloscope' || value === 'vectorscope' || value === 'spectrogram' || value === 'vumeter' || value === 'lufsmeter' || value === 'waveform'
 }
 
 interface ScopePopoutChunkBase {
@@ -30,6 +42,9 @@ export interface ScopePopoutSpectrumChunk extends ScopePopoutChunkBase {
   scope: 'spectrum'
   monoChunks: Float32Array[]
   fftSize: number
+  spectrumTiltDbPerOctave: number
+  spectrumHeatmap: boolean
+  spectrumHeatmapTiltDbPerOctave: number
 }
 
 export interface ScopePopoutOscilloscopeChunk extends ScopePopoutChunkBase {
@@ -45,9 +60,51 @@ export interface ScopePopoutVectorscopeChunk extends ScopePopoutChunkBase {
     left: Float32Array
     right: Float32Array
   }>
+  vectorscopeMode: string
+  vectorscopeMultiband: boolean
+}
+
+export interface ScopePopoutSpectrogramChunk extends ScopePopoutChunkBase {
+  scope: 'spectrogram'
+  monoChunks: Float32Array[]
+  fftSize: number
+  spectrogramScrollSpeed: number
+  spectrogramClarityMode: SpectrogramClarityMode
+  spectrogramScaleMode: SpectrogramScaleMode
+}
+
+export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {
+  scope: 'vumeter'
+  stereoChunks: Array<{
+    left: Float32Array
+    right: Float32Array
+  }>
+  vuMeterMode: VUMeterMode
+  vuMeterOrientation: VUMeterOrientation
+}
+
+export interface ScopePopoutLUFSMeterChunk extends ScopePopoutChunkBase {
+  scope: 'lufsmeter'
+  stereoChunks: Array<{
+    left: Float32Array
+    right: Float32Array
+  }>
+  lufsMeterMode: LUFSMeterMode
+}
+
+export interface ScopePopoutWaveformChunk extends ScopePopoutChunkBase {
+  scope: 'waveform'
+  monoChunks: Float32Array[]
+  waveformScrollSpeed: number
+  waveformGainDb: number
+  waveformMultiband: boolean
 }
 
 export type ScopePopoutChunk =
   | ScopePopoutSpectrumChunk
   | ScopePopoutOscilloscopeChunk
   | ScopePopoutVectorscopeChunk
+  | ScopePopoutSpectrogramChunk
+  | ScopePopoutVUMeterChunk
+  | ScopePopoutLUFSMeterChunk
+  | ScopePopoutWaveformChunk

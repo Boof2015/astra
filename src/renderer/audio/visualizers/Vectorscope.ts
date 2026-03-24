@@ -1,5 +1,8 @@
 import { audioEngine } from '../AudioEngine'
 import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
+import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
+import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
 
 export interface VectorscopeOptions {
   lineColor?: string
@@ -7,8 +10,10 @@ export interface VectorscopeOptions {
   backgroundColor?: string
   showGrid?: boolean
   gridColor?: string
-  persistence?: number  // 0.0 (no trail) to 1.0 (infinite trail), default 0.92
+  persistence?: number  // 0.0 (no trail) to 1.0 (infinite trail), default 0.10
   displayPoints?: number  // how many points to request from native, default 4096
+  mode?: VectorscopeMode
+  multiband?: boolean
 }
 
 const defaultOptions: Required<VectorscopeOptions> = {
@@ -18,8 +23,12 @@ const defaultOptions: Required<VectorscopeOptions> = {
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
   persistence: 0.10,
-  displayPoints: 4096
+  displayPoints: 4096,
+  mode: 'lissajous',
+  multiband: false,
 }
+
+const BAND_ORDER = ['low', 'mid', 'high'] as const
 
 export class Vectorscope {
   private canvas: HTMLCanvasElement
@@ -32,6 +41,8 @@ export class Vectorscope {
   private nativeInitialized: boolean = false
   private lastSampleRate: number = 0
   private unsubscribeTrackChange: (() => void) | null = null
+  private splitter: MultibandSplitter = new MultibandSplitter()
+  private multibandBuffer: MultibandBuffer = new MultibandBuffer()
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
     this.canvas = canvas
@@ -70,11 +81,13 @@ export class Vectorscope {
   }
 
   private updateSampleRateIfNeeded(): void {
-    if (!isNativeAvailable()) return
     const currentRate = audioEngine.getSampleRate()
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.lastSampleRate = currentRate
-      nativeVectorscope.setSampleRate(currentRate)
+      if (isNativeAvailable()) {
+        nativeVectorscope.setSampleRate(currentRate)
+      }
+      this.splitter.configure(currentRate)
     }
   }
 
@@ -83,6 +96,8 @@ export class Vectorscope {
     if (isNativeAvailable()) {
       nativeVectorscope.reset()
     }
+    this.splitter.reset()
+    this.multibandBuffer.reset()
     this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height)
   }
 
@@ -114,10 +129,12 @@ export class Vectorscope {
     const { canvas, ctx, offscreenCanvas, offscreenCtx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const centerX = width / 2
-    const centerY = height / 2
-    const VISUAL_GAIN = 2.5
-    const scale = Math.min(centerX, centerY) * 0.9 * VISUAL_GAIN
+    const isPolar = options.mode === 'polar-unipolar' || options.mode === 'polar-bipolar'
+    const VISUAL_GAIN = isPolar ? 1.2 : 1.5
+    const layout = getVectorscopeLayout(width, height, options.mode)
+    const centerX = layout.centerX
+    const centerY = layout.centerY
+    const scale = layout.radius * VISUAL_GAIN
 
     // Sync offscreen canvas size
     if (offscreenCanvas.width !== width || offscreenCanvas.height !== height) {
@@ -129,17 +146,18 @@ export class Vectorscope {
     this.updateSampleRateIfNeeded()
 
     // ---- PERSISTENCE FADE ----
-    // Fade existing content by drawing semi-transparent white with destination-in
-    // This progressively reduces alpha of every existing pixel each frame
     offscreenCtx.globalCompositeOperation = 'destination-in'
     offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
     offscreenCtx.fillRect(0, 0, width, height)
     offscreenCtx.globalCompositeOperation = 'source-over'
 
-    // ---- FLUSH SAMPLES TO NATIVE ----
+    // ---- FLUSH SAMPLES ----
     const pendingSamples = audioEngine.flushPendingVectorscopeSamples()
 
-    if (isNativeAvailable()) {
+    if (options.multiband) {
+      // Multiband path: split into 3 bands, render each with its own color
+      this.drawMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+    } else if (isNativeAvailable()) {
       // Push all accumulated stereo chunks to native circular buffer
       for (const chunk of pendingSamples) {
         nativeVectorscope.pushSamples(chunk.left, chunk.right)
@@ -167,7 +185,8 @@ export class Vectorscope {
 
     // Draw grid underneath
     if (options.showGrid) {
-      this.drawGrid()
+      const dpr = window.devicePixelRatio || 1
+      drawVectorscopeGridForMode(ctx, width, height, options.gridColor, options.mode, dpr)
     }
 
     // Draw the accumulated vectorscope image on top
@@ -186,6 +205,7 @@ export class Vectorscope {
     scale: number
   ): void {
     const { options } = this
+    const mode = options.mode
     const dpr = window.devicePixelRatio || 1
     const dotSize = options.lineWidth * dpr
 
@@ -205,8 +225,12 @@ export class Vectorscope {
       ctx.globalAlpha = alpha
 
       for (let i = startIdx; i < endIdx; i++) {
-        const px = centerX + x[i] * scale
-        const py = centerY - y[i] * scale
+        // Native returns x=Right, y=Left
+        const point = transformPoint(y[i], x[i], mode)
+        if (!point) continue
+
+        const px = centerX + point.dx * scale
+        const py = centerY - point.dy * scale
         ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
       }
     }
@@ -223,6 +247,7 @@ export class Vectorscope {
     if (pendingSamples.length === 0) return
 
     const { options } = this
+    const mode = options.mode
     const dpr = window.devicePixelRatio || 1
     const dotSize = options.lineWidth * dpr
 
@@ -231,70 +256,78 @@ export class Vectorscope {
 
     for (const chunk of pendingSamples) {
       for (let i = 0; i < chunk.left.length; i++) {
-        const px = centerX + chunk.right[i] * scale
-        const py = centerY - chunk.left[i] * scale
+        const point = transformPoint(chunk.left[i], chunk.right[i], mode)
+        if (!point) continue
+
+        const px = centerX + point.dx * scale
+        const py = centerY - point.dy * scale
         ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
       }
     }
     ctx.globalAlpha = 1.0
   }
 
-  private drawGrid(): void {
-    const { ctx, canvas, options } = this
-    const width = canvas.width
-    const height = canvas.height
-    const centerX = width / 2
-    const centerY = height / 2
-    const radius = Math.min(centerX, centerY) * 0.9
+  private drawMultibandPoints(
+    ctx: CanvasRenderingContext2D,
+    pendingSamples: { left: Float32Array; right: Float32Array }[],
+    centerX: number,
+    centerY: number,
+    scale: number
+  ): void {
+    const { options } = this
+    const mode = options.mode
     const dpr = window.devicePixelRatio || 1
+    const dotSize = options.lineWidth * dpr
 
-    ctx.strokeStyle = options.gridColor
-    ctx.lineWidth = dpr
-
-    // Draw circular guides
-    const circles = [0.25, 0.5, 0.75, 1.0]
-    for (const scale of circles) {
-      ctx.beginPath()
-      ctx.arc(centerX, centerY, radius * scale, 0, Math.PI * 2)
-      ctx.stroke()
+    // Ensure splitter is configured
+    const sampleRate = audioEngine.getSampleRate()
+    if (sampleRate > 0) {
+      this.splitter.configure(sampleRate)
     }
 
-    // Draw crosshairs
-    // Vertical line (mono/center)
-    ctx.beginPath()
-    ctx.moveTo(centerX, centerY - radius)
-    ctx.lineTo(centerX, centerY + radius)
-    ctx.stroke()
+    // Also push to native so switching back to single-color is seamless
+    if (isNativeAvailable()) {
+      for (const chunk of pendingSamples) {
+        nativeVectorscope.pushSamples(chunk.left, chunk.right)
+      }
+    }
 
-    // Horizontal line
-    ctx.beginPath()
-    ctx.moveTo(centerX - radius, centerY)
-    ctx.lineTo(centerX + radius, centerY)
-    ctx.stroke()
+    // Split new samples into bands and push into circular buffer
+    for (const chunk of pendingSamples) {
+      const bands = this.splitter.split(chunk.left, chunk.right)
+      this.multibandBuffer.push(bands)
+    }
 
-    // Diagonal lines (45 degrees)
-    ctx.strokeStyle = options.gridColor.replace('0.1', '0.05')
+    // Read all buffered points and draw with age-based opacity (same as native path)
+    const result = this.multibandBuffer.getPoints(options.displayPoints)
+    if (result.count === 0) return
 
-    // +45 degrees
-    ctx.beginPath()
-    ctx.moveTo(centerX - radius * 0.707, centerY - radius * 0.707)
-    ctx.lineTo(centerX + radius * 0.707, centerY + radius * 0.707)
-    ctx.stroke()
+    const segments = 8
+    const pointsPerSegment = Math.ceil(result.count / segments)
 
-    // -45 degrees
-    ctx.beginPath()
-    ctx.moveTo(centerX + radius * 0.707, centerY - radius * 0.707)
-    ctx.lineTo(centerX - radius * 0.707, centerY + radius * 0.707)
-    ctx.stroke()
+    for (let seg = 0; seg < segments; seg++) {
+      const startIdx = seg * pointsPerSegment
+      const endIdx = Math.min((seg + 1) * pointsPerSegment, result.count)
+      if (startIdx >= result.count) break
 
-    // Labels
-    ctx.fillStyle = options.gridColor
-    ctx.font = `${10 * dpr}px monospace`
-    ctx.textAlign = 'center'
-    ctx.fillText('L', centerX - radius - 12 * dpr, centerY + 4 * dpr)
-    ctx.fillText('R', centerX + radius + 12 * dpr, centerY + 4 * dpr)
-    ctx.fillText('+', centerX, centerY - radius - 6 * dpr)
-    ctx.fillText('-', centerX, centerY + radius + 12 * dpr)
+      const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
+      ctx.globalAlpha = alpha
+
+      for (const band of BAND_ORDER) {
+        const bandData = result.bands[band]
+        ctx.fillStyle = BAND_COLORS[band]
+
+        for (let i = startIdx; i < endIdx; i++) {
+          const point = transformPoint(bandData.left[i], bandData.right[i], mode)
+          if (!point) continue
+
+          const px = centerX + point.dx * scale
+          const py = centerY - point.dy * scale
+          ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+        }
+      }
+    }
+    ctx.globalAlpha = 1.0
   }
 
   dispose(): void {

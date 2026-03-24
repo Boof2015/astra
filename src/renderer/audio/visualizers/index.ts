@@ -1,3 +1,7 @@
+export { LUFSMeter, type LUFSMeterOptions } from './LUFSMeter'
 export { Oscilloscope, type OscilloscopeOptions } from './Oscilloscope'
 export { SpectrumAnalyzer, type SpectrumAnalyzerOptions } from './SpectrumAnalyzer'
+export { Spectrogram, type SpectrogramOptions } from './Spectrogram'
 export { Vectorscope, type VectorscopeOptions } from './Vectorscope'
+export { VUMeter, type VUMeterOptions } from './VUMeter'
+export { Waveform, type WaveformOptions } from './Waveform'

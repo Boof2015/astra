@@ -4,6 +4,12 @@ import type { Track } from '../types/audio'
 
 export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
+export const DEFAULT_ANALYZER_HEIGHT_PX = 196
+export const MIN_ANALYZER_HEIGHT_PX = 144
+export const MAX_ANALYZER_HEIGHT_PX = 320
+export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
+export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
+
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
@@ -43,6 +49,14 @@ function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
 
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
 
+export function normalizeAnalyzerHeightPx(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_ANALYZER_HEIGHT_PX
+
+  const snapped = Math.round(numeric / 4) * 4
+  return Math.min(MAX_ANALYZER_HEIGHT_PX, Math.max(MIN_ANALYZER_HEIGHT_PX, snapped))
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
@@ -60,7 +74,41 @@ function persistWaveformTimeDisplayModePreference(mode: WaveformTimeDisplayMode)
   }
 }
 
+function readAnalyzerHeightPreference(): number {
+  try {
+    return normalizeAnalyzerHeightPx(localStorage.getItem(ANALYZER_HEIGHT_STORAGE_KEY))
+  } catch {
+    return DEFAULT_ANALYZER_HEIGHT_PX
+  }
+}
+
+function persistAnalyzerHeightPreference(heightPx: number): void {
+  try {
+    localStorage.setItem(ANALYZER_HEIGHT_STORAGE_KEY, String(normalizeAnalyzerHeightPx(heightPx)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readAnalyzerRackVisibilityPreference(): boolean {
+  try {
+    return localStorage.getItem(ANALYZER_RACK_VISIBILITY_STORAGE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
+  try {
+    localStorage.setItem(ANALYZER_RACK_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
+const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
+const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -70,7 +118,10 @@ interface UIStore {
   showPipelineShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
+  isAnalyzerEditMode: boolean
+  isAnalyzerRackVisible: boolean
   isFullscreen: boolean
+  analyzerHeightPx: number
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
@@ -84,7 +135,16 @@ interface UIStore {
   toggleLyricsShelf: () => void
   setLyricsShelfExpanded: (expanded: boolean) => void
   closeLyricsShelf: () => void
+  openAnalyzerEditMode: () => void
+  closeAnalyzerEditMode: () => void
+  toggleAnalyzerEditMode: () => void
+  showAnalyzerRack: () => void
+  hideAnalyzerRack: () => void
+  toggleAnalyzerRack: () => void
   setFullscreen: (fs: boolean) => void
+  setAnalyzerHeightPx: (heightPx: number) => void
+  resetAnalyzerHeightPx: () => void
+  resetAnalyzerRackPreferences: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -108,7 +168,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showPipelineShelf: false,
   showLyricsShelf: false,
   lyricsShelfExpanded: false,
+  isAnalyzerEditMode: false,
+  isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
+  analyzerHeightPx: initialAnalyzerHeightPx,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
@@ -140,7 +203,47 @@ export const useUIStore = create<UIStore>((set, get) => ({
     showLyricsShelf: false,
     lyricsShelfExpanded: false
   }),
+  openAnalyzerEditMode: () => set({ isAnalyzerEditMode: true }),
+  closeAnalyzerEditMode: () => set({ isAnalyzerEditMode: false }),
+  toggleAnalyzerEditMode: () => set((s) => ({ isAnalyzerEditMode: !s.isAnalyzerEditMode })),
+  showAnalyzerRack: () => {
+    persistAnalyzerRackVisibilityPreference(true)
+    set({ isAnalyzerRackVisible: true })
+  },
+  hideAnalyzerRack: () => {
+    persistAnalyzerRackVisibilityPreference(false)
+    set({
+      isAnalyzerRackVisible: false,
+      isAnalyzerEditMode: false,
+    })
+  },
+  toggleAnalyzerRack: () => set((s) => {
+    const nextVisible = !s.isAnalyzerRackVisible
+    persistAnalyzerRackVisibilityPreference(nextVisible)
+    return {
+      isAnalyzerRackVisible: nextVisible,
+      isAnalyzerEditMode: nextVisible ? s.isAnalyzerEditMode : false,
+    }
+  }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
+  setAnalyzerHeightPx: (heightPx) => {
+    const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
+    persistAnalyzerHeightPreference(nextHeightPx)
+    set({ analyzerHeightPx: nextHeightPx })
+  },
+  resetAnalyzerHeightPx: () => {
+    persistAnalyzerHeightPreference(DEFAULT_ANALYZER_HEIGHT_PX)
+    set({ analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX })
+  },
+  resetAnalyzerRackPreferences: () => {
+    persistAnalyzerRackVisibilityPreference(true)
+    persistAnalyzerHeightPreference(DEFAULT_ANALYZER_HEIGHT_PX)
+    set({
+      isAnalyzerRackVisible: true,
+      isAnalyzerEditMode: false,
+      analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX,
+    })
+  },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'
     persistWaveformTimeDisplayModePreference(nextMode)

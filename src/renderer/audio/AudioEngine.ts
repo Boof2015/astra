@@ -7,6 +7,7 @@ import type {
   NativeAudioTrackLoadResult,
   PlaybackOutputMode
 } from '../../types/nativeAudio'
+import type { ScopeKind } from '../../types/scopePopout'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -71,6 +72,18 @@ interface GainState {
   gainDb: number
   linearGain: number
   mode: GainApplicationMode
+}
+
+export interface VisualizerConsumerDemand {
+  spectrum?: boolean
+  oscilloscope?: boolean
+  vectorscope?: boolean
+  spectrogram?: boolean
+  vumeter?: boolean
+  lufsmeter?: boolean
+  waveform?: boolean
+  miniSpectrum?: boolean
+  miniOscilloscope?: boolean
 }
 
 interface AudioLoadDataOptions {
@@ -182,8 +195,13 @@ export class AudioEngine {
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
+  private pendingSpectrogramSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingVUMeterSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingLUFSMeterSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingWaveformSamples: Float32Array[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
+  private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
   private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
   private static readonly MAX_PENDING_VECTORSCOPE_CHUNKS = 20
@@ -344,11 +362,90 @@ export class AudioEngine {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
+    this.pendingVUMeterSamples = []
+    this.pendingLUFSMeterSamples = []
+    this.pendingWaveformSamples = []
     this.pendingMiniVisualizerChunks = []
     this.resetBitPerfectVisualizerGain()
     this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
     this.trackChangeCallbacks.forEach(cb => cb())
+  }
+
+  setVisualizerConsumerDemand(consumerId: string, demand: VisualizerConsumerDemand): void {
+    const nextDemand: VisualizerConsumerDemand = {
+      spectrum: Boolean(demand.spectrum),
+      oscilloscope: Boolean(demand.oscilloscope),
+      vectorscope: Boolean(demand.vectorscope),
+      spectrogram: Boolean(demand.spectrogram),
+      vumeter: Boolean(demand.vumeter),
+      lufsmeter: Boolean(demand.lufsmeter),
+      waveform: Boolean(demand.waveform),
+      miniSpectrum: Boolean(demand.miniSpectrum),
+      miniOscilloscope: Boolean(demand.miniOscilloscope),
+    }
+
+    const hasAnyDemand = Object.values(nextDemand).some(Boolean)
+    if (hasAnyDemand) {
+      this.visualizerConsumerDemand.set(consumerId, nextDemand)
+    } else {
+      this.visualizerConsumerDemand.delete(consumerId)
+    }
+    this.pruneVisualizerQueuesForDemand()
+  }
+
+  clearVisualizerConsumerDemand(consumerId: string): void {
+    if (this.visualizerConsumerDemand.delete(consumerId)) {
+      this.pruneVisualizerQueuesForDemand()
+    }
+  }
+
+  private hasVisualizerDemand(scope: ScopeKind): boolean {
+    for (const demand of this.visualizerConsumerDemand.values()) {
+      if (demand[scope]) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private hasMiniVisualizerDemand(mode: 'spectrum' | 'oscilloscope'): boolean {
+    const demandKey = mode === 'spectrum' ? 'miniSpectrum' : 'miniOscilloscope'
+    for (const demand of this.visualizerConsumerDemand.values()) {
+      if (demand[demandKey]) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private pruneVisualizerQueuesForDemand(): void {
+    if (!this.hasVisualizerDemand('oscilloscope')) {
+      this.pendingOscilloscopeSamples = []
+      this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
+    }
+    if (!this.hasVisualizerDemand('spectrum')) {
+      this.pendingSpectrumSamples = []
+    }
+    if (!this.hasVisualizerDemand('spectrogram')) {
+      this.pendingSpectrogramSamples = []
+    }
+    if (!this.hasVisualizerDemand('vectorscope')) {
+      this.pendingVectorscopeSamples = []
+    }
+    if (!this.hasVisualizerDemand('vumeter')) {
+      this.pendingVUMeterSamples = []
+    }
+    if (!this.hasVisualizerDemand('lufsmeter')) {
+      this.pendingLUFSMeterSamples = []
+    }
+    if (!this.hasVisualizerDemand('waveform')) {
+      this.pendingWaveformSamples = []
+    }
+    if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
+      this.pendingMiniVisualizerChunks = []
+    }
   }
 
   private queueVisualizerSamples(left: Float32Array, right: Float32Array): void {
@@ -361,38 +458,107 @@ export class AudioEngine {
     this.latestLeftChannel = normalizedLeft
     this.latestRightChannel = normalizedRight
 
-    const leftChunk = new Float32Array(normalizedLeft)
-    this.enqueueOscilloscopeSamples(leftChunk)
+    const oscilloscopeDemand = this.hasVisualizerDemand('oscilloscope')
+    const spectrumDemand = this.hasVisualizerDemand('spectrum')
+    const spectrogramDemand = this.hasVisualizerDemand('spectrogram')
+    const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
+    const vuMeterDemand = this.hasVisualizerDemand('vumeter')
+    const lufsMeterDemand = this.hasVisualizerDemand('lufsmeter')
+    const waveformDemand = this.hasVisualizerDemand('waveform')
+    const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
+    const miniOscilloscopeDemand = this.hasMiniVisualizerDemand('oscilloscope')
 
-    const mono = new Float32Array(Math.min(normalizedLeft.length, normalizedRight.length))
-    for (let i = 0; i < mono.length; i++) {
-      mono[i] = (normalizedLeft[i] + normalizedRight[i]) / 2
+    const shouldComputeMono = spectrumDemand || spectrogramDemand || miniSpectrumDemand
+    let mono: Float32Array | null = null
+    if (shouldComputeMono) {
+      mono = new Float32Array(Math.min(normalizedLeft.length, normalizedRight.length))
+      for (let i = 0; i < mono.length; i++) {
+        mono[i] = (normalizedLeft[i] + normalizedRight[i]) / 2
+      }
+      this.latestMonoChannel = mono
+    } else {
+      this.latestMonoChannel = new Float32Array(0)
     }
-    this.latestMonoChannel = mono
 
-    if (this.pendingSpectrumSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
-      this.pendingSpectrumSamples = this.pendingSpectrumSamples.slice(
-        -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
-      )
+    if (oscilloscopeDemand) {
+      const leftChunk = new Float32Array(normalizedLeft)
+      this.enqueueOscilloscopeSamples(leftChunk)
     }
-    this.pendingSpectrumSamples.push(mono)
 
-    if (this.pendingMiniVisualizerChunks.length >= AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS) {
-      this.pendingMiniVisualizerChunks = this.pendingMiniVisualizerChunks.slice(
-        -Math.floor(AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS / 2)
-      )
+    if (spectrumDemand && mono) {
+      if (this.pendingSpectrumSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingSpectrumSamples = this.pendingSpectrumSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingSpectrumSamples.push(mono)
     }
-    this.pendingMiniVisualizerChunks.push({ left: leftChunk, mono })
 
-    if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
-      this.pendingVectorscopeSamples = this.pendingVectorscopeSamples.slice(
-        -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
-      )
+    if (spectrogramDemand && mono) {
+      if (this.pendingSpectrogramSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingSpectrogramSamples = this.pendingSpectrogramSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingSpectrogramSamples.push(mono)
     }
-    this.pendingVectorscopeSamples.push({
-      left: new Float32Array(normalizedLeft),
-      right: new Float32Array(normalizedRight)
-    })
+
+    if (miniSpectrumDemand || miniOscilloscopeDemand) {
+      if (this.pendingMiniVisualizerChunks.length >= AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS) {
+        this.pendingMiniVisualizerChunks = this.pendingMiniVisualizerChunks.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_MINI_VISUALIZER_CHUNKS / 2)
+        )
+      }
+      this.pendingMiniVisualizerChunks.push({
+        left: miniOscilloscopeDemand ? new Float32Array(normalizedLeft) : new Float32Array(0),
+        mono: miniSpectrumDemand && mono ? mono : new Float32Array(0),
+      })
+    }
+
+    if (vectorscopeDemand) {
+      if (this.pendingVectorscopeSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
+        this.pendingVectorscopeSamples = this.pendingVectorscopeSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
+        )
+      }
+      this.pendingVectorscopeSamples.push({
+        left: new Float32Array(normalizedLeft),
+        right: new Float32Array(normalizedRight)
+      })
+    }
+
+    if (vuMeterDemand) {
+      if (this.pendingVUMeterSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
+        this.pendingVUMeterSamples = this.pendingVUMeterSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
+        )
+      }
+      this.pendingVUMeterSamples.push({
+        left: new Float32Array(normalizedLeft),
+        right: new Float32Array(normalizedRight)
+      })
+    }
+
+    if (lufsMeterDemand) {
+      if (this.pendingLUFSMeterSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingLUFSMeterSamples = this.pendingLUFSMeterSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingLUFSMeterSamples.push({
+        left: new Float32Array(normalizedLeft),
+        right: new Float32Array(normalizedRight)
+      })
+    }
+
+    if (waveformDemand) {
+      if (this.pendingWaveformSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingWaveformSamples = this.pendingWaveformSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingWaveformSamples.push(new Float32Array(normalizedLeft))
+    }
   }
 
   private enqueueOscilloscopeSamples(chunk: Float32Array): void {
@@ -2841,10 +3007,38 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending mono chunks for spectrogram processing.
+  flushPendingSpectrogramSamples(): Float32Array[] {
+    const samples = this.pendingSpectrogramSamples
+    this.pendingSpectrogramSamples = []
+    return samples
+  }
+
   // Flush all pending stereo chunks for vectorscope processing.
   flushPendingVectorscopeSamples(): { left: Float32Array; right: Float32Array }[] {
     const samples = this.pendingVectorscopeSamples
     this.pendingVectorscopeSamples = []
+    return samples
+  }
+
+  // Flush all pending stereo chunks for VU meter processing.
+  flushPendingVUMeterSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingVUMeterSamples
+    this.pendingVUMeterSamples = []
+    return samples
+  }
+
+  // Flush all pending stereo chunks for LUFS meter processing.
+  flushPendingLUFSMeterSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingLUFSMeterSamples
+    this.pendingLUFSMeterSamples = []
+    return samples
+  }
+
+  // Flush all pending mono chunks for scrolling waveform processing.
+  flushPendingWaveformSamples(): Float32Array[] {
+    const samples = this.pendingWaveformSamples
+    this.pendingWaveformSamples = []
     return samples
   }
 
@@ -3467,7 +3661,11 @@ export class AudioEngine {
     this.latestMonoChannel = new Float32Array(0)
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
+    this.pendingVUMeterSamples = []
+    this.pendingLUFSMeterSamples = []
+    this.pendingWaveformSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }

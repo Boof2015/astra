@@ -13,6 +13,10 @@ const EMPTY_RESET_STATE: ResetState = {
   spectrum: false,
   oscilloscope: false,
   vectorscope: false,
+  spectrogram: false,
+  vumeter: false,
+  lufsmeter: false,
+  waveform: false,
 }
 
 function flushScopeQueue(scope: ScopeKind): void {
@@ -26,6 +30,18 @@ function flushScopeQueue(scope: ScopeKind): void {
     case 'vectorscope':
       audioEngine.flushPendingVectorscopeSamples()
       break
+    case 'spectrogram':
+      audioEngine.flushPendingSpectrogramSamples()
+      break
+    case 'vumeter':
+      audioEngine.flushPendingVUMeterSamples()
+      break
+    case 'lufsmeter':
+      audioEngine.flushPendingLUFSMeterSamples()
+      break
+    case 'waveform':
+      audioEngine.flushPendingWaveformSamples()
+      break
   }
 }
 
@@ -33,8 +49,23 @@ export function useScopePopoutBridge(): void {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
+  const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
+  const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
+  const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
+  const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
+  const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
+  const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
+  const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
+  const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
+  const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
+  const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
+  const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
+  const vuMeterOrientation = useVisualizerSettingsStore((s) => s.vuMeterOrientation)
+  const lufsMeterMode = useVisualizerSettingsStore((s) => s.lufsMeterMode)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
@@ -59,6 +90,22 @@ export function useScopePopoutBridge(): void {
       unsubscribe()
     }
   }, [setScopePopoutState])
+
+  useEffect(() => {
+    audioEngine.setVisualizerConsumerDemand('scope-popout-bridge', {
+      spectrum: isVisualizerRunning && scopePopoutState.spectrum,
+      oscilloscope: isVisualizerRunning && scopePopoutState.oscilloscope,
+      vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
+      spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
+      vumeter: isVisualizerRunning && scopePopoutState.vumeter,
+      lufsmeter: isVisualizerRunning && scopePopoutState.lufsmeter,
+      waveform: isVisualizerRunning && scopePopoutState.waveform,
+    })
+
+    return () => {
+      audioEngine.clearVisualizerConsumerDemand('scope-popout-bridge')
+    }
+  }, [isVisualizerRunning, scopePopoutState])
 
   useEffect(() => {
     if (streamTimerRef.current !== null) {
@@ -86,6 +133,9 @@ export function useScopePopoutBridge(): void {
             sampleRate: audioEngine.getSampleRate(),
             monoChunks: [],
             fftSize,
+            spectrumTiltDbPerOctave,
+            spectrumHeatmap,
+            spectrumHeatmapTiltDbPerOctave,
             lineColor,
             reset: true,
           })
@@ -108,6 +158,58 @@ export function useScopePopoutBridge(): void {
             capturedAt: Date.now(),
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
+            vectorscopeMode,
+            vectorscopeMultiband,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'spectrogram':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'spectrogram',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            monoChunks: [],
+            fftSize: spectrogramFftSize,
+            spectrogramScrollSpeed,
+            spectrogramClarityMode,
+            spectrogramScaleMode,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'vumeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'vumeter',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            stereoChunks: [],
+            vuMeterMode,
+            vuMeterOrientation,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'lufsmeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'lufsmeter',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            stereoChunks: [],
+            lufsMeterMode,
+            lineColor,
+            reset: true,
+          })
+          break
+        case 'waveform':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'waveform',
+            capturedAt: Date.now(),
+            sampleRate: audioEngine.getSampleRate(),
+            monoChunks: [],
+            waveformScrollSpeed,
+            waveformGainDb,
+            waveformMultiband,
             lineColor,
             reset: true,
           })
@@ -138,6 +240,9 @@ export function useScopePopoutBridge(): void {
               sampleRate: audioEngine.getSampleRate(),
               monoChunks,
               fftSize,
+              spectrumTiltDbPerOctave,
+              spectrumHeatmap,
+              spectrumHeatmapTiltDbPerOctave,
               lineColor,
               reset: false,
             })
@@ -168,6 +273,74 @@ export function useScopePopoutBridge(): void {
               capturedAt: Date.now(),
               sampleRate: audioEngine.getSampleRate(),
               stereoChunks,
+              vectorscopeMode,
+              vectorscopeMultiband,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
+          case 'spectrogram': {
+            const monoChunks = audioEngine.flushPendingSpectrogramSamples()
+            if (monoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'spectrogram',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              monoChunks,
+              fftSize: spectrogramFftSize,
+              spectrogramScrollSpeed,
+              spectrogramClarityMode,
+              spectrogramScaleMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
+          case 'vumeter': {
+            const stereoChunks = audioEngine.flushPendingVUMeterSamples()
+            if (stereoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'vumeter',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              stereoChunks,
+              vuMeterMode,
+              vuMeterOrientation,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
+          case 'lufsmeter': {
+            const stereoChunks = audioEngine.flushPendingLUFSMeterSamples()
+            if (stereoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'lufsmeter',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              stereoChunks,
+              lufsMeterMode,
+              lineColor,
+              reset: false,
+            })
+            resetSentRef.current[scope] = false
+            break
+          }
+          case 'waveform': {
+            const monoChunks = audioEngine.flushPendingWaveformSamples()
+            if (monoChunks.length === 0) continue
+            window.electronAPI.scopePopout.publishChunk({
+              scope: 'waveform',
+              capturedAt: Date.now(),
+              sampleRate: audioEngine.getSampleRate(),
+              monoChunks,
+              waveformScrollSpeed,
+              waveformGainDb,
+              waveformMultiband,
               lineColor,
               reset: false,
             })
@@ -190,7 +363,22 @@ export function useScopePopoutBridge(): void {
     isVisualizerRunning,
     lineColor,
     fftSize,
+    spectrumTiltDbPerOctave,
+    spectrumHeatmap,
+    spectrumHeatmapTiltDbPerOctave,
+    spectrogramFftSize,
+    spectrogramScrollSpeed,
+    spectrogramClarityMode,
+    spectrogramScaleMode,
+    waveformScrollSpeed,
+    waveformGainDb,
+    waveformMultiband,
     pitchLock,
-    oscilloscopeUnderfillEnabled
+    oscilloscopeUnderfillEnabled,
+    vectorscopeMode,
+    vectorscopeMultiband,
+    vuMeterMode,
+    vuMeterOrientation,
+    lufsMeterMode
   ])
 }

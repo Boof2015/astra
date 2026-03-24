@@ -5,12 +5,41 @@ import {
   OSCILLOSCOPE_BUFFER_SIZE,
   vectorscope as nativeVectorscope
 } from '../../audio/native'
-import { SpectrumAnalyzer } from '../../audio/visualizers'
+import { LUFSMeter, SpectrumAnalyzer, Spectrogram, VUMeter, Waveform } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   isScopeKind,
   type ScopeKind,
 } from '../../../types/scopePopout'
+import {
+  DEFAULT_SPECTROGRAM_CLARITY_MODE,
+  DEFAULT_SPECTROGRAM_SCALE_MODE,
+  DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  clampSpectrogramScrollSpeed,
+  isSpectrogramClarityMode,
+  isSpectrogramScaleMode,
+} from '../../../types/spectrogram'
+import {
+  DEFAULT_VU_METER_MODE,
+  DEFAULT_VU_METER_ORIENTATION,
+  isVUMeterMode,
+  isVUMeterOrientation,
+  type VUMeterMode,
+  type VUMeterOrientation,
+} from '../../../types/vumeter'
+import {
+  DEFAULT_WAVEFORM_GAIN_DB,
+  DEFAULT_WAVEFORM_SCROLL_SPEED,
+  clampWaveformGainDb,
+  clampWaveformScrollSpeed,
+} from '../../../types/waveform'
+import {
+  DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE
+} from '../../../types/spectrum'
+import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
+import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
 import '../../styles/scope-popout.css'
 
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
@@ -86,6 +115,14 @@ function getScopeLabel(scope: ScopeKind): string {
       return 'Oscilloscope'
     case 'vectorscope':
       return 'Vectorscope'
+    case 'spectrogram':
+      return 'Spectrogram'
+    case 'vumeter':
+      return 'VU Meter'
+    case 'lufsmeter':
+      return 'LUFS Meter'
+    case 'waveform':
+      return 'Waveform'
   }
 }
 
@@ -181,6 +218,9 @@ function SpectrumScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)
+  const heatmapRef = useRef(false)
+  const heatmapTiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)
   const isPlayingRef = useRef(false)
 
   const handleResize = useCallback(() => {
@@ -194,12 +234,21 @@ function SpectrumScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       const nextFftSize = Math.max(1024, chunk.fftSize)
       const nextLineColor = chunk.lineColor
+      const nextTiltDbPerOctave = chunk.spectrumTiltDbPerOctave
+      const nextHeatmap = Boolean(chunk.spectrumHeatmap)
+      const nextHeatmapTiltDbPerOctave = chunk.spectrumHeatmapTiltDbPerOctave
       const optionsChanged =
         nextFftSize !== fftSizeRef.current ||
-        nextLineColor !== lineColorRef.current
+        nextLineColor !== lineColorRef.current ||
+        nextTiltDbPerOctave !== tiltDbPerOctaveRef.current ||
+        nextHeatmap !== heatmapRef.current ||
+        nextHeatmapTiltDbPerOctave !== heatmapTiltDbPerOctaveRef.current
 
       fftSizeRef.current = nextFftSize
       lineColorRef.current = nextLineColor
+      tiltDbPerOctaveRef.current = nextTiltDbPerOctave
+      heatmapRef.current = nextHeatmap
+      heatmapTiltDbPerOctaveRef.current = nextHeatmapTiltDbPerOctave
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -213,6 +262,10 @@ function SpectrumScopeCanvas() {
         visualizerRef.current?.setOptions({
           lineColor: nextLineColor,
           fftSize: nextFftSize,
+          fillGradient: !nextHeatmap,
+          heatmapFill: nextHeatmap,
+          tiltDbPerOctave: nextTiltDbPerOctave,
+          heatmapTiltDbPerOctave: nextHeatmapTiltDbPerOctave,
           gradientColors: getSpectrumGradientColors(nextLineColor),
         })
       }
@@ -228,7 +281,10 @@ function SpectrumScopeCanvas() {
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
         lineColor: lineColorRef.current,
         lineWidth: 2,
-        fillGradient: true,
+        fillGradient: !heatmapRef.current,
+        heatmapFill: heatmapRef.current,
+        tiltDbPerOctave: tiltDbPerOctaveRef.current,
+        heatmapTiltDbPerOctave: heatmapTiltDbPerOctaveRef.current,
         fftSize: fftSizeRef.current,
         gradientColors: getSpectrumGradientColors(lineColorRef.current),
         scaleType: 'log',
@@ -459,32 +515,6 @@ function OscilloscopeScopeCanvas() {
   )
 }
 
-function drawVectorscopeGrid(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  const centerX = width / 2
-  const centerY = height / 2
-  const radius = Math.min(centerX, centerY) * 0.9
-
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
-  ctx.lineWidth = 1
-
-  const rings = [0.25, 0.5, 0.75, 1]
-  for (const scale of rings) {
-    ctx.beginPath()
-    ctx.arc(centerX, centerY, radius * scale, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-
-  ctx.beginPath()
-  ctx.moveTo(centerX, centerY - radius)
-  ctx.lineTo(centerX, centerY + radius)
-  ctx.stroke()
-
-  ctx.beginPath()
-  ctx.moveTo(centerX - radius, centerY)
-  ctx.lineTo(centerX + radius, centerY)
-  ctx.stroke()
-}
-
 function VectorscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -494,7 +524,11 @@ function VectorscopeScopeCanvas() {
   const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef('#38bdf8')
+  const vectorscopeModeRef = useRef<VectorscopeMode>('lissajous')
+  const vectorscopeMultibandRef = useRef(false)
   const configuredSampleRateRef = useRef(0)
+  const splitterRef = useRef<MultibandSplitter>(new MultibandSplitter())
+  const multibandBufferRef = useRef<MultibandBuffer>(new MultibandBuffer())
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -502,11 +536,20 @@ function VectorscopeScopeCanvas() {
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       lineColorRef.current = chunk.lineColor
 
+      if ('vectorscopeMode' in chunk && isVectorscopeMode(chunk.vectorscopeMode)) {
+        vectorscopeModeRef.current = chunk.vectorscopeMode
+      }
+      if ('vectorscopeMultiband' in chunk) {
+        vectorscopeMultibandRef.current = Boolean(chunk.vectorscopeMultiband)
+      }
+
       if (chunk.reset) {
         pendingChunksRef.current = []
         if (isNativeAvailable()) {
           nativeVectorscope.reset()
         }
+        splitterRef.current.reset()
+        multibandBufferRef.current.reset()
         return
       }
 
@@ -526,24 +569,82 @@ function VectorscopeScopeCanvas() {
 
     const draw = () => {
       const { width, height } = canvasSizeRef.current
-      const centerX = width / 2
-      const centerY = height / 2
-      const scale = Math.min(centerX, centerY) * 0.9 * 2.5
 
       ctx.clearRect(0, 0, width, height)
-      drawVectorscopeGrid(ctx, width, height)
+
+      const mode = vectorscopeModeRef.current
+      const isPolar = mode === 'polar-unipolar' || mode === 'polar-bipolar'
+      const visualGain = isPolar ? 1.2 : 1.5
+      const layout = getVectorscopeLayout(width, height, mode)
+      const centerX = layout.centerX
+      const centerY = layout.centerY
+      const scale = layout.radius * visualGain
+
+      drawVectorscopeGridForMode(ctx, width, height, 'rgba(255, 255, 255, 0.08)', mode)
 
       const lineColor = lineColorRef.current
+      const multiband = vectorscopeMultibandRef.current
+      const sampleRate = sampleRateRef.current
 
-      if (isNativeAvailable()) {
-        const sampleRate = sampleRateRef.current
-        if (configuredSampleRateRef.current !== sampleRate) {
-          nativeVectorscope.setSampleRate(sampleRate)
-          configuredSampleRateRef.current = sampleRate
+      // Configure native sample rate
+      if (isNativeAvailable() && configuredSampleRateRef.current !== sampleRate) {
+        nativeVectorscope.setSampleRate(sampleRate)
+        configuredSampleRateRef.current = sampleRate
+      }
+
+      const pendingChunks = pendingChunksRef.current
+      pendingChunksRef.current = []
+
+      if (multiband) {
+        // Multiband path: split into 3 bands, buffer, draw all with age-based opacity
+        if (sampleRate > 0) {
+          splitterRef.current.configure(sampleRate)
         }
 
-        const pendingChunks = pendingChunksRef.current
-        pendingChunksRef.current = []
+        // Also push to native so switching back is seamless
+        if (isNativeAvailable()) {
+          for (const chunk of pendingChunks) {
+            nativeVectorscope.pushSamples(chunk.left, chunk.right)
+          }
+        }
+
+        // Split and accumulate into circular buffer
+        for (const chunk of pendingChunks) {
+          const bands = splitterRef.current.split(chunk.left, chunk.right)
+          multibandBufferRef.current.push(bands)
+        }
+
+        // Draw all buffered points with age-based opacity
+        const result = multibandBufferRef.current.getPoints(4096)
+        if (result.count > 0) {
+          const bandOrder = ['low', 'mid', 'high'] as const
+          const segments = 8
+          const pointsPerSegment = Math.ceil(result.count / segments)
+
+          for (let seg = 0; seg < segments; seg++) {
+            const start = seg * pointsPerSegment
+            const end = Math.min((seg + 1) * pointsPerSegment, result.count)
+            if (start >= result.count) break
+
+            ctx.globalAlpha = 0.16 + 0.84 * (seg / Math.max(1, segments - 1))
+
+            for (const band of bandOrder) {
+              const bandData = result.bands[band]
+              ctx.fillStyle = BAND_COLORS[band]
+
+              for (let i = start; i < end; i++) {
+                const point = transformPoint(bandData.left[i], bandData.right[i], mode)
+                if (!point) continue
+
+                const px = centerX + point.dx * scale
+                const py = centerY - point.dy * scale
+                ctx.fillRect(px - 1, py - 1, 2, 2)
+              }
+            }
+          }
+          ctx.globalAlpha = 1
+        }
+      } else if (isNativeAvailable()) {
         for (const chunk of pendingChunks) {
           nativeVectorscope.pushSamples(chunk.left, chunk.right)
         }
@@ -562,23 +663,28 @@ function VectorscopeScopeCanvas() {
             ctx.globalAlpha = 0.16 + 0.84 * (segment / Math.max(1, segments - 1))
 
             for (let i = start; i < end; i++) {
-              const px = centerX + points.x[i] * scale
-              const py = centerY - points.y[i] * scale
+              // Native returns x=Right, y=Left
+              const point = transformPoint(points.y[i], points.x[i], mode)
+              if (!point) continue
+
+              const px = centerX + point.dx * scale
+              const py = centerY - point.dy * scale
               ctx.fillRect(px - 1, py - 1, 2, 2)
             }
           }
           ctx.globalAlpha = 1
         }
       } else {
-        const pendingChunks = pendingChunksRef.current
-        pendingChunksRef.current = []
         ctx.fillStyle = lineColor
         ctx.globalAlpha = 0.85
 
         for (const chunk of pendingChunks) {
           for (let i = 0; i < chunk.left.length; i++) {
-            const px = centerX + chunk.right[i] * scale
-            const py = centerY - chunk.left[i] * scale
+            const point = transformPoint(chunk.left[i], chunk.right[i], mode)
+            if (!point) continue
+
+            const px = centerX + point.dx * scale
+            const py = centerY - point.dy * scale
             ctx.fillRect(px - 1, py - 1, 2, 2)
           }
         }
@@ -610,6 +716,410 @@ function VectorscopeScopeCanvas() {
   )
 }
 
+function SpectrogramScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<Spectrogram | null>(null)
+
+  const pendingChunksRef = useRef<Float32Array[]>([])
+  const sampleRateRef = useRef(48000)
+  const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const scrollSpeedRef = useRef(DEFAULT_SPECTROGRAM_SCROLL_SPEED)
+  const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
+  const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'spectrogram') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      const nextFftSize = Math.max(1024, chunk.fftSize)
+      const nextLineColor = chunk.lineColor
+      const nextScrollSpeed = clampSpectrogramScrollSpeed(chunk.spectrogramScrollSpeed)
+      const nextClarityMode = isSpectrogramClarityMode(chunk.spectrogramClarityMode)
+        ? chunk.spectrogramClarityMode
+        : DEFAULT_SPECTROGRAM_CLARITY_MODE
+      const nextScaleMode = isSpectrogramScaleMode(chunk.spectrogramScaleMode)
+        ? chunk.spectrogramScaleMode
+        : DEFAULT_SPECTROGRAM_SCALE_MODE
+
+      fftSizeRef.current = nextFftSize
+      lineColorRef.current = nextLineColor
+      scrollSpeedRef.current = nextScrollSpeed
+      clarityModeRef.current = nextClarityMode
+      scaleModeRef.current = nextScaleMode
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.monoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.monoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        fftSize: nextFftSize,
+        lineColor: nextLineColor,
+        scrollSpeed: nextScrollSpeed,
+        clarityMode: nextClarityMode,
+        scaleMode: nextScaleMode,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new Spectrogram(canvasRef.current, {
+        fftSize: fftSizeRef.current,
+        lineColor: lineColorRef.current,
+        scrollSpeed: scrollSpeedRef.current,
+        clarityMode: clarityModeRef.current,
+        scaleMode: scaleModeRef.current,
+        colorScheme: 'heat',
+        dataSource: {
+          getPendingSpectrogramSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
+function VUMeterScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<VUMeter | null>(null)
+
+  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const sampleRateRef = useRef(48000)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const vuMeterModeRef = useRef<VUMeterMode>(DEFAULT_VU_METER_MODE)
+  const vuMeterOrientationRef = useRef<VUMeterOrientation>(DEFAULT_VU_METER_ORIENTATION)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'vumeter') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      lineColorRef.current = chunk.lineColor
+
+      if ('vuMeterMode' in chunk && isVUMeterMode(chunk.vuMeterMode)) {
+        vuMeterModeRef.current = chunk.vuMeterMode
+      }
+      if ('vuMeterOrientation' in chunk && isVUMeterOrientation(chunk.vuMeterOrientation)) {
+        vuMeterOrientationRef.current = chunk.vuMeterOrientation
+      }
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.stereoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.stereoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        lineColor: chunk.lineColor,
+        mode: vuMeterModeRef.current,
+        orientation: vuMeterOrientationRef.current,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new VUMeter(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        mode: vuMeterModeRef.current,
+        orientation: vuMeterOrientationRef.current,
+        dataSource: {
+          getPendingVUMeterSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
+function LUFSMeterScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<LUFSMeter | null>(null)
+
+  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const sampleRateRef = useRef(48000)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'lufsmeter') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      lineColorRef.current = chunk.lineColor
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.stereoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.stereoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        lineColor: chunk.lineColor,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new LUFSMeter(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        dataSource: {
+          getPendingLUFSMeterSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
+function WaveformScopeCanvas() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visualizerRef = useRef<Waveform | null>(null)
+
+  const pendingChunksRef = useRef<Float32Array[]>([])
+  const sampleRateRef = useRef(48000)
+  const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
+  const scrollSpeedRef = useRef(DEFAULT_WAVEFORM_SCROLL_SPEED)
+  const gainDbRef = useRef(DEFAULT_WAVEFORM_GAIN_DB)
+  const multibandRef = useRef(false)
+  const isPlayingRef = useRef(false)
+
+  const handleResize = useCallback(() => {
+    if (!canvasRef.current || !containerRef.current) return
+    resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
+      if (chunk.scope !== 'waveform') return
+      sampleRateRef.current = Math.max(1, chunk.sampleRate)
+      lineColorRef.current = chunk.lineColor
+      scrollSpeedRef.current = clampWaveformScrollSpeed(chunk.waveformScrollSpeed)
+      gainDbRef.current = clampWaveformGainDb(chunk.waveformGainDb)
+      multibandRef.current = Boolean(chunk.waveformMultiband)
+
+      if (chunk.reset) {
+        pendingChunksRef.current = []
+        isPlayingRef.current = false
+      } else if (chunk.monoChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.monoChunks)
+        isPlayingRef.current = true
+      }
+
+      visualizerRef.current?.setOptions({
+        lineColor: chunk.lineColor,
+        scrollSpeed: scrollSpeedRef.current,
+        gainDb: gainDbRef.current,
+        multiband: multibandRef.current,
+      })
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    handleResize()
+
+    if (canvasRef.current && !visualizerRef.current) {
+      visualizerRef.current = new Waveform(canvasRef.current, {
+        lineColor: lineColorRef.current,
+        scrollSpeed: scrollSpeedRef.current,
+        gainDb: gainDbRef.current,
+        multiband: multibandRef.current,
+        dataSource: {
+          getPendingWaveformSamples: () => {
+            const chunks = pendingChunksRef.current
+            pendingChunksRef.current = []
+            return chunks
+          },
+          getSampleRate: () => sampleRateRef.current,
+          isPlaying: () => isPlayingRef.current,
+        },
+      })
+    }
+
+    visualizerRef.current?.start()
+
+    return () => {
+      visualizerRef.current?.dispose()
+      visualizerRef.current = null
+      pendingChunksRef.current = []
+      isPlayingRef.current = false
+    }
+  }, [handleResize])
+
+  useEffect(() => {
+    handleResize()
+
+    const observer = new ResizeObserver(() => {
+      handleResize()
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [handleResize])
+
+  return (
+    <div ref={containerRef} className="scope-popout-canvas-wrap">
+      <canvas ref={canvasRef} className="scope-popout-canvas" />
+    </div>
+  )
+}
+
 function ScopeCanvas({ scope }: { scope: ScopeKind }) {
   switch (scope) {
     case 'spectrum':
@@ -618,6 +1128,14 @@ function ScopeCanvas({ scope }: { scope: ScopeKind }) {
       return <OscilloscopeScopeCanvas />
     case 'vectorscope':
       return <VectorscopeScopeCanvas />
+    case 'spectrogram':
+      return <SpectrogramScopeCanvas />
+    case 'vumeter':
+      return <VUMeterScopeCanvas />
+    case 'lufsmeter':
+      return <LUFSMeterScopeCanvas />
+    case 'waveform':
+      return <WaveformScopeCanvas />
   }
 }
 

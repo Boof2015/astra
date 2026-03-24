@@ -5,7 +5,11 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
+  ANALYZER_PROFILES_STORAGE_KEY,
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
+  SPECTRUM_HEATMAP_STORAGE_KEY,
+  VECTORSCOPE_MULTIBAND_STORAGE_KEY,
+  WAVEFORM_MULTIBAND_STORAGE_KEY,
   useVisualizerSettingsStore
 } from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
@@ -13,6 +17,11 @@ import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerStore'
+import {
+  ANALYZER_HEIGHT_STORAGE_KEY,
+  ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  useUIStore
+} from '../../stores/uiStore'
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
@@ -33,7 +42,13 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-discord-cover-art-cache-v2',
   'astra-discord-cover-art-cache-v3',
   'astra-discord-cover-art-cache-v4',
+  ANALYZER_PROFILES_STORAGE_KEY,
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
+  VECTORSCOPE_MULTIBAND_STORAGE_KEY,
+  WAVEFORM_MULTIBAND_STORAGE_KEY,
+  SPECTRUM_HEATMAP_STORAGE_KEY,
+  ANALYZER_HEIGHT_STORAGE_KEY,
+  ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   'astra-library-tracklist-bpm-key-visible-v1',
   EQ_STORAGE_KEY,
@@ -90,8 +105,9 @@ export async function resetAllSettings(): Promise<string> {
   usePlayerStore.getState().resetAudioPreferences()
   await useDiscordSettingsStore.getState().resetToDefaults()
   useEQStore.getState().resetToDefaults()
-  useVisualizerSettingsStore.getState().resetToDefaults()
   clearRendererSettingsKeys()
+  useVisualizerSettingsStore.getState().resetToDefaults()
+  useUIStore.getState().resetAnalyzerRackPreferences()
   return 'All renderer settings reset.'
 }
 

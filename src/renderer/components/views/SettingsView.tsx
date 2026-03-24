@@ -14,7 +14,7 @@ import {
   useAudioSettingsStore,
   type ReplayGainMode
 } from '../../stores/audioSettingsStore'
-import { useVisualizerSettingsStore, type FFTSize } from '../../stores/visualizerSettingsStore'
+import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
@@ -181,13 +181,7 @@ export default function SettingsView() {
     resetToDefault: resetThemeToDefault,
   } = useThemeStore()
   const {
-    fftSize,
-    pitchLock,
-    oscilloscopeUnderfillEnabled,
     isRunning,
-    setFftSize,
-    setPitchLock,
-    setOscilloscopeUnderfillEnabled,
     setIsRunning,
   } = useVisualizerSettingsStore()
   const replayGainScanEnabled = useAudioSettingsStore((state) => state.replayGainScanEnabled)
@@ -928,15 +922,6 @@ export default function SettingsView() {
                 </label>
               )}
               <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Oscilloscope Underfill</span>
-                <button
-                  className={`settings-toggle ${oscilloscopeUnderfillEnabled ? 'active' : ''}`}
-                  onClick={() => setOscilloscopeUnderfillEnabled(!oscilloscopeUnderfillEnabled)}
-                >
-                  {oscilloscopeUnderfillEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-              <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">
                   {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
                 </span>
@@ -1098,24 +1083,9 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Analyzer</h3>
-              <p>FFT and visualizer behavior.</p>
+              <p>Profiles, docked scope layout, and visualizer behavior.</p>
             </div>
             <div className="settings-grid">
-              <label className="settings-field">
-                <span className="settings-field-label">FFT Size</span>
-                <select
-                  className="settings-select"
-                  value={fftSize}
-                  onChange={(e) => setFftSize(Number(e.target.value) as FFTSize)}
-                >
-                  <option value={1024}>1024</option>
-                  <option value={2048}>2048</option>
-                  <option value={4096}>4096</option>
-                  <option value={8192}>8192</option>
-                  <option value={16384}>16384</option>
-                </select>
-              </label>
-
               <label className="settings-field">
                 <span className="settings-field-label">Mini Player Visualizer</span>
                 <select
@@ -1130,16 +1100,6 @@ export default function SettingsView() {
               </label>
 
               <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Pitch Lock</span>
-                <button
-                  className={`settings-toggle ${pitchLock ? 'active' : ''}`}
-                  onClick={() => setPitchLock(!pitchLock)}
-                >
-                  {pitchLock ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="settings-field settings-field-inline">
                 <span className="settings-field-label">Visualizer</span>
                 <button
                   className={`settings-toggle ${isRunning ? 'active' : ''}`}
@@ -1148,10 +1108,9 @@ export default function SettingsView() {
                   {isRunning ? 'Running' : 'Paused'}
                 </button>
               </div>
-
             </div>
             <p className="settings-note">Visualizer line color follows the active theme accent.</p>
-            <p className="settings-note">For smoother mini-player visuals, use FFT 1024/2048, disable oscilloscope underfill, and avoid hero mode on lower-end GPUs.</p>
+            <p className="settings-note">For smoother mini-player visuals, use FFT 1024/2048 in the active analyzer profile, disable oscilloscope underfill there, and avoid hero mode on lower-end GPUs.</p>
           </section>
             )}
 
