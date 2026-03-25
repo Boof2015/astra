@@ -8,6 +8,7 @@ import type {
   NativeAudioVisualizerTapDemand,
   PlaybackOutputMode
 } from '../../types/nativeAudio'
+import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
 
 type EventCallback = (...args: unknown[]) => void
@@ -198,7 +199,7 @@ export class AudioEngine {
   private pendingSpectrumSamples: Float32Array[] = []
   private pendingSpectrogramSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
-  private pendingVUMeterSamples: { left: Float32Array; right: Float32Array }[] = []
+  private pendingVUMeterSamples: MultichannelAudioChunk[] = []
   private pendingLUFSMeterSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingWaveformSamples: Float32Array[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
@@ -460,10 +461,10 @@ export class AudioEngine {
       ),
       vectorscope: (
         this.hasVisualizerDemand('vectorscope')
-        || this.hasVisualizerDemand('vumeter')
         || this.hasVisualizerDemand('lufsmeter')
         || this.hasVisualizerDemand('waveform')
       ),
+      vumeter: this.hasVisualizerDemand('vumeter'),
     }
   }
 
@@ -478,6 +479,7 @@ export class AudioEngine {
           oscilloscope: false,
           spectrum: false,
           vectorscope: false,
+          vumeter: false,
         }
 
     if (
@@ -485,6 +487,7 @@ export class AudioEngine {
       && this.lastNativeVisualizerTapDemand.oscilloscope === demand.oscilloscope
       && this.lastNativeVisualizerTapDemand.spectrum === demand.spectrum
       && this.lastNativeVisualizerTapDemand.vectorscope === demand.vectorscope
+      && this.lastNativeVisualizerTapDemand.vumeter === demand.vumeter
     ) {
       return
     }
@@ -521,6 +524,7 @@ export class AudioEngine {
       window.nativeAudioAPI.flushOscilloscopeChunks()
       window.nativeAudioAPI.flushSpectrumChunks()
       window.nativeAudioAPI.flushVectorscopeChunks()
+      window.nativeAudioAPI.flushVUMeterChunks()
     } catch {
       // Ignore flush failures while tearing down visualizer demand.
     }
@@ -558,17 +562,35 @@ export class AudioEngine {
     }
   }
 
-  private queueVisualizerSamples(left: Float32Array, right: Float32Array): void {
-    if (!left || !right || left.length === 0 || right.length === 0) return
+  private queueVisualizerSamples(
+    channels: Float32Array[],
+    options: {
+      includeCompatibility?: boolean
+      includeVUMeter?: boolean
+    } = {}
+  ): void {
+    const includeCompatibility = options.includeCompatibility ?? true
+    const includeVUMeter = options.includeVUMeter ?? true
+    if (channels.length === 0 || channels[0].length === 0) return
     if (!this.hasAnyVisualizerDemand()) {
       this.clearLatestVisualizerChannels()
       return
     }
 
-    const normalizedSamples = this.normalizeBitPerfectVisualizerSamples(left, right)
-    const normalizedLeft = normalizedSamples?.left ?? left
-    const normalizedRight = normalizedSamples?.right ?? right
+    const normalizedChannels = this.normalizeBitPerfectVisualizerSamples(channels) ?? channels
 
+    if (includeCompatibility) {
+      this.queueCompatibilityVisualizerSamples(normalizedChannels)
+    }
+
+    if (includeVUMeter) {
+      this.queueVUMeterSamples(normalizedChannels)
+    }
+  }
+
+  private queueCompatibilityVisualizerSamples(channels: Float32Array[]): void {
+    const normalizedLeft = channels[0]
+    const normalizedRight = channels[1] ?? normalizedLeft
     this.latestLeftChannel = normalizedLeft
     this.latestRightChannel = normalizedRight
 
@@ -576,7 +598,6 @@ export class AudioEngine {
     const spectrumDemand = this.hasVisualizerDemand('spectrum')
     const spectrogramDemand = this.hasVisualizerDemand('spectrogram')
     const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
-    const vuMeterDemand = this.hasVisualizerDemand('vumeter')
     const lufsMeterDemand = this.hasVisualizerDemand('lufsmeter')
     const waveformDemand = this.hasVisualizerDemand('waveform')
     const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
@@ -641,18 +662,6 @@ export class AudioEngine {
       })
     }
 
-    if (vuMeterDemand) {
-      if (this.pendingVUMeterSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
-        this.pendingVUMeterSamples = this.pendingVUMeterSamples.slice(
-          -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
-        )
-      }
-      this.pendingVUMeterSamples.push({
-        left: new Float32Array(normalizedLeft),
-        right: new Float32Array(normalizedRight)
-      })
-    }
-
     if (lufsMeterDemand) {
       if (this.pendingLUFSMeterSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
         this.pendingLUFSMeterSamples = this.pendingLUFSMeterSamples.slice(
@@ -673,6 +682,20 @@ export class AudioEngine {
       }
       this.pendingWaveformSamples.push(new Float32Array(normalizedLeft))
     }
+  }
+
+  private queueVUMeterSamples(channels: Float32Array[]): void {
+    if (!this.hasVisualizerDemand('vumeter') || channels.length === 0) return
+
+    if (this.pendingVUMeterSamples.length >= AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS) {
+      this.pendingVUMeterSamples = this.pendingVUMeterSamples.slice(
+        -Math.floor(AudioEngine.MAX_PENDING_VECTORSCOPE_CHUNKS / 2)
+      )
+    }
+
+    this.pendingVUMeterSamples.push({
+      channels: channels.map((channel) => new Float32Array(channel)),
+    })
   }
 
   private enqueueOscilloscopeSamples(chunk: Float32Array): void {
@@ -722,15 +745,12 @@ export class AudioEngine {
     this.bitPerfectVisualizerGainInitialized = false
   }
 
-  private normalizeBitPerfectVisualizerSamples(
-    left: Float32Array,
-    right: Float32Array
-  ): { left: Float32Array; right: Float32Array } | null {
+  private normalizeBitPerfectVisualizerSamples(channels: Float32Array[]): Float32Array[] | null {
     if (this.playbackOutputMode !== 'bitperfect' || (!this._normalizationEnabled && !this._replayGainEnabled)) {
       return null
     }
 
-    const desiredGain = this.resolveBitPerfectVisualizerGain(left, right)
+    const desiredGain = this.resolveBitPerfectVisualizerGain(channels)
     if (!Number.isFinite(desiredGain) || Math.abs(desiredGain - 1) < 1e-4) {
       this.bitPerfectVisualizerGain = 1
       this.bitPerfectVisualizerGainInitialized = true
@@ -744,19 +764,13 @@ export class AudioEngine {
     this.bitPerfectVisualizerGain = appliedGain
     this.bitPerfectVisualizerGainInitialized = true
 
-    const normalizedLeft = new Float32Array(left.length)
-    const normalizedRight = new Float32Array(right.length)
-    for (let i = 0; i < left.length; i++) {
-      normalizedLeft[i] = Math.max(-1, Math.min(1, left[i] * appliedGain))
-    }
-    for (let i = 0; i < right.length; i++) {
-      normalizedRight[i] = Math.max(-1, Math.min(1, right[i] * appliedGain))
-    }
-
-    return {
-      left: normalizedLeft,
-      right: normalizedRight
-    }
+    return channels.map((channel) => {
+      const normalizedChannel = new Float32Array(channel.length)
+      for (let i = 0; i < channel.length; i++) {
+        normalizedChannel[i] = Math.max(-1, Math.min(1, channel[i] * appliedGain))
+      }
+      return normalizedChannel
+    })
   }
 
   private smoothBitPerfectVisualizerGain(desiredGain: number): number {
@@ -767,7 +781,7 @@ export class AudioEngine {
     return this.bitPerfectVisualizerGain + ((desiredGain - this.bitPerfectVisualizerGain) * smoothing)
   }
 
-  private resolveBitPerfectVisualizerGain(left: Float32Array, right: Float32Array): number {
+  private resolveBitPerfectVisualizerGain(channels: Float32Array[]): number {
     if (!this._normalizationEnabled) {
       return 1
     }
@@ -776,7 +790,7 @@ export class AudioEngine {
     if (this._replayGainEnabled && this.currentReplayGainDb != null) {
       desiredGainDb = this.currentReplayGainDb
     } else {
-      const chunkLoudnessDb = this.calculateChunkLoudness(left, right)
+      const chunkLoudnessDb = this.calculateChunkLoudness(channels)
       if (chunkLoudnessDb == null) {
         return this.bitPerfectVisualizerGainInitialized ? this.bitPerfectVisualizerGain : 1
       }
@@ -784,7 +798,7 @@ export class AudioEngine {
     }
 
     const clampedGain = this.toLinearGain(this.clampGainDb(desiredGainDb))
-    const peak = this.getChunkPeak(left, right)
+    const peak = this.getChunkPeak(channels)
     if (!Number.isFinite(peak) || peak <= 0) {
       return clampedGain
     }
@@ -792,18 +806,21 @@ export class AudioEngine {
     return Math.min(clampedGain, BIT_PERFECT_VISUALIZER_TARGET_PEAK / peak)
   }
 
-  private calculateChunkLoudness(left: Float32Array, right: Float32Array): number | null {
-    const sampleCount = Math.min(left.length, right.length)
-    if (sampleCount === 0) return null
+  private calculateChunkLoudness(channels: Float32Array[]): number | null {
+    const sampleCount = channels.reduce((minimum, channel) => (
+      minimum === null ? channel.length : Math.min(minimum, channel.length)
+    ), null as number | null)
+    if (sampleCount == null || sampleCount === 0 || channels.length === 0) return null
 
     let sumSquares = 0
-    for (let i = 0; i < sampleCount; i++) {
-      const leftSample = left[i]
-      const rightSample = right[i]
-      sumSquares += (leftSample * leftSample) + (rightSample * rightSample)
+    for (const channel of channels) {
+      for (let i = 0; i < sampleCount; i++) {
+        const sample = channel[i]
+        sumSquares += sample * sample
+      }
     }
 
-    const rms = Math.sqrt(sumSquares / (sampleCount * 2))
+    const rms = Math.sqrt(sumSquares / (sampleCount * channels.length))
     if (!Number.isFinite(rms) || rms < BIT_PERFECT_VISUALIZER_SILENCE_RMS) {
       return null
     }
@@ -811,12 +828,13 @@ export class AudioEngine {
     return 20 * Math.log10(rms + 1e-10)
   }
 
-  private getChunkPeak(left: Float32Array, right: Float32Array): number {
-    const sampleCount = Math.min(left.length, right.length)
+  private getChunkPeak(channels: Float32Array[]): number {
     let peak = 0
 
-    for (let i = 0; i < sampleCount; i++) {
-      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]))
+    for (const channel of channels) {
+      for (let i = 0; i < channel.length; i++) {
+        peak = Math.max(peak, Math.abs(channel[i]))
+      }
     }
 
     return peak
@@ -936,10 +954,23 @@ export class AudioEngine {
     const leftChunks = window.nativeAudioAPI.flushOscilloscopeChunks()
     const monoChunks = window.nativeAudioAPI.flushSpectrumChunks()
     const stereoChunks = window.nativeAudioAPI.flushVectorscopeChunks()
+    const vuChunks = window.nativeAudioAPI.flushVUMeterChunks()
+
+    if (vuChunks.length > 0) {
+      for (const chunk of vuChunks) {
+        this.queueVisualizerSamples(chunk.channels, {
+          includeCompatibility: false,
+          includeVUMeter: true,
+        })
+      }
+    }
 
     if (stereoChunks.length > 0) {
       for (const chunk of stereoChunks) {
-        this.queueVisualizerSamples(chunk.left, chunk.right)
+        this.queueVisualizerSamples([chunk.left, chunk.right], {
+          includeCompatibility: true,
+          includeVUMeter: false,
+        })
       }
     } else if (leftChunks.length > 0 || monoChunks.length > 0) {
       const mono = monoChunks[monoChunks.length - 1] ?? new Float32Array(0)
@@ -948,7 +979,10 @@ export class AudioEngine {
         ? mono
         : left
       if (left.length > 0) {
-        this.queueVisualizerSamples(left, right)
+        this.queueVisualizerSamples([left, right], {
+          includeCompatibility: true,
+          includeVUMeter: false,
+        })
       }
     }
 
@@ -1094,6 +1128,24 @@ export class AudioEngine {
     }
   }
 
+  private applyAnalysisRoutingPreferences(sourceChannels?: number): void {
+    const analysisChannels = Math.max(1, sourceChannels ?? this.audioBuffer?.numberOfChannels ?? 2)
+    const useDiscreteRouting = analysisChannels > 2
+    const mode: ChannelCountMode = useDiscreteRouting ? 'explicit' : 'max'
+    const interpretation: ChannelInterpretation = useDiscreteRouting ? 'discrete' : 'speakers'
+
+    const nodes: Array<AudioNode | null> = [
+      this.analysisNormalizationGainNode,
+      this.analysisDelayNode,
+      this.workletNode,
+      this.analysisTapSinkNode,
+    ]
+
+    for (const node of nodes) {
+      this.applyNodeRoutingMode(node, analysisChannels, mode, interpretation)
+    }
+  }
+
   private getEffectiveChannelMap(sourceChannels: number, outputChannels: number): Array<number | null> {
     return Array.from({ length: outputChannels }, (_, outputIndex) => {
       const manualSourceIndex = this.manualChannelRoutingMap?.[outputIndex]
@@ -1149,12 +1201,7 @@ export class AudioEngine {
   private connectSourceToAnalysisTap(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
     if (!this.analysisNormalizationGainNode) return
 
-    this.applyNodeRoutingMode(
-      this.analysisNormalizationGainNode,
-      Math.max(1, sourceChannels),
-      sourceChannels > 2 ? 'explicit' : 'max',
-      sourceChannels > 2 ? 'discrete' : 'speakers'
-    )
+    this.applyAnalysisRoutingPreferences(sourceChannels)
 
     sourceNode.connect(this.analysisNormalizationGainNode)
   }
@@ -1256,9 +1303,13 @@ export class AudioEngine {
 
         // Set up worklet message handler
         this.workletNode.port.onmessage = (event: MessageEvent) => {
-          const { left, right } = event.data
+          const { channels, left, right } = event.data ?? {}
+          if (Array.isArray(channels) && channels.length > 0) {
+            this.queueVisualizerSamples(channels)
+            return
+          }
           if (left && right && left.length > 0) {
-            this.queueVisualizerSamples(left, right)
+            this.queueVisualizerSamples([left, right])
           }
         }
         this.syncStandardVisualizerStreaming()
@@ -1295,6 +1346,7 @@ export class AudioEngine {
 
       // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+      this.applyAnalysisRoutingPreferences(this.audioBuffer?.numberOfChannels)
     }
   }
 
@@ -3142,8 +3194,8 @@ export class AudioEngine {
     return samples
   }
 
-  // Flush all pending stereo chunks for VU meter processing.
-  flushPendingVUMeterSamples(): { left: Float32Array; right: Float32Array }[] {
+  // Flush all pending multichannel chunks for VU meter processing.
+  flushPendingVUMeterSamples(): MultichannelAudioChunk[] {
     const samples = this.pendingVUMeterSamples
     this.pendingVUMeterSamples = []
     return samples
@@ -3728,6 +3780,7 @@ export class AudioEngine {
         oscilloscope: false,
         spectrum: false,
         vectorscope: false,
+        vumeter: false,
       }).catch(() => {
         // Ignore teardown errors.
       })

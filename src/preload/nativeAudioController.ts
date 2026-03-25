@@ -11,6 +11,7 @@ import type {
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
+  NativeAudioVUMeterChunk,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 
@@ -42,6 +43,7 @@ export interface NativeAudioAddonPlayback {
   flushOscilloscopeSamples(): Float32Array | null
   flushSpectrumSamples(): Float32Array | null
   flushVectorscopeSamples(): { left: Float32Array; right: Float32Array } | null
+  flushVUMeterSamples(): NativeAudioVUMeterChunk | null
 }
 
 export interface NativeAudioAddonModule {
@@ -64,6 +66,7 @@ interface NativeAudioControllerApi {
   flushOscilloscopeChunks: () => Float32Array[]
   flushSpectrumChunks: () => Float32Array[]
   flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
+  flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
   onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
 }
 
@@ -713,6 +716,7 @@ export function createNativeAudioController(
         oscilloscope: Boolean(demand.oscilloscope),
         spectrum: Boolean(demand.spectrum),
         vectorscope: Boolean(demand.vectorscope),
+        vumeter: Boolean(demand.vumeter),
       })
     },
 
@@ -732,6 +736,12 @@ export function createNativeAudioController(
       if (!playback) return []
       const samples = playback.flushVectorscopeSamples()
       return samples && samples.left.length > 0 && samples.right.length > 0 ? [samples] : []
+    },
+
+    flushVUMeterChunks: () => {
+      if (!playback) return []
+      const samples = playback.flushVUMeterSamples()
+      return samples && samples.channels.some((channel) => channel.length > 0) ? [samples] : []
     },
 
     onEvent: (callback) => {

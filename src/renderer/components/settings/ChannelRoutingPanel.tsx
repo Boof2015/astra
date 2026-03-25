@@ -5,6 +5,10 @@ import {
   useAudioSettingsStore
 } from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import {
+  getSourceChannelId,
+  getSourceChannelLabel,
+} from '../../utils/sourceChannelLayout'
 
 interface SpeakerChannel {
   id: string
@@ -57,24 +61,9 @@ function buildFallbackLayout(channelCount: number): SpeakerChannel[] {
   }))
 }
 
-function buildSourceLayout(channelCount: number): SpeakerChannel[] {
-  return Array.from({ length: channelCount }, (_, i) => ({
-    id: `SRC${i + 1}`,
-    label: `Decoded Channel ${i + 1}`,
-  }))
-}
-
 function formatChannels(value: number | null): string {
   if (!value || value <= 0) return '\u2014'
   return `${value}ch`
-}
-
-function getChannelId(index: number, layout: SpeakerChannel[]): string {
-  return layout[index]?.id ?? `CH${index + 1}`
-}
-
-function getChannelLabel(index: number, layout: SpeakerChannel[]): string {
-  return layout[index]?.label ?? `Channel ${index + 1}`
 }
 
 export default function ChannelRoutingPanel() {
@@ -105,10 +94,6 @@ export default function ChannelRoutingPanel() {
     ? (multichannelEnabled ? resolvedOutputChannels : Math.min(2, resolvedOutputChannels))
     : 0
 
-  const sourceLayout = useMemo(
-    () => (hasTrackChannels ? buildSourceLayout(resolvedTrackChannels) : []),
-    [hasTrackChannels, resolvedTrackChannels]
-  )
   const outputLayout = useMemo(
     () => (hasOutputChannels ? buildSpeakerLayout(resolvedOutputChannels) : []),
     [hasOutputChannels, resolvedOutputChannels]
@@ -159,9 +144,9 @@ export default function ChannelRoutingPanel() {
     if (!hasTrackChannels) return []
     return Array.from({ length: resolvedTrackChannels }, (_, index) => ({
       value: index,
-      label: `${getChannelId(index, sourceLayout)} - ${getChannelLabel(index, sourceLayout)}`
+      label: `${getSourceChannelId(index)} - ${getSourceChannelLabel(index)}`
     }))
-  }, [hasTrackChannels, resolvedTrackChannels, sourceLayout])
+  }, [hasTrackChannels, resolvedTrackChannels])
 
   const handleMappingChange = (outputIndex: number, rawValue: string) => {
     if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled) return
@@ -249,7 +234,7 @@ export default function ChannelRoutingPanel() {
             const sourceIndex = effectiveRouting[index] ?? -1
             const active = sourceIndex >= 0
             const detail = multichannelEnabled
-              ? (active ? `From ${getChannelId(sourceIndex, sourceLayout)}` : 'Muted')
+              ? (active ? `From ${getSourceChannelId(sourceIndex)}` : 'Muted')
               : (active ? 'Auto stereo mix' : 'Inactive in stereo mode')
             return (
               <div

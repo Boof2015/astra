@@ -70,10 +70,15 @@ struct VectorscopeSamples {
     std::vector<float> right;
 };
 
+struct MultichannelSamples {
+    std::vector<std::vector<float>> channels;
+};
+
 struct VisualizerTapDemand {
     bool oscilloscope = false;
     bool spectrum = false;
     bool vectorscope = false;
+    bool vumeter = false;
 };
 
 class FloatSampleRingBuffer {
@@ -149,6 +154,7 @@ public:
     std::vector<float> drainOscilloscopeSamples();
     std::vector<float> drainSpectrumSamples();
     VectorscopeSamples drainVectorscopeSamples();
+    MultichannelSamples drainVUMeterSamples();
 
     size_t renderInto(void* outputBuffer, size_t requestedFrames, bool& streamEnded);
     void onFramesConsumed(size_t frames);
@@ -201,6 +207,7 @@ private:
     FloatSampleRingBuffer spectrumTap_;
     FloatSampleRingBuffer vectorscopeLeftTap_;
     FloatSampleRingBuffer vectorscopeRightTap_;
+    std::vector<FloatSampleRingBuffer> vumeterTaps_;
 };
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink();

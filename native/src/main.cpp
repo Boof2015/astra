@@ -530,6 +530,11 @@ Napi::Value PlaybackSetVisualizerTapDemand(const Napi::CallbackInfo& info) {
         demand.vectorscope = vectorscopeValue.ToBoolean().Value();
     }
 
+    const Napi::Value vumeterValue = demandObject.Get("vumeter");
+    if (!vumeterValue.IsUndefined()) {
+        demand.vumeter = vumeterValue.ToBoolean().Value();
+    }
+
     playbackEngine.setVisualizerTapDemand(demand);
     return env.Undefined();
 }
@@ -578,6 +583,25 @@ Napi::Value PlaybackFlushVectorscopeSamples(const Napi::CallbackInfo& info) {
     }
     result.Set("left", left);
     result.Set("right", right);
+    return result;
+}
+
+Napi::Value PlaybackFlushVUMeterSamples(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto samples = playbackEngine.drainVUMeterSamples();
+    Napi::Object result = Napi::Object::New(env);
+    Napi::Array channels = Napi::Array::New(env, samples.channels.size());
+
+    for (size_t channelIndex = 0; channelIndex < samples.channels.size(); channelIndex++) {
+        const auto& channelSamples = samples.channels[channelIndex];
+        Napi::Float32Array output = Napi::Float32Array::New(env, channelSamples.size());
+        if (!channelSamples.empty()) {
+            std::memcpy(output.Data(), channelSamples.data(), channelSamples.size() * sizeof(float));
+        }
+        channels.Set(channelIndex, output);
+    }
+
+    result.Set("channels", channels);
     return result;
 }
 
@@ -636,6 +660,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("flushOscilloscopeSamples", Napi::Function::New(env, PlaybackFlushOscilloscopeSamples));
     playbackExports.Set("flushSpectrumSamples", Napi::Function::New(env, PlaybackFlushSpectrumSamples));
     playbackExports.Set("flushVectorscopeSamples", Napi::Function::New(env, PlaybackFlushVectorscopeSamples));
+    playbackExports.Set("flushVUMeterSamples", Napi::Function::New(env, PlaybackFlushVUMeterSamples));
     exports.Set("playback", playbackExports);
 
     return exports;

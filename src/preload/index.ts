@@ -51,6 +51,7 @@ import type {
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
+  NativeAudioVUMeterChunk,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
@@ -777,6 +778,7 @@ declare global {
       flushOscilloscopeChunks: () => Float32Array[]
       flushSpectrumChunks: () => Float32Array[]
       flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
+      flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {

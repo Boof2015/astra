@@ -459,16 +459,18 @@ void PlaybackEngine::setVisualizerTapDemand(const VisualizerTapDemand& demand) {
     bool clearOscilloscope = false;
     bool clearSpectrum = false;
     bool clearVectorscope = false;
+    bool clearVUMeter = false;
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         clearOscilloscope = visualizerTapDemand_.oscilloscope && !demand.oscilloscope;
         clearSpectrum = visualizerTapDemand_.spectrum && !demand.spectrum;
         clearVectorscope = visualizerTapDemand_.vectorscope && !demand.vectorscope;
+        clearVUMeter = visualizerTapDemand_.vumeter && !demand.vumeter;
         visualizerTapDemand_ = demand;
     }
 
-    if (!clearOscilloscope && !clearSpectrum && !clearVectorscope) {
+    if (!clearOscilloscope && !clearSpectrum && !clearVectorscope && !clearVUMeter) {
         return;
     }
 
@@ -482,6 +484,9 @@ void PlaybackEngine::setVisualizerTapDemand(const VisualizerTapDemand& demand) {
     if (clearVectorscope) {
         vectorscopeLeftTap_.clear();
         vectorscopeRightTap_.clear();
+    }
+    if (clearVUMeter) {
+        vumeterTaps_.clear();
     }
 }
 
@@ -516,6 +521,16 @@ VectorscopeSamples PlaybackEngine::drainVectorscopeSamples() {
     return drained;
 }
 
+MultichannelSamples PlaybackEngine::drainVUMeterSamples() {
+    std::lock_guard<std::mutex> lock(tapMutex_);
+    MultichannelSamples drained;
+    drained.channels.reserve(vumeterTaps_.size());
+    for (auto& tap : vumeterTaps_) {
+        drained.channels.push_back(tap.drain());
+    }
+    return drained;
+}
+
 size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bool& streamEnded) {
     streamEnded = false;
     struct TapChunk {
@@ -538,7 +553,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
         }
 
         tapDemand = visualizerTapDemand_;
-        shouldCaptureTaps = tapDemand.oscilloscope || tapDemand.spectrum || tapDemand.vectorscope;
+        shouldCaptureTaps = tapDemand.oscilloscope || tapDemand.spectrum || tapDemand.vectorscope || tapDemand.vumeter;
 
         uint8_t* output = static_cast<uint8_t*>(outputBuffer);
         size_t framesWritten = 0;
@@ -784,6 +799,7 @@ void PlaybackEngine::clearTapBuffers() {
     spectrumTap_.clear();
     vectorscopeLeftTap_.clear();
     vectorscopeRightTap_.clear();
+    vumeterTaps_.clear();
 }
 
 void PlaybackEngine::appendTapSamples(
@@ -792,7 +808,7 @@ void PlaybackEngine::appendTapSamples(
     const TrackFormat& format,
     const VisualizerTapDemand& demand
 ) {
-    if (!demand.oscilloscope && !demand.spectrum && !demand.vectorscope) {
+    if (!demand.oscilloscope && !demand.spectrum && !demand.vectorscope && !demand.vumeter) {
         return;
     }
 
@@ -803,6 +819,14 @@ void PlaybackEngine::appendTapSamples(
 
     const uint32_t channels = std::max<uint32_t>(1, format.channels);
     const uint32_t bytesPerSample = format.bytesPerSample();
+
+    if (demand.vumeter && vumeterTaps_.size() != channels) {
+        vumeterTaps_.clear();
+        vumeterTaps_.reserve(channels);
+        for (uint32_t channelIndex = 0; channelIndex < channels; channelIndex++) {
+            vumeterTaps_.emplace_back(kMaxTapSamples);
+        }
+    }
 
     for (size_t frameIndex = 0; frameIndex < frames; frameIndex++) {
         const uint8_t* framePtr = interleavedData + (frameIndex * format.bytesPerFrame());
@@ -821,6 +845,15 @@ void PlaybackEngine::appendTapSamples(
         if (demand.vectorscope) {
             vectorscopeLeftTap_.push(left);
             vectorscopeRightTap_.push(right);
+        }
+        if (demand.vumeter) {
+            for (uint32_t channelIndex = 0; channelIndex < channels; channelIndex++) {
+                const float sample = readNormalizedSample(
+                    framePtr + (channelIndex * bytesPerSample),
+                    format.sampleFormat
+                );
+                vumeterTaps_[channelIndex].push(sample);
+            }
         }
     }
 }

@@ -183,7 +183,7 @@ export function useScopePopoutBridge(): void {
             scope: 'vumeter',
             capturedAt: Date.now(),
             sampleRate: audioEngine.getSampleRate(),
-            stereoChunks: [],
+            channelChunks: [],
             vuMeterMode,
             vuMeterOrientation,
             lineColor,
@@ -300,13 +300,13 @@ export function useScopePopoutBridge(): void {
             break
           }
           case 'vumeter': {
-            const stereoChunks = audioEngine.flushPendingVUMeterSamples()
-            if (stereoChunks.length === 0) continue
+            const channelChunks = audioEngine.flushPendingVUMeterSamples()
+            if (channelChunks.length === 0) continue
             window.electronAPI.scopePopout.publishChunk({
               scope: 'vumeter',
               capturedAt: Date.now(),
               sampleRate: audioEngine.getSampleRate(),
-              stereoChunks,
+              channelChunks,
               vuMeterMode,
               vuMeterOrientation,
               lineColor,

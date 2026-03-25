@@ -1,3 +1,5 @@
+import type { MultichannelAudioChunk } from './audioAnalysis'
+
 export type PlaybackOutputMode = 'standard' | 'bitperfect'
 
 export type NativeAudioPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
@@ -65,10 +67,13 @@ export interface NativeAudioVectorscopeChunk {
   right: Float32Array
 }
 
+export interface NativeAudioVUMeterChunk extends MultichannelAudioChunk {}
+
 export interface NativeAudioVisualizerTapDemand {
   oscilloscope: boolean
   spectrum: boolean
   vectorscope: boolean
+  vumeter: boolean
 }
 
 export type NativeAudioEvent =

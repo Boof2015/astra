@@ -11,6 +11,7 @@ import {
   isScopeKind,
   type ScopeKind,
 } from '../../../types/scopePopout'
+import type { MultichannelAudioChunk } from '../../../types/audioAnalysis'
 import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_SCALE_MODE,
@@ -841,7 +842,7 @@ function VUMeterScopeCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<VUMeter | null>(null)
 
-  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const pendingChunksRef = useRef<MultichannelAudioChunk[]>([])
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const vuMeterModeRef = useRef<VUMeterMode>(DEFAULT_VU_METER_MODE)
@@ -871,8 +872,8 @@ function VUMeterScopeCanvas() {
         pendingChunksRef.current = []
         isPlayingRef.current = false
         visualizerRef.current?.invalidate()
-      } else if (chunk.stereoChunks.length > 0) {
-        pendingChunksRef.current.push(...chunk.stereoChunks)
+      } else if (chunk.channelChunks.length > 0) {
+        pendingChunksRef.current.push(...chunk.channelChunks)
         isPlayingRef.current = true
         visualizerRef.current?.invalidate()
       }

@@ -1,3 +1,4 @@
+import type { MultichannelAudioChunk } from './audioAnalysis'
 import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from './vumeter'
@@ -75,10 +76,7 @@ export interface ScopePopoutSpectrogramChunk extends ScopePopoutChunkBase {
 
 export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {
   scope: 'vumeter'
-  stereoChunks: Array<{
-    left: Float32Array
-    right: Float32Array
-  }>
+  channelChunks: MultichannelAudioChunk[]
   vuMeterMode: VUMeterMode
   vuMeterOrientation: VUMeterOrientation
 }
