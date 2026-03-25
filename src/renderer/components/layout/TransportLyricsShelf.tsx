@@ -2,6 +2,7 @@ import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
+import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import type { Track } from '../../types/audio'
 import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
 
@@ -57,7 +58,7 @@ function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: numb
 
 export default function TransportLyricsShelf() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const showLyricsShelf = useUIStore((s) => s.showLyricsShelf)
   const lyricsShelfExpanded = useUIStore((s) => s.lyricsShelfExpanded)
   const setLyricsShelfExpanded = useUIStore((s) => s.setLyricsShelfExpanded)

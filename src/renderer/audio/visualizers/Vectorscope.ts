@@ -3,6 +3,8 @@ import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
 export interface VectorscopeOptions {
   lineColor?: string
@@ -14,9 +16,10 @@ export interface VectorscopeOptions {
   displayPoints?: number  // how many points to request from native, default 4096
   mode?: VectorscopeMode
   multiband?: boolean
+  frameScheduler?: FrameScheduler
 }
 
-const defaultOptions: Required<VectorscopeOptions> = {
+const defaultOptions: Required<Omit<VectorscopeOptions, 'frameScheduler'>> = {
   lineColor: '#00ffff',
   lineWidth: 1.5,
   backgroundColor: 'transparent',
@@ -35,21 +38,30 @@ export class Vectorscope {
   private ctx: CanvasRenderingContext2D
   private offscreenCanvas: HTMLCanvasElement
   private offscreenCtx: CanvasRenderingContext2D
-  private options: Required<VectorscopeOptions>
-  private animationId: number | null = null
-  private isRunning: boolean = false
+  private staticLayerCanvas: HTMLCanvasElement
+  private staticLayerCtx: CanvasRenderingContext2D
+  private options: Required<Omit<VectorscopeOptions, 'frameScheduler'>>
+  private frameLoop: VisualizerFrameLoop
   private nativeInitialized: boolean = false
   private lastSampleRate: number = 0
   private unsubscribeTrackChange: (() => void) | null = null
+  private unsubscribePlaybackState: (() => void) | null = null
   private splitter: MultibandSplitter = new MultibandSplitter()
   private multibandBuffer: MultibandBuffer = new MultibandBuffer()
+  private staticLayerKey = ''
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    this.options = { ...defaultOptions, ...options }
+    const { frameScheduler, ...optionOverrides } = options
+    this.options = { ...defaultOptions, ...optionOverrides }
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => audioEngine.playbackState === 'playing',
+      onFrame: this.drawFrame,
+    })
 
     // Create offscreen canvas for persistence/fade
     this.offscreenCanvas = document.createElement('canvas')
@@ -58,6 +70,10 @@ export class Vectorscope {
     const offCtx = this.offscreenCanvas.getContext('2d')
     if (!offCtx) throw new Error('Could not get offscreen 2D context')
     this.offscreenCtx = offCtx
+    this.staticLayerCanvas = document.createElement('canvas')
+    const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
+    if (!staticLayerCtx) throw new Error('Could not get static offscreen 2D context')
+    this.staticLayerCtx = staticLayerCtx
 
     // Initialize native module if available
     this.initNative()
@@ -65,6 +81,9 @@ export class Vectorscope {
     // Subscribe to track changes for clean reset
     this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
       this.resetDisplay()
+    })
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
     })
   }
 
@@ -99,36 +118,39 @@ export class Vectorscope {
     this.splitter.reset()
     this.multibandBuffer.reset()
     this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height)
+    this.invalidate()
   }
 
   setOptions(options: Partial<VectorscopeOptions>): void {
-    this.options = { ...this.options, ...options }
+    const { frameScheduler: _frameScheduler, ...optionUpdates } = options
+    this.options = { ...this.options, ...optionUpdates }
+    this.staticLayerKey = ''
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
+  }
+
+  invalidate(): void {
+    this.frameLoop.invalidate()
   }
 
   resize(): void {
     // Canvas resize is handled externally; offscreen will sync in draw()
+    this.staticLayerKey = ''
+    this.invalidate()
   }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
-
+  private drawFrame = (): void => {
     const { canvas, ctx, offscreenCanvas, offscreenCtx, options } = this
     const width = canvas.width
     const height = canvas.height
+    if (width <= 0 || height <= 0) return
     const isPolar = options.mode === 'polar-unipolar' || options.mode === 'polar-bipolar'
     const VISUAL_GAIN = isPolar ? 1.2 : 1.5
     const layout = getVectorscopeLayout(width, height, options.mode)
@@ -175,24 +197,48 @@ export class Vectorscope {
     }
 
     // ---- COMPOSITE TO VISIBLE CANVAS ----
-    ctx.clearRect(0, 0, width, height)
-
-    // Draw background
-    if (options.backgroundColor !== 'transparent') {
-      ctx.fillStyle = options.backgroundColor
-      ctx.fillRect(0, 0, width, height)
-    }
-
-    // Draw grid underneath
-    if (options.showGrid) {
-      const dpr = window.devicePixelRatio || 1
-      drawVectorscopeGridForMode(ctx, width, height, options.gridColor, options.mode, dpr)
-    }
+    this.renderStaticLayer()
 
     // Draw the accumulated vectorscope image on top
     ctx.drawImage(offscreenCanvas, 0, 0)
+  }
 
-    this.animationId = requestAnimationFrame(this.draw)
+  private renderStaticLayer(): void {
+    this.ensureStaticLayer()
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.ctx.drawImage(this.staticLayerCanvas, 0, 0)
+  }
+
+  private ensureStaticLayer(): void {
+    const { canvas, options } = this
+    const key = [
+      canvas.width,
+      canvas.height,
+      options.backgroundColor,
+      options.showGrid,
+      options.gridColor,
+      options.mode,
+    ].join(':')
+
+    if (this.staticLayerKey === key) {
+      return
+    }
+
+    this.staticLayerCanvas.width = canvas.width
+    this.staticLayerCanvas.height = canvas.height
+    this.staticLayerCtx.clearRect(0, 0, canvas.width, canvas.height)
+
+    if (options.backgroundColor !== 'transparent') {
+      this.staticLayerCtx.fillStyle = options.backgroundColor
+      this.staticLayerCtx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+
+    if (options.showGrid) {
+      const dpr = window.devicePixelRatio || 1
+      drawVectorscopeGridForMode(this.staticLayerCtx, canvas.width, canvas.height, options.gridColor, options.mode, dpr)
+    }
+
+    this.staticLayerKey = key
   }
 
   private drawPoints(
@@ -332,11 +378,16 @@ export class Vectorscope {
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
 
     // Unsubscribe from track changes
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
+    }
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
     }
 
     // Reset native module state

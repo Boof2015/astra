@@ -5,6 +5,8 @@ import {
   isNativeAvailable
 } from '../native'
 import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
 export interface OscilloscopeOptions {
   lineColor?: string
@@ -14,9 +16,10 @@ export interface OscilloscopeOptions {
   gridColor?: string
   pitchLock?: boolean
   underfillEnabled?: boolean
+  frameScheduler?: FrameScheduler
 }
 
-const defaultOptions: Required<OscilloscopeOptions> = {
+const defaultOptions: Required<Omit<OscilloscopeOptions, 'frameScheduler'>> = {
   lineColor: '#00ffff',
   lineWidth: 2,
   backgroundColor: 'transparent',
@@ -90,13 +93,16 @@ function highContrastUnderfillColor(accentColor: string, alpha: number): string 
 export class Oscilloscope {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
-  private options: Required<OscilloscopeOptions>
-  private animationId: number | null = null
-  private isRunning: boolean = false
+  private options: Required<Omit<OscilloscopeOptions, 'frameScheduler'>>
+  private frameLoop: VisualizerFrameLoop
   private nativeInitialized: boolean = false
   private samplesReceived: number = 0
   private lastSampleRate: number = 0
   private unsubscribeTrackChange: (() => void) | null = null
+  private unsubscribePlaybackState: (() => void) | null = null
+  private staticLayerCanvas: HTMLCanvasElement
+  private staticLayerCtx: CanvasRenderingContext2D
+  private staticLayerKey = ''
   private static readonly WARMUP_SAMPLES = 4096 // Need ~4K samples before pitch detection is reliable
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
@@ -104,7 +110,17 @@ export class Oscilloscope {
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    this.options = { ...defaultOptions, ...options }
+    const { frameScheduler, ...optionOverrides } = options
+    this.options = { ...defaultOptions, ...optionOverrides }
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => audioEngine.playbackState === 'playing',
+      onFrame: this.drawFrame,
+    })
+    this.staticLayerCanvas = document.createElement('canvas')
+    const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
+    if (!staticLayerCtx) throw new Error('Could not get offscreen 2D context')
+    this.staticLayerCtx = staticLayerCtx
 
     // Initialize native module
     this.initNative()
@@ -112,6 +128,9 @@ export class Oscilloscope {
     // Subscribe to track changes to reset state for fresh pitch detection
     this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
       this.reset()
+    })
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
     })
   }
 
@@ -144,53 +163,48 @@ export class Oscilloscope {
   }
 
   setOptions(options: Partial<OscilloscopeOptions>): void {
-    this.options = { ...this.options, ...options }
+    const { frameScheduler: _frameScheduler, ...optionUpdates } = options
+    this.options = { ...this.options, ...optionUpdates }
 
     // Update native module settings
     if (isNativeAvailable() && options.pitchLock !== undefined) {
       nativeOscilloscope.setPitchLock(options.pitchLock)
     }
+
+    this.staticLayerKey = ''
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
   }
 
-  resize(): void { }
+  invalidate(): void {
+    this.frameLoop.invalidate()
+  }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
+  resize(): void {
+    this.staticLayerKey = ''
+    this.invalidate()
+  }
 
+  private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
     const dpr = window.devicePixelRatio || 1
 
-    ctx.clearRect(0, 0, width, height)
+    if (width <= 0 || height <= 0) return
 
-    if (options.backgroundColor !== 'transparent') {
-      ctx.fillStyle = options.backgroundColor
-      ctx.fillRect(0, 0, width, height)
-    }
-
-    if (options.showGrid) {
-      this.drawGrid()
-    }
+    this.renderStaticLayer()
 
     // Native C++ is being fed continuously by AudioWorklet via AudioEngine
     if (!isNativeAvailable()) {
       console.error('Oscilloscope: Native DSP required')
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -208,14 +222,12 @@ export class Oscilloscope {
     // Bypass mode (pitchLock=false) should render immediately using a moving window.
     if (options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
       // During warmup, just show a static waveform or grid
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
     // Process using circular buffer - searches backwards from writePos
     const result = nativeOscilloscope.processContinuous()
     if (!result) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -233,7 +245,6 @@ export class Oscilloscope {
     // Get samples from circular buffer for rendering
     const renderData = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
     if (!renderData || renderData.length === 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -251,7 +262,6 @@ export class Oscilloscope {
     }
 
     if (points.length < 2) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -288,11 +298,46 @@ export class Oscilloscope {
       ctx.lineTo(points[i].x, points[i].y)
     }
     ctx.stroke()
-    this.animationId = requestAnimationFrame(this.draw)
   }
 
-  private drawGrid(): void {
-    const { ctx, canvas, options } = this
+  private renderStaticLayer(): void {
+    this.ensureStaticLayer()
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.ctx.drawImage(this.staticLayerCanvas, 0, 0)
+  }
+
+  private ensureStaticLayer(): void {
+    const { canvas, options } = this
+    const key = [
+      canvas.width,
+      canvas.height,
+      options.backgroundColor,
+      options.showGrid,
+      options.gridColor,
+    ].join(':')
+
+    if (this.staticLayerKey === key) {
+      return
+    }
+
+    this.staticLayerCanvas.width = canvas.width
+    this.staticLayerCanvas.height = canvas.height
+    this.staticLayerCtx.clearRect(0, 0, canvas.width, canvas.height)
+
+    if (options.backgroundColor !== 'transparent') {
+      this.staticLayerCtx.fillStyle = options.backgroundColor
+      this.staticLayerCtx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+
+    if (options.showGrid) {
+      this.drawGrid(this.staticLayerCtx)
+    }
+
+    this.staticLayerKey = key
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D): void {
+    const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
     const dpr = window.devicePixelRatio || 1
@@ -333,15 +378,22 @@ export class Oscilloscope {
     if (isNativeAvailable()) {
       nativeOscilloscope.reset()
     }
+
+    this.invalidate()
   }
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
 
     // Unsubscribe from track change events
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
+    }
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
     }
 
     // Reset native module state

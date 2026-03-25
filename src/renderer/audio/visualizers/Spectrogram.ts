@@ -1,4 +1,6 @@
 import { audioEngine } from '../AudioEngine'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_SCALE_MODE,
@@ -28,9 +30,10 @@ export interface SpectrogramOptions {
   colorScheme?: 'heat' | 'mono'
   lineColor?: string
   dataSource?: SpectrogramDataSource
+  frameScheduler?: FrameScheduler
 }
 
-type ResolvedSpectrogramOptions = Required<Omit<SpectrogramOptions, 'dataSource'>>
+type ResolvedSpectrogramOptions = Required<Omit<SpectrogramOptions, 'dataSource' | 'frameScheduler'>>
 
 interface SpectrogramClarityProfile {
   gamma: number      // contrast curve exponent
@@ -270,8 +273,7 @@ export class Spectrogram {
   private ctx: CanvasRenderingContext2D
   private options: ResolvedSpectrogramOptions
   private dataSource: SpectrogramDataSource
-  private animationId: number | null = null
-  private isRunning = false
+  private frameLoop: VisualizerFrameLoop
 
   private fftRe: Float32Array
   private fftIm: Float32Array
@@ -297,6 +299,7 @@ export class Spectrogram {
   private lastScaleMode: SpectrogramScaleMode | null = null
 
   private unsubscribeTrackChange: (() => void) | null = null
+  private unsubscribePlaybackState: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: SpectrogramOptions = {}) {
     this.canvas = canvas
@@ -304,9 +307,14 @@ export class Spectrogram {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
 
-    const { dataSource, ...optionOverrides } = options
+    const { dataSource, frameScheduler, ...optionOverrides } = options
     this.options = resolveOptions(defaultOptions, optionOverrides)
     this.dataSource = dataSource ?? defaultSpectrogramDataSource
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => this.dataSource.isPlaying(),
+      onFrame: this.drawFrame,
+    })
 
     const windowSize = this.options.fftSize
     const paddedSize = windowSize * FFT_PAD_FACTOR
@@ -327,15 +335,19 @@ export class Spectrogram {
     this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
       this.resetDisplay()
     })
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
+    })
   }
 
   private resetDisplay(): void {
     this.sampleBufferPos = 0
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
+    this.invalidate()
   }
 
   setOptions(options: Partial<SpectrogramOptions>): void {
-    const { dataSource, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
     const previousOptions = this.options
     this.options = resolveOptions(previousOptions, optionUpdates)
 
@@ -355,25 +367,26 @@ export class Spectrogram {
     } else if (this.options.scaleMode !== previousOptions.scaleMode) {
       this.resetDisplay()
     }
+
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
+  }
+
+  invalidate(): void {
+    this.frameLoop.invalidate()
   }
 
   resize(): void {
     this.lastWidth = 0
     this.lastHeight = 0
+    this.invalidate()
   }
 
   private ensureColumnBuffers(height: number): void {
@@ -608,13 +621,10 @@ export class Spectrogram {
     return values
   }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
-
+  private drawFrame = (): void => {
     const width = this.canvas.width
     const height = this.canvas.height
     if (width <= 0 || height <= 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -656,7 +666,6 @@ export class Spectrogram {
       // Freeze waterfall in place instead of blanking
       this.ctx.clearRect(0, 0, width, height)
       this.ctx.drawImage(this.waterfallCanvas, 0, 0)
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -688,14 +697,18 @@ export class Spectrogram {
 
     this.ctx.clearRect(0, 0, width, height)
     this.ctx.drawImage(this.waterfallCanvas, 0, 0)
-    this.animationId = requestAnimationFrame(this.draw)
   }
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
+    }
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
     }
   }
 }

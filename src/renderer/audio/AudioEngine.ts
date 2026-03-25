@@ -5,6 +5,7 @@ import type {
   NativeAudioPlaybackSnapshot,
   NativeAudioTrackMetadata,
   NativeAudioTrackLoadResult,
+  NativeAudioVisualizerTapDemand,
   PlaybackOutputMode
 } from '../../types/nativeAudio'
 import type { ScopeKind } from '../../types/scopePopout'
@@ -258,6 +259,7 @@ export class AudioEngine {
   private nativeEventUnsubscribe: (() => void) | null = null
   private nativeModeMessage: string | null = null
   private nativeNextTrackBuffered: boolean = false
+  private lastNativeVisualizerTapDemand: NativeAudioVisualizerTapDemand | null = null
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -448,6 +450,51 @@ export class AudioEngine {
     })
   }
 
+  private getNativeVisualizerTapDemand(): NativeAudioVisualizerTapDemand {
+    return {
+      oscilloscope: this.hasVisualizerDemand('oscilloscope') || this.hasMiniVisualizerDemand('oscilloscope'),
+      spectrum: (
+        this.hasVisualizerDemand('spectrum')
+        || this.hasVisualizerDemand('spectrogram')
+        || this.hasMiniVisualizerDemand('spectrum')
+      ),
+      vectorscope: (
+        this.hasVisualizerDemand('vectorscope')
+        || this.hasVisualizerDemand('vumeter')
+        || this.hasVisualizerDemand('lufsmeter')
+        || this.hasVisualizerDemand('waveform')
+      ),
+    }
+  }
+
+  private syncNativeVisualizerTapDemand(): void {
+    if (this.playbackOutputMode !== 'bitperfect' && this.lastNativeVisualizerTapDemand === null) {
+      return
+    }
+
+    const demand = this.playbackOutputMode === 'bitperfect'
+      ? this.getNativeVisualizerTapDemand()
+      : {
+          oscilloscope: false,
+          spectrum: false,
+          vectorscope: false,
+        }
+
+    if (
+      this.lastNativeVisualizerTapDemand
+      && this.lastNativeVisualizerTapDemand.oscilloscope === demand.oscilloscope
+      && this.lastNativeVisualizerTapDemand.spectrum === demand.spectrum
+      && this.lastNativeVisualizerTapDemand.vectorscope === demand.vectorscope
+    ) {
+      return
+    }
+
+    this.lastNativeVisualizerTapDemand = demand
+    void window.nativeAudioAPI.setVisualizerTapDemand(demand).catch(() => {
+      // Ignore demand sync failures while native playback is unavailable or switching modes.
+    })
+  }
+
   private shouldPollNativeScopeData(): boolean {
     return this.playbackOutputMode === 'bitperfect'
       && this._playbackState === 'playing'
@@ -464,6 +511,7 @@ export class AudioEngine {
 
   private syncVisualizerTransportState(): void {
     this.syncStandardVisualizerStreaming()
+    this.syncNativeVisualizerTapDemand()
     this.syncNativeScopePolling()
   }
 
@@ -894,9 +942,9 @@ export class AudioEngine {
         this.queueVisualizerSamples(chunk.left, chunk.right)
       }
     } else if (leftChunks.length > 0 || monoChunks.length > 0) {
-      const left = leftChunks[leftChunks.length - 1] ?? new Float32Array(0)
-      const mono = monoChunks[monoChunks.length - 1] ?? left
-      const right = mono.length === left.length
+      const mono = monoChunks[monoChunks.length - 1] ?? new Float32Array(0)
+      const left = leftChunks[leftChunks.length - 1] ?? mono
+      const right = mono.length === left.length && mono.length > 0
         ? mono
         : left
       if (left.length > 0) {
@@ -1514,11 +1562,14 @@ export class AudioEngine {
   }
 
   // Event emitter methods
-  on(event: string, callback: EventCallback): void {
+  on(event: string, callback: EventCallback): () => void {
     if (!this.eventListeners.has(event)) {
       this.eventListeners.set(event, new Set())
     }
     this.eventListeners.get(event)!.add(callback)
+    return () => {
+      this.off(event, callback)
+    }
   }
 
   off(event: string, callback: EventCallback): void {
@@ -3672,6 +3723,16 @@ export class AudioEngine {
     this.clearNextBuffer()
     this.stopTimeUpdate()
     this.stopNativeScopePolling()
+    if (this.lastNativeVisualizerTapDemand !== null) {
+      void window.nativeAudioAPI.setVisualizerTapDemand({
+        oscilloscope: false,
+        spectrum: false,
+        vectorscope: false,
+      }).catch(() => {
+        // Ignore teardown errors.
+      })
+      this.lastNativeVisualizerTapDemand = null
+    }
     if (this.nativeEventUnsubscribe) {
       this.nativeEventUnsubscribe()
       this.nativeEventUnsubscribe = null

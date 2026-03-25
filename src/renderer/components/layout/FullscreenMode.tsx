@@ -7,6 +7,7 @@ import { useLyricsStore } from '../../stores/lyricsStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
+import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
@@ -188,7 +189,7 @@ function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: numb
 function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const waveformData = usePlayerStore((s) => s.waveformData)
   const seek = usePlayerStore((s) => s.seek)
@@ -245,7 +246,7 @@ function FullscreenLyricsDockPanel({
   showLyricsDock: boolean
   lyricsDockLayout: LyricsDockLayout
 }): ReactElement {
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
@@ -476,7 +477,7 @@ function FullscreenNextCueOverlay({
   repeat: 'none' | 'one' | 'all'
   setHeroPhase: Dispatch<SetStateAction<HeroPhase>>
 }): ReactElement | null {
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const [cueState, setCueState] = useState<CueState>('hidden')

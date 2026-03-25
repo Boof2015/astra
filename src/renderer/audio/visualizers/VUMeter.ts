@@ -1,4 +1,6 @@
 import { audioEngine } from '../AudioEngine'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
   DEFAULT_VU_METER_ORIENTATION,
   type VUMeterMode,
@@ -16,9 +18,10 @@ export interface VUMeterOptions {
   orientation?: VUMeterOrientation
   lineColor?: string
   dataSource?: VUMeterDataSource
+  frameScheduler?: FrameScheduler
 }
 
-type ResolvedVUMeterOptions = Required<Omit<VUMeterOptions, 'dataSource'>>
+type ResolvedVUMeterOptions = Required<Omit<VUMeterOptions, 'dataSource' | 'frameScheduler'>>
 
 const defaultOptions: ResolvedVUMeterOptions = {
   mode: 'bar',
@@ -63,8 +66,7 @@ export class VUMeter {
   private ctx: CanvasRenderingContext2D
   private options: ResolvedVUMeterOptions
   private dataSource: VUMeterDataSource
-  private animationId: number | null = null
-  private isRunning = false
+  private frameLoop: VisualizerFrameLoop
 
   // Meter state
   private rmsL = METER_MIN_DB
@@ -77,6 +79,7 @@ export class VUMeter {
 
   // Track change subscription
   private unsubscribeTrackChange: (() => void) | null = null
+  private unsubscribePlaybackState: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: VUMeterOptions = {}) {
     this.canvas = canvas
@@ -84,12 +87,20 @@ export class VUMeter {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
 
-    const { dataSource, ...optionOverrides } = options
+    const { dataSource, frameScheduler, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
     this.dataSource = dataSource ?? defaultVUMeterDataSource
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => this.dataSource.isPlaying(),
+      onFrame: this.drawFrame,
+    })
 
     this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
       this.resetMeters()
+    })
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
     })
   }
 
@@ -101,32 +112,33 @@ export class VUMeter {
     this.peakHoldL = 0
     this.peakHoldR = 0
     this.correlation = 0
+    this.invalidate()
   }
 
   setOptions(options: Partial<VUMeterOptions>): void {
-    const { dataSource, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
     this.options = { ...this.options, ...optionUpdates }
     if (dataSource) {
       this.dataSource = dataSource
     }
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
+  }
+
+  invalidate(): void {
+    this.frameLoop.invalidate()
   }
 
   resize(): void {
     // Canvas resize handled externally
+    this.invalidate()
   }
 
   private processAudio(): void {
@@ -586,15 +598,12 @@ export class VUMeter {
     ctx.fillText(dbText, centerX, y + h - 2)
   }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
-
+  private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
 
     if (width <= 0 || height <= 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -607,15 +616,18 @@ export class VUMeter {
     } else {
       this.drawBarMode(width, height)
     }
-
-    this.animationId = requestAnimationFrame(this.draw)
   }
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
+    }
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
     }
   }
 }

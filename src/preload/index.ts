@@ -48,12 +48,12 @@ import type {
   NativeAudioCapabilities,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
-  NativeAudioSampleFormat,
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
+  NativeAudioVisualizerTapDemand,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
-import { createNativeAudioController } from './nativeAudioController'
+import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
 export interface AudioFileMetadata {
   title?: string
@@ -384,38 +384,7 @@ export interface VisualizerDSP {
   }
 }
 
-interface NativeAudioAddonPlayback {
-  getCapabilities(): NativeAudioCapabilities
-  setOutputDevice(deviceId: string): NativeAudioCapabilities
-  loadTrack(
-    pcmData: Uint8Array,
-    sampleRate: number,
-    channels: number,
-    sampleFormat: NativeAudioSampleFormat,
-    duration: number
-  ): NativeAudioPlaybackSnapshot
-  preloadNextTrack(
-    pcmData: Uint8Array,
-    sampleRate: number,
-    channels: number,
-    sampleFormat: NativeAudioSampleFormat,
-    duration: number
-  ): void
-  play(): NativeAudioPlaybackSnapshot
-  pause(): NativeAudioPlaybackSnapshot
-  stop(): NativeAudioPlaybackSnapshot
-  seek(seconds: number): NativeAudioPlaybackSnapshot
-  clearNextTrack(): void
-  getPlaybackSnapshot(): NativeAudioPlaybackSnapshot
-  drainEvents(): NativeAudioEvent[]
-  flushOscilloscopeSamples(): Float32Array | null
-  flushSpectrumSamples(): Float32Array | null
-  flushVectorscopeSamples(): { left: Float32Array; right: Float32Array } | null
-}
-
-interface NativeAddonModule extends VisualizerDSP {
-  playback?: NativeAudioAddonPlayback
-}
+type NativeAddonModule = VisualizerDSP & NativeAudioAddonModule
 
 // Load Native Module
 let visualizerDSP: NativeAddonModule | null = null
@@ -804,6 +773,7 @@ declare global {
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+      setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
       flushOscilloscopeChunks: () => Float32Array[]
       flushSpectrumChunks: () => Float32Array[]
       flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]

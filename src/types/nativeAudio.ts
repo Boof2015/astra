@@ -65,6 +65,12 @@ export interface NativeAudioVectorscopeChunk {
   right: Float32Array
 }
 
+export interface NativeAudioVisualizerTapDemand {
+  oscilloscope: boolean
+  spectrum: boolean
+  vectorscope: boolean
+}
+
 export type NativeAudioEvent =
   | {
       type: 'stateChange'

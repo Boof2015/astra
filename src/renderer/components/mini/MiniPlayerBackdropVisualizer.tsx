@@ -265,6 +265,7 @@ export default function MiniPlayerBackdropVisualizer({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number | null>(null)
+  const drawRef = useRef<(() => void) | null>(null)
   const canvasSizeRef = useRef({ width: 0, height: 0 })
   const modeRef = useRef(mode)
   const layoutModeRef = useRef(layoutMode)
@@ -286,20 +287,6 @@ export default function MiniPlayerBackdropVisualizer({
     resolveVisibilityProfile(mode, lineColor, DEFAULT_BACKDROP_METRICS)
   )
   const [sampledBackdropMetrics, setSampledBackdropMetrics] = useState<BackdropMetrics | null>(null)
-
-  useEffect(() => {
-    modeRef.current = mode
-    if (mode === 'off') {
-      pendingLeftChunksRef.current = []
-      pendingMonoChunksRef.current = []
-      spectrumDataRef.current = null
-      samplesReceivedRef.current = 0
-      if (isNativeAvailable()) {
-        nativeOscilloscope.reset()
-        nativeSpectrum.reset()
-      }
-    }
-  }, [mode])
 
   useEffect(() => {
     layoutModeRef.current = layoutMode
@@ -382,6 +369,48 @@ export default function MiniPlayerBackdropVisualizer({
     canvasSizeRef.current = { width, height }
   }, [])
 
+  const stopAnimationLoop = useCallback(() => {
+    if (animationRef.current !== null) {
+      cancelAnimationFrame(animationRef.current)
+      animationRef.current = null
+    }
+  }, [])
+
+  const scheduleNextFrame = useCallback(() => {
+    if (modeRef.current === 'off' || animationRef.current !== null) {
+      return
+    }
+
+    animationRef.current = window.requestAnimationFrame(() => {
+      animationRef.current = null
+      drawRef.current?.()
+    })
+  }, [])
+
+  useEffect(() => {
+    modeRef.current = mode
+    if (mode === 'off') {
+      pendingLeftChunksRef.current = []
+      pendingMonoChunksRef.current = []
+      spectrumDataRef.current = null
+      samplesReceivedRef.current = 0
+      if (isNativeAvailable()) {
+        nativeOscilloscope.reset()
+        nativeSpectrum.reset()
+      }
+      stopAnimationLoop()
+      const canvas = canvasRef.current
+      const ctx = canvas?.getContext('2d')
+      const { width, height } = canvasSizeRef.current
+      if (ctx && width > 0 && height > 0) {
+        ctx.clearRect(0, 0, width, height)
+      }
+      return
+    }
+
+    scheduleNextFrame()
+  }, [mode, scheduleNextFrame, stopAnimationLoop])
+
   useEffect(() => {
     resizeCanvas()
 
@@ -414,6 +443,13 @@ export default function MiniPlayerBackdropVisualizer({
         samplesReceivedRef.current = 0
         nativeOscilloscope.reset()
         nativeSpectrum.reset()
+        if (activeMode !== 'off') {
+          scheduleNextFrame()
+        }
+        return
+      }
+
+      if (activeMode === 'off') {
         return
       }
 
@@ -439,10 +475,12 @@ export default function MiniPlayerBackdropVisualizer({
           pendingMonoChunksRef.current = pendingMonoChunksRef.current.slice(-MINI_MAX_PENDING_CHUNKS)
         }
       }
+
+      scheduleNextFrame()
     })
 
     return () => unsubscribe()
-  }, [])
+  }, [scheduleNextFrame])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -765,16 +803,15 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.stroke()
     }
 
-    const draw = () => {
+    drawRef.current = () => {
       const { width, height } = canvasSizeRef.current
       if (!isNativeAvailable() || width <= 0 || height <= 0) {
-        animationRef.current = window.requestAnimationFrame(draw)
+        scheduleNextFrame()
         return
       }
 
       const currentMode = modeRef.current
       if (currentMode === 'off') {
-        animationRef.current = window.requestAnimationFrame(draw)
         return
       }
 
@@ -793,20 +830,19 @@ export default function MiniPlayerBackdropVisualizer({
         drawOscilloscope(width, height, accentColor, visualizerColor, idle, profile)
       }
 
-      animationRef.current = window.requestAnimationFrame(draw)
+      scheduleNextFrame()
     }
 
-    animationRef.current = window.requestAnimationFrame(draw)
+    scheduleNextFrame()
     return () => {
-      if (animationRef.current !== null) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
+      drawRef.current = null
+      stopAnimationLoop()
     }
-  }, [])
+  }, [scheduleNextFrame, stopAnimationLoop])
 
   useEffect(() => {
     return () => {
+      stopAnimationLoop()
       if (isNativeAvailable()) {
         nativeOscilloscope.reset()
         nativeSpectrum.reset()
@@ -820,7 +856,7 @@ export default function MiniPlayerBackdropVisualizer({
       configuredPitchLockRef.current = null
       oscilloscopeUnderfillEnabledRef.current = false
     }
-  }, [])
+  }, [stopAnimationLoop])
 
   return (
     <div

@@ -153,6 +153,7 @@ const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
+const CURRENT_TIME_STORE_THROTTLE_MS = 100
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
 
@@ -358,6 +359,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let lastCommittedCurrentTimeMs = 0
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
   let associatedOpenNoticeId = 0
@@ -1494,13 +1496,41 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       audioEngine.on('stateChange', (state) => {
-        set({ playbackState: state as PlaybackState })
+        const nextPlaybackState = state as PlaybackState
+        if (nextPlaybackState === 'playing') {
+          set({ playbackState: nextPlaybackState })
+          return
+        }
+
+        lastCommittedCurrentTimeMs = performance.now()
+        set({
+          playbackState: nextPlaybackState,
+          currentTime: audioEngine.currentTime
+        })
       })
 
       audioEngine.on('timeUpdate', (time) => {
         const normalizedTime = time as number
-        set({ currentTime: normalizedTime })
         maybeCommitRecentPlay(normalizedTime)
+
+        const state = get()
+        if (state.playbackState !== 'playing') {
+          lastCommittedCurrentTimeMs = performance.now()
+          set({ currentTime: normalizedTime })
+          return
+        }
+
+        const now = performance.now()
+        const currentStoredTime = state.currentTime
+        const timeJumped = normalizedTime === 0
+          || normalizedTime < currentStoredTime
+          || Math.abs(normalizedTime - currentStoredTime) >= 0.2
+        if (!timeJumped && (now - lastCommittedCurrentTimeMs) < CURRENT_TIME_STORE_THROTTLE_MS) {
+          return
+        }
+
+        lastCommittedCurrentTimeMs = now
+        set({ currentTime: normalizedTime })
       })
 
       audioEngine.on('durationChange', (duration) => {

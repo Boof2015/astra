@@ -48,6 +48,7 @@ import type {
     NativeAudioPlaybackSnapshot,
     NativeAudioTrackLoadResult,
     NativeAudioTrackMetadata,
+    NativeAudioVisualizerTapDemand,
     NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 
@@ -66,6 +67,7 @@ declare global {
             seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
             clearNextTrack: () => Promise<void>
             getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+            setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
             flushOscilloscopeChunks: () => Float32Array[]
             flushSpectrumChunks: () => Float32Array[]
             flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]

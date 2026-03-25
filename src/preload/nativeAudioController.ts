@@ -10,10 +10,11 @@ import type {
   NativeAudioSampleFormat,
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
+  NativeAudioVisualizerTapDemand,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 
-interface NativeAudioAddonPlayback {
+export interface NativeAudioAddonPlayback {
   getCapabilities(): NativeAudioCapabilities
   setOutputDevice(deviceId: string): NativeAudioCapabilities
   loadTrack(
@@ -36,13 +37,14 @@ interface NativeAudioAddonPlayback {
   seek(seconds: number): NativeAudioPlaybackSnapshot
   clearNextTrack(): void
   getPlaybackSnapshot(): NativeAudioPlaybackSnapshot
+  setVisualizerTapDemand(demand: NativeAudioVisualizerTapDemand): void
   drainEvents(): NativeAudioEvent[]
   flushOscilloscopeSamples(): Float32Array | null
   flushSpectrumSamples(): Float32Array | null
   flushVectorscopeSamples(): { left: Float32Array; right: Float32Array } | null
 }
 
-interface NativeAudioAddonModule {
+export interface NativeAudioAddonModule {
   playback?: NativeAudioAddonPlayback
 }
 
@@ -58,6 +60,7 @@ interface NativeAudioControllerApi {
   seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
   clearNextTrack: () => Promise<void>
   getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+  setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
   flushOscilloscopeChunks: () => Float32Array[]
   flushSpectrumChunks: () => Float32Array[]
   flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
@@ -702,6 +705,15 @@ export function createNativeAudioController(
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
       return normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+    },
+
+    setVisualizerTapDemand: async (demand: NativeAudioVisualizerTapDemand) => {
+      const engine = await ensureAvailable()
+      engine.setVisualizerTapDemand({
+        oscilloscope: Boolean(demand.oscilloscope),
+        spectrum: Boolean(demand.spectrum),
+        vectorscope: Boolean(demand.vectorscope),
+      })
     },
 
     flushOscilloscopeChunks: () => {

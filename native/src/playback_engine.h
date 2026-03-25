@@ -70,6 +70,12 @@ struct VectorscopeSamples {
     std::vector<float> right;
 };
 
+struct VisualizerTapDemand {
+    bool oscilloscope = false;
+    bool spectrum = false;
+    bool vectorscope = false;
+};
+
 class FloatSampleRingBuffer {
 public:
     FloatSampleRingBuffer() = default;
@@ -136,6 +142,8 @@ public:
     PlaybackSnapshot stop();
     PlaybackSnapshot seek(double seconds);
     PlaybackSnapshot getSnapshot() const;
+    void setVisualizerTapDemand(const VisualizerTapDemand& demand);
+    VisualizerTapDemand getVisualizerTapDemand() const;
 
     std::vector<PlaybackEvent> drainEvents();
     std::vector<float> drainOscilloscopeSamples();
@@ -157,7 +165,12 @@ private:
     bool tryPushEvent(const PlaybackEvent& event);
     void clearPendingEvents();
     void clearTapBuffers();
-    void appendTapSamples(const uint8_t* interleavedData, size_t frames, const TrackFormat& format);
+    void appendTapSamples(
+        const uint8_t* interleavedData,
+        size_t frames,
+        const TrackFormat& format,
+        const VisualizerTapDemand& demand
+    );
     bool formatsMatch(const TrackFormat& a, const TrackFormat& b) const;
     uint64_t clampTargetFrameLocked(double seconds) const;
 
@@ -181,6 +194,7 @@ private:
     static constexpr uint32_t kTimeUpdateRateHz = 30;
     static constexpr size_t kFadeInFrames = 64;
     uint64_t fadeInRemaining_ = 0;
+    VisualizerTapDemand visualizerTapDemand_ {};
 
     std::vector<PlaybackEvent> pendingEvents_;
     FloatSampleRingBuffer oscilloscopeTap_;

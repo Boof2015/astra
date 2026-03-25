@@ -1,5 +1,7 @@
 import { audioEngine } from '../AudioEngine'
 import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
@@ -33,9 +35,10 @@ export interface SpectrumAnalyzerOptions {
   tiltReferenceHz?: number
   fftSize?: number
   dataSource?: SpectrumAnalyzerDataSource
+  frameScheduler?: FrameScheduler
 }
 
-type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource'>>
+type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource' | 'frameScheduler'>>
 
 // ---- Heat LUT for heatmap fill (same palette as Spectrogram) ----
 type HeatStop = { at: number; color: [number, number, number] }
@@ -99,18 +102,21 @@ export class SpectrumAnalyzer {
   private ctx: CanvasRenderingContext2D
   private options: ResolvedSpectrumAnalyzerOptions
   private dataSource: SpectrumAnalyzerDataSource
-  private animationId: number | null = null
-  private isRunning: boolean = false
+  private frameLoop: VisualizerFrameLoop
   private nativeInitialized: boolean = false
   private sampleRate: number = 48000
   private lastSampleRate: number = 0
+  private staticLayerCanvas: HTMLCanvasElement
+  private staticLayerCtx: CanvasRenderingContext2D
+  private staticLayerKey = ''
+  private unsubscribePlaybackState: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: SpectrumAnalyzerOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    const { dataSource, ...optionOverrides } = options
+    const { dataSource, frameScheduler, ...optionOverrides } = options
     this.options = {
       ...defaultOptions,
       ...optionOverrides,
@@ -122,6 +128,18 @@ export class SpectrumAnalyzer {
       ),
     }
     this.dataSource = dataSource ?? defaultSpectrumDataSource
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => this.dataSource.isPlaying(),
+      onFrame: this.drawFrame,
+    })
+    this.staticLayerCanvas = document.createElement('canvas')
+    const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
+    if (!staticLayerCtx) throw new Error('Could not get offscreen 2D context')
+    this.staticLayerCtx = staticLayerCtx
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
+    })
 
     // Initialize native module
     this.initNative()
@@ -159,7 +177,7 @@ export class SpectrumAnalyzer {
   }
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
-    const { dataSource, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
     const nextOptions = { ...this.options, ...optionUpdates }
     if (optionUpdates.tiltDbPerOctave !== undefined) {
       nextOptions.tiltDbPerOctave = clampSpectrumTiltDbPerOctave(optionUpdates.tiltDbPerOctave)
@@ -181,24 +199,25 @@ export class SpectrumAnalyzer {
         nativeSpectrum.setSmoothing(this.getNativeSmoothing())
       }
     }
+
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
+  }
+
+  invalidate(): void {
+    this.frameLoop.invalidate()
   }
 
   resize(): void {
-    // Canvas resize is handled externally
+    this.staticLayerKey = ''
+    this.invalidate()
   }
 
   // Linear interpolation helper
@@ -269,58 +288,42 @@ export class SpectrumAnalyzer {
     return monoData
   }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
-
+  private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
     const dpr = window.devicePixelRatio || 1
     if (width <= 0 || height <= 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
     // Get frequency data from native FFT
     if (!isNativeAvailable()) {
       console.error('SpectrumAnalyzer: Native DSP required')
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
     this.updateSampleRateIfNeeded()
 
+    const nyquist = this.sampleRate / 2
+    const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
+    const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
+
     if (!this.dataSource.isPlaying()) {
       this.dataSource.getPendingSpectrumSamples()
       nativeSpectrum.reset()
-
-      ctx.clearRect(0, 0, width, height)
-      if (options.backgroundColor !== 'transparent') {
-        ctx.fillStyle = options.backgroundColor
-        ctx.fillRect(0, 0, width, height)
-      }
-
-      const nyquist = this.sampleRate / 2
-      const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
-      const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
-      if (options.showGrid) {
-        this.drawGrid(minFrequency, maxFrequency)
-      }
-
-      this.animationId = requestAnimationFrame(this.draw)
+      this.renderStaticLayer(minFrequency, maxFrequency)
       return
     }
 
     const pendingSpectrum = this.dataSource.getPendingSpectrumSamples()
     const monoData = this.mergePendingSpectrumChunks(pendingSpectrum)
     if (!monoData) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
     const nativeResult = nativeSpectrum.process(monoData)
     if (!nativeResult) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -328,26 +331,10 @@ export class SpectrumAnalyzer {
     const bufferLength = frequencyData.length
 
     if (bufferLength === 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
-    // Clear canvas
-    ctx.clearRect(0, 0, width, height)
-
-    // Draw background if not transparent
-    if (options.backgroundColor !== 'transparent') {
-      ctx.fillStyle = options.backgroundColor
-      ctx.fillRect(0, 0, width, height)
-    }
-
-    // Draw grid
-    const nyquist = this.sampleRate / 2
-    const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
-    const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
-    if (options.showGrid) {
-      this.drawGrid(minFrequency, maxFrequency)
-    }
+    this.renderStaticLayer(minFrequency, maxFrequency)
 
     // Calculate frequency mapping
     const binWidth = nyquist / bufferLength
@@ -445,11 +432,51 @@ export class SpectrumAnalyzer {
     ctx.lineJoin = 'round'
     ctx.stroke()
 
-    this.animationId = requestAnimationFrame(this.draw)
   }
 
-  private drawGrid(minFrequency: number, maxFrequency: number): void {
-    const { ctx, canvas, options } = this
+  private renderStaticLayer(minFrequency: number, maxFrequency: number): void {
+    this.ensureStaticLayer(minFrequency, maxFrequency)
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.ctx.drawImage(this.staticLayerCanvas, 0, 0)
+  }
+
+  private ensureStaticLayer(minFrequency: number, maxFrequency: number): void {
+    const { canvas, options } = this
+    const key = [
+      canvas.width,
+      canvas.height,
+      options.backgroundColor,
+      options.showGrid,
+      options.gridColor,
+      options.scaleType,
+      options.minDecibels,
+      options.maxDecibels,
+      minFrequency,
+      maxFrequency,
+    ].join(':')
+
+    if (this.staticLayerKey === key) {
+      return
+    }
+
+    this.staticLayerCanvas.width = canvas.width
+    this.staticLayerCanvas.height = canvas.height
+    this.staticLayerCtx.clearRect(0, 0, canvas.width, canvas.height)
+
+    if (options.backgroundColor !== 'transparent') {
+      this.staticLayerCtx.fillStyle = options.backgroundColor
+      this.staticLayerCtx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+
+    if (options.showGrid) {
+      this.drawGrid(this.staticLayerCtx, minFrequency, maxFrequency)
+    }
+
+    this.staticLayerKey = key
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D, minFrequency: number, maxFrequency: number): void {
+    const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
     const dpr = window.devicePixelRatio || 1
@@ -504,6 +531,11 @@ export class SpectrumAnalyzer {
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
+    }
 
     // Reset native module state
     if (isNativeAvailable()) {

@@ -226,6 +226,7 @@ function SpectrumScopeCanvas() {
   const handleResize = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return
     resizeCanvasToContainer(canvasRef.current, containerRef.current)
+    visualizerRef.current?.resize()
   }, [])
 
   useEffect(() => {
@@ -253,9 +254,11 @@ function SpectrumScopeCanvas() {
       if (chunk.reset) {
         pendingChunksRef.current = []
         isPlayingRef.current = false
+        visualizerRef.current?.invalidate()
       } else if (chunk.monoChunks.length > 0) {
         pendingChunksRef.current.push(...chunk.monoChunks)
         isPlayingRef.current = true
+        visualizerRef.current?.invalidate()
       }
 
       if (optionsChanged) {
@@ -759,9 +762,11 @@ function SpectrogramScopeCanvas() {
       if (chunk.reset) {
         pendingChunksRef.current = []
         isPlayingRef.current = false
+        visualizerRef.current?.invalidate()
       } else if (chunk.monoChunks.length > 0) {
         pendingChunksRef.current.push(...chunk.monoChunks)
         isPlayingRef.current = true
+        visualizerRef.current?.invalidate()
       }
 
       visualizerRef.current?.setOptions({
@@ -865,9 +870,11 @@ function VUMeterScopeCanvas() {
       if (chunk.reset) {
         pendingChunksRef.current = []
         isPlayingRef.current = false
+        visualizerRef.current?.invalidate()
       } else if (chunk.stereoChunks.length > 0) {
         pendingChunksRef.current.push(...chunk.stereoChunks)
         isPlayingRef.current = true
+        visualizerRef.current?.invalidate()
       }
 
       visualizerRef.current?.setOptions({
@@ -957,9 +964,11 @@ function LUFSMeterScopeCanvas() {
       if (chunk.reset) {
         pendingChunksRef.current = []
         isPlayingRef.current = false
+        visualizerRef.current?.invalidate()
       } else if (chunk.stereoChunks.length > 0) {
         pendingChunksRef.current.push(...chunk.stereoChunks)
         isPlayingRef.current = true
+        visualizerRef.current?.invalidate()
       }
 
       visualizerRef.current?.setOptions({
@@ -1051,9 +1060,11 @@ function WaveformScopeCanvas() {
       if (chunk.reset) {
         pendingChunksRef.current = []
         isPlayingRef.current = false
+        visualizerRef.current?.invalidate()
       } else if (chunk.monoChunks.length > 0) {
         pendingChunksRef.current.push(...chunk.monoChunks)
         isPlayingRef.current = true
+        visualizerRef.current?.invalidate()
       }
 
       visualizerRef.current?.setOptions({

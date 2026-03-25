@@ -1,4 +1,6 @@
 import { audioEngine } from '../AudioEngine'
+import { FrameScheduler } from './frameScheduler'
+import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
   DEFAULT_WAVEFORM_GAIN_DB,
   DEFAULT_WAVEFORM_SCROLL_SPEED,
@@ -19,9 +21,10 @@ export interface WaveformOptions {
   gainDb?: number
   multiband?: boolean
   dataSource?: WaveformDataSource
+  frameScheduler?: FrameScheduler
 }
 
-type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource'>>
+type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource' | 'frameScheduler'>>
 
 const defaultOptions: ResolvedWaveformOptions = {
   lineColor: '#38bdf8',
@@ -64,12 +67,14 @@ export class Waveform {
   private ctx: CanvasRenderingContext2D
   private options: ResolvedWaveformOptions
   private dataSource: WaveformDataSource
-  private animationId: number | null = null
-  private isRunning = false
+  private frameLoop: VisualizerFrameLoop
 
   // Offscreen canvas for scrolling content
   private waterfallCanvas: HTMLCanvasElement
   private waterfallCtx: CanvasRenderingContext2D
+  private staticLayerCanvas: HTMLCanvasElement
+  private staticLayerCtx: CanvasRenderingContext2D
+  private staticLayerKey = ''
 
   // Sample accumulator for current pixel column
   private columnAccumulator: Float32Array = new Float32Array(0)
@@ -84,6 +89,7 @@ export class Waveform {
   private bandHighAcc: Float32Array = new Float32Array(0)
 
   private unsubscribeTrackChange: (() => void) | null = null
+  private unsubscribePlaybackState: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: WaveformOptions = {}) {
     this.canvas = canvas
@@ -92,7 +98,7 @@ export class Waveform {
     this.ctx = ctx
     this.ctx.imageSmoothingEnabled = false
 
-    const { dataSource, ...optionOverrides } = options
+    const { dataSource, frameScheduler, ...optionOverrides } = options
     this.options = {
       ...defaultOptions,
       ...optionOverrides,
@@ -101,6 +107,11 @@ export class Waveform {
       multiband: optionOverrides.multiband ?? defaultOptions.multiband,
     }
     this.dataSource = dataSource ?? defaultWaveformDataSource
+    this.frameLoop = new VisualizerFrameLoop({
+      frameScheduler,
+      shouldRun: () => this.dataSource.isPlaying(),
+      onFrame: this.drawFrame,
+    })
 
     this.waterfallCanvas = document.createElement('canvas')
     this.waterfallCanvas.width = canvas.width
@@ -109,11 +120,18 @@ export class Waveform {
     if (!waterfallCtx) throw new Error('Could not get waterfall 2D context')
     this.waterfallCtx = waterfallCtx
     this.waterfallCtx.imageSmoothingEnabled = false
+    this.staticLayerCanvas = document.createElement('canvas')
+    const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
+    if (!staticLayerCtx) throw new Error('Could not get static 2D context')
+    this.staticLayerCtx = staticLayerCtx
 
     this.recomputeSamplesPerColumn()
 
     this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
       this.resetDisplay()
+    })
+    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
+      this.invalidate()
     })
   }
 
@@ -121,6 +139,7 @@ export class Waveform {
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
     this.columnAccumulatorPos = 0
     this.splitter.reset()
+    this.invalidate()
   }
 
   private recomputeSamplesPerColumn(): void {
@@ -140,7 +159,7 @@ export class Waveform {
   }
 
   setOptions(options: Partial<WaveformOptions>): void {
-    const { dataSource, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
     const nextOptions: ResolvedWaveformOptions = {
       ...this.options,
       ...optionUpdates,
@@ -164,24 +183,26 @@ export class Waveform {
       this.splitter.reset()
       this.resetDisplay()
     }
+
+    this.invalidate()
   }
 
   start(): void {
-    if (this.isRunning) return
-    this.isRunning = true
-    this.draw()
+    this.frameLoop.start()
   }
 
   stop(): void {
-    this.isRunning = false
-    if (this.animationId !== null) {
-      cancelAnimationFrame(this.animationId)
-      this.animationId = null
-    }
+    this.frameLoop.stop()
+  }
+
+  invalidate(): void {
+    this.frameLoop.invalidate()
   }
 
   resize(): void {
     // Resize handled in draw loop
+    this.staticLayerKey = ''
+    this.invalidate()
   }
 
   private computeMinMax(): { min: number; max: number } {
@@ -295,8 +316,26 @@ export class Waveform {
     }
   }
 
-  private drawGrid(width: number, height: number): void {
-    const ctx = this.ctx
+  private renderStaticLayer(width: number, height: number): void {
+    this.ensureStaticLayer(width, height)
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.ctx.drawImage(this.staticLayerCanvas, 0, 0)
+  }
+
+  private ensureStaticLayer(width: number, height: number): void {
+    const key = `${width}:${height}`
+    if (this.staticLayerKey === key) {
+      return
+    }
+
+    this.staticLayerCanvas.width = this.canvas.width
+    this.staticLayerCanvas.height = this.canvas.height
+    this.staticLayerCtx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.drawGrid(this.staticLayerCtx, width, height)
+    this.staticLayerKey = key
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D, width: number, height: number): void {
     const centerY = height / 2
 
     // Center line (zero crossing)
@@ -318,14 +357,11 @@ export class Waveform {
     ctx.stroke()
   }
 
-  private draw = (): void => {
-    if (!this.isRunning) return
-
+  private drawFrame = (): void => {
     const width = this.canvas.width
     const height = this.canvas.height
 
     if (width <= 0 || height <= 0) {
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -357,6 +393,7 @@ export class Waveform {
       }
 
       this.recomputeSamplesPerColumn()
+      this.staticLayerKey = ''
     }
 
     // Handle sample rate changes
@@ -368,10 +405,8 @@ export class Waveform {
     if (!this.dataSource.isPlaying()) {
       this.dataSource.getPendingWaveformSamples() // drain
       // Freeze display — show last waveform
-      this.ctx.clearRect(0, 0, width, height)
-      this.drawGrid(width, height)
+      this.renderStaticLayer(width, height)
       this.ctx.drawImage(this.waterfallCanvas, 0, 0)
-      this.animationId = requestAnimationFrame(this.draw)
       return
     }
 
@@ -410,17 +445,20 @@ export class Waveform {
       }
     }
 
-    this.ctx.clearRect(0, 0, width, height)
-    this.drawGrid(width, height)
+    this.renderStaticLayer(width, height)
     this.ctx.drawImage(this.waterfallCanvas, 0, 0)
-    this.animationId = requestAnimationFrame(this.draw)
   }
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
+    }
+    if (this.unsubscribePlaybackState) {
+      this.unsubscribePlaybackState()
+      this.unsubscribePlaybackState = null
     }
   }
 }

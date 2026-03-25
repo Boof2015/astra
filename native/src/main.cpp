@@ -505,6 +505,35 @@ Napi::Value PlaybackGetSnapshot(const Napi::CallbackInfo& info) {
     return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.getSnapshot());
 }
 
+Napi::Value PlaybackSetVisualizerTapDemand(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected visualizer tap demand object").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    const Napi::Object demandObject = info[0].As<Napi::Object>();
+    NativePlayback::VisualizerTapDemand demand;
+
+    const Napi::Value oscilloscopeValue = demandObject.Get("oscilloscope");
+    if (!oscilloscopeValue.IsUndefined()) {
+        demand.oscilloscope = oscilloscopeValue.ToBoolean().Value();
+    }
+
+    const Napi::Value spectrumValue = demandObject.Get("spectrum");
+    if (!spectrumValue.IsUndefined()) {
+        demand.spectrum = spectrumValue.ToBoolean().Value();
+    }
+
+    const Napi::Value vectorscopeValue = demandObject.Get("vectorscope");
+    if (!vectorscopeValue.IsUndefined()) {
+        demand.vectorscope = vectorscopeValue.ToBoolean().Value();
+    }
+
+    playbackEngine.setVisualizerTapDemand(demand);
+    return env.Undefined();
+}
+
 Napi::Value PlaybackDrainEvents(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     const auto events = playbackEngine.drainEvents();
@@ -602,6 +631,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("seek", Napi::Function::New(env, PlaybackSeek));
     playbackExports.Set("clearNextTrack", Napi::Function::New(env, PlaybackClearNextTrack));
     playbackExports.Set("getPlaybackSnapshot", Napi::Function::New(env, PlaybackGetSnapshot));
+    playbackExports.Set("setVisualizerTapDemand", Napi::Function::New(env, PlaybackSetVisualizerTapDemand));
     playbackExports.Set("drainEvents", Napi::Function::New(env, PlaybackDrainEvents));
     playbackExports.Set("flushOscilloscopeSamples", Napi::Function::New(env, PlaybackFlushOscilloscopeSamples));
     playbackExports.Set("flushSpectrumSamples", Napi::Function::New(env, PlaybackFlushSpectrumSamples));

@@ -1,5 +1,8 @@
 import { useRef, useEffect } from 'react'
-import { audioEngine } from '../../audio/AudioEngine'
+import {
+  getEQAnalyzerFrameSnapshot,
+  subscribeToEQAnalyzerFrames,
+} from '../../audio/eqAnalyzerFrameSource'
 import { colorToRgbChannels } from '../visualizers/ambientSpectrumMath'
 
 const MIN_FREQ = 20
@@ -55,8 +58,6 @@ function resolveAccentRgbChannels(): string {
 
 export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animIdRef = useRef<number | null>(null)
-  const dataRef = useRef<Float32Array<ArrayBuffer> | null>(null)
 
   useEffect(() => {
     if (width <= 0 || height <= 0) return
@@ -74,20 +75,14 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
     const draw = () => {
       ctx.clearRect(0, 0, width, height)
 
-      const analyser = audioEngine.getEQAnalyserNode()
-      if (!analyser || audioEngine.playbackState !== 'playing') {
-        animIdRef.current = requestAnimationFrame(draw)
+      const snapshot = getEQAnalyzerFrameSnapshot()
+      const frequencyData = snapshot.data
+      if (!snapshot.available || !frequencyData || frequencyData.length === 0) {
         return
       }
 
-      // Allocate/reuse Float32Array for frequency data
-      const binCount = analyser.frequencyBinCount
-      if (!dataRef.current || dataRef.current.length !== binCount) {
-        dataRef.current = new Float32Array(binCount)
-      }
-      analyser.getFloatFrequencyData(dataRef.current)
-
-      const sampleRate = audioEngine.getSampleRate()
+      const binCount = frequencyData.length
+      const sampleRate = snapshot.sampleRate
       const nyquist = sampleRate / 2
       const binWidth = nyquist / binCount
 
@@ -106,8 +101,8 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
         const frac = bin - binLow
 
         // Interpolate between adjacent bins
-        const dbLow = dataRef.current[binLow] ?? SPEC_MIN_DB
-        const dbHigh = dataRef.current[binHigh] ?? SPEC_MIN_DB
+        const dbLow = frequencyData[binLow] ?? SPEC_MIN_DB
+        const dbHigh = frequencyData[binHigh] ?? SPEC_MIN_DB
         const db = dbLow + (dbHigh - dbLow) * frac
 
         // Map dB to Y position
@@ -135,17 +130,13 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
       gradient.addColorStop(1, `rgba(${accentRgbChannels}, 0.18)`)
       ctx.fillStyle = gradient
       ctx.fill()
-
-      animIdRef.current = requestAnimationFrame(draw)
     }
 
-    animIdRef.current = requestAnimationFrame(draw)
+    draw()
+    const unsubscribe = subscribeToEQAnalyzerFrames(draw)
 
     return () => {
-      if (animIdRef.current !== null) {
-        cancelAnimationFrame(animIdRef.current)
-        animIdRef.current = null
-      }
+      unsubscribe()
     }
   }, [width, height])
 

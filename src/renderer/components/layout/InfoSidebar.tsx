@@ -3,6 +3,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
+import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
@@ -53,7 +54,7 @@ function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: numb
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const playbackState = usePlayerStore((s) => s.playbackState)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()

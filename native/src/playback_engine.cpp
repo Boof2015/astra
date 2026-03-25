@@ -455,6 +455,41 @@ PlaybackSnapshot PlaybackEngine::getSnapshot() const {
     return snapshot;
 }
 
+void PlaybackEngine::setVisualizerTapDemand(const VisualizerTapDemand& demand) {
+    bool clearOscilloscope = false;
+    bool clearSpectrum = false;
+    bool clearVectorscope = false;
+
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        clearOscilloscope = visualizerTapDemand_.oscilloscope && !demand.oscilloscope;
+        clearSpectrum = visualizerTapDemand_.spectrum && !demand.spectrum;
+        clearVectorscope = visualizerTapDemand_.vectorscope && !demand.vectorscope;
+        visualizerTapDemand_ = demand;
+    }
+
+    if (!clearOscilloscope && !clearSpectrum && !clearVectorscope) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(tapMutex_);
+    if (clearOscilloscope) {
+        oscilloscopeTap_.clear();
+    }
+    if (clearSpectrum) {
+        spectrumTap_.clear();
+    }
+    if (clearVectorscope) {
+        vectorscopeLeftTap_.clear();
+        vectorscopeRightTap_.clear();
+    }
+}
+
+VisualizerTapDemand PlaybackEngine::getVisualizerTapDemand() const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return visualizerTapDemand_;
+}
+
 std::vector<PlaybackEvent> PlaybackEngine::drainEvents() {
     std::lock_guard<std::mutex> lock(eventMutex_);
     std::vector<PlaybackEvent> drained;
@@ -491,6 +526,8 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
 
     std::array<TapChunk, 2> tapChunks {};
     size_t tapChunkCount = 0;
+    VisualizerTapDemand tapDemand {};
+    bool shouldCaptureTaps = false;
     bool shouldClearTapBuffers = false;
     size_t totalFramesWritten = 0;
 
@@ -499,6 +536,9 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
         if (state_ != State::Playing || !hasCurrentTrack_) {
             return 0;
         }
+
+        tapDemand = visualizerTapDemand_;
+        shouldCaptureTaps = tapDemand.oscilloscope || tapDemand.spectrum || tapDemand.vectorscope;
 
         uint8_t* output = static_cast<uint8_t*>(outputBuffer);
         size_t framesWritten = 0;
@@ -610,7 +650,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
                 fadeInRemaining_ -= fadeFrames;
             }
 
-            if (tapChunkCount < tapChunks.size()) {
+            if (shouldCaptureTaps && tapChunkCount < tapChunks.size()) {
                 tapChunks[tapChunkCount++] = { source, framesToCopy, currentTrack_.format };
             }
             nextRenderFrame_ += framesToCopy;
@@ -629,7 +669,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
 
     for (size_t i = 0; i < tapChunkCount; i++) {
         const TapChunk& chunk = tapChunks[i];
-        appendTapSamples(chunk.source, chunk.frames, chunk.format);
+        appendTapSamples(chunk.source, chunk.frames, chunk.format, tapDemand);
     }
 
     return totalFramesWritten;
@@ -746,7 +786,16 @@ void PlaybackEngine::clearTapBuffers() {
     vectorscopeRightTap_.clear();
 }
 
-void PlaybackEngine::appendTapSamples(const uint8_t* interleavedData, size_t frames, const TrackFormat& format) {
+void PlaybackEngine::appendTapSamples(
+    const uint8_t* interleavedData,
+    size_t frames,
+    const TrackFormat& format,
+    const VisualizerTapDemand& demand
+) {
+    if (!demand.oscilloscope && !demand.spectrum && !demand.vectorscope) {
+        return;
+    }
+
     std::unique_lock<std::mutex> lock(tapMutex_, std::try_to_lock);
     if (!lock.owns_lock()) {
         return;
@@ -761,12 +810,18 @@ void PlaybackEngine::appendTapSamples(const uint8_t* interleavedData, size_t fra
         const float right = channels >= 2
             ? readNormalizedSample(framePtr + bytesPerSample, format.sampleFormat)
             : left;
-        const float mono = channels >= 2 ? (left + right) * 0.5f : left;
 
-        oscilloscopeTap_.push(left);
-        spectrumTap_.push(mono);
-        vectorscopeLeftTap_.push(left);
-        vectorscopeRightTap_.push(right);
+        if (demand.oscilloscope) {
+            oscilloscopeTap_.push(left);
+        }
+        if (demand.spectrum) {
+            const float mono = channels >= 2 ? (left + right) * 0.5f : left;
+            spectrumTap_.push(mono);
+        }
+        if (demand.vectorscope) {
+            vectorscopeLeftTap_.push(left);
+            vectorscopeRightTap_.push(right);
+        }
     }
 }
 

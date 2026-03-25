@@ -9,6 +9,7 @@ import {
   useAudioSettingsStore
 } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
+import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
@@ -34,7 +35,7 @@ function TransportWaveformSection({
   loadingPercent: number | null
 }) {
   const waveformData = usePlayerStore((s) => s.waveformData)
-  const currentTime = usePlayerStore((s) => s.currentTime)
+  const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
