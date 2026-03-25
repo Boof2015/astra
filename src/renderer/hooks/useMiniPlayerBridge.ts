@@ -57,6 +57,7 @@ export function useMiniPlayerBridge(): void {
   const latestPendingRef = useRef<MiniPlayerSnapshot | null>(null)
   const previousTrackIdRef = useRef<string | null>(null)
   const previousPlaybackStateRef = useRef(playbackState)
+  const previousArtworkRef = useRef<string | null>(null)
   const visualizerStreamTimerRef = useRef<number | null>(null)
   const visualizerResetSentRef = useRef(false)
 
@@ -269,6 +270,12 @@ export function useMiniPlayerBridge(): void {
     }).label
 
     const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
+    const currentTrackId = currentTrack?.id ?? null
+    const shouldIncludeArtwork = previousTrackIdRef.current !== currentTrackId ||
+      previousArtworkRef.current !== resolvedArtwork
+    const shouldForce = shouldIncludeArtwork ||
+      previousPlaybackStateRef.current !== playbackState
+
     const snapshot: MiniPlayerSnapshot = {
       playbackState,
       currentTime: toSafeTime(currentTime),
@@ -283,18 +290,15 @@ export function useMiniPlayerBridge(): void {
             title: currentTrack.title,
             artist: currentTrack.artist,
             album: currentTrack.album,
-            artworkData: resolvedArtwork,
+            artworkData: shouldIncludeArtwork ? resolvedArtwork : undefined,
             isFavorite,
           }
         : null
     }
 
-    const currentTrackId = currentTrack?.id ?? null
-    const shouldForce = previousTrackIdRef.current !== currentTrackId ||
-      previousPlaybackStateRef.current !== playbackState
-
     previousTrackIdRef.current = currentTrackId
     previousPlaybackStateRef.current = playbackState
+    previousArtworkRef.current = resolvedArtwork
 
     latestPendingRef.current = snapshot
 

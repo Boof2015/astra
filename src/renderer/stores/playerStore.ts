@@ -148,12 +148,34 @@ interface PlayerStore {
 
 // Waveform cache stored outside zustand to avoid re-renders on cache updates
 const waveformCache = new Map<string, Float32Array>()
+const MAX_WAVEFORM_CACHE_ENTRIES = 128
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
+
+function getWaveformCacheEntry(trackPath: string): Float32Array | undefined {
+  const cached = waveformCache.get(trackPath)
+  if (!cached) return undefined
+  waveformCache.delete(trackPath)
+  waveformCache.set(trackPath, cached)
+  return cached
+}
+
+function setWaveformCacheEntry(trackPath: string, peaks: Float32Array): void {
+  if (waveformCache.has(trackPath)) {
+    waveformCache.delete(trackPath)
+  }
+  waveformCache.set(trackPath, peaks)
+
+  while (waveformCache.size > MAX_WAVEFORM_CACHE_ENTRIES) {
+    const oldestKey = waveformCache.keys().next().value
+    if (!oldestKey) return
+    waveformCache.delete(oldestKey)
+  }
+}
 
 type NextCandidate =
   | { kind: 'current'; track: Track; source: QueueTrackSource; autoQueueIndex: number }
@@ -1489,14 +1511,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const track = get().currentTrack
         if (!track || !buffer) return
 
-        const cached = waveformCache.get(track.path)
+        const cached = getWaveformCacheEntry(track.path)
         if (cached) {
           set({ waveformData: cached })
           return
         }
 
         const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-        waveformCache.set(track.path, peaks)
+        setWaveformCacheEntry(track.path, peaks)
         set({ waveformData: peaks })
       })
 
@@ -1535,7 +1557,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTrack: nextTrack,
           currentTime: 0,
           duration: nextTrack.duration,
-          waveformData: waveformCache.get(nextTrack.path) ?? null
+          waveformData: getWaveformCacheEntry(nextTrack.path) ?? null
         }
         set(nextState)
         audioEngine.setCurrentReplayGainDb(

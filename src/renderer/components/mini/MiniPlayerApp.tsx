@@ -4,6 +4,7 @@ import type {
   MiniPlayerVisualizerMode,
   MiniPlayerWindowState
 } from '../../../types/miniPlayer'
+import { mergeMiniPlayerSnapshots } from '../../../types/miniPlayer'
 import MiniPlayerBackdropVisualizer from './MiniPlayerBackdropVisualizer'
 import '../../styles/mini-player.css'
 
@@ -90,7 +91,7 @@ export default function MiniPlayerApp() {
 
     void window.electronAPI.miniPlayer.getSnapshot().then((latest) => {
       if (!isMounted || !latest) return
-      setSnapshot(latest)
+      setSnapshot((current) => mergeMiniPlayerSnapshots(current, latest))
       setScrubTime(latest.currentTime)
     })
 
@@ -100,7 +101,7 @@ export default function MiniPlayerApp() {
     })
 
     const unsubSnapshot = window.electronAPI.miniPlayer.onSnapshot((next) => {
-      setSnapshot(next)
+      setSnapshot((current) => mergeMiniPlayerSnapshots(current, next))
     })
     const unsubWindowState = window.electronAPI.miniPlayer.onWindowState((next) => {
       setWindowState(next)

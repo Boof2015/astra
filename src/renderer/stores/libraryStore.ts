@@ -190,12 +190,15 @@ interface LibraryStore {
 
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
+const MAX_CARD_ARTWORK_CACHE_ENTRIES = 96
+const MAX_FULL_ARTWORK_CACHE_ENTRIES = 32
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
 const artworkCache = new Map<string, string>()
+const cardArtworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
 
@@ -243,25 +246,30 @@ function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
   return `full:${hash}`
 }
 
-function setThumbnailCacheEntry(cacheKey: string, dataUrl: string): void {
-  if (thumbnailArtworkCache.has(cacheKey)) {
-    thumbnailArtworkCache.delete(cacheKey)
+function setLruCacheEntry(
+  cache: Map<string, string>,
+  cacheKey: string,
+  dataUrl: string,
+  maxEntries: number
+): void {
+  if (cache.has(cacheKey)) {
+    cache.delete(cacheKey)
   }
-  thumbnailArtworkCache.set(cacheKey, dataUrl)
+  cache.set(cacheKey, dataUrl)
 
-  while (thumbnailArtworkCache.size > MAX_THUMBNAIL_CACHE_ENTRIES) {
-    const oldestKey = thumbnailArtworkCache.keys().next().value
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value
     if (!oldestKey) return
-    thumbnailArtworkCache.delete(oldestKey)
+    cache.delete(oldestKey)
   }
 }
 
-function getThumbnailCacheEntry(cacheKey: string): string | undefined {
-  const cached = thumbnailArtworkCache.get(cacheKey)
+function getLruCacheEntry(cache: Map<string, string>, cacheKey: string): string | undefined {
+  const cached = cache.get(cacheKey)
   if (!cached) return undefined
   // Touch entry to keep LRU order.
-  thumbnailArtworkCache.delete(cacheKey)
-  thumbnailArtworkCache.set(cacheKey, cached)
+  cache.delete(cacheKey)
+  cache.set(cacheKey, cached)
   return cached
 }
 
@@ -857,13 +865,14 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const cacheKey = getArtworkCacheKey(hash, variant)
 
     // Check cache first
-    if (variant === 'thumbnail' || variant === 'card') {
-      const thumbnailCached = getThumbnailCacheEntry(cacheKey)
-      if (thumbnailCached) {
-        return thumbnailCached
-      }
-    } else if (artworkCache.has(cacheKey)) {
-      return artworkCache.get(cacheKey)!
+    const cache = variant === 'thumbnail'
+      ? thumbnailArtworkCache
+      : variant === 'card'
+        ? cardArtworkCache
+        : artworkCache
+    const cached = getLruCacheEntry(cache, cacheKey)
+    if (cached) {
+      return cached
     }
 
     // Deduplicate concurrent requests for the same artwork hash + variant.
@@ -880,10 +889,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     )
       .then((dataUrl) => {
         if (dataUrl) {
-          if (variant === 'thumbnail' || variant === 'card') {
-            setThumbnailCacheEntry(cacheKey, dataUrl)
+          if (variant === 'thumbnail') {
+            setLruCacheEntry(thumbnailArtworkCache, cacheKey, dataUrl, MAX_THUMBNAIL_CACHE_ENTRIES)
+          } else if (variant === 'card') {
+            setLruCacheEntry(cardArtworkCache, cacheKey, dataUrl, MAX_CARD_ARTWORK_CACHE_ENTRIES)
           } else {
-            artworkCache.set(cacheKey, dataUrl)
+            setLruCacheEntry(artworkCache, cacheKey, dataUrl, MAX_FULL_ARTWORK_CACHE_ENTRIES)
           }
         }
         return dataUrl

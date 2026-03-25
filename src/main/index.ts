@@ -55,12 +55,13 @@ import {
   saveMainWindowPrefs,
   type MainWindowPrefs
 } from './services/mainWindowPrefs'
-import type {
-  MiniPlayerCommand,
-  MiniPlayerSnapshot,
-  MiniPlayerVisualizerStreamChunk,
-  MiniPlayerWindowPrefs,
-  MiniPlayerWindowState,
+import {
+  mergeMiniPlayerSnapshots,
+  type MiniPlayerCommand,
+  type MiniPlayerSnapshot,
+  type MiniPlayerVisualizerStreamChunk,
+  type MiniPlayerWindowPrefs,
+  type MiniPlayerWindowState,
 } from '../types/miniPlayer'
 import {
   DEFAULT_SCOPE_POPOUT_STATE,
@@ -2563,11 +2564,12 @@ ipcMain.handle('mini-player:getSnapshot', () => {
 })
 
 ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
-  latestMiniPlayerSnapshot = snapshot
-  localApiService.publishSnapshot(snapshot)
-  lastFmService.publishSnapshot(snapshot)
+  const mergedSnapshot = mergeMiniPlayerSnapshots(latestMiniPlayerSnapshot, snapshot)
+  latestMiniPlayerSnapshot = mergedSnapshot
+  localApiService.publishSnapshot(mergedSnapshot)
+  lastFmService.publishSnapshot(mergedSnapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
-    miniWindow.webContents.send('mini-player:snapshot', snapshot)
+    miniWindow.webContents.send('mini-player:snapshot', mergedSnapshot)
   }
 })
 

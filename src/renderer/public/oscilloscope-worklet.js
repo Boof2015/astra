@@ -3,6 +3,16 @@
 // to the renderer main thread for downstream DSP.
 
 class OscilloscopeProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super()
+    this.visualizerStreamingEnabled = false
+    this.port.onmessage = (event) => {
+      if (!event || typeof event.data !== 'object' || event.data == null) return
+      if (event.data.type !== 'set-visualizer-streaming-enabled') return
+      this.visualizerStreamingEnabled = Boolean(event.data.enabled)
+    }
+  }
+
   process(inputs, outputs, parameters) {
     const input = inputs[0]
     if (!input || input.length === 0) return true
@@ -12,10 +22,12 @@ class OscilloscopeProcessor extends AudioWorkletProcessor {
 
     if (!leftChannel || leftChannel.length === 0) return true
 
-    this.port.postMessage({
-      left: leftChannel.slice(),
-      right: rightChannel.slice()
-    })
+    if (this.visualizerStreamingEnabled) {
+      this.port.postMessage({
+        left: leftChannel.slice(),
+        right: rightChannel.slice()
+      })
+    }
 
     // Pass audio through unchanged
     const output = outputs[0]

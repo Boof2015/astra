@@ -1,4 +1,4 @@
-import { CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type Dispatch, type ReactElement, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -185,80 +185,15 @@ function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: numb
   return best
 }
 
-export default function FullscreenMode() {
-  const setFullscreen = useUIStore((s) => s.setFullscreen)
+function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
-  const {
-    currentTrack,
-    playbackState,
-    currentTime,
-    duration,
-    waveformData,
-    shuffle,
-    repeat,
-    togglePlay,
-    seek,
-    playNext,
-    playPrevious,
-    toggleShuffle,
-    toggleRepeat,
-  } = usePlayerStore()
-  const nextTrack = usePlayerStore((s) => s.getResolvedNextTrack())
-  const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
-
-  const favorites = useLibraryStore((s) => s.favorites)
-  const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
-  const getArtwork = useLibraryStore((s) => s.getArtwork)
+  const currentTime = usePlayerStore((s) => s.currentTime)
+  const duration = usePlayerStore((s) => s.duration)
+  const waveformData = usePlayerStore((s) => s.waveformData)
+  const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
-  const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
-  const lyricsResult = useLyricsStore((s) => s.currentResult)
-  const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
-  const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
 
-  const prefersReducedMotion = usePrefersReducedMotion()
-  const viewportSize = useViewportSize()
-  const lyricsDockLayout = useMemo(
-    () => resolveLyricsDockLayout(viewportSize),
-    [viewportSize.height, viewportSize.width]
-  )
-
-  const [resolvedBackdropArtwork, setResolvedBackdropArtwork] = useState<string | null>(null)
-  const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
-  const [previousBackdropArtwork, setPreviousBackdropArtwork] = useState<string | null>(null)
-  const [showPreviousBackdropLayer, setShowPreviousBackdropLayer] = useState(false)
-  const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
-  const [cueState, setCueState] = useState<CueState>('hidden')
-  const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
-  const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
-  const [showLyricsDock, setShowLyricsDock] = useState(false)
-
-  const backdropRequestTokenRef = useRef(0)
-  const previousTrackIdRef = useRef<string | null>(null)
-  const enterResetTimeoutRef = useRef<number | null>(null)
-  const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
-  const heroEnterRafRef = useRef<number | null>(null)
-  const lastLyricsRequestKeyRef = useRef<string | null>(null)
-  const fullscreenTitleOuterRef = useRef<HTMLHeadingElement>(null)
-  const fullscreenTitleInnerRef = useRef<HTMLSpanElement>(null)
-  const activeLyricLineRef = useRef<HTMLParagraphElement | null>(null)
-  const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
-
-  const isPlaying = playbackState === 'playing'
-  const isLoadingTrack = playbackState === 'loading'
-  const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
-  const currentTrackId = currentTrack?.id ?? null
-  const resolvedChannelCount = currentTrack?.channels ?? null
-  const isMultichannel = (resolvedChannelCount ?? 0) > 2
-  const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
-  const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
-  const showAtmosBadge = Boolean(
-    currentTrack?.isAtmosJoc ||
-    currentCodecProfile.includes('atmos') ||
-    currentCodecProfile.includes('joc') ||
-    currentCodec.includes('atmos') ||
-    currentCodec.includes('joc')
-  )
   const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
   const compensatedTime = duration > 0
     ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
@@ -268,6 +203,63 @@ export default function FullscreenMode() {
   const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
   const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
   const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
+
+  return (
+    <div className="fullscreen-waveform-wrap">
+      <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
+      <button
+        type="button"
+        className="fullscreen-time fullscreen-time-remaining fullscreen-time-toggle"
+        onClick={toggleWaveformTimeDisplayMode}
+        aria-label={rightTimeToggleLabel}
+        title={rightTimeToggleLabel}
+      >
+        {rightTimeLabel}
+      </button>
+      <WaveformSeekBar
+        waveformData={waveformData}
+        progress={progress}
+        duration={duration}
+        currentTime={compensatedTime}
+        onSeek={(time) => {
+          const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
+          void seek(rawSeekTime)
+        }}
+      />
+    </div>
+  )
+}
+
+function FullscreenLyricsDockPanel({
+  currentTrack,
+  showLyricsDock,
+  lyricsDockLayout,
+}: {
+  currentTrack: {
+    path: string
+    title: string
+    artist: string
+    album: string
+    duration: number
+  } | null
+  showLyricsDock: boolean
+  lyricsDockLayout: LyricsDockLayout
+}): ReactElement {
+  const currentTime = usePlayerStore((s) => s.currentTime)
+  const duration = usePlayerStore((s) => s.duration)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
+  const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
+  const lyricsResult = useLyricsStore((s) => s.currentResult)
+  const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
+  const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
+  const activeLyricLineRef = useRef<HTMLParagraphElement | null>(null)
+  const lastLyricsRequestKeyRef = useRef<string | null>(null)
+  const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
+
+  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
+  const compensatedTime = duration > 0
+    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
+    : 0
   const lyricsQuery = useMemo(
     () => buildLyricsQuery(currentTrack),
     [
@@ -302,22 +294,6 @@ export default function FullscreenMode() {
     '--fullscreen-lyrics-visible-lines': String(lyricsDockLayout.visibleLines),
     '--fullscreen-lyrics-open-height': `${lyricsDockLayout.openHeightPx}px`
   } as CSSProperties), [lyricsDockLayout.lineHeightPx, lyricsDockLayout.openHeightPx, lyricsDockLayout.visibleLines])
-
-  const checkFullscreenTitleOverflow = useCallback(() => {
-    const outer = fullscreenTitleOuterRef.current
-    const inner = fullscreenTitleInnerRef.current
-    if (!outer || !inner) return
-
-    const overflows = inner.scrollWidth > outer.clientWidth
-    setFullscreenTitleOverflows(overflows)
-
-    if (overflows) {
-      outer.style.setProperty('--marquee-offset', `${outer.clientWidth - inner.scrollWidth}px`)
-      return
-    }
-
-    outer.style.removeProperty('--marquee-offset')
-  }, [])
 
   const setActiveLyricLineNode = useCallback((node: HTMLParagraphElement | null) => {
     activeLyricLineRef.current = node
@@ -371,6 +347,145 @@ export default function FullscreenMode() {
     })
   }, [hasSyncedLyrics, showLyricsDock])
 
+  useEffect(() => {
+    if (!showLyricsDock) {
+      lastLyricsRequestKeyRef.current = null
+      return
+    }
+
+    const requestKey = lyricsQuery
+      ? `${lyricsQuery.path}\u0000${lyricsQuery.title}\u0000${lyricsQuery.artist}\u0000${lyricsQuery.album ?? ''}\u0000${lyricsQuery.durationSeconds ?? ''}`
+      : '__none__'
+    if (lastLyricsRequestKeyRef.current === requestKey) return
+    lastLyricsRequestKeyRef.current = requestKey
+    void loadLyricsForTrack(lyricsQuery)
+  }, [loadLyricsForTrack, lyricsQuery, showLyricsDock])
+
+  useLayoutEffect(() => {
+    recalculateActiveLyricFontSize()
+  }, [
+    recalculateActiveLyricFontSize,
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    lyricsDockLayout.lineHeightPx,
+    lyricsDockLayout.visibleLines,
+    showLyricsDock
+  ])
+
+  useEffect(() => {
+    if (!showLyricsDock || !hasSyncedLyrics) return
+    const node = activeLyricLineRef.current
+    if (!node) return
+
+    const resizeObserver = new ResizeObserver(() => {
+      recalculateActiveLyricFontSize()
+    })
+    resizeObserver.observe(node)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    hasSyncedLyrics,
+    recalculateActiveLyricFontSize,
+    showLyricsDock
+  ])
+
+  return (
+    <section
+      className={`fullscreen-lyrics-dock ${showLyricsDock ? 'is-open' : ''}`}
+      style={lyricsDockStyle}
+      aria-hidden={!showLyricsDock}
+    >
+      <div className="fullscreen-lyrics-dock-glass">
+        <div className="fullscreen-lyrics-dock-head">
+          <span className="fullscreen-lyrics-dock-label">Lyrics</span>
+          {activeLyricsResult?.status === 'hit' && (
+            <span className="fullscreen-lyrics-dock-source">
+              {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
+              {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
+              {activeLyricsResult.cached ? ' • Cached' : ''}
+            </span>
+          )}
+        </div>
+
+        {!currentTrack ? (
+          <p className="fullscreen-lyrics-dock-state">No track selected.</p>
+        ) : lyricsIsLoading && !activeLyricsResult ? (
+          <p className="fullscreen-lyrics-dock-state">Loading lyrics...</p>
+        ) : activeLyricsResult?.status === 'hit' && hasSyncedLyrics ? (
+          <div className="fullscreen-lyrics-dock-window" aria-live="polite">
+            <div
+              className="fullscreen-lyrics-dock-track"
+              style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
+            >
+              {syncedLines.map((line, index) => {
+                const distance = index - effectiveSyncedLineIndex
+                const isActiveLine = distance === 0
+                const lineClassName = [
+                  'fullscreen-lyrics-dock-line',
+                  isActiveLine
+                    ? 'is-active'
+                    : Math.abs(distance) === 1
+                      ? 'is-near'
+                      : Math.abs(distance) === 2
+                        ? 'is-far'
+                        : 'is-distant'
+                ].join(' ')
+
+                return (
+                  <p
+                    key={`${line.timestampMs}:${index}`}
+                    ref={isActiveLine ? setActiveLyricLineNode : undefined}
+                    className={lineClassName}
+                    style={isActiveLine && activeLyricFontSizePx != null
+                      ? { fontSize: `${activeLyricFontSizePx}px` }
+                      : undefined}
+                  >
+                    <span className="fullscreen-lyrics-dock-line-text">{line.text}</span>
+                  </p>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+          <p className="fullscreen-lyrics-dock-state fullscreen-lyrics-dock-state-not-found">
+            Lyrics not synced or not found.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function FullscreenNextCueOverlay({
+  nextTrack,
+  playbackState,
+  repeat,
+  setHeroPhase,
+}: {
+  nextTrack: {
+    artworkHash?: string
+    artworkData?: string
+    title: string
+    artist: string
+  } | null
+  playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
+  repeat: 'none' | 'one' | 'all'
+  setHeroPhase: Dispatch<SetStateAction<HeroPhase>>
+}): ReactElement | null {
+  const currentTime = usePlayerStore((s) => s.currentTime)
+  const duration = usePlayerStore((s) => s.duration)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
+  const [cueState, setCueState] = useState<CueState>('hidden')
+
+  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
+  const compensatedTime = duration > 0
+    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
+    : 0
+  const remaining = duration > 0 ? Math.max(0, duration - compensatedTime) : 0
   const cueProgress = Math.max(0, Math.min(1, (10 - Math.min(10, remaining)) / 10))
   const cueCountdown = Math.max(0, Math.ceil(Math.min(10, remaining)))
   const canShowNextCue =
@@ -378,6 +493,140 @@ export default function FullscreenMode() {
     duration > 0 &&
     repeat !== 'one' &&
     Boolean(nextTrack)
+
+  useEffect(() => {
+    if (!canShowNextCue) {
+      setCueState('hidden')
+      setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
+      return
+    }
+
+    if (remaining <= 1.2) {
+      setCueState('handoff')
+      setHeroPhase((prev) => (prev === 'enter' ? prev : 'handoff'))
+      return
+    }
+
+    if (remaining <= 10) {
+      setCueState('visible')
+      setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
+      return
+    }
+
+    setCueState('hidden')
+    setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
+  }, [canShowNextCue, remaining, setHeroPhase])
+
+  if (!nextTrack) return null
+
+  return (
+    <aside
+      className={`fullscreen-next-cue fullscreen-next-cue-${cueState}`}
+      aria-hidden={cueState === 'hidden'}
+    >
+      <div className="fullscreen-next-cue-card">
+        <div className="fullscreen-next-cue-artwork">
+          {nextTrack.artworkHash ? (
+            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" />
+          ) : nextTrack.artworkData ? (
+            <img src={nextTrack.artworkData} alt="Up next artwork" />
+          ) : (
+            <div className="fullscreen-next-cue-placeholder">&#9835;</div>
+          )}
+        </div>
+
+        <div className="fullscreen-next-cue-meta">
+          <span className="fullscreen-next-cue-label">Up Next</span>
+          <div className="fullscreen-next-cue-title">{nextTrack.title}</div>
+          <div className="fullscreen-next-cue-artist">{nextTrack.artist}</div>
+        </div>
+
+        <div className="fullscreen-next-cue-countdown">{cueCountdown}s</div>
+      </div>
+
+      <div className="fullscreen-next-cue-progress">
+        <div
+          className="fullscreen-next-cue-fill"
+          style={{ transform: `scaleX(${cueProgress})` }}
+        />
+      </div>
+    </aside>
+  )
+}
+
+export default function FullscreenMode() {
+  const setFullscreen = useUIStore((s) => s.setFullscreen)
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const playbackState = usePlayerStore((s) => s.playbackState)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const repeat = usePlayerStore((s) => s.repeat)
+  const togglePlay = usePlayerStore((s) => s.togglePlay)
+  const playNext = usePlayerStore((s) => s.playNext)
+  const playPrevious = usePlayerStore((s) => s.playPrevious)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
+  const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
+  const nextTrack = usePlayerStore((s) => s.getResolvedNextTrack())
+  const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
+
+  const favorites = useLibraryStore((s) => s.favorites)
+  const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
+  const getArtwork = useLibraryStore((s) => s.getArtwork)
+
+  const prefersReducedMotion = usePrefersReducedMotion()
+  const viewportSize = useViewportSize()
+  const lyricsDockLayout = useMemo(
+    () => resolveLyricsDockLayout(viewportSize),
+    [viewportSize.height, viewportSize.width]
+  )
+
+  const [resolvedBackdropArtwork, setResolvedBackdropArtwork] = useState<string | null>(null)
+  const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
+  const [previousBackdropArtwork, setPreviousBackdropArtwork] = useState<string | null>(null)
+  const [showPreviousBackdropLayer, setShowPreviousBackdropLayer] = useState(false)
+  const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
+  const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
+  const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
+  const [showLyricsDock, setShowLyricsDock] = useState(false)
+
+  const backdropRequestTokenRef = useRef(0)
+  const previousTrackIdRef = useRef<string | null>(null)
+  const enterResetTimeoutRef = useRef<number | null>(null)
+  const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
+  const heroEnterRafRef = useRef<number | null>(null)
+  const fullscreenTitleOuterRef = useRef<HTMLHeadingElement>(null)
+  const fullscreenTitleInnerRef = useRef<HTMLSpanElement>(null)
+
+  const isPlaying = playbackState === 'playing'
+  const isLoadingTrack = playbackState === 'loading'
+  const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
+  const currentTrackId = currentTrack?.id ?? null
+  const resolvedChannelCount = currentTrack?.channels ?? null
+  const isMultichannel = (resolvedChannelCount ?? 0) > 2
+  const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
+  const currentCodec = currentTrack?.codec?.toLowerCase() ?? ''
+  const showAtmosBadge = Boolean(
+    currentTrack?.isAtmosJoc ||
+    currentCodecProfile.includes('atmos') ||
+    currentCodecProfile.includes('joc') ||
+    currentCodec.includes('atmos') ||
+    currentCodec.includes('joc')
+  )
+
+  const checkFullscreenTitleOverflow = useCallback(() => {
+    const outer = fullscreenTitleOuterRef.current
+    const inner = fullscreenTitleInnerRef.current
+    if (!outer || !inner) return
+
+    const overflows = inner.scrollWidth > outer.clientWidth
+    setFullscreenTitleOverflows(overflows)
+
+    if (overflows) {
+      outer.style.setProperty('--marquee-offset', `${outer.clientWidth - inner.scrollWidth}px`)
+      return
+    }
+
+    outer.style.removeProperty('--marquee-offset')
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -411,20 +660,6 @@ export default function FullscreenMode() {
   }, [currentTrack?.title, checkFullscreenTitleOverflow])
 
   useEffect(() => {
-    if (!showLyricsDock) {
-      lastLyricsRequestKeyRef.current = null
-      return
-    }
-
-    const requestKey = lyricsQuery
-      ? `${lyricsQuery.path}\u0000${lyricsQuery.title}\u0000${lyricsQuery.artist}\u0000${lyricsQuery.album ?? ''}\u0000${lyricsQuery.durationSeconds ?? ''}`
-      : '__none__'
-    if (lastLyricsRequestKeyRef.current === requestKey) return
-    lastLyricsRequestKeyRef.current = requestKey
-    void loadLyricsForTrack(lyricsQuery)
-  }, [loadLyricsForTrack, lyricsQuery, showLyricsDock])
-
-  useEffect(() => {
     const outer = fullscreenTitleOuterRef.current
     if (!outer) return
 
@@ -432,38 +667,6 @@ export default function FullscreenMode() {
     resizeObserver.observe(outer)
     return () => resizeObserver.disconnect()
   }, [checkFullscreenTitleOverflow])
-
-  useLayoutEffect(() => {
-    recalculateActiveLyricFontSize()
-  }, [
-    recalculateActiveLyricFontSize,
-    activeSyncedLineIndex,
-    activeSyncedLineText,
-    lyricsDockLayout.lineHeightPx,
-    lyricsDockLayout.visibleLines,
-    showLyricsDock
-  ])
-
-  useEffect(() => {
-    if (!showLyricsDock || !hasSyncedLyrics) return
-    const node = activeLyricLineRef.current
-    if (!node) return
-
-    const resizeObserver = new ResizeObserver(() => {
-      recalculateActiveLyricFontSize()
-    })
-    resizeObserver.observe(node)
-
-    return () => {
-      resizeObserver.disconnect()
-    }
-  }, [
-    activeSyncedLineIndex,
-    activeSyncedLineText,
-    hasSyncedLyrics,
-    recalculateActiveLyricFontSize,
-    showLyricsDock
-  ])
 
   useEffect(() => {
     return () => {
@@ -572,7 +775,6 @@ export default function FullscreenMode() {
     if (previousTrackIdRef.current === currentTrackId) return
 
     previousTrackIdRef.current = currentTrackId
-    setCueState('hidden')
 
     if (enterResetTimeoutRef.current !== null) {
       window.clearTimeout(enterResetTimeoutRef.current)
@@ -597,29 +799,6 @@ export default function FullscreenMode() {
       )
     })
   }, [currentTrackId, prefersReducedMotion])
-
-  useEffect(() => {
-    if (!canShowNextCue) {
-      setCueState('hidden')
-      setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
-      return
-    }
-
-    if (remaining <= 1.2) {
-      setCueState('handoff')
-      setHeroPhase((prev) => (prev === 'enter' ? prev : 'handoff'))
-      return
-    }
-
-    if (remaining <= 10) {
-      setCueState('visible')
-      setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
-      return
-    }
-
-    setCueState('hidden')
-    setHeroPhase((prev) => (prev === 'handoff' ? 'steady' : prev))
-  }, [canShowNextCue, remaining])
 
   return (
     <div
@@ -816,28 +995,7 @@ export default function FullscreenMode() {
               </button>
             </div>
 
-            <div className="fullscreen-waveform-wrap">
-              <span className="fullscreen-time fullscreen-time-current">{formatTime(compensatedTime)}</span>
-              <button
-                type="button"
-                className="fullscreen-time fullscreen-time-remaining fullscreen-time-toggle"
-                onClick={toggleWaveformTimeDisplayMode}
-                aria-label={rightTimeToggleLabel}
-                title={rightTimeToggleLabel}
-              >
-                {rightTimeLabel}
-              </button>
-              <WaveformSeekBar
-                waveformData={waveformData}
-                progress={progress}
-                duration={duration}
-                currentTime={compensatedTime}
-                onSeek={(time) => {
-                  const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
-                  void seek(rawSeekTime)
-                }}
-              />
-            </div>
+            <FullscreenWaveformSection />
 
             <div className="fullscreen-footer">
               <button
@@ -871,105 +1029,28 @@ export default function FullscreenMode() {
             </div>
           </div>
 
-          <section
-            className={`fullscreen-lyrics-dock ${showLyricsDock ? 'is-open' : ''}`}
-            style={lyricsDockStyle}
-            aria-hidden={!showLyricsDock}
-          >
-            <div className="fullscreen-lyrics-dock-glass">
-              <div className="fullscreen-lyrics-dock-head">
-                <span className="fullscreen-lyrics-dock-label">Lyrics</span>
-                {activeLyricsResult?.status === 'hit' && (
-                  <span className="fullscreen-lyrics-dock-source">
-                    {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
-                    {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
-                    {activeLyricsResult.cached ? ' • Cached' : ''}
-                  </span>
-                )}
-              </div>
-
-              {!currentTrack ? (
-                <p className="fullscreen-lyrics-dock-state">No track selected.</p>
-              ) : lyricsIsLoading && !activeLyricsResult ? (
-                <p className="fullscreen-lyrics-dock-state">Loading lyrics...</p>
-              ) : activeLyricsResult?.status === 'hit' && hasSyncedLyrics ? (
-                <div className="fullscreen-lyrics-dock-window" aria-live="polite">
-                  <div
-                    className="fullscreen-lyrics-dock-track"
-                    style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
-                  >
-                    {syncedLines.map((line, index) => {
-                      const distance = index - effectiveSyncedLineIndex
-                      const isActiveLine = distance === 0
-                      const lineClassName = [
-                        'fullscreen-lyrics-dock-line',
-                        isActiveLine
-                          ? 'is-active'
-                          : Math.abs(distance) === 1
-                            ? 'is-near'
-                            : Math.abs(distance) === 2
-                              ? 'is-far'
-                              : 'is-distant'
-                      ].join(' ')
-
-                      return (
-                        <p
-                          key={`${line.timestampMs}:${index}`}
-                          ref={isActiveLine ? setActiveLyricLineNode : undefined}
-                          className={lineClassName}
-                          style={isActiveLine && activeLyricFontSizePx != null
-                            ? { fontSize: `${activeLyricFontSizePx}px` }
-                            : undefined}
-                        >
-                          <span className="fullscreen-lyrics-dock-line-text">{line.text}</span>
-                        </p>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <p className="fullscreen-lyrics-dock-state fullscreen-lyrics-dock-state-not-found">
-                  Lyrics not synced or not found.
-                </p>
-              )}
-            </div>
-          </section>
+          <FullscreenLyricsDockPanel
+            currentTrack={currentTrack
+              ? {
+                  path: currentTrack.path,
+                  title: currentTrack.title,
+                  artist: currentTrack.artist,
+                  album: currentTrack.album,
+                  duration: currentTrack.duration
+                }
+              : null}
+            showLyricsDock={showLyricsDock}
+            lyricsDockLayout={lyricsDockLayout}
+          />
         </div>
       </div>
 
-      {nextTrack && (
-        <aside
-          className={`fullscreen-next-cue fullscreen-next-cue-${cueState}`}
-          aria-hidden={cueState === 'hidden'}
-        >
-          <div className="fullscreen-next-cue-card">
-            <div className="fullscreen-next-cue-artwork">
-              {nextTrack.artworkHash ? (
-                <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" />
-              ) : nextTrack.artworkData ? (
-                <img src={nextTrack.artworkData} alt="Up next artwork" />
-              ) : (
-                <div className="fullscreen-next-cue-placeholder">&#9835;</div>
-              )}
-            </div>
-
-            <div className="fullscreen-next-cue-meta">
-              <span className="fullscreen-next-cue-label">Up Next</span>
-              <div className="fullscreen-next-cue-title">{nextTrack.title}</div>
-              <div className="fullscreen-next-cue-artist">{nextTrack.artist}</div>
-            </div>
-
-            <div className="fullscreen-next-cue-countdown">{cueCountdown}s</div>
-          </div>
-
-          <div className="fullscreen-next-cue-progress">
-            <div
-              className="fullscreen-next-cue-fill"
-              style={{ transform: `scaleX(${cueProgress})` }}
-            />
-          </div>
-        </aside>
-      )}
+      <FullscreenNextCueOverlay
+        nextTrack={nextTrack}
+        playbackState={playbackState}
+        repeat={repeat}
+        setHeroPhase={setHeroPhase}
+      />
     </div>
   )
 }

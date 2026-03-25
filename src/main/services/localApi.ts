@@ -55,7 +55,7 @@ function toSafeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
-function parseArtworkDataUrl(artworkData: string | null): ParsedArtworkData | null {
+function parseArtworkDataUrl(artworkData: string | null | undefined): ParsedArtworkData | null {
   if (typeof artworkData !== 'string') return null
   const normalized = artworkData.trim()
   const match = /^data:([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(

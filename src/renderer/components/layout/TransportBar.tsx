@@ -19,27 +19,93 @@ import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+function TransportWaveformSection({
+  loadingLabel,
+  loadingPercent
+}: {
+  loadingLabel: string | null
+  loadingPercent: number | null
+}) {
+  const waveformData = usePlayerStore((s) => s.waveformData)
+  const currentTime = usePlayerStore((s) => s.currentTime)
+  const duration = usePlayerStore((s) => s.duration)
+  const seek = usePlayerStore((s) => s.seek)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
+  const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
+  const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
+
+  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
+  const compensatedTime = duration > 0
+    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
+    : 0
+  const progress = duration > 0 ? (compensatedTime / duration) * 100 : 0
+  const remaining = duration > 0 ? duration - compensatedTime : 0
+  const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
+  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
+  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
+
+  return (
+    <div className="transport-waveform-wrap">
+      <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
+      <button
+        type="button"
+        className="waveform-time waveform-time-remaining waveform-time-toggle"
+        onClick={toggleWaveformTimeDisplayMode}
+        aria-label={rightTimeToggleLabel}
+        title={rightTimeToggleLabel}
+      >
+        {rightTimeLabel}
+      </button>
+      <WaveformSeekBar
+        waveformData={waveformData}
+        progress={progress}
+        duration={duration}
+        currentTime={compensatedTime}
+        onSeek={(time) => {
+          const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
+          void seek(rawSeekTime)
+        }}
+      />
+      {loadingLabel && (
+        <div className="transport-loading-hint" role="status" aria-live="polite">
+          <span className="transport-loading-hint-label">{loadingLabel}</span>
+          <span
+            className={`transport-loading-hint-bar ${loadingPercent === null ? 'indeterminate' : ''}`}
+            aria-hidden="true"
+          >
+            <span
+              className="transport-loading-hint-fill"
+              style={loadingPercent === null ? undefined : { width: `${Math.round(loadingPercent * 100)}%` }}
+            />
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function TransportBar() {
-  const {
-    currentTrack,
-    playbackState,
-    currentTime,
-    duration,
-    volume,
-    isMuted,
-    togglePlay,
-    seek,
-    setVolume,
-    toggleMute,
-    shuffle,
-    repeat,
-    playNext,
-    playPrevious,
-    toggleShuffle,
-    toggleRepeat,
-    waveformData,
-    remoteLoadProgress,
-  } = usePlayerStore()
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const playbackState = usePlayerStore((s) => s.playbackState)
+  const volume = usePlayerStore((s) => s.volume)
+  const isMuted = usePlayerStore((s) => s.isMuted)
+  const togglePlay = usePlayerStore((s) => s.togglePlay)
+  const setVolume = usePlayerStore((s) => s.setVolume)
+  const toggleMute = usePlayerStore((s) => s.toggleMute)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const repeat = usePlayerStore((s) => s.repeat)
+  const playNext = usePlayerStore((s) => s.playNext)
+  const playPrevious = usePlayerStore((s) => s.playPrevious)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
+  const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
+  const remoteLoadProgress = usePlayerStore((s) => s.remoteLoadProgress)
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const {
@@ -51,9 +117,7 @@ export default function TransportBar() {
     showLyricsShelf,
     togglePipelineShelf,
     toggleLyricsShelf,
-    setFullscreen,
-    waveformTimeDisplayMode,
-    toggleWaveformTimeDisplayMode
+    setFullscreen
   } = useUIStore()
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
@@ -61,7 +125,6 @@ export default function TransportBar() {
   const openArtistInLibrary = useOpenArtistInLibrary()
   const selectedOutputDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
   const availableOutputDevices = useAudioSettingsStore((s) => s.availableDevices)
-  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
@@ -136,13 +199,6 @@ export default function TransportBar() {
     setShowEQPopover(false)
   }, [playbackOutputMode, showEQPopover])
 
-  const formatTime = (seconds: number): string => {
-    if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
   const getPercentFromClientX = (clientX: number, element: HTMLDivElement): number => {
     const rect = element.getBoundingClientRect()
     if (rect.width <= 0) return 0
@@ -196,15 +252,6 @@ export default function TransportBar() {
     }
     return 'Buffering remote track...'
   })()
-  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
-  const compensatedTime = duration > 0
-    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
-    : 0
-  const progress = duration > 0 ? (compensatedTime / duration) * 100 : 0
-  const remaining = duration > 0 ? duration - compensatedTime : 0
-  const showingRemainingTime = waveformTimeDisplayMode === 'remaining'
-  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remaining)}` : formatTime(duration)
-  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
   const currentCodecProfile = currentTrack?.codecProfile?.toLowerCase() ?? ''
@@ -470,42 +517,7 @@ export default function TransportBar() {
         </div>
 
         {/* Waveform with floating time labels */}
-        <div className="transport-waveform-wrap">
-          <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
-          <button
-            type="button"
-            className="waveform-time waveform-time-remaining waveform-time-toggle"
-            onClick={toggleWaveformTimeDisplayMode}
-            aria-label={rightTimeToggleLabel}
-            title={rightTimeToggleLabel}
-          >
-            {rightTimeLabel}
-          </button>
-          <WaveformSeekBar
-            waveformData={waveformData}
-            progress={progress}
-            duration={duration}
-            currentTime={compensatedTime}
-            onSeek={(time) => {
-              const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
-              void seek(rawSeekTime)
-            }}
-          />
-          {loadingLabel && (
-            <div className="transport-loading-hint" role="status" aria-live="polite">
-              <span className="transport-loading-hint-label">{loadingLabel}</span>
-              <span
-                className={`transport-loading-hint-bar ${loadingPercent === null ? 'indeterminate' : ''}`}
-                aria-hidden="true"
-              >
-                <span
-                  className="transport-loading-hint-fill"
-                  style={loadingPercent === null ? undefined : { width: `${Math.round(loadingPercent * 100)}%` }}
-                />
-              </span>
-            </div>
-          )}
-        </div>
+        <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent} />
 
         {/* Volume */}
         <div className="transport-volume">

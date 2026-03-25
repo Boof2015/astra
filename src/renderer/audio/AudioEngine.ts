@@ -310,6 +310,7 @@ export class AudioEngine {
       this.nativeNextTrackBuffered = false
       this.stopNativeScopePolling()
       this.notifyTrackChange()
+      this.syncVisualizerTransportState()
       return {
         activeMode: this.playbackOutputMode,
         capabilities: this.nativeCapabilities,
@@ -322,6 +323,7 @@ export class AudioEngine {
       this.playbackOutputMode = 'standard'
       this.nativeModeMessage = capabilities.reasonUnavailable
       this.stopNativeScopePolling()
+      this.syncVisualizerTransportState()
       return {
         activeMode: this.playbackOutputMode,
         capabilities,
@@ -336,8 +338,8 @@ export class AudioEngine {
     this.audioBuffer = null
     this.playbackOutputMode = 'bitperfect'
     this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
-    this.startNativeScopePolling()
     this.notifyTrackChange()
+    this.syncVisualizerTransportState()
     return {
       activeMode: this.playbackOutputMode,
       capabilities,
@@ -368,6 +370,7 @@ export class AudioEngine {
     this.pendingLUFSMeterSamples = []
     this.pendingWaveformSamples = []
     this.pendingMiniVisualizerChunks = []
+    this.clearLatestVisualizerChannels()
     this.resetBitPerfectVisualizerGain()
     this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
     this.trackChangeCallbacks.forEach(cb => cb())
@@ -393,11 +396,13 @@ export class AudioEngine {
       this.visualizerConsumerDemand.delete(consumerId)
     }
     this.pruneVisualizerQueuesForDemand()
+    this.syncVisualizerTransportState()
   }
 
   clearVisualizerConsumerDemand(consumerId: string): void {
     if (this.visualizerConsumerDemand.delete(consumerId)) {
       this.pruneVisualizerQueuesForDemand()
+      this.syncVisualizerTransportState()
     }
   }
 
@@ -418,6 +423,59 @@ export class AudioEngine {
       }
     }
     return false
+  }
+
+  private hasAnyVisualizerDemand(): boolean {
+    for (const demand of this.visualizerConsumerDemand.values()) {
+      if (Object.values(demand).some(Boolean)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private clearLatestVisualizerChannels(): void {
+    this.latestLeftChannel = new Float32Array(0)
+    this.latestRightChannel = new Float32Array(0)
+    this.latestMonoChannel = new Float32Array(0)
+  }
+
+  private syncStandardVisualizerStreaming(): void {
+    if (!this.workletNode) return
+    this.workletNode.port.postMessage({
+      type: 'set-visualizer-streaming-enabled',
+      enabled: this.playbackOutputMode === 'standard' && this.hasAnyVisualizerDemand()
+    })
+  }
+
+  private shouldPollNativeScopeData(): boolean {
+    return this.playbackOutputMode === 'bitperfect'
+      && this._playbackState === 'playing'
+      && this.hasAnyVisualizerDemand()
+  }
+
+  private syncNativeScopePolling(): void {
+    if (this.shouldPollNativeScopeData()) {
+      this.startNativeScopePolling()
+    } else {
+      this.stopNativeScopePolling()
+    }
+  }
+
+  private syncVisualizerTransportState(): void {
+    this.syncStandardVisualizerStreaming()
+    this.syncNativeScopePolling()
+  }
+
+  private discardNativeScopeChunks(): void {
+    if (this.playbackOutputMode !== 'bitperfect') return
+    try {
+      window.nativeAudioAPI.flushOscilloscopeChunks()
+      window.nativeAudioAPI.flushSpectrumChunks()
+      window.nativeAudioAPI.flushVectorscopeChunks()
+    } catch {
+      // Ignore flush failures while tearing down visualizer demand.
+    }
   }
 
   private pruneVisualizerQueuesForDemand(): void {
@@ -446,10 +504,18 @@ export class AudioEngine {
     if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
       this.pendingMiniVisualizerChunks = []
     }
+    if (!this.hasAnyVisualizerDemand()) {
+      this.clearLatestVisualizerChannels()
+      this.discardNativeScopeChunks()
+    }
   }
 
   private queueVisualizerSamples(left: Float32Array, right: Float32Array): void {
     if (!left || !right || left.length === 0 || right.length === 0) return
+    if (!this.hasAnyVisualizerDemand()) {
+      this.clearLatestVisualizerChannels()
+      return
+    }
 
     const normalizedSamples = this.normalizeBitPerfectVisualizerSamples(left, right)
     const normalizedLeft = normalizedSamples?.left ?? left
@@ -750,6 +816,7 @@ export class AudioEngine {
         if (this._playbackState !== 'playing' || this.playbackOutputMode === 'bitperfect') {
           this.stopTimeUpdate()
         }
+        this.syncNativeScopePolling()
         break
       case 'timeUpdate':
         if (this.nativeSnapshot) {
@@ -785,6 +852,7 @@ export class AudioEngine {
           }
         }
         this.notifyTrackChange()
+        this.syncNativeScopePolling()
         this.emit('ended')
         break
       case 'deviceReopened':
@@ -812,7 +880,7 @@ export class AudioEngine {
   }
 
   private pollNativeScopeData = (): void => {
-    if (this.playbackOutputMode !== 'bitperfect') {
+    if (!this.shouldPollNativeScopeData()) {
       this.nativeScopePollFrameId = null
       return
     }
@@ -849,6 +917,7 @@ export class AudioEngine {
       window.cancelAnimationFrame(this.nativeScopePollFrameId)
       this.nativeScopePollFrameId = null
     }
+    this.discardNativeScopeChunks()
   }
 
   private buildNativeTrackMetadata(track: Track): NativeAudioTrackMetadata {
@@ -1144,6 +1213,7 @@ export class AudioEngine {
             this.queueVisualizerSamples(left, right)
           }
         }
+        this.syncStandardVisualizerStreaming()
       }
 
       // Connect main signal path:
@@ -3269,6 +3339,7 @@ export class AudioEngine {
       this.nativeSnapshot = await window.nativeAudioAPI.play()
       this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
       this.emit('stateChange', this._playbackState)
+      this.syncNativeScopePolling()
       return
     }
 
@@ -3320,9 +3391,11 @@ export class AudioEngine {
         this.nativeSnapshot = snapshot
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
+        this.syncNativeScopePolling()
       }).catch((error) => {
         this.emit('error', error instanceof Error ? error : new Error('Failed to pause native playback'))
       })
+      this.stopNativeScopePolling()
       return
     }
 
@@ -3356,10 +3429,12 @@ export class AudioEngine {
         this.emit('stateChange', this._playbackState)
         this.emit('timeUpdate', 0)
         this.notifyTrackChange()
+        this.syncNativeScopePolling()
       }).catch((error) => {
         this.emit('error', error instanceof Error ? error : new Error('Failed to stop native playback'))
       })
       this.stopTimeUpdate()
+      this.stopNativeScopePolling()
       return
     }
 

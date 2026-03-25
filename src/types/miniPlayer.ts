@@ -7,7 +7,7 @@ export interface MiniPlayerTrackSnapshot {
   title: string
   artist: string
   album: string
-  artworkData: string | null
+  artworkData?: string | null
   isFavorite: boolean
 }
 
@@ -19,6 +19,35 @@ export interface MiniPlayerSnapshot {
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
   visualizerLineColor: string
+}
+
+export function mergeMiniPlayerSnapshots(
+  previous: MiniPlayerSnapshot | null | undefined,
+  next: MiniPlayerSnapshot
+): MiniPlayerSnapshot {
+  const previousTrack = previous?.currentTrack ?? null
+  const nextTrack = next.currentTrack
+
+  if (!nextTrack) {
+    return {
+      ...next,
+      currentTrack: null
+    }
+  }
+
+  const shouldPreserveArtwork = previousTrack
+    && previousTrack.path === nextTrack.path
+    && nextTrack.artworkData === undefined
+
+  return {
+    ...next,
+    currentTrack: shouldPreserveArtwork
+      ? {
+          ...nextTrack,
+          artworkData: previousTrack.artworkData ?? null
+        }
+      : nextTrack
+  }
 }
 
 export interface MiniPlayerVisualizerStreamChunk {
