@@ -2,6 +2,7 @@ import { access } from 'fs/promises'
 import { execFile, spawn } from 'child_process'
 import { join } from 'path'
 import type {
+  AudioBufferMemoryStats,
   NativeAudioBackendKind,
   NativeAudioCapabilities,
   NativeAudioEvent,
@@ -62,6 +63,7 @@ interface NativeAudioControllerApi {
   seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
   clearNextTrack: () => Promise<void>
   getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+  getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
   setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
   flushOscilloscopeChunks: () => Float32Array[]
   flushSpectrumChunks: () => Float32Array[]
@@ -130,6 +132,12 @@ const DEFAULT_UNAVAILABLE_CAPABILITIES: NativeAudioCapabilities = {
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
   devices: []
+}
+
+const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
+  currentBytes: 0,
+  nextBytes: 0,
+  totalBytes: 0
 }
 
 function looksLikePath(candidate: string): boolean {
@@ -447,14 +455,24 @@ export function createNativeAudioController(
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
   let nextDecodedTrack: DecodedPcmTrack | null = null
   let currentTrackRequest: LoadedTrackRequest | null = null
+  let currentBufferBytes = 0
+  let nextBufferBytes = 0
   const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
   let capabilitiesCache: NativeAudioCapabilities = {
     ...DEFAULT_UNAVAILABLE_CAPABILITIES,
     reasonUnavailable: fallbackUnavailableReason
   }
 
+  const buildBufferMemoryStats = (): AudioBufferMemoryStats => ({
+    currentBytes: currentBufferBytes,
+    nextBytes: nextBufferBytes,
+    totalBytes: currentBufferBytes + nextBufferBytes
+  })
+
   const notify = (event: NativeAudioEvent) => {
-    if (event.type === 'gaplessTransition' && nextDecodedTrack) {
+    if (event.type === 'gaplessTransition') {
+      currentBufferBytes = nextBufferBytes
+      nextBufferBytes = 0
       nextDecodedTrack = null
     } else if (event.type === 'ended') {
       nextDecodedTrack = null
@@ -631,7 +649,10 @@ export function createNativeAudioController(
         metadata,
         sampleFormat: decoded.sampleFormat
       }
-      return loadDecodedTrack(engine, decoded)
+      const result = loadDecodedTrack(engine, decoded)
+      currentBufferBytes = decoded.pcmData.byteLength
+      nextBufferBytes = 0
+      return result
     },
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
@@ -647,6 +668,7 @@ export function createNativeAudioController(
         decoded.duration
       )
       nextDecodedTrack = decoded
+      nextBufferBytes = decoded.pcmData.byteLength
       const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
       return normalizeTrackLoadResult(snapshot, decoded)
     },
@@ -679,6 +701,8 @@ export function createNativeAudioController(
           sampleFormat: decoded.sampleFormat
         }
         loadDecodedTrack(engine, decoded)
+        currentBufferBytes = decoded.pcmData.byteLength
+        nextBufferBytes = 0
         return normalizePlaybackSnapshot(engine.play())
       }
     },
@@ -702,12 +726,18 @@ export function createNativeAudioController(
     clearNextTrack: async () => {
       const engine = await ensureAvailable()
       nextDecodedTrack = null
+      nextBufferBytes = 0
       engine.clearNextTrack()
     },
 
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
       return normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+    },
+
+    getBufferMemoryStats: async () => {
+      if (!playback) return { ...EMPTY_AUDIO_BUFFER_MEMORY_STATS }
+      return buildBufferMemoryStats()
     },
 
     setVisualizerTapDemand: async (demand: NativeAudioVisualizerTapDemand) => {

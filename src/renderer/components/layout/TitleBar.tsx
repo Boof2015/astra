@@ -1,19 +1,41 @@
 import { useState, useEffect } from 'react'
+import type { AudioBufferMemoryStats } from '../../../types/nativeAudio'
+import { audioEngine } from '../../audio/AudioEngine'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
   cpuPercent: number
-  memoryMb: number
+  workingSetMb: number
+}
+
+interface RendererMemoryStats {
+  privateMb: number
 }
 
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
+const BYTES_PER_MB = 1024 * 1024
+
+function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boolean } = {}): string {
+  if (memoryMb === null || !Number.isFinite(memoryMb)) return '\u2014'
+
+  const normalized = Math.max(0, memoryMb)
+  if (options.zeroAsZeroMb && normalized < 0.05) {
+    return '0 MB'
+  }
+
+  return normalized >= 1024
+    ? `${(normalized / 1024).toFixed(2)} GB`
+    : `${normalized.toFixed(normalized >= 100 ? 0 : 1)} MB`
+}
 
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [appStats, setAppStats] = useState<AppPerformanceStats | null>(null)
+  const [rendererMemoryStats, setRendererMemoryStats] = useState<RendererMemoryStats | null>(null)
+  const [bufferStats, setBufferStats] = useState<AudioBufferMemoryStats | null>(null)
   const [fps, setFps] = useState(0)
   const updateAvailable = useUpdateStore((s) => s.updateAvailable)
   const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
@@ -73,14 +95,26 @@ export default function TitleBar() {
     let isMounted = true
 
     const loadAppStats = async () => {
-      if (!window.electronAPI?.getAppPerformanceStats) return
-      try {
-        const stats = await window.electronAPI.getAppPerformanceStats()
-        if (isMounted) {
-          setAppStats(stats)
-        }
-      } catch {
-        // Ignore stats load errors; title remains functional.
+      const [appStatsResult, rendererMemoryResult, bufferStatsResult] = await Promise.allSettled([
+        window.electronAPI?.getAppPerformanceStats
+          ? window.electronAPI.getAppPerformanceStats()
+          : Promise.reject(new Error('App performance stats unavailable.')),
+        window.electronAPI?.getRendererMemoryStats
+          ? window.electronAPI.getRendererMemoryStats()
+          : Promise.reject(new Error('Renderer memory stats unavailable.')),
+        audioEngine.getBufferMemoryStats()
+      ])
+
+      if (!isMounted) return
+
+      if (appStatsResult.status === 'fulfilled') {
+        setAppStats(appStatsResult.value)
+      }
+      if (rendererMemoryResult.status === 'fulfilled') {
+        setRendererMemoryStats(rendererMemoryResult.value)
+      }
+      if (bufferStatsResult.status === 'fulfilled') {
+        setBufferStats(bufferStatsResult.value)
       }
     }
 
@@ -130,11 +164,24 @@ export default function TitleBar() {
   }
 
   const formattedCpu = appStats ? `${Math.max(0, Math.round(appStats.cpuPercent))}%` : '\u2014'
-  const formattedMemory = appStats
-    ? appStats.memoryMb >= 1024
-      ? `${(appStats.memoryMb / 1024).toFixed(2)}GB`
-      : `${appStats.memoryMb.toFixed(appStats.memoryMb >= 100 ? 0 : 1)}MB`
-    : '\u2014'
+  const bufferMemoryMb = bufferStats ? bufferStats.totalBytes / BYTES_PER_MB : null
+  const currentBufferMemoryMb = bufferStats ? bufferStats.currentBytes / BYTES_PER_MB : null
+  const nextBufferMemoryMb = bufferStats ? bufferStats.nextBytes / BYTES_PER_MB : null
+  const otherProcessMemoryMb = appStats && rendererMemoryStats
+    ? Math.max(appStats.workingSetMb - rendererMemoryStats.privateMb, 0)
+    : null
+  const appMemoryMb = rendererMemoryStats && bufferMemoryMb !== null
+    ? Math.max(rendererMemoryStats.privateMb - bufferMemoryMb, 0)
+    : appStats && bufferMemoryMb !== null
+      ? Math.max(appStats.workingSetMb - bufferMemoryMb, 0)
+    : null
+  const formattedRendererMemory = formatMemoryMb(rendererMemoryStats?.privateMb ?? null)
+  const formattedAppMemory = formatMemoryMb(appMemoryMb)
+  const formattedBufferMemory = formatMemoryMb(bufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedCurrentBufferMemory = formatMemoryMb(currentBufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedNextBufferMemory = formatMemoryMb(nextBufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedOtherProcessMemory = formatMemoryMb(otherProcessMemoryMb)
+  const formattedTotalMemory = formatMemoryMb(appStats?.workingSetMb ?? null)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
   const apiIndicatorLabel = localApiStatus?.active
     ? localApiStatus.controlsEnabled ? 'API+CTL' : 'API'
@@ -144,6 +191,17 @@ export default function TitleBar() {
       ? `Local API active with controls on ${localApiStatus.baseUrl}`
       : `Local API active on ${localApiStatus.baseUrl}`
     : 'Local API status unavailable'
+  const appMemoryTitle = rendererMemoryStats && bufferStats
+    ? `Renderer-private memory excluding decoded audio buffers. Renderer private: ${formatMemoryMb(rendererMemoryStats.privateMb)}.${appStats ? ` Total app working set: ${formatMemoryMb(appStats.workingSetMb)}.` : ''}`
+    : appStats && bufferStats
+      ? `Fallback app working set excluding decoded audio buffers. Total working set: ${formatMemoryMb(appStats.workingSetMb)}.`
+      : 'App memory excluding decoded audio buffers.'
+  const bufferMemoryTitle = bufferStats
+    ? `Decoded audio buffers held by Astra. Current: ${formatMemoryMb(bufferStats.currentBytes / BYTES_PER_MB, { zeroAsZeroMb: true })}. Next: ${formatMemoryMb(bufferStats.nextBytes / BYTES_PER_MB, { zeroAsZeroMb: true })}.`
+    : 'Decoded audio buffer memory for the current and next track.'
+  const totalMemoryTitle = appStats
+    ? `Total app working set across renderer, main, GPU, and utility processes: ${formatMemoryMb(appStats.workingSetMb)}.`
+    : 'Total app working set.'
 
   return (
     <header className="titlebar">
@@ -182,19 +240,64 @@ export default function TitleBar() {
           </span>
         )}
 
-        <div className="titlebar-stats" aria-label="Astra performance stats">
-          <span className="titlebar-stat">
-            <span className="titlebar-stat-label">CPU</span>
-            <span>{formattedCpu}</span>
-          </span>
-          <span className="titlebar-stat">
-            <span className="titlebar-stat-label">MEM</span>
-            <span>{formattedMemory}</span>
-          </span>
-          <span className="titlebar-stat">
-            <span className="titlebar-stat-label">FPS</span>
-            <span>{formattedFps}</span>
-          </span>
+        <div
+          className="titlebar-stats-shell"
+          tabIndex={0}
+          aria-label="Astra performance stats with memory breakdown"
+        >
+          <div className="titlebar-stats" aria-label="Astra performance stats">
+            <span className="titlebar-stat">
+              <span className="titlebar-stat-label">CPU</span>
+              <span>{formattedCpu}</span>
+            </span>
+            <span className="titlebar-stat" title={appMemoryTitle}>
+              <span className="titlebar-stat-label">APP</span>
+              <span>{formattedAppMemory}</span>
+            </span>
+            <span className="titlebar-stat" title={bufferMemoryTitle}>
+              <span className="titlebar-stat-label">BUF</span>
+              <span>{formattedBufferMemory}</span>
+            </span>
+            <span className="titlebar-stat" title={totalMemoryTitle}>
+              <span className="titlebar-stat-label">TOT</span>
+              <span>{formattedTotalMemory}</span>
+            </span>
+            <span className="titlebar-stat">
+              <span className="titlebar-stat-label">FPS</span>
+              <span>{formattedFps}</span>
+            </span>
+          </div>
+          <div className="titlebar-stats-breakdown" role="tooltip" aria-label="Memory breakdown">
+            <div className="titlebar-stats-breakdown-title">Memory</div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">Renderer</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">APP</span>
+              <span className="titlebar-stats-breakdown-value">{formattedAppMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">Buffers</span>
+              <span className="titlebar-stats-breakdown-value">{formattedBufferMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">Current buf</span>
+              <span className="titlebar-stats-breakdown-value">{formattedCurrentBufferMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">Next buf</span>
+              <span className="titlebar-stats-breakdown-value">{formattedNextBufferMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row">
+              <span className="titlebar-stats-breakdown-label">Other procs</span>
+              <span className="titlebar-stats-breakdown-value">{formattedOtherProcessMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total">
+              <span className="titlebar-stats-breakdown-label">Total</span>
+              <span className="titlebar-stats-breakdown-value">{formattedTotalMemory}</span>
+            </div>
+          </div>
         </div>
 
         {updateAvailable && (

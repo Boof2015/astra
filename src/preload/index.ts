@@ -45,6 +45,7 @@ import type {
   TrackSourceType
 } from '../types/subsonic'
 import type {
+  AudioBufferMemoryStats,
   NativeAudioCapabilities,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
@@ -281,7 +282,11 @@ export interface TrackOverrideSnapshot {
 
 export interface AppPerformanceStats {
   cpuPercent: number
-  memoryMb: number
+  workingSetMb: number
+}
+
+export interface RendererMemoryStats {
+  privateMb: number
 }
 
 export interface DiscordTrackPresence {
@@ -490,6 +495,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
+  getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
+    const memoryInfo = await process.getProcessMemoryInfo()
+    return {
+      privateMb: memoryInfo.private / 1024
+    }
+  },
 
   updates: {
     checkForUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
@@ -774,6 +785,7 @@ declare global {
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+      getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
       setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
       flushOscilloscopeChunks: () => Float32Array[]
       flushSpectrumChunks: () => Float32Array[]
@@ -819,6 +831,7 @@ declare global {
       platform: NodeJS.Platform
       getAppVersion: () => Promise<string>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      getRendererMemoryStats: () => Promise<RendererMemoryStats>
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
         openReleasesPage: (releaseUrl?: string) => Promise<boolean>

@@ -1,5 +1,6 @@
 import { PlaybackState, EQBand, Track } from '../types/audio'
 import type {
+  AudioBufferMemoryStats,
   NativeAudioCapabilities,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
@@ -67,6 +68,11 @@ const DIFFERENTIAL_MIN_CORRELATION = 0.06
 const DIFFERENTIAL_BT_GAIN_MULTIPLIER = 1.25
 const DIFFERENTIAL_START_FREQ_HZ = 900
 const DIFFERENTIAL_END_FREQ_HZ = 4200
+const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
+  currentBytes: 0,
+  nextBytes: 0,
+  totalBytes: 0
+}
 
 type GainApplicationMode = 'off' | 'normalization' | 'replaygain'
 
@@ -1052,6 +1058,11 @@ export class AudioEngine {
     return Math.max(1, Math.min(32, this.context?.destination.maxChannelCount ?? 2))
   }
 
+  private getDecodedAudioBufferBytes(buffer: AudioBuffer | null): number {
+    if (!buffer) return 0
+    return buffer.length * buffer.numberOfChannels * 4
+  }
+
   private getRoutingOutputChannelCount(sourceChannels?: number): number {
     const maxChannels = this.getMaxDestinationChannelCount()
     if (!this.multichannelEnabled) {
@@ -1663,6 +1674,24 @@ export class AudioEngine {
 
   getAudioBuffer(): AudioBuffer | null {
     return this.audioBuffer
+  }
+
+  async getBufferMemoryStats(): Promise<AudioBufferMemoryStats> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      try {
+        return await window.nativeAudioAPI.getBufferMemoryStats()
+      } catch {
+        return { ...EMPTY_AUDIO_BUFFER_MEMORY_STATS }
+      }
+    }
+
+    const currentBytes = this.getDecodedAudioBufferBytes(this.audioBuffer)
+    const nextBytes = this.getDecodedAudioBufferBytes(this.nextBuffer)
+    return {
+      currentBytes,
+      nextBytes,
+      totalBytes: currentBytes + nextBytes
+    }
   }
 
   getCurrentTrackChannelCount(): number | null {
@@ -3845,6 +3874,7 @@ export class AudioEngine {
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
     this.audioBuffer = null
+    this.nextBuffer = null
     this.latestLeftChannel = new Float32Array(0)
     this.latestRightChannel = new Float32Array(0)
     this.latestMonoChannel = new Float32Array(0)

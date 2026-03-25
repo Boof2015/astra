@@ -40,6 +40,12 @@ export interface NativeAudioTrackMetadata {
   codecProfile?: string
 }
 
+export interface AudioBufferMemoryStats {
+  currentBytes: number
+  nextBytes: number
+  totalBytes: number
+}
+
 export interface NativeAudioPlaybackSnapshot {
   playbackState: NativeAudioPlaybackState
   currentTime: number

@@ -154,6 +154,7 @@ button, .titlebar {
   align-items: center;
   padding: 0 12px;
   position: relative;
+  z-index: 64;
   background: transparent;
 }
 
@@ -328,19 +329,100 @@ button, .titlebar {
   box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.75);
 }
 
+.titlebar-stats-shell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  z-index: 2;
+  outline: none;
+}
+
+.titlebar-stats-shell:focus-visible {
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.4);
+}
+
 .titlebar-stats {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.titlebar-stats-breakdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 224px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(30, 34, 41, 0.96), rgba(18, 20, 26, 0.96));
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast),
+    visibility var(--transition-fast);
+  z-index: 80;
+}
+
+.titlebar-stats-shell:hover .titlebar-stats-breakdown,
+.titlebar-stats-shell:focus-within .titlebar-stats-breakdown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.titlebar-stats-breakdown-title {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.titlebar-stats-breakdown-row {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 5px;
+}
+
+.titlebar-stats-breakdown-row-total {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.titlebar-stats-breakdown-label {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.titlebar-stats-breakdown-value {
+  justify-self: end;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .titlebar-stat {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .titlebar-stat-label {
@@ -7604,13 +7686,27 @@ body::after {
 }
 
 .titlebar-stats {
-  gap: 6px;
+  gap: 4px;
   font-size: 8px;
   color: rgba(255, 255, 255, 0.42);
 }
 
+.titlebar-stats-breakdown {
+  min-width: 206px;
+  padding: 9px 10px;
+}
+
+.titlebar-stats-breakdown-title {
+  font-size: 8px;
+}
+
+.titlebar-stats-breakdown-label,
+.titlebar-stats-breakdown-value {
+  font-size: 9px;
+}
+
 .titlebar-stat {
-  gap: 3px;
+  gap: 2px;
 }
 
 .titlebar-stat-label {
@@ -11230,7 +11326,8 @@ body::after {
     height: 30px;
   }
 
-  .titlebar-stats {
+  .titlebar-stats,
+  .titlebar-stats-shell {
     display: none;
   }
 

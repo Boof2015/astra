@@ -2634,7 +2634,7 @@ ipcMain.handle('app:getPerformanceStats', () => {
 
   return {
     cpuPercent: totalCpuPercent,
-    memoryMb: totalWorkingSetKb / 1024,
+    workingSetMb: totalWorkingSetKb / 1024,
   }
 })
 

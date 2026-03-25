@@ -43,6 +43,7 @@ import type {
     SubsonicStatusSnapshot
 } from '../types/subsonic'
 import type {
+    AudioBufferMemoryStats,
     NativeAudioCapabilities,
     NativeAudioEvent,
     NativeAudioPlaybackSnapshot,
@@ -68,6 +69,7 @@ declare global {
             seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
             clearNextTrack: () => Promise<void>
             getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+            getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
             setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
             flushOscilloscopeChunks: () => Float32Array[]
             flushSpectrumChunks: () => Float32Array[]
@@ -109,7 +111,8 @@ declare global {
             }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
-            getAppPerformanceStats: () => Promise<{ cpuPercent: number; memoryMb: number }>
+            getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
+            getRendererMemoryStats: () => Promise<{ privateMb: number }>
             updates: {
                 checkForUpdates: () => Promise<{
                     status: 'up-to-date' | 'update-available' | 'error'
