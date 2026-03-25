@@ -1152,6 +1152,8 @@ button, .titlebar {
 .info-sidebar-artwork {
   aspect-ratio: 1;
   width: 100%;
+  height: calc(var(--info-sidebar-width) - 40px);
+  flex: 0 0 auto;
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--bg-tertiary);
