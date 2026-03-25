@@ -1,10 +1,8 @@
 import { useEffect } from 'react'
+import { SEEK_STEP_SECONDS, VOLUME_STEP } from '../constants/keyboardShortcuts'
 import { usePlayerStore } from '../stores/playerStore'
 import { useUIStore } from '../stores/uiStore'
 import { useJumpToNowPlaying } from './useJumpToNowPlaying'
-
-const SEEK_STEP_SECONDS = 5
-const VOLUME_STEP = 0.05
 
 const clamp = (value: number, min: number, max: number): number => {
   return Math.min(max, Math.max(min, value))
@@ -55,6 +53,26 @@ export function useKeyboardShortcuts(): void {
       const key = e.key
       const normalizedKey = key.toLowerCase()
       const ui = useUIStore.getState()
+      const isTextInputTarget = isShortcutBlockedTarget(e.target)
+      const isShortcutHelpOpen =
+        (!e.metaKey && !e.ctrlKey && !e.altKey && key === '?') ||
+        ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === '/')
+
+      if (isShortcutHelpOpen && !isTextInputTarget) {
+        e.preventDefault()
+        if (e.repeat) return
+        ui.openKeyboardShortcuts()
+        return
+      }
+
+      if (ui.isKeyboardShortcutsOpen) {
+        if (key === 'Escape') {
+          e.preventDefault()
+          if (e.repeat) return
+          ui.closeKeyboardShortcuts()
+        }
+        return
+      }
 
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && normalizedKey === 'k') {
         e.preventDefault()
@@ -69,7 +87,7 @@ export function useKeyboardShortcuts(): void {
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
       // Don't intercept while interacting with form fields/editable content.
-      if (isShortcutBlockedTarget(e.target)) {
+      if (isTextInputTarget) {
         return
       }
 

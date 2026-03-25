@@ -9,6 +9,7 @@ import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
+import KeyboardShortcutsModal from './components/layout/KeyboardShortcutsModal'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
@@ -221,6 +222,7 @@ function App() {
       <AssociatedOpenCue />
       <UpdateAvailableCue />
       <QuickLaunchPalette />
+      <KeyboardShortcutsModal />
       {isFullscreen && <FullscreenMode />}
     </div>
   )

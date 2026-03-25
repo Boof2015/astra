@@ -259,6 +259,7 @@ export default function SettingsView() {
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
     return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
   })
+  const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -1502,6 +1503,7 @@ export default function SettingsView() {
                   Open Releases
                 </button>
               </div>
+
             </div>
             <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
               {updateStatusMessage}
@@ -1514,6 +1516,15 @@ export default function SettingsView() {
             <p className="settings-note settings-update-meta">
               {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
             </p>
+            <div className="settings-actions settings-info-actions">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={openKeyboardShortcuts}
+              >
+                Keyboard Shortcuts
+              </button>
+            </div>
             <div className="settings-info-panels">
               <div className="settings-info-panel">
                 <h4>Attribution</h4>

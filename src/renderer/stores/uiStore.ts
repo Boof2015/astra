@@ -125,6 +125,7 @@ interface UIStore {
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
+  isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
   queueInsertDrag: QueueInsertDragState | null
@@ -150,6 +151,9 @@ interface UIStore {
   openQuickLaunch: () => void
   closeQuickLaunch: () => void
   toggleQuickLaunch: () => void
+  openKeyboardShortcuts: () => void
+  closeKeyboardShortcuts: () => void
+  toggleKeyboardShortcuts: () => void
   setPendingLibrarySearchQuery: (query: string | null) => void
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
@@ -175,6 +179,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
+  isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
   queueInsertDrag: null,
@@ -261,6 +266,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openQuickLaunch: () => set({ isQuickLaunchOpen: true }),
   closeQuickLaunch: () => set({ isQuickLaunchOpen: false }),
   toggleQuickLaunch: () => set((s) => ({ isQuickLaunchOpen: !s.isQuickLaunchOpen })),
+  openKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: true }),
+  closeKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: false }),
+  toggleKeyboardShortcuts: () => set((s) => ({ isKeyboardShortcutsOpen: !s.isKeyboardShortcutsOpen })),
   setPendingLibrarySearchQuery: (query) => set({ pendingLibrarySearchQuery: query }),
   consumePendingLibrarySearchQuery: () => {
     const query = get().pendingLibrarySearchQuery

@@ -35,7 +35,7 @@ A fully parametric EQ with up to 10 bands, a live frequency response graph with 
 
 ## Library
 
-Point Astra at your music folders and it takes care of the rest, metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. There's also a global fuzzy search shortcut so you can find anything without touching the mouse. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player.
+Point Astra at your music folders and it takes care of the rest, metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. There's also an in-app Quick Launch shortcut so you can find anything without touching the mouse, plus a keyboard shortcuts reference in Settings when you need a refresher. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player.
 
 ## Audio Settings
 
