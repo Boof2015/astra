@@ -55,6 +55,12 @@ import type {
   NativeAudioVUMeterChunk,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
+import type {
+  RemoteAudioLoadProgress,
+  RemoteStreamChunk,
+  RemoteStreamEvent,
+  RemoteStreamInfo
+} from '../types/remoteStream'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
 export interface AudioFileMetadata {
@@ -86,18 +92,6 @@ export interface AudioFileResult {
 
 export interface AudioLoadOptions {
   metadataMode?: 'full' | 'none'
-}
-
-export interface RemoteAudioLoadProgress {
-  path: string
-  sourceType: 'subsonic' | 'jellyfin'
-  stage: 'downloading'
-  loadedBytes: number
-  totalBytes: number | null
-  chunkCount: number
-  percent: number | null
-  done: boolean
-  failed: boolean
 }
 
 // Library types
@@ -618,12 +612,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
+    ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
+  cancelRemoteStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelRemoteStream', sessionId) as Promise<void>,
   getReplayGainScanEnabled: () => ipcRenderer.invoke('audio:getReplayGainScanEnabled') as Promise<boolean>,
   setReplayGainScanEnabled: (enabled: boolean) => ipcRenderer.invoke('audio:setReplayGainScanEnabled', enabled) as Promise<boolean>,
   onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: RemoteAudioLoadProgress) => callback(progress)
     ipcRenderer.on('audio:remoteLoadProgress', handler)
     return () => ipcRenderer.removeListener('audio:remoteLoadProgress', handler)
+  },
+  onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, chunk: RemoteStreamChunk) => callback(chunk)
+    ipcRenderer.on('audio:remoteStreamChunk', handler)
+    return () => ipcRenderer.removeListener('audio:remoteStreamChunk', handler)
+  },
+  onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: RemoteStreamEvent) => callback(payload)
+    ipcRenderer.on('audio:remoteStreamEvent', handler)
+    return () => ipcRenderer.removeListener('audio:remoteStreamEvent', handler)
   },
 
   // Generic file dialogs & I/O
@@ -907,9 +914,13 @@ declare global {
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
+      cancelRemoteStream: (sessionId: number) => Promise<void>
       getReplayGainScanEnabled: () => Promise<boolean>
       setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
       onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => () => void
+      onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => () => void
+      onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => () => void
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>

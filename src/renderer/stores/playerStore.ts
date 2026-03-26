@@ -8,13 +8,18 @@ import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } 
 interface RemoteLoadProgress {
   path: string
   sourceType: 'subsonic' | 'jellyfin'
-  stage: 'downloading'
+  stage: 'downloading' | 'streaming' | 'complete' | 'failed'
   loadedBytes: number
   totalBytes: number | null
   chunkCount: number
   percent: number | null
   done: boolean
   failed: boolean
+  bufferedSeconds: number
+  bufferedPercent: number | null
+  analyzedSeconds: number
+  analyzedPercent: number | null
+  playable: boolean
 }
 
 export type QueueTrackSource = 'user' | 'auto' | 'manual'
@@ -46,7 +51,11 @@ interface PlayerStore {
   volume: number
   isMuted: boolean
   waveformData: Float32Array | null
+  waveformBufferedRatio: number
+  waveformAnalyzedRatio: number
   remoteLoadProgress: RemoteLoadProgress | null
+  remoteBufferedSeconds: number
+  remoteStreamSessionId: number | null
   ffmpegFallbackNotice: {
     id: number
     trackPath: string
@@ -157,6 +166,25 @@ const CURRENT_TIME_STORE_THROTTLE_MS = 100
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
 
+function createInitialRemoteLoadProgress(track: Track): RemoteLoadProgress {
+  return {
+    path: track.path,
+    sourceType: track.sourceType === 'jellyfin' ? 'jellyfin' : 'subsonic',
+    stage: 'downloading',
+    loadedBytes: 0,
+    totalBytes: null,
+    chunkCount: 0,
+    percent: null,
+    done: false,
+    failed: false,
+    bufferedSeconds: 0,
+    bufferedPercent: 0,
+    analyzedSeconds: 0,
+    analyzedPercent: 0,
+    playable: false
+  }
+}
+
 function getWaveformCacheEntry(trackPath: string): Float32Array | undefined {
   const cached = waveformCache.get(trackPath)
   if (!cached) return undefined
@@ -189,6 +217,11 @@ function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   return track.sourceType !== undefined
     && track.sourceType !== 'local'
     && track.isAvailable === false
+}
+
+function shouldUseWaveformCache(track: Track | null | undefined): boolean {
+  if (!track) return false
+  return (track.sourceType ?? 'local') === 'local'
 }
 
 function clampQueuePosition(index: number, length: number): number {
@@ -721,7 +754,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     volume: initialPlayerVolume,
     isMuted: false,
     waveformData: null,
+    waveformBufferedRatio: 1,
+    waveformAnalyzedRatio: 1,
     remoteLoadProgress: null,
+    remoteBufferedSeconds: 0,
+    remoteStreamSessionId: null,
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
     associatedOpenNotice: null,
@@ -752,7 +789,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrackSource: 'manual',
         playbackState: 'loading',
         waveformData: null,
+        waveformBufferedRatio: 1,
+        waveformAnalyzedRatio: 1,
         remoteLoadProgress: null,
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null,
         currentTime: 0,
         duration: track.duration
       })
@@ -776,6 +817,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             currentTrack: resolvedTrack,
             currentTrackSource: 'manual',
             remoteLoadProgress: null,
+            remoteBufferedSeconds: 0,
+            remoteStreamSessionId: null,
+            waveformBufferedRatio: 1,
+            waveformAnalyzedRatio: 1,
             currentTime: 0
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -813,6 +858,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTrack: resolvedTrack,
           currentTrackSource: 'manual',
           remoteLoadProgress: null,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null,
+          waveformBufferedRatio: 1,
+          waveformAnalyzedRatio: 1,
           currentTime: 0
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -835,7 +884,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           trackPath: track.path,
           failed: true
         })
-        set({ playbackState: 'stopped', remoteLoadProgress: null })
+        set({
+          playbackState: 'stopped',
+          remoteLoadProgress: null,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null
+        })
         pendingManualLoadCueTrack = null
         return false
       }
@@ -862,6 +916,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
 
       const previousPlaybackState = state.playbackState
+      if (
+        state.currentTrack.sourceType
+        && state.currentTrack.sourceType !== 'local'
+        && previousPlaybackState === 'stopped'
+        && state.remoteStreamSessionId === null
+      ) {
+        const reloaded = await get()._loadAndPlayTrack(state.currentTrack, { manualStart: true })
+        if (!reloaded) {
+          markTrackUnavailableInState(state.currentTrack.path)
+        }
+        return
+      }
       if (pendingManualLoadCueTrack) {
         showOutputDelayNotice(pendingManualLoadCueTrack)
         pendingManualLoadCueTrack = null
@@ -889,11 +955,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     stop: () => {
       pendingManualLoadCueTrack = null
       recentPlaySession = null
+      set({
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null
+      })
       audioEngine.stop()
     },
 
     seek: async (time: number) => {
-      await audioEngine.seek(time)
+      const state = get()
+      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
+        ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
+        : time
+      await audioEngine.seek(seekTime)
     },
 
     // Volume controls
@@ -1281,27 +1355,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrack: track,
         playbackState: 'loading',
         waveformData: null,
+        waveformBufferedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
+        waveformAnalyzedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
-          ? {
-              path: track.path,
-              sourceType: track.sourceType,
-              stage: 'downloading',
-              loadedBytes: 0,
-              totalBytes: null,
-              chunkCount: 0,
-              percent: null,
-              done: false,
-              failed: false
-            }
+          ? createInitialRemoteLoadProgress(track)
           : null,
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null,
         currentTime: 0,
         duration: track.duration
       })
 
       try {
         await ensureCompatiblePlaybackMode(track)
+        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         if (shouldUseBitPerfectPath(track)) {
-          const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const loadResult = await audioEngine.loadTrackFromPath(track)
           const resolvedTrack: Track = {
@@ -1329,6 +1397,49 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return true
         }
 
+        if (track.sourceType && track.sourceType !== 'local') {
+          try {
+            const streamInfo = await audioEngine.loadRemoteStream(track, { replayGainDb })
+            const resolvedTrack: Track = {
+              ...track,
+              duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
+              channels: streamInfo.channels ?? track.channels
+            }
+            set({
+              duration: resolvedTrack.duration,
+              currentTrack: resolvedTrack,
+              waveformData: null,
+              waveformBufferedRatio: 0,
+              waveformAnalyzedRatio: 0,
+              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
+              remoteStreamSessionId: streamInfo.sessionId,
+              currentTime: 0
+            })
+            hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+            if (manualStart) {
+              showOutputDelayNotice(resolvedTrack)
+            }
+            await audioEngine.play()
+            startRecentPlaySession(resolvedTrack.path)
+            logSlowPath('queueLoadAndPlayTrack', loadStart, {
+              trackPath: track.path,
+              usedRemoteStream: true
+            })
+            return true
+          } catch (streamError) {
+            console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
+            set({
+              remoteLoadProgress: createInitialRemoteLoadProgress(track),
+              remoteBufferedSeconds: 0,
+              remoteStreamSessionId: null,
+              waveformData: null,
+              waveformBufferedRatio: 0,
+              waveformAnalyzedRatio: 0
+            })
+          }
+        }
+
         const fileLoadStart = performance.now()
         // Load audio file from path
         const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
@@ -1340,12 +1451,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             failed: true,
             stage: 'fileLoad'
           })
-          set({ playbackState: 'stopped', remoteLoadProgress: null })
+          set({
+            playbackState: 'stopped',
+            remoteLoadProgress: null,
+            remoteBufferedSeconds: 0,
+            remoteStreamSessionId: null
+          })
           return false
         }
 
         let usedFfmpegFallback = false
-        const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(result.data, { replayGainDb })
@@ -1379,6 +1494,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           duration: audioEngine.duration,
           currentTrack: resolvedTrack,
           remoteLoadProgress: null,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null,
+          waveformBufferedRatio: 1,
+          waveformAnalyzedRatio: 1,
           currentTime: 0
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -1409,7 +1528,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
-        set({ playbackState: 'stopped', remoteLoadProgress: null })
+        set({
+          playbackState: 'stopped',
+          remoteLoadProgress: null,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null
+        })
         return false
       }
     },
@@ -1490,7 +1614,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             return state
           }
           return {
-            remoteLoadProgress: progress
+            remoteLoadProgress: progress,
+            remoteBufferedSeconds: progress.bufferedSeconds
           }
         })
       })
@@ -1498,14 +1623,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
         if (nextPlaybackState === 'playing') {
-          set({ playbackState: nextPlaybackState })
+          lastCommittedCurrentTimeMs = performance.now()
+          set({
+            playbackState: nextPlaybackState,
+            currentTime: audioEngine.currentTime
+          })
           return
         }
 
         lastCommittedCurrentTimeMs = performance.now()
         set({
           playbackState: nextPlaybackState,
-          currentTime: audioEngine.currentTime
+          currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
         })
       })
 
@@ -1514,6 +1643,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         maybeCommitRecentPlay(normalizedTime)
 
         const state = get()
+        if (state.playbackState === 'loading') {
+          if (normalizedTime !== 0) {
+            return
+          }
+          if (state.currentTime !== 0) {
+            lastCommittedCurrentTimeMs = performance.now()
+            set({ currentTime: 0 })
+          }
+          return
+        }
+
+        if (state.playbackState === 'stopped') {
+          if (normalizedTime !== 0) {
+            return
+          }
+          if (state.currentTime !== 0) {
+            lastCommittedCurrentTimeMs = performance.now()
+            set({ currentTime: 0 })
+          }
+          return
+        }
+
         if (state.playbackState !== 'playing') {
           lastCommittedCurrentTimeMs = performance.now()
           set({ currentTime: normalizedTime })
@@ -1537,19 +1688,57 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({ duration: duration as number })
       })
 
+      audioEngine.on('remoteWaveformUpdate', (payload) => {
+        const next = payload as {
+          waveformData: Float32Array
+          bufferedRatio: number
+          analyzedRatio: number
+          bufferedSeconds: number
+        }
+        const track = get().currentTrack
+        if (!track || !track.sourceType || track.sourceType === 'local') {
+          return
+        }
+
+        set((state) => ({
+          waveformData: (
+            state.remoteStreamSessionId !== null
+            && state.waveformAnalyzedRatio >= 0.999
+            && next.analyzedRatio < 0.999
+          )
+            ? state.waveformData
+            : next.waveformData,
+          waveformBufferedRatio: next.bufferedRatio,
+          waveformAnalyzedRatio: Math.max(state.waveformAnalyzedRatio, next.analyzedRatio),
+          remoteBufferedSeconds: next.bufferedSeconds
+        }))
+      })
+
       audioEngine.on('bufferReady', (buffer) => {
         const track = get().currentTrack
         if (!track || !buffer) return
 
-        const cached = getWaveformCacheEntry(track.path)
-        if (cached) {
-          set({ waveformData: cached })
-          return
+        if (shouldUseWaveformCache(track)) {
+          const cached = getWaveformCacheEntry(track.path)
+          if (cached) {
+            set({
+              waveformData: cached,
+              waveformBufferedRatio: 1,
+              waveformAnalyzedRatio: 1
+            })
+            return
+          }
         }
 
         const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-        setWaveformCacheEntry(track.path, peaks)
-        set({ waveformData: peaks })
+        if (shouldUseWaveformCache(track)) {
+          setWaveformCacheEntry(track.path, peaks)
+        }
+        set({
+          waveformData: peaks,
+          waveformBufferedRatio: 1,
+          waveformAnalyzedRatio: 1
+        })
       })
 
       // Handle gapless transition - advance queue without reloading
@@ -1582,12 +1771,22 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTime: number
           duration: number
           waveformData: Float32Array | null
+          waveformBufferedRatio: number
+          waveformAnalyzedRatio: number
+          remoteBufferedSeconds: number
+          remoteStreamSessionId: number | null
         } = {
           ...transitionState,
           currentTrack: nextTrack,
           currentTime: 0,
           duration: nextTrack.duration,
-          waveformData: getWaveformCacheEntry(nextTrack.path) ?? null
+          waveformData: shouldUseWaveformCache(nextTrack)
+            ? (getWaveformCacheEntry(nextTrack.path) ?? null)
+            : null,
+          waveformBufferedRatio: 1,
+          waveformAnalyzedRatio: 1,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null
         }
         set(nextState)
         audioEngine.setCurrentReplayGainDb(
@@ -1603,7 +1802,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       audioEngine.on('ended', () => {
         commitRecentPlayNow()
         recentPlaySession = null
-        set({ currentTime: 0 })
+        set({
+          currentTime: 0,
+          remoteBufferedSeconds: 0,
+          remoteStreamSessionId: null
+        })
         // Auto-play next track (non-gapless fallback)
         get().playNext()
       })

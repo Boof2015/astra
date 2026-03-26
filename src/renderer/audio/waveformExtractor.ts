@@ -94,3 +94,68 @@ export function downsampleWaveform(source: Float32Array, barCount: number): Floa
 
   return current
 }
+
+export class ProgressiveWaveformAccumulator {
+  private readonly resolution: number
+  private readonly totalFrames: number
+  private readonly sumSquares: Float64Array
+  private readonly counts: Uint32Array
+
+  constructor(durationSeconds: number, sampleRate: number, resolution: number = 512) {
+    const normalizedDuration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 1
+    const normalizedSampleRate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 48_000
+    this.resolution = Math.max(8, Math.floor(resolution))
+    this.totalFrames = Math.max(1, Math.floor(normalizedDuration * normalizedSampleRate))
+    this.sumSquares = new Float64Array(this.resolution)
+    this.counts = new Uint32Array(this.resolution)
+  }
+
+  ingestChunk(channelData: Float32Array[], startFrame: number): void {
+    if (!Array.isArray(channelData) || channelData.length === 0) return
+    const frameCount = channelData.reduce((min, channel) => (
+      min === null ? channel.length : Math.min(min, channel.length)
+    ), null as number | null)
+    if (frameCount == null || frameCount <= 0) return
+
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+      const absoluteFrame = startFrame + frameIndex
+      if (absoluteFrame < 0) continue
+      const binIndex = Math.max(
+        0,
+        Math.min(this.resolution - 1, Math.floor((absoluteFrame / this.totalFrames) * this.resolution))
+      )
+
+      let frameSquareSum = 0
+      for (let channelIndex = 0; channelIndex < channelData.length; channelIndex++) {
+        const sample = channelData[channelIndex][frameIndex] ?? 0
+        frameSquareSum += sample * sample
+      }
+
+      this.sumSquares[binIndex] += frameSquareSum / channelData.length
+      this.counts[binIndex] += 1
+    }
+  }
+
+  getPeaks(): Float32Array {
+    const peaks = new Float32Array(this.resolution)
+    let maxValue = 0
+
+    for (let index = 0; index < this.resolution; index++) {
+      const count = this.counts[index]
+      if (count === 0) continue
+      const rms = Math.sqrt(this.sumSquares[index] / count)
+      peaks[index] = rms
+      if (rms > maxValue) {
+        maxValue = rms
+      }
+    }
+
+    if (maxValue > 0) {
+      for (let index = 0; index < this.resolution; index++) {
+        peaks[index] /= maxValue
+      }
+    }
+
+    return peaks
+  }
+}

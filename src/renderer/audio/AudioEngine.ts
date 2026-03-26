@@ -1,4 +1,5 @@
 import { PlaybackState, EQBand, Track } from '../types/audio'
+import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
@@ -11,12 +12,17 @@ import type {
 } from '../../types/nativeAudio'
 import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
+import { ProgressiveWaveformAccumulator } from './waveformExtractor'
 
 type EventCallback = (...args: unknown[]) => void
 
 const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
 const BIT_PERFECT_UNSUPPORTED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
+const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
+const REMOTE_NORMALIZATION_UPDATE_SECONDS = 5
+const REMOTE_NORMALIZATION_MIN_DELTA_DB = 1
+const REMOTE_NORMALIZATION_SLEW_MS = 250
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -98,10 +104,39 @@ interface AudioLoadDataOptions {
   replayGainDb?: number | null
 }
 
+interface RemoteStreamLoadOptions {
+  replayGainDb?: number | null
+}
+
 interface PlaybackModeSwitchResult {
   activeMode: PlaybackOutputMode
   capabilities: NativeAudioCapabilities
   message: string | null
+}
+
+interface ProgressiveNormalizationAccumulator {
+  sumSquares: number
+  sampleCount: number
+  nextUpdateFrameThreshold: number
+  approximate: boolean
+}
+
+interface RemoteStreamRuntimeState {
+  sessionId: number
+  path: string
+  sourceType: 'subsonic' | 'jellyfin'
+  sampleRate: number
+  channels: number
+  durationSeconds: number
+  bufferedFrames: number
+  analyzedFrames: number
+  currentFrame: number
+  playRequested: boolean
+  started: boolean
+  paused: boolean
+  sourceEnded: boolean
+  waveform: ProgressiveWaveformAccumulator
+  normalization: ProgressiveNormalizationAccumulator | null
 }
 
 export type OutputDelayCalibrationFailureCode =
@@ -181,6 +216,7 @@ export class AudioEngine {
   private analysisDelayNode: DelayNode | null = null
   private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
+  private remoteStreamNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
   private analysisDelayMs: number = 0
 
@@ -245,7 +281,7 @@ export class AudioEngine {
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
   private multichannelEnabled: boolean = false
   private manualChannelRoutingMap: number[] | null = null
-  private sourceRoutingNodes: WeakMap<AudioBufferSourceNode, {
+  private sourceRoutingNodes: WeakMap<AudioNode, {
     splitter: ChannelSplitterNode
     merger: ChannelMergerNode
   }> = new WeakMap()
@@ -264,9 +300,16 @@ export class AudioEngine {
   private nativeSnapshot: NativeAudioPlaybackSnapshot | null = null
   private nativeScopePollFrameId: number | null = null
   private nativeEventUnsubscribe: (() => void) | null = null
+  private remoteStreamChunkUnsubscribe: (() => void) | null = null
+  private remoteStreamEventUnsubscribe: (() => void) | null = null
   private nativeModeMessage: string | null = null
   private nativeNextTrackBuffered: boolean = false
   private lastNativeVisualizerTapDemand: NativeAudioVisualizerTapDemand | null = null
+  private remoteStreamState: RemoteStreamRuntimeState | null = null
+  private remotePlayPromise: Promise<void> | null = null
+  private remotePlayResolver: (() => void) | null = null
+  private remotePlayRejecter: ((error: Error) => void) | null = null
+  private normalizationApproximate: boolean = false
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -1027,6 +1070,7 @@ export class AudioEngine {
     await this.initNativeAudio()
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
     if (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused') {
       try {
         await window.nativeAudioAPI.stop()
@@ -1035,6 +1079,7 @@ export class AudioEngine {
       }
     }
     this.clearNextBuffer()
+    await this.clearRemoteStreamState(true)
     this.audioBuffer = null
     this.nativeNextTrackBuffered = false
     const result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
@@ -1169,7 +1214,7 @@ export class AudioEngine {
     })
   }
 
-  private connectSourceWithRouting(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+  private connectSourceWithRouting(sourceNode: AudioNode, sourceChannels: number): void {
     if (!this.context || !this.normalizationGainNode) return
 
     this.applyChannelRoutingPreferences(sourceChannels)
@@ -1209,7 +1254,7 @@ export class AudioEngine {
     this.sourceRoutingNodes.set(sourceNode, { splitter, merger })
   }
 
-  private connectSourceToAnalysisTap(sourceNode: AudioBufferSourceNode, sourceChannels: number): void {
+  private connectSourceToAnalysisTap(sourceNode: AudioNode, sourceChannels: number): void {
     if (!this.analysisNormalizationGainNode) return
 
     this.applyAnalysisRoutingPreferences(sourceChannels)
@@ -1217,7 +1262,7 @@ export class AudioEngine {
     sourceNode.connect(this.analysisNormalizationGainNode)
   }
 
-  private disconnectSourceRouting(sourceNode: AudioBufferSourceNode | null): void {
+  private disconnectSourceRouting(sourceNode: AudioNode | null): void {
     if (!sourceNode) return
 
     const routingNodes = this.sourceRoutingNodes.get(sourceNode)
@@ -1226,6 +1271,397 @@ export class AudioEngine {
     try { routingNodes.splitter.disconnect() } catch { /* ignore */ }
     try { routingNodes.merger.disconnect() } catch { /* ignore */ }
     this.sourceRoutingNodes.delete(sourceNode)
+  }
+
+  private resetRemotePlayPromise(error?: Error): void {
+    if (error) {
+      this.remotePlayRejecter?.(error)
+    } else {
+      this.remotePlayResolver?.()
+    }
+    this.remotePlayPromise = null
+    this.remotePlayResolver = null
+    this.remotePlayRejecter = null
+  }
+
+  private disconnectRemoteStreamNode(): void {
+    if (!this.remoteStreamNode) return
+    this.remoteStreamNode.port.onmessage = null
+    this.disconnectSourceRouting(this.remoteStreamNode)
+    try {
+      this.remoteStreamNode.disconnect()
+    } catch {
+      // Ignore disconnect races while replacing the remote stream node.
+    }
+    this.remoteStreamNode = null
+  }
+
+  private async clearRemoteStreamState(cancelSession: boolean): Promise<void> {
+    const remoteState = this.remoteStreamState
+    this.remoteStreamState = null
+    this.disconnectRemoteStreamNode()
+    this.stopTimeUpdate()
+    this.normalizationApproximate = false
+    this.resetRemotePlayPromise(cancelSession ? new Error('Remote stream was cancelled.') : undefined)
+
+    if (remoteState && cancelSession) {
+      try {
+        await window.electronAPI.cancelRemoteStream(remoteState.sessionId)
+      } catch {
+        // Ignore cancellation failures while switching tracks or stopping playback.
+      }
+    }
+  }
+
+  private createRemoteStreamNode(channelCount: number): AudioWorkletNode {
+    if (!this.context) {
+      throw new Error('AudioContext not initialized')
+    }
+
+    const node = new AudioWorkletNode(this.context, 'remote-stream-player', {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [Math.max(1, channelCount)]
+    })
+
+    node.port.onmessage = (event: MessageEvent) => {
+      if (node !== this.remoteStreamNode) {
+        return
+      }
+
+      const payload = event.data ?? {}
+      if (!payload || typeof payload !== 'object') return
+
+      if (payload.type === 'position' && this.remoteStreamState) {
+        this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
+          ? Math.max(0, Math.floor(payload.frame))
+          : this.remoteStreamState.currentFrame
+        this.emit('timeUpdate', this.currentTime)
+      }
+
+      if (payload.type === 'ended' && this.remoteStreamState) {
+        this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
+          ? Math.max(0, Math.floor(payload.frame))
+          : this.remoteStreamState.currentFrame
+        this.remoteStreamState.started = false
+        this.remoteStreamState.paused = false
+        this.remoteStreamState.playRequested = false
+        this._playbackState = 'stopped'
+        this.emit('stateChange', this._playbackState)
+        this.emit('timeUpdate', 0)
+        this.notifyTrackChange()
+        this.stopTimeUpdate()
+        void this.clearRemoteStreamState(false)
+        this.emit('ended')
+      }
+    }
+
+    this.connectSourceWithRouting(node, channelCount)
+    this.connectSourceToAnalysisTap(node, channelCount)
+    return node
+  }
+
+  private createProgressiveNormalizationAccumulator(): ProgressiveNormalizationAccumulator {
+    return {
+      sumSquares: 0,
+      sampleCount: 0,
+      nextUpdateFrameThreshold: 0,
+      approximate: true
+    }
+  }
+
+  private resolveProgressiveNormalizationGain(accumulator: ProgressiveNormalizationAccumulator): GainState | null {
+    if (accumulator.sampleCount <= 0) return null
+
+    const rms = Math.sqrt(accumulator.sumSquares / accumulator.sampleCount)
+    if (!Number.isFinite(rms) || rms <= 0) {
+      return {
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'normalization'
+      }
+    }
+
+    const currentDb = 20 * Math.log10(rms + 1e-10)
+    const clampedGainDb = this.clampGainDb(this._targetLufs - currentDb)
+    return {
+      gainDb: clampedGainDb,
+      linearGain: this.toLinearGain(clampedGainDb),
+      mode: 'normalization'
+    }
+  }
+
+  private applyRemoteNormalizationIfNeeded(
+    remoteState: RemoteStreamRuntimeState,
+    options: { force?: boolean; markComplete?: boolean } = {}
+  ): void {
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (!this._normalizationEnabled) {
+      this.normalizationApproximate = false
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
+      return
+    }
+
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+      this.normalizationApproximate = false
+      const clampedGainDb = this.clampGainDb(this.currentReplayGainDb)
+      this.applyGainState({
+        gainDb: clampedGainDb,
+        linearGain: this.toLinearGain(clampedGainDb),
+        mode: 'replaygain'
+      })
+      return
+    }
+
+    if (!remoteState.normalization) return
+    const gainState = this.resolveProgressiveNormalizationGain(remoteState.normalization)
+    if (!gainState) return
+
+    const currentGainDb = this._normalizationMode === 'normalization'
+      ? this._normalizationGainDb
+      : Number.NaN
+    const shouldApplyImmediately = !Number.isFinite(currentGainDb)
+    const shouldApply = shouldApplyImmediately
+      || options.force === true
+      || Math.abs(gainState.gainDb - currentGainDb) >= REMOTE_NORMALIZATION_MIN_DELTA_DB
+
+    if (!shouldApply) return
+
+    this.normalizationApproximate = options.markComplete !== true
+    if (options.force === true || !this.context) {
+      this.applyGainState(gainState)
+      return
+    }
+
+    const now = this.context.currentTime
+    const params = [this.normalizationGainNode?.gain, this.analysisNormalizationGainNode?.gain].filter(Boolean) as AudioParam[]
+    this._normalizationGainDb = gainState.gainDb
+    this._normalizationMode = gainState.mode
+    for (const param of params) {
+      param.cancelScheduledValues(now)
+      param.setValueAtTime(param.value, now)
+      param.linearRampToValueAtTime(gainState.linearGain, now + (REMOTE_NORMALIZATION_SLEW_MS / 1000))
+    }
+  }
+
+  private emitRemoteWaveformUpdate(remoteState: RemoteStreamRuntimeState): void {
+    const durationFrames = Math.max(1, Math.round(remoteState.durationSeconds * remoteState.sampleRate))
+    const bufferedRatio = Math.max(0, Math.min(1, remoteState.bufferedFrames / durationFrames))
+    const analyzedRatio = Math.max(0, Math.min(1, remoteState.analyzedFrames / durationFrames))
+    this.emit('remoteWaveformUpdate', {
+      waveformData: remoteState.waveform.getPeaks(),
+      bufferedRatio,
+      analyzedRatio,
+      bufferedSeconds: remoteState.bufferedFrames / remoteState.sampleRate
+    })
+  }
+
+  private maybeStartRemotePlayback(): void {
+    const remoteState = this.remoteStreamState
+    if (!remoteState || !this.remoteStreamNode) return
+    if (!remoteState.playRequested || remoteState.started) return
+
+    const playableFrames = Math.floor(remoteState.sampleRate * REMOTE_STREAM_PLAYABLE_SECONDS)
+    const hasEnoughBuffered = remoteState.bufferedFrames >= playableFrames
+      || (remoteState.sourceEnded && remoteState.bufferedFrames > 0)
+    if (!hasEnoughBuffered) return
+
+    remoteState.started = true
+    remoteState.paused = false
+    this.remoteStreamNode.port.postMessage({
+      type: 'set-playing',
+      playing: true
+    })
+    this._playbackState = 'playing'
+    this.emit('stateChange', this._playbackState)
+    this.startTimeUpdate()
+    this.resetRemotePlayPromise()
+  }
+
+  private deinterleaveRemoteChunk(chunk: RemoteStreamChunk): Float32Array[] {
+    const interleaved = new Float32Array(chunk.pcmData)
+    const channelData = Array.from({ length: chunk.channels }, () => new Float32Array(chunk.frameCount))
+    for (let frameIndex = 0; frameIndex < chunk.frameCount; frameIndex++) {
+      for (let channelIndex = 0; channelIndex < chunk.channels; channelIndex++) {
+        channelData[channelIndex][frameIndex] = interleaved[(frameIndex * chunk.channels) + channelIndex] ?? 0
+      }
+    }
+    return channelData
+  }
+
+  private handleRemoteStreamChunk(chunk: RemoteStreamChunk): void {
+    const remoteState = this.remoteStreamState
+    if (!remoteState || chunk.sessionId !== remoteState.sessionId || !this.remoteStreamNode) {
+      return
+    }
+
+    const channelData = this.deinterleaveRemoteChunk(chunk)
+    const startFrame = remoteState.bufferedFrames
+    remoteState.bufferedFrames = Math.max(remoteState.bufferedFrames, chunk.decodedFrames)
+    remoteState.analyzedFrames = remoteState.bufferedFrames
+    remoteState.waveform.ingestChunk(channelData, startFrame)
+
+    if (remoteState.normalization) {
+      for (const channel of channelData) {
+        for (let index = 0; index < channel.length; index++) {
+          const sample = channel[index]
+          remoteState.normalization.sumSquares += sample * sample
+        }
+      }
+      remoteState.normalization.sampleCount += channelData[0]?.length ? channelData[0].length * channelData.length : 0
+
+      const playableThresholdFrames = Math.floor(remoteState.sampleRate * REMOTE_STREAM_PLAYABLE_SECONDS)
+      if (remoteState.normalization.nextUpdateFrameThreshold === 0 && remoteState.analyzedFrames >= playableThresholdFrames) {
+        remoteState.normalization.nextUpdateFrameThreshold = Math.floor(remoteState.sampleRate * REMOTE_NORMALIZATION_UPDATE_SECONDS)
+        this.applyRemoteNormalizationIfNeeded(remoteState, { force: true })
+      } else if (
+        remoteState.normalization.nextUpdateFrameThreshold > 0
+        && remoteState.analyzedFrames >= remoteState.normalization.nextUpdateFrameThreshold
+      ) {
+        remoteState.normalization.nextUpdateFrameThreshold += Math.floor(remoteState.sampleRate * REMOTE_NORMALIZATION_UPDATE_SECONDS)
+        this.applyRemoteNormalizationIfNeeded(remoteState)
+      }
+    }
+
+    this.emitRemoteWaveformUpdate(remoteState)
+    this.remoteStreamNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        frameCount: chunk.frameCount,
+        channelData
+      },
+      channelData.map((channel) => channel.buffer)
+    )
+    this.maybeStartRemotePlayback()
+  }
+
+  private handleRemoteStreamEvent(payload: RemoteStreamEvent): void {
+    const remoteState = this.remoteStreamState
+    if (!remoteState || payload.sessionId !== remoteState.sessionId) return
+
+    if (payload.type === 'complete') {
+      remoteState.sourceEnded = true
+      if (remoteState.normalization) {
+        this.applyRemoteNormalizationIfNeeded(remoteState, { force: true, markComplete: true })
+      } else {
+        this.normalizationApproximate = false
+      }
+      this.remoteStreamNode?.port.postMessage({
+        type: 'set-source-ended',
+        ended: true
+      })
+      this.maybeStartRemotePlayback()
+      return
+    }
+
+    if (payload.type === 'failed') {
+      remoteState.sourceEnded = true
+      this.remoteStreamNode?.port.postMessage({
+        type: 'set-source-ended',
+        ended: true
+      })
+      const error = new Error(payload.message)
+      this.emit('error', error)
+      this.resetRemotePlayPromise(error)
+      return
+    }
+
+    if (payload.type === 'cancelled') {
+      this.resetRemotePlayPromise(new Error('Remote stream was cancelled.'))
+    }
+  }
+
+  async loadRemoteStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native loading.')
+    }
+
+    await this.initContext()
+    if (!this.context || !this.workletLoaded) {
+      throw new Error('Audio worklet could not be initialized for remote streaming.')
+    }
+
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
+
+    this.stopSource()
+    this.clearNextBuffer()
+    await this.clearRemoteStreamState(true)
+    this.audioBuffer = null
+    this.pauseTime = 0
+    this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+    this.notifyTrackChange()
+
+    const info = await window.electronAPI.startRemoteStream(
+      track.path,
+      this.context.sampleRate,
+      track.channels ?? null
+    )
+
+    this.remoteStreamNode = this.createRemoteStreamNode(info.channels)
+    this.remoteStreamState = {
+      sessionId: info.sessionId,
+      path: track.path,
+      sourceType: info.sourceType,
+      sampleRate: info.sampleRate,
+      channels: info.channels,
+      durationSeconds: info.durationSeconds && info.durationSeconds > 0
+        ? info.durationSeconds
+        : Math.max(track.duration, 0),
+      bufferedFrames: 0,
+      analyzedFrames: 0,
+      currentFrame: 0,
+      playRequested: false,
+      started: false,
+      paused: false,
+      sourceEnded: false,
+      waveform: new ProgressiveWaveformAccumulator(
+        info.durationSeconds && info.durationSeconds > 0 ? info.durationSeconds : Math.max(track.duration, 1),
+        info.sampleRate
+      ),
+      normalization: this._replayGainEnabled && this.currentReplayGainDb != null
+        ? null
+        : this.createProgressiveNormalizationAccumulator()
+    }
+
+    this.applyChannelRoutingPreferences(info.channels)
+    this.applyAnalysisRoutingPreferences(info.channels)
+    this.emit('durationChange', this.remoteStreamState.durationSeconds)
+
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+      const clampedGainDb = this.clampGainDb(this.currentReplayGainDb)
+      this.normalizationApproximate = false
+      this.applyGainState({
+        gainDb: clampedGainDb,
+        linearGain: this.toLinearGain(clampedGainDb),
+        mode: 'replaygain'
+      })
+    } else if (!this._normalizationEnabled) {
+      this.normalizationApproximate = false
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
+    } else {
+      this.normalizationApproximate = true
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'normalization'
+      })
+    }
+
+    if (info.initialChunk) {
+      this.handleRemoteStreamChunk(info.initialChunk)
+    }
+
+    return info
   }
 
   async setChannelRoutingMap(map: number[] | null): Promise<void> {
@@ -1324,6 +1760,18 @@ export class AudioEngine {
           }
         }
         this.syncStandardVisualizerStreaming()
+      }
+
+      if (this.remoteStreamChunkUnsubscribe === null) {
+        this.remoteStreamChunkUnsubscribe = window.electronAPI.onRemoteStreamChunk((chunk) => {
+          this.handleRemoteStreamChunk(chunk)
+        })
+      }
+
+      if (this.remoteStreamEventUnsubscribe === null) {
+        this.remoteStreamEventUnsubscribe = window.electronAPI.onRemoteStreamEvent((payload) => {
+          this.handleRemoteStreamEvent(payload)
+        })
       }
 
       // Connect main signal path:
@@ -1525,6 +1973,13 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
+    if (this.remoteStreamState) {
+      this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
+        force: true,
+        markComplete: this.remoteStreamState.sourceEnded
+      })
+      return
+    }
     if (!enabled) {
       this.applyGainState({
         gainDb: 0,
@@ -1556,6 +2011,13 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
+    if (this.remoteStreamState) {
+      this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
+        force: true,
+        markComplete: this.remoteStreamState.sourceEnded
+      })
+      return
+    }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     }
@@ -1583,6 +2045,14 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamState) {
+      this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
+        force: true,
+        markComplete: this.remoteStreamState.sourceEnded
+      })
+      return
+    }
+
     if (this.audioBuffer) {
       this.applyNormalization(this.audioBuffer)
     } else if (!this._normalizationEnabled) {
@@ -1605,6 +2075,17 @@ export class AudioEngine {
 
     this._replayGainEnabled = normalized
     if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    if (this.remoteStreamState) {
+      this.remoteStreamState.normalization = this._replayGainEnabled && this.currentReplayGainDb != null
+        ? null
+        : this.remoteStreamState.normalization ?? this.createProgressiveNormalizationAccumulator()
+      this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
+        force: true,
+        markComplete: this.remoteStreamState.sourceEnded
+      })
       return
     }
 
@@ -1660,7 +2141,12 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.currentTime ?? 0
     }
-    if (!this.context || this._playbackState === 'stopped') return 0
+    if (this.remoteStreamState) {
+      return this.remoteStreamState.sampleRate > 0
+        ? this.remoteStreamState.currentFrame / this.remoteStreamState.sampleRate
+        : 0
+    }
+    if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
     return this.context.currentTime - this.startTime
   }
@@ -1668,6 +2154,9 @@ export class AudioEngine {
   get duration(): number {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.duration ?? 0
+    }
+    if (this.remoteStreamState) {
+      return this.remoteStreamState.durationSeconds
     }
     return this.audioBuffer?.duration ?? 0
   }
@@ -1698,7 +2187,19 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.channels ?? null
     }
+    if (this.remoteStreamState) {
+      return this.remoteStreamState.channels
+    }
     return this.audioBuffer?.numberOfChannels ?? null
+  }
+
+  getRemoteBufferedSeconds(): number {
+    if (!this.remoteStreamState || this.remoteStreamState.sampleRate <= 0) return 0
+    return this.remoteStreamState.bufferedFrames / this.remoteStreamState.sampleRate
+  }
+
+  isNormalizationApproximate(): boolean {
+    return this.normalizationApproximate
   }
 
   // Get actual sample rate from AudioContext (for native DSP sync)
@@ -3268,11 +3769,13 @@ export class AudioEngine {
 
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
 
     try {
       // Stop any current playback
       this.stopSource()
       this.clearNextBuffer()
+      await this.clearRemoteStreamState(true)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
       this.pauseTime = 0
@@ -3475,6 +3978,37 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamState) {
+      const remoteState = this.remoteStreamState
+      if (remoteState.started && !remoteState.paused && this._playbackState === 'playing') {
+        return
+      }
+      remoteState.playRequested = true
+
+      if (remoteState.started && remoteState.paused) {
+        remoteState.paused = false
+        this.remoteStreamNode?.port.postMessage({
+          type: 'set-playing',
+          playing: true
+        })
+        this._playbackState = 'playing'
+        this.emit('stateChange', this._playbackState)
+        this.startTimeUpdate()
+        return
+      }
+
+      if (this.remotePlayPromise === null) {
+        this.remotePlayPromise = new Promise<void>((resolve, reject) => {
+          this.remotePlayResolver = resolve
+          this.remotePlayRejecter = reject
+        })
+      }
+      const pendingPlayPromise = this.remotePlayPromise
+
+      this.maybeStartRemotePlayback()
+      return pendingPlayPromise ?? Promise.resolve()
+    }
+
     if (!this.audioBuffer || !this.context) return
 
     // Resume context if suspended (autoplay policy)
@@ -3531,6 +4065,22 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamState) {
+      this.remoteStreamState.playRequested = false
+      this.remoteStreamState.paused = this.remoteStreamState.started
+      if (!this.remoteStreamState.started) {
+        this.resetRemotePlayPromise(new Error('Remote playback was paused before start.'))
+      }
+      this.remoteStreamNode?.port.postMessage({
+        type: 'set-playing',
+        playing: false
+      })
+      this._playbackState = 'paused'
+      this.emit('stateChange', this._playbackState)
+      this.stopTimeUpdate()
+      return
+    }
+
     if (this._playbackState !== 'playing' || !this.context) return
 
     this.pauseTime = this.context.currentTime - this.startTime
@@ -3570,6 +4120,18 @@ export class AudioEngine {
       return
     }
 
+    if (this.remoteStreamState) {
+      this.remoteStreamNode?.port.postMessage({ type: 'clear' })
+      void this.clearRemoteStreamState(true)
+      this.pauseTime = 0
+      this._playbackState = 'stopped'
+      this.emit('stateChange', this._playbackState)
+      this.emit('timeUpdate', 0)
+      this.notifyTrackChange()
+      this.stopTimeUpdate()
+      return
+    }
+
     this.stopSource()
     this.cancelScheduledNext()
     this.pauseTime = 0
@@ -3587,6 +4149,19 @@ export class AudioEngine {
       this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
       this.emit('timeUpdate', this.nativeSnapshot.currentTime)
       this.notifyTrackChange()
+      return
+    }
+
+    if (this.remoteStreamState) {
+      const remoteState = this.remoteStreamState
+      const maxSeekTime = this.getRemoteBufferedSeconds()
+      const clampedTime = Math.max(0, Math.min(time, maxSeekTime))
+      remoteState.currentFrame = Math.max(0, Math.floor(clampedTime * remoteState.sampleRate))
+      this.remoteStreamNode?.port.postMessage({
+        type: 'seek',
+        frame: remoteState.currentFrame
+      })
+      this.emit('timeUpdate', clampedTime)
       return
     }
 
@@ -3802,6 +4377,7 @@ export class AudioEngine {
   dispose(): void {
     this.stop()
     this.clearNextBuffer()
+    void this.clearRemoteStreamState(true)
     this.stopTimeUpdate()
     this.stopNativeScopePolling()
     if (this.lastNativeVisualizerTapDemand !== null) {
@@ -3818,6 +4394,14 @@ export class AudioEngine {
     if (this.nativeEventUnsubscribe) {
       this.nativeEventUnsubscribe()
       this.nativeEventUnsubscribe = null
+    }
+    if (this.remoteStreamChunkUnsubscribe) {
+      this.remoteStreamChunkUnsubscribe()
+      this.remoteStreamChunkUnsubscribe = null
+    }
+    if (this.remoteStreamEventUnsubscribe) {
+      this.remoteStreamEventUnsubscribe()
+      this.remoteStreamEventUnsubscribe = null
     }
     this.nativeSnapshot = null
     this.nativeNextTrackBuffered = false
@@ -3849,6 +4433,7 @@ export class AudioEngine {
       this.workletNode.disconnect()
       this.workletNode = null
     }
+    this.disconnectRemoteStreamNode()
     if (this.analysisTapSinkNode) {
       try { this.analysisTapSinkNode.disconnect() } catch { /* ignore */ }
       this.analysisTapSinkNode = null
@@ -3869,12 +4454,14 @@ export class AudioEngine {
     this.analysisDelayMs = 0
     this._normalizationGainDb = 0
     this._normalizationMode = 'off'
+    this.normalizationApproximate = false
     this._replayGainEnabled = false
     this.currentReplayGainDb = null
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.nextBuffer = null
+    this.remoteStreamState = null
     this.latestLeftChannel = new Float32Array(0)
     this.latestRightChannel = new Float32Array(0)
     this.latestMonoChannel = new Float32Array(0)

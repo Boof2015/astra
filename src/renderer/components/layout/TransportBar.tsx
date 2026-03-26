@@ -35,9 +35,13 @@ function TransportWaveformSection({
   loadingPercent: number | null
 }) {
   const waveformData = usePlayerStore((s) => s.waveformData)
+  const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
+  const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
+  const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
   const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
@@ -69,6 +73,9 @@ function TransportWaveformSection({
         progress={progress}
         duration={duration}
         currentTime={compensatedTime}
+        bufferedRatio={waveformBufferedRatio}
+        analyzedRatio={waveformAnalyzedRatio}
+        seekableDuration={currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? remoteBufferedSeconds : duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)
@@ -245,6 +252,14 @@ export default function TransportBar() {
   const loadingLabel = (() => {
     if (!isLoadingTrack || !currentTrack) return null
     if (!currentTrack.sourceType || currentTrack.sourceType === 'local') return null
+    if (activeRemoteLoadProgress?.stage === 'streaming') {
+      const readySeconds = Math.max(0, activeRemoteLoadProgress.bufferedSeconds)
+      const readyLabel = formatTime(readySeconds)
+      if (loadingPercent !== null) {
+        return `Streaming • ${readyLabel} ready • ${Math.round(loadingPercent * 100)}% downloaded`
+      }
+      return `Streaming • ${readyLabel} ready`
+    }
     if (loadingPercent !== null) {
       return `Buffering ${Math.round(loadingPercent * 100)}% • ${activeRemoteLoadProgress?.chunkCount ?? 0} chunks`
     }
@@ -308,8 +323,9 @@ export default function TransportBar() {
     const rounded = Math.round(gainDb * 10) / 10
     const displayDb = Math.abs(rounded) < 0.05 ? 0 : rounded
     const sign = displayDb > 0 ? '+' : ''
+    const approxPrefix = audioEngine.isNormalizationApproximate() ? '~' : ''
     return {
-      value: `${sign}${displayDb.toFixed(1)}dB`,
+      value: `${approxPrefix}${sign}${displayDb.toFixed(1)}dB`,
       dim: false,
       accent: replayGainScanEnabled && gainMode === 'replaygain',
       off: false

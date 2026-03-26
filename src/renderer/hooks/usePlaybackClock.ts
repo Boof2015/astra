@@ -53,6 +53,17 @@ function ensureInitialized(): void {
   cachedCurrentTime = usePlayerStore.getState().currentTime
 
   usePlayerStore.subscribe((state, prevState) => {
+    const trackChanged = state.currentTrack?.path !== prevState.currentTrack?.path
+
+    if (trackChanged) {
+      cachedCurrentTime = state.currentTime
+      notifyListeners()
+      if (state.playbackState === 'playing') {
+        startLoop()
+      }
+      return
+    }
+
     if (state.playbackState !== prevState.playbackState) {
       if (state.playbackState === 'playing') {
         cachedCurrentTime = audioEngine.currentTime
@@ -62,6 +73,19 @@ function ensureInitialized(): void {
       }
 
       stopLoop()
+      cachedCurrentTime = state.currentTime
+      notifyListeners()
+      return
+    }
+
+    if (
+      state.playbackState === 'playing'
+      && state.currentTime !== prevState.currentTime
+      && (
+        state.currentTime === 0
+        || state.currentTime < prevState.currentTime
+      )
+    ) {
       cachedCurrentTime = state.currentTime
       notifyListeners()
       return

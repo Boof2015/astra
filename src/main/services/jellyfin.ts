@@ -209,6 +209,16 @@ function buildJellyfinAuthorizationHeader(
   return `MediaBrowser ${parts.join(', ')}`
 }
 
+export function buildJellyfinStreamRequestHeaders(
+  config: JellyfinConnectionConfig,
+  authContext: JellyfinAuthContext
+): Record<string, string> {
+  return {
+    'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
+    'X-Emby-Token': authContext.accessToken
+  }
+}
+
 function buildJellyfinUrl(
   config: JellyfinConnectionConfig,
   endpoint: string,
@@ -700,7 +710,7 @@ export function buildJellyfinStreamUrl(
   ).toString()
 }
 
-function buildJellyfinTranscodeStreamUrl(
+export function buildJellyfinTranscodeStreamUrl(
   config: JellyfinConnectionConfig,
   sourceTrackId: string,
   authContext: JellyfinAuthContext,

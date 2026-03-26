@@ -181,11 +181,12 @@ export default function AudioPipelineShelf() {
       const rounded = Math.round(gainDb * 10) / 10
       const displayDb = Math.abs(rounded) < 0.05 ? 0 : rounded
       const sign = displayDb > 0 ? '+' : ''
+      const approxPrefix = audioEngine.isNormalizationApproximate() ? '~' : ''
       result.push({
         id: 'norm',
         icon: NormIcon,
         label: replayGainScanEnabled && gainMode === 'replaygain' ? 'ReplayGain' : 'Normalization',
-        detail: `${sign}${displayDb.toFixed(1)} dB`
+        detail: `${approxPrefix}${sign}${displayDb.toFixed(1)} dB`
       })
     }
 

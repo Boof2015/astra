@@ -7,6 +7,9 @@ interface WaveformSeekBarProps {
   progress: number // 0-100
   duration: number
   currentTime: number
+  bufferedRatio?: number
+  analyzedRatio?: number
+  seekableDuration?: number
   onSeek: (time: number) => void
 }
 
@@ -24,6 +27,9 @@ export default function WaveformSeekBar({
   progress,
   duration,
   currentTime,
+  bufferedRatio = 1,
+  analyzedRatio = 1,
+  seekableDuration,
   onSeek
 }: WaveformSeekBarProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -85,17 +91,25 @@ export default function WaveformSeekBar({
     ctx.clearRect(0, 0, width, height)
 
     const playedX = (progress / 100) * width
+    const analyzedX = Math.max(0, Math.min(width, analyzedRatio * width))
+    const effectiveSeekableDuration = seekableDuration ?? (bufferedRatio * duration)
+    const seekableX = duration > 0
+      ? Math.max(0, Math.min(width, (effectiveSeekableDuration / duration) * width))
+      : width
     const centerY = height / 2
     const playedColor = accent
-    const unplayedColor = 'rgba(255, 255, 255, 0.12)'
+    const loadedColor = 'rgba(255, 255, 255, 0.12)'
+    const unloadedColor = 'rgba(255, 255, 255, 0.05)'
 
     if (!displayData || displayData.length === 0) {
       // Fallback: simple thin progress line
       const barHeight = 4 * dpr
-      ctx.fillStyle = unplayedColor
+      ctx.fillStyle = unloadedColor
       ctx.fillRect(0, centerY - barHeight / 2, width, barHeight)
+      ctx.fillStyle = loadedColor
+      ctx.fillRect(0, centerY - barHeight / 2, analyzedX, barHeight)
       ctx.fillStyle = playedColor
-      ctx.fillRect(0, centerY - barHeight / 2, playedX, barHeight)
+      ctx.fillRect(0, centerY - barHeight / 2, Math.min(playedX, analyzedX), barHeight)
       return
     }
 
@@ -113,7 +127,13 @@ export default function WaveformSeekBar({
       const barHalfHeight = Math.max(minBarHalfHeight, peakValue * maxBarHalfHeight)
       const barCenterX = x + barWidth / 2
 
-      ctx.fillStyle = barCenterX <= playedX ? playedColor : unplayedColor
+      if (barCenterX <= playedX && barCenterX <= analyzedX) {
+        ctx.fillStyle = playedColor
+      } else if (barCenterX <= analyzedX) {
+        ctx.fillStyle = loadedColor
+      } else {
+        ctx.fillStyle = unloadedColor
+      }
 
       const barTop = centerY - barHalfHeight
       const barHeight = barHalfHeight * 2
@@ -133,6 +153,15 @@ export default function WaveformSeekBar({
       ctx.stroke()
     }
 
+    if (seekableX < width) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'
+      ctx.lineWidth = 1 * dpr
+      ctx.beginPath()
+      ctx.moveTo(seekableX, 0)
+      ctx.lineTo(seekableX, height)
+      ctx.stroke()
+    }
+
     // White hover/seek indicator
     if (hoverPercent !== null) {
       const hoverX = hoverPercent * width
@@ -143,7 +172,7 @@ export default function WaveformSeekBar({
       ctx.lineTo(hoverX, height)
       ctx.stroke()
     }
-  }, [displayData, progress, hoverPercent, canvasSize, accent])
+  }, [displayData, progress, hoverPercent, canvasSize, accent, analyzedRatio, bufferedRatio, duration, seekableDuration])
 
   // Redraw on any dependency change
   useEffect(() => {
@@ -165,17 +194,25 @@ export default function WaveformSeekBar({
     e.currentTarget.setPointerCapture(e.pointerId)
     isDraggingRef.current = true
     const percent = getPercentFromClientX(e.clientX)
-    setHoverPercent(percent)
-    onSeek(percent * duration)
+    const maxSeekablePercent = duration > 0
+      ? Math.max(0, Math.min(1, (seekableDuration ?? (bufferedRatio * duration)) / duration))
+      : 0
+    const clampedPercent = Math.min(percent, maxSeekablePercent)
+    setHoverPercent(clampedPercent)
+    onSeek(clampedPercent * duration)
   }
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const percent = getPercentFromClientX(e.clientX)
-    setHoverPercent(percent)
+    const maxSeekablePercent = duration > 0
+      ? Math.max(0, Math.min(1, (seekableDuration ?? (bufferedRatio * duration)) / duration))
+      : 0
+    const clampedPercent = Math.min(percent, maxSeekablePercent)
+    setHoverPercent(clampedPercent)
 
     if (duration <= 0) return
     if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
-    onSeek(percent * duration)
+    onSeek(clampedPercent * duration)
   }
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {

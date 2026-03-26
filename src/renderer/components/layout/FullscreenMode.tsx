@@ -192,6 +192,10 @@ function FullscreenWaveformSection(): ReactElement {
   const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
   const waveformData = usePlayerStore((s) => s.waveformData)
+  const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
+  const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
+  const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
 
@@ -222,6 +226,9 @@ function FullscreenWaveformSection(): ReactElement {
         progress={progress}
         duration={duration}
         currentTime={compensatedTime}
+        bufferedRatio={waveformBufferedRatio}
+        analyzedRatio={waveformAnalyzedRatio}
+        seekableDuration={currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? remoteBufferedSeconds : duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)
