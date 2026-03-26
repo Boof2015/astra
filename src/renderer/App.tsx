@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
 import AnalyzerDeck from './components/layout/AnalyzerDeck'
@@ -62,6 +62,9 @@ function getAssociatedOpenSourceLabel(platform: NodeJS.Platform): string {
 }
 
 function App() {
+  const rackShellRef = useRef<HTMLDivElement | null>(null)
+  const collapseToggleRef = useRef<HTMLButtonElement | null>(null)
+
   usePointerFocusCleanup()
   useKeyboardShortcuts()
   useMediaSession()
@@ -80,6 +83,7 @@ function App() {
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
+  const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
 
   const appStyle = useMemo(() => ({
     '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
@@ -90,6 +94,69 @@ function App() {
       setAnalyzerHeightPreviewPx(null)
     }
   }, [isAnalyzerRackVisible])
+
+  useEffect(() => {
+    if (!isAnalyzerRackVisible || isAnalyzerEditMode) {
+      setIsCollapseToggleNearby(false)
+      return
+    }
+
+    const horizontalRevealMarginPx = 24
+    const topRevealMarginPx = 12
+    const bottomRevealMarginPx = 24
+
+    const updateNearbyState = (nextValue: boolean) => {
+      setIsCollapseToggleNearby((currentValue) => currentValue === nextValue ? currentValue : nextValue)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== 'mouse') {
+        updateNearbyState(false)
+        return
+      }
+
+      const rackShell = rackShellRef.current
+      const collapseToggle = collapseToggleRef.current
+      if (!rackShell || !collapseToggle) {
+        updateNearbyState(false)
+        return
+      }
+
+      const rackRect = rackShell.getBoundingClientRect()
+      const toggleRect = collapseToggle.getBoundingClientRect()
+      const isInsideRack =
+        event.clientX >= rackRect.left &&
+        event.clientX <= rackRect.right &&
+        event.clientY >= rackRect.top &&
+        event.clientY <= rackRect.bottom
+
+      if (isInsideRack) {
+        updateNearbyState(false)
+        return
+      }
+
+      // Reveal the hidden collapse control as the cursor approaches its resting position.
+      const isNearToggle =
+        event.clientX >= toggleRect.left - horizontalRevealMarginPx &&
+        event.clientX <= toggleRect.right + horizontalRevealMarginPx &&
+        event.clientY >= toggleRect.top - topRevealMarginPx &&
+        event.clientY <= toggleRect.bottom + bottomRevealMarginPx
+
+      updateNearbyState(isNearToggle)
+    }
+
+    const handleWindowBlur = () => {
+      updateNearbyState(false)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('blur', handleWindowBlur)
+    }
+  }, [isAnalyzerEditMode, isAnalyzerRackVisible])
 
   useEffect(() => {
     useThemeStore.getState().initFromSaved()
@@ -160,10 +227,14 @@ function App() {
     >
       <TitleBar />
       {isAnalyzerRackVisible && (
-        <div className="analyzer-rack-shell">
+        <div
+          ref={rackShellRef}
+          className={`analyzer-rack-shell ${isCollapseToggleNearby ? 'is-collapse-toggle-nearby' : ''}`.trim()}
+        >
           <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
           {!isAnalyzerEditMode && (
             <button
+              ref={collapseToggleRef}
               type="button"
               className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
               onClick={hideAnalyzerRack}

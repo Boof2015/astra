@@ -8193,6 +8193,7 @@ body::after {
 }
 
 .analyzer-rack-shell:hover .analyzer-rack-collapse-toggle,
+.analyzer-rack-shell.is-collapse-toggle-nearby .analyzer-rack-collapse-toggle,
 .analyzer-rack-shell:focus-within .analyzer-rack-collapse-toggle,
 .analyzer-rack-collapse-toggle:focus-visible {
   opacity: 1;
