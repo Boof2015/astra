@@ -162,6 +162,7 @@ export interface Album {
   identity_key: string
   album: string
   artist: string
+  primary_artist: string | null
   year: number | null
   artwork_hash: string | null
   track_count: number

@@ -672,6 +672,7 @@ export default function LibraryView() {
     for (const track of sourceFilteredTracks) {
       const identityKey = buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
+      const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)
       const match = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
 
@@ -680,7 +681,7 @@ export default function LibraryView() {
         continue
       }
 
-      if (normalizeKey(identityArtist) === selectedArtistKey) continue
+      if (normalizeKey(browseArtist) === selectedArtistKey) continue
 
       const normalizedAlbumName = track.album.trim() || UNKNOWN_ALBUM_NAME
       if (normalizeKey(normalizedAlbumName) === normalizeKey(UNKNOWN_ALBUM_NAME)) continue
@@ -701,6 +702,7 @@ export default function LibraryView() {
         identity_key: identityKey,
         album: normalizedAlbumName,
         artist: identityArtist || UNKNOWN_ARTIST_NAME,
+        primary_artist: resolveBrowseArtistForTrack(track, 'canonical'),
         year: track.year,
         artwork_hash: track.artwork_hash,
         track_count: 1
@@ -713,7 +715,11 @@ export default function LibraryView() {
     for (const album of albums) {
       if (!matchedIdentityKeys.has(album.identity_key)) continue
 
-      if (normalizeKey(album.artist) === selectedArtistKey) {
+      const primaryArtistKey = artistBrowseMode === 'strict'
+        ? normalizeKey(album.artist)
+        : normalizeKey(album.primary_artist ?? '')
+
+      if (primaryArtistKey === selectedArtistKey) {
         primary.push(album)
       } else {
         featured.push(album)
@@ -736,7 +742,7 @@ export default function LibraryView() {
       primaryArtistAlbums: primary,
       featuredArtistAlbums: featured
     }
-  }, [albumByIdentityKey, albumByKey, albums, selectedArtist, sourceFilteredTracks])
+  }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
 
   const trimmedQueryForMessage = searchQuery.trim()
   const searchPlaceholder = inDetailView

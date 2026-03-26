@@ -3166,6 +3166,7 @@ export function getAlbums(): {
   identity_key: string
   album: string
   artist: string
+  primary_artist: string | null
   year: number | null
   artwork_hash: string | null
   track_count: number
@@ -3177,14 +3178,33 @@ export function getAlbums(): {
   const groups = buildAlbumGroups(tracks)
   const albums = Array.from(groups.values())
     .filter(isEligibleAlbumGroup)
-    .map((group) => ({
-      identity_key: group.identityKey,
-      album: pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album'),
-      artist: pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist'),
-      year: group.year,
-      artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
-      track_count: group.trackCount
-    }))
+    .map((group) => {
+      const album = pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album')
+      const artist = pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist')
+
+      let primaryArtist: string | null
+      if (group.groupingMode === 'explicit-album-artist') {
+        primaryArtist = getPrimaryArtistFromAlbumArtist(artist)
+      } else if (group.groupingMode === 'artwork-hash' && group.primaryArtistKeys.size > 1) {
+        primaryArtist = null
+      } else {
+        primaryArtist = artist
+      }
+
+      if (normalizeKey(primaryArtist ?? '') === normalizeKey(VARIOUS_ARTISTS_NAME)) {
+        primaryArtist = null
+      }
+
+      return {
+        identity_key: group.identityKey,
+        album,
+        artist,
+        primary_artist: primaryArtist,
+        year: group.year,
+        artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
+        track_count: group.trackCount
+      }
+    })
 
   return albums.sort((a, b) => {
     const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })

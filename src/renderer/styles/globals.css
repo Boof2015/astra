@@ -228,10 +228,8 @@ button, .titlebar {
   display: block;
 }
 
-.titlebar-logo-heart {
-  position: absolute;
-  top: 50%;
-  left: 50%;
+.titlebar-logo-heart,
+.settings-link-btn-heart {
   width: 2px;
   height: 2px;
   margin-top: -4px;
@@ -258,7 +256,14 @@ button, .titlebar {
   pointer-events: none;
 }
 
-.titlebar-logo-link:hover .titlebar-logo-heart {
+.titlebar-logo-heart {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+}
+
+.titlebar-logo-link:hover .titlebar-logo-heart,
+.settings-link-btn-kofi:hover .settings-link-btn-heart {
   opacity: 1;
   transform: translate3d(0, 0, 0);
   animation: titlebarLogoHeartPop 0.22s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2510,11 +2515,14 @@ button, .titlebar {
 
   .titlebar-logo,
   .titlebar-logo-link,
-  .titlebar-logo-heart {
+  .titlebar-logo-heart,
+  .settings-link-btn-kofi,
+  .settings-link-btn-heart {
     transition-duration: 0.08s !important;
   }
 
-  .titlebar-logo-link:hover .titlebar-logo-heart {
+  .titlebar-logo-link:hover .titlebar-logo-heart,
+  .settings-link-btn-kofi:hover .settings-link-btn-heart {
     animation: none !important;
   }
 
@@ -12721,6 +12729,19 @@ body::after {
 
 .settings-link-btn {
   justify-content: flex-start;
+}
+
+.settings-link-btn-kofi {
+  position: relative;
+  padding-right: 16px;
+}
+
+.settings-link-btn-heart {
+  position: absolute;
+  top: 3px;
+  left: calc(100% - 3px);
+  margin-top: -4px;
+  margin-left: -5px;
 }
 
 .settings-audio-control {

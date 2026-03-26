@@ -63,7 +63,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'info',
     label: 'Info',
-    keywords: ['version', 'updates', 'license', 'support', 'about', 'changelog']
+    keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']
   },
   {
     id: 'danger',

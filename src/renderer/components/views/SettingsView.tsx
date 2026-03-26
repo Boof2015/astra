@@ -1552,10 +1552,11 @@ export default function SettingsView() {
                   </button>
                   <button
                     type="button"
-                    className="settings-btn settings-link-btn"
+                    className="settings-btn settings-link-btn settings-link-btn-kofi"
                     onClick={() => openExternalLink(ASTRA_SUPPORT_URL)}
                   >
-                    Support
+                    Ko-fi
+                    <span className="settings-link-btn-heart" aria-hidden="true" />
                   </button>
                 </div>
               </div>
