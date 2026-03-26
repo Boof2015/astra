@@ -913,11 +913,16 @@ export default function SettingsView() {
                     className="settings-select"
                     value={coverArtAccentMethod}
                     onChange={(event) => {
-                      const method: CoverArtAccentMethod = event.target.value === 'average' ? 'average' : 'dominant'
+                      const method: CoverArtAccentMethod = event.target.value === 'average'
+                        ? 'average'
+                        : event.target.value === 'vibrant'
+                          ? 'vibrant'
+                          : 'dominant'
                       setCoverArtAccentMethod(method)
                     }}
                   >
                     <option value="dominant">Dominant</option>
+                    <option value="vibrant">Vibrant</option>
                     <option value="average">Average</option>
                   </select>
                 </label>
@@ -950,7 +955,7 @@ export default function SettingsView() {
             <p className="settings-note">The current Astra look is preserved as the default preset.</p>
             {accentSource === 'cover-art' && (
               <p className="settings-note">
-                Cover art accents use the selected method on the current track artwork. If artwork is missing, Astra uses the fallback accent color.
+                Cover art accents use the selected method on the current track artwork. Vibrant favors richer, less-muted colors. If artwork is missing or no usable color is found, Astra uses the fallback accent color.
               </p>
             )}
           </section>

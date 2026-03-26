@@ -1,18 +1,60 @@
 import type { CoverArtAccentMethod } from '../stores/themeStore'
 
-const SAMPLE_SIZE = 64
+const SAMPLE_SIZE = 128
 const MIN_ALPHA = 24
+const VIBRANT_MIN_ALPHA = 48
 const DOMINANT_BUCKET_SIZE = 24
 
 type Rgb = { r: number; g: number; b: number }
 
-interface DominantBucket {
+interface AccentNormalizationOptions {
+  saturationFloor: number
+  saturationCeiling: number
+  lightnessFloor: number
+  lightnessCeiling: number
+}
+
+interface AccentBucket {
   count: number
   sumR: number
   sumG: number
   sumB: number
   saturationSum: number
   luminanceSum: number
+  chromaSum: number
+}
+
+interface PixelAnalysis {
+  r: number
+  g: number
+  b: number
+  max: number
+  min: number
+  saturation: number
+  luminance: number
+  chroma: number
+}
+
+interface BucketExtractionOptions {
+  minAlpha: number
+  normalizeColor: (color: Rgb) => Rgb
+  isPixelAccepted: (pixel: PixelAnalysis) => boolean
+  scoreBucket: (bucket: AccentBucket) => number
+  fallback: () => string | null
+}
+
+const DEFAULT_NORMALIZATION: AccentNormalizationOptions = {
+  saturationFloor: 0.32,
+  saturationCeiling: 0.9,
+  lightnessFloor: 0.33,
+  lightnessCeiling: 0.68,
+}
+
+const VIBRANT_NORMALIZATION: AccentNormalizationOptions = {
+  saturationFloor: 0.5,
+  saturationCeiling: 0.98,
+  lightnessFloor: 0.38,
+  lightnessCeiling: 0.62,
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -87,24 +129,35 @@ function hslToRgb({ h, s, l }: { h: number; s: number; l: number }): Rgb {
   }
 }
 
-function normalizeAccentColor(color: Rgb): Rgb {
+function normalizeAccentColor(color: Rgb, options: AccentNormalizationOptions): Rgb {
   const hsl = rgbToHsl(color)
-
-  const saturationFloor = 0.32
-  const saturationCeiling = 0.9
-  const lightnessFloor = 0.33
-  const lightnessCeiling = 0.68
 
   const normalized = {
     h: hsl.h,
-    s: clamp(Math.max(hsl.s, saturationFloor), 0, saturationCeiling),
-    l: clamp(hsl.l, lightnessFloor, lightnessCeiling),
+    s: clamp(Math.max(hsl.s, options.saturationFloor), 0, options.saturationCeiling),
+    l: clamp(hsl.l, options.lightnessFloor, options.lightnessCeiling),
   }
 
   return hslToRgb(normalized)
 }
 
-function scoreDominantBucket(bucket: DominantBucket): number {
+function analyzePixel(r: number, g: number, b: number): PixelAnalysis {
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+
+  return {
+    r,
+    g,
+    b,
+    max,
+    min,
+    saturation: max === 0 ? 0 : (max - min) / max,
+    luminance: (max + min) / (2 * 255),
+    chroma: (max - min) / 255,
+  }
+}
+
+function scoreDominantBucket(bucket: AccentBucket): number {
   if (bucket.count <= 0) return -1
 
   const avgSaturation = bucket.saturationSum / bucket.count
@@ -112,6 +165,19 @@ function scoreDominantBucket(bucket: DominantBucket): number {
   const midToneWeight = 1 - Math.min(1, Math.abs(avgLuminance - 0.52) / 0.52)
 
   return bucket.count * (1 + (avgSaturation * 0.9)) * (0.55 + (midToneWeight * 0.45))
+}
+
+function scoreVibrantBucket(bucket: AccentBucket): number {
+  if (bucket.count <= 0) return -1
+
+  const avgSaturation = bucket.saturationSum / bucket.count
+  const avgLuminance = bucket.luminanceSum / bucket.count
+  const avgChroma = bucket.chromaSum / bucket.count
+  const midToneWeight = 1 - Math.min(1, Math.abs(avgLuminance - 0.52) / 0.52)
+
+  return Math.pow(bucket.count, 0.55)
+    * (0.45 + (avgSaturation * 1.6) + (avgChroma * 0.9))
+    * (0.75 + (midToneWeight * 0.35))
 }
 
 function extractAverageColor(pixels: Uint8ClampedArray): string | null {
@@ -137,82 +203,105 @@ function extractAverageColor(pixels: Uint8ClampedArray): string | null {
     r: sumR / totalWeight,
     g: sumG / totalWeight,
     b: sumB / totalWeight,
-  })
+  }, DEFAULT_NORMALIZATION)
 
   return rgbToHex(averaged)
 }
 
-function extractDominantColor(pixels: Uint8ClampedArray): string | null {
-  const buckets = new Map<string, DominantBucket>()
+function extractBucketedColor(
+  pixels: Uint8ClampedArray,
+  options: BucketExtractionOptions
+): string | null {
+  const buckets = new Map<string, AccentBucket>()
 
   for (let i = 0; i < pixels.length; i += 4) {
     const alpha = pixels[i + 3]
-    if (alpha < MIN_ALPHA) continue
+    if (alpha < options.minAlpha) continue
 
-    const r = pixels[i]
-    const g = pixels[i + 1]
-    const b = pixels[i + 2]
-    const max = Math.max(r, g, b)
-    const min = Math.min(r, g, b)
+    const pixel = analyzePixel(pixels[i], pixels[i + 1], pixels[i + 2])
+    if (!options.isPixelAccepted(pixel)) continue
 
-    if (max < 24 || min > 240) continue
-
-    const saturation = max === 0 ? 0 : (max - min) / max
-    if (saturation < 0.08) continue
-
-    const luminance = (max + min) / (2 * 255)
-
-    const bucketR = Math.round(r / DOMINANT_BUCKET_SIZE)
-    const bucketG = Math.round(g / DOMINANT_BUCKET_SIZE)
-    const bucketB = Math.round(b / DOMINANT_BUCKET_SIZE)
+    const bucketR = Math.round(pixel.r / DOMINANT_BUCKET_SIZE)
+    const bucketG = Math.round(pixel.g / DOMINANT_BUCKET_SIZE)
+    const bucketB = Math.round(pixel.b / DOMINANT_BUCKET_SIZE)
     const key = `${bucketR}-${bucketG}-${bucketB}`
 
     const existing = buckets.get(key)
     if (existing) {
       existing.count += 1
-      existing.sumR += r
-      existing.sumG += g
-      existing.sumB += b
-      existing.saturationSum += saturation
-      existing.luminanceSum += luminance
+      existing.sumR += pixel.r
+      existing.sumG += pixel.g
+      existing.sumB += pixel.b
+      existing.saturationSum += pixel.saturation
+      existing.luminanceSum += pixel.luminance
+      existing.chromaSum += pixel.chroma
       continue
     }
 
     buckets.set(key, {
       count: 1,
-      sumR: r,
-      sumG: g,
-      sumB: b,
-      saturationSum: saturation,
-      luminanceSum: luminance,
+      sumR: pixel.r,
+      sumG: pixel.g,
+      sumB: pixel.b,
+      saturationSum: pixel.saturation,
+      luminanceSum: pixel.luminance,
+      chromaSum: pixel.chroma,
     })
   }
 
   if (buckets.size === 0) {
-    return extractAverageColor(pixels)
+    return options.fallback()
   }
 
-  let winningBucket: DominantBucket | null = null
+  let winningBucket: AccentBucket | null = null
   let bestScore = -1
 
   for (const bucket of buckets.values()) {
-    const score = scoreDominantBucket(bucket)
+    const score = options.scoreBucket(bucket)
     if (score <= bestScore) continue
     bestScore = score
     winningBucket = bucket
   }
 
   if (!winningBucket || winningBucket.count <= 0) {
-    return extractAverageColor(pixels)
+    return options.fallback()
   }
 
-  const dominant = normalizeAccentColor({
+  const accent = options.normalizeColor({
     r: winningBucket.sumR / winningBucket.count,
     g: winningBucket.sumG / winningBucket.count,
     b: winningBucket.sumB / winningBucket.count,
   })
 
-  return rgbToHex(dominant)
+  return rgbToHex(accent)
+}
+
+function extractDominantColor(pixels: Uint8ClampedArray): string | null {
+  return extractBucketedColor(pixels, {
+    minAlpha: MIN_ALPHA,
+    normalizeColor: (color) => normalizeAccentColor(color, DEFAULT_NORMALIZATION),
+    isPixelAccepted: (pixel) => {
+      if (pixel.max < 24 || pixel.min > 240) return false
+      return pixel.saturation >= 0.08
+    },
+    scoreBucket: scoreDominantBucket,
+    fallback: () => extractAverageColor(pixels),
+  })
+}
+
+function extractVibrantColor(pixels: Uint8ClampedArray): string | null {
+  return extractBucketedColor(pixels, {
+    minAlpha: VIBRANT_MIN_ALPHA,
+    normalizeColor: (color) => normalizeAccentColor(color, VIBRANT_NORMALIZATION),
+    isPixelAccepted: (pixel) => {
+      if (pixel.saturation < 0.16) return false
+      if (pixel.luminance < 0.10) return false
+      if (pixel.luminance > 0.93 && pixel.saturation < 0.35) return false
+      return true
+    },
+    scoreBucket: scoreVibrantBucket,
+    fallback: () => extractDominantColor(pixels),
+  })
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {
@@ -267,6 +356,10 @@ export async function extractArtworkAccent(
 
     if (method === 'average') {
       return extractAverageColor(pixels)
+    }
+
+    if (method === 'vibrant') {
+      return extractVibrantColor(pixels)
     }
 
     return extractDominantColor(pixels)

@@ -3,7 +3,7 @@ import { useVisualizerSettingsStore } from './visualizerSettingsStore'
 
 export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson'
 export type AccentSource = 'theme' | 'cover-art'
-export type CoverArtAccentMethod = 'dominant' | 'average'
+export type CoverArtAccentMethod = 'dominant' | 'average' | 'vibrant'
 
 export interface ResolvedThemeTokens {
   bgPrimary: string
@@ -358,8 +358,11 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       ? 'cover-art'
       : DEFAULT_ACCENT_SOURCE
 
-    const coverArtAccentMethod = parsed.coverArtAccentMethod === 'average'
-      ? 'average'
+    const coverArtAccentMethod = (
+      parsed.coverArtAccentMethod === 'average'
+      || parsed.coverArtAccentMethod === 'vibrant'
+    )
+      ? parsed.coverArtAccentMethod
       : DEFAULT_COVER_ART_ACCENT_METHOD
 
     return {
