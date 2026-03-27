@@ -43,6 +43,56 @@ const PEAK_HOLD_FRAMES = 45
 const PEAK_DECAY_DB_PER_FRAME = 0.3
 const RMS_SMOOTHING = 0.85
 const CORRELATION_SMOOTHING = 0.88
+const MONO_FONT_FAMILY = '"JetBrains Mono", monospace'
+const TEXT_PADDING_X_PX = 4
+const TEXT_PADDING_Y_PX = 3
+const CHANNEL_LABEL_MIN_FONT_PX = 8
+const CHANNEL_LABEL_MAX_FONT_PX = 14
+const DB_LABEL_MIN_FONT_PX = 7
+const DB_LABEL_MAX_FONT_PX = 12
+const CORRELATION_LABEL_MIN_FONT_PX = 7
+const CORRELATION_LABEL_MAX_FONT_PX = 11
+const MIN_HORIZONTAL_BAR_WIDTH_PX = 24
+const MIN_VERTICAL_DB_METER_WIDTH_PX = 22
+
+type TextRole = 'channel' | 'db' | 'correlation'
+
+interface TextRoleSpec {
+  minFontSize: number
+  maxFontSize: number
+  paddingX: number
+  paddingY: number
+}
+
+interface FittedTextMetrics {
+  fontSize: number
+  textWidth: number
+  bandWidth: number
+  bandHeight: number
+  paddingX: number
+  paddingY: number
+}
+
+const TEXT_ROLE_SPECS: Record<TextRole, TextRoleSpec> = {
+  channel: {
+    minFontSize: CHANNEL_LABEL_MIN_FONT_PX,
+    maxFontSize: CHANNEL_LABEL_MAX_FONT_PX,
+    paddingX: TEXT_PADDING_X_PX,
+    paddingY: TEXT_PADDING_Y_PX,
+  },
+  db: {
+    minFontSize: DB_LABEL_MIN_FONT_PX,
+    maxFontSize: DB_LABEL_MAX_FONT_PX,
+    paddingX: TEXT_PADDING_X_PX,
+    paddingY: TEXT_PADDING_Y_PX,
+  },
+  correlation: {
+    minFontSize: CORRELATION_LABEL_MIN_FONT_PX,
+    maxFontSize: CORRELATION_LABEL_MAX_FONT_PX,
+    paddingX: TEXT_PADDING_X_PX,
+    paddingY: TEXT_PADDING_Y_PX,
+  },
+}
 
 function parseHexColor(hex: string): [number, number, number] {
   const h = hex.replace('#', '')
@@ -55,6 +105,10 @@ function parseHexColor(hex: string): [number, number, number] {
 
 function colorWithAlpha(r: number, g: number, b: number, a: number): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 export class VUMeter {
@@ -264,6 +318,126 @@ export class VUMeter {
     return this.peakLevels[this.getDisplayChannelIndex(index)] ?? METER_MIN_DB
   }
 
+  private getChannelLabels(): string[] {
+    return Array.from({ length: this.activeChannelCount }, (_, channelIndex) => this.getChannelLabel(channelIndex))
+  }
+
+  private getMonoFont(fontSize: number): string {
+    return `${fontSize}px ${MONO_FONT_FAMILY}`
+  }
+
+  private getDbText(db: number, includeUnit = false): string {
+    const displayDb = Math.max(METER_MIN_DB, Math.min(0, db))
+    const text = displayDb <= METER_MIN_DB + 1 ? '-∞' : `${displayDb.toFixed(1)}`
+    return includeUnit ? `${text} dB` : text
+  }
+
+  private getStableDbText(includeUnit = false): string {
+    return includeUnit ? '-60.0 dB' : '-60.0'
+  }
+
+  private fitTextBand(
+    texts: readonly string[],
+    maxWidth: number,
+    maxHeight: number,
+    role: TextRole
+  ): FittedTextMetrics | null {
+    if (texts.length === 0) return null
+
+    const spec = TEXT_ROLE_SPECS[role]
+    const innerMaxWidth = Math.max(0, maxWidth - spec.paddingX * 2)
+    const innerMaxHeight = Math.max(0, maxHeight - spec.paddingY * 2)
+    const startingFontSize = Math.min(spec.maxFontSize, Math.floor(innerMaxHeight))
+
+    if (innerMaxWidth <= 0 || startingFontSize < spec.minFontSize) {
+      return null
+    }
+
+    for (let fontSize = startingFontSize; fontSize >= spec.minFontSize; fontSize--) {
+      this.ctx.font = this.getMonoFont(fontSize)
+      let widestText = 0
+      for (const text of texts) {
+        widestText = Math.max(widestText, this.ctx.measureText(text).width)
+      }
+      if (widestText <= innerMaxWidth + 0.01) {
+        return {
+          fontSize,
+          textWidth: widestText,
+          bandWidth: widestText + spec.paddingX * 2,
+          bandHeight: fontSize + spec.paddingY * 2,
+          paddingX: spec.paddingX,
+          paddingY: spec.paddingY,
+        }
+      }
+    }
+
+    return null
+  }
+
+  private resolveHorizontalTextLayout(
+    width: number,
+    meterHeight: number,
+    channelTexts: readonly string[]
+  ): {
+    labelMetrics: FittedTextMetrics | null
+    labelWidth: number
+    labelGap: number
+    dbMetrics: FittedTextMetrics | null
+    dbWidth: number
+    dbGap: number
+    barLeft: number
+    barRight: number
+    barWidth: number
+  } {
+    const gapX = 4
+    const minBarWidth = Math.min(width, MIN_HORIZONTAL_BAR_WIDTH_PX)
+    const maxTextWidth = Math.max(0, width - minBarWidth - gapX * 2)
+
+    let labelMetrics = this.fitTextBand(channelTexts, maxTextWidth, meterHeight, 'channel')
+    let dbMetrics = this.fitTextBand([this.getStableDbText()], maxTextWidth, meterHeight, 'db')
+
+    if (labelMetrics && dbMetrics && labelMetrics.bandWidth + dbMetrics.bandWidth > maxTextWidth) {
+      dbMetrics = null
+    }
+
+    const availableLabelWidth = Math.max(0, maxTextWidth - (dbMetrics?.bandWidth ?? 0))
+    if (!labelMetrics || labelMetrics.bandWidth > availableLabelWidth) {
+      const fittedLabelWithDb = this.fitTextBand(channelTexts, availableLabelWidth, meterHeight, 'channel')
+      if (fittedLabelWithDb) {
+        labelMetrics = fittedLabelWithDb
+      } else if (dbMetrics) {
+        dbMetrics = null
+        labelMetrics = this.fitTextBand(channelTexts, maxTextWidth, meterHeight, 'channel')
+      } else {
+        labelMetrics = fittedLabelWithDb
+      }
+    }
+
+    if (labelMetrics && dbMetrics && labelMetrics.bandWidth + dbMetrics.bandWidth > maxTextWidth) {
+      dbMetrics = null
+      labelMetrics = this.fitTextBand(channelTexts, maxTextWidth, meterHeight, 'channel')
+    }
+
+    const labelWidth = labelMetrics ? Math.ceil(labelMetrics.bandWidth) : 0
+    const dbWidth = dbMetrics ? Math.ceil(dbMetrics.bandWidth) : 0
+    const labelGap = labelWidth > 0 ? gapX : 0
+    const dbGap = dbWidth > 0 ? gapX : 0
+    const barLeft = labelWidth + labelGap
+    const barRight = width - dbWidth - dbGap
+
+    return {
+      labelMetrics,
+      labelWidth,
+      labelGap,
+      dbMetrics,
+      dbWidth,
+      dbGap,
+      barLeft,
+      barRight,
+      barWidth: Math.max(1, barRight - barLeft),
+    }
+  }
+
   private drawBarMode(width: number, height: number): void {
     if (this.activeChannelCount <= 0) return
 
@@ -288,25 +462,42 @@ export class VUMeter {
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
 
     const meterHeight = Math.max(1, Math.floor(height * 0.28))
-    const corrHeight = Math.max(1, Math.floor(height * 0.16))
-    const gap = Math.max(2, Math.floor(height * 0.04))
-    const labelWidth = Math.max(24, Math.floor(width * 0.07))
-    const dbLabelWidth = Math.max(52, Math.floor(width * 0.1))
-    const barLeft = labelWidth + 4
-    const barRight = width - dbLabelWidth - 4
-    const barWidth = Math.max(1, barRight - barLeft)
+    const corrHeight = Math.max(
+      10,
+      Math.ceil(this.fitTextBand(['-1', 'Ø', '+1'], Math.max(1, width / 3), height, 'correlation')?.bandHeight
+        ?? (CORRELATION_LABEL_MIN_FONT_PX + TEXT_PADDING_Y_PX * 2))
+    )
+    const gap = clamp(height * 0.04, 2, 10)
+    const {
+      labelMetrics,
+      labelWidth,
+      dbMetrics,
+      dbWidth,
+      dbGap,
+      barLeft,
+      barRight,
+      barWidth,
+    } = this.resolveHorizontalTextLayout(width, meterHeight, ['L', 'R'])
     const totalHeight = meterHeight * 2 + corrHeight + gap * 2
     const topOffset = Math.max(0, Math.floor((height - totalHeight) / 2))
 
     const leftY = topOffset
     this.drawHorizontalMeterBar(ctx, barLeft, leftY, barWidth, meterHeight, this.rmsLevels[0], this.peakLevels[0], cr, cg, cb)
-    this.drawMeterLabel(ctx, 0, leftY, labelWidth, meterHeight, 'L')
-    this.drawDbLabel(ctx, barRight + 4, leftY, dbLabelWidth, meterHeight, this.rmsLevels[0])
+    if (labelMetrics && labelWidth > 0) {
+      this.drawMeterLabel(ctx, 0, leftY, labelWidth, meterHeight, 'L', labelMetrics)
+    }
+    if (dbMetrics && dbWidth > 0) {
+      this.drawDbLabel(ctx, barRight + dbGap, leftY, dbWidth, meterHeight, this.rmsLevels[0], dbMetrics)
+    }
 
     const rightY = leftY + meterHeight + gap
     this.drawHorizontalMeterBar(ctx, barLeft, rightY, barWidth, meterHeight, this.rmsLevels[1], this.peakLevels[1], cr, cg, cb)
-    this.drawMeterLabel(ctx, 0, rightY, labelWidth, meterHeight, 'R')
-    this.drawDbLabel(ctx, barRight + 4, rightY, dbLabelWidth, meterHeight, this.rmsLevels[1])
+    if (labelMetrics && labelWidth > 0) {
+      this.drawMeterLabel(ctx, 0, rightY, labelWidth, meterHeight, 'R', labelMetrics)
+    }
+    if (dbMetrics && dbWidth > 0) {
+      this.drawDbLabel(ctx, barRight + dbGap, rightY, dbWidth, meterHeight, this.rmsLevels[1], dbMetrics)
+    }
 
     const corrY = rightY + meterHeight + gap
     this.drawCorrelationBar(ctx, barLeft, corrY, barWidth, corrHeight, cr, cg, cb)
@@ -316,14 +507,19 @@ export class VUMeter {
     const ctx = this.ctx
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
 
-    const gap = Math.max(2, Math.floor(height * 0.035))
-    const labelWidth = Math.max(26, Math.floor(width * 0.1))
-    const dbLabelWidth = Math.max(50, Math.floor(width * 0.12))
-    const barLeft = labelWidth + 4
-    const barRight = width - dbLabelWidth - 4
-    const barWidth = Math.max(1, barRight - barLeft)
+    const gap = clamp(height * 0.035, 2, 8)
     const totalGap = gap * Math.max(0, this.activeChannelCount - 1)
     const meterHeight = Math.max(1, Math.floor((height - totalGap) / this.activeChannelCount))
+    const {
+      labelMetrics,
+      labelWidth,
+      dbMetrics,
+      dbWidth,
+      dbGap,
+      barLeft,
+      barRight,
+      barWidth,
+    } = this.resolveHorizontalTextLayout(width, meterHeight, this.getChannelLabels())
     const totalHeight = meterHeight * this.activeChannelCount + totalGap
     const topOffset = Math.max(0, Math.floor((height - totalHeight) / 2))
 
@@ -341,8 +537,12 @@ export class VUMeter {
         cg,
         cb
       )
-      this.drawMeterLabel(ctx, 0, y, labelWidth, meterHeight, this.getChannelLabel(channelIndex))
-      this.drawDbLabel(ctx, barRight + 4, y, dbLabelWidth, meterHeight, this.rmsLevels[channelIndex])
+      if (labelMetrics && labelWidth > 0) {
+        this.drawMeterLabel(ctx, 0, y, labelWidth, meterHeight, this.getChannelLabel(channelIndex), labelMetrics)
+      }
+      if (dbMetrics && dbWidth > 0) {
+        this.drawDbLabel(ctx, barRight + dbGap, y, dbWidth, meterHeight, this.rmsLevels[channelIndex], dbMetrics)
+      }
     }
   }
 
@@ -350,34 +550,56 @@ export class VUMeter {
     const ctx = this.ctx
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
 
-    const sidePadding = Math.max(4, Math.floor(width * 0.08))
-    const channelGap = Math.max(4, Math.floor(width * 0.08))
-    const labelHeight = Math.max(14, Math.floor(height * 0.08))
-    const dbHeight = Math.max(14, Math.floor(height * 0.1))
-    const corrHeight = Math.max(10, Math.floor(height * 0.11))
-    const gapY = Math.max(4, Math.floor(height * 0.03))
-    const maxMeterWidth = Math.max(4, Math.floor((width - channelGap) / 2))
+    const sidePadding = clamp(width * 0.08, 4, 18)
+    const channelGap = clamp(width * 0.08, 4, 16)
+    const gapY = clamp(height * 0.03, 2, 8)
+    const maxMeterWidth = Math.max(4, (width - channelGap) / 2)
     const availableMeterWidth = Math.max(8, width - sidePadding * 2 - channelGap)
-    const meterWidth = Math.min(Math.max(6, Math.floor(availableMeterWidth / 2)), maxMeterWidth)
+    const meterWidth = Math.min(Math.max(6, availableMeterWidth / 2), maxMeterWidth)
     const totalMeterWidth = meterWidth * 2 + channelGap
-    const meterLeft = Math.max(0, Math.floor((width - totalMeterWidth) / 2))
-    const meterTop = gapY + labelHeight
-    const meterHeight = Math.max(1, height - labelHeight - dbHeight - corrHeight - gapY * 4)
-    const dbY = meterTop + meterHeight + gapY
-    const corrY = dbY + dbHeight + gapY
-    const corrX = Math.max(4, Math.floor(width * 0.06))
+    const meterLeft = Math.max(0, (width - totalMeterWidth) / 2)
+    const labelMetrics = this.fitTextBand(['L', 'R'], meterWidth, height, 'channel')
+    let dbMetrics = meterWidth >= MIN_VERTICAL_DB_METER_WIDTH_PX
+      ? this.fitTextBand([this.getStableDbText()], meterWidth, height, 'db')
+      : null
+    const labelHeight = labelMetrics ? Math.ceil(labelMetrics.bandHeight) : 0
+    let dbHeight = dbMetrics ? Math.ceil(dbMetrics.bandHeight) : 0
+    const corrX = clamp(width * 0.06, 4, 20)
     const corrWidth = Math.max(1, width - corrX * 2)
+    const corrHeight = Math.max(
+      10,
+      Math.ceil(this.fitTextBand(['-1', 'Ø', '+1'], Math.max(1, corrWidth / 3), height, 'correlation')?.bandHeight
+        ?? (CORRELATION_LABEL_MIN_FONT_PX + TEXT_PADDING_Y_PX * 2))
+    )
+    const meterTop = labelHeight > 0 ? labelHeight + gapY : 0
+    let meterHeight = height - meterTop - corrHeight - gapY - (dbHeight > 0 ? (dbHeight + gapY) : 0)
+    if (dbMetrics && meterHeight < 24) {
+      dbMetrics = null
+      dbHeight = 0
+      meterHeight = height - meterTop - corrHeight - gapY
+    }
+    meterHeight = Math.max(1, meterHeight)
+    const dbY = meterTop + meterHeight + (dbMetrics ? gapY : 0)
+    const corrY = meterTop + meterHeight + (dbMetrics ? gapY + dbHeight + gapY : gapY)
 
     const leftX = meterLeft
     const rightX = meterLeft + meterWidth + channelGap
 
-    this.drawMeterLabel(ctx, leftX, 0, meterWidth, labelHeight, 'L')
+    if (labelMetrics && labelHeight > 0) {
+      this.drawMeterLabel(ctx, leftX, 0, meterWidth, labelHeight, 'L', labelMetrics)
+    }
     this.drawVerticalMeterBar(ctx, leftX, meterTop, meterWidth, meterHeight, this.rmsLevels[0], this.peakLevels[0], cr, cg, cb)
-    this.drawCenteredDbLabel(ctx, leftX, dbY, meterWidth, dbHeight, this.rmsLevels[0])
+    if (dbMetrics && dbHeight > 0) {
+      this.drawCenteredDbLabel(ctx, leftX, dbY, meterWidth, dbHeight, this.rmsLevels[0], dbMetrics)
+    }
 
-    this.drawMeterLabel(ctx, rightX, 0, meterWidth, labelHeight, 'R')
+    if (labelMetrics && labelHeight > 0) {
+      this.drawMeterLabel(ctx, rightX, 0, meterWidth, labelHeight, 'R', labelMetrics)
+    }
     this.drawVerticalMeterBar(ctx, rightX, meterTop, meterWidth, meterHeight, this.rmsLevels[1], this.peakLevels[1], cr, cg, cb)
-    this.drawCenteredDbLabel(ctx, rightX, dbY, meterWidth, dbHeight, this.rmsLevels[1])
+    if (dbMetrics && dbHeight > 0) {
+      this.drawCenteredDbLabel(ctx, rightX, dbY, meterWidth, dbHeight, this.rmsLevels[1], dbMetrics)
+    }
 
     this.drawCorrelationBar(ctx, corrX, corrY, corrWidth, corrHeight, cr, cg, cb)
   }
@@ -385,24 +607,35 @@ export class VUMeter {
   private drawMultichannelVerticalBarMode(width: number, height: number): void {
     const ctx = this.ctx
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
-    const showDbReadouts = this.activeChannelCount === 1
-    const sidePadding = Math.max(4, Math.floor(width * 0.05))
-    const channelGap = Math.max(2, Math.floor(width * 0.02))
-    const labelHeight = Math.max(14, Math.floor(height * 0.08))
-    const dbHeight = showDbReadouts ? Math.max(14, Math.floor(height * 0.08)) : 0
-    const gapY = Math.max(4, Math.floor(height * 0.03))
+    const sidePadding = clamp(width * 0.05, 4, 14)
+    const channelGap = clamp(width * 0.02, 2, 8)
+    const gapY = clamp(height * 0.03, 2, 8)
     const totalGapWidth = channelGap * Math.max(0, this.activeChannelCount - 1)
     const availableMeterWidth = Math.max(8, width - sidePadding * 2 - totalGapWidth)
-    const meterWidth = Math.max(4, Math.floor(availableMeterWidth / this.activeChannelCount))
+    const meterWidth = Math.max(4, availableMeterWidth / this.activeChannelCount)
     const totalMeterWidth = meterWidth * this.activeChannelCount + totalGapWidth
-    const meterLeft = Math.max(0, Math.floor((width - totalMeterWidth) / 2))
-    const meterTop = gapY + labelHeight
-    const meterHeight = Math.max(1, height - labelHeight - gapY * 2 - (showDbReadouts ? (dbHeight + gapY) : 0))
-    const dbY = meterTop + meterHeight + gapY
+    const meterLeft = Math.max(0, (width - totalMeterWidth) / 2)
+    const labelMetrics = this.fitTextBand(this.getChannelLabels(), meterWidth, height, 'channel')
+    const labelHeight = labelMetrics ? Math.ceil(labelMetrics.bandHeight) : 0
+    let dbMetrics = this.activeChannelCount === 1 && meterWidth >= MIN_VERTICAL_DB_METER_WIDTH_PX
+      ? this.fitTextBand([this.getStableDbText()], meterWidth, height, 'db')
+      : null
+    let dbHeight = dbMetrics ? Math.ceil(dbMetrics.bandHeight) : 0
+    const meterTop = labelHeight > 0 ? labelHeight + gapY : 0
+    let meterHeight = height - meterTop - (dbHeight > 0 ? (dbHeight + gapY) : 0)
+    if (dbMetrics && meterHeight < 24) {
+      dbMetrics = null
+      dbHeight = 0
+      meterHeight = height - meterTop
+    }
+    meterHeight = Math.max(1, meterHeight)
+    const dbY = meterTop + meterHeight + (dbMetrics ? gapY : 0)
 
     for (let channelIndex = 0; channelIndex < this.activeChannelCount; channelIndex++) {
       const x = meterLeft + (channelIndex * (meterWidth + channelGap))
-      this.drawMeterLabel(ctx, x, 0, meterWidth, labelHeight, this.getChannelLabel(channelIndex))
+      if (labelMetrics && labelHeight > 0) {
+        this.drawMeterLabel(ctx, x, 0, meterWidth, labelHeight, this.getChannelLabel(channelIndex), labelMetrics)
+      }
       this.drawVerticalMeterBar(
         ctx,
         x,
@@ -415,8 +648,8 @@ export class VUMeter {
         cg,
         cb
       )
-      if (showDbReadouts) {
-        this.drawCenteredDbLabel(ctx, x, dbY, meterWidth, dbHeight, this.rmsLevels[channelIndex])
+      if (dbMetrics && dbHeight > 0) {
+        this.drawCenteredDbLabel(ctx, x, dbY, meterWidth, dbHeight, this.rmsLevels[channelIndex], dbMetrics)
       }
     }
   }
@@ -520,10 +753,11 @@ export class VUMeter {
   private drawMeterLabel(
     ctx: CanvasRenderingContext2D,
     x: number, y: number, w: number, h: number,
-    label: string
+    label: string,
+    metrics: FittedTextMetrics
   ): void {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-    ctx.font = `${Math.min(22, Math.max(10, h * 0.65))}px "JetBrains Mono", monospace`
+    ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(label, x + w / 2, y + h / 2)
@@ -532,26 +766,27 @@ export class VUMeter {
   private drawDbLabel(
     ctx: CanvasRenderingContext2D,
     x: number, y: number, _w: number, h: number,
-    db: number
+    db: number,
+    metrics: FittedTextMetrics
   ): void {
-    const displayDb = Math.max(METER_MIN_DB, Math.min(0, db))
-    const text = displayDb <= METER_MIN_DB + 1 ? '-∞' : `${displayDb.toFixed(1)}`
+    const text = this.getDbText(db)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
-    ctx.font = `${Math.min(20, Math.max(9, h * 0.55))}px "JetBrains Mono", monospace`
+    ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
-    ctx.fillText(text, x, y + h / 2)
+    ctx.fillText(text, x + metrics.paddingX, y + h / 2)
   }
 
   private drawCenteredDbLabel(
     ctx: CanvasRenderingContext2D,
     x: number, y: number, w: number, h: number,
-    db: number
+    db: number,
+    metrics: FittedTextMetrics,
+    includeUnit = false
   ): void {
-    const displayDb = Math.max(METER_MIN_DB, Math.min(0, db))
-    const text = displayDb <= METER_MIN_DB + 1 ? '-∞' : `${displayDb.toFixed(1)}`
+    const text = this.getDbText(db, includeUnit)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
-    ctx.font = `${Math.min(16, Math.max(8, h * 0.5))}px "JetBrains Mono", monospace`
+    ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(text, x + w / 2, y + h / 2)
@@ -582,35 +817,43 @@ export class VUMeter {
       }
     }
 
-    const fontSize = Math.min(18, Math.max(8, h * 0.55))
-    ctx.font = `${fontSize}px "JetBrains Mono", monospace`
+    const labelMetrics = this.fitTextBand(['-1', 'Ø', '+1'], Math.max(1, w / 3), h, 'correlation')
+    if (!labelMetrics) return
+
+    ctx.font = this.getMonoFont(labelMetrics.fontSize)
     ctx.textBaseline = 'middle'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
     ctx.textAlign = 'left'
-    ctx.fillText('-1', x + 2, y + h / 2)
+    ctx.fillText('-1', x + labelMetrics.paddingX, y + h / 2)
     ctx.textAlign = 'center'
     ctx.fillText('Ø', centerX, y + h / 2)
     ctx.textAlign = 'right'
-    ctx.fillText('+1', x + w - 2, y + h / 2)
+    ctx.fillText('+1', x + w - labelMetrics.paddingX, y + h / 2)
   }
 
   private drawNeedleMode(width: number, height: number): void {
     const ctx = this.ctx
     const [cr, cg, cb] = parseHexColor(this.options.lineColor)
-    const corrHeight = Math.max(1, Math.floor(height * 0.12))
-    const gap = Math.max(2, Math.floor(height * 0.03))
+    const corrHeight = Math.max(
+      10,
+      Math.ceil(this.fitTextBand(['-1', 'Ø', '+1'], Math.max(1, width / 3), height, 'correlation')?.bandHeight
+        ?? (CORRELATION_LABEL_MIN_FONT_PX + TEXT_PADDING_Y_PX * 2))
+    )
+    const gap = clamp(height * 0.03, 2, 8)
     const meterAreaHeight = height - corrHeight - gap
-    const meterWidth = Math.floor(width / 2) - 2
-    const barLeft = Math.max(16, Math.floor(width * 0.06)) + 4
-    const barRight = width - Math.max(36, Math.floor(width * 0.08)) - 4
+    const meterWidth = Math.max(1, (width - 4) / 2)
+    const labelMetrics = this.fitTextBand(['L', 'R'], meterWidth, meterAreaHeight, 'channel')
+    const dbMetrics = this.fitTextBand([this.getStableDbText(true)], meterWidth, meterAreaHeight, 'db')
+    const barLeft = clamp(width * 0.06, 16, Math.max(16, width / 4)) + 4
+    const barRight = width - clamp(width * 0.08, 36, Math.max(36, width / 3)) - 4
     const barWidth = Math.max(1, barRight - barLeft)
     const leftRms = this.getRmsLevel(0)
     const leftPeak = this.getPeakLevel(0)
     const rightRms = this.getRmsLevel(1)
     const rightPeak = this.getPeakLevel(1)
 
-    this.drawNeedleMeter(ctx, 0, 0, meterWidth, meterAreaHeight, leftRms, leftPeak, 'L', cr, cg, cb)
-    this.drawNeedleMeter(ctx, meterWidth + 4, 0, meterWidth, meterAreaHeight, rightRms, rightPeak, 'R', cr, cg, cb)
+    this.drawNeedleMeter(ctx, 0, 0, meterWidth, meterAreaHeight, leftRms, leftPeak, 'L', cr, cg, cb, labelMetrics, dbMetrics)
+    this.drawNeedleMeter(ctx, meterWidth + 4, 0, meterWidth, meterAreaHeight, rightRms, rightPeak, 'R', cr, cg, cb, labelMetrics, dbMetrics)
     this.drawCorrelationBar(ctx, barLeft, meterAreaHeight + gap, barWidth, corrHeight, cr, cg, cb)
   }
 
@@ -619,11 +862,19 @@ export class VUMeter {
     x: number, y: number, w: number, h: number,
     rmsDb: number, peakDb: number,
     label: string,
-    cr: number, cg: number, cb: number
+    cr: number, cg: number, cb: number,
+    labelMetrics: FittedTextMetrics | null,
+    dbMetrics: FittedTextMetrics | null
   ): void {
+    const labelHeight = labelMetrics ? Math.ceil(labelMetrics.bandHeight) : 0
+    const dbHeight = dbMetrics ? Math.ceil(dbMetrics.bandHeight) : 0
+    const topPadding = labelHeight > 0 ? labelHeight + 4 : 4
+    const bottomPadding = dbHeight > 0 ? dbHeight + 4 : 4
+    const arcAreaTop = y + topPadding
+    const arcAreaHeight = Math.max(1, h - topPadding - bottomPadding)
     const centerX = x + w / 2
-    const arcRadius = Math.min(w * 0.42, h * 0.65)
-    const arcCenterY = y + h * 0.78
+    const arcRadius = Math.min(w * 0.42, arcAreaHeight * 0.65)
+    const arcCenterY = arcAreaTop + arcAreaHeight * 0.78
     const startAngle = Math.PI * 1.25
     const endAngle = Math.PI * 1.75
 
@@ -686,39 +937,38 @@ export class VUMeter {
       ctx.fill()
     }
 
-    const fontSize = Math.min(22, Math.max(10, h * 0.1))
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'
-    ctx.font = `${fontSize}px "JetBrains Mono", monospace`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'top'
-    ctx.fillText(label, centerX, y + 4)
-
-    const displayDb = Math.max(METER_MIN_DB, Math.min(0, rmsDb))
-    const dbText = displayDb <= METER_MIN_DB + 1 ? '-∞ dB' : `${displayDb.toFixed(1)} dB`
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)'
-    ctx.font = `${Math.max(9, fontSize - 1)}px "JetBrains Mono", monospace`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'bottom'
-    ctx.fillText(dbText, centerX, y + h - 2)
+    if (labelMetrics && labelHeight > 0) {
+      this.drawMeterLabel(ctx, x, y, w, labelHeight, label, labelMetrics)
+    }
+    if (dbMetrics && dbHeight > 0) {
+      this.drawCenteredDbLabel(ctx, x, y + h - dbHeight, w, dbHeight, rmsDb, dbMetrics, true)
+    }
   }
 
   private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
+    const cssWidth = width / dpr
+    const cssHeight = height / dpr
 
-    if (width <= 0 || height <= 0) {
+    if (width <= 0 || height <= 0 || cssWidth <= 0 || cssHeight <= 0) {
       return
     }
 
     this.processAudio()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, width, height)
+    ctx.save()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     if (options.mode === 'needle') {
-      this.drawNeedleMode(width, height)
+      this.drawNeedleMode(cssWidth, cssHeight)
     } else {
-      this.drawBarMode(width, height)
+      this.drawBarMode(cssWidth, cssHeight)
     }
+    ctx.restore()
   }
 
   dispose(): void {

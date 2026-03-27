@@ -31,6 +31,7 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
   const scopeOrder = useVisualizerSettingsStore((state) => state.scopeOrder)
   const hiddenScopes = useVisualizerSettingsStore((state) => state.hiddenScopes)
   const widthWeights = useVisualizerSettingsStore((state) => state.widthWeights)
+  const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
   const setScopeDeckLayout = useVisualizerSettingsStore((state) => state.setScopeDeckLayout)
 
   const [dragState, setDragState] = useState<ScopeEditDragState | null>(null)
@@ -61,8 +62,8 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
   }, [resizePreviewWeights, widthWeights])
 
   const gridTemplateColumns = useMemo(() => {
-    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights)
-  }, [effectiveWidthWeights, visibleScopes])
+    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights, vectorscopeMode)
+  }, [effectiveWidthWeights, vectorscopeMode, visibleScopes])
 
   const activeScope = useMemo(() => {
     if (pinnedScope && visibleScopes.includes(pinnedScope)) return pinnedScope

@@ -275,10 +275,11 @@ export default function AnalyzerEditOverlay({
   onScopeHoverChange,
 }: AnalyzerEditOverlayProps) {
   const profiles = useVisualizerSettingsStore((state) => state.profiles)
-  const activeProfileId = useVisualizerSettingsStore((state) => state.activeProfileId)
-  const activeProfileName = useVisualizerSettingsStore((state) => state.activeProfileName)
-  const activeProfileBuiltIn = useVisualizerSettingsStore((state) => state.activeProfileBuiltIn)
-  const activeProfileCanDelete = useVisualizerSettingsStore((state) => state.activeProfileCanDelete)
+  const selectedProfileId = useVisualizerSettingsStore((state) => state.selectedProfileId)
+  const selectedProfileName = useVisualizerSettingsStore((state) => state.selectedProfileName)
+  const selectedProfileBuiltIn = useVisualizerSettingsStore((state) => state.selectedProfileBuiltIn)
+  const selectedProfileCanDelete = useVisualizerSettingsStore((state) => state.selectedProfileCanDelete)
+  const hasUnsavedProfileChanges = useVisualizerSettingsStore((state) => state.hasUnsavedProfileChanges)
   const fftSize = useVisualizerSettingsStore((state) => state.fftSize)
   const spectrogramFftSize = useVisualizerSettingsStore((state) => state.spectrogramFftSize)
   const spectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.spectrogramScrollSpeed)
@@ -297,8 +298,10 @@ export default function AnalyzerEditOverlay({
   const setWaveformMultiband = useVisualizerSettingsStore((state) => state.setWaveformMultiband)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
-  const setActiveProfile = useVisualizerSettingsStore((state) => state.setActiveProfile)
-  const saveCurrentProfile = useVisualizerSettingsStore((state) => state.saveCurrentProfile)
+  const setSelectedProfile = useVisualizerSettingsStore((state) => state.setSelectedProfile)
+  const saveSelectedProfile = useVisualizerSettingsStore((state) => state.saveSelectedProfile)
+  const saveCurrentProfileAs = useVisualizerSettingsStore((state) => state.saveCurrentProfileAs)
+  const revertToSelectedProfile = useVisualizerSettingsStore((state) => state.revertToSelectedProfile)
   const deleteProfile = useVisualizerSettingsStore((state) => state.deleteProfile)
   const setFftSize = useVisualizerSettingsStore((state) => state.setFftSize)
   const setSpectrogramFftSize = useVisualizerSettingsStore((state) => state.setSpectrogramFftSize)
@@ -321,16 +324,18 @@ export default function AnalyzerEditOverlay({
   const setActiveView = useUIStore((state) => state.setActiveView)
   const setPendingSettingsSection = useUIStore((state) => state.setPendingSettingsSection)
 
-  const [showSaveInput, setShowSaveInput] = useState(false)
-  const [saveName, setSaveName] = useState('')
+  const [showSaveAsInput, setShowSaveAsInput] = useState(false)
+  const [saveAsName, setSaveAsName] = useState('')
+  const [saveAsError, setSaveAsError] = useState<string | null>(null)
   const [activeScopeAlignment, setActiveScopeAlignment] = useState<ActiveScopeAlignment>('center')
   const activeSlotRef = useRef<HTMLDivElement | null>(null)
   const activeStripRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    setShowSaveInput(false)
-    setSaveName('')
-  }, [activeProfileId])
+    setShowSaveAsInput(false)
+    setSaveAsName('')
+    setSaveAsError(null)
+  }, [selectedProfileId])
 
   const sortedProfiles = useMemo(() => sortProfiles(profiles), [profiles])
   const builtInProfiles = useMemo(
@@ -342,11 +347,6 @@ export default function AnalyzerEditOverlay({
     [sortedProfiles]
   )
   const showHiddenDropField = draggedScope !== null && !isDraggingFromHidden
-  const activeBadgeLabel = activeProfileId === null
-    ? 'Custom'
-    : activeProfileBuiltIn
-      ? 'Built-in'
-      : 'Saved'
   const activeScopeIndex = activeScope ? visibleScopes.indexOf(activeScope) : -1
 
   useEffect(() => {
@@ -418,12 +418,15 @@ export default function AnalyzerEditOverlay({
     }
   }, [activeScopeIndex, activeScope, gridTemplateColumns, visibleScopes.length])
 
-  const handleSave = () => {
-    const trimmed = saveName.trim()
-    if (!trimmed) return
-    saveCurrentProfile(trimmed)
-    setShowSaveInput(false)
-    setSaveName('')
+  const handleSaveAs = () => {
+    const result = saveCurrentProfileAs(saveAsName)
+    if (!result.ok) {
+      setSaveAsError(result.error)
+      return
+    }
+    setShowSaveAsInput(false)
+    setSaveAsName('')
+    setSaveAsError(null)
   }
 
   const openAnalyzerSettings = () => {
@@ -686,88 +689,141 @@ export default function AnalyzerEditOverlay({
       )}
 
       <div className="analyzer-edit-corner analyzer-edit-corner-top-left">
-        <label className="analyzer-edit-corner-label analyzer-edit-corner-label-inline" htmlFor="analyzer-edit-profile-select">
-          PROFILE
-        </label>
-        <select
-          id="analyzer-edit-profile-select"
-          className="analyzer-edit-select"
-          value={activeProfileId ?? ''}
-          onChange={(event) => {
-            if (event.target.value) {
-              setActiveProfile(event.target.value)
-            }
-          }}
-        >
-          <option value="">Custom</option>
-          <optgroup label="Built-in">
-            {builtInProfiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name}
-              </option>
-            ))}
-          </optgroup>
-          {userProfiles.length > 0 && (
-            <optgroup label="My Profiles">
-              {userProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-
-        {showSaveInput ? (
-          <div className="analyzer-edit-save-inline">
-            <input
-              type="text"
-              className="analyzer-edit-input"
-              value={saveName}
-              placeholder="Profile name..."
-              onChange={(event) => setSaveName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  handleSave()
-                } else if (event.key === 'Escape') {
-                  setShowSaveInput(false)
-                  setSaveName('')
-                }
+        <div className="analyzer-edit-profile-toolbar">
+          <div className="analyzer-edit-profile-picker">
+            <label className="analyzer-edit-corner-label analyzer-edit-corner-label-inline" htmlFor="analyzer-edit-profile-select">
+              PROFILE
+            </label>
+            <select
+              id="analyzer-edit-profile-select"
+              className="analyzer-edit-select"
+              value={selectedProfileId}
+              onChange={(event) => {
+                setSelectedProfile(event.target.value)
               }}
-              autoFocus
-            />
-            <button
-              type="button"
-              className="analyzer-edit-button analyzer-edit-button-primary"
-              disabled={saveName.trim().length === 0}
-              onClick={handleSave}
             >
-              Save
-            </button>
+              <optgroup label="Built-in">
+                {builtInProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </optgroup>
+              {userProfiles.length > 0 && (
+                <optgroup label="My Profiles">
+                  {userProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
           </div>
-        ) : (
-          <button
-            type="button"
-            className="analyzer-edit-button"
-            onClick={() => setShowSaveInput(true)}
-          >
-            Save
-          </button>
-        )}
 
-        {activeProfileCanDelete && activeProfileId && (
-          <button
-            type="button"
-            className="analyzer-edit-button"
-            onClick={() => deleteProfile(activeProfileId)}
-          >
-            Delete
-          </button>
-        )}
+          <div className="analyzer-edit-profile-status" aria-label="Profile status">
+            <div className="analyzer-edit-badge">
+              {selectedProfileBuiltIn ? 'Built-in' : 'Saved'}
+            </div>
+            {hasUnsavedProfileChanges && (
+              <div className="analyzer-edit-badge analyzer-edit-badge-accent">
+                Edited
+              </div>
+            )}
+          </div>
 
-        <div className={`analyzer-edit-badge ${activeProfileId === null ? 'is-accent' : ''}`.trim()}>
-          {activeBadgeLabel}: {activeProfileName}
+          {showSaveAsInput ? (
+            <div className="analyzer-edit-save-inline">
+              <input
+                type="text"
+                className="analyzer-edit-input"
+                value={saveAsName}
+                placeholder="New profile name..."
+                onChange={(event) => {
+                  setSaveAsName(event.target.value)
+                  setSaveAsError(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    handleSaveAs()
+                  } else if (event.key === 'Escape') {
+                    setShowSaveAsInput(false)
+                    setSaveAsName('')
+                    setSaveAsError(null)
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                type="button"
+                className="analyzer-edit-button analyzer-edit-button-primary"
+                disabled={saveAsName.trim().length === 0}
+                onClick={handleSaveAs}
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                className="analyzer-edit-button"
+                onClick={() => {
+                  setShowSaveAsInput(false)
+                  setSaveAsName('')
+                  setSaveAsError(null)
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="analyzer-edit-profile-actions">
+              <button
+                type="button"
+                className="analyzer-edit-button"
+                disabled={selectedProfileBuiltIn || !hasUnsavedProfileChanges}
+                onClick={() => saveSelectedProfile()}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="analyzer-edit-button"
+                onClick={() => {
+                  setShowSaveAsInput(true)
+                  setSaveAsName(selectedProfileBuiltIn ? '' : selectedProfileName)
+                  setSaveAsError(null)
+                }}
+              >
+                Save As
+              </button>
+              <button
+                type="button"
+                className="analyzer-edit-button"
+                disabled={!hasUnsavedProfileChanges}
+                onClick={() => revertToSelectedProfile()}
+              >
+                Revert
+              </button>
+              <button
+                type="button"
+                className="analyzer-edit-button"
+                disabled={!selectedProfileCanDelete}
+                onClick={() => deleteProfile(selectedProfileId)}
+              >
+                Delete
+              </button>
+            </div>
+          )}
+
+          {saveAsError && (
+            <div
+              className="analyzer-edit-inline-feedback is-error"
+              role="alert"
+              aria-live="polite"
+            >
+              {saveAsError}
+            </div>
+          )}
         </div>
       </div>
 

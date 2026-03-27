@@ -113,7 +113,12 @@ interface VisualizerSettingsSnapshot {
   spectrumTiltDbPerOctave: number
   spectrumHeatmapTiltDbPerOctave: number
   profiles: Record<string, AnalyzerProfile>
-  activeProfileId: string | null
+  selectedProfileId: string
+  selectedProfileName: string
+  selectedProfileBuiltIn: boolean
+  selectedProfileCanDelete: boolean
+  hasUnsavedProfileChanges: boolean
+  activeProfileId: string
   activeProfileName: string
   activeProfileBuiltIn: boolean
   activeProfileCanDelete: boolean
@@ -140,8 +145,12 @@ interface VisualizerSettingsSnapshot {
 interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setLineColor: (color: string) => void
   setIsRunning: (running: boolean) => void
+  setSelectedProfile: (profileId: string) => void
   setActiveProfile: (profileId: string) => void
-  saveCurrentProfile: (name: string) => void
+  saveSelectedProfile: () => void
+  saveCurrentProfileAs: (name: string) => SaveCurrentProfileAsResult
+  saveCurrentProfile: (name: string) => SaveCurrentProfileAsResult
+  revertToSelectedProfile: () => void
   deleteProfile: (profileId: string) => void
   moveScope: (scope: ScopeKind, direction: 'earlier' | 'later') => void
   setScopeDeckLayout: (order: ScopeKind[], hiddenScopes: ScopeKind[]) => void
@@ -169,16 +178,20 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   resetToDefaults: () => void
 }
 
-interface PersistedAnalyzerEnvelopeV2 {
-  version: 2
-  activeProfileId: string | null
+interface PersistedAnalyzerEnvelopeV3 {
+  version: 3
+  selectedProfileId: string
   workingState: AnalyzerWorkingState
   profiles: AnalyzerProfile[]
 }
 
+type SaveCurrentProfileAsResult =
+  | { ok: true; profileId: string }
+  | { ok: false; error: string }
+
 const FFT_SIZES: readonly FFTSize[] = [1024, 2048, 4096, 8192, 16384]
 
-const ANALYZER_PROFILE_STORAGE_VERSION = 2
+const ANALYZER_PROFILE_STORAGE_VERSION = 3
 export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'
 export const VECTORSCOPE_MULTIBAND_STORAGE_KEY = 'astra-vectorscope-multiband'
@@ -187,8 +200,6 @@ export const SPECTRUM_HEATMAP_STORAGE_KEY = 'astra-spectrum-heatmap'
 
 const DEFAULT_PROFILE_ID = 'default'
 const DEFAULT_PROFILE_NAME = 'Default'
-const CUSTOM_PROFILE_NAME = 'Custom'
-
 const DEFAULT_LINE_COLOR = '#38bdf8'
 const DEFAULT_RUNNING = true
 const DEFAULT_FFT_SIZE: FFTSize = 4096
@@ -700,12 +711,12 @@ function serializeProfile(profile: AnalyzerProfile): AnalyzerProfile {
 
 function persistState(
   profiles: Record<string, AnalyzerProfile>,
-  activeProfileId: string | null,
+  selectedProfileId: string,
   workingState: AnalyzerWorkingState
 ): void {
-  const payload: PersistedAnalyzerEnvelopeV2 = {
+  const payload: PersistedAnalyzerEnvelopeV3 = {
     version: ANALYZER_PROFILE_STORAGE_VERSION,
-    activeProfileId,
+    selectedProfileId,
     workingState: cloneWorkingState(workingState),
     profiles: Object.values(profiles)
       .filter((profile) => !profile.builtIn)
@@ -739,19 +750,22 @@ function buildSnapshot(
   lineColor: string,
   isRunning: boolean,
   profilesInput: Record<string, AnalyzerProfile>,
-  requestedActiveProfileId: string | null,
+  requestedSelectedProfileId: string | null,
   workingStateInput: AnalyzerWorkingState,
 ): VisualizerSettingsSnapshot {
   const profiles = mergeProfiles(profilesInput)
   const workingState = normalizeWorkingState(workingStateInput)
-  const normalizedActiveProfileId = normalizeProfileId(requestedActiveProfileId)
-  const activeProfile = normalizedActiveProfileId
-    ? profiles[normalizedActiveProfileId] ?? null
+  const normalizedSelectedProfileId = normalizeProfileId(requestedSelectedProfileId)
+  const selectedProfile = normalizedSelectedProfileId
+    ? profiles[normalizedSelectedProfileId] ?? null
     : null
-
-  const activeProfileId = activeProfile && areWorkingStatesEqual(workingStateFromProfile(activeProfile), workingState)
-    ? activeProfile.id
-    : null
+  const resolvedSelectedProfile = selectedProfile ?? profiles[DEFAULT_PROFILE_ID]
+  const selectedProfileId = resolvedSelectedProfile.id
+  const hasUnsavedProfileChanges = !areWorkingStatesEqual(
+    workingStateFromProfile(resolvedSelectedProfile),
+    workingState
+  )
+  const selectedProfileCanDelete = !resolvedSelectedProfile.builtIn && !hasUnsavedProfileChanges
 
   return {
     lineColor,
@@ -762,10 +776,15 @@ function buildSnapshot(
     spectrumTiltDbPerOctave: workingState.scopeSettings.spectrum.tiltDbPerOctave,
     spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
     profiles,
-    activeProfileId,
-    activeProfileName: activeProfileId ? profiles[activeProfileId].name : CUSTOM_PROFILE_NAME,
-    activeProfileBuiltIn: activeProfileId ? profiles[activeProfileId].builtIn : false,
-    activeProfileCanDelete: activeProfileId ? !profiles[activeProfileId].builtIn : false,
+    selectedProfileId,
+    selectedProfileName: resolvedSelectedProfile.name,
+    selectedProfileBuiltIn: resolvedSelectedProfile.builtIn,
+    selectedProfileCanDelete,
+    hasUnsavedProfileChanges,
+    activeProfileId: selectedProfileId,
+    activeProfileName: resolvedSelectedProfile.name,
+    activeProfileBuiltIn: resolvedSelectedProfile.builtIn,
+    activeProfileCanDelete: selectedProfileCanDelete,
     workingState,
     scopeOrder: [...workingState.order],
     hiddenScopes: [...workingState.hiddenScopes],
@@ -808,20 +827,22 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
     const persistedProfiles = normalizePersistedProfiles(parsed.profiles, legacyUnderfillEnabled, legacyAnalyzerPrefs)
     const mergedProfiles = mergeProfiles(persistedProfiles)
 
-    const requestedActiveProfileId = normalizeProfileId(parsed.activeProfileId) ?? DEFAULT_PROFILE_ID
+    const requestedSelectedProfileId = normalizeProfileId(parsed.selectedProfileId)
+      ?? normalizeProfileId(parsed.activeProfileId)
+      ?? DEFAULT_PROFILE_ID
     const baseWorkingState = parsed.workingState !== undefined
       ? normalizeWorkingState(parsed.workingState, legacyUnderfillEnabled, legacyAnalyzerPrefs)
-      : requestedActiveProfileId && mergedProfiles[requestedActiveProfileId]
-        ? requestedActiveProfileId in BUILT_IN_PROFILES
+      : requestedSelectedProfileId && mergedProfiles[requestedSelectedProfileId]
+        ? requestedSelectedProfileId in BUILT_IN_PROFILES
           ? buildDefaultWorkingState(legacyAnalyzerPrefs)
-          : workingStateFromProfile(mergedProfiles[requestedActiveProfileId])
+          : workingStateFromProfile(mergedProfiles[requestedSelectedProfileId])
         : buildDefaultWorkingState(legacyAnalyzerPrefs)
 
     return buildSnapshot(
       DEFAULT_LINE_COLOR,
       DEFAULT_RUNNING,
       mergedProfiles,
-      requestedActiveProfileId,
+      requestedSelectedProfileId,
       baseWorkingState
     )
   } catch {
@@ -845,7 +866,7 @@ function updateWorkingState(
     state.lineColor,
     state.isRunning,
     state.profiles,
-    state.activeProfileId,
+    state.selectedProfileId,
     nextWorkingState
   )
 }
@@ -863,7 +884,7 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
     set({ isRunning: running })
   },
 
-  setActiveProfile: (profileId) => {
+  setSelectedProfile: (profileId) => {
     const targetId = normalizeProfileId(profileId)
     if (!targetId) return
 
@@ -883,17 +904,47 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
     set(nextSnapshot)
   },
 
-  saveCurrentProfile: (name) => {
+  setActiveProfile: (profileId) => {
+    get().setSelectedProfile(profileId)
+  },
+
+  saveSelectedProfile: () => {
+    const state = get()
+    const selectedProfile = state.profiles[state.selectedProfileId]
+    if (!selectedProfile || selectedProfile.builtIn || !state.hasUnsavedProfileChanges) return
+
+    const nextProfiles = {
+      ...state.profiles,
+      [selectedProfile.id]: buildProfile(selectedProfile.id, selectedProfile.name, false, state.workingState),
+    }
+
+    const nextSnapshot = buildSnapshot(
+      state.lineColor,
+      state.isRunning,
+      nextProfiles,
+      selectedProfile.id,
+      state.workingState
+    )
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  saveCurrentProfileAs: (name) => {
     const trimmed = name.trim()
-    if (!trimmed) return
+    if (!trimmed) {
+      return { ok: false, error: 'Enter a profile name.' }
+    }
 
     const state = get()
-
-    // If a non-built-in profile with the same name already exists, overwrite it
     const existingEntry = Object.values(state.profiles).find(
       (p) => !p.builtIn && p.name.toLowerCase() === trimmed.toLowerCase()
     )
-    const profileId = existingEntry ? existingEntry.id : makeProfileId(state.profiles)
+    if (existingEntry) {
+      return { ok: false, error: 'Profile name already exists.' }
+    }
+
+    const profileId = makeProfileId(state.profiles)
 
     const nextProfiles = {
       ...state.profiles,
@@ -910,6 +961,26 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
     set(nextSnapshot)
+    return { ok: true, profileId }
+  },
+
+  saveCurrentProfile: (name) => {
+    return get().saveCurrentProfileAs(name)
+  },
+
+  revertToSelectedProfile: () => {
+    const state = get()
+    const selectedProfile = state.profiles[state.selectedProfileId] ?? BUILT_IN_PROFILES[DEFAULT_PROFILE_ID]
+    const nextSnapshot = buildSnapshot(
+      state.lineColor,
+      state.isRunning,
+      state.profiles,
+      selectedProfile.id,
+      workingStateFromProfile(selectedProfile)
+    )
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
   },
 
   deleteProfile: (profileId) => {
@@ -921,12 +992,15 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
     if (!profile || profile.builtIn) return
 
     const { [targetId]: _removed, ...remainingProfiles } = state.profiles
+    const deletingSelectedProfile = state.selectedProfileId === targetId
     const nextSnapshot = buildSnapshot(
       state.lineColor,
       state.isRunning,
       remainingProfiles,
-      state.activeProfileId === targetId ? null : state.activeProfileId,
-      state.workingState
+      deletingSelectedProfile ? DEFAULT_PROFILE_ID : state.selectedProfileId,
+      deletingSelectedProfile
+        ? workingStateFromProfile(BUILT_IN_PROFILES[DEFAULT_PROFILE_ID])
+        : state.workingState
     )
 
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
@@ -1359,6 +1433,5 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
 
 export function getActiveAnalyzerProfile(): AnalyzerProfile | null {
   const state = useVisualizerSettingsStore.getState()
-  if (!state.activeProfileId) return null
-  return state.profiles[state.activeProfileId] ?? null
+  return state.profiles[state.selectedProfileId] ?? null
 }

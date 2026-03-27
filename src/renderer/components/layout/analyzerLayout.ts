@@ -1,6 +1,11 @@
 import type { ScopeKind } from '../../../types/scopePopout'
+import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 
 const DEFAULT_COLLAPSED_SCOPE_WEIGHT = 1
+const VECTORSCOPE_DRAWABLE_MIN_WIDTH = '96px'
+const VECTORSCOPE_LISSAJOUS_TILE_MIN_WIDTH = '152px'
+const VECTORSCOPE_SQUARE_BIASED_DEFAULT_WIDTH = 'clamp(96px, 18vw, calc(var(--analyzer-height) - 8px))'
+const VECTORSCOPE_LISSAJOUS_DEFAULT_WIDTH = 'clamp(152px, 18vw, calc(var(--analyzer-height) - 8px))'
 
 function usesCollapsedDefaultWeight(scope: ScopeKind): boolean {
   return scope === 'spectrogram'
@@ -9,19 +14,33 @@ function usesCollapsedDefaultWeight(scope: ScopeKind): boolean {
     || scope === 'waveform'
 }
 
+function vectorscopeMinWidth(vectorscopeMode: VectorscopeMode): string {
+  return vectorscopeMode === 'lissajous'
+    ? VECTORSCOPE_LISSAJOUS_TILE_MIN_WIDTH
+    : VECTORSCOPE_DRAWABLE_MIN_WIDTH
+}
+
+function vectorscopeCollapsedWidth(vectorscopeMode: VectorscopeMode): string {
+  return vectorscopeMode === 'lissajous'
+    ? VECTORSCOPE_LISSAJOUS_DEFAULT_WIDTH
+    : VECTORSCOPE_SQUARE_BIASED_DEFAULT_WIDTH
+}
+
 export function buildAnalyzerGridTemplateColumns(
   visibleScopes: ScopeKind[],
-  widthWeights: Partial<Record<ScopeKind, number>>
+  widthWeights: Partial<Record<ScopeKind, number>>,
+  vectorscopeMode: VectorscopeMode
 ): string {
   if (visibleScopes.length === 0) return ''
 
   return visibleScopes.map((scope) => {
     const weight = widthWeights[scope] ?? 1
     if (scope === 'vectorscope') {
+      const minWidth = vectorscopeMinWidth(vectorscopeMode)
       if (weight <= 0) {
-        return 'minmax(96px, clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)))'
+        return `minmax(${minWidth}, ${vectorscopeCollapsedWidth(vectorscopeMode)})`
       }
-      return `minmax(clamp(96px, 18vw, calc(var(--analyzer-height) - 8px)), ${weight}fr)`
+      return `minmax(${minWidth}, ${weight}fr)`
     }
 
     if (usesCollapsedDefaultWeight(scope) && weight <= 0) {

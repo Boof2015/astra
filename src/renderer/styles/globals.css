@@ -8874,7 +8874,7 @@ body::after {
 .analyzer-edit-corner-top-left {
   top: 0;
   left: 0;
-  max-width: min(46vw, 560px);
+  max-width: min(58vw, 900px);
   align-items: center;
 }
 
@@ -8907,6 +8907,63 @@ body::after {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+}
+
+.analyzer-edit-profile-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.analyzer-edit-profile-actions,
+.analyzer-edit-profile-status {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.analyzer-edit-profile-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.analyzer-edit-profile-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+}
+
+.analyzer-edit-profile-actions {
+  gap: 8px;
+}
+
+.analyzer-edit-inline-feedback {
+  display: inline-block;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.analyzer-edit-inline-feedback.is-error {
+  color: rgba(255, 148, 148, 0.9);
 }
 
 .analyzer-edit-corner-label {
@@ -8948,12 +9005,12 @@ body::after {
 }
 
 .analyzer-edit-select {
-  min-width: 188px;
+  min-width: 176px;
   padding: 0 34px 0 12px;
 }
 
 .analyzer-edit-input {
-  min-width: 188px;
+  min-width: 168px;
   padding: 0 12px;
 }
 
@@ -9029,6 +9086,12 @@ body::after {
 .analyzer-edit-button.is-active,
 .analyzer-edit-button-primary,
 .analyzer-edit-badge.is-accent {
+  border-color: rgba(var(--accent-rgb), 0.36);
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent-text-strong);
+}
+
+.analyzer-edit-badge-accent {
   border-color: rgba(var(--accent-rgb), 0.36);
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent-text-strong);
@@ -9379,6 +9442,14 @@ body::after {
   .analyzer-edit-corner-top-right,
   .analyzer-edit-corner-bottom-left {
     max-width: calc(100% - 10px);
+  }
+
+  .analyzer-edit-corner-top-left {
+    max-width: calc(100% - 10px);
+  }
+
+  .analyzer-edit-profile-toolbar {
+    max-width: calc(100vw - 32px);
   }
 
   .analyzer-edit-active-track {

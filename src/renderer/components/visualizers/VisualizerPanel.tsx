@@ -39,12 +39,52 @@ interface ResizeSession {
 }
 
 const MIN_SCOPE_WIDTH_PX = 112
-const MIN_VECTORSCOPE_WIDTH_PX = 96
+const MIN_VECTORSCOPE_DRAWABLE_WIDTH_PX = 96
+const MIN_LISSAJOUS_VECTORSCOPE_TILE_WIDTH_PX = 152
 const MIN_PREVIEW_WEIGHT = 0.4
 const MAX_PREVIEW_WEIGHT = 2.6
 
-function scopeMinWidthPx(scope: ScopeKind): number {
-  return scope === 'vectorscope' ? MIN_VECTORSCOPE_WIDTH_PX : MIN_SCOPE_WIDTH_PX
+function parseCssPixelValue(value: string): number | null {
+  const numeric = Number.parseFloat(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function resolveAnalyzerHeightPx(referenceElement: HTMLElement | null): number | null {
+  if (!referenceElement) return null
+
+  const value = getComputedStyle(referenceElement).getPropertyValue('--analyzer-height')
+  return parseCssPixelValue(value)
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function vectorscopeMinWidthPx(vectorscopeMode: VectorscopeMode, referenceElement: HTMLElement | null): number {
+  if (vectorscopeMode === 'lissajous') {
+    return MIN_LISSAJOUS_VECTORSCOPE_TILE_WIDTH_PX
+  }
+
+  const analyzerHeightPx = resolveAnalyzerHeightPx(referenceElement)
+  const squareBiasedMaxWidth = analyzerHeightPx === null
+    ? MIN_VECTORSCOPE_DRAWABLE_WIDTH_PX
+    : Math.max(MIN_VECTORSCOPE_DRAWABLE_WIDTH_PX, analyzerHeightPx - 8)
+
+  return Math.round(clampNumber(
+    window.innerWidth * 0.18,
+    MIN_VECTORSCOPE_DRAWABLE_WIDTH_PX,
+    squareBiasedMaxWidth
+  ))
+}
+
+function scopeMinWidthPx(
+  scope: ScopeKind,
+  vectorscopeMode: VectorscopeMode,
+  referenceElement: HTMLElement | null
+): number {
+  return scope === 'vectorscope'
+    ? vectorscopeMinWidthPx(vectorscopeMode, referenceElement)
+    : MIN_SCOPE_WIDTH_PX
 }
 
 function clampPreviewWeight(value: number): number {
@@ -797,8 +837,8 @@ export default function VisualizerPanel({
   }, [resizePreviewWeights, widthWeights])
 
   const derivedGridTemplateColumns = useMemo(() => {
-    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights)
-  }, [effectiveWidthWeights, visibleScopes])
+    return buildAnalyzerGridTemplateColumns(visibleScopes, effectiveWidthWeights, vectorscopeMode)
+  }, [effectiveWidthWeights, vectorscopeMode, visibleScopes])
   const gridTemplateColumns = gridTemplateColumnsProp ?? derivedGridTemplateColumns
 
   useEffect(() => {
@@ -956,9 +996,11 @@ export default function VisualizerPanel({
       if (!session) return
 
       const deltaX = moveEvent.clientX - session.startClientX
+      const minRightWidth = scopeMinWidthPx(session.rightScope, vectorscopeMode, gridRef.current)
+      const minLeftWidth = scopeMinWidthPx(session.leftScope, vectorscopeMode, gridRef.current)
       const nextLeftWidth = Math.min(
-        session.pairWidth - scopeMinWidthPx(session.rightScope),
-        Math.max(scopeMinWidthPx(session.leftScope), session.startLeftWidth + deltaX)
+        session.pairWidth - minRightWidth,
+        Math.max(minLeftWidth, session.startLeftWidth + deltaX)
       )
 
       const leftRatio = nextLeftWidth / session.pairWidth

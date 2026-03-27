@@ -50,6 +50,9 @@ function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
 const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
 
 export function normalizeAnalyzerHeightPx(value: unknown): number {
+  if (value == null) return DEFAULT_ANALYZER_HEIGHT_PX
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_ANALYZER_HEIGHT_PX
+
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_ANALYZER_HEIGHT_PX
 
