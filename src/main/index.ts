@@ -113,6 +113,49 @@ import type {
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
 
+function getArgSwitchValue(name: string): string | null {
+  const inlinePrefix = `--${name}=`
+
+  for (let index = 1; index < process.argv.length; index += 1) {
+    const arg = process.argv[index]
+    if (arg.startsWith(inlinePrefix)) {
+      return arg.slice(inlinePrefix.length)
+    }
+    if (arg === `--${name}`) {
+      const next = process.argv[index + 1]
+      if (!next || next.startsWith('--')) {
+        return ''
+      }
+      return next
+    }
+  }
+
+  return null
+}
+
+function isLinuxWaylandSessionEnv(): boolean {
+  if (process.platform !== 'linux') {
+    return false
+  }
+
+  const sessionType = process.env['XDG_SESSION_TYPE']?.trim().toLowerCase()
+  if (sessionType === 'wayland') {
+    return true
+  }
+
+  return Boolean(process.env['WAYLAND_DISPLAY']?.trim())
+}
+
+const requestedOzonePlatform = getArgSwitchValue('ozone-platform')?.trim().toLowerCase() ?? null
+const shouldForceX11ForLinuxWayland = process.platform === 'linux'
+  && isLinuxWaylandSessionEnv()
+  && requestedOzonePlatform === null
+
+if (shouldForceX11ForLinuxWayland) {
+  // XWayland is currently the reliable path for mini-player z-order behavior.
+  app.commandLine.appendSwitch('ozone-platform', 'x11')
+}
+
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
@@ -552,12 +595,15 @@ function isLinuxWaylandSession(): boolean {
     return false
   }
 
-  const sessionType = process.env['XDG_SESSION_TYPE']?.trim().toLowerCase()
-  if (sessionType === 'wayland') {
+  if (requestedOzonePlatform === 'x11' || shouldForceX11ForLinuxWayland) {
+    return false
+  }
+
+  if (requestedOzonePlatform === 'wayland') {
     return true
   }
 
-  return Boolean(process.env['WAYLAND_DISPLAY']?.trim())
+  return isLinuxWaylandSessionEnv()
 }
 
 function normalizeScopeKind(value: unknown): ScopeKind | null {
