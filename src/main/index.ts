@@ -538,7 +538,9 @@ function focusOrCreateMainWindow(): void {
 function getMiniWindowState(): MiniPlayerWindowState {
   const isOpen = Boolean(miniWindow && !miniWindow.isDestroyed())
   const alwaysOnTop = isOpen
-    ? miniWindow!.isAlwaysOnTop()
+    ? (isLinuxWaylandSession()
+        ? miniWindowPrefs?.alwaysOnTop ?? miniWindow!.isAlwaysOnTop()
+        : miniWindow!.isAlwaysOnTop())
     : miniWindowPrefs?.alwaysOnTop ?? true
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
@@ -1965,6 +1967,20 @@ function schedulePersistMiniWindowPrefs(): void {
   }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
 }
 
+function applyMiniPlayerPinnedBehavior(window: BrowserWindow, alwaysOnTop: boolean): void {
+  if (isLinuxWaylandSession()) {
+    window.setVisibleOnAllWorkspaces(alwaysOnTop)
+    if (alwaysOnTop) {
+      window.setAlwaysOnTop(true, 'dock')
+    } else {
+      window.setAlwaysOnTop(false)
+    }
+    return
+  }
+
+  window.setAlwaysOnTop(alwaysOnTop)
+}
+
 async function recreateMiniPlayerWindow(): Promise<void> {
   if (!miniWindow || miniWindow.isDestroyed()) {
     await createMiniPlayerWindow()
@@ -1992,7 +2008,7 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
   miniWindowPrefs = prefs
-  const useWaylandToolbarRole = isLinuxWaylandSession() && prefs.alwaysOnTop
+  const useWaylandDockRole = isLinuxWaylandSession() && prefs.alwaysOnTop
 
   miniWindow = new BrowserWindow({
     width: prefs.width,
@@ -2005,7 +2021,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     transparent: false,
     backgroundColor: '#050507',
     alwaysOnTop: prefs.alwaysOnTop,
-    type: useWaylandToolbarRole ? 'toolbar' : undefined,
+    type: useWaylandDockRole ? 'dock' : undefined,
     autoHideMenuBar: true,
     resizable: true,
     maximizable: false,
@@ -2020,7 +2036,12 @@ async function createMiniPlayerWindow(): Promise<void> {
     }
   })
 
+  applyMiniPlayerPinnedBehavior(miniWindow, prefs.alwaysOnTop)
+
   miniWindow.on('ready-to-show', () => {
+    if (miniWindow && !miniWindow.isDestroyed()) {
+      applyMiniPlayerPinnedBehavior(miniWindow, miniWindowPrefs?.alwaysOnTop ?? prefs.alwaysOnTop)
+    }
     miniWindow?.show()
   })
 
@@ -2600,9 +2621,7 @@ ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
   }
 
   if (isLinuxWaylandSession()) {
-    const nextAlwaysOnTop = miniWindow && !miniWindow.isDestroyed()
-      ? !miniWindow.isAlwaysOnTop()
-      : !miniWindowPrefs.alwaysOnTop
+    const nextAlwaysOnTop = !miniWindowPrefs.alwaysOnTop
 
     if (miniWindow && !miniWindow.isDestroyed()) {
       const captured = captureMiniWindowPrefs()
