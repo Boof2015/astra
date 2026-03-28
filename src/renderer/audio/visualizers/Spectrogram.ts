@@ -11,6 +11,7 @@ import {
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
 } from '../../../types/spectrogram'
+import { resolveColorToRgb } from '../../utils/color'
 
 export interface SpectrogramDataSource {
   getPendingSpectrogramSamples: () => Float32Array[]
@@ -255,15 +256,6 @@ function buildHeatLUT(): Uint8Array {
 }
 
 const HEAT_LUT = buildHeatLUT()
-
-function parseHexColor(hex: string): [number, number, number] {
-  const normalized = hex.replace('#', '')
-  return [
-    Number.parseInt(normalized.substring(0, 2), 16) || 56,
-    Number.parseInt(normalized.substring(2, 4), 16) || 189,
-    Number.parseInt(normalized.substring(4, 6), 16) || 248,
-  ]
-}
 
 // Zero-pad FFT for finer frequency resolution (visual interpolation)
 const FFT_PAD_FACTOR = 4
@@ -521,9 +513,9 @@ export class Spectrogram {
     if (!this.columnImageData) return
 
     const imageData = this.columnImageData.data
-    const [tintR, tintG, tintB] = this.options.colorScheme === 'mono'
-      ? parseHexColor(this.options.lineColor)
-      : [0, 0, 0]
+    const { r: tintR, g: tintG, b: tintB } = this.options.colorScheme === 'mono'
+      ? resolveColorToRgb(this.options.lineColor)
+      : { r: 0, g: 0, b: 0 }
 
     for (let row = 0; row < values.length; row += 1) {
       const intensity = Math.max(0, Math.min(1, values[row]))

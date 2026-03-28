@@ -54,6 +54,7 @@ import {
   loadMiniWindowPrefs,
   normalizeMiniPlayerVisualizerMode,
   saveMiniWindowPrefs,
+  stripMiniWindowPosition,
 } from './services/miniWindowPrefs'
 import {
   MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -542,6 +543,19 @@ function getMiniWindowState(): MiniPlayerWindowState {
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
   return { isOpen, alwaysOnTop, visualizerMode }
+}
+
+function isLinuxWaylandSession(): boolean {
+  if (process.platform !== 'linux') {
+    return false
+  }
+
+  const sessionType = process.env['XDG_SESSION_TYPE']?.trim().toLowerCase()
+  if (sessionType === 'wayland') {
+    return true
+  }
+
+  return Boolean(process.env['WAYLAND_DISPLAY']?.trim())
 }
 
 function normalizeScopeKind(value: unknown): ScopeKind | null {
@@ -1913,14 +1927,20 @@ function captureMiniWindowPrefs(): MiniPlayerWindowPrefs | null {
   if (!miniWindow || miniWindow.isDestroyed()) return null
   const bounds = miniWindow.getBounds()
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
-  return {
+  const captured: MiniPlayerWindowPrefs = {
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
     height: bounds.height,
-    alwaysOnTop: miniWindow.isAlwaysOnTop(),
+    alwaysOnTop: isLinuxWaylandSession()
+      ? miniWindowPrefs?.alwaysOnTop ?? miniWindow.isAlwaysOnTop()
+      : miniWindow.isAlwaysOnTop(),
     visualizerMode
   }
+
+  return isLinuxWaylandSession()
+    ? stripMiniWindowPosition(captured)
+    : captured
 }
 
 async function persistMiniWindowPrefs(): Promise<void> {
@@ -1945,6 +1965,21 @@ function schedulePersistMiniWindowPrefs(): void {
   }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
 }
 
+async function recreateMiniPlayerWindow(): Promise<void> {
+  if (!miniWindow || miniWindow.isDestroyed()) {
+    await createMiniPlayerWindow()
+    return
+  }
+
+  const windowToClose = miniWindow
+  await new Promise<void>((resolve) => {
+    windowToClose.once('closed', () => resolve())
+    windowToClose.close()
+  })
+
+  await createMiniPlayerWindow()
+}
+
 async function createMiniPlayerWindow(): Promise<void> {
   if (miniWindow && !miniWindow.isDestroyed()) {
     if (miniWindow.isMinimized()) {
@@ -1957,18 +1992,20 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
   miniWindowPrefs = prefs
+  const useWaylandToolbarRole = isLinuxWaylandSession() && prefs.alwaysOnTop
 
   miniWindow = new BrowserWindow({
     width: prefs.width,
     height: prefs.height,
-    x: prefs.x,
-    y: prefs.y,
+    x: isLinuxWaylandSession() ? undefined : prefs.x,
+    y: isLinuxWaylandSession() ? undefined : prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
     frame: false,
     transparent: false,
     backgroundColor: '#050507',
     alwaysOnTop: prefs.alwaysOnTop,
+    type: useWaylandToolbarRole ? 'toolbar' : undefined,
     autoHideMenuBar: true,
     resizable: true,
     maximizable: false,
@@ -2558,6 +2595,34 @@ ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) =>
 })
 
 ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
+  if (!miniWindowPrefs) {
+    miniWindowPrefs = await loadMiniWindowPrefs()
+  }
+
+  if (isLinuxWaylandSession()) {
+    const nextAlwaysOnTop = miniWindow && !miniWindow.isDestroyed()
+      ? !miniWindow.isAlwaysOnTop()
+      : !miniWindowPrefs.alwaysOnTop
+
+    if (miniWindow && !miniWindow.isDestroyed()) {
+      const captured = captureMiniWindowPrefs()
+      miniWindowPrefs = stripMiniWindowPosition({
+        ...(captured ?? miniWindowPrefs),
+        alwaysOnTop: nextAlwaysOnTop
+      })
+    } else {
+      miniWindowPrefs = stripMiniWindowPosition({
+        ...miniWindowPrefs,
+        alwaysOnTop: nextAlwaysOnTop
+      })
+    }
+
+    await saveMiniWindowPrefs(miniWindowPrefs)
+    await recreateMiniPlayerWindow()
+    broadcastMiniWindowState()
+    return getMiniWindowState()
+  }
+
   if (!miniWindow || miniWindow.isDestroyed()) {
     await createMiniPlayerWindow()
   }

@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import type { LUFSMeterMode } from '../../../types/lufsmeter'
+import { resolveColorToRgb } from '../../utils/color'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
@@ -100,17 +101,6 @@ function applyBiquad(coeffs: BiquadCoeffs, state: BiquadState, input: number): n
   state.y2 = state.y1
   state.y1 = output
   return output
-}
-
-// ---- Color utilities ----
-
-function parseHexColor(hex: string): [number, number, number] {
-  const h = hex.replace('#', '')
-  return [
-    parseInt(h.substring(0, 2), 16) || 56,
-    parseInt(h.substring(2, 4), 16) || 189,
-    parseInt(h.substring(4, 6), 16) || 248,
-  ]
 }
 
 // ---- LUFS Meter class ----
@@ -380,7 +370,7 @@ export class LUFSMeter {
 
   private drawBars(width: number, height: number): void {
     const ctx = this.ctx
-    const [tintR, tintG, tintB] = parseHexColor(this.options.lineColor)
+    const { r: tintR, g: tintG, b: tintB } = resolveColorToRgb(this.options.lineColor)
     const dpr = window.devicePixelRatio || 1
 
     const padding = Math.round(8 * dpr)

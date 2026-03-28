@@ -7,6 +7,7 @@ import {
   clampWaveformGainDb,
   clampWaveformScrollSpeed,
 } from '../../../types/waveform'
+import { resolveColorToRgb } from '../../utils/color'
 import { MultibandSplitter } from './multibandSplitter'
 
 export interface WaveformDataSource {
@@ -52,15 +53,6 @@ const defaultWaveformDataSource: WaveformDataSource = {
 // Calibrate 1.0x to the prior 8s window at roughly 512px wide,
 // while keeping scroll speed independent from panel width.
 const BASE_PIXELS_PER_SECOND = 64
-
-function parseHexColor(hex: string): [number, number, number] {
-  const h = hex.replace('#', '')
-  return [
-    parseInt(h.substring(0, 2), 16) || 56,
-    parseInt(h.substring(2, 4), 16) || 189,
-    parseInt(h.substring(4, 6), 16) || 248,
-  ]
-}
 
 export class Waveform {
   private canvas: HTMLCanvasElement
@@ -298,7 +290,10 @@ export class Waveform {
     if (this.options.multiband) {
       ;[r, g, b] = this.computeBandColor()
     } else {
-      ;[r, g, b] = parseHexColor(this.options.lineColor)
+      const lineColor = resolveColorToRgb(this.options.lineColor)
+      r = lineColor.r
+      g = lineColor.g
+      b = lineColor.b
     }
 
     const fillAlpha = this.options.multiband ? MULTIBAND_FILL_ALPHA : 0.55
