@@ -253,6 +253,10 @@ let lastFmConfig: LastFmServiceConfig = {
 }
 let lyricsOnlineEnabled = false
 
+function isLinuxDesktop(): boolean {
+  return process.platform === 'linux'
+}
+
 function stripEnvQuotes(value: string): string {
   if (value.length >= 2) {
     const first = value[0]
@@ -581,7 +585,7 @@ function focusOrCreateMainWindow(): void {
 function getMiniWindowState(): MiniPlayerWindowState {
   const isOpen = Boolean(miniWindow && !miniWindow.isDestroyed())
   const alwaysOnTop = isOpen
-    ? (isLinuxWaylandSession()
+    ? (isLinuxDesktop()
         ? miniWindowPrefs?.alwaysOnTop ?? miniWindow!.isAlwaysOnTop()
         : miniWindow!.isAlwaysOnTop())
     : miniWindowPrefs?.alwaysOnTop ?? true
@@ -2014,7 +2018,7 @@ function schedulePersistMiniWindowPrefs(): void {
 }
 
 function applyMiniPlayerPinnedBehavior(window: BrowserWindow, alwaysOnTop: boolean): void {
-  if (isLinuxWaylandSession()) {
+  if (isLinuxDesktop()) {
     window.setVisibleOnAllWorkspaces(alwaysOnTop)
     if (alwaysOnTop) {
       window.setAlwaysOnTop(true, 'dock')
@@ -2054,7 +2058,7 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
   miniWindowPrefs = prefs
-  const useWaylandDockRole = isLinuxWaylandSession() && prefs.alwaysOnTop
+  const useLinuxDockRole = isLinuxDesktop() && prefs.alwaysOnTop
 
   miniWindow = new BrowserWindow({
     width: prefs.width,
@@ -2067,7 +2071,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     transparent: false,
     backgroundColor: '#050507',
     alwaysOnTop: prefs.alwaysOnTop,
-    type: useWaylandDockRole ? 'dock' : undefined,
+    type: useLinuxDockRole ? 'dock' : undefined,
     autoHideMenuBar: true,
     resizable: true,
     maximizable: false,
