@@ -113,26 +113,6 @@ import type {
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
 
-function getArgSwitchValue(name: string): string | null {
-  const inlinePrefix = `--${name}=`
-
-  for (let index = 1; index < process.argv.length; index += 1) {
-    const arg = process.argv[index]
-    if (arg.startsWith(inlinePrefix)) {
-      return arg.slice(inlinePrefix.length)
-    }
-    if (arg === `--${name}`) {
-      const next = process.argv[index + 1]
-      if (!next || next.startsWith('--')) {
-        return ''
-      }
-      return next
-    }
-  }
-
-  return null
-}
-
 function isLinuxWaylandSessionEnv(): boolean {
   if (process.platform !== 'linux') {
     return false
@@ -144,16 +124,6 @@ function isLinuxWaylandSessionEnv(): boolean {
   }
 
   return Boolean(process.env['WAYLAND_DISPLAY']?.trim())
-}
-
-const requestedOzonePlatform = getArgSwitchValue('ozone-platform')?.trim().toLowerCase() ?? null
-const shouldForceX11ForLinuxWayland = process.platform === 'linux'
-  && isLinuxWaylandSessionEnv()
-  && requestedOzonePlatform === null
-
-if (shouldForceX11ForLinuxWayland) {
-  // XWayland is currently the reliable path for mini-player z-order behavior.
-  app.commandLine.appendSwitch('ozone-platform', 'x11')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -595,18 +565,6 @@ function getMiniWindowState(): MiniPlayerWindowState {
 }
 
 function isLinuxWaylandSession(): boolean {
-  if (process.platform !== 'linux') {
-    return false
-  }
-
-  if (requestedOzonePlatform === 'x11' || shouldForceX11ForLinuxWayland) {
-    return false
-  }
-
-  if (requestedOzonePlatform === 'wayland') {
-    return true
-  }
-
   return isLinuxWaylandSessionEnv()
 }
 
@@ -2058,7 +2016,7 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
   miniWindowPrefs = prefs
-  const useLinuxDockRole = isLinuxDesktop() && prefs.alwaysOnTop
+  const useLinuxPinnedOverlay = isLinuxDesktop() && prefs.alwaysOnTop
 
   miniWindow = new BrowserWindow({
     width: prefs.width,
@@ -2067,11 +2025,12 @@ async function createMiniPlayerWindow(): Promise<void> {
     y: isLinuxWaylandSession() ? undefined : prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
+    focusable: useLinuxPinnedOverlay ? false : true,
     frame: false,
     transparent: false,
     backgroundColor: '#050507',
     alwaysOnTop: prefs.alwaysOnTop,
-    type: useLinuxDockRole ? 'dock' : undefined,
+    type: useLinuxPinnedOverlay ? 'dock' : undefined,
     autoHideMenuBar: true,
     resizable: true,
     maximizable: false,
@@ -2670,7 +2629,7 @@ ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
     miniWindowPrefs = await loadMiniWindowPrefs()
   }
 
-  if (isLinuxWaylandSession()) {
+  if (isLinuxDesktop()) {
     const nextAlwaysOnTop = !miniWindowPrefs.alwaysOnTop
 
     if (miniWindow && !miniWindow.isDestroyed()) {
