@@ -103,16 +103,6 @@ export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs 
   }
 }
 
-export function stripMiniWindowPosition(prefs: MiniPlayerWindowPrefs): MiniPlayerWindowPrefs {
-  const normalized = normalizeMiniWindowPrefs(prefs)
-  return {
-    width: normalized.width,
-    height: normalized.height,
-    alwaysOnTop: normalized.alwaysOnTop,
-    visualizerMode: normalized.visualizerMode
-  }
-}
-
 export async function loadMiniWindowPrefs(): Promise<MiniPlayerWindowPrefs> {
   try {
     const data = await readFile(prefsPath(), 'utf-8')

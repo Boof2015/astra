@@ -54,7 +54,6 @@ import {
   loadMiniWindowPrefs,
   normalizeMiniPlayerVisualizerMode,
   saveMiniWindowPrefs,
-  stripMiniWindowPosition,
 } from './services/miniWindowPrefs'
 import {
   MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -112,19 +111,6 @@ import type {
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
-
-function isLinuxWaylandSessionEnv(): boolean {
-  if (process.platform !== 'linux') {
-    return false
-  }
-
-  const sessionType = process.env['XDG_SESSION_TYPE']?.trim().toLowerCase()
-  if (sessionType === 'wayland') {
-    return true
-  }
-
-  return Boolean(process.env['WAYLAND_DISPLAY']?.trim())
-}
 
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
@@ -222,10 +208,6 @@ let lastFmConfig: LastFmServiceConfig = {
   pendingScrobbles: []
 }
 let lyricsOnlineEnabled = false
-
-function isLinuxDesktop(): boolean {
-  return process.platform === 'linux'
-}
 
 function stripEnvQuotes(value: string): string {
   if (value.length >= 2) {
@@ -555,17 +537,11 @@ function focusOrCreateMainWindow(): void {
 function getMiniWindowState(): MiniPlayerWindowState {
   const isOpen = Boolean(miniWindow && !miniWindow.isDestroyed())
   const alwaysOnTop = isOpen
-    ? (isLinuxDesktop()
-        ? miniWindowPrefs?.alwaysOnTop ?? miniWindow!.isAlwaysOnTop()
-        : miniWindow!.isAlwaysOnTop())
+    ? miniWindow!.isAlwaysOnTop()
     : miniWindowPrefs?.alwaysOnTop ?? true
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
   return { isOpen, alwaysOnTop, visualizerMode }
-}
-
-function isLinuxWaylandSession(): boolean {
-  return isLinuxWaylandSessionEnv()
 }
 
 function normalizeScopeKind(value: unknown): ScopeKind | null {
@@ -1937,20 +1913,14 @@ function captureMiniWindowPrefs(): MiniPlayerWindowPrefs | null {
   if (!miniWindow || miniWindow.isDestroyed()) return null
   const bounds = miniWindow.getBounds()
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
-  const captured: MiniPlayerWindowPrefs = {
+  return {
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
     height: bounds.height,
-    alwaysOnTop: isLinuxWaylandSession()
-      ? miniWindowPrefs?.alwaysOnTop ?? miniWindow.isAlwaysOnTop()
-      : miniWindow.isAlwaysOnTop(),
+    alwaysOnTop: miniWindow.isAlwaysOnTop(),
     visualizerMode
   }
-
-  return isLinuxWaylandSession()
-    ? stripMiniWindowPosition(captured)
-    : captured
 }
 
 async function persistMiniWindowPrefs(): Promise<void> {
@@ -1975,35 +1945,6 @@ function schedulePersistMiniWindowPrefs(): void {
   }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
 }
 
-function applyMiniPlayerPinnedBehavior(window: BrowserWindow, alwaysOnTop: boolean): void {
-  if (isLinuxDesktop()) {
-    window.setVisibleOnAllWorkspaces(alwaysOnTop)
-    if (alwaysOnTop) {
-      window.setAlwaysOnTop(true, 'dock')
-    } else {
-      window.setAlwaysOnTop(false)
-    }
-    return
-  }
-
-  window.setAlwaysOnTop(alwaysOnTop)
-}
-
-async function recreateMiniPlayerWindow(): Promise<void> {
-  if (!miniWindow || miniWindow.isDestroyed()) {
-    await createMiniPlayerWindow()
-    return
-  }
-
-  const windowToClose = miniWindow
-  await new Promise<void>((resolve) => {
-    windowToClose.once('closed', () => resolve())
-    windowToClose.close()
-  })
-
-  await createMiniPlayerWindow()
-}
-
 async function createMiniPlayerWindow(): Promise<void> {
   if (miniWindow && !miniWindow.isDestroyed()) {
     if (miniWindow.isMinimized()) {
@@ -2016,21 +1957,18 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   const prefs = miniWindowPrefs ?? await loadMiniWindowPrefs()
   miniWindowPrefs = prefs
-  const useLinuxPinnedOverlay = isLinuxDesktop() && prefs.alwaysOnTop
 
   miniWindow = new BrowserWindow({
     width: prefs.width,
     height: prefs.height,
-    x: isLinuxWaylandSession() ? undefined : prefs.x,
-    y: isLinuxWaylandSession() ? undefined : prefs.y,
+    x: prefs.x,
+    y: prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
-    focusable: useLinuxPinnedOverlay ? false : true,
     frame: false,
     transparent: false,
     backgroundColor: '#050507',
     alwaysOnTop: prefs.alwaysOnTop,
-    type: useLinuxPinnedOverlay ? 'dock' : undefined,
     autoHideMenuBar: true,
     resizable: true,
     maximizable: false,
@@ -2045,12 +1983,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     }
   })
 
-  applyMiniPlayerPinnedBehavior(miniWindow, prefs.alwaysOnTop)
-
   miniWindow.on('ready-to-show', () => {
-    if (miniWindow && !miniWindow.isDestroyed()) {
-      applyMiniPlayerPinnedBehavior(miniWindow, miniWindowPrefs?.alwaysOnTop ?? prefs.alwaysOnTop)
-    }
     miniWindow?.show()
   })
 
@@ -2625,32 +2558,6 @@ ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) =>
 })
 
 ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
-  if (!miniWindowPrefs) {
-    miniWindowPrefs = await loadMiniWindowPrefs()
-  }
-
-  if (isLinuxDesktop()) {
-    const nextAlwaysOnTop = !miniWindowPrefs.alwaysOnTop
-
-    if (miniWindow && !miniWindow.isDestroyed()) {
-      const captured = captureMiniWindowPrefs()
-      miniWindowPrefs = stripMiniWindowPosition({
-        ...(captured ?? miniWindowPrefs),
-        alwaysOnTop: nextAlwaysOnTop
-      })
-    } else {
-      miniWindowPrefs = stripMiniWindowPosition({
-        ...miniWindowPrefs,
-        alwaysOnTop: nextAlwaysOnTop
-      })
-    }
-
-    await saveMiniWindowPrefs(miniWindowPrefs)
-    await recreateMiniPlayerWindow()
-    broadcastMiniWindowState()
-    return getMiniWindowState()
-  }
-
   if (!miniWindow || miniWindow.isDestroyed()) {
     await createMiniPlayerWindow()
   }
