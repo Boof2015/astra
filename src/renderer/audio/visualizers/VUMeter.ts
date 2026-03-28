@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import { getSourceChannelId } from '../../utils/sourceChannelLayout'
+import { resolveColorToRgb } from '../../utils/color'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import type { MultichannelAudioChunk } from '../../../types/audioAnalysis'
@@ -92,15 +93,6 @@ const TEXT_ROLE_SPECS: Record<TextRole, TextRoleSpec> = {
     paddingX: TEXT_PADDING_X_PX,
     paddingY: TEXT_PADDING_Y_PX,
   },
-}
-
-function parseHexColor(hex: string): [number, number, number] {
-  const h = hex.replace('#', '')
-  return [
-    parseInt(h.substring(0, 2), 16) || 56,
-    parseInt(h.substring(2, 4), 16) || 189,
-    parseInt(h.substring(4, 6), 16) || 248,
-  ]
 }
 
 function colorWithAlpha(r: number, g: number, b: number, a: number): string {
@@ -459,7 +451,7 @@ export class VUMeter {
 
   private drawStereoHorizontalBarMode(width: number, height: number): void {
     const ctx = this.ctx
-    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
 
     const meterHeight = Math.max(1, Math.floor(height * 0.28))
     const corrHeight = Math.max(
@@ -505,7 +497,7 @@ export class VUMeter {
 
   private drawMultichannelHorizontalBarMode(width: number, height: number): void {
     const ctx = this.ctx
-    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
 
     const gap = clamp(height * 0.035, 2, 8)
     const totalGap = gap * Math.max(0, this.activeChannelCount - 1)
@@ -548,7 +540,7 @@ export class VUMeter {
 
   private drawStereoVerticalBarMode(width: number, height: number): void {
     const ctx = this.ctx
-    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
 
     const sidePadding = clamp(width * 0.08, 4, 18)
     const channelGap = clamp(width * 0.08, 4, 16)
@@ -606,7 +598,7 @@ export class VUMeter {
 
   private drawMultichannelVerticalBarMode(width: number, height: number): void {
     const ctx = this.ctx
-    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
     const sidePadding = clamp(width * 0.05, 4, 14)
     const channelGap = clamp(width * 0.02, 2, 8)
     const gapY = clamp(height * 0.03, 2, 8)
@@ -833,7 +825,7 @@ export class VUMeter {
 
   private drawNeedleMode(width: number, height: number): void {
     const ctx = this.ctx
-    const [cr, cg, cb] = parseHexColor(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
     const corrHeight = Math.max(
       10,
       Math.ceil(this.fitTextBand(['-1', 'Ø', '+1'], Math.max(1, width / 3), height, 'correlation')?.bandHeight
