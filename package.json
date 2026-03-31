@@ -76,7 +76,9 @@
     "files": [
       "out/**/*",
       ".env.local",
-      "native/build/Release/*.node"
+      "native/build/Release/*.node",
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/ffprobe-static/**/*"
     ],
     "extraResources": [
       {

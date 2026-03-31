@@ -4114,6 +4114,9 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
   const isWindows = process.platform === 'win32'
   const executable = `ffprobe${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticFfprobeBinaryPath()
+  const packagedStaticCandidates = app.isPackaged
+    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+    : []
   const candidates = [
     ...(app.isPackaged
       ? [
@@ -4121,6 +4124,7 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
           join(process.resourcesPath, 'bin', executable)
         ]
       : []),
+    ...packagedStaticCandidates,
     ...(staticModulePath ? [staticModulePath] : []),
     ...(isWindows
       ? ['ffprobe.exe', 'ffprobe']
@@ -4159,6 +4163,9 @@ async function resolveFfmpegBinaryPath(): Promise<string | null> {
   const isWindows = process.platform === 'win32'
   const executable = `ffmpeg${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticFfmpegBinaryPath()
+  const packagedStaticCandidates = app.isPackaged
+    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', executable)]
+    : []
   const candidates = [
     ...(app.isPackaged
       ? [
@@ -4166,6 +4173,7 @@ async function resolveFfmpegBinaryPath(): Promise<string | null> {
           join(process.resourcesPath, 'bin', executable)
         ]
       : []),
+    ...packagedStaticCandidates,
     ...(staticModulePath ? [staticModulePath] : []),
     ...(isWindows
       ? ['ffmpeg.exe', 'ffmpeg']

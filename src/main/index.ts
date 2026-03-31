@@ -4706,6 +4706,13 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
 
   const isWindows = process.platform === 'win32'
   const executable = `${binary}${isWindows ? '.exe' : ''}`
+  const packagedStaticCandidates = isDev
+    ? []
+    : (
+        binary === 'ffmpeg'
+          ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', executable)]
+          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+      )
   const systemCandidates = binary === 'ffmpeg'
     ? (isWindows ? ['ffmpeg.exe', 'ffmpeg'] : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'])
     : (isWindows ? ['ffprobe.exe', 'ffprobe'] : ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe'])
@@ -4716,6 +4723,7 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
       join(process.resourcesPath, executable),
       join(process.resourcesPath, 'bin', executable)
     ]),
+    ...packagedStaticCandidates,
     ...(staticModulePath ? [staticModulePath] : []),
     ...systemCandidates
   ])

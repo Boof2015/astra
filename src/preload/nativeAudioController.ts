@@ -332,11 +332,19 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
   const isWindows = process.platform === 'win32'
   const executable = `${binary}${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticBinary(binary)
+  const packagedStaticCandidates = process.env.NODE_ENV === 'development'
+    ? []
+    : (
+        binary === 'ffmpeg'
+          ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', executable)]
+          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+      )
   const candidates = [
     ...(process.env.NODE_ENV === 'development' ? [] : [
       join(process.resourcesPath, executable),
       join(process.resourcesPath, 'bin', executable)
     ]),
+    ...packagedStaticCandidates,
     ...(staticModulePath ? [staticModulePath] : []),
     ...(binary === 'ffmpeg'
       ? (isWindows ? ['ffmpeg.exe', 'ffmpeg'] : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'])
