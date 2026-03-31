@@ -696,6 +696,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return null
   }
 
+  const MAX_PLAYBACK_HISTORY = 500
+
   const applyCandidateTransition = (
     state: PlayerStore,
     candidate: NextCandidate,
@@ -703,7 +705,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   ) => {
     const currentEntry = getCurrentPlaybackEntry(state)
     const nextHistory = options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
-      ? [...state.playbackHistory, currentEntry]
+      ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY)
       : state.playbackHistory
 
     let nextFuture = state.playbackFuture
@@ -1008,7 +1010,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           ? buildAutoShuffleOrder(tracks.length, normalizedStartIndex)
           : [],
         playbackFuture: [],
-        playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry] : state.playbackHistory,
+        playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
         currentTrackSource: normalizedStartIndex >= 0 ? 'auto' : state.currentTrackSource
       })
 
