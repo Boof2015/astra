@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
+    env:
+      AUR_WORKDIR: /home/builder/aur
     steps:
       - uses: actions/checkout@v4
 
@@ -70,26 +72,33 @@ jobs:
           useradd --create-home --shell /bin/bash builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
           chmod 0440 /etc/sudoers.d/builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Stage AUR files for builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$AUR_WORKDIR"
+          install -d -o builder -g builder "$AUR_WORKDIR"
+          cp -R .github/aur/. "$AUR_WORKDIR/"
+          chown -R builder:builder "$AUR_WORKDIR"
 
       - name: Generate .SRCINFO
         shell: bash
         run: |
           set -euo pipefail
-          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --printsrcinfo > .SRCINFO"
+          su builder -c "cd \"$AUR_WORKDIR\" && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Build AUR package
         shell: bash
         run: |
           set -euo pipefail
-          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --syncdeps --noconfirm --cleanbuild"
+          su builder -c "cd \"$AUR_WORKDIR\" && makepkg --syncdeps --noconfirm --cleanbuild"
 
       - name: Verify package contents
         shell: bash
-        working-directory: .github/aur
         run: |
           set -euo pipefail
-          PKG_FILE="$(find . -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
+          PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
           if [ -z "$PKG_FILE" ]; then
             echo "Built package archive not found." >&2
             exit 1
@@ -105,6 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
+    env:
+      AUR_WORKDIR: /home/builder/aur
     steps:
       - uses: actions/checkout@v4
 
@@ -119,7 +130,6 @@ jobs:
         run: |
           set -euo pipefail
           useradd --create-home --shell /bin/bash builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
 
       - name: Compute version strings
         id: ver
@@ -159,11 +169,21 @@ jobs:
             "$URL" \
             "${{ steps.sha256.outputs.sha256 }}"
 
+      - name: Stage AUR files for builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$AUR_WORKDIR"
+          install -d -o builder -g builder "$AUR_WORKDIR"
+          cp -R .github/aur/. "$AUR_WORKDIR/"
+          chown -R builder:builder "$AUR_WORKDIR"
+
       - name: Generate .SRCINFO
         shell: bash
         run: |
           set -euo pipefail
-          su builder -c "cd \"$GITHUB_WORKSPACE/.github/aur\" && makepkg --printsrcinfo > .SRCINFO"
+          su builder -c "cd \"$AUR_WORKDIR\" && makepkg --printsrcinfo > .SRCINFO"
+          install -Dm644 "$AUR_WORKDIR/.SRCINFO" "$GITHUB_WORKSPACE/.github/aur/.SRCINFO"
 
       - name: Normalize AUR SSH key
         id: aur_key
