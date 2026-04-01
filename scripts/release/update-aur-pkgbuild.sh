@@ -51,3 +51,4 @@ sed \
   "${pkgbuild_path}" > "${tmp_file}"
 
 mv "${tmp_file}" "${pkgbuild_path}"
+chmod 644 "${pkgbuild_path}"
