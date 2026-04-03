@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, Menu } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -282,6 +282,10 @@ function loadMainProcessEnvLocal(): void {
 loadMainProcessEnvLocal()
 const LASTFM_API_KEY = (process.env.LASTFM_API_KEY ?? '').trim()
 const LASTFM_SHARED_SECRET = (process.env.LASTFM_SHARED_SECRET ?? '').trim()
+
+// Performance optimization: Disable default menu early to improve startup time
+// See: https://www.electronjs.org/docs/latest/tutorial/performance
+Menu.setApplicationMenu(null)
 
 function resolveSafeReleaseUrl(candidateUrl: unknown): string {
   if (typeof candidateUrl !== 'string') {
