@@ -38,7 +38,7 @@
     "@fontsource/jetbrains-mono": "^5.2.8",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
-    "music-metadata": "^11.10.6",
+    "music-metadata": "^11.12.3",
     "node-addon-api": "^8.5.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
@@ -47,7 +47,7 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
+    "@electron/rebuild": "^4.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
@@ -56,7 +56,7 @@
     "electron": "^40.0.0",
     "electron-builder": "^26.0.0",
     "electron-vite": "^5.0.0",
-    "node-gyp": "^10.3.1",
+    "node-gyp": "^12.2.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
@@ -238,8 +238,17 @@
         "height": 440
       },
       "contents": [
-        { "x": 130, "y": 220, "type": "file" },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "nsis": {
