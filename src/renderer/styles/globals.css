@@ -1759,6 +1759,7 @@ button, .titlebar {
   margin-top: 0;
   opacity: 0;
   overflow: hidden;
+  border-radius: 16px;
   pointer-events: none;
   transform: translateY(22px) scale(0.94);
   will-change: transform, opacity, max-height;
@@ -1782,16 +1783,14 @@ button, .titlebar {
   position: relative;
   overflow: hidden;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.03)),
-    rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(17px) saturate(1.22);
-  -webkit-backdrop-filter: blur(17px) saturate(1.22);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 14px 28px rgba(0, 0, 0, 0.28);
-  padding: 11px 16px 12px;
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 20px 56px rgba(0, 0, 0, 0.45);
+  padding: 12px 16px 12px;
   opacity: 0;
   transform: translateY(12px) scale(0.965);
   will-change: transform, opacity;
@@ -1808,9 +1807,9 @@ button, .titlebar {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(78% 62% at 10% 6%, rgba(255, 255, 255, 0.26), transparent 68%),
-    radial-gradient(80% 64% at 90% 100%, rgba(var(--accent-rgb), 0.2), transparent 72%);
-  opacity: 0.16;
+    radial-gradient(78% 62% at 10% 6%, rgba(255, 255, 255, 0.12), transparent 68%),
+    radial-gradient(80% 64% at 90% 100%, rgba(var(--accent-rgb), 0.14), transparent 72%);
+  opacity: 0.12;
   transition: opacity 0.36s ease;
 }
 
@@ -1863,14 +1862,11 @@ button, .titlebar {
 
 .fullscreen-lyrics-dock-line {
   margin: 0;
-  height: var(--fullscreen-lyrics-line-height);
+  min-height: var(--fullscreen-lyrics-line-height);
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   text-align: center;
   line-height: 1.24;
   color: rgba(255, 255, 255, 0.4);
@@ -1888,10 +1884,9 @@ button, .titlebar {
 .fullscreen-lyrics-dock-line-text {
   display: block;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: center;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .fullscreen-lyrics-dock-line.is-near {
@@ -1918,7 +1913,7 @@ button, .titlebar {
   transform: scale(1);
   font-size: clamp(23px, 2.8vw, 34px);
   font-weight: 700;
-  text-shadow: 0 2px 24px rgba(255, 255, 255, 0.22);
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.1);
 }
 
 .fullscreen-lyrics-dock-line.is-distant {
