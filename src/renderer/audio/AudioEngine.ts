@@ -12,6 +12,7 @@ import type {
 } from '../../types/nativeAudio'
 import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
+import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
 
 type EventCallback = (...args: unknown[]) => void
@@ -102,6 +103,7 @@ export interface VisualizerConsumerDemand {
 
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
+  trackPath?: string | null
 }
 
 interface RemoteStreamLoadOptions {
@@ -218,6 +220,7 @@ export class AudioEngine {
   private workletNode: AudioWorkletNode | null = null
   private remoteStreamNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
+  private disableStandardAnalysisGraphDev: boolean = false
   private analysisDelayMs: number = 0
 
   // EQ nodes
@@ -252,6 +255,8 @@ export class AudioEngine {
   private static readonly MAX_PENDING_MINI_VISUALIZER_CHUNKS = 160 // ~0.42s at 48k/128
 
   private audioBuffer: AudioBuffer | null = null
+  private currentBufferTrackPath: string | null = null
+  private nextBufferTrackPath: string | null = null
   private startTime: number = 0
   private pauseTime: number = 0
   private _playbackState: PlaybackState = 'stopped'
@@ -362,6 +367,9 @@ export class AudioEngine {
       this.nativeNextTrackBuffered = false
       this.stopNativeScopePolling()
       this.notifyTrackChange()
+      if (this.context) {
+        this.rebuildStandardAnalysisGraphRouting()
+      }
       this.syncVisualizerTransportState()
       return {
         activeMode: this.playbackOutputMode,
@@ -492,11 +500,19 @@ export class AudioEngine {
     this.latestMonoChannel = new Float32Array(0)
   }
 
+  private shouldBypassStandardAnalysisGraph(): boolean {
+    return this.playbackOutputMode === 'standard' && this.disableStandardAnalysisGraphDev
+  }
+
   private syncStandardVisualizerStreaming(): void {
     if (!this.workletNode) return
     this.workletNode.port.postMessage({
       type: 'set-visualizer-streaming-enabled',
-      enabled: this.playbackOutputMode === 'standard' && this.hasAnyVisualizerDemand()
+      enabled: (
+        this.playbackOutputMode === 'standard'
+        && !this.shouldBypassStandardAnalysisGraph()
+        && this.hasAnyVisualizerDemand()
+      )
     })
   }
 
@@ -953,12 +969,16 @@ export class AudioEngine {
         break
       case 'gaplessTransition':
         this.nativeNextTrackBuffered = false
+        this.currentBufferTrackPath = this.nextBufferTrackPath
+        this.nextBufferTrackPath = null
         void this.refreshNativeSnapshot()
         this.notifyTrackChange()
         this.emit('gaplessTransition')
         break
       case 'ended':
         this.nativeNextTrackBuffered = false
+        this.currentBufferTrackPath = null
+        this.nextBufferTrackPath = null
         if (this.nativeSnapshot) {
           this.nativeSnapshot = {
             ...this.nativeSnapshot,
@@ -1081,8 +1101,10 @@ export class AudioEngine {
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
     this.audioBuffer = null
+    this.currentBufferTrackPath = null
     this.nativeNextTrackBuffered = false
     const result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
+    this.currentBufferTrackPath = track.path
     await this.refreshNativeCapabilities()
     await this.refreshNativeSnapshot()
     this.notifyTrackChange()
@@ -1096,6 +1118,7 @@ export class AudioEngine {
     await this.initNativeAudio()
     const result = await window.nativeAudioAPI.preloadNextTrack(track.path, this.buildNativeTrackMetadata(track))
     this.nativeNextTrackBuffered = true
+    this.nextBufferTrackPath = track.path
     return result
   }
 
@@ -1255,11 +1278,122 @@ export class AudioEngine {
   }
 
   private connectSourceToAnalysisTap(sourceNode: AudioNode, sourceChannels: number): void {
-    if (!this.analysisNormalizationGainNode) return
+    if (!this.analysisNormalizationGainNode || this.shouldBypassStandardAnalysisGraph()) return
 
     this.applyAnalysisRoutingPreferences(sourceChannels)
 
+    try {
+      sourceNode.disconnect(this.analysisNormalizationGainNode)
+    } catch {
+      // Ignore missing connections while reconfiguring the analysis graph.
+    }
     sourceNode.connect(this.analysisNormalizationGainNode)
+  }
+
+  private disconnectSourceFromAnalysisTap(sourceNode: AudioNode | null): void {
+    if (!sourceNode || !this.analysisNormalizationGainNode) return
+
+    try {
+      sourceNode.disconnect(this.analysisNormalizationGainNode)
+    } catch {
+      // Ignore missing connections while reconfiguring the analysis graph.
+    }
+  }
+
+  private syncSourceAnalysisTapConnection(sourceNode: AudioNode | null, sourceChannels?: number): void {
+    if (!sourceNode) return
+
+    this.disconnectSourceFromAnalysisTap(sourceNode)
+    if (this.shouldBypassStandardAnalysisGraph()) return
+    if (!sourceChannels || sourceChannels <= 0) return
+
+    this.connectSourceToAnalysisTap(sourceNode, sourceChannels)
+  }
+
+  private syncLiveSourceAnalysisTapConnections(): void {
+    this.syncSourceAnalysisTapConnection(this.sourceNode, this.audioBuffer?.numberOfChannels)
+    this.syncSourceAnalysisTapConnection(this.nextSourceNode, this.nextBuffer?.numberOfChannels)
+    this.syncSourceAnalysisTapConnection(this.remoteStreamNode, this.remoteStreamState?.channels)
+  }
+
+  private getPostEQOutputNode(): AudioNode | null {
+    if (this.playbackOutputMode === 'bitperfect') {
+      return null
+    }
+    return this.shouldBypassStandardAnalysisGraph()
+      ? this.gainNode
+      : this.eqAnalyserNode
+  }
+
+  private rebuildStandardAnalysisGraphRouting(): void {
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (!this.context || !this.normalizationGainNode || !this.preampNode || !this.gainNode) return
+
+    try { this.normalizationGainNode.disconnect() } catch { /* ignore */ }
+    this.normalizationGainNode.connect(this.preampNode)
+
+    this._disconnectEQChain()
+    try { this.eqAnalyserNode?.disconnect() } catch { /* ignore */ }
+    try { this.eqAnalysisDelayNode?.disconnect() } catch { /* ignore */ }
+    try { this.eqDisplayAnalyserNode?.disconnect() } catch { /* ignore */ }
+    try { this.eqAnalysisTapSinkNode?.disconnect() } catch { /* ignore */ }
+    try { this.analysisNormalizationGainNode?.disconnect() } catch { /* ignore */ }
+    try { this.analysisDelayNode?.disconnect() } catch { /* ignore */ }
+    try { this.workletNode?.disconnect() } catch { /* ignore */ }
+    try { this.analysisTapSinkNode?.disconnect() } catch { /* ignore */ }
+    try { this.gainNode.disconnect() } catch { /* ignore */ }
+
+    this.gainNode.connect(this.context.destination)
+
+    if (!this.shouldBypassStandardAnalysisGraph()) {
+      if (this.eqAnalyserNode) {
+        this.eqAnalyserNode.connect(this.gainNode)
+        if (this.eqAnalysisDelayNode && this.eqDisplayAnalyserNode && this.eqAnalysisTapSinkNode) {
+          this.eqAnalyserNode.connect(this.eqAnalysisDelayNode)
+          this.eqAnalysisDelayNode.connect(this.eqDisplayAnalyserNode)
+          this.eqDisplayAnalyserNode.connect(this.eqAnalysisTapSinkNode)
+          this.eqAnalysisTapSinkNode.connect(this.context.destination)
+        }
+      }
+
+      if (this.workletNode && this.analysisNormalizationGainNode && this.analysisDelayNode && this.analysisTapSinkNode) {
+        this.analysisNormalizationGainNode.connect(this.analysisDelayNode)
+        this.analysisDelayNode.connect(this.workletNode)
+        this.workletNode.connect(this.analysisTapSinkNode)
+        this.analysisTapSinkNode.connect(this.context.destination)
+      }
+    } else {
+      this.pendingOscilloscopeSamples = []
+      this.pendingSpectrumSamples = []
+      this.pendingSpectrogramSamples = []
+      this.pendingVectorscopeSamples = []
+      this.pendingVUMeterSamples = []
+      this.pendingLUFSMeterSamples = []
+      this.pendingWaveformSamples = []
+      this.pendingMiniVisualizerChunks = []
+      this.clearLatestVisualizerChannels()
+      this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
+    }
+
+    this.updateEQ(this.requestedEQBands, this.requestedEQPreampDb, this.requestedEQEnabled)
+    this.syncLiveSourceAnalysisTapConnections()
+    this.syncStandardVisualizerStreaming()
+  }
+
+  setDisableStandardAnalysisGraphDev(disabled: boolean): void {
+    const normalized = Boolean(disabled)
+    if (this.disableStandardAnalysisGraphDev === normalized) {
+      return
+    }
+
+    this.disableStandardAnalysisGraphDev = normalized
+
+    if (this.playbackOutputMode === 'standard' && this.context) {
+      this.rebuildStandardAnalysisGraphRouting()
+      return
+    }
+
+    this.syncStandardVisualizerStreaming()
   }
 
   private disconnectSourceRouting(sourceNode: AudioNode | null): void {
@@ -1299,6 +1433,7 @@ export class AudioEngine {
   private async clearRemoteStreamState(cancelSession: boolean): Promise<void> {
     const remoteState = this.remoteStreamState
     this.remoteStreamState = null
+    this.currentBufferTrackPath = null
     this.disconnectRemoteStreamNode()
     this.stopTimeUpdate()
     this.normalizationApproximate = false
@@ -1593,6 +1728,7 @@ export class AudioEngine {
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
     this.audioBuffer = null
+    this.currentBufferTrackPath = null
     this.pauseTime = 0
     this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
     this.notifyTrackChange()
@@ -1604,6 +1740,7 @@ export class AudioEngine {
     )
 
     this.remoteStreamNode = this.createRemoteStreamNode(info.channels)
+    this.currentBufferTrackPath = track.path
     this.remoteStreamState = {
       sessionId: info.sessionId,
       path: track.path,
@@ -1774,34 +1911,12 @@ export class AudioEngine {
         })
       }
 
-      // Connect main signal path:
-      // playback: normalization -> preamp -> [eq filters] -> gain -> destination
-      this.normalizationGainNode.connect(this.preampNode)
-      // Initially preamp connects through analyser to gain (no EQ bands yet)
-      this.preampNode.connect(this.eqAnalyserNode)
-      this.eqAnalyserNode.connect(this.gainNode)
-      this.gainNode.connect(this.context.destination)
-
-      // delayed EQ analyser tap for EQ/fullscreen visuals
-      if (this.eqAnalysisDelayNode && this.eqDisplayAnalyserNode && this.eqAnalysisTapSinkNode) {
-        this.eqAnalyserNode.connect(this.eqAnalysisDelayNode)
-        this.eqAnalysisDelayNode.connect(this.eqDisplayAnalyserNode)
-        this.eqDisplayAnalyserNode.connect(this.eqAnalysisTapSinkNode)
-        this.eqAnalysisTapSinkNode.connect(this.context.destination)
-      }
-
-      // analysis: normalization tap -> worklet -> silent sink so the worklet stays pulled.
       if (this.workletNode && this.analysisNormalizationGainNode && this.analysisDelayNode) {
         this.analysisTapSinkNode = this.context.createGain()
         this.analysisTapSinkNode.gain.value = 0
-        this.analysisNormalizationGainNode.connect(this.analysisDelayNode)
-        this.analysisDelayNode.connect(this.workletNode)
-        this.workletNode.connect(this.analysisTapSinkNode)
-        this.analysisTapSinkNode.connect(this.context.destination)
       }
 
-      // Apply the latest requested EQ state now that the EQ nodes exist.
-      this.updateEQ(this.requestedEQBands, this.requestedEQPreampDb, this.requestedEQEnabled)
+      this.rebuildStandardAnalysisGraphRouting()
 
       // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
@@ -2202,6 +2317,99 @@ export class AudioEngine {
     return this.normalizationApproximate
   }
 
+  getDiagnosticsSnapshot(): {
+    playbackOutputMode: PlaybackOutputMode
+    bitPerfectActive: boolean
+    hasContext: boolean
+    hasAudioBuffer: boolean
+    hasNextBuffer: boolean
+    currentBufferTrackPath: string | null
+    nextBufferTrackPath: string | null
+    currentBufferBytes: number
+    nextBufferBytes: number
+    totalBufferBytes: number
+    nativeNextTrackBuffered: boolean
+    gaplessScheduled: boolean
+    gaplessTargetDeltaSeconds: number | null
+    remoteStreamActive: boolean
+    remoteStreamSessionId: number | null
+    remoteStreamSourceType: string | null
+    remoteBufferedSeconds: number
+    remoteBufferedFrames: number
+    remoteAnalyzedFrames: number
+    normalizationApproximate: boolean
+    visualizerConsumerCount: number
+    activeVisualizerScopes: ScopeKind[]
+    activeMiniVisualizerModes: Array<'spectrum' | 'oscilloscope'>
+    pendingOscilloscopeChunks: number
+    pendingSpectrumChunks: number
+    pendingSpectrogramChunks: number
+    pendingVectorscopeChunks: number
+    pendingVUMeterChunks: number
+    pendingLUFSMeterChunks: number
+    pendingWaveformChunks: number
+    pendingMiniVisualizerChunks: number
+    pendingVisualizerChunksTotal: number
+  } {
+    const currentBufferBytes = this.getDecodedAudioBufferBytes(this.audioBuffer)
+    const nextBufferBytes = this.getDecodedAudioBufferBytes(this.nextBuffer)
+    const activeVisualizerScopes = SCOPE_KINDS.filter((scope) => this.hasVisualizerDemand(scope))
+    const activeMiniVisualizerModes: Array<'spectrum' | 'oscilloscope'> = []
+    if (this.hasMiniVisualizerDemand('spectrum')) {
+      activeMiniVisualizerModes.push('spectrum')
+    }
+    if (this.hasMiniVisualizerDemand('oscilloscope')) {
+      activeMiniVisualizerModes.push('oscilloscope')
+    }
+    const gaplessTargetDeltaSeconds = this.context && this.scheduledEndTime > 0
+      ? Math.max(0, this.scheduledEndTime - this.context.currentTime)
+      : null
+    const pendingVisualizerChunksTotal =
+      this.pendingOscilloscopeSamples.length +
+      this.pendingSpectrumSamples.length +
+      this.pendingSpectrogramSamples.length +
+      this.pendingVectorscopeSamples.length +
+      this.pendingVUMeterSamples.length +
+      this.pendingLUFSMeterSamples.length +
+      this.pendingWaveformSamples.length +
+      this.pendingMiniVisualizerChunks.length
+
+    return {
+      playbackOutputMode: this.playbackOutputMode,
+      bitPerfectActive: this.isBitPerfectActive(),
+      hasContext: this.context !== null,
+      hasAudioBuffer: this.audioBuffer !== null,
+      hasNextBuffer: this.nextBuffer !== null,
+      currentBufferTrackPath: this.currentBufferTrackPath,
+      nextBufferTrackPath: this.nextBufferTrackPath,
+      currentBufferBytes,
+      nextBufferBytes,
+      totalBufferBytes: currentBufferBytes + nextBufferBytes,
+      nativeNextTrackBuffered: this.nativeNextTrackBuffered,
+      gaplessScheduled: this.nextSourceNode !== null || this.nativeNextTrackBuffered,
+      gaplessTargetDeltaSeconds,
+      remoteStreamActive: this.remoteStreamState !== null,
+      remoteStreamSessionId: this.remoteStreamState?.sessionId ?? null,
+      remoteStreamSourceType: this.remoteStreamState?.sourceType ?? null,
+      remoteBufferedSeconds: this.getRemoteBufferedSeconds(),
+      remoteBufferedFrames: this.remoteStreamState?.bufferedFrames ?? 0,
+      remoteAnalyzedFrames: this.remoteStreamState?.analyzedFrames ?? 0,
+      normalizationApproximate: this.normalizationApproximate,
+      visualizerConsumerCount: this.visualizerConsumerDemand.size,
+      activeVisualizerScopes,
+      activeMiniVisualizerModes,
+      pendingOscilloscopeChunks: this.pendingOscilloscopeSamples.length,
+      pendingSpectrumChunks: this.pendingSpectrumSamples.length,
+      pendingSpectrogramChunks: this.pendingSpectrogramSamples.length,
+      pendingVectorscopeChunks: this.pendingVectorscopeSamples.length,
+      pendingVUMeterChunks: this.pendingVUMeterSamples.length,
+      pendingLUFSMeterChunks: this.pendingLUFSMeterSamples.length,
+      pendingWaveformChunks: this.pendingWaveformSamples.length,
+      pendingMiniVisualizerChunks: this.pendingMiniVisualizerChunks.length,
+      pendingVisualizerChunksTotal
+    }
+  }
+
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
     if (this.playbackOutputMode === 'bitperfect') {
@@ -2214,7 +2422,7 @@ export class AudioEngine {
 
   // Get post-EQ analyser node for spectrum overlay
   getEQAnalyserNode(): AnalyserNode | null {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.playbackOutputMode === 'bitperfect' || this.shouldBypassStandardAnalysisGraph()) {
       return null
     }
     return this.eqDisplayAnalyserNode ?? this.eqAnalyserNode
@@ -3778,11 +3986,13 @@ export class AudioEngine {
       await this.clearRemoteStreamState(true)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
+      this.currentBufferTrackPath = null
       this.pauseTime = 0
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
       // Decode audio data
       this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+      this.currentBufferTrackPath = options.trackPath ?? null
       this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
       // Notify visualizers of track change (reset their state for fresh pitch detection)
@@ -3797,6 +4007,7 @@ export class AudioEngine {
       this.emit('bufferReady', this.audioBuffer)
     } catch (err) {
       this.audioBuffer = null
+      this.currentBufferTrackPath = null
       this.pauseTime = 0
       this.currentReplayGainDb = null
       this._playbackState = 'stopped'
@@ -3820,6 +4031,7 @@ export class AudioEngine {
       const clonedBuffer = arrayBuffer.slice(0)
       this.nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
       this.nextBuffer = await this.context.decodeAudioData(clonedBuffer)
+      this.nextBufferTrackPath = options.trackPath ?? null
       this.updateNextNormalizationCache()
 
       // If currently playing, schedule the gapless transition
@@ -3829,6 +4041,7 @@ export class AudioEngine {
     } catch (err) {
       console.error('Failed to pre-buffer next track:', err)
       this.nextBuffer = null
+      this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
       this.clearNextNormalizationCache()
     }
@@ -3900,6 +4113,8 @@ export class AudioEngine {
     // Swap buffers
     this.audioBuffer = nextBuffer
     this.nextBuffer = null
+    this.currentBufferTrackPath = this.nextBufferTrackPath
+    this.nextBufferTrackPath = null
     this.currentReplayGainDb = nextReplayGainDb
     this.nextReplayGainDb = null
 
@@ -3908,6 +4123,7 @@ export class AudioEngine {
       this.sourceNode.onended = null
       this.disconnectSourceRouting(this.sourceNode)
       try {
+        this.sourceNode.buffer = null
         this.sourceNode.disconnect()
       } catch { /* ignore */ }
     }
@@ -3943,11 +4159,13 @@ export class AudioEngine {
   clearNextBuffer(): void {
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
+      this.nextBufferTrackPath = null
       void window.nativeAudioAPI.clearNextTrack()
       return
     }
     this.cancelScheduledNext()
     this.nextBuffer = null
+    this.nextBufferTrackPath = null
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
   }
@@ -3959,6 +4177,7 @@ export class AudioEngine {
         this.nextSourceNode.onended = null
         this.disconnectSourceRouting(this.nextSourceNode)
         this.nextSourceNode.stop()
+        this.nextSourceNode.buffer = null
         this.nextSourceNode.disconnect()
       } catch { /* ignore */ }
       this.nextSourceNode = null
@@ -4105,6 +4324,8 @@ export class AudioEngine {
   stop(): void {
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
+      this.currentBufferTrackPath = null
+      this.nextBufferTrackPath = null
       void window.nativeAudioAPI.stop().then((snapshot) => {
         this.nativeSnapshot = snapshot
         this._playbackState = snapshot.playbackState as PlaybackState
@@ -4249,7 +4470,8 @@ export class AudioEngine {
       return
     }
 
-    if (!this.context || !this.preampNode || !this.eqAnalyserNode) return
+    const postEQOutputNode = this.getPostEQOutputNode()
+    if (!this.context || !this.preampNode || !postEQOutputNode) return
 
     // Update preamp
     const linearPreamp = enabled ? Math.pow(10, preampDb / 20) : 1.0
@@ -4263,7 +4485,7 @@ export class AudioEngine {
     this.eqFilters = []
 
     // Rebuild chain immediately (same synchronous block)
-    // Route: preamp -> [EQ filters] -> eqAnalyserNode (-> gainNode already connected)
+    // Route: preamp -> [EQ filters] -> post-EQ output node
     if (enabled && bands.length > 0) {
       const newFilters: BiquadFilterNode[] = bands.map((band) => {
         const filter = this.context!.createBiquadFilter()
@@ -4278,11 +4500,11 @@ export class AudioEngine {
       for (let i = 0; i < newFilters.length - 1; i++) {
         newFilters[i].connect(newFilters[i + 1])
       }
-      newFilters[newFilters.length - 1].connect(this.eqAnalyserNode)
+      newFilters[newFilters.length - 1].connect(postEQOutputNode)
       this.eqFilters = newFilters
     } else {
-      // Bypass: connect preamp directly to analyser
-      this.preampNode.connect(this.eqAnalyserNode)
+      // Bypass EQ filters but keep the selected post-EQ route active.
+      this.preampNode.connect(postEQOutputNode)
     }
   }
 
@@ -4346,6 +4568,7 @@ export class AudioEngine {
       try {
         this.sourceNode.onended = null
         this.sourceNode.stop()
+        this.sourceNode.buffer = null
         this.disconnectSourceRouting(this.sourceNode)
         this.sourceNode.disconnect()
       } catch {
@@ -4461,6 +4684,8 @@ export class AudioEngine {
     this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.nextBuffer = null
+    this.currentBufferTrackPath = null
+    this.nextBufferTrackPath = null
     this.remoteStreamState = null
     this.latestLeftChannel = new Float32Array(0)
     this.latestRightChannel = new Float32Array(0)

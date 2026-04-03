@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
+import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
@@ -45,6 +46,8 @@ export interface InputDelayBaseline {
 
 interface AudioSettingsStore {
   playbackOutputMode: PlaybackOutputMode
+  disableGaplessPrebufferDev: boolean
+  disableStandardAnalysisGraphDev: boolean
   nativeAudioCapabilities: NativeAudioCapabilities
   playbackModeStatusMessage: string | null
   selectedDeviceId: string
@@ -70,6 +73,8 @@ interface AudioSettingsStore {
   refreshDevices: () => Promise<void>
   refreshOutputChannelCount: () => Promise<void>
   setPlaybackOutputMode: (mode: PlaybackOutputMode) => Promise<void>
+  setDisableGaplessPrebufferDev: (disabled: boolean) => void
+  setDisableStandardAnalysisGraphDev: (disabled: boolean) => void
   selectDevice: (deviceId: string) => Promise<void>
   setCalibrationInputDeviceId: (deviceId: string) => void
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
@@ -101,6 +106,8 @@ const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'
+const DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY = 'astra-dev-disable-gapless-prebuffer-v1'
+const DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY = 'astra-dev-disable-standard-analysis-graph-v1'
 const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'
 const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
@@ -196,6 +203,24 @@ function normalizeReplayGainMode(value: unknown): ReplayGainMode {
   if (value === 'track') return 'track'
   if (value === 'album') return 'album'
   return 'auto'
+}
+
+function readDevDisableGaplessPrebuffer(): boolean {
+  if (!import.meta.env.DEV) return false
+  try {
+    return localStorage.getItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function readDevDisableStandardAnalysisGraph(): boolean {
+  if (!import.meta.env.DEV) return false
+  try {
+    return localStorage.getItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 function normalizeDelayProfile(value: unknown): DelayCompensationProfile {
@@ -934,8 +959,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     mediaDeviceChangeListenerAttached = true
   }
 
+  const initialDisableGaplessPrebufferDev = readDevDisableGaplessPrebuffer()
+  const initialDisableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
+  audioEngine.setDisableStandardAnalysisGraphDev(initialDisableStandardAnalysisGraphDev)
+
   return {
     playbackOutputMode: 'standard',
+    disableGaplessPrebufferDev: initialDisableGaplessPrebufferDev,
+    disableStandardAnalysisGraphDev: initialDisableStandardAnalysisGraphDev,
     nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
     playbackModeStatusMessage: null,
     selectedDeviceId: '',
@@ -1012,6 +1043,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     setPlaybackOutputMode: async (mode: PlaybackOutputMode) => {
       const normalizedMode = normalizePlaybackOutputMode(mode)
+      const previousMode = get().playbackOutputMode
       const result = await audioEngine.setPlaybackOutputMode(normalizedMode)
       const fallbackMode = result.activeMode
       const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
@@ -1027,6 +1059,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       })
 
       localStorage.setItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY, fallbackMode)
+      logMemoryDiagnosticsEvent('playback_output_mode_changed', {
+        requestedMode: normalizedMode,
+        previousMode,
+        activeMode: fallbackMode,
+        message: result.message ?? null,
+        bitPerfectActive: audioEngine.isBitPerfectActive()
+      })
       await get().refreshDevices()
 
       const selectedOutputId = savedSelectedDeviceId.trim()
@@ -1055,6 +1094,57 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       if (fallbackMode !== normalizedMode && result.message) {
         set({ playbackModeStatusMessage: result.message })
       }
+    },
+
+    setDisableGaplessPrebufferDev: (disabled: boolean) => {
+      const normalized = import.meta.env.DEV && Boolean(disabled)
+      if (get().disableGaplessPrebufferDev === normalized) {
+        return
+      }
+
+      set({ disableGaplessPrebufferDev: normalized })
+
+      try {
+        if (normalized) {
+          localStorage.setItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY, '1')
+        } else {
+          localStorage.removeItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY)
+        }
+      } catch {
+        // Ignore storage failures and keep the in-memory override.
+      }
+
+      if (normalized) {
+        audioEngine.clearNextBuffer()
+      }
+
+      logMemoryDiagnosticsEvent('dev_gapless_prebuffer_override_changed', {
+        disabled: normalized
+      })
+    },
+
+    setDisableStandardAnalysisGraphDev: (disabled: boolean) => {
+      const normalized = import.meta.env.DEV && Boolean(disabled)
+      if (get().disableStandardAnalysisGraphDev === normalized) {
+        return
+      }
+
+      audioEngine.setDisableStandardAnalysisGraphDev(normalized)
+      set({ disableStandardAnalysisGraphDev: normalized })
+
+      try {
+        if (normalized) {
+          localStorage.setItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY, '1')
+        } else {
+          localStorage.removeItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY)
+        }
+      } catch {
+        // Ignore storage failures and keep the in-memory override.
+      }
+
+      logMemoryDiagnosticsEvent('dev_standard_analysis_graph_override_changed', {
+        disabled: normalized
+      })
     },
 
     selectDevice: async (deviceId: string) => {
@@ -1575,6 +1665,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
       localStorage.removeItem(REPLAYGAIN_MODE_STORAGE_KEY)
+      localStorage.removeItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY)
+      localStorage.removeItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V2)
 
@@ -1616,6 +1708,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.setReplayGainEnabled(false)
       audioEngine.normalizationEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
+      audioEngine.setDisableStandardAnalysisGraphDev(false)
       await audioEngine.setPlaybackOutputMode('standard')
 
       let availableDevices = get().availableDevices
@@ -1643,6 +1736,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       set({
         playbackOutputMode: 'standard',
+        disableGaplessPrebufferDev: false,
+        disableStandardAnalysisGraphDev: false,
         nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
         playbackModeStatusMessage: null,
         selectedDeviceId: '',
@@ -1667,6 +1762,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     initFromSaved: async () => {
+      const disableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
+      audioEngine.setDisableStandardAnalysisGraphDev(disableStandardAnalysisGraphDev)
+
       const savedPlaybackOutputMode = normalizePlaybackOutputMode(
         localStorage.getItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
       )
@@ -1717,6 +1815,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       set({
         playbackOutputMode,
+        disableGaplessPrebufferDev: readDevDisableGaplessPrebuffer(),
+        disableStandardAnalysisGraphDev,
         nativeAudioCapabilities,
         playbackModeStatusMessage: playbackModeResult.message ?? audioEngine.getPlaybackModeStatusMessage(),
         delayProfilesByDeviceKey: savedProfiles,

@@ -12784,6 +12784,14 @@ body::after {
   color: rgba(255, 255, 255, 0.74);
 }
 
+.settings-info-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.68);
+  word-break: break-all;
+}
+
 .settings-info-meta {
   margin-top: 2px;
   font-family: var(--font-mono);

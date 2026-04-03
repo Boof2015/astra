@@ -17,12 +17,12 @@ class OscilloscopeProcessor extends AudioWorkletProcessor {
     const input = inputs[0]
     if (!input || input.length === 0) return true
 
-    const channels = input.map((channel) => channel.slice())
-    const leftChannel = channels[0]
+    const leftChannel = input[0]
 
     if (!leftChannel || leftChannel.length === 0) return true
 
     if (this.visualizerStreamingEnabled) {
+      const channels = input.map((channel) => channel.slice())
       this.port.postMessage({
         channels
       })

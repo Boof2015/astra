@@ -20,6 +20,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -194,6 +195,10 @@ export default function SettingsView() {
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
   const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
   const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
+  const disableGaplessPrebufferDev = useAudioSettingsStore((state) => state.disableGaplessPrebufferDev)
+  const setDisableGaplessPrebufferDev = useAudioSettingsStore((state) => state.setDisableGaplessPrebufferDev)
+  const disableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.disableStandardAnalysisGraphDev)
+  const setDisableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.setDisableStandardAnalysisGraphDev)
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
@@ -242,6 +247,15 @@ export default function SettingsView() {
     checkForUpdates,
     openReleasesPage,
   } = useUpdateStore()
+  const {
+    status: diagnosticsStatus,
+    isLoading: diagnosticsIsLoading,
+    errorMessage: diagnosticsErrorMessage,
+    init: initDiagnostics,
+    setEnabled: setDiagnosticsEnabled,
+    revealCurrentLog,
+    revealPreviousLog,
+  } = useDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
@@ -325,6 +339,10 @@ export default function SettingsView() {
   useEffect(() => {
     void initLocalApi()
   }, [initLocalApi])
+
+  useEffect(() => {
+    void initDiagnostics()
+  }, [initDiagnostics])
 
   useEffect(() => {
     if (!localApiStatus) return
@@ -509,6 +527,15 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+  const diagnosticsEnabled = diagnosticsStatus?.enabled ?? false
+  const diagnosticsSampleIntervalLabel = `${Math.round((diagnosticsStatus?.sampleIntervalMs ?? 15000) / 1000)} seconds`
+  const diagnosticsCurrentLogPath = diagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsPreviousLogPath = diagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsSessionLabel = diagnosticsStatus?.sessionStartedAt
+    ? `Current session started ${new Date(diagnosticsStatus.sessionStartedAt).toLocaleString()}.`
+    : diagnosticsEnabled
+      ? 'Waiting for the current diagnostics session header.'
+      : 'Diagnostics are disabled.'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
@@ -1251,9 +1278,41 @@ export default function SettingsView() {
                 Load a track and keep playback in playing or paused state to start a sleep timer.
               </p>
             )}
+            {import.meta.env.DEV && (
+              <div className="settings-grid">
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Disable Gapless Prebuffer (Dev)</span>
+                  <button
+                    className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
+                    onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
+                  >
+                    {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
+                  </button>
+                </div>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Disable Analysis/EQ Taps (Dev)</span>
+                  <button
+                    className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
+                    onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
+                  >
+                    {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
+                  </button>
+                </div>
+              </div>
+            )}
             <p className="settings-note">
               Sleep timer counts down in real time, pauses playback when it expires, and does not persist after restart.
             </p>
+            {import.meta.env.DEV && (
+              <p className="settings-note">
+                Dev override. When enabled, Astra stops preloading the next track and clears any scheduled handoff so you can compare memory growth without gapless-style buffering.
+              </p>
+            )}
+            {import.meta.env.DEV && (
+              <p className="settings-note">
+                Dev override. When enabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active, so you can isolate the persistent analysis graph.
+              </p>
+            )}
           </section>
             )}
 
@@ -1531,6 +1590,50 @@ export default function SettingsView() {
               </button>
             </div>
             <div className="settings-info-panels">
+              <div className="settings-info-panel">
+                <h4>Memory Diagnostics</h4>
+                <p>
+                  Writes a CSV memory log every {diagnosticsSampleIntervalLabel} plus playback breadcrumbs
+                  so you can correlate growth with track changes, buffering, gapless handoffs, and remote streams.
+                </p>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Diagnostics Logging</span>
+                  <button
+                    type="button"
+                    className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
+                    onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
+                    disabled={diagnosticsIsLoading && diagnosticsStatus === null}
+                  >
+                    {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">Current log</p>
+                <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>
+                <p className="settings-info-meta">Previous log</p>
+                <p className="settings-info-path">{diagnosticsPreviousLogPath}</p>
+                <p className="settings-info-meta">{diagnosticsSessionLabel}</p>
+                {diagnosticsErrorMessage && (
+                  <p className="settings-note settings-note-error">{diagnosticsErrorMessage}</p>
+                )}
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealCurrentLog()}
+                    disabled={!diagnosticsStatus?.hasCurrentLog}
+                  >
+                    Reveal Current Log
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealPreviousLog()}
+                    disabled={!diagnosticsStatus?.hasPreviousLog}
+                  >
+                    Reveal Previous Log
+                  </button>
+                </div>
+              </div>
               <div className="settings-info-panel">
                 <h4>Attribution</h4>
                 <p>Astra is created and maintained by Boof2015.</p>

@@ -6,6 +6,14 @@ import { extractArtworkAccent } from '../utils/artworkAccent'
 
 const coverArtAccentCache = new Map<string, string | null>()
 
+function estimateAccentCacheBytes(): number {
+  let total = 0
+  for (const [cacheKey, value] of coverArtAccentCache.entries()) {
+    total += (cacheKey.length * 2) + ((value ?? '').length * 2)
+  }
+  return total
+}
+
 function buildArtworkIdentity(track: { id: string; path: string; artworkHash?: string }): string {
   if (track.artworkHash) {
     return `hash:${track.artworkHash}`
@@ -16,6 +24,16 @@ function buildArtworkIdentity(track: { id: string; path: string; artworkHash?: s
   }
 
   return `id:${track.id}`
+}
+
+export function getCoverArtAccentDiagnosticsSnapshot(): {
+  coverArtAccentEntries: number
+  coverArtAccentBytes: number
+} {
+  return {
+    coverArtAccentEntries: coverArtAccentCache.size,
+    coverArtAccentBytes: estimateAccentCacheBytes()
+  }
 }
 
 export function useCoverArtAccent(): void {

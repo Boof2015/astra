@@ -47,6 +47,7 @@ import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
+import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MIN_HEIGHT,
@@ -108,6 +109,11 @@ import type {
   SubsonicSourceUpdateInput,
   SubsonicStatusSnapshot
 } from '../types/subsonic'
+import type {
+  MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsRendererSnapshot,
+  MemoryDiagnosticsSnapshotRequest
+} from '../types/diagnostics'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -169,6 +175,8 @@ const CARD_ARTWORK_JPEG_QUALITY = 84
 const ARTWORK_THUMB_CACHE_VERSION = 'v2'
 const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
+const MEMORY_DIAGNOSTICS_ENABLED_META_KEY = 'memory_diagnostics_enabled_v1'
+const MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS = 15_000
 const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
 const SUBSONIC_STREAM_MAX_BITRATE_KBPS = 256
 const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
@@ -208,6 +216,100 @@ let lastFmConfig: LastFmServiceConfig = {
   pendingScrobbles: []
 }
 let lyricsOnlineEnabled = false
+let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
+
+function getMemoryDiagnosticsProcessLabels(): Record<number, string> {
+  const labels: Record<number, string> = {
+    [process.pid]: 'browser'
+  }
+
+  const registerWindowProcess = (label: string, window: BrowserWindow | null): void => {
+    if (!window || window.isDestroyed()) return
+    const pid = window.webContents.getOSProcessId()
+    if (Number.isInteger(pid) && pid > 0) {
+      labels[pid] = label
+    }
+  }
+
+  registerWindowProcess('main_window', mainWindow)
+  registerWindowProcess('mini_window', miniWindow)
+  for (const scope of SCOPE_KINDS) {
+    registerWindowProcess(`scope_${scope}`, scopePopoutWindows[scope])
+  }
+
+  return labels
+}
+
+function getMemoryDiagnosticsWindowRoleSummary(): Record<string, unknown> {
+  return {
+    mainWindowOpen: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    miniWindowOpen: Boolean(miniWindow && !miniWindow.isDestroyed()),
+    scopeOpenCount: SCOPE_KINDS.reduce((count, scope) => {
+      const scopeWindow = getScopePopoutWindow(scope)
+      return count + (scopeWindow && !scopeWindow.isDestroyed() ? 1 : 0)
+    }, 0),
+    scopePopouts: getScopePopoutState()
+  }
+}
+
+function broadcastMemoryDiagnosticsStatus(): void {
+  if (!memoryDiagnosticsService || !mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+  mainWindow.webContents.send('diagnostics:status', memoryDiagnosticsService.getStatus())
+}
+
+function sendRendererSnapshotRequest(request: MemoryDiagnosticsSnapshotRequest): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false
+  }
+  mainWindow.webContents.send('diagnostics:requestRendererSnapshot', request)
+  return true
+}
+
+function logMemoryDiagnosticsMainEvent(
+  name: string,
+  details?: Record<string, unknown>,
+  options: { captureSample?: boolean } = {}
+): void {
+  if (!memoryDiagnosticsService) return
+  void memoryDiagnosticsService.logEvent({
+    name,
+    source: 'main',
+    details: details ?? null
+  }, options)
+}
+
+function getMemoryDiagnosticsStatusSnapshot() {
+  if (memoryDiagnosticsService) {
+    return memoryDiagnosticsService.getStatus()
+  }
+  const logsDir = join(app.getPath('userData'), 'logs')
+  return {
+    enabled: false,
+    sampleIntervalMs: MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS,
+    currentLogPath: join(logsDir, 'memory-diagnostics-current.csv'),
+    previousLogPath: join(logsDir, 'memory-diagnostics-prev.csv'),
+    hasCurrentLog: false,
+    hasPreviousLog: false,
+    sessionStartedAt: null
+  }
+}
+
+function normalizeMemoryDiagnosticsEventPayload(rawPayload: unknown): MemoryDiagnosticsEventPayload | null {
+  if (!rawPayload || typeof rawPayload !== 'object') return null
+  const payload = rawPayload as MemoryDiagnosticsEventPayload
+  if (typeof payload.name !== 'string' || payload.name.trim().length === 0) return null
+  if (payload.source !== 'main' && payload.source !== 'renderer') return null
+  const details = payload.details
+  return {
+    name: payload.name.trim(),
+    source: payload.source,
+    details: details && typeof details === 'object' && !Array.isArray(details)
+      ? details
+      : null
+  }
+}
 
 function stripEnvQuotes(value: string): string {
   if (value.length >= 2) {
@@ -329,6 +431,16 @@ const localApiService = new LocalApiService({
   dispatchCommand: sendMiniPlayerCommand,
   onStatusChange: () => {
     broadcastLocalApiStatus()
+    const status = localApiService.getStatus()
+    logMemoryDiagnosticsMainEvent('local_api_status_changed', {
+      enabled: status.enabled,
+      active: status.active,
+      controlsEnabled: status.controlsEnabled,
+      port: status.port,
+      mode: status.mode,
+      connectedClients: status.connectedClients,
+      lastError: status.lastError
+    })
   }
 })
 
@@ -348,6 +460,16 @@ const lastFmService = new LastFmService({
   },
   onStatusChange: () => {
     broadcastLastFmStatus()
+    const status = lastFmService.getStatus()
+    logMemoryDiagnosticsMainEvent('lastfm_status_changed', {
+      enabled: status.enabled,
+      connected: status.connected,
+      authPending: status.authPending,
+      pendingScrobbles: status.pendingScrobbles,
+      username: status.username,
+      statusMessage: status.statusMessage,
+      lastError: status.lastError
+    })
   }
 })
 
@@ -355,6 +477,13 @@ const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
   onStatusChange: () => {
     broadcastLyricsStatus()
+    const status = lyricsService.getStatus()
+    logMemoryDiagnosticsMainEvent('lyrics_status_changed', {
+      enabled: status.enabled,
+      provider: status.provider,
+      statusMessage: status.statusMessage,
+      lastError: status.lastError
+    })
   }
 })
 
@@ -623,6 +752,19 @@ function parseMetaBoolean(value: string | null, fallback: boolean): boolean {
   return fallback
 }
 
+async function loadMemoryDiagnosticsEnabledFromMeta(): Promise<boolean> {
+  const enabled = parseMetaBoolean(library.getAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY), false)
+  const normalizedStoredValue = enabled ? '1' : '0'
+  if (library.getAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY) !== normalizedStoredValue) {
+    try {
+      await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, normalizedStoredValue)
+    } catch (error) {
+      console.warn('Failed to persist normalized memory diagnostics setting:', error)
+    }
+  }
+  return enabled
+}
+
 async function loadReplayGainScanEnabledFromMeta(): Promise<boolean> {
   const enabled = parseMetaBoolean(library.getAppMeta(REPLAYGAIN_SCAN_ENABLED_META_KEY), false)
   library.setReplayGainScanEnabled(enabled)
@@ -868,6 +1010,10 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   })
   scopePopoutWindows[scope] = scopeWindow
   setScopePopoutOpenState(scope, true)
+  logMemoryDiagnosticsMainEvent('window_opened', {
+    windowType: 'scope_popout',
+    scope
+  })
 
   scopeWindow.on('ready-to-show', () => {
     scopeWindow.show()
@@ -876,6 +1022,10 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   scopeWindow.on('closed', () => {
     scopePopoutWindows[scope] = null
     setScopePopoutOpenState(scope, false)
+    logMemoryDiagnosticsMainEvent('window_closed', {
+      windowType: 'scope_popout',
+      scope
+    })
   })
 
   scopeWindow.webContents.on('did-finish-load', () => {
@@ -1612,24 +1762,39 @@ async function runSubsonicSync(sourceId?: number): Promise<void> {
     throw new Error('A Subsonic sync is already in progress.')
   }
 
+  const sources = sourceId
+    ? library.listSubsonicSources().filter((source) => source.id === sourceId)
+    : library.listSubsonicSources()
+
   subsonicSyncInFlight = true
   broadcastSubsonicStatus(refreshSubsonicStatusCache(true))
+  logMemoryDiagnosticsMainEvent('subsonic_sync_started', {
+    requestedSourceId: sourceId ?? null,
+    sourceCount: sources.length
+  })
 
+  let failedSourceCount = 0
   try {
-    const sources = sourceId
-      ? library.listSubsonicSources().filter((source) => source.id === sourceId)
-      : library.listSubsonicSources()
-
     for (const source of sources) {
       try {
         await syncOneSubsonicSource(source.id)
       } catch (error) {
+        failedSourceCount += 1
+        logMemoryDiagnosticsMainEvent('subsonic_sync_failed', {
+          sourceId: source.id,
+          message: error instanceof Error ? error.message : 'Unknown Subsonic sync failure.'
+        })
         console.warn(`Subsonic sync failed for source ${source.id}:`, error)
       }
     }
   } finally {
     subsonicSyncInFlight = false
     broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+    logMemoryDiagnosticsMainEvent('subsonic_sync_finished', {
+      requestedSourceId: sourceId ?? null,
+      sourceCount: sources.length,
+      failedSourceCount
+    })
   }
 }
 
@@ -1840,24 +2005,39 @@ async function runJellyfinSync(sourceId?: number): Promise<void> {
     throw new Error('A Jellyfin sync is already in progress.')
   }
 
+  const sources = sourceId
+    ? library.listJellyfinSources().filter((source) => source.id === sourceId)
+    : library.listJellyfinSources()
+
   jellyfinSyncInFlight = true
   broadcastJellyfinStatus(refreshJellyfinStatusCache(true))
+  logMemoryDiagnosticsMainEvent('jellyfin_sync_started', {
+    requestedSourceId: sourceId ?? null,
+    sourceCount: sources.length
+  })
 
+  let failedSourceCount = 0
   try {
-    const sources = sourceId
-      ? library.listJellyfinSources().filter((source) => source.id === sourceId)
-      : library.listJellyfinSources()
-
     for (const source of sources) {
       try {
         await syncOneJellyfinSource(source.id)
       } catch (error) {
+        failedSourceCount += 1
+        logMemoryDiagnosticsMainEvent('jellyfin_sync_failed', {
+          sourceId: source.id,
+          message: error instanceof Error ? error.message : 'Unknown Jellyfin sync failure.'
+        })
         console.warn(`Jellyfin sync failed for source ${source.id}:`, error)
       }
     }
   } finally {
     jellyfinSyncInFlight = false
     broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+    logMemoryDiagnosticsMainEvent('jellyfin_sync_finished', {
+      requestedSourceId: sourceId ?? null,
+      sourceCount: sources.length,
+      failedSourceCount
+    })
   }
 }
 
@@ -1982,6 +2162,9 @@ async function createMiniPlayerWindow(): Promise<void> {
       backgroundThrottling: false
     }
   })
+  logMemoryDiagnosticsMainEvent('window_opened', {
+    windowType: 'mini_player'
+  })
 
   miniWindow.on('ready-to-show', () => {
     miniWindow?.show()
@@ -2003,6 +2186,9 @@ async function createMiniPlayerWindow(): Promise<void> {
   miniWindow.on('closed', () => {
     miniWindow = null
     broadcastMiniWindowState()
+    logMemoryDiagnosticsMainEvent('window_closed', {
+      windowType: 'mini_player'
+    })
   })
 
   miniWindow.webContents.on('did-finish-load', () => {
@@ -2057,6 +2243,9 @@ function createWindow(): void {
       backgroundThrottling: false
     }
   })
+  logMemoryDiagnosticsMainEvent('window_opened', {
+    windowType: 'main'
+  })
 
   if (prefs.maximized) {
     mainWindow.maximize()
@@ -2084,6 +2273,9 @@ function createWindow(): void {
       miniWindow.close()
     }
     closeAllScopePopoutWindows()
+    logMemoryDiagnosticsMainEvent('window_closed', {
+      windowType: 'main'
+    }, { captureSample: false })
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -2407,6 +2599,22 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('Failed to initialize artwork thumbnail cache directory:', error)
   }
+  const memoryDiagnosticsEnabled = await loadMemoryDiagnosticsEnabledFromMeta()
+  memoryDiagnosticsService = new MemoryDiagnosticsService({
+    userDataPath: app.getPath('userData'),
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    sampleIntervalMs: MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS,
+    getMainProcessMemoryUsage: () => process.memoryUsage(),
+    getAppMetrics: () => app.getAppMetrics(),
+    sendRendererSnapshotRequest,
+    getProcessLabels: getMemoryDiagnosticsProcessLabels,
+    getWindowRoleSummary: getMemoryDiagnosticsWindowRoleSummary,
+    onStatusChange: () => {
+      broadcastMemoryDiagnosticsStatus()
+    }
+  })
+  await memoryDiagnosticsService.initialize(memoryDiagnosticsEnabled)
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
@@ -2491,6 +2699,7 @@ app.on('before-quit', () => {
   void persistMainWindowPrefs()
   void persistMiniWindowPrefs()
   closeAllScopePopoutWindows()
+  void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
   lastFmService.stop()
   discordRpcService.shutdown()
@@ -2649,6 +2858,43 @@ ipcMain.handle('app:getPerformanceStats', () => {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
   }
+})
+
+ipcMain.handle('diagnostics:getStatus', () => {
+  return getMemoryDiagnosticsStatusSnapshot()
+})
+
+ipcMain.handle('diagnostics:setEnabled', async (_event, enabledValue: unknown) => {
+  const enabled = Boolean(enabledValue)
+  await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, enabled ? '1' : '0')
+  if (!memoryDiagnosticsService) {
+    return getMemoryDiagnosticsStatusSnapshot()
+  }
+  return memoryDiagnosticsService.setEnabled(enabled)
+})
+
+ipcMain.handle('diagnostics:revealCurrentLog', async () => {
+  return memoryDiagnosticsService?.revealCurrentLog() ?? false
+})
+
+ipcMain.handle('diagnostics:revealPreviousLog', async () => {
+  return memoryDiagnosticsService?.revealPreviousLog() ?? false
+})
+
+ipcMain.handle('diagnostics:logEvent', async (_event, rawPayload: unknown) => {
+  const payload = normalizeMemoryDiagnosticsEventPayload(rawPayload)
+  if (!payload || !memoryDiagnosticsService) {
+    return false
+  }
+  await memoryDiagnosticsService.logEvent(payload)
+  return true
+})
+
+ipcMain.on('diagnostics:publishRendererSnapshot', (_event, requestId: unknown, rawSnapshot: unknown) => {
+  if (typeof requestId !== 'string' || !rawSnapshot || typeof rawSnapshot !== 'object') {
+    return
+  }
+  memoryDiagnosticsService?.publishRendererSnapshot(requestId, rawSnapshot as MemoryDiagnosticsRendererSnapshot)
 })
 
 ipcMain.handle('updates:check', async () => {
@@ -3522,11 +3768,17 @@ ipcMain.handle('library:cancelScan', () => {
 
   activeLibraryScanAbortController.abort()
   sendLibraryScanStage(activeLibraryScanStage ?? 'scanning', 'Canceling scan...')
+  logMemoryDiagnosticsMainEvent('library_scan_cancel_requested', {
+    stage: activeLibraryScanStage ?? 'scanning'
+  })
   return { canceled: true }
 })
 
 ipcMain.handle('library:backfillReplayGainMetadata', async () => {
   const issueCollector = createLibraryScanIssueCollector()
+  logMemoryDiagnosticsMainEvent('library_backfill_started', {
+    kind: 'replaygain_manual'
+  })
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       sendLibraryScanStage('backfill', 'Processing ReplayGain metadata...')
@@ -3561,6 +3813,9 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
     }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
+      logMemoryDiagnosticsMainEvent('library_backfill_canceled', {
+        kind: 'replaygain_manual'
+      })
       return {
         scanned: 0,
         updated: 0,
@@ -3570,6 +3825,10 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
       }
     }
     throw error
+  } finally {
+    logMemoryDiagnosticsMainEvent('library_backfill_finished', {
+      kind: 'replaygain_manual'
+    })
   }
 })
 
@@ -3582,6 +3841,11 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
 
   const folderLabel = basename(folderPath) || folderPath
   const issueCollector = createLibraryScanIssueCollector()
+  logMemoryDiagnosticsMainEvent('library_scan_started', {
+    kind: 'add_folder',
+    folderPath,
+    folderLabel
+  })
 
   try {
     const result = await runLibraryScanOperation(async (signal) => {
@@ -3639,9 +3903,18 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
     return { success: true, canceled: false, folder, ...result }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
+      logMemoryDiagnosticsMainEvent('library_scan_canceled', {
+        kind: 'add_folder',
+        folderPath
+      })
       return { success: false, canceled: true, folder, scanIssueLog: issueCollector.build() }
     }
     throw error
+  } finally {
+    logMemoryDiagnosticsMainEvent('library_scan_finished', {
+      kind: 'add_folder',
+      folderPath
+    })
   }
 })
 
@@ -3670,6 +3943,11 @@ ipcMain.handle(
   async (_event, folderPath: string) => {
     const folderLabel = basename(folderPath) || folderPath
     const issueCollector = createLibraryScanIssueCollector()
+    logMemoryDiagnosticsMainEvent('library_scan_started', {
+      kind: 'rescan_folder',
+      folderPath,
+      folderLabel
+    })
     try {
       const result = await runLibraryScanOperation(async (signal) => {
         const onIssue = (issue: library.LibraryScanIssue) => {
@@ -3745,9 +4023,18 @@ ipcMain.handle(
       return { success: true, canceled: false, ...result }
     } catch (error) {
       if (library.isLibraryScanCancelledError(error)) {
+        logMemoryDiagnosticsMainEvent('library_scan_canceled', {
+          kind: 'rescan_folder',
+          folderPath
+        })
         return { success: false, canceled: true, scanIssueLog: issueCollector.build() }
       }
       throw error
+    } finally {
+      logMemoryDiagnosticsMainEvent('library_scan_finished', {
+        kind: 'rescan_folder',
+        folderPath
+      })
     }
   }
 )
@@ -3769,6 +4056,10 @@ ipcMain.handle('library:factoryReset', async () => {
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
   const issueCollector = createLibraryScanIssueCollector()
+  logMemoryDiagnosticsMainEvent('library_scan_started', {
+    kind: 'rescan_all',
+    folderCount: library.getLibraryFolders().length
+  })
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       const folders = library.getLibraryFolders()
@@ -3871,6 +4162,9 @@ ipcMain.handle('library:rescan', async () => {
     return { ...result, canceled: false }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
+      logMemoryDiagnosticsMainEvent('library_scan_canceled', {
+        kind: 'rescan_all'
+      })
       return {
         added: 0,
         updated: 0,
@@ -3882,6 +4176,10 @@ ipcMain.handle('library:rescan', async () => {
       }
     }
     throw error
+  } finally {
+    logMemoryDiagnosticsMainEvent('library_scan_finished', {
+      kind: 'rescan_all'
+    })
   }
 })
 
