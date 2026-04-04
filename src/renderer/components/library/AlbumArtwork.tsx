@@ -51,7 +51,7 @@ export default function AlbumArtwork({
   hash,
   alt = 'Album artwork',
   className = '',
-  variant = 'full'
+  variant = 'card'
 }: AlbumArtworkProps) {
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null)
   const [isVisible, setIsVisible] = useState(false)

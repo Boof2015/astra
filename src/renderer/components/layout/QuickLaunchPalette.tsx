@@ -119,7 +119,7 @@ function ResultThumbnail({ hash, fallback }: { hash: string | null | undefined; 
   useEffect(() => {
     if (!hash) { setUrl(null); return }
     let cancelled = false
-    void getArtwork(hash).then((u) => { if (!cancelled) setUrl(u ?? null) })
+    void getArtwork(hash, { variant: 'thumbnail' }).then((u) => { if (!cancelled) setUrl(u ?? null) })
     return () => { cancelled = true }
   }, [hash, getArtwork])
 

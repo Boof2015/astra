@@ -164,6 +164,9 @@ const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
+const BYTES_PER_FLOAT32_SAMPLE = 4
+const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
+const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
 
@@ -178,6 +181,20 @@ function estimateWaveformCacheBytes(): number {
 function estimateTrackArtworkBytes(track: Track | null | undefined): number {
   const artworkData = track?.artworkData
   return typeof artworkData === 'string' ? artworkData.length * 2 : 0
+}
+
+function estimateDecodedTrackBytes(track: Track | null | undefined): number | null {
+  if (!track) return null
+
+  const durationSeconds = track.duration
+  const sampleRate = track.sampleRate
+  const channels = track.channels ?? 2
+
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return null
+  if (typeof sampleRate !== 'number' || !Number.isFinite(sampleRate) || sampleRate <= 0) return null
+  if (typeof channels !== 'number' || !Number.isFinite(channels) || channels <= 0) return null
+
+  return Math.round(durationSeconds * sampleRate * channels * BYTES_PER_FLOAT32_SAMPLE)
 }
 
 function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 'userQueue' | 'autoQueue' | 'playbackHistory' | 'playbackFuture'>) {
@@ -1657,6 +1674,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               trackPath: nextTrack.path,
               loaded: true,
               usedNativeBitPerfect: true
+            })
+            return
+          }
+
+          const bufferStats = await audioEngine.getBufferMemoryStats()
+          const estimatedNextTrackBytes = estimateDecodedTrackBytes(nextTrack)
+          const currentBufferedBytes = bufferStats.totalBytes
+          const wouldExceedTotalBudget =
+            estimatedNextTrackBytes !== null
+            && (currentBufferedBytes + estimatedNextTrackBytes) > MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+
+          if (
+            currentBufferedBytes >= MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+            || (estimatedNextTrackBytes !== null && estimatedNextTrackBytes > MAX_STANDARD_PREBUFFER_TRACK_BYTES)
+            || wouldExceedTotalBudget
+          ) {
+            logMemoryDiagnosticsEvent('prebuffer_skipped_budget', {
+              trackPath: nextTrack.path,
+              currentBufferedMb: Number((currentBufferedBytes / (1024 * 1024)).toFixed(1)),
+              estimatedNextTrackMb: estimatedNextTrackBytes === null
+                ? null
+                : Number((estimatedNextTrackBytes / (1024 * 1024)).toFixed(1)),
+              maxTrackMb: MAX_STANDARD_PREBUFFER_TRACK_BYTES / (1024 * 1024),
+              maxTotalMb: MAX_STANDARD_PREBUFFER_TOTAL_BYTES / (1024 * 1024)
+            })
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              skippedBudget: true,
+              currentBufferedBytes,
+              estimatedNextTrackBytes
             })
             return
           }

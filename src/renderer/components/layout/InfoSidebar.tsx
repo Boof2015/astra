@@ -262,7 +262,7 @@ export default function InfoSidebar() {
         <>
           <div className="info-sidebar-artwork">
             {currentTrack.artworkHash ? (
-              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
             ) : currentTrack.artworkData ? (
               <img src={currentTrack.artworkData} alt="Album art" />
             ) : (

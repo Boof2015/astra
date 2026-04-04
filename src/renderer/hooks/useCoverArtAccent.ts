@@ -68,7 +68,7 @@ export function useCoverArtAccent(): void {
       let artworkDataUrl = currentTrack.artworkData ?? null
 
       if (!artworkDataUrl && currentTrack.artworkHash) {
-        artworkDataUrl = await getArtwork(currentTrack.artworkHash)
+        artworkDataUrl = await getArtwork(currentTrack.artworkHash, { variant: 'card' })
         if (requestTokenRef.current !== requestToken) return
       }
 

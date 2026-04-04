@@ -192,7 +192,7 @@ interface LibraryStore {
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
 const MAX_CARD_ARTWORK_CACHE_ENTRIES = 96
-const MAX_FULL_ARTWORK_CACHE_ENTRIES = 32
+const MAX_FULL_ARTWORK_CACHE_ENTRIES = 8
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
@@ -870,7 +870,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Get artwork data URL (with caching)
   getArtwork: async (hash: string | null, options?: ArtworkRequestOptions) => {
     if (!hash) return null
-    const variant: ArtworkVariant = options?.variant ?? 'full'
+    const variant: ArtworkVariant = options?.variant ?? 'card'
     const cacheKey = getArtworkCacheKey(hash, variant)
 
     // Check cache first

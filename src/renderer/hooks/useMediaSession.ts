@@ -118,7 +118,7 @@ export function useMediaSession(): void {
         artworkDataUrl = currentTrack.artworkData
       } else if (currentTrack.artworkHash) {
         artworkDataUrl =
-          (await useLibraryStore.getState().getArtwork(currentTrack.artworkHash)) ?? undefined
+          (await useLibraryStore.getState().getArtwork(currentTrack.artworkHash, { variant: 'card' })) ?? undefined
       }
 
       const artwork: MediaImage[] = []

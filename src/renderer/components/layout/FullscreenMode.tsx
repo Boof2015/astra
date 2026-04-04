@@ -535,7 +535,7 @@ function FullscreenNextCueOverlay({
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {nextTrack.artworkHash ? (
-            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" />
+            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" variant="card" />
           ) : nextTrack.artworkData ? (
             <img src={nextTrack.artworkData} alt="Up next artwork" />
           ) : (
@@ -708,7 +708,7 @@ export default function FullscreenMode() {
 
       if (currentTrack.artworkHash) {
         try {
-          const hashArtwork = await getArtwork(currentTrack.artworkHash)
+          const hashArtwork = await getArtwork(currentTrack.artworkHash, { variant: 'full' })
           if (backdropRequestTokenRef.current !== requestToken) return
           if (hashArtwork) {
             artworkCandidates.push(hashArtwork)
@@ -878,7 +878,7 @@ export default function FullscreenMode() {
             <div className="fullscreen-main-row">
               <div className="fullscreen-artwork">
                 {currentTrack?.artworkHash ? (
-                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
                 ) : currentTrack?.artworkData ? (
                   <img src={currentTrack.artworkData} alt="Album art" />
                 ) : (
