@@ -2931,6 +2931,7 @@ button, .titlebar {
   flex-direction: column;
   gap: 6px;
   scrollbar-width: thin;
+  scrollbar-color: var(--glass-border) transparent;
 }
 
 .transport-lyrics-expanded-line {
@@ -2959,6 +2960,29 @@ button, .titlebar {
   line-height: 1.44;
   color: rgba(255, 255, 255, 0.76);
   padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-border) transparent;
+}
+
+.transport-lyrics-expanded-list::-webkit-scrollbar,
+.transport-lyrics-expanded-plain::-webkit-scrollbar {
+  width: 8px;
+}
+
+.transport-lyrics-expanded-list::-webkit-scrollbar-track,
+.transport-lyrics-expanded-plain::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.transport-lyrics-expanded-list::-webkit-scrollbar-thumb,
+.transport-lyrics-expanded-plain::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 4px;
+}
+
+.transport-lyrics-expanded-list::-webkit-scrollbar-thumb:hover,
+.transport-lyrics-expanded-plain::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
 }
 
 .transport-lyrics-shelf-state {
