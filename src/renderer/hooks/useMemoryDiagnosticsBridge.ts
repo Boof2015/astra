@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react'
 import type { ScopeKind } from '../../types/scopePopout'
 import type {
+  MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsTitleBarPeakSnapshot,
-  MemoryDiagnosticsTitleBarSampleSnapshot
+  MemoryDiagnosticsTitleBarSampleSnapshot,
+  MemoryDiagnosticsUserAgentSpecificMemorySnapshot
 } from '../../types/diagnostics'
 import { audioEngine } from '../audio/AudioEngine'
 import { useDiscordSettingsStore } from '../stores/discordSettingsStore'
@@ -19,18 +21,32 @@ import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 const TITLE_BAR_SAMPLE_INTERVAL_MS = 1000
 const TITLE_BAR_STALE_SAMPLE_MS = TITLE_BAR_SAMPLE_INTERVAL_MS * 2
 
+type PerformanceWithMemoryDiagnostics = Performance & {
+  memory?: {
+    usedJSHeapSize?: number
+    totalJSHeapSize?: number
+    jsHeapSizeLimit?: number
+  }
+  measureUserAgentSpecificMemory?: () => Promise<{
+    bytes?: number
+    breakdown?: Array<{
+      bytes?: number
+      types?: unknown
+      attribution?: unknown
+    }>
+  }>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function getJsHeapStats(): {
   usedBytes: number | null
   totalBytes: number | null
   limitBytes: number | null
 } {
-  const performanceWithMemory = performance as Performance & {
-    memory?: {
-      usedJSHeapSize?: number
-      totalJSHeapSize?: number
-      jsHeapSizeLimit?: number
-    }
-  }
+  const performanceWithMemory = performance as PerformanceWithMemoryDiagnostics
   const memory = performanceWithMemory.memory
   if (!memory) {
     return {
@@ -46,6 +62,67 @@ function getJsHeapStats(): {
     usedBytes: normalize(memory.usedJSHeapSize),
     totalBytes: normalize(memory.totalJSHeapSize),
     limitBytes: normalize(memory.jsHeapSizeLimit)
+  }
+}
+
+async function getUserAgentSpecificMemoryStats(): Promise<MemoryDiagnosticsUserAgentSpecificMemorySnapshot | null> {
+  const performanceWithDiagnostics = performance as PerformanceWithMemoryDiagnostics
+  if (typeof performanceWithDiagnostics.measureUserAgentSpecificMemory !== 'function') {
+    return null
+  }
+
+  try {
+    const result = await performanceWithDiagnostics.measureUserAgentSpecificMemory()
+    if (typeof result?.bytes !== 'number' || !Number.isFinite(result.bytes)) {
+      return null
+    }
+
+    const breakdown = Array.isArray(result.breakdown)
+      ? result.breakdown.flatMap((entry) => {
+          if (!entry || typeof entry.bytes !== 'number' || !Number.isFinite(entry.bytes)) {
+            return []
+          }
+
+          const types = Array.isArray(entry.types)
+            ? entry.types.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+            : []
+          const attribution = Array.isArray(entry.attribution)
+            ? entry.attribution.flatMap((item) => {
+                if (!isRecord(item)) return []
+                const normalized = Object.entries(item).reduce<Record<string, string | null>>((acc, [key, value]) => {
+                  if (typeof value === 'string') {
+                    acc[key] = value
+                  } else if (value === null) {
+                    acc[key] = null
+                  }
+                  return acc
+                }, {})
+                return Object.keys(normalized).length > 0 ? [normalized] : []
+              })
+            : []
+
+          return [{
+            bytes: entry.bytes,
+            types,
+            attribution
+          }]
+        })
+      : []
+
+    return {
+      bytes: result.bytes,
+      breakdown
+    }
+  } catch {
+    return null
+  }
+}
+
+function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot | null {
+  try {
+    return window.electronAPI.diagnostics.getBlinkResourceUsage()
+  } catch {
+    return null
   }
 }
 
@@ -302,10 +379,14 @@ export function useMemoryDiagnosticsBridge(): void {
   useEffect(() => {
     const unsubscribe = window.electronAPI.diagnostics.onSnapshotRequest((request) => {
       void (async () => {
-        const titleBarSample = await ensureFreshTitleBarSample()
+        const [titleBarSample, userAgentSpecificMemory] = await Promise.all([
+          ensureFreshTitleBarSample(),
+          getUserAgentSpecificMemoryStats()
+        ])
         const titleBarPeaks = titleBarSample.sampledAt === null
           ? titleBarPeaksRef.current
           : updateTitleBarPeaks(titleBarPeaksRef.current, titleBarSample)
+        const blinkResourceUsage = getBlinkResourceUsage()
 
         titleBarPeaksRef.current = createTitleBarPeaksFromSample(titleBarSample)
 
@@ -326,6 +407,8 @@ export function useMemoryDiagnosticsBridge(): void {
           jsHeapUsedBytes: null,
           jsHeapTotalBytes: null,
           jsHeapLimitBytes: null,
+          userAgentSpecificMemory,
+          blinkResourceUsage,
           heapSpaces: {
             oldSpaceUsedBytes: null,
             newSpaceUsedBytes: null,

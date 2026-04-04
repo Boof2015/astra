@@ -250,9 +250,12 @@ export default function SettingsView() {
   const {
     status: diagnosticsStatus,
     isLoading: diagnosticsIsLoading,
+    isCapturingBundle: diagnosticsIsCapturingBundle,
+    lastCaptureResult: diagnosticsLastCaptureResult,
     errorMessage: diagnosticsErrorMessage,
     init: initDiagnostics,
     setEnabled: setDiagnosticsEnabled,
+    captureBundle: captureDiagnosticsBundle,
     revealCurrentLog,
     revealPreviousLog,
   } = useDiagnosticsStore()
@@ -536,6 +539,9 @@ export default function SettingsView() {
     : diagnosticsEnabled
       ? 'Waiting for the current diagnostics session header.'
       : 'Diagnostics are disabled.'
+  const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
+    ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
+    : 'No memory bundle captured in this session.'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
@@ -1612,6 +1618,20 @@ export default function SettingsView() {
                 <p className="settings-info-meta">Previous log</p>
                 <p className="settings-info-path">{diagnosticsPreviousLogPath}</p>
                 <p className="settings-info-meta">{diagnosticsSessionLabel}</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void captureDiagnosticsBundle()}
+                    disabled={diagnosticsIsCapturingBundle}
+                  >
+                    {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">{diagnosticsLastBundleLabel}</p>
+                {diagnosticsLastCaptureResult && (
+                  <p className="settings-info-path">{diagnosticsLastCaptureResult.directoryPath}</p>
+                )}
                 {diagnosticsErrorMessage && (
                   <p className="settings-note settings-note-error">{diagnosticsErrorMessage}</p>
                 )}

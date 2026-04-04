@@ -102,6 +102,32 @@ export interface MemoryDiagnosticsRendererHeapSpacesSnapshot {
   largeObjectSpaceUsedBytes: number | null
 }
 
+export interface MemoryDiagnosticsBlinkResourceUsageBucketSnapshot {
+  count: number
+  liveSize: number
+  size: number
+}
+
+export interface MemoryDiagnosticsBlinkResourceUsageSnapshot {
+  images: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+  scripts: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+  cssStyleSheets: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+  xslStyleSheets: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+  fonts: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+  other: MemoryDiagnosticsBlinkResourceUsageBucketSnapshot
+}
+
+export interface MemoryDiagnosticsUserAgentSpecificMemoryBreakdownSnapshot {
+  bytes: number
+  types: string[]
+  attribution: Array<Record<string, string | null>>
+}
+
+export interface MemoryDiagnosticsUserAgentSpecificMemorySnapshot {
+  bytes: number
+  breakdown: MemoryDiagnosticsUserAgentSpecificMemoryBreakdownSnapshot[]
+}
+
 export interface MemoryDiagnosticsTitleBarSampleSnapshot {
   sampledAt: number | null
   rendererPrivateMb: number | null
@@ -174,6 +200,8 @@ export interface MemoryDiagnosticsRendererSnapshot {
   jsHeapUsedBytes: number | null
   jsHeapTotalBytes: number | null
   jsHeapLimitBytes: number | null
+  userAgentSpecificMemory: MemoryDiagnosticsUserAgentSpecificMemorySnapshot | null
+  blinkResourceUsage: MemoryDiagnosticsBlinkResourceUsageSnapshot | null
   heapSpaces: MemoryDiagnosticsRendererHeapSpacesSnapshot
   titleBar: MemoryDiagnosticsTitleBarSampleSnapshot
   titleBarPeaks: MemoryDiagnosticsTitleBarPeakSnapshot
@@ -198,6 +226,15 @@ export interface MemoryDiagnosticsRendererSnapshot {
   scopePopouts: ScopePopoutState
   library: MemoryDiagnosticsLibrarySnapshot
   caches: MemoryDiagnosticsCacheSnapshot
+}
+
+export interface MemoryDiagnosticsCaptureBundleResult {
+  capturedAt: number
+  tag: string | null
+  directoryPath: string
+  summaryPath: string
+  heapSnapshotPath: string
+  files: string[]
 }
 
 export interface MemoryDiagnosticsEventPayload {

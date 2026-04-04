@@ -2607,6 +2607,12 @@ app.whenReady().then(async () => {
     sampleIntervalMs: MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS,
     getMainProcessMemoryUsage: () => process.memoryUsage(),
     getAppMetrics: () => app.getAppMetrics(),
+    takeRendererHeapSnapshot: async (filePath: string) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new Error('Main window is unavailable for heap snapshot capture.')
+      }
+      await mainWindow.webContents.takeHeapSnapshot(filePath)
+    },
     sendRendererSnapshotRequest,
     getProcessLabels: getMemoryDiagnosticsProcessLabels,
     getWindowRoleSummary: getMemoryDiagnosticsWindowRoleSummary,
@@ -2879,6 +2885,14 @@ ipcMain.handle('diagnostics:revealCurrentLog', async () => {
 
 ipcMain.handle('diagnostics:revealPreviousLog', async () => {
   return memoryDiagnosticsService?.revealPreviousLog() ?? false
+})
+
+ipcMain.handle('diagnostics:captureMemoryBundle', async (_event, rawTag: unknown) => {
+  if (!memoryDiagnosticsService) {
+    throw new Error('Memory diagnostics service is unavailable.')
+  }
+  const tag = typeof rawTag === 'string' ? rawTag : undefined
+  return memoryDiagnosticsService.captureMemoryBundle(tag)
 })
 
 ipcMain.handle('diagnostics:logEvent', async (_event, rawPayload: unknown) => {

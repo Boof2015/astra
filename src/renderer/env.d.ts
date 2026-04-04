@@ -54,6 +54,8 @@ import type {
     NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 import type {
+    MemoryDiagnosticsBlinkResourceUsageSnapshot,
+    MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
     MemoryDiagnosticsRendererSnapshot,
     MemoryDiagnosticsSnapshotRequest,
@@ -138,6 +140,8 @@ declare global {
                 setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
                 revealCurrentLog: () => Promise<boolean>
                 revealPreviousLog: () => Promise<boolean>
+                captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+                getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
                 publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
                 logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
                 onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void

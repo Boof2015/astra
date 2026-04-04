@@ -2,6 +2,7 @@ import { access, appendFile, mkdir, rename, rm, writeFile } from 'fs/promises'
 import { shell, type ProcessMetric } from 'electron'
 import { join } from 'path'
 import type {
+  MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsSnapshotReason,
@@ -224,6 +225,47 @@ interface AppMetricsSummary {
   workingSetMbByLabel: Record<string, number>
 }
 
+interface MemoryDiagnosticsCaptureSummary {
+  bundleVersion: 1
+  capturedAt: number
+  completedAt: number
+  tag: string | null
+  directoryPath: string
+  files: {
+    summaryPath: string
+    heapSnapshotPath: string
+  }
+  appVersion: string
+  platform: NodeJS.Platform
+  currentLogPath: string
+  previousLogPath: string
+  windowRoles: Record<string, unknown>
+  processLabels: Record<number, string>
+  rendererSnapshotState: RendererSnapshotResolution['state']
+  rendererSnapshotAgeMs: number | null
+  mainProcessMemory: {
+    rssBytes: number
+    heapUsedBytes: number
+    heapTotalBytes: number
+    externalBytes: number
+    arrayBuffersBytes: number
+    rssMb: number | null
+    heapUsedMb: number | null
+    heapTotalMb: number | null
+    externalMb: number | null
+    arrayBuffersMb: number | null
+  }
+  appMetrics: AppMetricsSummary
+  performanceMemory: {
+    usedJSHeapSize: number | null
+    totalJSHeapSize: number | null
+    jsHeapSizeLimit: number | null
+  } | null
+  userAgentSpecificMemory: MemoryDiagnosticsRendererSnapshot['userAgentSpecificMemory']
+  blinkResourceUsage: MemoryDiagnosticsRendererSnapshot['blinkResourceUsage']
+  rendererSnapshot: MemoryDiagnosticsRendererSnapshot | null
+}
+
 export interface MemoryDiagnosticsServiceOptions {
   userDataPath: string
   platform: NodeJS.Platform
@@ -231,6 +273,7 @@ export interface MemoryDiagnosticsServiceOptions {
   sampleIntervalMs: number
   getMainProcessMemoryUsage: () => NodeJS.MemoryUsage
   getAppMetrics: () => ProcessMetric[]
+  takeRendererHeapSnapshot: (filePath: string) => Promise<void>
   sendRendererSnapshotRequest: (request: MemoryDiagnosticsSnapshotRequest) => boolean
   getProcessLabels: () => Record<number, string>
   getWindowRoleSummary: () => Record<string, unknown>
@@ -341,6 +384,12 @@ function summarizeAppMetrics(metrics: ProcessMetric[], processLabels: Record<num
   }
 }
 
+function normalizeCaptureTag(tag: string | null | undefined): string | null {
+  if (typeof tag !== 'string') return null
+  const trimmed = tag.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 export class MemoryDiagnosticsService {
   private readonly sampleIntervalMs: number
   private readonly logDirPath: string
@@ -361,6 +410,7 @@ export class MemoryDiagnosticsService {
   private lastSampleSummary: SampleMemorySummary | null = null
   private writeQueue: Promise<void> = Promise.resolve()
   private sampleInFlight: Promise<void> | null = null
+  private bundleCaptureInFlight: Promise<MemoryDiagnosticsCaptureBundleResult> | null = null
   private pendingImmediateEventName: string | null = null
 
   constructor(options: MemoryDiagnosticsServiceOptions) {
@@ -413,6 +463,19 @@ export class MemoryDiagnosticsService {
     if (!this.hasPreviousLog) return false
     shell.showItemInFolder(this.previousLogPath)
     return true
+  }
+
+  async captureMemoryBundle(tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> {
+    if (this.bundleCaptureInFlight) {
+      return this.bundleCaptureInFlight
+    }
+
+    this.bundleCaptureInFlight = this.doCaptureMemoryBundle(tag)
+      .finally(() => {
+        this.bundleCaptureInFlight = null
+      })
+
+    return this.bundleCaptureInFlight
   }
 
   async logEvent(payload: MemoryDiagnosticsEventPayload, options: { captureSample?: boolean } = {}): Promise<void> {
@@ -770,6 +833,84 @@ export class MemoryDiagnosticsService {
       library_selected_detail_track_count: snapshot?.library.selectedDetailTrackCount ?? null,
       library_scan_in_progress: snapshot?.library.scanInProgress ?? null
     })
+  }
+
+  private async doCaptureMemoryBundle(tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> {
+    await mkdir(this.logDirPath, { recursive: true })
+
+    const capturedAt = Date.now()
+    const normalizedTag = normalizeCaptureTag(tag)
+    const timestampSegment = new Date(capturedAt).toISOString().replace(/[.:]/g, '-')
+    const directoryName = normalizedTag
+      ? `${timestampSegment}-${sanitizeKeySegment(normalizedTag)}`
+      : timestampSegment
+    const directoryPath = join(this.logDirPath, 'memory-diagnostics-bundles', directoryName)
+    const summaryPath = join(directoryPath, 'summary.json')
+    const heapSnapshotPath = join(directoryPath, 'renderer.heapsnapshot')
+    const processLabels = this.options.getProcessLabels()
+    const windowRoles = this.options.getWindowRoleSummary()
+    const mainMemory = this.options.getMainProcessMemoryUsage()
+    const appMetrics = summarizeAppMetrics(this.options.getAppMetrics(), processLabels)
+    const rendererResolution = await this.resolveRendererSnapshot('event')
+    const rendererSnapshot = rendererResolution.snapshot
+
+    await mkdir(directoryPath, { recursive: true })
+    await this.options.takeRendererHeapSnapshot(heapSnapshotPath)
+
+    const completedAt = Date.now()
+    const summary: MemoryDiagnosticsCaptureSummary = {
+      bundleVersion: 1,
+      capturedAt,
+      completedAt,
+      tag: normalizedTag,
+      directoryPath,
+      files: {
+        summaryPath,
+        heapSnapshotPath
+      },
+      appVersion: this.options.appVersion,
+      platform: this.options.platform,
+      currentLogPath: this.currentLogPath,
+      previousLogPath: this.previousLogPath,
+      windowRoles,
+      processLabels,
+      rendererSnapshotState: rendererResolution.state,
+      rendererSnapshotAgeMs: rendererResolution.ageMs,
+      mainProcessMemory: {
+        rssBytes: mainMemory.rss,
+        heapUsedBytes: mainMemory.heapUsed,
+        heapTotalBytes: mainMemory.heapTotal,
+        externalBytes: mainMemory.external,
+        arrayBuffersBytes: mainMemory.arrayBuffers,
+        rssMb: bytesToMb(mainMemory.rss),
+        heapUsedMb: bytesToMb(mainMemory.heapUsed),
+        heapTotalMb: bytesToMb(mainMemory.heapTotal),
+        externalMb: bytesToMb(mainMemory.external),
+        arrayBuffersMb: bytesToMb(mainMemory.arrayBuffers)
+      },
+      appMetrics,
+      performanceMemory: rendererSnapshot
+        ? {
+            usedJSHeapSize: rendererSnapshot.jsHeapUsedBytes,
+            totalJSHeapSize: rendererSnapshot.jsHeapTotalBytes,
+            jsHeapSizeLimit: rendererSnapshot.jsHeapLimitBytes
+          }
+        : null,
+      userAgentSpecificMemory: rendererSnapshot?.userAgentSpecificMemory ?? null,
+      blinkResourceUsage: rendererSnapshot?.blinkResourceUsage ?? null,
+      rendererSnapshot
+    }
+
+    await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf-8')
+
+    return {
+      capturedAt,
+      tag: normalizedTag,
+      directoryPath,
+      summaryPath,
+      heapSnapshotPath,
+      files: [summaryPath, heapSnapshotPath]
+    }
   }
 
   private computeDelta(next: SampleMemorySummary): Record<string, number | null> {

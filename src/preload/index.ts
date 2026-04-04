@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { join } from 'path'
 import { getHeapSpaceStatistics } from 'v8'
 import type {
@@ -63,6 +63,8 @@ import type {
   RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+  MemoryDiagnosticsBlinkResourceUsageSnapshot,
+  MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsSnapshotRequest,
@@ -440,6 +442,18 @@ const nativeAudioController = createNativeAudioController(visualizerDSP, {
   unavailableReason: nativeAddonLoadError
 })
 
+function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
+  const usage = webFrame.getResourceUsage()
+  return {
+    images: { ...usage.images },
+    scripts: { ...usage.scripts },
+    cssStyleSheets: { ...usage.cssStyleSheets },
+    xslStyleSheets: { ...usage.xslStyleSheets },
+    fonts: { ...usage.fonts },
+    other: { ...usage.other }
+  }
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -540,6 +554,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:setEnabled', enabled),
     revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealCurrentLog'),
     revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealPreviousLog'),
+    captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
+      ipcRenderer.invoke('diagnostics:captureMemoryBundle', tag),
+    getBlinkResourceUsage: (): MemoryDiagnosticsBlinkResourceUsageSnapshot => getBlinkResourceUsage(),
     publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
       ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
     logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
@@ -904,6 +921,8 @@ declare global {
         setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
         revealCurrentLog: () => Promise<boolean>
         revealPreviousLog: () => Promise<boolean>
+        captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+        getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
         publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
         logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void

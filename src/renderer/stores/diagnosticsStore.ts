@@ -1,14 +1,17 @@
 import { create } from 'zustand'
-import type { MemoryDiagnosticsStatus } from '../../types/diagnostics'
+import type { MemoryDiagnosticsCaptureBundleResult, MemoryDiagnosticsStatus } from '../../types/diagnostics'
 
 interface DiagnosticsStore {
   status: MemoryDiagnosticsStatus | null
   isLoading: boolean
   isInitialized: boolean
+  isCapturingBundle: boolean
+  lastCaptureResult: MemoryDiagnosticsCaptureBundleResult | null
   errorMessage: string
   init: () => Promise<void>
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus | null>
+  captureBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult | null>
   revealCurrentLog: () => Promise<boolean>
   revealPreviousLog: () => Promise<boolean>
 }
@@ -46,6 +49,8 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
     status: null,
     isLoading: false,
     isInitialized: false,
+    isCapturingBundle: false,
+    lastCaptureResult: null,
     errorMessage: '',
 
     init: async () => {
@@ -77,6 +82,24 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    captureBundle: async (tag?: string) => {
+      set({ isCapturingBundle: true, errorMessage: '' })
+      try {
+        const result = await window.electronAPI.diagnostics.captureMemoryBundle(tag)
+        set({
+          isCapturingBundle: false,
+          lastCaptureResult: result
+        })
+        return result
+      } catch (error) {
+        set({
+          isCapturingBundle: false,
+          errorMessage: toErrorMessage(error)
+        })
         return null
       }
     },
