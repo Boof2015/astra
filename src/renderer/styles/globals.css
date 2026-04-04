@@ -1755,6 +1755,7 @@ button, .titlebar {
   --fullscreen-lyrics-line-height: 46px;
   --fullscreen-lyrics-visible-lines: 3;
   --fullscreen-lyrics-open-height: 196px;
+  --fullscreen-lyrics-dock-radius: 16px;
   max-height: 0;
   margin-top: 0;
   opacity: 0;
@@ -1781,16 +1782,15 @@ button, .titlebar {
 .fullscreen-lyrics-dock-glass {
   position: relative;
   overflow: hidden;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.03)),
-    rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(17px) saturate(1.22);
-  -webkit-backdrop-filter: blur(17px) saturate(1.22);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 14px 28px rgba(0, 0, 0, 0.28);
+  isolation: isolate;
+  border-radius: var(--fullscreen-lyrics-dock-radius);
+  clip-path: inset(0 round var(--fullscreen-lyrics-dock-radius));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.34);
+  background-clip: padding-box;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
   padding: 11px 16px 12px;
   opacity: 0;
   transform: translateY(12px) scale(0.965);
@@ -1806,11 +1806,12 @@ button, .titlebar {
   position: absolute;
   inset: 0;
   border-radius: inherit;
+  clip-path: inherit;
   pointer-events: none;
   background:
-    radial-gradient(78% 62% at 10% 6%, rgba(255, 255, 255, 0.26), transparent 68%),
-    radial-gradient(80% 64% at 90% 100%, rgba(var(--accent-rgb), 0.2), transparent 72%);
-  opacity: 0.16;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 42%),
+    radial-gradient(80% 64% at 90% 100%, rgba(var(--accent-rgb), 0.14), transparent 72%);
+  opacity: 0.14;
   transition: opacity 0.36s ease;
 }
 
@@ -1820,7 +1821,7 @@ button, .titlebar {
 }
 
 .fullscreen-lyrics-dock.is-open .fullscreen-lyrics-dock-glass::before {
-  opacity: 0.44;
+  opacity: 0.26;
 }
 
 .fullscreen-lyrics-dock-head {
@@ -11322,6 +11323,7 @@ body::after {
 
   .fullscreen-lyrics-dock {
     --fullscreen-lyrics-line-height: 42px;
+    --fullscreen-lyrics-dock-radius: 14px;
   }
 
   .fullscreen-lyrics-dock.is-open {
@@ -11618,6 +11620,7 @@ body::after {
 
   .fullscreen-lyrics-dock {
     --fullscreen-lyrics-line-height: 34px;
+    --fullscreen-lyrics-dock-radius: 12px;
   }
 
   .fullscreen-lyrics-dock.is-open {
@@ -11626,7 +11629,6 @@ body::after {
   }
 
   .fullscreen-lyrics-dock-glass {
-    border-radius: 12px;
     padding: 9px 11px 10px;
   }
 
