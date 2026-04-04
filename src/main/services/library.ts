@@ -9,6 +9,12 @@ import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import {
+  buildAlbumIdentityKeyByTrackId,
+  buildAlbumIdentityKeyFromTrack as buildFallbackAlbumIdentityKeyFromTrack,
+  groupTracksByAlbumIdentity,
+  type AlbumGroupingMode
+} from '../../shared/library/albumGrouping'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
@@ -25,6 +31,7 @@ const AUDIO_EXTENSIONS = new Set([
 export interface DbTrack {
   id: number
   path: string
+  album_identity_key?: string
   title: string
   artist: string
   album: string
@@ -592,11 +599,39 @@ function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
   })
 }
 
-function readEffectiveTracks(sql: string): DbTrack[] {
+function readEffectiveTrackRows(sql: string): DbTrack[] {
   if (!db) return []
   const result = db.exec(sql)
   if (result.length === 0) return []
   return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+}
+
+function buildAlbumIdentityKeysByPath(tracks: readonly DbTrack[]): Map<string, string> {
+  return buildAlbumIdentityKeyByTrackId(tracks, (track) => track.path)
+}
+
+function readAllTrackRowsUnordered(): DbTrack[] {
+  return readEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)
+}
+
+function attachAlbumIdentityKeys(tracks: readonly DbTrack[], libraryTracks?: readonly DbTrack[]): DbTrack[] {
+  if (tracks.length === 0) return []
+
+  const effectiveLibraryTracks = libraryTracks ?? readAllTrackRowsUnordered()
+  const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
+
+  return tracks.map((track) => ({
+    ...track,
+    album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track)
+  }))
+}
+
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrack[]): DbTrack[] {
+  const tracks = readEffectiveTrackRows(sql)
+  return attachAlbumIdentityKeys(tracks, libraryTracks)
 }
 
 function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
@@ -640,8 +675,6 @@ interface CountedDisplayVariant {
   display: string
   count: number
 }
-
-type AlbumGroupingMode = 'explicit-album-artist' | 'artwork-hash' | 'track-artist'
 
 interface AlbumGroupAccumulator {
   identityKey: string
@@ -833,13 +866,6 @@ function pickMostFrequentArtworkHash(
   return bestHash ?? fallback
 }
 
-function readAllTracksUnordered(): DbTrack[] {
-  return readEffectiveTracks(`
-    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
-  `)
-}
-
 function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
   const discA = a.disc_number ?? 0
   const discB = b.disc_number ?? 0
@@ -859,15 +885,6 @@ function compareTracksByAlbumDiscTrackTitle(a: DbTrack, b: DbTrack): number {
   const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
   if (albumCompare !== 0) return albumCompare
   return compareTracksByDiscTrackTitle(a, b)
-}
-
-function normalizeArtworkHash(hash: string | null): string | null {
-  const normalized = normalizeDisplay(hash ?? '')
-  return normalized ? normalized.toLocaleLowerCase() : null
-}
-
-function buildAlbumIdentityKey(albumKey: string, discriminator: string): string {
-  return `album:${albumKey}::${discriminator}`
 }
 
 function addAliasArtistKey(aliasArtistKeys: Set<string>, rawValue: string): void {
@@ -951,11 +968,7 @@ function addTrackToAlbumGroup(
 }
 
 function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
-  if (
-    group.groupingMode === 'artwork-hash'
-    && group.trackCount >= MIN_TRACKS_FOR_ALBUM
-    && group.primaryArtistKeys.size > 1
-  ) {
+  if (group.groupingMode === 'shared-artwork-compilation') {
     group.artistVariants = new Map()
     incrementDisplayVariant(group.artistVariants, VARIOUS_ARTISTS_NAME)
     group.artistKey = normalizeKey(VARIOUS_ARTISTS_NAME)
@@ -972,40 +985,21 @@ function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
 function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator> {
   const groups = new Map<string, AlbumGroupAccumulator>()
 
-  for (const track of tracks) {
-    const albumName = normalizeAlbumName(track.album)
-    const albumKey = normalizeKey(albumName)
-    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || 'Unknown Artist'
-    const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey('Unknown Artist')
-    const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
-    const artworkIdentityHash = normalizeArtworkHash(track.base_artwork_hash ?? track.artwork_hash)
+  for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
+    const group = createAlbumGroupAccumulator(
+      identityGroup.identityKey,
+      identityGroup.groupingMode,
+      identityGroup.albumKey,
+      identityGroup.displayArtist
+    )
 
-    let identityKey: string
-    let groupingMode: AlbumGroupingMode
-    let displayArtist: string
-
-    if (normalizedAlbumArtist) {
-      const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey('Unknown Artist')
-      identityKey = buildAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`)
-      groupingMode = 'explicit-album-artist'
-      displayArtist = normalizedAlbumArtist
-    } else if (artworkIdentityHash) {
-      identityKey = buildAlbumIdentityKey(albumKey, `ah:${artworkIdentityHash}`)
-      groupingMode = 'artwork-hash'
-      displayArtist = primaryArtist
-    } else {
-      identityKey = buildAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`)
-      groupingMode = 'track-artist'
-      displayArtist = primaryArtist
+    for (const track of identityGroup.tracks) {
+      const albumName = normalizeAlbumName(track.album)
+      const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || UNKNOWN_ARTIST_NAME
+      addTrackToAlbumGroup(group, track, albumName, identityGroup.displayArtist, primaryArtist)
     }
 
-    let group = groups.get(identityKey)
-    if (!group) {
-      group = createAlbumGroupAccumulator(identityKey, groupingMode, albumKey, displayArtist)
-      groups.set(identityKey, group)
-    }
-
-    addTrackToAlbumGroup(group, track, albumName, displayArtist, primaryArtist)
+    groups.set(group.identityKey, group)
   }
 
   for (const group of groups.values()) {
@@ -3017,7 +3011,7 @@ export async function setLyricsTrackSyncOffset(trackPaths: string[], offsetMs: n
 
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
-  return readEffectiveTracks(`
+  const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
     ORDER BY
@@ -3027,6 +3021,7 @@ export function getAllTracks(): DbTrack[] {
       COALESCE(o.track_number, t.track_number, 0),
       t.path COLLATE NOCASE
   `)
+  return attachAlbumIdentityKeys(tracks, tracks)
 }
 
 // Get tracks by artist
@@ -3036,17 +3031,17 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
   if (!targetArtistKey) return []
   const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
 
-  const tracks = readAllTracksUnordered()
+  const tracks = readAllTrackRowsUnordered()
   const matched = tracks.filter((track) => trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode))
 
-  return matched.sort(compareTracksByAlbumDiscTrackTitle)
+  return attachAlbumIdentityKeys(matched.sort(compareTracksByAlbumDiscTrackTitle), tracks)
 }
 
 // Get tracks by album
 export function getTracksByAlbum(album: string, artist?: string, identityKey?: string): DbTrack[] {
   if (!db) return []
   const albumKey = normalizeKey(normalizeAlbumName(album))
-  const tracks = readAllTracksUnordered()
+  const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
   const groups = buildAlbumGroups(tracks)
 
@@ -3054,31 +3049,31 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
   if (normalizedIdentityKey) {
     const directGroup = groups.get(normalizedIdentityKey)
     if (directGroup && directGroup.albumKey === albumKey) {
-      return [...directGroup.tracks].sort(compareTracksByDiscTrackTitle)
+      return attachAlbumIdentityKeys([...directGroup.tracks].sort(compareTracksByDiscTrackTitle), tracks)
     }
   }
 
   if (!artist || !normalizeDisplay(artist)) {
     const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
-    return matched.sort(compareTracksByDiscTrackTitle)
+    return attachAlbumIdentityKeys(matched.sort(compareTracksByDiscTrackTitle), tracks)
   }
 
   const artistKey = normalizeKey(artist)
   if (!artistKey) {
     const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
-    return matched.sort(compareTracksByDiscTrackTitle)
+    return attachAlbumIdentityKeys(matched.sort(compareTracksByDiscTrackTitle), tracks)
   }
 
   const albumGroups = Array.from(groups.values()).filter((group) => group.albumKey === albumKey)
   for (const group of albumGroups) {
     if (group.artistKey === artistKey) {
-      return [...group.tracks].sort(compareTracksByDiscTrackTitle)
+      return attachAlbumIdentityKeys([...group.tracks].sort(compareTracksByDiscTrackTitle), tracks)
     }
   }
 
   const aliasMatches = albumGroups.filter((group) => group.aliasArtistKeys.has(artistKey))
   if (aliasMatches.length === 1) {
-    return [...aliasMatches[0].tracks].sort(compareTracksByDiscTrackTitle)
+    return attachAlbumIdentityKeys([...aliasMatches[0].tracks].sort(compareTracksByDiscTrackTitle), tracks)
   }
 
   // Defensive fallback if canonical grouping misses a case.
@@ -3088,13 +3083,13 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
     if (normalizeKey(track.artist) === artistKey) return true
     return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
   })
-  return fallback.sort(compareTracksByDiscTrackTitle)
+  return attachAlbumIdentityKeys(fallback.sort(compareTracksByDiscTrackTitle), tracks)
 }
 
 // Get unique artists
 export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: string; track_count: number; artwork_hash: string | null }[] {
   if (!db) return []
-  const tracks = readAllTracksUnordered()
+  const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
   const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
   const browseArtistResolver = resolvedMode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
@@ -3172,7 +3167,7 @@ export function getAlbums(): {
   track_count: number
 }[] {
   if (!db) return []
-  const tracks = readAllTracksUnordered()
+  const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
 
   const groups = buildAlbumGroups(tracks)
@@ -3185,7 +3180,7 @@ export function getAlbums(): {
       let primaryArtist: string | null
       if (group.groupingMode === 'explicit-album-artist') {
         primaryArtist = getPrimaryArtistFromAlbumArtist(artist)
-      } else if (group.groupingMode === 'artwork-hash' && group.primaryArtistKeys.size > 1) {
+      } else if (group.groupingMode === 'shared-artwork-compilation') {
         primaryArtist = null
       } else {
         primaryArtist = artist
@@ -3238,7 +3233,7 @@ export function searchTracks(query: string): DbTrack[] {
     tracks.push(row)
   }
   stmt.free()
-  return tracks
+  return attachAlbumIdentityKeys(tracks)
 }
 
 function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | null {
@@ -6090,7 +6085,7 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
 
   const content = await readFile(sourceFilePath, 'utf-8')
   const parsed = parsePlaylistDocument(sourceFilePath, content)
-  const lookup = buildPlaylistImportLookupIndex(readAllTracksUnordered())
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
   const matchedTrackPaths: string[] = []
   const warnings = [...parsed.warnings]
 

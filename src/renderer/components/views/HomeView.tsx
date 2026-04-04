@@ -13,6 +13,7 @@ import PlaylistCover from '../playlists/PlaylistCover'
 
 interface HomeTrack {
   path: string
+  album_identity_key: string
   title: string
   artist: string
   album: string
@@ -1060,7 +1061,7 @@ export default function HomeView() {
     const uniqueAlbums: HomeAlbum[] = []
 
     for (const track of recentlyPlayed) {
-      const identityKey = buildAlbumIdentityKeyFromTrack(track)
+      const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)
       const metadata = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
@@ -1099,6 +1100,7 @@ export default function HomeView() {
       artist: recentTrack.artist,
       album: recentTrack.album,
       albumArtist: recentTrack.album_artist ?? undefined,
+      albumIdentityKey: recentTrack.album_identity_key,
       duration: recentTrack.duration,
       format: recentTrack.format,
       artworkHash: recentTrack.artwork_hash ?? undefined,

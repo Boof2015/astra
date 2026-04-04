@@ -162,6 +162,7 @@ function toQueueTrack(track: {
   title: string
   artist: string
   album: string
+  album_identity_key: string
   album_artist: string | null
   duration: number
   format: string
@@ -186,6 +187,7 @@ function toQueueTrack(track: {
     artist: track.artist,
     album: track.album,
     albumArtist: track.album_artist ?? undefined,
+    albumIdentityKey: track.album_identity_key,
     duration: track.duration,
     format: track.format,
     artworkHash: track.artwork_hash ?? undefined,
@@ -575,7 +577,7 @@ export default function LibraryView() {
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
-      keys.add(buildAlbumIdentityKeyFromTrack(track))
+      keys.add(track.album_identity_key || buildAlbumIdentityKeyFromTrack(track))
     }
     return keys
   }, [sourceFilteredTracks])
@@ -670,7 +672,7 @@ export default function LibraryView() {
     const featuredSinglesByIdentityKey = new Map<string, (typeof albums)[number]>()
 
     for (const track of sourceFilteredTracks) {
-      const identityKey = buildAlbumIdentityKeyFromTrack(track)
+      const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
       const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)

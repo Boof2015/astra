@@ -17,6 +17,7 @@ import PlaylistCover from '../playlists/PlaylistCover'
 interface DbTrack {
   id: number
   path: string
+  album_identity_key: string
   title: string
   artist: string
   album: string
@@ -91,7 +92,12 @@ interface TrackListRowSharedProps {
   nextQueuedTrackPath: string | null
   queueFeedback: Record<string, true>
   openArtistInLibrary: (artist: string) => void | Promise<void>
-  openAlbumInLibrary: (albumName: string, trackArtist: string, albumArtist?: string | null) => void | Promise<void>
+  openAlbumInLibrary: (
+    albumName: string,
+    trackArtist: string,
+    albumArtist?: string | null,
+    albumIdentityKey?: string
+  ) => void | Promise<void>
   formatBpm: (bpm: number | null | undefined) => string
   formatAddedDate: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
   formatAddedDateTitle: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
@@ -144,6 +150,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     artist: dbTrack.artist,
     album: dbTrack.album,
     albumArtist: dbTrack.album_artist ?? undefined,
+    albumIdentityKey: dbTrack.album_identity_key,
     duration: dbTrack.duration,
     format: dbTrack.format,
     artworkHash: dbTrack.artwork_hash ?? undefined,
@@ -410,7 +417,7 @@ function TrackListRowRenderer({
                 className="track-album track-album-link"
                 onClick={(event) => {
                   event.stopPropagation()
-                  void openAlbumInLibrary(track.album, track.artist, track.album_artist)
+                  void openAlbumInLibrary(track.album, track.artist, track.album_artist, track.album_identity_key)
                 }}
                 title={`Show album ${track.album}`}
               >

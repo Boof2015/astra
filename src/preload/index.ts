@@ -107,6 +107,7 @@ export interface AudioLoadOptions {
 export interface DbTrack {
   id: number
   path: string
+  album_identity_key: string
   title: string
   artist: string
   album: string

@@ -6,6 +6,7 @@ export type QuickLaunchTrackAction = 'play-now' | 'queue-next'
 export interface QuickLaunchTrackRecord {
   id: number
   path: string
+  album_identity_key: string
   title: string
   artist: string
   album: string

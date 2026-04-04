@@ -290,7 +290,12 @@ export default function InfoSidebar() {
                   type="button"
                   className="info-meta-value info-meta-album-link"
                   onClick={() => {
-                    void openAlbumInLibrary(currentTrack.album, currentTrack.artist, currentTrack.albumArtist)
+                    void openAlbumInLibrary(
+                      currentTrack.album,
+                      currentTrack.artist,
+                      currentTrack.albumArtist,
+                      currentTrack.albumIdentityKey
+                    )
                   }}
                   title={`Show album ${currentTrack.album}`}
                 >

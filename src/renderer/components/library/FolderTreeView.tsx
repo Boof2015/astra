@@ -85,6 +85,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     artist: dbTrack.artist,
     album: dbTrack.album,
     albumArtist: dbTrack.album_artist ?? undefined,
+    albumIdentityKey: dbTrack.album_identity_key,
     duration: dbTrack.duration,
     format: dbTrack.format,
     artworkHash: dbTrack.artwork_hash ?? undefined,

@@ -7,6 +7,7 @@ export interface Track {
   artist: string
   album: string
   albumArtist?: string
+  albumIdentityKey?: string
   duration: number
   trackNumber?: number
   discNumber?: number

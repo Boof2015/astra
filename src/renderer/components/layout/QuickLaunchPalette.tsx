@@ -40,6 +40,7 @@ function toQueueTrack(track: QuickLaunchTrackRecord): Track {
     artist: track.artist,
     album: track.album,
     albumArtist: track.album_artist ?? undefined,
+    albumIdentityKey: track.album_identity_key,
     duration: track.duration,
     trackNumber: track.track_number ?? undefined,
     discNumber: track.disc_number ?? undefined,
