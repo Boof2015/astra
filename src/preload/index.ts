@@ -1,5 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { join } from 'path'
+import { getHeapSpaceStatistics } from 'v8'
 import type {
   MiniPlayerCommand,
   MiniPlayerSnapshot,
@@ -61,6 +62,14 @@ import type {
   RemoteStreamEvent,
   RemoteStreamInfo
 } from '../types/remoteStream'
+import type {
+  MemoryDiagnosticsBlinkResourceUsageSnapshot,
+  MemoryDiagnosticsCaptureBundleResult,
+  MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsRendererSnapshot,
+  MemoryDiagnosticsSnapshotRequest,
+  MemoryDiagnosticsStatus
+} from '../types/diagnostics'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
 export interface AudioFileMetadata {
@@ -282,6 +291,18 @@ export interface AppPerformanceStats {
 
 export interface RendererMemoryStats {
   privateMb: number
+  rssBytes: number
+  heapUsedBytes: number
+  heapTotalBytes: number
+  externalBytes: number
+  arrayBuffersBytes: number
+  heapSpaces: {
+    oldSpaceUsedBytes: number | null
+    newSpaceUsedBytes: number | null
+    codeSpaceUsedBytes: number | null
+    mapSpaceUsedBytes: number | null
+    largeObjectSpaceUsedBytes: number | null
+  }
 }
 
 export interface DiscordTrackPresence {
@@ -421,6 +442,18 @@ const nativeAudioController = createNativeAudioController(visualizerDSP, {
   unavailableReason: nativeAddonLoadError
 })
 
+function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
+  const usage = webFrame.getResourceUsage()
+  return {
+    images: { ...usage.images },
+    scripts: { ...usage.scripts },
+    cssStyleSheets: { ...usage.cssStyleSheets },
+    xslStyleSheets: { ...usage.xslStyleSheets },
+    fonts: { ...usage.fonts },
+    other: { ...usage.other }
+  }
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -492,8 +525,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
+    const memoryUsage = process.memoryUsage()
+    const heapSpaces = getHeapSpaceStatistics()
+    const getSpaceUsedBytes = (spaceName: string): number | null => {
+      const match = heapSpaces.find((space) => space.space_name === spaceName)
+      return match && Number.isFinite(match.space_used_size)
+        ? match.space_used_size
+        : null
+    }
     return {
-      privateMb: memoryInfo.private / 1024
+      privateMb: memoryInfo.private / 1024,
+      rssBytes: memoryUsage.rss,
+      heapUsedBytes: memoryUsage.heapUsed,
+      heapTotalBytes: memoryUsage.heapTotal,
+      externalBytes: memoryUsage.external,
+      arrayBuffersBytes: memoryUsage.arrayBuffers,
+      heapSpaces: {
+        oldSpaceUsedBytes: getSpaceUsedBytes('old_space'),
+        newSpaceUsedBytes: getSpaceUsedBytes('new_space'),
+        codeSpaceUsedBytes: getSpaceUsedBytes('code_space'),
+        mapSpaceUsedBytes: getSpaceUsedBytes('map_space'),
+        largeObjectSpaceUsedBytes: getSpaceUsedBytes('large_object_space')
+      }
+    }
+  },
+  diagnostics: {
+    getStatus: (): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:getStatus'),
+    setEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:setEnabled', enabled),
+    revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealCurrentLog'),
+    revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealPreviousLog'),
+    captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
+      ipcRenderer.invoke('diagnostics:captureMemoryBundle', tag),
+    getBlinkResourceUsage: (): MemoryDiagnosticsBlinkResourceUsageSnapshot => getBlinkResourceUsage(),
+    publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
+      ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
+    logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
+      ipcRenderer.invoke('diagnostics:logEvent', payload),
+    onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => callback(status)
+      ipcRenderer.on('diagnostics:status', handler)
+      return () => ipcRenderer.removeListener('diagnostics:status', handler)
+    },
+    onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: MemoryDiagnosticsSnapshotRequest) => callback(request)
+      ipcRenderer.on('diagnostics:requestRendererSnapshot', handler)
+      return () => ipcRenderer.removeListener('diagnostics:requestRendererSnapshot', handler)
     }
   },
 
@@ -840,6 +916,18 @@ declare global {
       getAppVersion: () => Promise<string>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
+      diagnostics: {
+        getStatus: () => Promise<MemoryDiagnosticsStatus>
+        setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+        revealCurrentLog: () => Promise<boolean>
+        revealPreviousLog: () => Promise<boolean>
+        captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+        getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+        publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
+        logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+        onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
+        onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+      }
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
         openReleasesPage: (releaseUrl?: string) => Promise<boolean>

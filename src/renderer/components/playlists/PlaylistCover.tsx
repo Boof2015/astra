@@ -27,7 +27,7 @@ export default function PlaylistCover({
       }
     }
 
-    void getArtwork(hash)
+    void getArtwork(hash, { variant: 'card' })
       .then((url) => {
         if (isCancelled) return
         setArtworkUrl(url)

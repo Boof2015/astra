@@ -53,6 +53,14 @@ import type {
     NativeAudioVUMeterChunk,
     NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
+import type {
+    MemoryDiagnosticsBlinkResourceUsageSnapshot,
+    MemoryDiagnosticsCaptureBundleResult,
+    MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsRendererSnapshot,
+    MemoryDiagnosticsSnapshotRequest,
+    MemoryDiagnosticsStatus
+} from '../types/diagnostics'
 
 declare global {
     interface Window {
@@ -112,7 +120,33 @@ declare global {
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
-            getRendererMemoryStats: () => Promise<{ privateMb: number }>
+            getRendererMemoryStats: () => Promise<{
+                privateMb: number
+                rssBytes: number
+                heapUsedBytes: number
+                heapTotalBytes: number
+                externalBytes: number
+                arrayBuffersBytes: number
+                heapSpaces: {
+                    oldSpaceUsedBytes: number | null
+                    newSpaceUsedBytes: number | null
+                    codeSpaceUsedBytes: number | null
+                    mapSpaceUsedBytes: number | null
+                    largeObjectSpaceUsedBytes: number | null
+                }
+            }>
+            diagnostics: {
+                getStatus: () => Promise<MemoryDiagnosticsStatus>
+                setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+                revealCurrentLog: () => Promise<boolean>
+                revealPreviousLog: () => Promise<boolean>
+                captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+                getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+                publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
+                logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+                onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
+                onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+            }
             updates: {
                 checkForUpdates: () => Promise<{
                     status: 'up-to-date' | 'update-available' | 'error'

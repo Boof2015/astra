@@ -56,7 +56,7 @@ export default function AssociatedOpenCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Open with Astra cue artwork" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Open with Astra cue artwork" variant="card" />
           ) : artworkTrack?.artworkData ? (
             <img src={artworkTrack.artworkData} alt="Open with Astra cue artwork" />
           ) : (

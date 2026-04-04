@@ -54,7 +54,12 @@ function ArtistListRowRenderer({
       >
         <div className="artist-avatar">
           {artist.artwork_hash ? (
-            <AlbumArtwork hash={artist.artwork_hash} alt={`${artist.artist} artwork`} className="artist-avatar-artwork" />
+            <AlbumArtwork
+              hash={artist.artwork_hash}
+              alt={`${artist.artist} artwork`}
+              className="artist-avatar-artwork"
+              variant="thumbnail"
+            />
           ) : (
             artist.artist.charAt(0).toUpperCase()
           )}

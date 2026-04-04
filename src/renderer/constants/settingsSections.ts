@@ -1,3 +1,10 @@
+export interface SettingsSectionDefinition {
+  id: string
+  label: string
+  keywords: readonly string[]
+  hidden?: boolean
+}
+
 export const SETTINGS_SECTIONS = [
   {
     id: 'appearance',
@@ -66,13 +73,22 @@ export const SETTINGS_SECTIONS = [
     keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']
   },
   {
+    id: 'developer',
+    label: 'Developer',
+    keywords: ['memory', 'diagnostics', 'debug', 'log', 'logging', 'heap', 'bundle', 'profiling', 'developer'],
+    hidden: true
+  },
+  {
     id: 'danger',
     label: 'Danger Zone',
     keywords: ['reset', 'factory reset', 'clear', 'danger', 'troubleshoot', 'delete', 'wipe']
   }
-] as const
+] as const satisfies readonly SettingsSectionDefinition[]
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
+export const NON_HIDDEN_SETTINGS_SECTIONS = SETTINGS_SECTIONS.filter(
+  (section) => !('hidden' in section && section.hidden)
+)
 
 export interface NavEntry {
   id: string

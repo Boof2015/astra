@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -20,6 +20,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -105,6 +106,10 @@ const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
 const BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY = 'astra-bitperfect-warning-dismissed-v1'
+const DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY = 'astra-settings-developer-section-visible-v1'
+const DEVELOPER_SETTINGS_SECTION_ID: SettingsSectionId = 'developer'
+const DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET = 7
+const DEVELOPER_SETTINGS_REVEAL_RESET_MS = 2500
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -158,10 +163,27 @@ function parseNormalizationTargetLufsInput(input: string): number | null {
   return Math.round(parsed * 10) / 10
 }
 
+function readDeveloperSectionVisibilityPreference(): boolean {
+  try {
+    return localStorage.getItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistDeveloperSectionVisibilityPreference(visible: boolean): void {
+  try {
+    localStorage.setItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory visibility.
+  }
+}
+
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
+  const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
@@ -194,6 +216,10 @@ export default function SettingsView() {
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
   const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
   const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
+  const disableGaplessPrebufferDev = useAudioSettingsStore((state) => state.disableGaplessPrebufferDev)
+  const setDisableGaplessPrebufferDev = useAudioSettingsStore((state) => state.setDisableGaplessPrebufferDev)
+  const disableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.disableStandardAnalysisGraphDev)
+  const setDisableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.setDisableStandardAnalysisGraphDev)
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
@@ -242,6 +268,18 @@ export default function SettingsView() {
     checkForUpdates,
     openReleasesPage,
   } = useUpdateStore()
+  const {
+    status: diagnosticsStatus,
+    isLoading: diagnosticsIsLoading,
+    isCapturingBundle: diagnosticsIsCapturingBundle,
+    lastCaptureResult: diagnosticsLastCaptureResult,
+    errorMessage: diagnosticsErrorMessage,
+    init: initDiagnostics,
+    setEnabled: setDiagnosticsEnabled,
+    captureBundle: captureDiagnosticsBundle,
+    revealCurrentLog,
+    revealPreviousLog,
+  } = useDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
@@ -259,6 +297,8 @@ export default function SettingsView() {
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
     return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
   })
+  const developerRevealClickCountRef = useRef(0)
+  const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -317,6 +357,10 @@ export default function SettingsView() {
     }
     return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
   }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
+  const visibleSettingsSections = useMemo(
+    () => SETTINGS_SECTIONS.filter((section) => developerSectionVisible || !('hidden' in section && section.hidden)),
+    [developerSectionVisible]
+  )
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -325,6 +369,10 @@ export default function SettingsView() {
   useEffect(() => {
     void initLocalApi()
   }, [initLocalApi])
+
+  useEffect(() => {
+    void initDiagnostics()
+  }, [initDiagnostics])
 
   useEffect(() => {
     if (!localApiStatus) return
@@ -358,13 +406,78 @@ export default function SettingsView() {
   }, [showBitPerfectWarning])
 
   useEffect(() => {
+    return () => {
+      if (developerRevealResetTimeoutRef.current != null) {
+        window.clearTimeout(developerRevealResetTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (pendingSettingsSection === null) return
 
     const pendingSection = consumePendingSettingsSection()
-    if (pendingSection) {
-      setActiveSectionId(pendingSection)
+    if (!pendingSection) return
+
+    const pendingSectionDefinition = SETTINGS_SECTIONS.find((section) => section.id === pendingSection)
+    if (
+      pendingSectionDefinition != null &&
+      'hidden' in pendingSectionDefinition &&
+      pendingSectionDefinition.hidden &&
+      !developerSectionVisible
+    ) {
+      return
     }
-  }, [consumePendingSettingsSection, pendingSettingsSection])
+
+    setActiveSectionId(pendingSection)
+  }, [consumePendingSettingsSection, developerSectionVisible, pendingSettingsSection])
+
+  useEffect(() => {
+    if (!developerSectionVisible && activeSectionId === DEVELOPER_SETTINGS_SECTION_ID) {
+      setActiveSectionId('info')
+    }
+  }, [activeSectionId, developerSectionVisible])
+
+  const resetDeveloperRevealProgress = () => {
+    developerRevealClickCountRef.current = 0
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+      developerRevealResetTimeoutRef.current = null
+    }
+  }
+
+  const revealDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(true)
+    setDeveloperSectionVisible(true)
+    setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+    resetDeveloperRevealProgress()
+  }
+
+  const handleAppVersionClick = () => {
+    if (developerSectionVisible) {
+      setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+      return
+    }
+
+    developerRevealClickCountRef.current += 1
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+    }
+    developerRevealResetTimeoutRef.current = window.setTimeout(() => {
+      developerRevealClickCountRef.current = 0
+      developerRevealResetTimeoutRef.current = null
+    }, DEVELOPER_SETTINGS_REVEAL_RESET_MS)
+
+    if (developerRevealClickCountRef.current >= DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET) {
+      revealDeveloperSection()
+    }
+  }
+
+  const handleHideDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(false)
+    setDeveloperSectionVisible(false)
+    resetDeveloperRevealProgress()
+  }
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -509,6 +622,18 @@ export default function SettingsView() {
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+  const diagnosticsEnabled = diagnosticsStatus?.enabled ?? false
+  const diagnosticsSampleIntervalLabel = `${Math.round((diagnosticsStatus?.sampleIntervalMs ?? 15000) / 1000)} seconds`
+  const diagnosticsCurrentLogPath = diagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsPreviousLogPath = diagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsSessionLabel = diagnosticsStatus?.sessionStartedAt
+    ? `Current session started ${new Date(diagnosticsStatus.sessionStartedAt).toLocaleString()}.`
+    : diagnosticsEnabled
+      ? 'Waiting for the current diagnostics session header.'
+      : 'Diagnostics are disabled.'
+  const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
+    ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
+    : 'No memory bundle captured in this session.'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
@@ -825,7 +950,7 @@ export default function SettingsView() {
 
         <div className="settings-layout">
           <nav className="settings-sidebar" aria-label="Settings sections">
-            {SETTINGS_SECTIONS.map((section) => (
+            {visibleSettingsSections.map((section) => (
               <button
                 key={section.id}
                 type="button"
@@ -1475,7 +1600,14 @@ export default function SettingsView() {
             <div className="settings-grid settings-info-grid">
               <div className="settings-field">
                 <span className="settings-field-label">App Version</span>
-                <span className="settings-info-value">{appVersionLabel}</span>
+                <button
+                  type="button"
+                  className="settings-version-reveal-btn settings-info-value"
+                  onClick={handleAppVersionClick}
+                  aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
+                >
+                  {appVersionLabel}
+                </button>
               </div>
 
               <div className="settings-field settings-field-inline">
@@ -1579,6 +1711,125 @@ export default function SettingsView() {
                     GPL v3 Text
                   </button>
                 </div>
+              </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'developer' && developerSectionVisible && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Developer</h3>
+              <p>Hidden diagnostics and playback-debug controls.</p>
+            </div>
+            <div className="settings-actions settings-info-actions">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={handleHideDeveloperSection}
+              >
+                Hide Developer Section
+              </button>
+            </div>
+            <div className="settings-info-panels">
+              <div className="settings-info-panel">
+                <h4>Memory Diagnostics</h4>
+                <p>
+                  Writes a CSV memory log every {diagnosticsSampleIntervalLabel} plus playback breadcrumbs
+                  so you can correlate growth with track changes, buffering, gapless handoffs, and remote streams.
+                </p>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Diagnostics Logging</span>
+                  <button
+                    type="button"
+                    className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
+                    onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
+                    disabled={diagnosticsIsLoading && diagnosticsStatus === null}
+                  >
+                    {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">Current log</p>
+                <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>
+                <p className="settings-info-meta">Previous log</p>
+                <p className="settings-info-path">{diagnosticsPreviousLogPath}</p>
+                <p className="settings-info-meta">{diagnosticsSessionLabel}</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void captureDiagnosticsBundle()}
+                    disabled={diagnosticsIsCapturingBundle}
+                  >
+                    {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">{diagnosticsLastBundleLabel}</p>
+                {diagnosticsLastCaptureResult && (
+                  <p className="settings-info-path">{diagnosticsLastCaptureResult.directoryPath}</p>
+                )}
+                {diagnosticsErrorMessage && (
+                  <p className="settings-note settings-note-error">{diagnosticsErrorMessage}</p>
+                )}
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealCurrentLog()}
+                    disabled={!diagnosticsStatus?.hasCurrentLog}
+                  >
+                    Reveal Current Log
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealPreviousLog()}
+                    disabled={!diagnosticsStatus?.hasPreviousLog}
+                  >
+                    Reveal Previous Log
+                  </button>
+                </div>
+              </div>
+              <div className="settings-info-panel">
+                <h4>Playback Overrides</h4>
+                {import.meta.env.DEV ? (
+                  <>
+                    <p>Temporary switches for isolating standard-mode playback behavior during local debugging.</p>
+                    <div className="settings-grid">
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Gapless Prebuffer</span>
+                        <button
+                          className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
+                          onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
+                        >
+                          {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Analysis/EQ Taps</span>
+                        <button
+                          className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
+                          onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
+                        >
+                          {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="settings-note">
+                      When gapless prebuffer is disabled, Astra stops preloading the next track and clears scheduled handoffs so you can compare memory growth without gapless-style buffering.
+                    </p>
+                    <p className="settings-note">
+                      When analysis and EQ taps are disabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p>Playback override switches are only available in development builds.</p>
+                    <p className="settings-note">
+                      Production builds keep these toggles off and ignore their stored values.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </section>

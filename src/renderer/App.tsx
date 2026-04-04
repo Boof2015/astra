@@ -31,6 +31,7 @@ import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
+import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
@@ -71,6 +72,7 @@ function App() {
   useDiscordPresence()
   useMiniPlayerBridge()
   useScopePopoutBridge()
+  useMemoryDiagnosticsBridge()
   useCoverArtAccent()
   useRuntimeAppIconSync()
 

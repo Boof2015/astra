@@ -4,6 +4,7 @@ import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
+import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 
 interface RemoteLoadProgress {
   path: string
@@ -163,8 +164,69 @@ const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
+const BYTES_PER_FLOAT32_SAMPLE = 4
+const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
+const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
+
+function estimateWaveformCacheBytes(): number {
+  let total = 0
+  for (const peaks of waveformCache.values()) {
+    total += peaks.byteLength
+  }
+  return total
+}
+
+function estimateTrackArtworkBytes(track: Track | null | undefined): number {
+  const artworkData = track?.artworkData
+  return typeof artworkData === 'string' ? artworkData.length * 2 : 0
+}
+
+function estimateDecodedTrackBytes(track: Track | null | undefined): number | null {
+  if (!track) return null
+
+  const durationSeconds = track.duration
+  const sampleRate = track.sampleRate
+  const channels = track.channels ?? 2
+
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return null
+  if (typeof sampleRate !== 'number' || !Number.isFinite(sampleRate) || sampleRate <= 0) return null
+  if (typeof channels !== 'number' || !Number.isFinite(channels) || channels <= 0) return null
+
+  return Math.round(durationSeconds * sampleRate * channels * BYTES_PER_FLOAT32_SAMPLE)
+}
+
+function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 'userQueue' | 'autoQueue' | 'playbackHistory' | 'playbackFuture'>) {
+  const retainedTracks: Track[] = []
+  if (state.currentTrack) {
+    retainedTracks.push(state.currentTrack)
+  }
+  retainedTracks.push(...state.userQueue)
+  retainedTracks.push(...state.autoQueue)
+  retainedTracks.push(...state.playbackHistory.map((entry) => entry.track))
+  retainedTracks.push(...state.playbackFuture.map((entry) => entry.track))
+
+  let retainedArtworkTrackCount = 0
+  let retainedArtworkDataBytes = 0
+  const distinctTrackPaths = new Set<string>()
+
+  for (const track of retainedTracks) {
+    distinctTrackPaths.add(track.path)
+    const artworkBytes = estimateTrackArtworkBytes(track)
+    if (artworkBytes > 0) {
+      retainedArtworkTrackCount += 1
+      retainedArtworkDataBytes += artworkBytes
+    }
+  }
+
+  return {
+    retainedTrackCount: retainedTracks.length,
+    distinctRetainedTrackCount: distinctTrackPaths.size,
+    retainedArtworkTrackCount,
+    retainedArtworkDataBytes
+  }
+}
 
 function createInitialRemoteLoadProgress(track: Track): RemoteLoadProgress {
   return {
@@ -838,7 +900,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         try {
-          await audioEngine.loadAudioData(audioData, { replayGainDb })
+          await audioEngine.loadAudioData(audioData, { replayGainDb, trackPath: track.path })
         } catch (primaryDecodeError) {
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           if (!fallbackData) {
@@ -847,7 +909,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData, { replayGainDb })
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -1392,6 +1454,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           await audioEngine.play()
           startRecentPlaySession(resolvedTrack.path)
           get()._preBufferNextTrack()
+          logMemoryDiagnosticsEvent('track_load_success', {
+            trackPath: track.path,
+            sourceType: track.sourceType ?? 'local',
+            loadPath: 'bitperfect',
+            durationSeconds: loadResult.duration,
+            channels: loadResult.channels
+          })
           logSlowPath('queueLoadAndPlayTrack', loadStart, {
             trackPath: track.path,
             usedNativeBitPerfect: true
@@ -1424,6 +1493,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
             await audioEngine.play()
             startRecentPlaySession(resolvedTrack.path)
+            logMemoryDiagnosticsEvent('remote_stream_started', {
+              trackPath: track.path,
+              sourceType: resolvedTrack.sourceType ?? 'local',
+              sessionId: streamInfo.sessionId,
+              durationSeconds: resolvedTrack.duration,
+              channels: streamInfo.channels
+            })
+            logMemoryDiagnosticsEvent('track_load_success', {
+              trackPath: track.path,
+              sourceType: resolvedTrack.sourceType ?? 'local',
+              loadPath: 'remote_stream',
+              sessionId: streamInfo.sessionId,
+              durationSeconds: resolvedTrack.duration,
+              channels: streamInfo.channels
+            })
             logSlowPath('queueLoadAndPlayTrack', loadStart, {
               trackPath: track.path,
               usedRemoteStream: true
@@ -1431,6 +1515,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             return true
           } catch (streamError) {
             console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
+            logMemoryDiagnosticsEvent('remote_stream_fallback', {
+              trackPath: track.path,
+              sourceType: track.sourceType ?? 'local',
+              message: streamError instanceof Error ? streamError.message : 'Remote stream setup failed.'
+            })
             set({
               remoteLoadProgress: createInitialRemoteLoadProgress(track),
               remoteBufferedSeconds: 0,
@@ -1465,7 +1554,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(result.data, { replayGainDb })
+          await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path })
         } catch (primaryDecodeError) {
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           if (!fallbackData) {
@@ -1474,7 +1563,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData, { replayGainDb })
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -1511,6 +1600,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         await audioEngine.play()
         startRecentPlaySession(resolvedTrack.path)
+        logMemoryDiagnosticsEvent('track_load_success', {
+          trackPath: track.path,
+          sourceType: resolvedTrack.sourceType ?? 'local',
+          loadPath: usedFfmpegFallback ? 'file_ffmpeg_fallback' : 'file_decode',
+          fileLoadMs,
+          decodeMs,
+          usedFfmpegFallback
+        })
 
         // Pre-buffer next track for gapless playback
         get()._preBufferNextTrack()
@@ -1523,6 +1620,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         return true
       } catch (error) {
         console.error('Failed to load track:', error)
+        logMemoryDiagnosticsEvent('track_load_failed', {
+          trackPath: track.path,
+          sourceType: track.sourceType ?? 'local',
+          message: error instanceof Error ? error.message : 'Unknown track load failure.'
+        })
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           failed: true
@@ -1544,6 +1646,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     _preBufferNextTrack: async () => {
       const bufferStart = performance.now()
       const state = get()
+
+      if (useAudioSettingsStore.getState().disableGaplessPrebufferDev) {
+        return
+      }
 
       if (state.repeat === 'one') {
         return
@@ -1572,6 +1678,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             return
           }
 
+          const bufferStats = await audioEngine.getBufferMemoryStats()
+          const estimatedNextTrackBytes = estimateDecodedTrackBytes(nextTrack)
+          const currentBufferedBytes = bufferStats.totalBytes
+          const wouldExceedTotalBudget =
+            estimatedNextTrackBytes !== null
+            && (currentBufferedBytes + estimatedNextTrackBytes) > MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+
+          if (
+            currentBufferedBytes >= MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+            || (estimatedNextTrackBytes !== null && estimatedNextTrackBytes > MAX_STANDARD_PREBUFFER_TRACK_BYTES)
+            || wouldExceedTotalBudget
+          ) {
+            logMemoryDiagnosticsEvent('prebuffer_skipped_budget', {
+              trackPath: nextTrack.path,
+              currentBufferedMb: Number((currentBufferedBytes / (1024 * 1024)).toFixed(1)),
+              estimatedNextTrackMb: estimatedNextTrackBytes === null
+                ? null
+                : Number((estimatedNextTrackBytes / (1024 * 1024)).toFixed(1)),
+              maxTrackMb: MAX_STANDARD_PREBUFFER_TRACK_BYTES / (1024 * 1024),
+              maxTotalMb: MAX_STANDARD_PREBUFFER_TOTAL_BYTES / (1024 * 1024)
+            })
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              skippedBudget: true,
+              currentBufferedBytes,
+              estimatedNextTrackBytes
+            })
+            return
+          }
+
           const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
           // Re-check repeat mode after async gap — may have changed to 'one'
           if (get().repeat === 'one') {
@@ -1579,7 +1715,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
           if (result) {
             await audioEngine.preBufferNext(result.data, {
-              replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+              replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode),
+              trackPath: nextTrack.path
             })
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
@@ -1763,6 +1900,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         const nextTrack = nextCandidate.kind === 'future' ? nextCandidate.entry.track : nextCandidate.track
         if (isUnavailableRemoteTrack(nextTrack)) return
+        logMemoryDiagnosticsEvent('gapless_transition_state', {
+          previousTrackPath: state.currentTrack?.path ?? null,
+          nextTrackPath: nextTrack.path
+        })
 
         const transitionState = applyCandidateTransition(state, nextCandidate, {
           pushCurrentToHistory: true,
@@ -1815,6 +1956,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('error', (error) => {
         console.error('Audio engine error:', error)
+        logMemoryDiagnosticsEvent('audio_engine_error', {
+          message: error instanceof Error ? error.message : String(error)
+        })
       })
 
       // Set initial volume
@@ -1842,3 +1986,38 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   audioEngine.clearNextBuffer()
   void playerState._preBufferNextTrack()
 })
+
+useAudioSettingsStore.subscribe((nextState, prevState) => {
+  if (nextState.disableGaplessPrebufferDev === prevState.disableGaplessPrebufferDev) return
+
+  const playerState = usePlayerStore.getState()
+  audioEngine.clearNextBuffer()
+
+  if (!nextState.disableGaplessPrebufferDev) {
+    void playerState._preBufferNextTrack()
+  }
+})
+
+export function getPlayerDiagnosticsSnapshot(): {
+  caches: {
+    waveformEntries: number
+    waveformBytes: number
+    currentWaveformBytes: number
+  }
+  retention: {
+    retainedTrackCount: number
+    distinctRetainedTrackCount: number
+    retainedArtworkTrackCount: number
+    retainedArtworkDataBytes: number
+  }
+} {
+  const state = usePlayerStore.getState()
+  return {
+    caches: {
+      waveformEntries: waveformCache.size,
+      waveformBytes: estimateWaveformCacheBytes(),
+      currentWaveformBytes: state.waveformData?.byteLength ?? 0
+    },
+    retention: getTrackRetentionDiagnostics(state)
+  }
+}

@@ -192,7 +192,7 @@ interface LibraryStore {
 // Artwork cache stored outside of zustand to avoid re-renders
 const MAX_THUMBNAIL_CACHE_ENTRIES = 512
 const MAX_CARD_ARTWORK_CACHE_ENTRIES = 96
-const MAX_FULL_ARTWORK_CACHE_ENTRIES = 32
+const MAX_FULL_ARTWORK_CACHE_ENTRIES = 8
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
@@ -202,6 +202,14 @@ const artworkCache = new Map<string, string>()
 const cardArtworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+
+function estimateStringMapBytes(cache: Map<string, string>): number {
+  let total = 0
+  for (const [key, value] of cache.entries()) {
+    total += (key.length * 2) + (value.length * 2)
+  }
+  return total
+}
 
 function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectionOrigin' | 'tracks'>): LibrarySelectionSnapshot | null {
   if (!state.selectedAlbum && !state.selectedArtist) return null
@@ -862,7 +870,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Get artwork data URL (with caching)
   getArtwork: async (hash: string | null, options?: ArtworkRequestOptions) => {
     if (!hash) return null
-    const variant: ArtworkVariant = options?.variant ?? 'full'
+    const variant: ArtworkVariant = options?.variant ?? 'card'
     const cacheKey = getArtworkCacheKey(hash, variant)
 
     // Check cache first
@@ -978,3 +986,57 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
   }
 }))
+
+export function getLibraryDiagnosticsSnapshot(): {
+  totalTrackCount: number
+  visibleTrackCount: number
+  albumCount: number
+  artistCount: number
+  folderCount: number
+  favoriteCount: number
+  favoriteTrackCount: number
+  recentlyPlayedCount: number
+  searchResultCount: number
+  selectionHistoryCount: number
+  selectionHistoryTrackCount: number
+  selectedDetailTrackCount: number
+  scanInProgress: boolean
+  caches: {
+    artworkFullEntries: number
+    artworkFullBytes: number
+    artworkThumbnailEntries: number
+    artworkThumbnailBytes: number
+    artworkCardEntries: number
+    artworkCardBytes: number
+    artworkRequests: number
+  }
+} {
+  const state = useLibraryStore.getState()
+  const selectionHistoryTrackCount = state.selectionHistory.reduce((total, snapshot) => {
+    return total + snapshot.tracks.length
+  }, 0)
+  return {
+    totalTrackCount: state.totalTrackCount,
+    visibleTrackCount: state.tracks.length,
+    albumCount: state.albums.length,
+    artistCount: state.artists.length,
+    folderCount: state.folders.length,
+    favoriteCount: state.favorites.size,
+    favoriteTrackCount: state.favoriteTracks.length,
+    recentlyPlayedCount: state.recentlyPlayed.length,
+    searchResultCount: state.searchResults.length,
+    selectionHistoryCount: state.selectionHistory.length,
+    selectionHistoryTrackCount,
+    selectedDetailTrackCount: state.selectedAlbum || state.selectedArtist ? state.tracks.length : 0,
+    scanInProgress: state.isScanning,
+    caches: {
+      artworkFullEntries: artworkCache.size,
+      artworkFullBytes: estimateStringMapBytes(artworkCache),
+      artworkThumbnailEntries: thumbnailArtworkCache.size,
+      artworkThumbnailBytes: estimateStringMapBytes(thumbnailArtworkCache),
+      artworkCardEntries: cardArtworkCache.size,
+      artworkCardBytes: estimateStringMapBytes(cardArtworkCache),
+      artworkRequests: artworkRequestCache.size
+    }
+  }
+}

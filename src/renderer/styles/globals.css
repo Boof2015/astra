@@ -12751,6 +12751,18 @@ body::after {
   color: rgba(255, 255, 255, 0.9);
 }
 
+.settings-version-reveal-btn {
+  appearance: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .settings-info-grid {
   align-items: stretch;
 }
@@ -12782,6 +12794,14 @@ body::after {
   margin-top: 8px;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.74);
+}
+
+.settings-info-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.68);
+  word-break: break-all;
 }
 
 .settings-info-meta {
