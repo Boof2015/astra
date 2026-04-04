@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -106,6 +106,10 @@ const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
 const BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY = 'astra-bitperfect-warning-dismissed-v1'
+const DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY = 'astra-settings-developer-section-visible-v1'
+const DEVELOPER_SETTINGS_SECTION_ID: SettingsSectionId = 'developer'
+const DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET = 7
+const DEVELOPER_SETTINGS_REVEAL_RESET_MS = 2500
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -159,10 +163,27 @@ function parseNormalizationTargetLufsInput(input: string): number | null {
   return Math.round(parsed * 10) / 10
 }
 
+function readDeveloperSectionVisibilityPreference(): boolean {
+  try {
+    return localStorage.getItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistDeveloperSectionVisibilityPreference(visible: boolean): void {
+  try {
+    localStorage.setItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory visibility.
+  }
+}
+
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
+  const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
@@ -276,6 +297,8 @@ export default function SettingsView() {
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
     return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
   })
+  const developerRevealClickCountRef = useRef(0)
+  const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -334,6 +357,10 @@ export default function SettingsView() {
     }
     return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
   }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
+  const visibleSettingsSections = useMemo(
+    () => SETTINGS_SECTIONS.filter((section) => developerSectionVisible || !('hidden' in section && section.hidden)),
+    [developerSectionVisible]
+  )
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -379,13 +406,78 @@ export default function SettingsView() {
   }, [showBitPerfectWarning])
 
   useEffect(() => {
+    return () => {
+      if (developerRevealResetTimeoutRef.current != null) {
+        window.clearTimeout(developerRevealResetTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (pendingSettingsSection === null) return
 
     const pendingSection = consumePendingSettingsSection()
-    if (pendingSection) {
-      setActiveSectionId(pendingSection)
+    if (!pendingSection) return
+
+    const pendingSectionDefinition = SETTINGS_SECTIONS.find((section) => section.id === pendingSection)
+    if (
+      pendingSectionDefinition != null &&
+      'hidden' in pendingSectionDefinition &&
+      pendingSectionDefinition.hidden &&
+      !developerSectionVisible
+    ) {
+      return
     }
-  }, [consumePendingSettingsSection, pendingSettingsSection])
+
+    setActiveSectionId(pendingSection)
+  }, [consumePendingSettingsSection, developerSectionVisible, pendingSettingsSection])
+
+  useEffect(() => {
+    if (!developerSectionVisible && activeSectionId === DEVELOPER_SETTINGS_SECTION_ID) {
+      setActiveSectionId('info')
+    }
+  }, [activeSectionId, developerSectionVisible])
+
+  const resetDeveloperRevealProgress = () => {
+    developerRevealClickCountRef.current = 0
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+      developerRevealResetTimeoutRef.current = null
+    }
+  }
+
+  const revealDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(true)
+    setDeveloperSectionVisible(true)
+    setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+    resetDeveloperRevealProgress()
+  }
+
+  const handleAppVersionClick = () => {
+    if (developerSectionVisible) {
+      setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+      return
+    }
+
+    developerRevealClickCountRef.current += 1
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+    }
+    developerRevealResetTimeoutRef.current = window.setTimeout(() => {
+      developerRevealClickCountRef.current = 0
+      developerRevealResetTimeoutRef.current = null
+    }, DEVELOPER_SETTINGS_REVEAL_RESET_MS)
+
+    if (developerRevealClickCountRef.current >= DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET) {
+      revealDeveloperSection()
+    }
+  }
+
+  const handleHideDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(false)
+    setDeveloperSectionVisible(false)
+    resetDeveloperRevealProgress()
+  }
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -858,7 +950,7 @@ export default function SettingsView() {
 
         <div className="settings-layout">
           <nav className="settings-sidebar" aria-label="Settings sections">
-            {SETTINGS_SECTIONS.map((section) => (
+            {visibleSettingsSections.map((section) => (
               <button
                 key={section.id}
                 type="button"
@@ -1284,41 +1376,9 @@ export default function SettingsView() {
                 Load a track and keep playback in playing or paused state to start a sleep timer.
               </p>
             )}
-            {import.meta.env.DEV && (
-              <div className="settings-grid">
-                <div className="settings-field settings-field-inline">
-                  <span className="settings-field-label">Disable Gapless Prebuffer (Dev)</span>
-                  <button
-                    className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
-                    onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
-                  >
-                    {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
-                  </button>
-                </div>
-                <div className="settings-field settings-field-inline">
-                  <span className="settings-field-label">Disable Analysis/EQ Taps (Dev)</span>
-                  <button
-                    className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
-                    onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
-                  >
-                    {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
-                  </button>
-                </div>
-              </div>
-            )}
             <p className="settings-note">
               Sleep timer counts down in real time, pauses playback when it expires, and does not persist after restart.
             </p>
-            {import.meta.env.DEV && (
-              <p className="settings-note">
-                Dev override. When enabled, Astra stops preloading the next track and clears any scheduled handoff so you can compare memory growth without gapless-style buffering.
-              </p>
-            )}
-            {import.meta.env.DEV && (
-              <p className="settings-note">
-                Dev override. When enabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active, so you can isolate the persistent analysis graph.
-              </p>
-            )}
           </section>
             )}
 
@@ -1540,7 +1600,14 @@ export default function SettingsView() {
             <div className="settings-grid settings-info-grid">
               <div className="settings-field">
                 <span className="settings-field-label">App Version</span>
-                <span className="settings-info-value">{appVersionLabel}</span>
+                <button
+                  type="button"
+                  className="settings-version-reveal-btn settings-info-value"
+                  onClick={handleAppVersionClick}
+                  aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
+                >
+                  {appVersionLabel}
+                </button>
               </div>
 
               <div className="settings-field settings-field-inline">
@@ -1593,6 +1660,75 @@ export default function SettingsView() {
                 onClick={openKeyboardShortcuts}
               >
                 Keyboard Shortcuts
+              </button>
+            </div>
+            <div className="settings-info-panels">
+              <div className="settings-info-panel">
+                <h4>Attribution</h4>
+                <p>Astra is created and maintained by Boof2015.</p>
+                <p className="settings-info-meta">Contact: contact@novaml.ai</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_REPOSITORY_URL)}
+                  >
+                    GitHub Repository
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_DISCORD_URL)}
+                  >
+                    Discord
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn settings-link-btn-kofi"
+                    onClick={() => openExternalLink(ASTRA_SUPPORT_URL)}
+                  >
+                    Ko-fi
+                    <span className="settings-link-btn-heart" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <div className="settings-info-panel">
+                <h4>License</h4>
+                <p>Astra is distributed under GPL-3.0-only.</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(ASTRA_LICENSE_URL)}
+                  >
+                    View LICENSE
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => openExternalLink(GPL_V3_URL)}
+                  >
+                    GPL v3 Text
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'developer' && developerSectionVisible && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Developer</h3>
+              <p>Hidden diagnostics and playback-debug controls.</p>
+            </div>
+            <div className="settings-actions settings-info-actions">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={handleHideDeveloperSection}
+              >
+                Hide Developer Section
               </button>
             </div>
             <div className="settings-info-panels">
@@ -1655,53 +1791,45 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-info-panel">
-                <h4>Attribution</h4>
-                <p>Astra is created and maintained by Boof2015.</p>
-                <p className="settings-info-meta">Contact: contact@novaml.ai</p>
-                <div className="settings-info-links">
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn"
-                    onClick={() => openExternalLink(ASTRA_REPOSITORY_URL)}
-                  >
-                    GitHub Repository
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn"
-                    onClick={() => openExternalLink(ASTRA_DISCORD_URL)}
-                  >
-                    Discord
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn settings-link-btn-kofi"
-                    onClick={() => openExternalLink(ASTRA_SUPPORT_URL)}
-                  >
-                    Ko-fi
-                    <span className="settings-link-btn-heart" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-              <div className="settings-info-panel">
-                <h4>License</h4>
-                <p>Astra is distributed under GPL-3.0-only.</p>
-                <div className="settings-info-links">
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn"
-                    onClick={() => openExternalLink(ASTRA_LICENSE_URL)}
-                  >
-                    View LICENSE
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn"
-                    onClick={() => openExternalLink(GPL_V3_URL)}
-                  >
-                    GPL v3 Text
-                  </button>
-                </div>
+                <h4>Playback Overrides</h4>
+                {import.meta.env.DEV ? (
+                  <>
+                    <p>Temporary switches for isolating standard-mode playback behavior during local debugging.</p>
+                    <div className="settings-grid">
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Gapless Prebuffer</span>
+                        <button
+                          className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
+                          onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
+                        >
+                          {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Analysis/EQ Taps</span>
+                        <button
+                          className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
+                          onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
+                        >
+                          {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="settings-note">
+                      When gapless prebuffer is disabled, Astra stops preloading the next track and clears scheduled handoffs so you can compare memory growth without gapless-style buffering.
+                    </p>
+                    <p className="settings-note">
+                      When analysis and EQ taps are disabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p>Playback override switches are only available in development builds.</p>
+                    <p className="settings-note">
+                      Production builds keep these toggles off and ignore their stored values.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </section>

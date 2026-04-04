@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { NAV_ENTRIES, SETTINGS_SECTIONS } from '../../constants/settingsSections'
+import { NAV_ENTRIES, NON_HIDDEN_SETTINGS_SECTIONS } from '../../constants/settingsSections'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
@@ -252,7 +252,7 @@ export default function QuickLaunchPalette() {
   const settingResults = useMemo(() => {
     if (!hasQuery) return []
 
-    const scored = SETTINGS_SECTIONS.map((section) => {
+    const scored = NON_HIDDEN_SETTINGS_SECTIONS.map((section) => {
       const result = multiFieldScore(trimmedQuery, [
         { value: section.label, weight: 1.4 },
         { value: section.keywords.join(' '), weight: 1.0 }
@@ -397,7 +397,7 @@ export default function QuickLaunchPalette() {
     }).filter((result): result is NonNullable<typeof result> => result !== null)
 
     const settingResults = EMPTY_SHORTCUT_SETTING_IDS.map((id) => {
-      const section = SETTINGS_SECTIONS.find((candidate) => candidate.id === id)
+      const section = NON_HIDDEN_SETTINGS_SECTIONS.find((candidate) => candidate.id === id)
       if (!section) return null
       return {
         kind: 'setting' as const,
