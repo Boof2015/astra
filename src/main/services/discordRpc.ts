@@ -3,6 +3,7 @@ import { readdirSync } from 'fs'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { normalizeDiscordActivityDetails, truncateDiscordField } from './discordRpcActivity'
 
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
@@ -97,11 +98,6 @@ function normalizeHttpsUrl(value: unknown): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function truncate(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return value.slice(0, maxLength - 1) + '…'
 }
 
 function toTrackLine(artist?: string): string {
@@ -475,14 +471,14 @@ export class DiscordRpcService {
     if (!presence || !presence.track) return null
     if (presence.playbackState === 'stopped') return null
 
-    const title = presence.track.title.trim()
-    if (!title) return null
+    const details = normalizeDiscordActivityDetails(presence.track.title, 128)
+    if (!details) return null
 
     const activityType = presence.playbackState === 'playing' ? 2 : 0
     const activity: Record<string, unknown> = {
       name: DISCORD_ACTIVITY_NAME,
       type: activityType,
-      details: truncate(title, 128),
+      details,
       state: '',
       instance: false
     }
@@ -492,12 +488,12 @@ export class DiscordRpcService {
     const combinedStateLine = [identityLine !== 'Astra' ? identityLine : null, qualityLine]
       .filter(Boolean)
       .join(' - ') || identityLine
-    activity.state = truncate(combinedStateLine, 128)
+    activity.state = truncateDiscordField(combinedStateLine, 128)
 
     if (presence.playbackState === 'paused') {
-      activity.state = truncate(`Paused • ${combinedStateLine}`, 128)
+      activity.state = truncateDiscordField(`Paused • ${combinedStateLine}`, 128)
     } else if (presence.playbackState === 'loading') {
-      activity.state = truncate(`Loading • ${combinedStateLine}`, 128)
+      activity.state = truncateDiscordField(`Loading • ${combinedStateLine}`, 128)
     }
 
     if (presence.playbackState === 'playing') {
