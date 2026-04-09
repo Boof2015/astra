@@ -5,12 +5,12 @@ import {
   normalizeDisplay,
   normalizeKey,
   splitCollaborators
-} from '../../shared/library/albumGrouping'
+} from '../../shared/library/albumGrouping.ts'
 
 export type {
   AlbumIdentityArtistTrackLike,
   AlbumIdentityTrackLike
-} from '../../shared/library/albumGrouping'
+} from '../../shared/library/albumGrouping.ts'
 
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
 

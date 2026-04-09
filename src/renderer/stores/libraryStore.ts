@@ -116,6 +116,7 @@ export interface ScanIssueLog {
 interface LibraryStore {
   // State
   tracks: DbTrack[]
+  fullTracks: DbTrack[]
   totalTrackCount: number
   albums: Album[]
   artists: Artist[]
@@ -322,6 +323,7 @@ function mergeScanIssueLogs(
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
   tracks: [],
+  fullTracks: [],
   totalTrackCount: 0,
   albums: [],
   artists: [],
@@ -397,8 +399,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const tracks = await window.electronAPI.library.getTracks()
     set((state) => {
       // Avoid clobbering active artist/album selections with full library tracks.
-      if (state.selectedAlbum || state.selectedArtist) return {}
-      return { tracks }
+      if (state.selectedAlbum || state.selectedArtist) {
+        return { fullTracks: tracks }
+      }
+      return { tracks, fullTracks: tracks }
     })
   },
 
@@ -781,6 +785,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
       return {
         viewMode: mode,
+        tracks: state.fullTracks,
         selectedAlbum: null,
         selectedArtist: null,
         selectionOrigin: null,
@@ -824,7 +829,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Clear selection
   clearSelection: async () => {
-    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null, selectionHistory: [] })
+    set((state) => ({
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectionOrigin: null,
+      selectionHistory: [],
+      tracks: state.fullTracks
+    }))
     await get().loadTracks()
   },
 

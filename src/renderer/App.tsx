@@ -25,6 +25,7 @@ import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
+import { useGraphStore } from './stores/graphStore'
 import { usePlayerStore } from './stores/playerStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
@@ -77,6 +78,8 @@ function App() {
   useRuntimeAppIconSync()
 
   const showQueue = useUIStore((s) => s.showQueue)
+  const activeView = useUIStore((s) => s.activeView)
+  const setActiveView = useUIStore((s) => s.setActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
@@ -86,6 +89,7 @@ function App() {
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
+  const graphEnabled = useGraphStore((s) => s.enabled)
 
   const appStyle = useMemo(() => ({
     '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
@@ -96,6 +100,12 @@ function App() {
       setAnalyzerHeightPreviewPx(null)
     }
   }, [isAnalyzerRackVisible])
+
+  useEffect(() => {
+    if (activeView === 'graph' && !graphEnabled) {
+      setActiveView('home')
+    }
+  }, [activeView, graphEnabled, setActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {

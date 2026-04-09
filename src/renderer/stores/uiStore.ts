@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
 
-export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
+export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
