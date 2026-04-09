@@ -146,6 +146,7 @@ interface LibraryStore {
   // Actions
   loadLibrary: () => Promise<void>
   loadTracks: () => Promise<void>
+  loadFullTracks: () => Promise<void>
   loadTrackCount: () => Promise<void>
   loadAlbums: () => Promise<void>
   loadArtists: () => Promise<void>
@@ -177,6 +178,7 @@ interface LibraryStore {
     origin?: Exclude<SelectionOrigin, null>,
     mode?: LibraryArtistBrowseMode
   ) => Promise<void>
+  releaseFullTracks: () => void
   clearSelection: () => void
   goBackSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
@@ -204,6 +206,7 @@ const artworkCache = new Map<string, string>()
 const cardArtworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+let fullTracksRequestId = 0
 
 function estimateStringMapBytes(cache: Map<string, string>): number {
   let total = 0
@@ -404,6 +407,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       }
       return { tracks, fullTracks: tracks }
     })
+  },
+
+  loadFullTracks: async () => {
+    const requestId = ++fullTracksRequestId
+    const tracks = await window.electronAPI.library.getTracks()
+    if (requestId !== fullTracksRequestId) {
+      return
+    }
+
+    set({ fullTracks: tracks })
   },
 
   // Load full-library track count (independent of active selection/filter state)
@@ -825,6 +838,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
     }))
+  },
+
+  releaseFullTracks: () => {
+    fullTracksRequestId += 1
   },
 
   // Clear selection

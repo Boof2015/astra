@@ -192,10 +192,14 @@ const closeIcon = (
 )
 
 export default function GraphView() {
+  const tracks = useLibraryStore((state) => state.tracks)
   const fullTracks = useLibraryStore((state) => state.fullTracks)
   const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const isLibraryLoading = useLibraryStore((state) => state.isLoading)
-  const loadTracks = useLibraryStore((state) => state.loadTracks)
+  const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
+  const selectedArtist = useLibraryStore((state) => state.selectedArtist)
+  const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
+  const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
 
@@ -236,10 +240,14 @@ export default function GraphView() {
     viewportRef.current = viewport
   }, [viewport])
 
+  const graphTracks = fullTracks.length > 0
+    ? fullTracks
+    : (!selectedAlbum && !selectedArtist ? tracks : [])
+
   useEffect(() => {
-    if (totalTrackCount <= 0 || fullTracks.length > 0 || isLibraryLoading) return
-    void loadTracks()
-  }, [fullTracks.length, isLibraryLoading, loadTracks, totalTrackCount])
+    if (totalTrackCount <= 0 || graphTracks.length > 0 || isLibraryLoading) return
+    void loadFullTracks()
+  }, [graphTracks.length, isLibraryLoading, loadFullTracks, totalTrackCount])
 
   useEffect(() => {
     const surface = surfaceRef.current
@@ -266,8 +274,8 @@ export default function GraphView() {
   }, [])
 
   const graph = useMemo(
-    () => buildArtistGraph(fullTracks),
-    [fullTracks]
+    () => buildArtistGraph(graphTracks),
+    [graphTracks]
   )
   const graphIndex = useMemo(
     () => indexArtistGraph(graph),
@@ -626,12 +634,18 @@ export default function GraphView() {
     return () => {
       if (simulationFrameRef.current != null) {
         window.cancelAnimationFrame(simulationFrameRef.current)
+        simulationFrameRef.current = null
       }
       if (viewportFrameRef.current != null) {
         window.cancelAnimationFrame(viewportFrameRef.current)
+        viewportFrameRef.current = null
       }
+      dragStateRef.current = null
+      simulationNodesRef.current = []
+      viewportRef.current = DEFAULT_VIEWPORT
+      releaseFullTracks()
     }
-  }, [])
+  }, [releaseFullTracks])
 
   const simulationNodeByKey = useMemo(
     () => new Map(simulationNodes.map((node) => [node.key, node])),
@@ -1008,7 +1022,7 @@ export default function GraphView() {
   const revealedArtistCountLabel = `${revealedNodeKeys.size}/${graph.nodes.length}`
   const revealedEdgeCountLabel = `${renderedEdges.length}/${graph.edges.length}`
 
-  if (totalTrackCount > 0 && fullTracks.length === 0) {
+  if (totalTrackCount > 0 && graphTracks.length === 0) {
     return (
       <div className="graph-view">
         <div className="graph-loading">
@@ -1019,7 +1033,7 @@ export default function GraphView() {
     )
   }
 
-  if (fullTracks.length === 0) {
+  if (graphTracks.length === 0) {
     return (
       <div className="graph-view">
         <div className="graph-empty-state">

@@ -153,6 +153,11 @@ interface RelaxLayoutOptions {
   fixedNodeKeys?: Set<string>
 }
 
+const artistGraphBuildCache = new WeakMap<readonly ArtistGraphTrackLike[], ArtistGraphBuildResult>()
+const artistGraphIndexCache = new WeakMap<ArtistGraphBuildResult, ArtistGraphIndex>()
+const artistGraphVisibleCache = new WeakMap<ArtistGraphBuildResult, Map<string, ArtistGraphVisibleResult>>()
+const artistGraphLayoutCache = new WeakMap<ArtistGraphVisibleResult, Map<string, ArtistGraphLayoutResult>>()
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
@@ -266,6 +271,17 @@ function compareEdge(left: ArtistGraphEdge, right: ArtistGraphEdge): number {
   return left.key.localeCompare(right.key)
 }
 
+function getVisibleCacheKey(options: ArtistGraphVisibleOptions): string {
+  const edgeWeightThreshold = Math.max(1, options.edgeWeightThreshold ?? 2)
+  if (options.mode === 'focus') {
+    const focusNeighborLimit = Math.max(1, options.focusNeighborLimit ?? DEFAULT_FOCUS_GRAPH_NEIGHBOR_LIMIT)
+    return `focus:${options.focusArtistKey ?? ''}:${edgeWeightThreshold}:${focusNeighborLimit}`
+  }
+
+  const fullMaxNeighborsPerNode = Math.max(1, options.fullMaxNeighborsPerNode ?? DEFAULT_FULL_GRAPH_MAX_NEIGHBORS)
+  return `full:${edgeWeightThreshold}:${fullMaxNeighborsPerNode}`
+}
+
 function buildNeighborMap(graph: ArtistGraphBuildResult): Map<string, ArtistGraphNeighborSummary[]> {
   const nodeByKey = new Map(graph.nodes.map((node) => [node.key, node]))
   const neighborsByArtistKey = new Map<string, ArtistGraphNeighborSummary[]>()
@@ -305,14 +321,27 @@ function buildNeighborMap(graph: ArtistGraphBuildResult): Map<string, ArtistGrap
 }
 
 export function indexArtistGraph(graph: ArtistGraphBuildResult): ArtistGraphIndex {
-  return {
+  const cached = artistGraphIndexCache.get(graph)
+  if (cached) {
+    return cached
+  }
+
+  const index = {
     nodeByKey: new Map(graph.nodes.map((node) => [node.key, node])),
     edgeByKey: new Map(graph.edges.map((edge) => [edge.key, edge])),
     neighborsByArtistKey: buildNeighborMap(graph)
   }
+
+  artistGraphIndexCache.set(graph, index)
+  return index
 }
 
 export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[]): ArtistGraphBuildResult {
+  const cached = artistGraphBuildCache.get(tracks)
+  if (cached) {
+    return cached
+  }
+
   const nodeAccumulators = new Map<string, ArtistGraphNodeAccumulator>()
   const edgeAccumulators = new Map<string, ArtistGraphEdgeAccumulator>()
 
@@ -448,18 +477,28 @@ export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[]): Artis
     }
   }).sort(compareNode)
 
-  return {
+  const result = {
     nodes,
     edges,
     maxTrackCount: nodes.reduce((maxTrackCount, node) => Math.max(maxTrackCount, node.trackCount), 0),
     maxEdgeWeight: edges.reduce((maxEdgeWeight, edge) => Math.max(maxEdgeWeight, edge.sharedTrackCount), 0)
   }
+
+  artistGraphBuildCache.set(tracks, result)
+  return result
 }
 
 export function resolveVisibleArtistGraph(
   graph: ArtistGraphBuildResult,
   options: ArtistGraphVisibleOptions
 ): ArtistGraphVisibleResult {
+  const cacheKey = getVisibleCacheKey(options)
+  const cachedVisibleGraphs = artistGraphVisibleCache.get(graph)
+  const cached = cachedVisibleGraphs?.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
   const { nodeByKey, edgeByKey, neighborsByArtistKey } = indexArtistGraph(graph)
   const mode = options.mode
 
@@ -471,13 +510,19 @@ export function resolveVisibleArtistGraph(
       : graph.nodes[0]?.key ?? null
 
     if (!focusArtistKey) {
-      return {
+      const emptyResult = {
         nodes: [],
         edges: [],
         focusArtistKey: null,
         hiddenFocusNeighborCount: 0,
         effectiveEdgeThreshold: 1
       }
+      const nextCache = cachedVisibleGraphs ?? new Map<string, ArtistGraphVisibleResult>()
+      nextCache.set(cacheKey, emptyResult)
+      if (!cachedVisibleGraphs) {
+        artistGraphVisibleCache.set(graph, nextCache)
+      }
+      return emptyResult
     }
 
     const allNeighbors = neighborsByArtistKey.get(focusArtistKey) ?? []
@@ -501,13 +546,19 @@ export function resolveVisibleArtistGraph(
     ))
     const visibleNodes = graph.nodes.filter((node) => visibleArtistKeys.has(node.key))
 
-    return {
+    const result = {
       nodes: visibleNodes,
       edges: visibleEdges,
       focusArtistKey,
       hiddenFocusNeighborCount: Math.max(0, eligibleNeighbors.length - (visibleArtistKeys.size - 1)),
       effectiveEdgeThreshold
     }
+    const nextCache = cachedVisibleGraphs ?? new Map<string, ArtistGraphVisibleResult>()
+    nextCache.set(cacheKey, result)
+    if (!cachedVisibleGraphs) {
+      artistGraphVisibleCache.set(graph, nextCache)
+    }
+    return result
   }
 
   const preferredThreshold = Math.max(1, options.edgeWeightThreshold ?? 2)
@@ -542,13 +593,19 @@ export function resolveVisibleArtistGraph(
     visibleArtistKeys.add(edge.target)
   }
 
-  return {
+  const result = {
     nodes: graph.nodes.filter((node) => visibleArtistKeys.has(node.key)),
     edges: visibleEdges,
     focusArtistKey: null,
     hiddenFocusNeighborCount: 0,
     effectiveEdgeThreshold
   }
+  const nextCache = cachedVisibleGraphs ?? new Map<string, ArtistGraphVisibleResult>()
+  nextCache.set(cacheKey, result)
+  if (!cachedVisibleGraphs) {
+    artistGraphVisibleCache.set(graph, nextCache)
+  }
+  return result
 }
 
 function buildFocusLayout(
@@ -1004,12 +1061,27 @@ export function buildArtistGraphLayout(
   visibleGraph: ArtistGraphVisibleResult,
   options: Pick<ArtistGraphVisibleOptions, 'mode'>
 ): ArtistGraphLayoutResult {
+  const cachedLayouts = artistGraphLayoutCache.get(visibleGraph)
+  const cached = cachedLayouts?.get(options.mode)
+  if (cached) {
+    return cached
+  }
+
+  const cacheResult = (layout: ArtistGraphLayoutResult): ArtistGraphLayoutResult => {
+    const nextCache = cachedLayouts ?? new Map<string, ArtistGraphLayoutResult>()
+    nextCache.set(options.mode, layout)
+    if (!cachedLayouts) {
+      artistGraphLayoutCache.set(visibleGraph, nextCache)
+    }
+    return layout
+  }
+
   if (visibleGraph.nodes.length === 0) {
-    return {
+    return cacheResult({
       nodes: [],
       edges: [],
       bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 }
-    }
+    })
   }
 
   const graphIndex = indexArtistGraph({
@@ -1020,7 +1092,7 @@ export function buildArtistGraphLayout(
   })
 
   if (options.mode === 'focus') {
-    return buildFocusLayout(visibleGraph, graphIndex)
+    return cacheResult(buildFocusLayout(visibleGraph, graphIndex))
   }
 
   const components = buildConnectedComponents(visibleGraph)
@@ -1045,9 +1117,9 @@ export function buildArtistGraphLayout(
     )
   }))
 
-  return {
+  return cacheResult({
     nodes: relaxedNodes,
     edges: layoutEdges,
     bounds: computeLayoutBounds(relaxedNodes)
-  }
+  })
 }
