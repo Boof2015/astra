@@ -7,6 +7,7 @@ import {
 
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
+const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
 const DEFAULT_FULL_GRAPH_MAX_NEIGHBORS = 8
 const DEFAULT_FOCUS_GRAPH_NEIGHBOR_LIMIT = 8
 const MAX_EDGE_SAMPLE_TRACKS = 6
@@ -165,8 +166,14 @@ function hashStringToUnit(value: string): number {
   return hash / 0xffffffff
 }
 
+function isIgnorableArtist(displayArtist: string): boolean {
+  const artistKey = normalizeKey(displayArtist)
+  return artistKey != null && GENERIC_ARTIST_KEYS.has(artistKey)
+}
+
 function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
   const participants = new Map<string, string>()
+  let sawIgnorableArtist = false
 
   const addParticipants = (rawValue: string | null | undefined) => {
     const normalized = normalizeDisplay(rawValue ?? '')
@@ -177,6 +184,10 @@ function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
     for (const value of values) {
       const display = normalizeDisplay(value)
       if (!display) continue
+      if (isIgnorableArtist(display)) {
+        sawIgnorableArtist = true
+        continue
+      }
       const key = normalizeKey(display)
       if (!key || participants.has(key)) continue
       participants.set(key, display)
@@ -186,7 +197,7 @@ function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
   addParticipants(track.album_artist)
   addParticipants(track.artist)
 
-  if (participants.size === 0) {
+  if (participants.size === 0 && !sawIgnorableArtist) {
     participants.set(normalizeKey(UNKNOWN_ARTIST_NAME), UNKNOWN_ARTIST_NAME)
   }
 

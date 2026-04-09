@@ -64,6 +64,26 @@ test('buildArtistGraph tolerates missing metadata and falls back to Unknown Arti
   assert.equal(graph.edges.length, 0)
 })
 
+test('buildArtistGraph ignores Various Artists credits while keeping real collaborators', () => {
+  const graph = buildArtistGraph([
+    createTrack('collab', {
+      artist: 'Alpha feat Beta',
+      album_artist: 'Various Artists',
+      album_identity_key: 'album:collab'
+    }),
+    createTrack('generic-only', {
+      artist: 'Various Artists',
+      album_artist: 'Various Artists',
+      album_identity_key: 'album:generic-only'
+    })
+  ])
+
+  assert.deepEqual(graph.nodes.map((node) => node.artist).sort(), ['Alpha', 'Beta'])
+  assert.equal(graph.edges.length, 1)
+  assert.equal(graph.edges[0]?.source, 'alpha')
+  assert.equal(graph.edges[0]?.target, 'beta')
+})
+
 test('resolveVisibleArtistGraph applies full-view thresholds and focus-view neighbor limits', () => {
   const graph = buildArtistGraph([
     createTrack('ab-1', { artist: 'A feat B', album_identity_key: 'album:ab-1' }),

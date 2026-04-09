@@ -56,6 +56,28 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function getSimulationRenderIntervalMs(nodeCount: number, edgeCount: number): number {
+  if (edgeCount <= 90 && nodeCount <= 56) {
+    return 0
+  }
+  if (edgeCount <= 150 && nodeCount <= 84) {
+    return 1000 / 55
+  }
+  if (edgeCount <= 240 && nodeCount <= 120) {
+    return 1000 / 48
+  }
+  if (edgeCount <= 360 && nodeCount <= 170) {
+    return 1000 / 36
+  }
+  if (edgeCount > 600 || nodeCount > 220) {
+    return 1000 / 18
+  }
+  if (edgeCount > 360 || nodeCount > 150) {
+    return 1000 / 22
+  }
+  return 1000 / 28
+}
+
 function hashStringToUnit(value: string): number {
   let hash = 0
   for (let index = 0; index < value.length; index += 1) {
@@ -358,15 +380,43 @@ export default function GraphView() {
       : 0
     const forceScale = 1 / (1 + Math.max(0, graphDensity - 1.1) * 0.22)
     const velocityScale = Math.max(0.52, forceScale)
+    const renderIntervalMs = getSimulationRenderIntervalMs(visibleGraph.nodes.length, visibleGraph.edges.length)
     const durationMs = mode === 'focus'
       ? Math.min(5400, Math.max(1800, 900 + (orderedSeedNodes.length * 88)))
       : Math.min(12000, Math.max(2600, 1300 + (orderedSeedNodes.length * 92)))
     const startedAt = performance.now()
     let lastActiveCount = 0
+    let lastRenderedAt = 0
+    let lastRenderedActiveCount = 0
+    let lastRenderedProgress = 0
 
     simulationNodesRef.current = orderedSeedNodes
     setSimulationNodes(orderedSeedNodes.map((node) => ({ ...node })))
     setRevealProgress(0)
+
+    const commitSimulationFrame = (
+      nodes: SimulationNode[],
+      progress: number,
+      activeCount: number,
+      now: number,
+      force: boolean = false
+    ) => {
+      const shouldCommit = force ||
+        activeCount !== lastRenderedActiveCount ||
+        progress === 1 && lastRenderedProgress < 1 ||
+        (progress - lastRenderedProgress) >= 0.05 ||
+        (now - lastRenderedAt) >= renderIntervalMs
+
+      if (!shouldCommit) {
+        return
+      }
+
+      lastRenderedAt = now
+      lastRenderedActiveCount = activeCount
+      lastRenderedProgress = progress
+      setRevealProgress(progress)
+      setSimulationNodes(nodes.map((node) => ({ ...node })))
+    }
 
     const tick = (now: number) => {
       const progress = clamp((now - startedAt) / durationMs, 0, 1)
@@ -531,8 +581,7 @@ export default function GraphView() {
         node.y += node.vy
       }
 
-      setRevealProgress(progress)
-      setSimulationNodes(nodes.map((node) => ({ ...node })))
+      commitSimulationFrame(nodes, progress, activeCount, now)
 
       simulationFrameRef.current = window.requestAnimationFrame(tick)
     }
@@ -588,17 +637,21 @@ export default function GraphView() {
     () => new Map(simulationNodes.map((node) => [node.key, node])),
     [simulationNodes]
   )
-  const revealedNodeKeys = useMemo(
-    () => new Set(simulationNodes.filter((node) => node.active).map((node) => node.key)),
+  const activeSimulationNodes = useMemo(
+    () => simulationNodes.filter((node) => node.active),
     [simulationNodes]
+  )
+  const revealedNodeKeys = useMemo(
+    () => new Set(activeSimulationNodes.map((node) => node.key)),
+    [activeSimulationNodes]
   )
   const renderedEdges = useMemo(
     () => visibleGraph.edges.filter((edge) => revealedNodeKeys.has(edge.source) && revealedNodeKeys.has(edge.target)),
     [revealedNodeKeys, visibleGraph.edges]
   )
   const renderedBounds = useMemo(
-    () => computeBoundsFromPoints(simulationNodes.filter((node) => node.active).map((node) => ({ x: node.x, y: node.y }))),
-    [simulationNodes]
+    () => computeBoundsFromPoints(activeSimulationNodes.map((node) => ({ x: node.x, y: node.y }))),
+    [activeSimulationNodes]
   )
 
   const selectedNode = selectedArtistKey && revealedNodeKeys.has(selectedArtistKey)
@@ -794,6 +847,39 @@ export default function GraphView() {
     }
     return highlighted
   }, [activeHighlightArtistKey, graphIndex.neighborsByArtistKey, revealedNodeKeys])
+  const shouldBatchSettledEdges = revealProgress >= 1 && renderedEdges.length > 180 && !activeHighlightArtistKey && !selectedComparisonEdge
+  const batchedSettledEdgePaths = useMemo(() => {
+    if (!shouldBatchSettledEdges) {
+      return null
+    }
+
+    const thinSegments: string[] = []
+    const mediumSegments: string[] = []
+    const thickSegments: string[] = []
+
+    for (const edge of renderedEdges) {
+      const sourceNode = simulationNodeByKey.get(edge.source)
+      const targetNode = simulationNodeByKey.get(edge.target)
+      if (!sourceNode || !targetNode) continue
+
+      const segment = `M${sourceNode.x.toFixed(1)} ${sourceNode.y.toFixed(1)}L${targetNode.x.toFixed(1)} ${targetNode.y.toFixed(1)}`
+      const edgeWeightRatio = edge.sharedTrackCount / Math.max(1, graph.maxEdgeWeight)
+
+      if (edgeWeightRatio >= 0.45) {
+        thickSegments.push(segment)
+      } else if (edgeWeightRatio >= 0.18) {
+        mediumSegments.push(segment)
+      } else {
+        thinSegments.push(segment)
+      }
+    }
+
+    return {
+      thin: thinSegments.join(''),
+      medium: mediumSegments.join(''),
+      thick: thickSegments.join('')
+    }
+  }, [graph.maxEdgeWeight, renderedEdges, shouldBatchSettledEdges, simulationNodeByKey])
 
   const handleArtistSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1140,7 +1226,7 @@ export default function GraphView() {
             </aside>
           )}
 
-          {simulationNodes.filter((node) => node.active).length === 0 ? (
+          {activeSimulationNodes.length === 0 ? (
             <div
               className="graph-surface-empty"
               onPointerDown={(event) => event.stopPropagation()}
@@ -1153,7 +1239,40 @@ export default function GraphView() {
               <g
                 transform={`translate(${(surfaceSize.width / 2) + viewport.panX} ${(surfaceSize.height / 2) + viewport.panY}) scale(${viewport.zoom})`}
               >
-                {renderedEdges.map((edge) => {
+                {shouldBatchSettledEdges && batchedSettledEdgePaths ? (
+                  <>
+                    {batchedSettledEdgePaths.thin && (
+                      <path
+                        d={batchedSettledEdgePaths.thin}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.88)"
+                        strokeOpacity={0.08}
+                        strokeWidth={0.6}
+                        strokeLinecap="round"
+                      />
+                    )}
+                    {batchedSettledEdgePaths.medium && (
+                      <path
+                        d={batchedSettledEdgePaths.medium}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.88)"
+                        strokeOpacity={0.12}
+                        strokeWidth={1}
+                        strokeLinecap="round"
+                      />
+                    )}
+                    {batchedSettledEdgePaths.thick && (
+                      <path
+                        d={batchedSettledEdgePaths.thick}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.88)"
+                        strokeOpacity={0.18}
+                        strokeWidth={1.6}
+                        strokeLinecap="round"
+                      />
+                    )}
+                  </>
+                ) : renderedEdges.map((edge) => {
                   const sourceNode = simulationNodeByKey.get(edge.source)
                   const targetNode = simulationNodeByKey.get(edge.target)
                   const layoutEdge = layoutEdgeByKey.get(edge.key)
@@ -1198,7 +1317,7 @@ export default function GraphView() {
                   )
                 })}
 
-                {simulationNodes.filter((node) => node.active).map((simulationNode) => {
+                {activeSimulationNodes.map((simulationNode) => {
                   const node = graphIndex.nodeByKey.get(simulationNode.key)
                   if (!node) return null
 
