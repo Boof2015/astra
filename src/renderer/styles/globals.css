@@ -4788,13 +4788,6 @@ button, .titlebar {
   fill: #ffffff;
 }
 
-.graph-node-label.is-anchor {
-  fill: rgba(255, 255, 255, 0.98);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
 .graph-node-subtitle {
   fill: rgba(255, 255, 255, 0.56);
   font-family: var(--font-mono);
@@ -4982,6 +4975,20 @@ button, .titlebar {
 .graph-surface.is-panning * {
   user-select: none;
   -webkit-user-select: none;
+}
+
+.graph-cluster-label {
+  position: absolute;
+  transform: translate(-50%, 0);
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.24);
 }
 
 .graph-surface::before {

@@ -799,27 +799,28 @@ function placeComponentsOnField(components: ArtistGraphPlacementComponent[]): Ar
   const placedComponents: ArtistGraphPlacedComponent[] = []
   const mergedNodes: ArtistGraphLayoutNode[] = []
   const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+  const fieldCompression = 0.76
 
   for (let index = 0; index < components.length; index += 1) {
     const component = components[index]
     if (!component) continue
 
-    const componentRadius = Math.max(160, (component.diameter / 2) + 120)
+    const componentRadius = Math.max(118, (component.diameter / 2) + 72)
     let placedX = 0
     let placedY = 0
 
     if (index > 0) {
       let foundSpot = false
       for (let attempt = 0; attempt < 260; attempt += 1) {
-        const angle = (index * goldenAngle) + (attempt * 0.41)
-        const radius = 220 + (Math.sqrt(attempt + index) * (150 + (componentRadius * 0.12)))
+        const angle = (index * goldenAngle) + (attempt * 0.5)
+        const radius = 132 + (Math.sqrt(attempt + 1) * (88 + (componentRadius * 0.06)))
         const candidateX = Math.cos(angle) * radius
         const candidateY = Math.sin(angle) * radius * 0.84
 
         const overlaps = placedComponents.some((placedComponent) => {
           const dx = placedComponent.x - candidateX
           const dy = placedComponent.y - candidateY
-          const minDistance = placedComponent.radius + componentRadius + 96
+          const minDistance = placedComponent.radius + componentRadius + 34
           return ((dx * dx) + (dy * dy)) < (minDistance * minDistance)
         })
 
@@ -833,11 +834,14 @@ function placeComponentsOnField(components: ArtistGraphPlacementComponent[]): Ar
 
       if (!foundSpot) {
         const fallbackAngle = index * goldenAngle
-        const fallbackRadius = 260 + (index * 160)
+        const fallbackRadius = 180 + (index * 76)
         placedX = Math.cos(fallbackAngle) * fallbackRadius
         placedY = Math.sin(fallbackAngle) * fallbackRadius * 0.82
       }
     }
+
+    placedX *= fieldCompression
+    placedY *= fieldCompression
 
     placedComponents.push({
       nodes: component.nodes,

@@ -95,8 +95,8 @@ function buildFitViewport(
 
   const graphWidth = Math.max(260, bounds.maxX - bounds.minX)
   const graphHeight = Math.max(260, bounds.maxY - bounds.minY)
-  const paddingX = Math.min(160, width * 0.12)
-  const paddingY = Math.min(120, height * 0.12)
+  const paddingX = Math.min(104, width * 0.075)
+  const paddingY = Math.min(84, height * 0.075)
   const zoom = clamp(
     Math.min((width - (paddingX * 2)) / graphWidth, (height - (paddingY * 2)) / graphHeight, 1.08),
     MIN_ZOOM,
@@ -261,6 +261,10 @@ export default function GraphView() {
     () => buildArtistGraphLayout(visibleGraph, { mode }),
     [mode, visibleGraph]
   )
+  const seedNodeByKey = useMemo(
+    () => new Map(seedLayout.nodes.map((node) => [node.key, node])),
+    [seedLayout.nodes]
+  )
   const layoutEdgeByKey = useMemo(
     () => new Map(seedLayout.edges.map((edge) => [edge.key, edge])),
     [seedLayout.edges]
@@ -349,6 +353,11 @@ export default function GraphView() {
         }
       })
     const nodeIndexByKey = new Map(orderedSeedNodes.map((node, index) => [node.key, index]))
+    const graphDensity = visibleGraph.nodes.length > 1
+      ? visibleGraph.edges.length / visibleGraph.nodes.length
+      : 0
+    const forceScale = 1 / (1 + Math.max(0, graphDensity - 1.1) * 0.22)
+    const velocityScale = Math.max(0.52, forceScale)
     const durationMs = mode === 'focus'
       ? Math.min(5400, Math.max(1800, 900 + (orderedSeedNodes.length * 88)))
       : Math.min(12000, Math.max(2600, 1300 + (orderedSeedNodes.length * 92)))
@@ -373,7 +382,7 @@ export default function GraphView() {
           node.active = true
 
           const randomAngle = hashStringToUnit(`${node.key}:spawn`) * Math.PI * 2
-          const randomSpeed = 2.8 + (hashStringToUnit(`${node.key}:speed`) * 3)
+          const randomSpeed = (2.2 + (hashStringToUnit(`${node.key}:speed`) * 2.2)) * Math.max(0.64, velocityScale)
           node.vx += Math.cos(randomAngle) * randomSpeed
           node.vy += Math.sin(randomAngle) * randomSpeed
 
@@ -388,7 +397,7 @@ export default function GraphView() {
             const dx = node.x - otherNode.x
             const dy = node.y - otherNode.y
             const distance = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)))
-            const impulse = 0.38 + (Math.min(edge.sharedTrackCount, 5) * 0.1)
+            const impulse = (0.26 + (Math.min(edge.sharedTrackCount, 5) * 0.06)) * Math.max(0.62, forceScale)
 
             otherNode.vx -= (dx / distance) * impulse
             otherNode.vy -= (dy / distance) * impulse
@@ -397,17 +406,31 @@ export default function GraphView() {
         lastActiveCount = activeCount
       }
 
-      const alpha = Math.max(0.02, (1 - progress) * 0.2 + 0.028)
-      const repulsionStrength = mode === 'focus' ? 24000 : 36000
-      const centerForce = mode === 'focus' ? 0.0021 : 0.0009
-      const damping = progress < 1 ? 0.91 : 0.972
+      const alpha = Math.max(0.014, ((1 - progress) * 0.16 + 0.022) * Math.max(0.58, forceScale))
+      const repulsionStrength = (mode === 'focus' ? 18000 : 26000) * Math.max(0.5, forceScale)
+      const centerForce = mode === 'focus' ? 0.0022 : 0.00105
+      const damping = progress < 1
+        ? 0.88 + (Math.min(0.04, graphDensity * 0.004))
+        : 0.942 + (Math.min(0.026, graphDensity * 0.003))
+      const anchorStrength = graphDensity > 1.8
+        ? (mode === 'focus' ? 0.0014 : 0.00095) * (1 + Math.min(1.1, (graphDensity - 1.8) * 0.16))
+        : 0
+      const maxVelocity = (progress < 1 ? 3.8 : 1.9) * Math.max(0.68, velocityScale)
 
       for (let leftIndex = 0; leftIndex < activeCount; leftIndex += 1) {
         const leftNode = nodes[leftIndex]
         if (!leftNode || !leftNode.active) continue
 
-        let forceX = -leftNode.x * centerForce
-        let forceY = -leftNode.y * centerForce
+        const localEdgeCount = visibleEdgesByArtistKey.get(leftNode.key)?.length ?? 0
+        const centerMultiplier = graphDensity > 1.25
+          ? localEdgeCount <= 1
+            ? 2.6
+            : localEdgeCount <= 2
+              ? 1.95
+              : 1.14
+          : 1
+        let forceX = -leftNode.x * centerForce * centerMultiplier
+        let forceY = -leftNode.y * centerForce * centerMultiplier
 
         for (let rightIndex = leftIndex + 1; rightIndex < activeCount; rightIndex += 1) {
           const rightNode = nodes[rightIndex]
@@ -462,8 +485,8 @@ export default function GraphView() {
           ? Math.max(84, 176 - (Math.log2(edge.sharedTrackCount + 1) * 20))
           : Math.max(78, 148 - (Math.log2(edge.sharedTrackCount + 1) * 14))
         const springStrength = mode === 'focus'
-          ? 0.014 + (Math.min(edge.sharedTrackCount, 6) * 0.0034)
-          : 0.012 + (Math.min(edge.sharedTrackCount, 6) * 0.0026)
+          ? (0.0105 + (Math.min(edge.sharedTrackCount, 6) * 0.0022)) * Math.max(0.58, forceScale)
+          : (0.0095 + (Math.min(edge.sharedTrackCount, 6) * 0.0019)) * Math.max(0.6, forceScale)
         const stretch = distance - targetDistance
         const springX = (dx / distance) * stretch * springStrength
         const springY = (dy / distance) * stretch * springStrength
@@ -478,13 +501,28 @@ export default function GraphView() {
         const node = nodes[index]
         if (!node || !node.active) continue
 
+        if (anchorStrength > 0) {
+          const seedNode = seedNodeByKey.get(node.key)
+          if (seedNode) {
+            node.vx += (seedNode.x - node.x) * anchorStrength
+            node.vy += (seedNode.y - node.y) * anchorStrength
+          }
+        }
+
         if (mode === 'focus' && visibleGraph.focusArtistKey && node.key === visibleGraph.focusArtistKey) {
           node.vx += -node.x * 0.035
           node.vy += -node.y * 0.035
         } else if (progress >= 1) {
           const driftAngle = hashStringToUnit(`${node.key}:${Math.floor(now / 1400)}`) * Math.PI * 2
-          node.vx += Math.cos(driftAngle) * 0.006
-          node.vy += Math.sin(driftAngle) * 0.006
+          node.vx += Math.cos(driftAngle) * (0.0034 * Math.max(0.58, forceScale))
+          node.vy += Math.sin(driftAngle) * (0.0034 * Math.max(0.58, forceScale))
+        }
+
+        const speed = Math.sqrt((node.vx * node.vx) + (node.vy * node.vy))
+        if (speed > maxVelocity) {
+          const clampRatio = maxVelocity / speed
+          node.vx *= clampRatio
+          node.vy *= clampRatio
         }
 
         node.vx *= damping
@@ -569,14 +607,153 @@ export default function GraphView() {
   const focusNode = visibleGraph.focusArtistKey
     ? graphIndex.nodeByKey.get(visibleGraph.focusArtistKey) ?? null
     : null
-  const anchorLabelArtistKey = useMemo(() => {
-    if (visibleGraph.focusArtistKey && revealedNodeKeys.has(visibleGraph.focusArtistKey)) {
-      return visibleGraph.focusArtistKey
+  const lowZoomClusterDescriptors = useMemo(() => {
+    if (visibleGraph.nodes.length === 0) {
+      return []
     }
 
-    const anchorNode = visibleGraph.nodes.find((node) => revealedNodeKeys.has(node.key)) ?? null
-    return anchorNode?.key ?? null
-  }, [revealedNodeKeys, visibleGraph.focusArtistKey, visibleGraph.nodes])
+    const adjacency = new Map<string, Set<string>>()
+    const unseen = new Set<string>()
+
+    for (const node of visibleGraph.nodes) {
+      adjacency.set(node.key, new Set())
+      unseen.add(node.key)
+    }
+
+    for (const edge of visibleGraph.edges) {
+      adjacency.get(edge.source)?.add(edge.target)
+      adjacency.get(edge.target)?.add(edge.source)
+    }
+
+    const descriptors: Array<{
+      key: string
+      artist: string
+      memberKeys: string[]
+      score: number
+    }> = []
+
+    while (unseen.size > 0) {
+      const iterator = unseen.values().next()
+      const rootKey = iterator.value
+      if (!rootKey) break
+
+      const memberKeys: string[] = []
+      const queue = [rootKey]
+      unseen.delete(rootKey)
+      let totalTrackCount = 0
+      let labelNode: ArtistGraphNode | null = null
+
+      while (queue.length > 0) {
+        const currentKey = queue.shift()
+        if (!currentKey) continue
+
+        memberKeys.push(currentKey)
+
+        const currentNode = graphIndex.nodeByKey.get(currentKey) ?? null
+        if (currentNode) {
+          totalTrackCount += currentNode.trackCount
+          if (
+            !labelNode ||
+            currentNode.trackCount > labelNode.trackCount ||
+            (
+              currentNode.trackCount === labelNode.trackCount &&
+              currentNode.collaboratorCount > labelNode.collaboratorCount
+            ) ||
+            (
+              currentNode.trackCount === labelNode.trackCount &&
+              currentNode.collaboratorCount === labelNode.collaboratorCount &&
+              currentNode.artist.localeCompare(labelNode.artist, undefined, { sensitivity: 'base' }) < 0
+            )
+          ) {
+            labelNode = currentNode
+          }
+        }
+
+        for (const neighborKey of adjacency.get(currentKey) ?? []) {
+          if (!unseen.has(neighborKey)) continue
+          unseen.delete(neighborKey)
+          queue.push(neighborKey)
+        }
+      }
+
+      if (!labelNode) continue
+
+      descriptors.push({
+        key: labelNode.key,
+        artist: labelNode.artist,
+        memberKeys,
+        score: totalTrackCount + (memberKeys.length * 6)
+      })
+    }
+
+    descriptors.sort((left, right) => {
+      if (left.score !== right.score) {
+        return right.score - left.score
+      }
+      if (left.memberKeys.length !== right.memberKeys.length) {
+        return right.memberKeys.length - left.memberKeys.length
+      }
+      return left.artist.localeCompare(right.artist, undefined, { sensitivity: 'base' })
+    })
+
+    const majorDescriptors = descriptors.filter((descriptor) => (
+      descriptor.memberKeys.length >= 4 || descriptor.score >= 24
+    ))
+
+    return (majorDescriptors.length > 0 ? majorDescriptors : descriptors.slice(0, Math.min(4, descriptors.length))).slice(0, 8)
+  }, [graphIndex.nodeByKey, visibleGraph.edges, visibleGraph.nodes])
+  const lowZoomClusterLabels = useMemo(() => {
+    if (viewport.zoom > 0.58) {
+      return []
+    }
+
+    const labels: Array<{
+      key: string
+      artist: string
+      left: number
+      top: number
+      opacity: number
+    }> = []
+
+    for (const descriptor of lowZoomClusterDescriptors) {
+      if (!revealedNodeKeys.has(descriptor.key)) {
+        continue
+      }
+
+      const memberNodes = descriptor.memberKeys
+        .map((memberKey) => simulationNodeByKey.get(memberKey))
+        .filter((node): node is SimulationNode => node != null && node.active)
+
+      if (memberNodes.length === 0) continue
+
+      let minX = Number.POSITIVE_INFINITY
+      let maxX = Number.NEGATIVE_INFINITY
+      let maxY = Number.NEGATIVE_INFINITY
+
+      for (const memberNode of memberNodes) {
+        minX = Math.min(minX, memberNode.x)
+        maxX = Math.max(maxX, memberNode.x)
+        maxY = Math.max(maxY, memberNode.y)
+      }
+
+      const left = (surfaceSize.width / 2) + viewport.panX + (((minX + maxX) / 2) * viewport.zoom)
+      const top = (surfaceSize.height / 2) + viewport.panY + (maxY * viewport.zoom) + 10
+
+      if (labels.some((label) => Math.abs(label.left - left) < 120 && Math.abs(label.top - top) < 24)) {
+        continue
+      }
+
+      labels.push({
+        key: descriptor.key,
+        artist: descriptor.artist,
+        left,
+        top,
+        opacity: descriptor.memberKeys.length >= 8 ? 0.38 : descriptor.memberKeys.length >= 5 ? 0.32 : 0.27
+      })
+    }
+
+    return labels
+  }, [lowZoomClusterDescriptors, revealedNodeKeys, simulationNodeByKey, surfaceSize.height, surfaceSize.width, viewport.panX, viewport.panY, viewport.zoom])
 
   useEffect(() => {
     if (!selectedArtistKey) return
@@ -839,6 +1016,20 @@ export default function GraphView() {
             </div>
           )}
 
+          {lowZoomClusterLabels.map((label) => (
+            <div
+              key={label.key}
+              className="graph-cluster-label"
+              style={{
+                left: `${label.left}px`,
+                top: `${label.top}px`,
+                opacity: label.opacity
+              }}
+            >
+              {label.artist}
+            </div>
+          ))}
+
           <div
             className="graph-overlay-bottom"
             onPointerDown={(event) => event.stopPropagation()}
@@ -1019,8 +1210,7 @@ export default function GraphView() {
                   const isCompared = comparisonArtistKey === node.key
                   const isHighlighted = highlightedArtistKeys.size === 0 || highlightedArtistKeys.has(node.key)
                   const isDimmed = highlightedArtistKeys.size > 0 && !isHighlighted
-                  const isAnchorLabel = viewport.zoom <= 0.4 && anchorLabelArtistKey === node.key && !isSelected && !isHovered
-                  const showLabel = viewport.zoom >= 0.72 || isSelected || isHovered || isFocusRoot || isAnchorLabel
+                  const showLabel = viewport.zoom >= 0.72 || isSelected || isHovered || isFocusRoot
                   const opacity = isDimmed ? 0.2 : 1
 
                   return (
@@ -1066,10 +1256,9 @@ export default function GraphView() {
                       />
                       {showLabel && (
                         <text
-                          className={`graph-node-label ${isDimmed ? 'is-dimmed' : ''}${isAnchorLabel ? ' is-anchor' : ''}`}
-                          x={isAnchorLabel ? 0 : radius + 7}
-                          y={isAnchorLabel ? -(radius + 12) : 4}
-                          textAnchor={isAnchorLabel ? 'middle' : 'start'}
+                          className={`graph-node-label ${isDimmed ? 'is-dimmed' : ''}`}
+                          x={radius + 7}
+                          y={4}
                         >
                           {node.artist}
                         </text>
