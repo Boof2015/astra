@@ -98,15 +98,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          grep -Fx 'depend = fuse2' "$AUR_WORKDIR/.SRCINFO"
           PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
           if [ -z "$PKG_FILE" ]; then
             echo "Built package archive not found." >&2
             exit 1
           fi
           bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/bin/astra'
-          bsdtar -tf "$PKG_FILE" | grep -Fx 'opt/astra/AppRun'
+          bsdtar -tf "$PKG_FILE" | grep -Fx 'opt/astra/astra.AppImage'
           bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/share/applications/astra.desktop'
           bsdtar -tf "$PKG_FILE" | grep -Eq '^usr/share/icons/hicolor/.+/apps/astra\.(png|svg)$'
+          if bsdtar -tf "$PKG_FILE" | grep -Fxq 'opt/astra/AppRun'; then
+            echo "Legacy extracted AppRun payload is still present in the package." >&2
+            exit 1
+          fi
+
+      - name: Install and smoke test AUR package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
+          if [ -z "$PKG_FILE" ]; then
+            echo "Built package archive not found." >&2
+            exit 1
+          fi
+
+          pacman -U --noconfirm "$PKG_FILE"
+
+          su builder -c 'test -x /usr/bin/astra'
+          su builder -c 'test -x /opt/astra/astra.AppImage'
+          stat -c '%a %n' /usr/bin/astra /opt/astra/astra.AppImage
+
+          grep -Fx 'Exec=astra %U' /usr/share/applications/astra.desktop
+          grep -Fx 'TryExec=astra' /usr/share/applications/astra.desktop
+          grep -Fx 'Icon=astra' /usr/share/applications/astra.desktop
+
+          su builder -c 'APPIMAGE_EXTRACT_AND_RUN=1 /opt/astra/astra.AppImage --appimage-version'
 
   publish-aur:
     name: Publish to AUR
