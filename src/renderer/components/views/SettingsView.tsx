@@ -1600,7 +1600,7 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Experimental</h3>
-              <p>Preview features that may change, move, or disappear.</p>
+              <p>Preview features that may change, move, or disappear. They are not guaranteed to be stable.</p>
             </div>
             <div className="settings-grid">
               <div className="settings-field settings-field-inline">
