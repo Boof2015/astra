@@ -161,6 +161,7 @@ const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
 const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
+const LOCAL_API_REMOTE_WEB_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
@@ -172,6 +173,8 @@ const TRACKLIST_THUMB_MAX_EDGE_PX = 96
 const CARD_ARTWORK_MAX_EDGE_PX = 320
 const TRACKLIST_THUMB_JPEG_QUALITY = 78
 const CARD_ARTWORK_JPEG_QUALITY = 84
+const REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX = 256
+const REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY = 80
 const ARTWORK_THUMB_CACHE_VERSION = 'v2'
 const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
@@ -206,6 +209,7 @@ let nextRemoteStreamSessionId = 1
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
   controlsEnabled: false,
+  remoteWebEnabled: false,
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
 }
@@ -429,6 +433,10 @@ const localApiService = new LocalApiService({
   config: localApiConfig,
   getSnapshot: () => latestMiniPlayerSnapshot,
   dispatchCommand: sendMiniPlayerCommand,
+  resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
+    maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
+    jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
+  }),
   onStatusChange: () => {
     broadcastLocalApiStatus()
     const status = localApiService.getStatus()
@@ -436,6 +444,7 @@ const localApiService = new LocalApiService({
       enabled: status.enabled,
       active: status.active,
       controlsEnabled: status.controlsEnabled,
+      remoteWebEnabled: status.remoteWebEnabled,
       port: status.port,
       mode: status.mode,
       connectedClients: status.connectedClients,
@@ -795,6 +804,7 @@ function normalizeLocalApiPort(rawPort: unknown): number {
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
+  await library.setAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY, config.remoteWebEnabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_PORT_META_KEY, String(config.port))
   await library.setAppMeta(LOCAL_API_TOKEN_META_KEY, config.token)
 }
@@ -802,7 +812,9 @@ async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<voi
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_ENABLED_META_KEY), false)
   const controlsEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY), false)
+  const remoteWebEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY), false)
   const controlsEnabled = enabled ? controlsEnabledStored : false
+  const remoteWebEnabled = enabled ? remoteWebEnabledStored : false
 
   const rawPort = library.getAppMeta(LOCAL_API_PORT_META_KEY)
   let port = LOCAL_API_DEFAULT_PORT
@@ -823,6 +835,7 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const normalized: LocalApiServiceConfig = {
     enabled,
     controlsEnabled,
+    remoteWebEnabled,
     port,
     token
   }
@@ -830,6 +843,7 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const needsPersistence =
     library.getAppMeta(LOCAL_API_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY) !== (normalized.controlsEnabled ? '1' : '0') ||
+    library.getAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY) !== (normalized.remoteWebEnabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_PORT_META_KEY) !== String(normalized.port) ||
     library.getAppMeta(LOCAL_API_TOKEN_META_KEY) !== normalized.token
 
@@ -3332,7 +3346,8 @@ ipcMain.handle('local-api:setEnabled', async (_event, enabled: unknown) => {
   const nextConfig: LocalApiServiceConfig = {
     ...localApiConfig,
     enabled: nextEnabled,
-    controlsEnabled: nextEnabled ? localApiConfig.controlsEnabled : false
+    controlsEnabled: nextEnabled ? localApiConfig.controlsEnabled : false,
+    remoteWebEnabled: nextEnabled ? localApiConfig.remoteWebEnabled : false
   }
   return applyLocalApiConfig(nextConfig)
 })
@@ -3342,6 +3357,15 @@ ipcMain.handle('local-api:setControlsEnabled', async (_event, controlsEnabled: u
   const nextConfig: LocalApiServiceConfig = {
     ...localApiConfig,
     controlsEnabled: nextControlsEnabled
+  }
+  return applyLocalApiConfig(nextConfig)
+})
+
+ipcMain.handle('local-api:setRemoteWebEnabled', async (_event, remoteWebEnabled: unknown) => {
+  const nextRemoteWebEnabled = localApiConfig.enabled && Boolean(remoteWebEnabled)
+  const nextConfig: LocalApiServiceConfig = {
+    ...localApiConfig,
+    remoteWebEnabled: nextRemoteWebEnabled
   }
   return applyLocalApiConfig(nextConfig)
 })
@@ -3367,6 +3391,7 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
   const nextConfig: LocalApiServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    remoteWebEnabled: false,
     port: LOCAL_API_DEFAULT_PORT,
     token: generateLocalApiToken(),
   }

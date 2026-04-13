@@ -13668,6 +13668,12 @@ body::after {
   gap: 8px;
 }
 
+.settings-shell .settings-remote-url-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .settings-sleep-controls {
   display: flex;
   flex-direction: column;

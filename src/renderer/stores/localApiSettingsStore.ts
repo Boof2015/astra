@@ -10,6 +10,7 @@ interface LocalApiSettingsStore {
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
+  setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setPort: (port: number) => Promise<LocalApiStatus | null>
   rotateToken: () => Promise<LocalApiStatus | null>
   resetToDefaults: () => Promise<LocalApiStatus | null>
@@ -86,6 +87,16 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     setControlsEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.localApi.setControlsEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setRemoteWebEnabled: async (enabled: boolean) => {
+      try {
+        const status = await window.electronAPI.localApi.setRemoteWebEnabled(enabled)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

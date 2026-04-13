@@ -198,6 +198,7 @@ declare global {
                 getStatus: () => Promise<LocalApiStatus>
                 setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+                setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setPort: (port: number) => Promise<LocalApiStatus>
                 rotateToken: () => Promise<LocalApiStatus>
                 resetToDefaults: () => Promise<LocalApiStatus>

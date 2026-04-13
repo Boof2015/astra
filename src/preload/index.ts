@@ -598,6 +598,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setEnabled: (enabled: boolean): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setEnabled', enabled),
     setControlsEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
       ipcRenderer.invoke('local-api:setControlsEnabled', enabled),
+    setRemoteWebEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
+      ipcRenderer.invoke('local-api:setRemoteWebEnabled', enabled),
     setPort: (port: number): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setPort', port),
     rotateToken: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:rotateToken'),
     resetToDefaults: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:resetToDefaults'),
@@ -948,6 +950,7 @@ declare global {
         getStatus: () => Promise<LocalApiStatus>
         setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setPort: (port: number) => Promise<LocalApiStatus>
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>

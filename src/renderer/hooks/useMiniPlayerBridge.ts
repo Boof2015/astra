@@ -290,6 +290,7 @@ export function useMiniPlayerBridge(): void {
             title: currentTrack.title,
             artist: currentTrack.artist,
             album: currentTrack.album,
+            artworkHash: currentTrack.artworkHash ?? null,
             artworkData: shouldIncludeArtwork ? resolvedArtwork : undefined,
             isFavorite,
           }

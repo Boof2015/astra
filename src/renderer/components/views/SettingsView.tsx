@@ -240,6 +240,7 @@ export default function SettingsView() {
     init: initLocalApi,
     setEnabled: setLocalApiEnabled,
     setControlsEnabled: setLocalApiControlsEnabled,
+    setRemoteWebEnabled: setLocalApiRemoteWebEnabled,
     setPort: setLocalApiPort,
     rotateToken: rotateLocalApiToken,
   } = useLocalApiSettingsStore()
@@ -605,12 +606,18 @@ export default function SettingsView() {
     : 'No update checks have run yet.'
   const localApiEnabled = localApiStatus?.enabled ?? false
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
+  const localApiRemoteWebEnabled = localApiStatus?.remoteWebEnabled ?? false
   const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
+  const localApiControllerUrls = (localApiStatus?.lanUrls ?? []).map((url) => `${url}/remote/`)
   const localApiToken = localApiStatus?.token ?? ''
   const localApiStatusLabel = !localApiStatus
     ? 'Loading local API status...'
     : localApiStatus.active
-      ? `Local integration API active on ${localApiStatus.baseUrl}.`
+      ? localApiStatus.remoteWebEnabled
+        ? localApiControllerUrls.length > 0
+          ? `Local integration API active on ${localApiStatus.baseUrl} and exposed on your LAN via ${localApiStatus.bindHost}.`
+          : `Local integration API active on ${localApiStatus.baseUrl}. Remote controller is enabled, but no non-internal IPv4 LAN address was detected.`
+        : `Local integration API active on ${localApiStatus.baseUrl}.`
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
@@ -776,6 +783,13 @@ export default function SettingsView() {
     void rotateLocalApiToken().then((status) => {
       if (!status) return
       setLocalApiFeedback('API key regenerated.')
+    })
+  }
+
+  const handleSetLocalApiRemoteWebEnabled = (enabled: boolean) => {
+    void setLocalApiRemoteWebEnabled(enabled).then((status) => {
+      if (!status) return
+      setLocalApiFeedback(enabled ? 'Remote web controller enabled.' : 'Remote web controller disabled.')
     })
   }
 
@@ -1532,6 +1546,17 @@ export default function SettingsView() {
                     </button>
                   </div>
 
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Remote Web Controller</span>
+                    <button
+                      className={`settings-toggle ${localApiRemoteWebEnabled ? 'active' : ''}`}
+                      onClick={() => handleSetLocalApiRemoteWebEnabled(!localApiRemoteWebEnabled)}
+                      disabled={!localApiEnabled}
+                    >
+                      {localApiRemoteWebEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
                   <div className="settings-field">
                     <span className="settings-field-label">Local API Port</span>
                     <div className="settings-inline-row">
@@ -1567,6 +1592,33 @@ export default function SettingsView() {
                   </div>
 
                   <div className="settings-field">
+                    <span className="settings-field-label">Remote Controller URLs</span>
+                    <div className="settings-remote-url-list">
+                      {localApiRemoteWebEnabled && localApiControllerUrls.length > 0 ? (
+                        localApiControllerUrls.map((controllerUrl) => (
+                          <div key={controllerUrl} className="settings-inline-row">
+                            <span className="settings-chip settings-chip-mono settings-chip-grow">
+                              {controllerUrl}
+                            </span>
+                            <button
+                              className="settings-btn"
+                              onClick={() => void copyToClipboard(controllerUrl, 'Remote URL')}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="settings-chip settings-chip-mono settings-chip-grow">
+                          {localApiRemoteWebEnabled
+                            ? 'No non-internal IPv4 LAN address detected yet.'
+                            : 'Enable Remote Web Controller to expose LAN URLs.'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="settings-field">
                     <span className="settings-field-label">Local API Key</span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">
@@ -1589,7 +1641,10 @@ export default function SettingsView() {
                 {localApiFeedback && <p className="settings-note settings-note-success">{localApiFeedback}</p>}
                 {localApiErrorMessage && <p className="settings-note settings-note-error">{localApiErrorMessage}</p>}
                 <p className="settings-note">
-                  The local API is loopback-only, off by default, and read-only unless controls are explicitly enabled.
+                  The local API is loopback-only and off by default. Enabling Remote Web Controller also exposes it on your LAN until that toggle is turned back off.
+                </p>
+                <p className="settings-note">
+                  External playback controls stay read-only until they are explicitly enabled, including from the remote web controller.
                 </p>
               </div>
             </div>

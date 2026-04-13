@@ -1,8 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomBytes, timingSafeEqual } from 'crypto'
+import { readFile } from 'fs/promises'
+import { networkInterfaces } from 'os'
+import { extname, join, normalize } from 'path'
+import { fileURLToPath } from 'url'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import {
-  LOCAL_API_HOST,
+  LOCAL_API_LAN_HOST,
+  LOCAL_API_LOOPBACK_HOST,
   type LocalApiControlCommand,
   type LocalApiNowPlayingSnapshot,
   type LocalApiServiceConfig,
@@ -16,17 +21,37 @@ const CONTROL_RATE_LIMIT_WINDOW_MS = 60_000
 const CONTROL_RATE_LIMIT_MAX_REQUESTS = 120
 const CONTROL_MAX_BODY_BYTES = 1_024
 const ARTWORK_MAX_BYTES = 8 * 1024 * 1024
+const LOCAL_API_MODULE_DIR = typeof __dirname === 'string'
+  ? __dirname
+  : fileURLToPath(new URL('.', import.meta.url))
+const REMOTE_STATIC_ROOT_CANDIDATES = [
+  join(process.cwd(), 'src/renderer/public/remote'),
+  join(process.cwd(), 'out/renderer/remote'),
+  join(LOCAL_API_MODULE_DIR, '../../renderer/remote'),
+  join(LOCAL_API_MODULE_DIR, '../renderer/remote')
+]
+const REMOTE_STATIC_CONTENT_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8'
+}
 
 interface LocalApiServiceOptions {
   config: LocalApiServiceConfig
   getSnapshot: () => MiniPlayerSnapshot | null
   dispatchCommand: (command: MiniPlayerCommand) => void
+  resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   onStatusChange?: (status: LocalApiStatus) => void
 }
 
-interface LocalApiControlBody {
-  command: LocalApiControlCommand
-}
+type LocalApiControlBody =
+  | { command: Exclude<LocalApiControlCommand, 'seek'> }
+  | { command: 'seek'; time: number }
 
 interface ControlRateLimitState {
   count: number
@@ -40,6 +65,7 @@ interface ParsedArtworkData {
 
 interface LocalApiArtworkState {
   currentTrackId: string | null
+  dataUrl: string | null
   mimeType: string | null
   bytes: Buffer | null
 }
@@ -78,7 +104,8 @@ function parseArtworkDataUrl(artworkData: string | null | undefined): ParsedArtw
 
 function sanitizeSnapshot(
   snapshot: MiniPlayerSnapshot | null,
-  artworkUrl: string | null
+  artworkUrl: string | null,
+  artworkDataUrl: string | null
 ): LocalApiNowPlayingSnapshot {
   const updatedAt = Date.now()
 
@@ -109,7 +136,8 @@ function sanitizeSnapshot(
           artist: String(snapshot.currentTrack.artist),
           album: String(snapshot.currentTrack.album),
           isFavorite: Boolean(snapshot.currentTrack.isFavorite),
-          artworkUrl
+          artworkUrl,
+          artworkDataUrl
         }
       : null,
     updatedAt
@@ -123,8 +151,8 @@ function secureTokenEquals(left: string, right: string): boolean {
   return timingSafeEqual(leftBuffer, rightBuffer)
 }
 
-function mapControlCommand(command: LocalApiControlCommand): MiniPlayerCommand {
-  switch (command) {
+function mapControlCommand(command: LocalApiControlBody): MiniPlayerCommand {
+  switch (command.command) {
     case 'play':
       return { type: 'play' }
     case 'pause':
@@ -135,12 +163,63 @@ function mapControlCommand(command: LocalApiControlCommand): MiniPlayerCommand {
       return { type: 'playPrevious' }
     case 'toggle-favorite':
       return { type: 'toggleFavoriteCurrent' }
+    case 'seek':
+      return { type: 'seek', time: command.time }
   }
 }
 
 function toLocalApiMode(config: LocalApiServiceConfig): LocalApiStatus['mode'] {
   if (!config.enabled) return 'off'
   return config.controlsEnabled ? 'api-control' : 'api'
+}
+
+function getLocalApiBindHost(config: Pick<LocalApiServiceConfig, 'remoteWebEnabled'>): string {
+  return config.remoteWebEnabled ? LOCAL_API_LAN_HOST : LOCAL_API_LOOPBACK_HOST
+}
+
+function getLocalApiLanUrls(port: number): string[] {
+  const urls = new Set<string>()
+  const interfaces = networkInterfaces()
+
+  for (const addresses of Object.values(interfaces)) {
+    for (const addressInfo of addresses ?? []) {
+      if (addressInfo.internal) continue
+      if (addressInfo.family !== 'IPv4') continue
+      const address = addressInfo.address.trim()
+      if (!address) continue
+      urls.add(`http://${address}:${port}`)
+    }
+  }
+
+  return Array.from(urls).sort((left, right) => left.localeCompare(right))
+}
+
+function getRemoteAssetPathname(requestPath: string): string | null {
+  if (requestPath === '/remote') return ''
+  if (requestPath === '/remote/' || requestPath === '/remote/index.html') return 'index.html'
+  if (!requestPath.startsWith('/remote/')) return null
+
+  const rawRelativePath = requestPath.slice('/remote/'.length)
+  if (!rawRelativePath) return 'index.html'
+
+  let decodedPath: string
+  try {
+    decodedPath = decodeURIComponent(rawRelativePath)
+  } catch {
+    return null
+  }
+
+  const normalizedPath = normalize(decodedPath).replace(/\\/g, '/')
+  if (
+    normalizedPath.startsWith('../')
+    || normalizedPath.includes('/../')
+    || normalizedPath === '..'
+    || normalizedPath.startsWith('/')
+  ) {
+    return null
+  }
+
+  return normalizedPath
 }
 
 export function generateLocalApiToken(): string {
@@ -150,6 +229,7 @@ export function generateLocalApiToken(): string {
 export class LocalApiService {
   private config: LocalApiServiceConfig
   private readonly dispatchCommand: (command: MiniPlayerCommand) => void
+  private readonly resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   private readonly onStatusChange?: (status: LocalApiStatus) => void
 
   private server: Server | null = null
@@ -165,27 +245,37 @@ export class LocalApiService {
   private latestRawSnapshot: MiniPlayerSnapshot | null
   private latestArtwork: LocalApiArtworkState = {
     currentTrackId: null,
+    dataUrl: null,
     mimeType: null,
     bytes: null
   }
   private latestSnapshot: LocalApiNowPlayingSnapshot
+  private artworkResolveSequence = 0
 
   constructor(options: LocalApiServiceOptions) {
     this.config = { ...options.config }
     this.dispatchCommand = options.dispatchCommand
+    this.resolveArtworkDataUrl = options.resolveArtworkDataUrl
     this.onStatusChange = options.onStatusChange
     this.latestRawSnapshot = options.getSnapshot()
-    this.latestSnapshot = sanitizeSnapshot(this.latestRawSnapshot, null)
+    this.latestSnapshot = sanitizeSnapshot(this.latestRawSnapshot, null, null)
     this.refreshLatestSnapshot(this.latestRawSnapshot)
   }
 
   getStatus(): LocalApiStatus {
+    const bindHost = getLocalApiBindHost(this.config)
+    const lanUrls = this.active && this.config.remoteWebEnabled
+      ? getLocalApiLanUrls(this.config.port)
+      : []
     return {
       enabled: this.config.enabled,
       controlsEnabled: this.config.controlsEnabled,
-      host: LOCAL_API_HOST,
+      remoteWebEnabled: this.config.remoteWebEnabled,
+      bindHost,
       port: this.config.port,
-      baseUrl: `http://${LOCAL_API_HOST}:${this.config.port}`,
+      baseUrl: `http://${LOCAL_API_LOOPBACK_HOST}:${this.config.port}`,
+      lanUrls,
+      controllerUrl: lanUrls[0] ? `${lanUrls[0]}/remote/` : null,
       token: this.config.token,
       active: this.active,
       mode: toLocalApiMode(this.config),
@@ -197,7 +287,10 @@ export class LocalApiService {
   async applyConfig(config: LocalApiServiceConfig): Promise<LocalApiStatus> {
     const previous = this.config
     const tokenChanged = previous.token !== config.token
-    const restartNeeded = previous.port !== config.port || previous.enabled !== config.enabled
+    const restartNeeded =
+      previous.port !== config.port
+      || previous.enabled !== config.enabled
+      || previous.remoteWebEnabled !== config.remoteWebEnabled
 
     this.config = { ...config }
     this.refreshLatestSnapshot(this.latestRawSnapshot)
@@ -239,41 +332,100 @@ export class LocalApiService {
   }
 
   private buildArtworkUrl(trackId: string): string {
-    const baseUrl = `http://${LOCAL_API_HOST}:${this.config.port}`
+    const baseUrl = `http://${LOCAL_API_LOOPBACK_HOST}:${this.config.port}`
     return `${baseUrl}/v1/artwork/current?trackId=${encodeURIComponent(trackId)}`
+  }
+
+  private buildSnapshot(includeInlineArtwork: boolean): LocalApiNowPlayingSnapshot {
+    const trackId = this.latestArtwork.currentTrackId
+    return sanitizeSnapshot(
+      this.latestRawSnapshot,
+      trackId && this.latestArtwork.bytes ? this.buildArtworkUrl(trackId) : null,
+      includeInlineArtwork ? this.latestArtwork.dataUrl : null
+    )
+  }
+
+  private async resolveArtworkForTrack(trackId: string, artworkHash: string, sequence: number): Promise<void> {
+    if (!this.resolveArtworkDataUrl) return
+
+    const artworkDataUrl = await this.resolveArtworkDataUrl(artworkHash).catch(() => null)
+    if (!artworkDataUrl) return
+
+    if (sequence !== this.artworkResolveSequence) return
+    if (this.latestRawSnapshot?.currentTrack?.id !== trackId) return
+
+    const parsedArtwork = parseArtworkDataUrl(artworkDataUrl)
+    if (!parsedArtwork) return
+
+    this.latestArtwork = {
+      currentTrackId: trackId,
+      dataUrl: artworkDataUrl,
+      mimeType: parsedArtwork.mimeType,
+      bytes: parsedArtwork.bytes
+    }
+    this.latestSnapshot = this.buildSnapshot(false)
+    if (this.active) {
+      this.broadcastSseEvent('now-playing', this.buildSnapshot(true))
+    }
   }
 
   private refreshLatestSnapshot(snapshot: MiniPlayerSnapshot | null): void {
     this.latestRawSnapshot = snapshot
     const currentTrack = snapshot?.currentTrack
     if (!currentTrack) {
+      this.artworkResolveSequence += 1
       this.latestArtwork = {
         currentTrackId: null,
+        dataUrl: null,
         mimeType: null,
         bytes: null
       }
-      this.latestSnapshot = sanitizeSnapshot(snapshot, null)
+      this.latestSnapshot = this.buildSnapshot(false)
       return
     }
 
     const trackId = String(currentTrack.id)
-    const parsedArtwork = parseArtworkDataUrl(currentTrack.artworkData)
-    if (!parsedArtwork) {
+    const inlineArtworkDataUrl = toSafeOptionalString(currentTrack.artworkData)
+    const parsedArtwork = parseArtworkDataUrl(inlineArtworkDataUrl)
+    if (parsedArtwork) {
+      this.artworkResolveSequence += 1
       this.latestArtwork = {
         currentTrackId: trackId,
+        dataUrl: inlineArtworkDataUrl,
+        mimeType: parsedArtwork.mimeType,
+        bytes: parsedArtwork.bytes
+      }
+      this.latestSnapshot = this.buildSnapshot(false)
+      return
+    }
+
+    if (this.latestArtwork.currentTrackId === trackId && this.latestArtwork.bytes) {
+      this.latestSnapshot = this.buildSnapshot(false)
+      return
+    }
+
+    this.artworkResolveSequence += 1
+    const resolveSequence = this.artworkResolveSequence
+
+    if (!currentTrack.artworkHash) {
+      this.latestArtwork = {
+        currentTrackId: trackId,
+        dataUrl: null,
         mimeType: null,
         bytes: null
       }
-      this.latestSnapshot = sanitizeSnapshot(snapshot, null)
+      this.latestSnapshot = this.buildSnapshot(false)
       return
     }
 
     this.latestArtwork = {
       currentTrackId: trackId,
-      mimeType: parsedArtwork.mimeType,
-      bytes: parsedArtwork.bytes
+      dataUrl: null,
+      mimeType: null,
+      bytes: null
     }
-    this.latestSnapshot = sanitizeSnapshot(snapshot, this.buildArtworkUrl(trackId))
+    this.latestSnapshot = this.buildSnapshot(false)
+    void this.resolveArtworkForTrack(trackId, currentTrack.artworkHash, resolveSequence)
   }
 
   private async startServer(): Promise<void> {
@@ -296,7 +448,7 @@ export class LocalApiService {
 
         server.once('listening', onListening)
         server.once('error', onError)
-        server.listen(this.config.port, LOCAL_API_HOST)
+        server.listen(this.config.port, getLocalApiBindHost(this.config))
       })
 
       server.on('error', (error) => {
@@ -406,6 +558,26 @@ export class LocalApiService {
     res.end(JSON.stringify(body))
   }
 
+  private respondFile(
+    res: ServerResponse<IncomingMessage>,
+    statusCode: number,
+    filePath: string,
+    body: Buffer
+  ): void {
+    const extension = extname(filePath).toLowerCase()
+    res.statusCode = statusCode
+    res.setHeader(
+      'Content-Type',
+      REMOTE_STATIC_CONTENT_TYPES[extension] ?? 'application/octet-stream'
+    )
+    res.setHeader('Content-Length', body.length.toString())
+    res.setHeader('Cache-Control', extension === '.html' ? 'no-store' : 'public, max-age=300')
+    if (filePath.endsWith('/sw.js') || filePath === 'sw.js') {
+      res.setHeader('Service-Worker-Allowed', '/remote/')
+    }
+    res.end(body)
+  }
+
   private async readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string | null> {
     return await new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
@@ -438,16 +610,29 @@ export class LocalApiService {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
     const command = candidate.command
-    if (
-      command !== 'play'
-      && command !== 'pause'
-      && command !== 'next'
-      && command !== 'previous'
-      && command !== 'toggle-favorite'
-    ) {
-      return null
+    switch (command) {
+      case 'play':
+      case 'pause':
+      case 'next':
+      case 'previous':
+      case 'toggle-favorite':
+        return { command }
+      case 'seek': {
+        const time = candidate.time
+        if (typeof time !== 'number' || !Number.isFinite(time)) {
+          return null
+        }
+        return { command, time }
+      }
+      default:
+        return null
     }
-    return { command }
+  }
+
+  private getCurrentSeekDuration(): number | null {
+    if (!this.latestRawSnapshot?.currentTrack) return null
+    const duration = toSafeNumber(this.latestRawSnapshot.duration)
+    return duration > 0 ? duration : null
   }
 
   private handleSse(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
@@ -518,8 +703,22 @@ export class LocalApiService {
       return
     }
 
-    this.dispatchCommand(mapControlCommand(controlBody.command))
-    this.respondJson(res, 200, { ok: true, command: controlBody.command })
+    let dispatchCommand = controlBody
+    if (controlBody.command === 'seek') {
+      const duration = this.getCurrentSeekDuration()
+      if (duration === null) {
+        this.respondJson(res, 409, { error: 'No active seekable track.' })
+        return
+      }
+
+      dispatchCommand = {
+        command: 'seek',
+        time: Math.max(0, Math.min(duration, controlBody.time))
+      }
+    }
+
+    this.dispatchCommand(mapControlCommand(dispatchCommand))
+    this.respondJson(res, 200, { ok: true, command: dispatchCommand.command })
   }
 
   private handleArtwork(
@@ -551,16 +750,63 @@ export class LocalApiService {
     res.end(this.latestArtwork.bytes)
   }
 
+  private async readRemoteAsset(relativePath: string): Promise<{ filePath: string; bytes: Buffer } | null> {
+    for (const rootPath of REMOTE_STATIC_ROOT_CANDIDATES) {
+      const resolvedPath = join(rootPath, relativePath)
+      try {
+        const bytes = await readFile(resolvedPath)
+        return { filePath: relativePath, bytes }
+      } catch {
+        // Try the next candidate root.
+      }
+    }
+
+    return null
+  }
+
+  private async handleRemoteAsset(
+    _req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>,
+    requestPath: string
+  ): Promise<boolean> {
+    if (!this.config.remoteWebEnabled) return false
+
+    if (requestPath === '/remote') {
+      res.statusCode = 302
+      res.setHeader('Location', '/remote/')
+      res.setHeader('Cache-Control', 'no-store')
+      res.end()
+      return true
+    }
+
+    const assetPath = getRemoteAssetPathname(requestPath)
+    if (assetPath === null) return false
+
+    const asset = await this.readRemoteAsset(assetPath)
+    if (!asset) {
+      this.respondJson(res, 503, { error: 'Remote controller assets are unavailable.' })
+      return true
+    }
+
+    this.respondFile(res, 200, asset.filePath, asset.bytes)
+    return true
+  }
+
   private async handleRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
     const method = req.method ?? 'GET'
     let requestUrl: URL
     try {
-      requestUrl = new URL(req.url ?? '/', `http://${LOCAL_API_HOST}`)
+      requestUrl = new URL(req.url ?? '/', `http://${LOCAL_API_LOOPBACK_HOST}`)
     } catch {
       this.respondJson(res, 400, { error: 'Invalid request URL.' })
       return
     }
     const path = requestUrl.pathname
+
+    if (method === 'GET' && path.startsWith('/remote')) {
+      const handled = await this.handleRemoteAsset(req, res, path)
+      if (handled) return
+    }
 
     if (method === 'GET' && path === '/v1/now-playing') {
       if (!this.isAuthorized(req)) {
@@ -568,7 +814,8 @@ export class LocalApiService {
         return
       }
 
-      this.respondJson(res, 200, this.latestSnapshot)
+      const includeInlineArtwork = requestUrl.searchParams.get('inlineArtwork') === '1'
+      this.respondJson(res, 200, includeInlineArtwork ? this.buildSnapshot(true) : this.latestSnapshot)
       return
     }
 

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Astra Remote</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-auth="true">
+    <div class="remote-glow remote-glow-a" aria-hidden="true"></div>
+    <div class="remote-glow remote-glow-b" aria-hidden="true"></div>
+
+    <main class="remote-shell">
+      <header class="panel remote-header">
+        <div>
+          <p class="eyebrow">Astra Remote</p>
+          <h1>LAN controller</h1>
+          <p id="connection-label" class="header-copy">Waiting for a Local API key.</p>
+        </div>
+        <div class="header-actions">
+          <span id="status-pill" class="status-pill status-idle">Idle</span>
+          <button id="reconnect-button" class="ghost-button" type="button">Reconnect</button>
+          <button id="forget-button" class="ghost-button" type="button">Forget Key</button>
+        </div>
+      </header>
+
+      <section id="notice-banner" class="panel notice-banner notice-info" hidden>
+        <p id="notice-text">Remote controller ready.</p>
+      </section>
+
+      <section id="install-note" class="panel install-note" hidden>
+        <p>
+          LAN HTTP is not a secure context in Chrome, so “Add to Home screen” becomes a browser shortcut.
+          Standalone PWA install requires HTTPS or localhost.
+        </p>
+      </section>
+
+      <section id="auth-panel" class="panel auth-panel">
+        <p class="eyebrow">Secure Setup</p>
+        <h2>Enter the Astra API key</h2>
+        <p class="panel-copy">
+          Open this URL from Astra's settings, then paste the current Local API key from the desktop app.
+        </p>
+        <div id="origin-chip" class="mono-chip"></div>
+        <form id="auth-form" class="auth-form">
+          <label class="field-label" for="auth-token">Local API key</label>
+          <input
+            id="auth-token"
+            class="token-input"
+            name="auth-token"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            inputmode="text"
+            placeholder="Paste the token from Astra"
+          />
+          <button id="connect-button" class="primary-button" type="submit">Connect</button>
+        </form>
+      </section>
+
+      <section class="remote-controller">
+        <section class="panel now-playing-panel">
+          <div class="artwork-frame">
+            <img id="artwork-image" class="artwork-image" alt="Current album art" hidden />
+            <div id="artwork-placeholder" class="artwork-placeholder" aria-hidden="true">ASTRA</div>
+          </div>
+
+          <div class="meta-block">
+            <div class="meta-topline">
+              <span id="playback-state" class="playback-chip">Stopped</span>
+            </div>
+            <h2 id="track-title" class="track-title">Nothing playing</h2>
+            <p id="track-artist" class="track-artist">Connect to Astra to load the live transport.</p>
+            <p id="track-album" class="track-album">Ready for phone control</p>
+          </div>
+        </section>
+
+        <section class="panel transport-panel">
+          <div class="time-row">
+            <span id="elapsed-time">0:00</span>
+            <span id="remaining-time">-0:00</span>
+          </div>
+          <input id="seek-input" class="seek-input" type="range" min="0" max="1" step="0.01" value="0" disabled />
+
+          <div class="control-grid">
+            <button id="previous-button" class="control-button" type="button">Prev</button>
+            <button id="play-button" class="control-button control-button-primary" type="button">Play</button>
+            <button id="next-button" class="control-button" type="button">Next</button>
+            <button id="favorite-button" class="control-button" type="button">Fav</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

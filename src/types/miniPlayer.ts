@@ -7,6 +7,7 @@ export interface MiniPlayerTrackSnapshot {
   title: string
   artist: string
   album: string
+  artworkHash?: string | null
   artworkData?: string | null
   isFavorite: boolean
 }
