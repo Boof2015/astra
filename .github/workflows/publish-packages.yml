@@ -128,12 +128,21 @@ jobs:
           su builder -c 'test -x /usr/bin/astra'
           su builder -c 'test -x /opt/astra/astra.AppImage'
           stat -c '%a %n' /usr/bin/astra /opt/astra/astra.AppImage
+          grep -Fx 'exec /opt/astra/astra.AppImage --no-sandbox "$@"' /usr/bin/astra
 
           grep -Fx 'Exec=astra %U' /usr/share/applications/astra.desktop
           grep -Fx 'TryExec=astra' /usr/share/applications/astra.desktop
           grep -Fx 'Icon=astra' /usr/share/applications/astra.desktop
 
-          su builder -c 'APPIMAGE_EXTRACT_AND_RUN=1 /opt/astra/astra.AppImage --appimage-version'
+          su builder -c '
+            tmpdir="$(mktemp -d)"
+            trap "rm -rf \"$tmpdir\"" EXIT
+            cd "$tmpdir"
+            /opt/astra/astra.AppImage --appimage-extract >/dev/null
+            test -x "$tmpdir/squashfs-root/AppRun"
+            test -x "$tmpdir/squashfs-root/astra"
+            test -f "$tmpdir/squashfs-root/astra.desktop"
+          '
 
   publish-aur:
     name: Publish to AUR
