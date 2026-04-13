@@ -278,7 +278,7 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
         with:
           pkgname: astra-music-bin
           pkgbuild: .github/aur/PKGBUILD
