@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fx 'depends = fuse2' "$AUR_WORKDIR/.SRCINFO"
+          grep -Eq '^[[:space:]]*depends = fuse2$' "$AUR_WORKDIR/.SRCINFO"
           PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
           if [ -z "$PKG_FILE" ]; then
             echo "Built package archive not found." >&2
