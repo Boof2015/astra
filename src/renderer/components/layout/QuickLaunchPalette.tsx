@@ -4,6 +4,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useGraphStore } from '../../stores/graphStore'
 import type { Track } from '../../types/audio'
 import type {
   QuickLaunchAlbumRecord,
@@ -153,6 +154,8 @@ export default function QuickLaunchPalette() {
   const setPendingLibrarySearchQuery = useUIStore((state) => state.setPendingLibrarySearchQuery)
   const setPendingSettingsSection = useUIStore((state) => state.setPendingSettingsSection)
   const setActiveView = useUIStore((state) => state.setActiveView)
+  const graphEnabled = useGraphStore((state) => state.enabled)
+  const openFullMap = useGraphStore((state) => state.openFullMap)
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
@@ -232,23 +235,25 @@ export default function QuickLaunchPalette() {
   const navResults = useMemo(() => {
     if (!hasQuery) return []
 
-    const scored = NAV_ENTRIES.map((entry) => {
-      const result = multiFieldScore(trimmedQuery, [
-        { value: entry.label, weight: 1.5 },
-        { value: entry.keywords.join(' '), weight: 1.0 }
-      ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
-      return {
-        kind: 'nav' as const,
-        id: entry.id,
-        score: result,
-        label: entry.label,
-        view: entry.view
-      }
-    }).filter((r): r is NonNullable<typeof r> => r !== null)
+    const scored = NAV_ENTRIES
+      .filter((entry) => graphEnabled || entry.view !== 'graph')
+      .map((entry) => {
+        const result = multiFieldScore(trimmedQuery, [
+          { value: entry.label, weight: 1.5 },
+          { value: entry.keywords.join(' '), weight: 1.0 }
+        ])
+        if (!result || result < MIN_SCORE_THRESHOLD) return null
+        return {
+          kind: 'nav' as const,
+          id: entry.id,
+          score: result,
+          label: entry.label,
+          view: entry.view
+        }
+      }).filter((r): r is NonNullable<typeof r> => r !== null)
 
     return scored.sort(compareScoredResults).slice(0, NAV_RESULT_LIMIT)
-  }, [hasQuery, trimmedQuery])
+  }, [graphEnabled, hasQuery, trimmedQuery])
 
   const settingResults = useMemo(() => {
     if (!hasQuery) return []
@@ -544,6 +549,9 @@ export default function QuickLaunchPalette() {
         if (result.view === 'playlist') {
           clearPlaylistSelection()
         }
+        if (result.view === 'graph') {
+          openFullMap()
+        }
         setActiveView(result.view as Parameters<typeof setActiveView>[0])
         closeQuickLaunch()
         return
@@ -618,6 +626,7 @@ export default function QuickLaunchPalette() {
     clearSelection,
     closeQuickLaunch,
     isExecuting,
+    openFullMap,
     selectAlbum,
     selectArtist,
     selectPlaylist,

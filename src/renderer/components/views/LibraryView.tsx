@@ -4,6 +4,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
+import { useGraphStore } from '../../stores/graphStore'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
@@ -239,6 +240,8 @@ export default function LibraryView() {
   const startPlaybackContext = usePlayerStore((s) => s.startPlaybackContext)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const graphEnabled = useGraphStore((s) => s.enabled)
+  const openFocusedGraph = useGraphStore((s) => s.openFocusedGraph)
   const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
@@ -796,6 +799,12 @@ export default function LibraryView() {
     }
   }
 
+  const handleOpenSelectedArtistInGraph = () => {
+    if (!selectedArtist) return
+    openFocusedGraph(selectedArtist)
+    setActiveView('graph')
+  }
+
   // Header
   let title = 'Library'
   let showViewTabs = true
@@ -963,23 +972,34 @@ export default function LibraryView() {
           <section className="library-artist-rail">
             <div className="library-artist-rail-header">
               <h3>Albums</h3>
-              <div className="library-artist-rail-actions">
-                <button
-                  type="button"
-                  className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'albums' ? 'active' : ''}`}
-                  onClick={() => setArtistAlbumRailMode('albums')}
-                  aria-pressed={artistAlbumRailMode === 'albums'}
-                >
-                  Albums
-                </button>
-                <button
-                  type="button"
-                  className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'featured' ? 'active' : ''}`}
-                  onClick={() => setArtistAlbumRailMode('featured')}
-                  aria-pressed={artistAlbumRailMode === 'featured'}
-                >
-                  Featured In
-                </button>
+              <div className="library-artist-rail-action-row">
+                {graphEnabled && (
+                  <button
+                    type="button"
+                    className="library-artist-graph-btn"
+                    onClick={handleOpenSelectedArtistInGraph}
+                  >
+                    Open In Graph
+                  </button>
+                )}
+                <div className="library-artist-rail-actions">
+                  <button
+                    type="button"
+                    className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'albums' ? 'active' : ''}`}
+                    onClick={() => setArtistAlbumRailMode('albums')}
+                    aria-pressed={artistAlbumRailMode === 'albums'}
+                  >
+                    Albums
+                  </button>
+                  <button
+                    type="button"
+                    className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'featured' ? 'active' : ''}`}
+                    onClick={() => setArtistAlbumRailMode('featured')}
+                    aria-pressed={artistAlbumRailMode === 'featured'}
+                  >
+                    Featured In
+                  </button>
+                </div>
               </div>
             </div>
 

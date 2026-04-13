@@ -21,6 +21,7 @@ import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import { useGraphStore } from '../../stores/graphStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -300,8 +301,12 @@ export default function SettingsView() {
   const developerRevealClickCountRef = useRef(0)
   const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
+  const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
+  const libraryGraphEnabled = useGraphStore((state) => state.enabled)
+  const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
+  const openFullGraph = useGraphStore((state) => state.openFullMap)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const sleepTimerIsActive = useSleepTimerStore((state) => state.isActive)
@@ -1588,6 +1593,45 @@ export default function SettingsView() {
                 </p>
               </div>
             </div>
+          </section>
+            )}
+
+            {activeSectionId === 'experimental' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Experimental</h3>
+              <p>Preview features that may change, move, or disappear. They are not guaranteed to be stable.</p>
+            </div>
+            <div className="settings-grid">
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Library Graph</span>
+                <button
+                  className={`settings-toggle ${libraryGraphEnabled ? 'active' : ''}`}
+                  onClick={() => setLibraryGraphEnabled(!libraryGraphEnabled)}
+                >
+                  {libraryGraphEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+              <div className="settings-field settings-field-inline">
+                <span className="settings-field-label">Open Graph</span>
+                <button
+                  className="settings-btn"
+                  disabled={!libraryGraphEnabled}
+                  onClick={() => {
+                    openFullGraph()
+                    setActiveView('graph')
+                  }}
+                >
+                  Open Full Map
+                </button>
+              </div>
+            </div>
+            <p className="settings-note">
+              Enable Library Graph adds a dedicated graph view and an artist-page graph entrypoint.
+            </p>
+            <p className="settings-note">
+              The current version derives artist relationships from your existing library metadata only.
+            </p>
           </section>
             )}
 

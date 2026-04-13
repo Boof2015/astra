@@ -68,6 +68,11 @@ export const SETTINGS_SECTIONS = [
     ]
   },
   {
+    id: 'experimental',
+    label: 'Experimental',
+    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network']
+  },
+  {
     id: 'info',
     label: 'Info',
     keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']
@@ -93,12 +98,13 @@ export const NON_HIDDEN_SETTINGS_SECTIONS = SETTINGS_SECTIONS.filter(
 export interface NavEntry {
   id: string
   label: string
-  view: 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
+  view: 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
   keywords: string[]
 }
 
 export const NAV_ENTRIES: NavEntry[] = [
   { id: 'nav:eq', label: 'Equalizer', view: 'eq', keywords: ['eq', 'equalizer', 'bands', 'frequency', 'bass', 'treble'] },
+  { id: 'nav:graph', label: 'Library Graph', view: 'graph', keywords: ['graph', 'network', 'artists', 'relationships', 'collab', 'collaboration', 'map'] },
   { id: 'nav:library', label: 'Library', view: 'library', keywords: ['library', 'tracks', 'songs', 'browse', 'collection'] },
   { id: 'nav:home', label: 'Home', view: 'home', keywords: ['home', 'dashboard', 'main'] },
   { id: 'nav:playlist', label: 'Playlists', view: 'playlist', keywords: ['playlist', 'playlists', 'list'] },

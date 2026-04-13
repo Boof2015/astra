@@ -116,6 +116,7 @@ export interface ScanIssueLog {
 interface LibraryStore {
   // State
   tracks: DbTrack[]
+  fullTracks: DbTrack[]
   totalTrackCount: number
   albums: Album[]
   artists: Artist[]
@@ -145,6 +146,7 @@ interface LibraryStore {
   // Actions
   loadLibrary: () => Promise<void>
   loadTracks: () => Promise<void>
+  loadFullTracks: () => Promise<void>
   loadTrackCount: () => Promise<void>
   loadAlbums: () => Promise<void>
   loadArtists: () => Promise<void>
@@ -176,6 +178,7 @@ interface LibraryStore {
     origin?: Exclude<SelectionOrigin, null>,
     mode?: LibraryArtistBrowseMode
   ) => Promise<void>
+  releaseFullTracks: () => void
   clearSelection: () => void
   goBackSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
@@ -203,6 +206,7 @@ const artworkCache = new Map<string, string>()
 const cardArtworkCache = new Map<string, string>()
 const thumbnailArtworkCache = new Map<string, string>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+let fullTracksRequestId = 0
 
 function estimateStringMapBytes(cache: Map<string, string>): number {
   let total = 0
@@ -322,6 +326,7 @@ function mergeScanIssueLogs(
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
   tracks: [],
+  fullTracks: [],
   totalTrackCount: 0,
   albums: [],
   artists: [],
@@ -397,9 +402,21 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const tracks = await window.electronAPI.library.getTracks()
     set((state) => {
       // Avoid clobbering active artist/album selections with full library tracks.
-      if (state.selectedAlbum || state.selectedArtist) return {}
-      return { tracks }
+      if (state.selectedAlbum || state.selectedArtist) {
+        return { fullTracks: tracks }
+      }
+      return { tracks, fullTracks: tracks }
     })
+  },
+
+  loadFullTracks: async () => {
+    const requestId = ++fullTracksRequestId
+    const tracks = await window.electronAPI.library.getTracks()
+    if (requestId !== fullTracksRequestId) {
+      return
+    }
+
+    set({ fullTracks: tracks })
   },
 
   // Load full-library track count (independent of active selection/filter state)
@@ -781,6 +798,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
       return {
         viewMode: mode,
+        tracks: state.fullTracks,
         selectedAlbum: null,
         selectedArtist: null,
         selectionOrigin: null,
@@ -822,9 +840,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }))
   },
 
+  releaseFullTracks: () => {
+    fullTracksRequestId += 1
+  },
+
   // Clear selection
   clearSelection: async () => {
-    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null, selectionHistory: [] })
+    set((state) => ({
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectionOrigin: null,
+      selectionHistory: [],
+      tracks: state.fullTracks
+    }))
     await get().loadTracks()
   },
 

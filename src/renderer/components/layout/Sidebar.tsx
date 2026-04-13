@@ -2,11 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore, type AppView } from '../../stores/uiStore'
+import { useGraphStore } from '../../stores/graphStore'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
-const navItems: { id: AppView; label: string; icon: ReactNode }[] = [
+const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
   {
     id: 'home',
     label: 'Home',
@@ -25,6 +26,20 @@ const navItems: { id: AppView; label: string; icon: ReactNode }[] = [
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+      </svg>
+    ),
+  },
+  {
+    id: 'graph',
+    label: 'Graph',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="5" cy="6" r="2.2" />
+        <circle cx="18.5" cy="5.5" r="2.2" />
+        <circle cx="12" cy="18" r="2.2" />
+        <path d="M7 7.2 10.5 16" />
+        <path d="m16.8 6.6-3.4 9.1" />
+        <path d="M7.3 6h9" />
       </svg>
     ),
   },
@@ -80,6 +95,8 @@ const metadataIcon = (
 
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
+  const graphEnabled = useGraphStore((s) => s.enabled)
+  const openFullMap = useGraphStore((s) => s.openFullMap)
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
@@ -108,6 +125,10 @@ export default function Sidebar() {
       topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
     }, 3),
     [playlists, favoriteTracks]
+  )
+  const navItems = useMemo(
+    () => baseNavItems.filter((item) => graphEnabled || item.id !== 'graph'),
+    [graphEnabled]
   )
 
   const updateOverflowPopoutPosition = useCallback(() => {
@@ -209,8 +230,12 @@ export default function Sidebar() {
       return
     }
 
+    if (view === 'graph') {
+      openFullMap()
+    }
+
     setActiveView(view)
-  }, [clearPlaylistSelection, setActiveView])
+  }, [clearPlaylistSelection, openFullMap, setActiveView])
 
   return (
     <aside className="sidebar">
