@@ -21,7 +21,7 @@
         <div>
           <p class="eyebrow">Astra Remote</p>
           <h1>LAN controller</h1>
-          <p id="connection-label" class="header-copy">Waiting for a Local API key.</p>
+          <p id="connection-label" class="header-copy">Waiting for pairing or a Local API key.</p>
         </div>
         <div class="header-actions">
           <span id="status-pill" class="status-pill status-idle">Idle</span>
@@ -41,11 +41,68 @@
         </p>
       </section>
 
-      <section id="auth-panel" class="panel auth-panel">
-        <p class="eyebrow">Secure Setup</p>
+      <section id="pair-panel" class="panel auth-panel">
+        <p class="eyebrow">Phone Pairing</p>
+        <h2>Connect this phone to Astra</h2>
+        <p id="pair-copy" class="panel-copy">
+          Open Pair Remote in Astra on your desktop. This page can stay open and will react to a new pairing link automatically.
+        </p>
+        <div class="setup-step-list" aria-label="Pairing steps">
+          <div id="setup-step-start" class="setup-step" data-state="active">
+            <div class="setup-step-number">1</div>
+            <div class="setup-step-body">
+              <strong>Start pairing in Astra on your desktop</strong>
+              <span>Open Settings → Local API, then tap Pair Remote.</span>
+            </div>
+          </div>
+          <div id="setup-step-open" class="setup-step" data-state="idle">
+            <div class="setup-step-number">2</div>
+            <div class="setup-step-body">
+              <strong>Open the pairing link on this phone</strong>
+              <span>Scan the QR code from Astra or paste the pairing link below.</span>
+            </div>
+          </div>
+          <div id="setup-step-approve" class="setup-step" data-state="idle">
+            <div class="setup-step-number">3</div>
+            <div class="setup-step-body">
+              <strong>Approve this phone in Astra</strong>
+              <span>Astra issues a dedicated token after you approve the request on the desktop.</span>
+            </div>
+          </div>
+        </div>
+        <div class="setup-status-card">
+          <div id="pair-status-chip" class="mono-chip">Waiting for a pairing link</div>
+        </div>
+        <form id="pair-link-form" class="auth-form">
+          <label class="field-label" for="pair-link-input">Already on this page?</label>
+          <p class="panel-copy panel-copy-compact">
+            Paste the full pairing link from Astra here if your camera opens this page instead of scanning directly.
+          </p>
+          <div class="pair-link-input-row">
+            <input
+              id="pair-link-input"
+              class="token-input"
+              name="pair-link"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              inputmode="text"
+              placeholder="Paste pairing link or ticket"
+            />
+            <button id="pair-link-button" class="primary-button" type="submit">Pair This Phone</button>
+          </div>
+        </form>
+        <div class="auth-form-actions setup-panel-actions">
+          <button id="show-manual-auth-button" class="ghost-button" type="button">Use API Key Instead</button>
+        </div>
+      </section>
+
+      <section id="auth-panel" class="panel auth-panel" hidden>
+        <p class="eyebrow">Manual Fallback</p>
         <h2>Enter the Astra API key</h2>
         <p class="panel-copy">
-          Open this URL from Astra's settings, then paste the current Local API key from the desktop app.
+          Pairing is the preferred path. Use this only if you intentionally want to connect with the current Local API key instead.
         </p>
         <div id="origin-chip" class="mono-chip"></div>
         <form id="auth-form" class="auth-form">
@@ -61,11 +118,14 @@
             inputmode="text"
             placeholder="Paste the token from Astra"
           />
-          <button id="connect-button" class="primary-button" type="submit">Connect</button>
+          <div class="auth-form-actions">
+            <button id="connect-button" class="primary-button" type="submit">Connect</button>
+            <button id="hide-manual-auth-button" class="ghost-button" type="button">Back to Pairing</button>
+          </div>
         </form>
       </section>
 
-      <section class="remote-controller">
+      <section id="remote-controller" class="remote-controller">
         <section class="panel now-playing-panel">
           <div class="artwork-frame">
             <img id="artwork-image" class="artwork-image" alt="Current album art" hidden />

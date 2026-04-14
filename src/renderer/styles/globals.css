@@ -13674,6 +13674,141 @@ body::after {
   gap: 8px;
 }
 
+.local-api-guide {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+  gap: 12px;
+}
+
+.local-api-guide-main,
+.local-api-guide-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.local-api-guide-step,
+.local-api-guide-side-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px;
+}
+
+.local-api-guide-step.is-active,
+.local-api-guide-side-card.is-active {
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(0, 0, 0, 0.22));
+}
+
+.local-api-guide-step.is-complete {
+  border-color: rgba(134, 239, 172, 0.18);
+  background: linear-gradient(180deg, rgba(134, 239, 172, 0.05), rgba(0, 0, 0, 0.2));
+}
+
+.local-api-guide-step.is-blocked {
+  border-color: rgba(248, 113, 113, 0.18);
+}
+
+.local-api-guide-step-head,
+.local-api-guide-side-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.local-api-guide-side-head {
+  justify-content: space-between;
+}
+
+.local-api-guide-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.local-api-guide-step-copy,
+.local-api-guide-toggle-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.local-api-guide-step-copy h5,
+.local-api-guide-side-head h5 {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.local-api-guide-step-copy p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.local-api-guide-toggle-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.local-api-guide-toggle-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+}
+
+.local-api-guide-toggle-card .settings-note {
+  margin-top: 4px;
+}
+
+.local-api-guide-action-row,
+.local-api-guide-inline-chip-row,
+.local-api-guide-sidebar-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.local-api-guide-sidebar-actions {
+  justify-content: flex-end;
+}
+
+.local-api-guide-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.local-api-guide-empty-state strong {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.84);
+}
+
 .settings-sleep-controls {
   display: flex;
   flex-direction: column;
@@ -13720,8 +13855,65 @@ body::after {
   min-width: 0;
 }
 
+.settings-shell .settings-inline-input-grow {
+  flex: 1;
+  min-width: 0;
+}
+
 .settings-shell .settings-inline-input-compact {
   max-width: 140px;
+}
+
+.settings-shell .settings-pairing-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-shell .settings-pairing-request,
+.settings-shell .settings-paired-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 10px;
+}
+
+.settings-shell .settings-pairing-request-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-shell .settings-manual-setup {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 10px;
+}
+
+.settings-shell .settings-manual-setup-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.settings-shell .settings-manual-setup-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-shell .settings-manual-setup-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .settings-shell .settings-note-success {
@@ -13758,6 +13950,190 @@ body::after {
 .confirm-action-modal .settings-btn-danger:hover {
   border-color: rgba(248, 113, 113, 0.76);
   background: rgba(248, 113, 113, 0.24);
+}
+
+.local-api-pairing-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.local-api-pairing-subtitle {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.local-api-pairing-body {
+  display: grid;
+  gap: 16px;
+}
+
+.local-api-pairing-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.local-api-pairing-toggle-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.local-api-pairing-toggle-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+}
+
+.local-api-pairing-toggle-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.local-api-pairing-toggle-copy .settings-note {
+  margin-top: 4px;
+}
+
+.local-api-pairing-qr-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.local-api-pairing-qr {
+  width: min(100%, 360px);
+}
+
+.local-api-pairing-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.local-api-pairing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.local-api-pairing-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.local-api-pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.local-api-pairing-action-row,
+.local-api-pairing-inline-chip-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.local-api-pairing-flow {
+  display: grid;
+  gap: 10px;
+}
+
+.local-api-pairing-flow-step {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 12px;
+}
+
+.local-api-pairing-flow-step.is-active {
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(0, 0, 0, 0.2));
+}
+
+.local-api-pairing-flow-step.is-blocked {
+  border-color: rgba(248, 113, 113, 0.24);
+}
+
+.local-api-pairing-flow-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.local-api-pairing-flow-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.local-api-pairing-flow-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.local-api-pairing-flow-copy h4 {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.local-api-pairing-flow-copy p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.local-api-pairing-request-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-api-pairing-waiting {
+  margin-top: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+@media (max-width: 980px) {
+  .local-api-guide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .local-api-pairing-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .settings-shell .settings-danger-zone {

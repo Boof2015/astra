@@ -13,7 +13,12 @@ import type {
     ScopePopoutChunk,
     ScopePopoutState
 } from '../types/scopePopout'
-import type { LocalApiStatus } from '../types/localApi'
+import type {
+    LocalApiPairedDevice,
+    LocalApiPairingTicket,
+    LocalApiPendingPairingRequest,
+    LocalApiStatus
+} from '../types/localApi'
 import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
@@ -196,6 +201,13 @@ declare global {
             }
             localApi: {
                 getStatus: () => Promise<LocalApiStatus>
+                createPairingTicket: (baseUrl?: string) => Promise<LocalApiPairingTicket>
+                listPairedDevices: () => Promise<LocalApiPairedDevice[]>
+                listPendingPairingRequests: () => Promise<LocalApiPendingPairingRequest[]>
+                approvePairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
+                rejectPairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
+                revokePairedDevice: (id: string) => Promise<LocalApiPairedDevice | null>
+                revokeAllPairedDevices: () => Promise<number>
                 setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>

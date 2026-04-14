@@ -5,6 +5,17 @@
   const NOTICE_TIMEOUT_MS = 3600
 
   const elements = {
+    pairPanel: document.getElementById('pair-panel'),
+    pairCopy: document.getElementById('pair-copy'),
+    pairStatusChip: document.getElementById('pair-status-chip'),
+    setupStepStart: document.getElementById('setup-step-start'),
+    setupStepOpen: document.getElementById('setup-step-open'),
+    setupStepApprove: document.getElementById('setup-step-approve'),
+    pairLinkForm: document.getElementById('pair-link-form'),
+    pairLinkInput: document.getElementById('pair-link-input'),
+    pairLinkButton: document.getElementById('pair-link-button'),
+    showManualAuthButton: document.getElementById('show-manual-auth-button'),
+    hideManualAuthButton: document.getElementById('hide-manual-auth-button'),
     authPanel: document.getElementById('auth-panel'),
     authForm: document.getElementById('auth-form'),
     authToken: document.getElementById('auth-token'),
@@ -15,6 +26,7 @@
     noticeBanner: document.getElementById('notice-banner'),
     noticeText: document.getElementById('notice-text'),
     installNote: document.getElementById('install-note'),
+    remoteController: document.getElementById('remote-controller'),
     playbackState: document.getElementById('playback-state'),
     artworkImage: document.getElementById('artwork-image'),
     artworkPlaceholder: document.getElementById('artwork-placeholder'),
@@ -36,18 +48,24 @@
     token: (localStorage.getItem(STORAGE_KEY) || '').trim(),
     snapshot: null,
     connectionState: 'idle',
-    connectionMessage: 'Waiting for a Local API key.',
+    connectionMessage: 'Waiting for pairing or a Local API key.',
     noticeMessage: '',
     noticeTone: 'info',
     noticeTimer: null,
     eventAbortController: null,
     reconnectTimer: null,
     pollTimer: null,
+    pairPollTimer: null,
     artworkObjectUrl: null,
     artworkTrackId: null,
     artworkRequestId: 0,
     isScrubbing: false,
-    scrubValue: 0
+    scrubValue: 0,
+    manualAuthVisible: false,
+    pairingState: 'idle',
+    pairingMessage: 'Open Pair Remote in Astra on your desktop, then scan the QR code or paste the pairing link on this page.',
+    pairingPollToken: '',
+    pairingExpiresAt: 0
   }
 
   elements.originChip.textContent = window.location.origin
@@ -103,6 +121,13 @@
     }
   }
 
+  function stopPairingPolling() {
+    if (state.pairPollTimer !== null) {
+      window.clearInterval(state.pairPollTimer)
+      state.pairPollTimer = null
+    }
+  }
+
   function stopEventStream() {
     if (state.eventAbortController) {
       state.eventAbortController.abort()
@@ -121,6 +146,70 @@
     stopEventStream()
     stopPolling()
     stopReconnectTimer()
+  }
+
+  function setPairingState(nextState, message, expiresAt) {
+    state.pairingState = nextState
+    state.pairingMessage = message
+    state.pairingExpiresAt = typeof expiresAt === 'number' ? expiresAt : 0
+    render()
+  }
+
+  function detectClientLabel() {
+    const userAgent = navigator.userAgent || ''
+    if (/iPhone/i.test(userAgent)) return 'iPhone'
+    if (/iPad/i.test(userAgent)) return 'iPad'
+    if (/Android/i.test(userAgent)) return 'Android Phone'
+    if (/Macintosh|Mac OS X/i.test(userAgent)) return 'Mac Browser'
+    if (/Windows/i.test(userAgent)) return 'Windows Browser'
+    return 'Remote Controller'
+  }
+
+  function deriveDeviceName() {
+    const clientLabel = detectClientLabel()
+    return clientLabel === 'Remote Controller' ? 'Astra Remote' : `${clientLabel} Remote`
+  }
+
+  function clearPairingHash() {
+    if (!window.location.hash) return
+    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`)
+  }
+
+  function extractPairingTicket(value) {
+    const trimmedValue = typeof value === 'string' ? value.trim() : ''
+    if (!trimmedValue) return ''
+
+    const directHashParams = new URLSearchParams(trimmedValue.replace(/^#/, ''))
+    const directHashTicket = (directHashParams.get('pair') || '').trim()
+    if (directHashTicket) return directHashTicket
+
+    try {
+      const parsedUrl = new URL(trimmedValue, window.location.origin)
+      const hashParams = new URLSearchParams(parsedUrl.hash.replace(/^#/, ''))
+      const hashTicket = (hashParams.get('pair') || '').trim()
+      if (hashTicket) return hashTicket
+
+      const searchTicket = (parsedUrl.searchParams.get('pair') || '').trim()
+      if (searchTicket) return searchTicket
+    } catch {
+      // Ignore invalid URLs and fall back to raw ticket parsing.
+    }
+
+    return /^[A-Za-z0-9_-]{16,}$/.test(trimmedValue) ? trimmedValue : ''
+  }
+
+  function prepareForPairingClaim() {
+    stopRealtime()
+    stopPairingPolling()
+    state.snapshot = null
+    state.token = ''
+    state.manualAuthVisible = false
+    state.connectionState = 'idle'
+    state.connectionMessage = 'Waiting for Astra to approve this phone.'
+    elements.authToken.value = ''
+    elements.pairLinkInput.value = ''
+    clearArtwork(null)
+    render()
   }
 
   function setNotice(message, tone, timeoutMs) {
@@ -199,16 +288,54 @@
       : snapshot && snapshot.playbackState === 'loading'
         ? 'Wait'
         : 'Play'
+    const showSetup = !state.token
+    const pairingCountdownMs = state.pairingExpiresAt > 0 ? Math.max(0, state.pairingExpiresAt - Date.now()) : 0
+    const pairingStateLabels = {
+      idle: 'Waiting for a pairing link',
+      claiming: 'Claiming pairing link',
+      pending: pairingCountdownMs > 0
+        ? `Awaiting approval • ${formatTime(pairingCountdownMs / 1000)}`
+        : 'Awaiting approval',
+      rejected: 'Pairing rejected',
+      expired: 'Pairing expired',
+      error: 'Pairing failed'
+    }
 
-    document.body.dataset.auth = state.token ? 'false' : 'true'
-    elements.authPanel.hidden = Boolean(state.token)
+    document.body.dataset.auth = showSetup ? 'true' : 'false'
+    elements.pairPanel.hidden = !showSetup || state.manualAuthVisible
+    elements.authPanel.hidden = !showSetup || !state.manualAuthVisible
+    elements.remoteController.hidden = showSetup
     elements.authToken.disabled = state.connectionState === 'connecting'
+    elements.pairLinkInput.disabled = state.pairingState === 'claiming' || state.pairingState === 'pending'
+    elements.pairLinkButton.disabled = state.pairingState === 'claiming' || state.pairingState === 'pending'
     elements.reconnectButton.disabled = !state.token || state.connectionState === 'connecting'
     elements.forgetButton.disabled = !state.token
+    elements.reconnectButton.hidden = showSetup
+    elements.forgetButton.hidden = showSetup
+    elements.installNote.hidden = window.isSecureContext || !showSetup
+
+    const hasPairingInProgress = state.pairingState === 'claiming' || state.pairingState === 'pending'
+    const stepStates = {
+      start: hasPairingInProgress ? 'complete' : 'active',
+      open: state.pairingState === 'pending'
+        ? 'complete'
+        : state.pairingState === 'claiming'
+          ? 'active'
+          : 'idle',
+      approve: state.pairingState === 'pending' ? 'active' : 'idle'
+    }
+    elements.setupStepStart.dataset.state = stepStates.start
+    elements.setupStepOpen.dataset.state = stepStates.open
+    elements.setupStepApprove.dataset.state = stepStates.approve
 
     setThemeAccent(snapshot && snapshot.visualizerLineColor)
     renderStatus()
     renderNotice()
+
+    elements.pairCopy.textContent = state.pairingMessage
+    elements.pairStatusChip.textContent = pairingStateLabels[state.pairingState] || 'Waiting for a pairing link'
+    elements.showManualAuthButton.disabled = state.pairingState === 'claiming' || state.pairingState === 'pending'
+    elements.hideManualAuthButton.disabled = state.connectionState === 'connecting'
 
     elements.playbackState.textContent = snapshot
       ? snapshot.playbackState.charAt(0).toUpperCase() + snapshot.playbackState.slice(1)
@@ -254,10 +381,13 @@
 
   function handleAuthorizationFailure() {
     stopRealtime()
+    stopPairingPolling()
     persistToken('')
+    state.manualAuthVisible = false
     state.connectionState = 'error'
     state.connectionMessage = 'API key rejected. Enter the current Local API key from Astra.'
     setNotice('Authentication failed. Copy the latest key from Astra.', 'error', 0)
+    setPairingState('idle', 'Open Pair Remote in Astra on your desktop, then scan the QR code or paste the pairing link on this page.', 0)
     render()
     elements.authToken.focus()
   }
@@ -409,6 +539,136 @@
     }, RECONNECT_DELAY_MS)
   }
 
+  async function fetchPairingStatus() {
+    if (!state.pairingPollToken) return
+
+    try {
+      const response = await fetch(`/v1/pairing/status?pollToken=${encodeURIComponent(state.pairingPollToken)}`, {
+        cache: 'no-store'
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (response.status === 404) {
+        stopPairingPolling()
+        setPairingState('error', 'Astra no longer recognizes this pairing request. Start a fresh Pair Remote flow on the desktop.', 0)
+        return
+      }
+
+      if (response.status === 410 || payload.state === 'consumed') {
+        stopPairingPolling()
+        if (!state.token) {
+          setPairingState('error', 'This pairing link was already used. Start a fresh Pair Remote flow on the desktop.', 0)
+        }
+        return
+      }
+
+      if (!response.ok) {
+        throw new Error(`Pairing status failed with ${response.status}.`)
+      }
+
+      if (payload.state === 'approved' && typeof payload.token === 'string' && payload.token.trim()) {
+        stopPairingPolling()
+        persistToken(payload.token.trim())
+        state.manualAuthVisible = false
+        state.pairingPollToken = ''
+        clearPairingHash()
+        setPairingState('idle', 'This phone is paired. Astra will reconnect with its dedicated device token.', 0)
+        setNotice('Phone paired. Astra Remote is now connected with its own device token.', 'info', NOTICE_TIMEOUT_MS)
+        void connect()
+        return
+      }
+
+      if (payload.state === 'rejected') {
+        stopPairingPolling()
+        state.pairingPollToken = ''
+        setPairingState('rejected', 'Astra rejected this phone. Start a fresh Pair Remote flow on the desktop if you want to try again.', payload.expiresAt || 0)
+        return
+      }
+
+      if (payload.state === 'expired') {
+        stopPairingPolling()
+        state.pairingPollToken = ''
+        setPairingState('expired', 'This pairing request expired. Start Pair Remote again on the desktop.', payload.expiresAt || 0)
+        return
+      }
+
+      setPairingState('pending', 'Pairing request sent. Approve this phone in Astra to finish setup.', payload.expiresAt || state.pairingExpiresAt)
+    } catch (error) {
+      stopPairingPolling()
+      state.pairingPollToken = ''
+      setPairingState('error', 'Could not finish pairing with Astra. Check the desktop app and try again.', 0)
+    }
+  }
+
+  function startPairingPolling() {
+    stopPairingPolling()
+    state.pairPollTimer = window.setInterval(() => {
+      void fetchPairingStatus()
+    }, 1500)
+  }
+
+  async function claimPairingTicket(ticket) {
+    stopPairingPolling()
+    state.manualAuthVisible = false
+    state.pairingPollToken = ''
+    setPairingState('claiming', 'Link received. Asking Astra to start pairing for this phone.', 0)
+
+    try {
+      const response = await fetch('/v1/pairing/claim', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: JSON.stringify({
+          ticket,
+          deviceName: deriveDeviceName(),
+          clientLabel: detectClientLabel()
+        })
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (response.status === 404 || response.status === 410) {
+        setPairingState('expired', 'This pairing link is no longer valid. Start Pair Remote again on the desktop.', 0)
+        return false
+      }
+
+      if (!response.ok || typeof payload.pollToken !== 'string' || !payload.pollToken.trim()) {
+        setPairingState('error', 'Astra could not start pairing for this phone. Start Pair Remote again on the desktop.', 0)
+        return false
+      }
+
+      state.pairingPollToken = payload.pollToken.trim()
+      clearPairingHash()
+      setPairingState('pending', 'Pairing request sent. Approve this phone in Astra to finish setup.', payload.expiresAt || 0)
+      startPairingPolling()
+      void fetchPairingStatus()
+      return true
+    } catch (error) {
+      setPairingState('error', 'Could not reach Astra for pairing. Reopen the LAN pairing link from Astra and try again.', 0)
+      return false
+    }
+  }
+
+  function beginPairingClaim(rawInput, notifyOnInvalid) {
+    const trimmedInput = typeof rawInput === 'string' ? rawInput.trim() : ''
+    if (!trimmedInput) return false
+
+    const pairingTicket = extractPairingTicket(trimmedInput)
+    if (!pairingTicket) {
+      if (notifyOnInvalid !== false) {
+        setNotice('Paste a full pairing link or raw pairing ticket from Astra.', 'error', NOTICE_TIMEOUT_MS)
+        elements.pairLinkInput.focus()
+      }
+      return false
+    }
+
+    prepareForPairingClaim()
+    void claimPairingTicket(pairingTicket)
+    return true
+  }
+
   function handleStreamPayload(payload) {
     try {
       const snapshot = JSON.parse(payload)
@@ -547,6 +807,11 @@
     }
   }
 
+  elements.pairLinkForm.addEventListener('submit', (event) => {
+    event.preventDefault()
+    beginPairingClaim(elements.pairLinkInput.value)
+  })
+
   elements.authForm.addEventListener('submit', (event) => {
     event.preventDefault()
     const nextToken = elements.authToken.value.trim()
@@ -555,10 +820,23 @@
       return
     }
 
+    stopPairingPolling()
+    state.pairingPollToken = ''
     persistToken(nextToken)
     state.connectionMessage = 'Connecting to Astra.'
     render()
     void connect()
+  })
+
+  elements.showManualAuthButton.addEventListener('click', () => {
+    state.manualAuthVisible = true
+    render()
+    elements.authToken.focus()
+  })
+
+  elements.hideManualAuthButton.addEventListener('click', () => {
+    state.manualAuthVisible = false
+    render()
   })
 
   elements.reconnectButton.addEventListener('click', () => {
@@ -567,14 +845,16 @@
 
   elements.forgetButton.addEventListener('click', () => {
     stopRealtime()
+    stopPairingPolling()
     persistToken('')
     state.snapshot = null
+    state.manualAuthVisible = false
     state.connectionState = 'idle'
-    state.connectionMessage = 'API key cleared.'
+    state.connectionMessage = 'Remote token cleared.'
     clearArtwork(null)
-    setNotice('Saved API key removed from this phone.', 'info', NOTICE_TIMEOUT_MS)
+    setPairingState('idle', 'Open Pair Remote in Astra on your desktop, then scan the QR code or paste the pairing link on this page.', 0)
+    setNotice('Saved remote credential removed from this phone.', 'info', NOTICE_TIMEOUT_MS)
     render()
-    elements.authToken.focus()
   })
 
   elements.previousButton.addEventListener('click', () => {
@@ -624,7 +904,12 @@
 
   window.addEventListener('beforeunload', () => {
     stopRealtime()
+    stopPairingPolling()
     revokeArtwork()
+  })
+
+  window.addEventListener('hashchange', () => {
+    beginPairingClaim(window.location.hash, false)
   })
 
   if ('serviceWorker' in navigator) {
@@ -636,9 +921,14 @@
   }
 
   render()
-  if (state.token) {
+  const pairingStarted = beginPairingClaim(window.location.hash, false)
+  if (pairingStarted) {
+    // Pairing flow is already running from the URL fragment.
+  } else if (state.token) {
     void connect()
   } else {
-    elements.authToken.focus()
+    state.manualAuthVisible = false
+    setPairingState('idle', 'Open Pair Remote in Astra on your desktop, then scan the QR code or paste the pairing link on this page.', 0)
+    render()
   }
 })()

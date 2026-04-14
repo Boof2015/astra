@@ -7,6 +7,7 @@ export const LOCAL_API_MAX_PORT = 65535
 export type LocalApiPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type LocalApiMode = 'off' | 'api' | 'api-control'
 export type LocalApiControlCommand = 'play' | 'pause' | 'next' | 'previous' | 'toggle-favorite' | 'seek'
+export type LocalApiPairingState = 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed'
 
 export interface LocalApiTrackSnapshot {
   id: string
@@ -37,6 +38,34 @@ export interface LocalApiServiceConfig {
   token: string
 }
 
+export interface LocalApiPairedDevice {
+  id: string
+  name: string
+  clientLabel: string
+  tokenPrefix: string
+  createdAt: number
+  lastSeenAt: number | null
+  revokedAt: number | null
+}
+
+export interface LocalApiPendingPairingRequest {
+  id: string
+  deviceName: string
+  clientLabel: string
+  requestedAt: number
+  expiresAt: number
+  baseUrl: string
+}
+
+export interface LocalApiPairingTicket {
+  ticket: string
+  baseUrl: string
+  controllerUrl: string
+  pairingUrl: string
+  createdAt: number
+  expiresAt: number
+}
+
 export interface LocalApiStatus {
   enabled: boolean
   controlsEnabled: boolean
@@ -50,5 +79,7 @@ export interface LocalApiStatus {
   active: boolean
   mode: LocalApiMode
   connectedClients: number
+  pairedDeviceCount: number
+  pendingPairingCount: number
   lastError: string | null
 }

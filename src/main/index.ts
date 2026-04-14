@@ -164,6 +164,7 @@ const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
 const LOCAL_API_REMOTE_WEB_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
+const LOCAL_API_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
 const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
@@ -213,6 +214,17 @@ let localApiConfig: LocalApiServiceConfig = {
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
 }
+type PersistedLocalApiPairedDevice = {
+  id: string
+  name: string
+  clientLabel: string
+  tokenHash: string
+  tokenPrefix: string
+  createdAt: number
+  lastSeenAt: number | null
+  revokedAt: number | null
+}
+let localApiPairedDevices: PersistedLocalApiPairedDevice[] = []
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   sessionKey: null,
@@ -437,6 +449,13 @@ const localApiService = new LocalApiService({
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
     jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
   }),
+  pairedDevices: localApiPairedDevices,
+  onPairedDevicesChange: (devices) => {
+    localApiPairedDevices = devices.map((device) => ({ ...device }))
+    void persistLocalApiPairedDevices(localApiPairedDevices).catch((error) => {
+      console.warn('Failed to persist local API paired devices:', error)
+    })
+  },
   onStatusChange: () => {
     broadcastLocalApiStatus()
     const status = localApiService.getStatus()
@@ -448,6 +467,8 @@ const localApiService = new LocalApiService({
       port: status.port,
       mode: status.mode,
       connectedClients: status.connectedClients,
+      pairedDeviceCount: status.pairedDeviceCount,
+      pendingPairingCount: status.pendingPairingCount,
       lastError: status.lastError
     })
   }
@@ -801,12 +822,58 @@ function normalizeLocalApiPort(rawPort: unknown): number {
   return parsed
 }
 
+function sanitizeLocalApiPairedDevices(rawDevices: unknown): PersistedLocalApiPairedDevice[] {
+  if (!Array.isArray(rawDevices)) return []
+  const sanitized: PersistedLocalApiPairedDevice[] = []
+
+  for (const candidate of rawDevices) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const value = candidate as Record<string, unknown>
+    const id = typeof value.id === 'string' ? value.id.trim() : ''
+    const name = typeof value.name === 'string' ? value.name.trim() : ''
+    const clientLabel = typeof value.clientLabel === 'string' ? value.clientLabel.trim() : ''
+    const tokenHash = typeof value.tokenHash === 'string' ? value.tokenHash.trim() : ''
+    const tokenPrefix = typeof value.tokenPrefix === 'string' ? value.tokenPrefix.trim() : ''
+    const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+      ? Math.max(0, value.createdAt)
+      : 0
+    const lastSeenAt = typeof value.lastSeenAt === 'number' && Number.isFinite(value.lastSeenAt)
+      ? Math.max(0, value.lastSeenAt)
+      : null
+    const revokedAt = typeof value.revokedAt === 'number' && Number.isFinite(value.revokedAt)
+      ? Math.max(0, value.revokedAt)
+      : null
+
+    if (!id || !name || !clientLabel || !tokenHash || !tokenPrefix || createdAt <= 0) {
+      continue
+    }
+
+    sanitized.push({
+      id,
+      name: name.slice(0, 80),
+      clientLabel: clientLabel.slice(0, 80),
+      tokenHash,
+      tokenPrefix: tokenPrefix.slice(0, 16),
+      createdAt,
+      lastSeenAt,
+      revokedAt
+    })
+  }
+
+  return sanitized
+}
+
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY, config.remoteWebEnabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_PORT_META_KEY, String(config.port))
   await library.setAppMeta(LOCAL_API_TOKEN_META_KEY, config.token)
+}
+
+async function persistLocalApiPairedDevices(devices: PersistedLocalApiPairedDevice[]): Promise<void> {
+  localApiPairedDevices = devices.map((device) => ({ ...device }))
+  await library.setAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY, JSON.stringify(localApiPairedDevices))
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
@@ -856,6 +923,30 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   }
 
   return normalized
+}
+
+async function loadLocalApiPairedDevicesFromMeta(): Promise<PersistedLocalApiPairedDevice[]> {
+  let pairedDevices = sanitizeLocalApiPairedDevices([])
+  const rawPairedDevices = library.getAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY)
+  if (rawPairedDevices) {
+    try {
+      pairedDevices = sanitizeLocalApiPairedDevices(JSON.parse(rawPairedDevices))
+    } catch {
+      pairedDevices = sanitizeLocalApiPairedDevices([])
+    }
+  }
+
+  if (library.getAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY) !== JSON.stringify(pairedDevices)) {
+    try {
+      await persistLocalApiPairedDevices(pairedDevices)
+    } catch (error) {
+      console.warn('Failed to persist normalized local API paired devices:', error)
+    }
+  } else {
+    localApiPairedDevices = pairedDevices.map((device) => ({ ...device }))
+  }
+
+  return pairedDevices
 }
 
 async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<ReturnType<typeof localApiService.getStatus>> {
@@ -2638,6 +2729,8 @@ app.whenReady().then(async () => {
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
+  localApiPairedDevices = await loadLocalApiPairedDevicesFromMeta()
+  localApiService.replacePairedDevices(localApiPairedDevices)
   await localApiService.applyConfig(localApiConfig)
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
@@ -3341,6 +3434,43 @@ ipcMain.handle('local-api:getStatus', () => {
   return localApiService.getStatus()
 })
 
+ipcMain.handle('local-api:createPairingTicket', (_event, baseUrl?: unknown) => {
+  return localApiService.createPairingTicket(typeof baseUrl === 'string' ? baseUrl : undefined)
+})
+
+ipcMain.handle('local-api:listPairedDevices', () => {
+  return localApiService.listPairedDevices()
+})
+
+ipcMain.handle('local-api:listPendingPairingRequests', () => {
+  return localApiService.listPendingPairingRequests()
+})
+
+ipcMain.handle('local-api:approvePairingRequest', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid pairing request id.')
+  }
+  return localApiService.approvePairingRequest(id.trim())
+})
+
+ipcMain.handle('local-api:rejectPairingRequest', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid pairing request id.')
+  }
+  return localApiService.rejectPairingRequest(id.trim())
+})
+
+ipcMain.handle('local-api:revokePairedDevice', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid paired device id.')
+  }
+  return localApiService.revokePairedDevice(id.trim())
+})
+
+ipcMain.handle('local-api:revokeAllPairedDevices', () => {
+  return localApiService.revokeAllPairedDevices()
+})
+
 ipcMain.handle('local-api:setEnabled', async (_event, enabled: unknown) => {
   const nextEnabled = Boolean(enabled)
   const nextConfig: LocalApiServiceConfig = {
@@ -3395,6 +3525,8 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
     port: LOCAL_API_DEFAULT_PORT,
     token: generateLocalApiToken(),
   }
+  localApiService.replacePairedDevices([])
+  await persistLocalApiPairedDevices([])
   return applyLocalApiConfig(nextConfig)
 })
 

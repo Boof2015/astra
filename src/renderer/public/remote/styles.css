@@ -239,9 +239,106 @@ button:disabled {
   gap: 14px;
 }
 
+.setup-step-list {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 12px 14px;
+}
+
+.setup-step[data-state="active"] {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--accent) 10%, rgba(255, 255, 255, 0.03));
+}
+
+.setup-step[data-state="complete"] {
+  border-color: rgba(134, 239, 172, 0.24);
+  background: rgba(134, 239, 172, 0.08);
+}
+
+.setup-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.setup-step[data-state="active"] .setup-step-number {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.setup-step[data-state="complete"] .setup-step-number {
+  border-color: rgba(134, 239, 172, 0.4);
+  color: #d1fae5;
+}
+
+.setup-step-body {
+  display: grid;
+  gap: 4px;
+}
+
+.setup-step-body strong {
+  font-size: 0.98rem;
+  color: var(--text);
+}
+
+.setup-step-body span {
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
+.setup-status-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 12px;
+}
+
 .auth-form {
   display: grid;
   gap: 12px;
+}
+
+.panel-copy-compact {
+  margin-top: -4px;
+  font-size: 0.92rem;
+}
+
+.auth-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pair-link-input-row {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-panel-actions {
+  padding-top: 2px;
 }
 
 .field-label {
@@ -287,14 +384,10 @@ button:disabled {
 .remote-controller {
   display: grid;
   gap: 14px;
-  transition: opacity 180ms ease, transform 180ms ease, filter 180ms ease;
 }
 
 body[data-auth="true"] .remote-controller {
-  opacity: 0.26;
-  transform: scale(0.985);
-  filter: blur(6px);
-  pointer-events: none;
+  display: none;
 }
 
 .now-playing-panel,
@@ -398,6 +491,10 @@ body[data-auth="true"] .remote-controller {
   .remote-header {
     grid-template-columns: 1fr auto;
     align-items: end;
+  }
+
+  .pair-link-input-row {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .now-playing-panel {
