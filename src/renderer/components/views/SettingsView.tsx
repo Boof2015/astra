@@ -6,6 +6,7 @@ import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
+import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -189,6 +190,7 @@ export default function SettingsView() {
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
+  const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
@@ -664,6 +666,12 @@ export default function SettingsView() {
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
+  const localApiActiveDevices = useMemo(() => localApiPairedDevices.filter((d) => d.revokedAt == null), [localApiPairedDevices])
+  const localApiControllerUrl = localApiControllerUrls[0] ?? ''
+  const localApiInlineQrSvg = useMemo(() => {
+    if (!localApiControllerUrl) return ''
+    try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
+  }, [localApiControllerUrl])
   const lastFmConnected = lastFmStatus?.connected ?? false
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
@@ -1762,21 +1770,71 @@ export default function SettingsView() {
                     <span className="settings-info-value">{localApiPhoneRemoteSummary}</span>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Phone Remote Setup</span>
+                    <span className="settings-field-label">Pair a New Phone</span>
                     <button
                       className="settings-btn settings-btn-primary"
                       onClick={handleOpenLocalApiPairingModal}
                     >
-                      Open Setup Popup
+                      Pair Phone
                     </button>
                   </div>
                 </div>
-                <p className="settings-note">
-                  One popup walks through enablement, pairing code generation, approval, and paired-phone management.
-                </p>
-                <p className="settings-note">
-                  Astra prefers `192.168.*` LAN addresses for this flow.
-                </p>
+
+                {/* Inline paired devices */}
+                {localApiActiveDevices.length > 0 && (
+                  <div className="local-api-inline-devices">
+                    <div className="local-api-inline-devices-header">
+                      <span className="local-api-inline-devices-count">
+                        {localApiActiveDevices.length} paired phone{localApiActiveDevices.length !== 1 ? 's' : ''}
+                      </span>
+                      {localApiControllerUrl && localApiInlineQrSvg && (
+                        <button
+                          className={`settings-btn${showInlinePhoneQr ? ' settings-btn-primary' : ''}`}
+                          onClick={() => setShowInlinePhoneQr((prev) => !prev)}
+                        >
+                          {showInlinePhoneQr ? 'Hide QR' : 'Open on Phone'}
+                        </button>
+                      )}
+                    </div>
+
+                    {showInlinePhoneQr && localApiControllerUrl && localApiInlineQrSvg && (
+                      <div className="local-api-inline-qr">
+                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: localApiInlineQrSvg }} />
+                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan to open the remote — no new pairing needed</p>
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => { void navigator.clipboard.writeText(localApiControllerUrl) }}
+                        >
+                          Copy Link
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="local-api-inline-devices-list">
+                      {localApiActiveDevices.map((device) => (
+                        <div key={device.id} className="local-api-inline-device">
+                          <div className="local-api-inline-device-info">
+                            <span className="local-api-inline-device-name">{device.name}</span>
+                            <span className="local-api-inline-device-detail">
+                              Last seen {device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : 'Never'}
+                            </span>
+                          </div>
+                          <button
+                            className="settings-btn settings-btn-danger"
+                            onClick={() => handleRevokeLocalApiPairedDevice(device.id)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ))}
+                      {localApiActiveDevices.length >= 2 && (
+                        <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllLocalApiPairedDevices}>
+                          Revoke All
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             <p className="settings-note">
               Enable Library Graph adds a dedicated graph view and an artist-page graph entrypoint.

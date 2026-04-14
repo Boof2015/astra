@@ -14202,36 +14202,30 @@ body::after {
   flex-shrink: 0;
 }
 
-/* Paired devices collapsible */
+/* Paired devices */
 .local-api-pairing-paired {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
-  padding-top: 4px;
+  padding-top: 8px;
 }
 
-.local-api-pairing-paired-toggle {
+.local-api-pairing-paired-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 100%;
-  padding: 8px 0;
-  background: none;
-  border: none;
-  cursor: pointer;
-  user-select: none;
+  padding-bottom: 8px;
 }
 
-.local-api-pairing-paired-toggle span {
+.local-api-pairing-paired-count {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.4);
 }
 
-.local-api-pairing-paired-toggle svg {
-  color: rgba(255, 255, 255, 0.25);
-  transition: transform var(--transition-fast);
-}
-
-.local-api-pairing-paired-toggle.is-open svg {
-  transform: rotate(180deg);
+.local-api-pairing-link-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 16px;
 }
 
 .local-api-pairing-paired-list {
@@ -14282,6 +14276,71 @@ body::after {
   color: rgba(255, 255, 255, 0.5);
   text-align: center;
   animation: pairingCountdownPulse 2.5s ease-in-out infinite;
+}
+
+/* Inline device list (settings card, outside modal) */
+.local-api-inline-devices {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+
+.local-api-inline-devices-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+.local-api-inline-devices-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-inline-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 16px;
+}
+
+.local-api-inline-devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.local-api-inline-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.local-api-inline-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.local-api-inline-device-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-api-inline-device-detail {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .settings-shell .settings-danger-zone {

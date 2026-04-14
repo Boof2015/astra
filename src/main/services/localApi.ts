@@ -318,6 +318,7 @@ export class LocalApiService {
   }
   private latestSnapshot: LocalApiNowPlayingSnapshot
   private artworkResolveSequence = 0
+  private artworkResolvingTrackId: string | null = null
 
   constructor(options: LocalApiServiceOptions) {
     this.config = { ...options.config }
@@ -582,14 +583,24 @@ export class LocalApiService {
     if (!this.resolveArtworkDataUrl) return
 
     const artworkDataUrl = await this.resolveArtworkDataUrl(artworkHash).catch(() => null)
-    if (!artworkDataUrl) return
+    if (!artworkDataUrl) {
+      if (this.artworkResolvingTrackId === trackId) this.artworkResolvingTrackId = null
+      return
+    }
 
     if (sequence !== this.artworkResolveSequence) return
-    if (this.latestRawSnapshot?.currentTrack?.id !== trackId) return
+    if (this.latestRawSnapshot?.currentTrack?.id !== trackId) {
+      if (this.artworkResolvingTrackId === trackId) this.artworkResolvingTrackId = null
+      return
+    }
 
     const parsedArtwork = parseArtworkDataUrl(artworkDataUrl)
-    if (!parsedArtwork) return
+    if (!parsedArtwork) {
+      if (this.artworkResolvingTrackId === trackId) this.artworkResolvingTrackId = null
+      return
+    }
 
+    this.artworkResolvingTrackId = null
     this.latestArtwork = {
       currentTrackId: trackId,
       dataUrl: artworkDataUrl,
@@ -607,6 +618,7 @@ export class LocalApiService {
     const currentTrack = snapshot?.currentTrack
     if (!currentTrack) {
       this.artworkResolveSequence += 1
+      this.artworkResolvingTrackId = null
       this.latestArtwork = {
         currentTrackId: null,
         dataUrl: null,
@@ -622,6 +634,7 @@ export class LocalApiService {
     const parsedArtwork = parseArtworkDataUrl(inlineArtworkDataUrl)
     if (parsedArtwork) {
       this.artworkResolveSequence += 1
+      this.artworkResolvingTrackId = null
       this.latestArtwork = {
         currentTrackId: trackId,
         dataUrl: inlineArtworkDataUrl,
@@ -637,10 +650,16 @@ export class LocalApiService {
       return
     }
 
+    if (this.latestArtwork.currentTrackId === trackId && this.artworkResolvingTrackId === trackId) {
+      this.latestSnapshot = this.buildSnapshot(false)
+      return
+    }
+
     this.artworkResolveSequence += 1
     const resolveSequence = this.artworkResolveSequence
 
     if (!currentTrack.artworkHash) {
+      this.artworkResolvingTrackId = null
       this.latestArtwork = {
         currentTrackId: trackId,
         dataUrl: null,
@@ -658,6 +677,7 @@ export class LocalApiService {
       bytes: null
     }
     this.latestSnapshot = this.buildSnapshot(false)
+    this.artworkResolvingTrackId = trackId
     void this.resolveArtworkForTrack(trackId, currentTrack.artworkHash, resolveSequence)
   }
 

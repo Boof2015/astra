@@ -75,7 +75,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
   } = props
 
   const [now, setNow] = useState(() => Date.now())
-  const [showPairedDevices, setShowPairedDevices] = useState(false)
+  const [showLinkOnlyQr, setShowLinkOnlyQr] = useState(false)
   const autoGenerateAttempted = useRef(false)
 
   useEffect(() => {
@@ -117,6 +117,8 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     }
   }, [wizardStep, hasLiveTicket, canGenerateTicket, onGenerateTicket])
 
+  const controllerUrl = selectedBaseUrl ? `${selectedBaseUrl}/remote/` : props.selectedControllerUrl
+
   const svgMarkup = useMemo(() => {
     if (!ticket) return ''
     try {
@@ -125,6 +127,15 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
       return ''
     }
   }, [ticket])
+
+  const linkOnlyQrSvg = useMemo(() => {
+    if (!controllerUrl) return ''
+    try {
+      return renderPairingQrSvg(controllerUrl)
+    } catch {
+      return ''
+    }
+  }, [controllerUrl])
 
   const stepIndex = STEP_LABELS.findIndex((s) => s.key === wizardStep)
 
@@ -145,8 +156,8 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
         </div>
 
         <div className="modal-body local-api-pairing-body">
-          {feedbackMessage && <p className="settings-note settings-note-success">{feedbackMessage}</p>}
-          {errorMessage && <p className="settings-note settings-note-error">{errorMessage}</p>}
+          {feedbackMessage && wizardStep !== 'approve' && <p className="settings-note settings-note-success">{feedbackMessage}</p>}
+          {errorMessage && wizardStep !== 'approve' && <p className="settings-note settings-note-error">{errorMessage}</p>}
 
           {/* Step indicator */}
           <div className="local-api-pairing-steps" aria-hidden="true">
@@ -286,44 +297,62 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
             </div>
           )}
 
-          {/* Paired devices - collapsible */}
-          {hasPairedDevices && (
+          {/* Paired devices — only on QR step */}
+          {hasPairedDevices && wizardStep === 'qr' && (
             <div className="local-api-pairing-paired">
-              <button
-                className={`local-api-pairing-paired-toggle${showPairedDevices ? ' is-open' : ''}`}
-                onClick={() => setShowPairedDevices((prev) => !prev)}
-                aria-expanded={showPairedDevices}
-              >
-                <span>{activeDevices.length} paired phone{activeDevices.length !== 1 ? 's' : ''}</span>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              {showPairedDevices && (
-                <div className="local-api-pairing-paired-list">
-                  {activeDevices.map((device) => (
-                    <div key={device.id} className="local-api-pairing-paired-device">
-                      <div className="local-api-pairing-paired-device-info">
-                        <span className="local-api-pairing-paired-device-name">{device.name}</span>
-                        <span className="local-api-pairing-paired-device-detail">
-                          Last seen {formatTimestamp(device.lastSeenAt)}
-                        </span>
-                      </div>
-                      <button
-                        className="settings-btn settings-btn-danger"
-                        onClick={() => onRevokeDevice(device.id)}
-                      >
-                        Revoke
-                      </button>
-                    </div>
-                  ))}
-                  {activeDevices.length >= 2 && (
-                    <button className="settings-btn settings-btn-danger" onClick={onRevokeAllDevices}>
-                      Revoke All
-                    </button>
-                  )}
+              <div className="local-api-pairing-paired-header">
+                <span className="local-api-pairing-paired-count">
+                  {activeDevices.length} paired phone{activeDevices.length !== 1 ? 's' : ''}
+                </span>
+                {controllerUrl && (
+                  <button
+                    className={`settings-btn${showLinkOnlyQr ? ' settings-btn-primary' : ''}`}
+                    onClick={() => setShowLinkOnlyQr((prev) => !prev)}
+                    title="Show a QR code that opens the remote controller — no pairing needed for already-paired phones"
+                  >
+                    {showLinkOnlyQr ? 'Hide QR' : 'Open on Phone'}
+                  </button>
+                )}
+              </div>
+
+              {showLinkOnlyQr && controllerUrl && linkOnlyQrSvg && (
+                <div className="local-api-pairing-link-qr">
+                  <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: linkOnlyQrSvg }} />
+                  <p className="local-api-pairing-scan-hint">Scan to open the remote — no new pairing required</p>
+                  <button
+                    className="settings-btn settings-btn-primary"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(controllerUrl)
+                    }}
+                  >
+                    Copy Link
+                  </button>
                 </div>
               )}
+
+              <div className="local-api-pairing-paired-list">
+                {activeDevices.map((device) => (
+                  <div key={device.id} className="local-api-pairing-paired-device">
+                    <div className="local-api-pairing-paired-device-info">
+                      <span className="local-api-pairing-paired-device-name">{device.name}</span>
+                      <span className="local-api-pairing-paired-device-detail">
+                        Last seen {formatTimestamp(device.lastSeenAt)}
+                      </span>
+                    </div>
+                    <button
+                      className="settings-btn settings-btn-danger"
+                      onClick={() => onRevokeDevice(device.id)}
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                ))}
+                {activeDevices.length >= 2 && (
+                  <button className="settings-btn settings-btn-danger" onClick={onRevokeAllDevices}>
+                    Revoke All
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'astra-remote-shell-v1'
+const CACHE_NAME = 'astra-remote-shell-v3'
 const SHELL_ASSETS = [
   '/remote/',
   '/remote/app.js',
