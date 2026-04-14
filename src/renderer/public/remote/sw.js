@@ -1,4 +1,4 @@
-const CACHE_NAME = 'astra-remote-shell-v3'
+const CACHE_NAME = 'astra-remote-shell-v4'
 const SHELL_ASSETS = [
   '/remote/',
   '/remote/app.js',
@@ -8,6 +8,39 @@ const SHELL_ASSETS = [
   '/remote/manifest.webmanifest',
   '/remote/styles.css'
 ]
+
+const NETWORK_FIRST_PATHS = new Set(SHELL_ASSETS)
+
+function normalizeCacheKey(pathname) {
+  return pathname === '/remote' ? '/remote/' : pathname
+}
+
+async function networkFirst(request, cacheKey) {
+  const cache = await caches.open(CACHE_NAME)
+  try {
+    const response = await fetch(request)
+    if (response.ok) {
+      await cache.put(cacheKey, response.clone())
+    }
+    return response
+  } catch (error) {
+    const cachedResponse = await cache.match(cacheKey)
+    if (cachedResponse) return cachedResponse
+    throw error
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(CACHE_NAME)
+  const cachedResponse = await cache.match(request)
+  if (cachedResponse) return cachedResponse
+
+  const response = await fetch(request)
+  if (response.ok) {
+    await cache.put(request, response.clone())
+  }
+  return response
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -29,33 +62,14 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
 
   if (url.origin !== self.location.origin) return
-  if (!url.pathname.startsWith('/remote/')) return
   if (url.pathname.startsWith('/v1/')) return
+  if (url.pathname !== '/remote' && !url.pathname.startsWith('/remote/')) return
 
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          const copy = response.clone()
-          void caches.open(CACHE_NAME).then((cache) => cache.put('/remote/', copy))
-          return response
-        })
-        .catch(() => caches.match('/remote/'))
-    )
+  const cacheKey = normalizeCacheKey(url.pathname)
+  if (event.request.mode === 'navigate' || NETWORK_FIRST_PATHS.has(cacheKey)) {
+    event.respondWith(networkFirst(event.request, cacheKey))
     return
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse
-
-      return fetch(event.request).then((response) => {
-        if (response.ok) {
-          const copy = response.clone()
-          void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy))
-        }
-        return response
-      })
-    })
-  )
+  event.respondWith(cacheFirst(event.request))
 })

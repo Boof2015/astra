@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="./icon-192.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body data-page="setup" data-pair-phase="idle">
+  <body data-page="setup" data-pair-phase="idle" data-view="setup-idle">
 
     <main class="remote-shell">
       <!-- ── Header ── -->
@@ -80,7 +80,7 @@
               <circle cx="40" cy="40" r="36" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-dasharray="56 170" class="pair-spinner-arc"/>
             </svg>
           </div>
-          <h2 class="pair-waiting-title">Waiting for approval</h2>
+          <h2 id="pair-pending-title" class="pair-waiting-title">Waiting for approval</h2>
           <p id="pair-pending-copy" class="pair-waiting-copy">Open Astra on your desktop and tap <strong>Approve</strong> to connect this phone.</p>
           <span id="pair-pending-timer" class="pair-timer"></span>
         </div>
@@ -88,7 +88,7 @@
 
       <!-- ── Pair: error / rejected / expired ── -->
       <section id="pair-error" class="glass-panel page-section pair-section">
-        <p class="section-label section-label-error">Pairing failed</p>
+        <p id="pair-error-title" class="section-label section-label-error">Pairing failed</p>
         <p id="pair-error-copy" class="section-copy">Something went wrong. Try again from the desktop.</p>
         <button id="pair-retry-button" class="btn-ghost" type="button">Try again</button>
       </section>
@@ -137,7 +137,7 @@
           </div>
         </div>
 
-        <div class="transport-panel">
+        <div id="transport-panel" class="transport-panel">
           <div class="seek-bar" id="seek-track">
             <div class="seek-bar-fill" id="seek-fill"></div>
             <div class="seek-bar-thumb" id="seek-thumb"></div>

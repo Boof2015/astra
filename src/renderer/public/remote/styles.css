@@ -17,6 +17,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
 
 html, body { height: 100%; }
 
@@ -154,6 +155,14 @@ body[data-page="setup"][data-manual-auth="false"][data-pair-phase="idle"] #pair-
 body[data-page="setup"][data-manual-auth="false"][data-pair-phase="claiming"] #pair-pending { display: flex; }
 body[data-page="setup"][data-manual-auth="false"][data-pair-phase="pending"] #pair-pending { display: flex; }
 body[data-page="setup"][data-manual-auth="false"][data-pair-phase="error"] #pair-error { display: flex; }
+
+/* Explicit view model */
+body[data-view="setup-idle"] #pair-idle { display: block; }
+body[data-view="setup-pending"] #pair-pending { display: flex; }
+body[data-view="setup-error"] #pair-error { display: flex; }
+body[data-view="manual-auth"] #auth-panel { display: block; }
+body[data-view="paired-connecting"] .remote-controller { display: flex; }
+body[data-view="player-ready"] .remote-controller { display: flex; }
 
 /* ── Section typography ── */
 

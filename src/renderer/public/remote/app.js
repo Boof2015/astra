@@ -1,6 +1,7 @@
 (function () {
   const STORAGE_KEY = 'astra-remote-api-token-v1'
   const POLL_INTERVAL_MS = 5000
+  const PAIR_POLL_INTERVAL_MS = 1500
   const RECONNECT_DELAY_MS = 2000
   const NOTICE_TIMEOUT_MS = 3600
   const ARTWORK_RETRY_DELAY_MS = 800
@@ -11,9 +12,11 @@
   const elements = {
     pairIdle: $('pair-idle'),
     pairPending: $('pair-pending'),
+    pairPendingTitle: $('pair-pending-title'),
     pairPendingCopy: $('pair-pending-copy'),
     pairPendingTimer: $('pair-pending-timer'),
     pairError: $('pair-error'),
+    pairErrorTitle: $('pair-error-title'),
     pairErrorCopy: $('pair-error-copy'),
     pairRetryButton: $('pair-retry-button'),
     pairLinkForm: $('pair-link-form'),
@@ -32,6 +35,7 @@
     noticeText: $('notice-text'),
 
     remoteController: $('remote-controller'),
+    transportPanel: $('transport-panel'),
     artworkImage: $('artwork-image'),
     artworkPlaceholder: $('artwork-placeholder'),
     trackTitle: $('track-title'),
@@ -71,11 +75,14 @@
     artworkRetryCount: 0,
     isScrubbing: false,
     scrubValue: 0,
+    hasInitialSnapshot: false,
     manualAuthVisible: false,
     pairingState: 'idle',
     pairingMessage: '',
     pairingPollToken: '',
-    pairingExpiresAt: 0
+    pairingExpiresAt: 0,
+    pairingAttemptCounter: 0,
+    activePairingAttemptId: 0
   }
 
   elements.originChip.textContent = window.location.origin
@@ -125,7 +132,7 @@
   // ── Timers ──
 
   function stopPolling() { if (state.pollTimer !== null) { clearInterval(state.pollTimer); state.pollTimer = null } }
-  function stopPairingPolling() { if (state.pairPollTimer !== null) { clearInterval(state.pairPollTimer); state.pairPollTimer = null } }
+  function stopPairingPolling() { if (state.pairPollTimer !== null) { clearTimeout(state.pairPollTimer); state.pairPollTimer = null } }
   function stopEventStream() { if (state.eventAbortController) { state.eventAbortController.abort(); state.eventAbortController = null } }
   function stopReconnectTimer() { if (state.reconnectTimer !== null) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null } }
   function stopRealtime() { stopEventStream(); stopPolling(); stopReconnectTimer() }
@@ -142,8 +149,55 @@
   function getPairPhase() {
     const s = state.pairingState
     if (s === 'claiming' || s === 'pending') return 'pending'
-    if (s === 'rejected' || s === 'expired' || s === 'error') return 'error'
+    if (s === 'rejected' || s === 'expired' || s === 'consumed' || s === 'error') return 'error'
     return 'idle'
+  }
+
+  function getViewModel() {
+    if (state.manualAuthVisible) return 'manual-auth'
+
+    const pairPhase = getPairPhase()
+    if (pairPhase === 'pending') return 'setup-pending'
+    if (pairPhase === 'error') return 'setup-error'
+
+    if (state.token) {
+      return state.hasInitialSnapshot ? 'player-ready' : 'paired-connecting'
+    }
+
+    return 'setup-idle'
+  }
+
+  function beginPairingAttempt() {
+    stopPairingPolling()
+    state.pairingPollToken = ''
+    state.pairingAttemptCounter += 1
+    state.activePairingAttemptId = state.pairingAttemptCounter
+    return state.activePairingAttemptId
+  }
+
+  function isActivePairingAttempt(attemptId) {
+    return attemptId > 0 && state.activePairingAttemptId === attemptId
+  }
+
+  function clearPairingAttempt() {
+    stopPairingPolling()
+    state.pairingPollToken = ''
+    state.activePairingAttemptId = 0
+  }
+
+  function completePairingAttempt(attemptId) {
+    if (!isActivePairingAttempt(attemptId)) return false
+    clearPairingAttempt()
+    return true
+  }
+
+  function schedulePairingPoll(attemptId, delayMs) {
+    if (!isActivePairingAttempt(attemptId) || !state.pairingPollToken) return
+    stopPairingPolling()
+    state.pairPollTimer = setTimeout(() => {
+      state.pairPollTimer = null
+      void fetchPairingStatus(attemptId)
+    }, delayMs)
   }
 
   // ── Device detection ──
@@ -189,10 +243,14 @@
 
   function prepareForPairingClaim() {
     stopRealtime()
-    stopPairingPolling()
+    clearPairingAttempt()
     state.snapshot = null
+    state.hasInitialSnapshot = false
     state.token = ''
     state.manualAuthVisible = false
+    state.pairingState = 'idle'
+    state.pairingMessage = ''
+    state.pairingExpiresAt = 0
     state.connectionState = 'idle'
     state.connectionMessage = 'Waiting for Astra to approve this phone.'
     elements.authToken.value = ''
@@ -238,13 +296,25 @@
   }
 
   function renderPage() {
+    const view = getViewModel()
     const hasToken = Boolean(state.token)
     const page = hasToken ? 'player' : 'setup'
     const phase = getPairPhase()
+    const showRemoteController = view === 'paired-connecting' || view === 'player-ready'
+    const showTransport = view === 'player-ready'
+    const showConnectionLabel = view !== 'setup-pending' && (view !== 'player-ready' || state.connectionState !== 'connected')
 
     document.body.dataset.page = page
     document.body.dataset.pairPhase = phase
     document.body.dataset.manualAuth = state.manualAuthVisible ? 'true' : 'false'
+    document.body.dataset.view = view
+
+    elements.pairIdle.hidden = view !== 'setup-idle'
+    elements.pairPending.hidden = view !== 'setup-pending'
+    elements.pairError.hidden = view !== 'setup-error'
+    elements.authPanel.hidden = view !== 'manual-auth'
+    elements.remoteController.hidden = !showRemoteController
+    elements.transportPanel.hidden = !showTransport
 
     // Header buttons
     elements.reconnectButton.hidden = !hasToken
@@ -252,8 +322,8 @@
     elements.reconnectButton.disabled = !hasToken || state.connectionState === 'connecting'
     elements.forgetButton.disabled = !hasToken
 
-    // Connection label — hide during pending (the spinner screen says it all) and when connected
-    elements.connectionLabel.hidden = (phase === 'pending') || hasToken
+    // Connection label — hide while approval is pending and once the live player is connected.
+    elements.connectionLabel.hidden = !showConnectionLabel
 
     // Pair idle form state
     elements.pairLinkInput.disabled = phase === 'pending'
@@ -261,17 +331,26 @@
     elements.showManualAuthButton.disabled = phase === 'pending'
 
     // Pair pending content
-    if (phase === 'pending') {
+    if (view === 'setup-pending') {
+      const isClaiming = state.pairingState === 'claiming'
       const countdown = state.pairingExpiresAt > 0 ? Math.max(0, state.pairingExpiresAt - Date.now()) : 0
-      elements.pairPendingTimer.textContent = countdown > 0 ? formatTime(countdown / 1000) : ''
+      elements.pairPendingTitle.textContent = isClaiming ? 'Starting pairing' : 'Waiting for approval'
+      elements.pairPendingCopy.textContent = state.pairingMessage || (isClaiming
+        ? 'Connecting to Astra...'
+        : 'Open Astra on your desktop and tap Approve to connect this phone.')
+      elements.pairPendingTimer.textContent = !isClaiming && countdown > 0 ? formatTime(countdown / 1000) : ''
     }
 
     // Pair error content
-    if (phase === 'error') {
-      const errorLabels = { rejected: 'Request rejected', expired: 'Link expired', error: 'Pairing failed' }
+    if (view === 'setup-error') {
+      const errorLabels = {
+        rejected: 'Request rejected',
+        expired: 'Link expired',
+        consumed: 'Link already used',
+        error: 'Pairing failed'
+      }
       elements.pairErrorCopy.textContent = state.pairingMessage || 'Something went wrong. Try again from the desktop.'
-      const errSection = elements.pairError.querySelector('.section-label')
-      if (errSection) errSection.textContent = errorLabels[state.pairingState] || 'Pairing failed'
+      elements.pairErrorTitle.textContent = errorLabels[state.pairingState] || 'Pairing failed'
     }
 
     // Auth panel
@@ -349,11 +428,14 @@
 
   function handleAuthorizationFailure() {
     stopRealtime()
-    stopPairingPolling()
+    clearPairingAttempt()
     persistToken('')
+    state.snapshot = null
+    state.hasInitialSnapshot = false
     state.manualAuthVisible = false
     state.connectionState = 'error'
     state.connectionMessage = 'API key rejected.'
+    clearArtwork(null)
     setNotice('Authentication failed. Copy the latest key from Astra.', 'error', 0)
     setPairingState('idle', '', 0)
     renderPage()
@@ -431,6 +513,7 @@
 
   function applySnapshot(snapshot) {
     state.snapshot = snapshot
+    state.hasInitialSnapshot = true
     state.connectionState = 'connected'
     state.connectionMessage = 'Connected.'
     clearNotice()
@@ -455,7 +538,7 @@
       } else if (state.connectionState === 'connected') {
         state.connectionState = 'reconnecting'
         state.connectionMessage = 'Reconnecting...'
-        renderStatus()
+        renderPage()
       }
       return false
     }
@@ -473,47 +556,50 @@
     if (state.reconnectTimer !== null || !state.token) return
     state.connectionState = 'reconnecting'
     state.connectionMessage = 'Reconnecting...'
-    renderStatus()
+    renderPage()
     startPolling()
     state.reconnectTimer = setTimeout(() => { state.reconnectTimer = null; if (state.token) void connect() }, RECONNECT_DELAY_MS)
   }
 
   // ── Pairing ──
 
-  async function fetchPairingStatus() {
-    if (!state.pairingPollToken) return
+  async function fetchPairingStatus(attemptId) {
+    if (!isActivePairingAttempt(attemptId) || !state.pairingPollToken) return
+    const pollToken = state.pairingPollToken
     try {
-      const resp = await fetch(`/v1/pairing/status?pollToken=${encodeURIComponent(state.pairingPollToken)}`, { cache: 'no-store' })
+      const resp = await fetch(`/v1/pairing/status?pollToken=${encodeURIComponent(pollToken)}`, { cache: 'no-store' })
       const p = await resp.json().catch(() => ({}))
-      if (resp.status === 404) { stopPairingPolling(); setPairingState('error', 'Astra no longer recognizes this request. Start a new pairing flow.', 0); return }
-      if (resp.status === 410 || p.state === 'consumed') { stopPairingPolling(); if (!state.token) setPairingState('error', 'This link was already used. Start a new pairing flow.', 0); return }
+      if (!isActivePairingAttempt(attemptId) || state.pairingPollToken !== pollToken) return
+      if (resp.status === 404) { completePairingAttempt(attemptId); setPairingState('error', 'Astra no longer recognizes this request. Start a new pairing flow.', 0); return }
+      if (resp.status === 410 || p.state === 'consumed') { completePairingAttempt(attemptId); setPairingState('consumed', 'This link was already used. Start a new pairing flow.', 0); return }
       if (!resp.ok) throw new Error(`${resp.status}`)
       if (p.state === 'approved' && typeof p.token === 'string' && p.token.trim()) {
-        stopPairingPolling()
+        if (!completePairingAttempt(attemptId)) return
         persistToken(p.token.trim())
         state.manualAuthVisible = false
-        state.pairingPollToken = ''
+        state.connectionState = 'connecting'
+        state.connectionMessage = 'Connecting...'
+        state.hasInitialSnapshot = false
         clearPairingHash()
         setPairingState('idle', '', 0)
         setNotice('Paired successfully.', 'info', NOTICE_TIMEOUT_MS)
         void connect()
         return
       }
-      if (p.state === 'rejected') { stopPairingPolling(); state.pairingPollToken = ''; setPairingState('rejected', 'Astra rejected this phone. Try again from the desktop.', p.expiresAt || 0); return }
-      if (p.state === 'expired') { stopPairingPolling(); state.pairingPollToken = ''; setPairingState('expired', 'This request expired. Start Pair Remote again.', p.expiresAt || 0); return }
+      if (p.state === 'rejected') { completePairingAttempt(attemptId); setPairingState('rejected', 'Astra rejected this phone. Try again from the desktop.', p.expiresAt || 0); return }
+      if (p.state === 'expired') { completePairingAttempt(attemptId); setPairingState('expired', 'This request expired. Start Pair Remote again.', p.expiresAt || 0); return }
       setPairingState('pending', 'Approve this phone in Astra.', p.expiresAt || state.pairingExpiresAt)
-    } catch { stopPairingPolling(); state.pairingPollToken = ''; setPairingState('error', 'Lost connection to Astra. Check the desktop app.', 0) }
+      schedulePairingPoll(attemptId, PAIR_POLL_INTERVAL_MS)
+    } catch {
+      if (!isActivePairingAttempt(attemptId)) return
+      completePairingAttempt(attemptId)
+      setPairingState('error', 'Lost connection to Astra. Check the desktop app.', 0)
+    }
   }
 
-  function startPairingPolling() {
-    stopPairingPolling()
-    state.pairPollTimer = setInterval(() => void fetchPairingStatus(), 1500)
-  }
-
-  async function claimPairingTicket(ticket) {
-    stopPairingPolling()
+  async function claimPairingTicket(ticket, attemptId) {
+    if (!isActivePairingAttempt(attemptId)) return false
     state.manualAuthVisible = false
-    state.pairingPollToken = ''
     setPairingState('claiming', 'Connecting...', 0)
     try {
       const resp = await fetch('/v1/pairing/claim', {
@@ -522,15 +608,20 @@
         body: JSON.stringify({ ticket, deviceName: deriveDeviceName(), clientLabel: detectClientLabel() })
       })
       const p = await resp.json().catch(() => ({}))
-      if (resp.status === 404 || resp.status === 410) { setPairingState('expired', 'This link is no longer valid. Start Pair Remote again.', 0); return false }
-      if (!resp.ok || typeof p.pollToken !== 'string' || !p.pollToken.trim()) { setPairingState('error', 'Astra could not start pairing. Try again.', 0); return false }
+      if (!isActivePairingAttempt(attemptId)) return false
+      if (resp.status === 404 || resp.status === 410) { completePairingAttempt(attemptId); setPairingState('expired', 'This link is no longer valid. Start Pair Remote again.', 0); return false }
+      if (!resp.ok || typeof p.pollToken !== 'string' || !p.pollToken.trim()) { completePairingAttempt(attemptId); setPairingState('error', 'Astra could not start pairing. Try again.', 0); return false }
       state.pairingPollToken = p.pollToken.trim()
       clearPairingHash()
       setPairingState('pending', 'Approve this phone in Astra to finish.', p.expiresAt || 0)
-      startPairingPolling()
-      void fetchPairingStatus()
+      void fetchPairingStatus(attemptId)
       return true
-    } catch { setPairingState('error', 'Could not reach Astra. Check your network.', 0); return false }
+    } catch {
+      if (!isActivePairingAttempt(attemptId)) return false
+      completePairingAttempt(attemptId)
+      setPairingState('error', 'Could not reach Astra. Check your network.', 0)
+      return false
+    }
   }
 
   function beginPairingClaim(rawInput, notifyOnInvalid) {
@@ -542,7 +633,8 @@
       return false
     }
     prepareForPairingClaim()
-    void claimPairingTicket(ticket)
+    const attemptId = beginPairingAttempt()
+    void claimPairingTicket(ticket, attemptId)
     return true
   }
 
@@ -582,7 +674,7 @@
       stopPolling()
       state.connectionState = 'connected'
       state.connectionMessage = 'Connected.'
-      renderStatus()
+      renderPage()
       const reader = resp.body.getReader()
       const dec = new TextDecoder()
       const buf = { value: '' }
@@ -627,9 +719,14 @@
     e.preventDefault()
     const t = elements.authToken.value.trim()
     if (!t) { setNotice('Paste the API key first.', 'error', NOTICE_TIMEOUT_MS); return }
-    stopPairingPolling()
-    state.pairingPollToken = ''
+    clearPairingAttempt()
+    state.snapshot = null
+    state.hasInitialSnapshot = false
+    clearArtwork(null)
+    setPairingState('idle', '', 0)
     persistToken(t)
+    state.manualAuthVisible = false
+    state.connectionState = 'connecting'
     state.connectionMessage = 'Connecting...'
     renderPage()
     void connect()
@@ -639,7 +736,7 @@
   elements.hideManualAuthButton.addEventListener('click', () => { state.manualAuthVisible = false; renderPage() })
 
   elements.pairRetryButton.addEventListener('click', () => {
-    state.pairingPollToken = ''
+    clearPairingAttempt()
     setPairingState('idle', '', 0)
   })
 
@@ -647,9 +744,10 @@
 
   elements.forgetButton.addEventListener('click', () => {
     stopRealtime()
-    stopPairingPolling()
+    clearPairingAttempt()
     persistToken('')
     state.snapshot = null
+    state.hasInitialSnapshot = false
     state.manualAuthVisible = false
     state.connectionState = 'idle'
     state.connectionMessage = 'Disconnected.'
@@ -703,12 +801,14 @@
   elements.seekTrack.addEventListener('pointercancel', () => { if (state.isScrubbing) { state.isScrubbing = false; renderPlayer() } })
 
   // Lifecycle
-  window.addEventListener('beforeunload', () => { stopRealtime(); stopPairingPolling(); revokeArtwork() })
+  window.addEventListener('beforeunload', () => { stopRealtime(); clearPairingAttempt(); revokeArtwork() })
   window.addEventListener('hashchange', () => beginPairingClaim(window.location.hash, false))
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {})
+      navigator.serviceWorker.register('./sw.js', { scope: './' })
+        .then((registration) => registration.update())
+        .catch(() => {})
     })
   }
 
