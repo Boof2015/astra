@@ -829,11 +829,25 @@ export default function SettingsView() {
     })
   }
 
-  const handleSetLocalApiRemoteWebEnabled = (enabled: boolean) => {
-    void setLocalApiRemoteWebEnabled(enabled).then((status) => {
-      if (!status) return
-      setLocalApiFeedback(enabled ? 'Remote web controller enabled.' : 'Remote web controller disabled.')
-    })
+  const handleEnableLocalApiRemoteControl = () => {
+    void (async () => {
+      if (!localApiEnabled) {
+        const status = await setLocalApiEnabled(true)
+        if (!status) return
+      }
+
+      if (!localApiRemoteWebEnabled) {
+        const status = await setLocalApiRemoteWebEnabled(true)
+        if (!status) return
+      }
+
+      if (!localApiControlsEnabled) {
+        const status = await setLocalApiControlsEnabled(true)
+        if (!status) return
+      }
+
+      setLocalApiFeedback('Phone remote control enabled.')
+    })()
   }
 
   const handleOpenLocalApiPairingModal = () => {
@@ -2106,9 +2120,7 @@ export default function SettingsView() {
           feedbackMessage={localApiFeedback}
           errorMessage={localApiErrorMessage}
           onClose={handleCloseLocalApiPairingModal}
-          onSetApiEnabled={(enabled) => void setLocalApiEnabled(enabled)}
-          onSetRemoteWebEnabled={handleSetLocalApiRemoteWebEnabled}
-          onSetControlsEnabled={(enabled) => void setLocalApiControlsEnabled(enabled)}
+          onEnableRemoteControl={handleEnableLocalApiRemoteControl}
           onSelectBaseUrl={setLocalApiSelectedPairingBaseUrl}
           onGenerateTicket={handleCreateLocalApiPairingTicket}
           onRefreshTicket={handleRefreshLocalApiPairingTicket}

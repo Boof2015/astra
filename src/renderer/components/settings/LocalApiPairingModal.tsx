@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   LocalApiPairedDevice,
   LocalApiPairingTicket,
@@ -19,9 +19,7 @@ interface LocalApiPairingModalProps {
   feedbackMessage: string
   errorMessage: string
   onClose: () => void
-  onSetApiEnabled: (enabled: boolean) => void
-  onSetRemoteWebEnabled: (enabled: boolean) => void
-  onSetControlsEnabled: (enabled: boolean) => void
+  onEnableRemoteControl: () => void
   onSelectBaseUrl: (baseUrl: string) => void
   onGenerateTicket: () => void
   onRefreshTicket: () => void
@@ -31,6 +29,8 @@ interface LocalApiPairingModalProps {
   onRevokeDevice: (id: string) => void
   onRevokeAllDevices: () => void
 }
+
+type WizardStep = 'enable' | 'qr' | 'approve'
 
 function formatCountdown(remainingMs: number): string {
   const safeSeconds = Math.max(0, Math.ceil(remainingMs / 1000))
@@ -44,6 +44,12 @@ function formatTimestamp(value: number | null): string {
   return new Date(value).toLocaleString()
 }
 
+const STEP_LABELS: { key: WizardStep; label: string }[] = [
+  { key: 'enable', label: 'Setup' },
+  { key: 'qr', label: 'Scan' },
+  { key: 'approve', label: 'Approve' }
+]
+
 export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
   const {
     ticket,
@@ -54,13 +60,10 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     controlsEnabled,
     lanUrls,
     selectedBaseUrl,
-    selectedControllerUrl,
     feedbackMessage,
     errorMessage,
     onClose,
-    onSetApiEnabled,
-    onSetRemoteWebEnabled,
-    onSetControlsEnabled,
+    onEnableRemoteControl,
     onSelectBaseUrl,
     onGenerateTicket,
     onRefreshTicket,
@@ -70,22 +73,50 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     onRevokeDevice,
     onRevokeAllDevices
   } = props
+
   const [now, setNow] = useState(() => Date.now())
+  const [showPairedDevices, setShowPairedDevices] = useState(false)
+  const autoGenerateAttempted = useRef(false)
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNow(Date.now())
-    }, 250)
-    return () => {
-      window.clearInterval(timer)
-    }
+    const timer = window.setInterval(() => setNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
   }, [])
 
-  const desktopReady = apiEnabled && remoteWebEnabled
-  const canGenerateTicket = desktopReady && lanUrls.length > 0
+  const remoteControlReady = apiEnabled && remoteWebEnabled && controlsEnabled
+  const canGenerateTicket = remoteControlReady && lanUrls.length > 0
   const remainingMs = ticket ? Math.max(0, ticket.expiresAt - now) : 0
+  const hasLiveTicket = ticket != null && remainingMs > 0
   const hasPendingRequests = pendingRequests.length > 0
-  const hasPairedDevices = pairedDevices.length > 0
+  const activeDevices = useMemo(() => pairedDevices.filter((d) => d.revokedAt == null), [pairedDevices])
+  const hasPairedDevices = activeDevices.length > 0
+  const prevDeviceCount = useRef(activeDevices.length)
+
+  // Auto-close after a device is approved (device count increases)
+  useEffect(() => {
+    if (activeDevices.length > prevDeviceCount.current) {
+      onClose()
+    }
+    prevDeviceCount.current = activeDevices.length
+  }, [activeDevices.length, onClose])
+
+  const wizardStep: WizardStep = !remoteControlReady
+    ? 'enable'
+    : hasPendingRequests
+      ? 'approve'
+      : 'qr'
+
+  // Auto-generate ticket when entering QR step
+  useEffect(() => {
+    if (wizardStep === 'qr' && !hasLiveTicket && canGenerateTicket && !autoGenerateAttempted.current) {
+      autoGenerateAttempted.current = true
+      onGenerateTicket()
+    }
+    if (wizardStep !== 'qr') {
+      autoGenerateAttempted.current = false
+    }
+  }, [wizardStep, hasLiveTicket, canGenerateTicket, onGenerateTicket])
+
   const svgMarkup = useMemo(() => {
     if (!ticket) return ''
     try {
@@ -94,6 +125,8 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
       return ''
     }
   }, [ticket])
+
+  const stepIndex = STEP_LABELS.findIndex((s) => s.key === wizardStep)
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -105,12 +138,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
         aria-labelledby="local-api-pairing-title"
       >
         <div className="modal-header">
-          <div>
-            <h3 id="local-api-pairing-title">Phone Remote Setup</h3>
-            <p className="local-api-pairing-subtitle">
-              Experimental guided setup for the LAN phone controller. Start here, then follow the steps in order.
-            </p>
-          </div>
+          <h3 id="local-api-pairing-title">Pair a Phone</h3>
           <button className="modal-close" onClick={onClose} aria-label="Close">
             ×
           </button>
@@ -120,218 +148,165 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
           {feedbackMessage && <p className="settings-note settings-note-success">{feedbackMessage}</p>}
           {errorMessage && <p className="settings-note settings-note-error">{errorMessage}</p>}
 
-          <section className={`local-api-pairing-flow-step ${desktopReady ? 'is-active' : 'is-blocked'}`}>
-            <div className="local-api-pairing-flow-head">
-              <div className="local-api-pairing-flow-number">1</div>
-              <div className="local-api-pairing-flow-copy">
-                <h4>Prepare Astra</h4>
-                <p>Turn on the pieces the phone remote needs. Playback controls are optional and can stay read-only.</p>
-              </div>
-              <span className={`settings-chip ${desktopReady ? '' : 'settings-chip-danger'}`}>
-                {desktopReady ? 'Ready' : 'Setup Needed'}
-              </span>
-            </div>
-            <div className="local-api-pairing-toggle-grid">
-              <div className="local-api-pairing-toggle-card">
-                <div className="local-api-pairing-toggle-copy">
-                  <span className="settings-field-label">Local Integration API</span>
-                  <p className="settings-note">Required before Astra can create any pairing link.</p>
-                </div>
-                <button
-                  className={`settings-toggle ${apiEnabled ? 'active' : ''}`}
-                  onClick={() => onSetApiEnabled(!apiEnabled)}
-                >
-                  {apiEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-              <div className="local-api-pairing-toggle-card">
-                <div className="local-api-pairing-toggle-copy">
-                  <span className="settings-field-label">Phone Remote Host</span>
-                  <p className="settings-note">Exposes the phone controller on your LAN and allows pairing tickets.</p>
-                </div>
-                <button
-                  className={`settings-toggle ${remoteWebEnabled ? 'active' : ''}`}
-                  onClick={() => onSetRemoteWebEnabled(!remoteWebEnabled)}
-                  disabled={!apiEnabled}
-                >
-                  {remoteWebEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-              <div className="local-api-pairing-toggle-card">
-                <div className="local-api-pairing-toggle-copy">
-                  <span className="settings-field-label">Playback Controls</span>
-                  <p className="settings-note">Optional. Leave off if the phone should only view playback state.</p>
-                </div>
-                <button
-                  className={`settings-toggle ${controlsEnabled ? 'active' : ''}`}
-                  onClick={() => onSetControlsEnabled(!controlsEnabled)}
-                  disabled={!apiEnabled}
-                >
-                  {controlsEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section className={`local-api-pairing-flow-step ${canGenerateTicket ? 'is-active' : 'is-blocked'}`}>
-            <div className="local-api-pairing-flow-head">
-              <div className="local-api-pairing-flow-number">2</div>
-              <div className="local-api-pairing-flow-copy">
-                <h4>Create the phone pairing code</h4>
-                <p>Astra prefers `192.168.*` addresses here. Generate a pairing code, then scan or open it on the phone.</p>
-              </div>
-              <span className={`settings-chip ${ticket ? '' : 'settings-chip-danger'}`}>
-                {ticket ? 'Pairing Live' : canGenerateTicket ? 'Ready' : 'Blocked'}
-              </span>
-            </div>
-            {canGenerateTicket ? (
-              <>
-                <div className="local-api-pairing-action-row">
-                  <select
-                    className="settings-select settings-inline-input settings-inline-input-grow"
-                    value={selectedBaseUrl}
-                    onChange={(event) => onSelectBaseUrl(event.target.value)}
+          {/* Step indicator */}
+          <div className="local-api-pairing-steps" aria-hidden="true">
+            {STEP_LABELS.map((step, i) => {
+              const isCompleted = i < stepIndex
+              const isActive = i === stepIndex
+              return (
+                <div key={step.key} className="local-api-pairing-step-item">
+                  <div
+                    className={`local-api-pairing-step-dot${isActive ? ' is-active' : ''}${isCompleted ? ' is-completed' : ''}`}
                   >
-                    {lanUrls.map((url) => (
-                      <option key={url} value={url}>
-                        {url}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="settings-btn settings-btn-primary"
-                    onClick={ticket ? onRefreshTicket : onGenerateTicket}
-                  >
-                    {ticket ? 'Refresh Pairing Code' : 'Generate Pairing Code'}
-                  </button>
-                </div>
-                {selectedControllerUrl && (
-                  <div className="local-api-pairing-inline-chip-row">
-                    <span className="settings-chip settings-chip-mono settings-chip-grow">{selectedControllerUrl}</span>
+                    {isCompleted && (
+                      <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
                   </div>
-                )}
-                {ticket ? (
-                  <div className="local-api-pairing-hero">
-                    <div className="local-api-pairing-qr-wrap">
-                      {svgMarkup ? (
-                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
-                      ) : (
-                        <p className="settings-note settings-note-error">
-                          Astra could not render a QR code for this pairing link. Use the copy button instead.
-                        </p>
-                      )}
-                    </div>
-                    <div className="local-api-pairing-meta">
-                      <div className="local-api-pairing-meta-row">
-                        <span className="settings-field-label">Expires In</span>
-                        <span className={`settings-chip settings-chip-mono ${remainingMs > 0 ? '' : 'settings-chip-danger'}`}>
-                          {remainingMs > 0 ? formatCountdown(remainingMs) : 'Expired'}
-                        </span>
-                      </div>
-                      <div className="local-api-pairing-meta-row">
-                        <span className="settings-field-label">Selected Pairing URL</span>
-                        <span className="settings-chip settings-chip-mono settings-chip-grow">{ticket.controllerUrl}</span>
-                      </div>
-                      <div className="local-api-pairing-actions">
-                        <button className="settings-btn settings-btn-primary" onClick={onCopyPairingUrl}>
-                          Copy Pairing Link
-                        </button>
-                        <button className="settings-btn" onClick={onRefreshTicket}>
+                  <span className="local-api-pairing-step-label">{step.label}</span>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Enable step */}
+          {wizardStep === 'enable' && (
+            <div className="local-api-pairing-enable" key="enable">
+              <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                <rect x="12" y="4" width="24" height="40" rx="4" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" fill="none" />
+                <circle cx="24" cy="38" r="2" fill="rgba(255,255,255,0.2)" />
+                <path d="M20 10h8" stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeLinecap="round" />
+                <path d="M32 24l6-3v10l-6-3" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
+                <path d="M10 24l-6-3v10l6-3" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
+              </svg>
+              <p>Enable phone remote hosting to get started.</p>
+              <button className="settings-btn settings-btn-primary" onClick={onEnableRemoteControl}>
+                Enable Phone Remote
+              </button>
+            </div>
+          )}
+
+          {/* QR step */}
+          {wizardStep === 'qr' && (
+            <div className="local-api-pairing-qr-hero" key="qr">
+              {canGenerateTicket ? (
+                <>
+                  <div className="local-api-pairing-qr-wrap">
+                    {hasLiveTicket && svgMarkup ? (
+                      <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
+                    ) : hasLiveTicket && !svgMarkup ? (
+                      <p className="settings-note settings-note-error" style={{ margin: 0 }}>
+                        Could not render QR code. Use the copy button below.
+                      </p>
+                    ) : ticket && remainingMs <= 0 ? (
+                      <div className="local-api-pairing-qr-expired">
+                        <div className="local-api-pairing-qr local-api-pairing-qr-dim" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
+                        <button className="settings-btn settings-btn-primary local-api-pairing-qr-expired-btn" onClick={onRefreshTicket}>
                           Regenerate
                         </button>
                       </div>
-                      <p className="settings-note">
-                        Keep the popup open. Once the phone claims this link, Astra will show its approval request below.
-                      </p>
-                    </div>
+                    ) : (
+                      <div className="local-api-pairing-qr-loading">Generating...</div>
+                    )}
                   </div>
-                ) : (
-                  <div className="local-api-pairing-waiting">
-                    Generate a pairing code to show the QR and copyable link for the phone.
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="local-api-pairing-waiting">
-                {!apiEnabled
-                  ? 'Enable the Local Integration API first.'
-                  : !remoteWebEnabled
-                    ? 'Enable the Phone Remote Host first.'
-                    : 'Astra could not find a usable `192.168.*` LAN address yet.'}
-              </div>
-            )}
-          </section>
 
-          <section className={`local-api-pairing-flow-step ${hasPendingRequests ? 'is-active' : ''}`}>
-            <div className="local-api-pairing-flow-head">
-              <div className="local-api-pairing-flow-number">3</div>
-              <div className="local-api-pairing-flow-copy">
-                <h4>Approve the phone</h4>
-                <p>A phone only receives its per-device credential after you approve it here.</p>
-              </div>
-              <span className={`settings-chip ${hasPendingRequests ? 'settings-chip-danger' : ''}`}>
-                {hasPendingRequests ? `${pendingRequests.length} Waiting` : 'Waiting'}
-              </span>
-            </div>
-            {hasPendingRequests ? (
-              <div className="local-api-pairing-request-list">
-                {pendingRequests.map((request) => (
-                  <div key={request.id} className="settings-pairing-request">
-                    <div className="settings-pairing-request-copy">
-                      <span className="settings-chip settings-chip-mono settings-chip-grow">
-                        {request.deviceName}
-                      </span>
-                      <span className="settings-note">
-                        {request.clientLabel} • expires {new Date(request.expiresAt).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    <div className="settings-inline-row">
-                      <button
-                        className="settings-btn settings-btn-primary"
-                        onClick={() => onApproveRequest(request.id)}
-                      >
-                        Approve
-                      </button>
-                      <button
-                        className="settings-btn"
-                        onClick={() => onRejectRequest(request.id)}
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="local-api-pairing-waiting">
-                Astra is waiting for the phone to claim the pairing link and ask for approval.
-              </div>
-            )}
-          </section>
-
-          <section className={`local-api-pairing-flow-step ${hasPairedDevices ? 'is-active' : ''}`}>
-            <div className="local-api-pairing-flow-head">
-              <div className="local-api-pairing-flow-number">4</div>
-              <div className="local-api-pairing-flow-copy">
-                <h4>Manage paired phones</h4>
-                <p>Each phone gets its own revocable device token. Remove access here if a phone is lost or replaced.</p>
-              </div>
-              <span className={`settings-chip ${hasPairedDevices ? '' : 'settings-chip-danger'}`}>
-                {hasPairedDevices ? `${pairedDevices.length} Paired` : 'None'}
-              </span>
-            </div>
-            {hasPairedDevices ? (
-              <>
-                <div className="local-api-pairing-request-list">
-                  {pairedDevices.map((device) => (
-                    <div key={device.id} className="settings-paired-device">
-                      <div className="settings-pairing-request-copy">
-                        <span className="settings-chip settings-chip-mono settings-chip-grow">{device.name}</span>
-                        <span className="settings-note">
-                          {device.clientLabel} • added {formatTimestamp(device.createdAt)}
+                  {hasLiveTicket && (
+                    <>
+                      <p className="local-api-pairing-scan-hint">Scan with your phone camera</p>
+                      <div className="local-api-pairing-qr-actions">
+                        <span className={`local-api-pairing-countdown${remainingMs < 60000 ? ' is-expiring' : ''}`}>
+                          {formatCountdown(remainingMs)}
                         </span>
-                        <span className="settings-note">
-                          last seen {formatTimestamp(device.lastSeenAt)} • token {device.tokenPrefix}...
+                        <button className="settings-btn settings-btn-primary" onClick={onCopyPairingUrl}>
+                          Copy Link
+                        </button>
+                        <button className="settings-btn local-api-pairing-refresh-btn" onClick={onRefreshTicket} aria-label="Refresh pairing code">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M1.5 7a5.5 5.5 0 0 1 9.36-3.93M12.5 7a5.5 5.5 0 0 1-9.36 3.93" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                            <path d="M10.5 1v2.5H13M3.5 13v-2.5H1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {ticket && remainingMs <= 0 && (
+                    <p className="local-api-pairing-scan-hint">Pairing code expired</p>
+                  )}
+
+                  {lanUrls.length > 1 && (
+                    <select
+                      className="settings-select local-api-pairing-url-select"
+                      value={selectedBaseUrl}
+                      onChange={(event) => onSelectBaseUrl(event.target.value)}
+                    >
+                      {lanUrls.map((url) => (
+                        <option key={url} value={url}>{url}</option>
+                      ))}
+                    </select>
+                  )}
+                </>
+              ) : (
+                <div className="local-api-pairing-waiting">
+                  Waiting for a LAN address...
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Approve step */}
+          {wizardStep === 'approve' && (
+            <div className="local-api-pairing-approve" key="approve">
+              <h4 className="local-api-pairing-approve-title">A phone wants to connect</h4>
+              {pendingRequests.map((request) => (
+                <div key={request.id} className="local-api-pairing-approve-card">
+                  <div className="local-api-pairing-approve-info">
+                    <span className="local-api-pairing-approve-name">{request.deviceName}</span>
+                    <span className="local-api-pairing-approve-detail">
+                      {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div className="local-api-pairing-approve-actions">
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={() => onApproveRequest(request.id)}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="settings-btn"
+                      onClick={() => onRejectRequest(request.id)}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Paired devices - collapsible */}
+          {hasPairedDevices && (
+            <div className="local-api-pairing-paired">
+              <button
+                className={`local-api-pairing-paired-toggle${showPairedDevices ? ' is-open' : ''}`}
+                onClick={() => setShowPairedDevices((prev) => !prev)}
+                aria-expanded={showPairedDevices}
+              >
+                <span>{activeDevices.length} paired phone{activeDevices.length !== 1 ? 's' : ''}</span>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              {showPairedDevices && (
+                <div className="local-api-pairing-paired-list">
+                  {activeDevices.map((device) => (
+                    <div key={device.id} className="local-api-pairing-paired-device">
+                      <div className="local-api-pairing-paired-device-info">
+                        <span className="local-api-pairing-paired-device-name">{device.name}</span>
+                        <span className="local-api-pairing-paired-device-detail">
+                          Last seen {formatTimestamp(device.lastSeenAt)}
                         </span>
                       </div>
                       <button
@@ -342,19 +317,15 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       </button>
                     </div>
                   ))}
+                  {activeDevices.length >= 2 && (
+                    <button className="settings-btn settings-btn-danger" onClick={onRevokeAllDevices}>
+                      Revoke All
+                    </button>
+                  )}
                 </div>
-                <div className="local-api-pairing-actions">
-                  <button className="settings-btn settings-btn-danger" onClick={onRevokeAllDevices}>
-                    Revoke All Phones
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="local-api-pairing-waiting">
-                No phones are paired yet. Once you approve one, it will show up here for later management.
-              </div>
-            )}
-          </section>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
