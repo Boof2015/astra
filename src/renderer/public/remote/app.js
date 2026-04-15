@@ -9,6 +9,7 @@
   const DEFAULT_ACCENT = '#38bdf8'
   const KEYBOARD_SEEK_SMALL_STEP_SECONDS = 5
   const KEYBOARD_SEEK_LARGE_STEP_SECONDS = 15
+  const MEDIA_SESSION_ACTIONS = ['play', 'pause', 'previoustrack', 'nexttrack', 'seekto', 'seekbackward', 'seekforward']
 
   const $ = (id) => document.getElementById(id)
 
@@ -201,12 +202,17 @@
     revokeArtwork()
     state.artworkTrackId = trackId
     state.artworkObjectUrl = objectUrl
+    updateMediaSessionArtwork(trackId, objectUrl)
     renderPlayer()
   }
 
   function clearArtwork(trackId) {
     revokeArtwork()
     state.artworkTrackId = trackId || null
+    if (ms.activationState === 'active' && state.snapshot?.currentTrack) {
+      ms.lastArtworkKey = null
+      syncMediaSessionMetadata(state.snapshot)
+    }
     renderPlayer()
   }
 
@@ -324,6 +330,7 @@
 
   function prepareForPairingClaim() {
     stopRealtime()
+    destroyMediaSession()
     clearPairingAttempt()
     state.snapshot = null
     state.optimisticSeekTime = null
@@ -538,6 +545,7 @@
 
   function handleAuthorizationFailure() {
     stopRealtime()
+    destroyMediaSession()
     clearPairingAttempt()
     persistToken('')
     state.snapshot = null
@@ -630,7 +638,9 @@
     state.connectionMessage = 'Connected.'
     clearNotice()
     void syncArtwork(snapshot)
+    updateMediaSession(snapshot)
     renderPage()
+    maybeActivateMediaSession()
   }
 
   async function fetchSnapshot(background) {
@@ -643,6 +653,7 @@
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return false
       if (!background) {
+        destroyMediaSession()
         state.connectionState = 'error'
         state.connectionMessage = 'Unable to reach Astra.'
         setNotice('Make sure this phone is on the same network as Astra.', 'error', 0)
@@ -666,6 +677,7 @@
 
   function scheduleReconnect() {
     if (state.reconnectTimer !== null || !state.token) return
+    destroyMediaSession()
     state.connectionState = 'reconnecting'
     state.connectionMessage = 'Reconnecting...'
     renderPage()
@@ -823,6 +835,316 @@
     } catch { setNotice('Could not send command.', 'error', NOTICE_TIMEOUT_MS) }
   }
 
+  // ── Media Session ──
+
+  function mediaSessionSupported() {
+    return 'mediaSession' in navigator
+  }
+
+  function audioSessionSupported() {
+    return typeof navigator.audioSession === 'object' && navigator.audioSession !== null && 'type' in navigator.audioSession
+  }
+
+  function createSilentAudio() {
+    const sampleRate = 8000
+    const numSamples = sampleRate * 30
+    const dataSize = numSamples * 2 // 16-bit mono
+    const buf = new ArrayBuffer(44 + dataSize)
+    const view = new DataView(buf)
+    function ws(offset, str) { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)) }
+    ws(0, 'RIFF'); view.setUint32(4, 36 + dataSize, true)
+    ws(8, 'WAVE'); ws(12, 'fmt ')
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true)
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+    ws(36, 'data'); view.setUint32(40, dataSize, true)
+    // Use an effectively inaudible non-zero waveform so Chrome still treats this
+    // as active audio instead of optimizing it away as literal silence/mute.
+    for (let i = 0; i < numSamples; i++) {
+      view.setInt16(44 + (i * 2), i % 2 === 0 ? 1 : -1, true)
+    }
+    const audio = document.createElement('audio')
+    audio.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
+    audio.loop = true
+    audio.preload = 'auto'
+    audio.playsInline = true
+    audio.setAttribute('playsinline', '')
+    audio.setAttribute('webkit-playsinline', '')
+    audio.muted = false
+    audio.defaultMuted = false
+    audio.volume = 1
+    audio.load()
+    document.body.appendChild(audio)
+    return audio
+  }
+
+  const ms = {
+    audio: null,
+    artUrl: null,
+    lastTrackId: null,
+    lastArtworkKey: null,
+    ready: false,
+    activationState: 'idle',
+    activationMessage: '',
+    previousAudioSessionType: null,
+    managedAudioSession: false
+  }
+
+  function setMediaSessionActivationState(next, message) {
+    ms.activationState = next
+    ms.activationMessage = message || ''
+  }
+
+  function applyPlaybackAudioSessionType() {
+    if (!audioSessionSupported()) return
+    const audioSession = navigator.audioSession
+    if (!ms.managedAudioSession) {
+      ms.previousAudioSessionType = typeof audioSession.type === 'string' ? audioSession.type : null
+      ms.managedAudioSession = true
+    }
+    try {
+      audioSession.type = 'playback'
+    } catch {
+      // Ignore browsers that expose the API but reject the requested type.
+    }
+  }
+
+  function restorePlaybackAudioSessionType() {
+    if (!ms.managedAudioSession || !audioSessionSupported()) return
+    const audioSession = navigator.audioSession
+    try {
+      audioSession.type = ms.previousAudioSessionType || 'ambient'
+    } catch {
+      // Ignore browsers that cannot restore the type.
+    }
+    ms.previousAudioSessionType = null
+    ms.managedAudioSession = false
+  }
+
+  function installMediaSessionActionHandlers() {
+    if (!mediaSessionSupported()) return
+    const session = navigator.mediaSession
+
+    try {
+      session.setActionHandler('play', () => {
+        if (ms.audio) {
+          ms.audio.play().catch(() => {
+              if (ms.activationState !== 'active') return
+              destroyMediaSession('blocked', 'Browser background playback was suspended. Keep this page open and try playback again.')
+              renderPage()
+            })
+        }
+        session.playbackState = 'playing'
+        void sendControl({ command: 'play' })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('pause', () => {
+        if (ms.audio) ms.audio.pause()
+        session.playbackState = 'paused'
+        void sendControl({ command: 'pause' })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('previoustrack', () => {
+        void sendControl({ command: 'previous' })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('nexttrack', () => {
+        void sendControl({ command: 'next' })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('seekto', (d) => {
+        if (d.seekTime != null) void sendControl({ command: 'seek', time: d.seekTime })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('seekbackward', (d) => {
+        const skip = d.seekOffset ?? 10
+        const t = state.snapshot ? Math.max(0, (state.snapshot.currentTime || 0) - skip) : 0
+        void sendControl({ command: 'seek', time: t })
+      })
+    } catch {}
+
+    try {
+      session.setActionHandler('seekforward', (d) => {
+        const skip = d.seekOffset ?? 10
+        const dur = state.snapshot ? (state.snapshot.duration || 0) : 0
+        const t = state.snapshot ? Math.min(dur, (state.snapshot.currentTime || 0) + skip) : 0
+        void sendControl({ command: 'seek', time: t })
+      })
+    } catch {}
+  }
+
+  function ensureMediaSessionScaffold() {
+    if (!mediaSessionSupported()) return false
+    if (!ms.audio) ms.audio = createSilentAudio()
+    if (!ms.ready) {
+      installMediaSessionActionHandlers()
+      ms.ready = true
+    }
+    return true
+  }
+
+  async function ensureMediaSessionActivated() {
+    if (!state.snapshot || !state.snapshot.currentTrack) return false
+    if (!mediaSessionSupported()) {
+      setMediaSessionActivationState('blocked', 'This browser does not expose a Media Session for Astra Remote.')
+      setNotice('This browser does not expose Android lock screen controls for Astra Remote.', 'error', NOTICE_TIMEOUT_MS)
+      return false
+    }
+    if (ms.activationState === 'active') return true
+    if (ms.activationState === 'activating') return false
+
+    setMediaSessionActivationState('activating')
+
+    try {
+      if (!ensureMediaSessionScaffold() || !ms.audio) throw new Error('Media Session unavailable.')
+      applyPlaybackAudioSessionType()
+      syncMediaSessionMetadata(state.snapshot)
+      syncMediaSessionPositionState(state.snapshot)
+      navigator.mediaSession.playbackState = state.snapshot.playbackState === 'playing' ? 'playing' : 'paused'
+      await ms.audio.play()
+      setMediaSessionActivationState('active')
+      updateMediaSession(state.snapshot)
+      return true
+    } catch {
+      destroyMediaSession('blocked', 'Chrome blocked background playback. Keep this page open and try playback again.')
+      setNotice('Chrome blocked the lock screen session. Keep this page open and try playback again.', 'error', NOTICE_TIMEOUT_MS)
+      return false
+    }
+  }
+
+  function maybeActivateMediaSession() {
+    if (!state.snapshot || !state.snapshot.currentTrack) return
+    if (!mediaSessionSupported()) return
+    if (ms.activationState === 'active' || ms.activationState === 'activating') return
+    if (!navigator.userActivation?.hasBeenActive) return
+    void ensureMediaSessionActivated()
+  }
+
+  function syncMediaSessionMetadata(snapshot) {
+    if (!mediaSessionSupported()) return
+    const session = navigator.mediaSession
+    const track = snapshot && snapshot.currentTrack
+    const trackId = track ? track.id : null
+    const resolvedArtworkUrl = trackId && state.artworkTrackId === trackId ? state.artworkObjectUrl : null
+    const artworkKey = track
+      ? track.artworkDataUrl || resolvedArtworkUrl || ''
+      : ''
+
+    if (trackId !== ms.lastTrackId || artworkKey !== ms.lastArtworkKey) {
+      ms.lastTrackId = trackId
+      ms.lastArtworkKey = artworkKey
+      if (!track) {
+        if (ms.artUrl) { URL.revokeObjectURL(ms.artUrl); ms.artUrl = null }
+        session.metadata = null
+      } else {
+        const artwork = []
+        const dataUrl = track.artworkDataUrl
+        if (dataUrl) {
+          // Initial load includes inline base64 artwork — convert to blob URL
+          if (ms.artUrl) { URL.revokeObjectURL(ms.artUrl); ms.artUrl = null }
+          try {
+            const [header, b64] = dataUrl.split(',')
+            const mime = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg'
+            const bytes = atob(b64)
+            const arr = new Uint8Array(bytes.length)
+            for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
+            ms.artUrl = URL.createObjectURL(new Blob([arr], { type: mime }))
+            artwork.push({ src: ms.artUrl, sizes: '512x512', type: mime })
+          } catch {}
+        } else {
+          if (ms.artUrl) { URL.revokeObjectURL(ms.artUrl); ms.artUrl = null }
+          if (resolvedArtworkUrl) {
+            artwork.push({ src: resolvedArtworkUrl, sizes: '512x512' })
+          }
+        }
+        session.metadata = new MediaMetadata({ title: track.title || '', artist: track.artist || '', album: track.album || '', artwork })
+      }
+    }
+  }
+
+  function syncMediaSessionPlaybackState(snapshot) {
+    if (!mediaSessionSupported()) return
+    const session = navigator.mediaSession
+
+    const playing = snapshot && snapshot.playbackState === 'playing'
+    const paused = snapshot && snapshot.playbackState === 'paused'
+
+    if (playing && ms.audio) {
+      ms.audio.play().then(() => {
+        if (!ms.ready || ms.activationState !== 'active') return
+        session.playbackState = 'playing'
+      }).catch(() => {
+        if (ms.activationState !== 'active') return
+        destroyMediaSession('blocked', 'Browser background playback was suspended. Keep this page open and try playback again.')
+        renderPage()
+      })
+    } else {
+      if (ms.audio) ms.audio.pause()
+      session.playbackState = paused ? 'paused' : 'none'
+    }
+  }
+
+  function syncMediaSessionPositionState(snapshot) {
+    if (!mediaSessionSupported()) return
+    const session = navigator.mediaSession
+    const dur = snapshot ? Math.max(0, snapshot.duration || 0) : 0
+    if (dur > 0) {
+      try {
+        session.setPositionState({ duration: dur, position: Math.min(Math.max(0, snapshot.currentTime || 0), dur), playbackRate: 1.0 })
+      } catch {}
+      return
+    }
+    try {
+      session.setPositionState(null)
+    } catch {
+      // Ignore browsers that reject null position state resets.
+    }
+  }
+
+  function updateMediaSession(snapshot) {
+    if (!ms.ready || ms.activationState !== 'active' || !mediaSessionSupported() || !ms.audio) return
+    syncMediaSessionMetadata(snapshot)
+    syncMediaSessionPlaybackState(snapshot)
+    syncMediaSessionPositionState(snapshot)
+  }
+
+  // Called by setArtwork() when the async artwork fetch completes for the current track
+  function updateMediaSessionArtwork(trackId, objectUrl) {
+    if (!ms.ready || ms.activationState !== 'active' || !mediaSessionSupported()) return
+    if (trackId !== ms.lastTrackId) return
+    ms.lastArtworkKey = null
+    if (state.snapshot) syncMediaSessionMetadata(state.snapshot)
+  }
+
+  function destroyMediaSession(nextState, message) {
+    if (ms.audio) { ms.audio.pause(); ms.audio.remove(); URL.revokeObjectURL(ms.audio.src); ms.audio = null }
+    if (ms.artUrl) { URL.revokeObjectURL(ms.artUrl); ms.artUrl = null }
+    restorePlaybackAudioSessionType()
+    if (mediaSessionSupported()) {
+      for (const action of MEDIA_SESSION_ACTIONS) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null)
+        } catch {}
+      }
+      navigator.mediaSession.metadata = null
+      navigator.mediaSession.playbackState = 'none'
+    }
+    ms.ready = false
+    ms.lastTrackId = null
+    ms.lastArtworkKey = null
+    setMediaSessionActivationState(nextState || 'idle', message)
+  }
+
   function getSeekDuration() {
     return Math.max(0, (state.snapshot && state.snapshot.duration) || 0)
   }
@@ -859,6 +1181,7 @@
     e.preventDefault()
     const t = elements.authToken.value.trim()
     if (!t) { setNotice('Paste the API key first.', 'error', NOTICE_TIMEOUT_MS); return }
+    destroyMediaSession()
     clearPairingAttempt()
     state.snapshot = null
     state.optimisticSeekTime = null
@@ -885,6 +1208,7 @@
 
   elements.forgetButton.addEventListener('click', () => {
     stopRealtime()
+    destroyMediaSession()
     clearPairingAttempt()
     persistToken('')
     state.snapshot = null
@@ -900,10 +1224,14 @@
   })
 
   elements.previousButton.addEventListener('click', () => { haptic(8); void sendControl({ command: 'previous' }) })
-  elements.playButton.addEventListener('click', () => {
+  elements.playButton.addEventListener('click', async () => {
     haptic(10)
     if (!state.snapshot) return
-    void sendControl({ command: state.snapshot.playbackState === 'playing' ? 'pause' : 'play' })
+    const command = state.snapshot.playbackState === 'playing' ? 'pause' : 'play'
+    if (command === 'play' && ms.activationState !== 'active') {
+      await ensureMediaSessionActivated()
+    }
+    void sendControl({ command })
   })
   elements.nextButton.addEventListener('click', () => { haptic(8); void sendControl({ command: 'next' }) })
   elements.favoriteButton.addEventListener('click', () => { haptic(6); void sendControl({ command: 'toggle-favorite' }) })
@@ -991,8 +1319,11 @@
   })
 
   // Lifecycle
-  window.addEventListener('beforeunload', () => { stopRealtime(); clearPairingAttempt(); revokeArtwork() })
+  window.addEventListener('beforeunload', () => { stopRealtime(); destroyMediaSession(); clearPairingAttempt(); revokeArtwork() })
   window.addEventListener('hashchange', () => beginPairingClaim(window.location.hash, false))
+  document.addEventListener('pointerdown', () => {
+    maybeActivateMediaSession()
+  }, { passive: true })
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
