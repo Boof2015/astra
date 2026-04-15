@@ -14305,6 +14305,10 @@ body::after {
   padding: 12px 0 16px;
 }
 
+.local-api-inline-qr .local-api-pairing-qr {
+  width: min(100%, 220px);
+}
+
 .local-api-inline-devices-list {
   display: flex;
   flex-direction: column;
