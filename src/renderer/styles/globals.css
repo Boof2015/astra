@@ -12626,28 +12626,25 @@ body::after {
 }
 
 .settings-section-panel {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
-  padding: 16px;
+  padding: 0;
 }
 
 .settings-section-head {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+  gap: 2px;
+  margin-bottom: 16px;
 }
 
 .settings-section-head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .settings-section-head p {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.54);
+  display: none;
 }
 
 .settings-actions {
@@ -12666,17 +12663,18 @@ body::after {
 }
 
 .settings-integration-cards {
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .settings-integration-card {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.22);
-  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+  padding: 0;
 }
 
 .settings-library-remote-card {
@@ -12693,6 +12691,7 @@ body::after {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 12px;
+  padding: 10px 14px 0;
 }
 
 .remote-panel-header-actions {
@@ -13186,20 +13185,23 @@ body::after {
 .settings-integration-card-head {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: 0;
+  margin-bottom: 0;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .settings-integration-card-head h4 {
   margin: 0;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.9);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
 }
 
 .settings-integration-card-head p {
-  margin: 0;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.54);
+  display: none;
 }
 
 .settings-btn {
@@ -13238,10 +13240,48 @@ body::after {
   background: rgba(var(--accent-rgb), 0.18);
 }
 
-.settings-grid {
+.settings-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-fields-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0;
+}
+
+.settings-fields-row .settings-field {
+  border-bottom: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-fields-row .settings-field:last-child {
+  border-right: none;
+}
+
+.settings-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.settings-card-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 .settings-field {
@@ -13249,23 +13289,25 @@ body::after {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.28);
-  padding: 10px 12px;
-  min-height: 72px;
-  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-field:last-child {
+  border-bottom: none;
 }
 
 .settings-field-inline {
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
+  padding: 10px 14px;
 }
 
 .settings-field-label {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .settings-field-inline .settings-field-label {
@@ -13324,11 +13366,18 @@ body::after {
 }
 
 .settings-note {
-  margin-top: 10px;
+  margin-top: 0;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.03em;
-  color: rgba(255, 255, 255, 0.44);
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.32);
+  line-height: 1.5;
+}
+
+.settings-card .settings-note,
+.settings-integration-card .settings-note {
+  padding: 6px 14px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .analyzer-profile-panel {
@@ -13544,6 +13593,7 @@ body::after {
   display: flex;
   align-items: stretch;
   gap: 10px;
+  margin-top: 12px;
 }
 
 .settings-audio-control .audio-output-select {
@@ -13813,6 +13863,7 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 12px 14px;
 }
 
 .settings-sleep-presets {
@@ -14281,7 +14332,7 @@ body::after {
 /* Inline device list (settings card, outside modal) */
 .local-api-inline-devices {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
-  padding-top: 10px;
+  padding: 10px 14px 4px;
   margin-top: 6px;
 }
 
@@ -14348,8 +14399,10 @@ body::after {
 }
 
 .settings-shell .settings-danger-zone {
-  border-color: rgba(248, 113, 113, 0.24);
+  border: 1px solid rgba(248, 113, 113, 0.24);
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(38, 14, 18, 0.42), rgba(18, 8, 12, 0.46));
+  padding: 16px;
 }
 
 .settings-shell .settings-danger-groups {
@@ -14596,6 +14649,20 @@ body::after {
   flex-direction: column;
   gap: 10px;
 }
+
+.delay-comp-panel .settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.delay-comp-panel .settings-field {
+  padding: 8px 10px;
+  border-bottom: none;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
+}
+
 
 .delay-comp-header {
   display: flex;

@@ -191,6 +191,7 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
+  const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
@@ -1103,7 +1104,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Appearance</h3>
-              <p>Theme and accent preferences.</p>
             </div>
             <div className="settings-theme-grid">
               {THEME_PRESET_LIST.map((preset) => (
@@ -1118,106 +1118,105 @@ export default function SettingsView() {
                 </button>
               ))}
             </div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span className="settings-field-label">
-                  {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
-                </span>
-                <div className="settings-accent-inputs">
-                  <input
-                    className="settings-color settings-color-wide"
-                    type="color"
-                    value={fallbackAccent}
-                    onChange={(event) => {
-                      const next = event.target.value.toLowerCase()
-                      setAccentInputValue(next)
-                      setCustomAccent(next)
-                    }}
-                  />
-                  <input
-                    className="settings-select settings-accent-hex-input"
-                    type="text"
-                    value={accentInputValue}
-                    onChange={(event) => handleAccentColorInput(event.target.value)}
-                    onBlur={() => {
-                      const normalized = normalizeHexColor(accentInputValue)
-                      if (!normalized) {
-                        setAccentInputValue(fallbackAccent)
-                        return
-                      }
-                      setAccentInputValue(normalized)
-                    }}
-                    placeholder={defaultPresetAccent}
-                    spellCheck={false}
-                  />
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Accent</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">
+                      {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
+                    </span>
+                    <div className="settings-accent-inputs">
+                      <input
+                        className="settings-color settings-color-wide"
+                        type="color"
+                        value={fallbackAccent}
+                        onChange={(event) => {
+                          const next = event.target.value.toLowerCase()
+                          setAccentInputValue(next)
+                          setCustomAccent(next)
+                        }}
+                      />
+                      <input
+                        className="settings-select settings-accent-hex-input"
+                        type="text"
+                        value={accentInputValue}
+                        onChange={(event) => handleAccentColorInput(event.target.value)}
+                        onBlur={() => {
+                          const normalized = normalizeHexColor(accentInputValue)
+                          if (!normalized) {
+                            setAccentInputValue(fallbackAccent)
+                            return
+                          }
+                          setAccentInputValue(normalized)
+                        }}
+                        placeholder={defaultPresetAccent}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Accent Source</span>
+                    <select
+                      className="settings-select"
+                      value={accentSource}
+                      onChange={(event) => {
+                        const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
+                        setAccentSource(source)
+                      }}
+                    >
+                      <option value="theme">Theme Accent</option>
+                      <option value="cover-art">Cover Art (Now Playing)</option>
+                    </select>
+                  </label>
+                  {accentSource === 'cover-art' && (
+                    <label className="settings-field">
+                      <span className="settings-field-label">Cover Art Method</span>
+                      <select
+                        className="settings-select"
+                        value={coverArtAccentMethod}
+                        onChange={(event) => {
+                          const method: CoverArtAccentMethod = event.target.value === 'average'
+                            ? 'average'
+                            : event.target.value === 'vibrant'
+                              ? 'vibrant'
+                              : 'dominant'
+                          setCoverArtAccentMethod(method)
+                        }}
+                      >
+                        <option value="dominant">Dominant</option>
+                        <option value="vibrant">Vibrant</option>
+                        <option value="average">Average</option>
+                      </select>
+                    </label>
+                  )}
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
+                    </span>
+                    {customAccent ? (
+                      <button className="settings-btn" onClick={usePresetAccent}>
+                        Use Preset Accent
+                      </button>
+                    ) : (
+                      <span className="settings-chip">Using Preset Accent</span>
+                    )}
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Theme</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={() => {
+                        resetThemeToDefault()
+                        setAccentInputValue(defaultPresetAccent)
+                      }}
+                    >
+                      Reset Theme to Default
+                    </button>
+                  </div>
                 </div>
-              </label>
-              <label className="settings-field">
-                <span className="settings-field-label">Accent Source</span>
-                <select
-                  className="settings-select"
-                  value={accentSource}
-                  onChange={(event) => {
-                    const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
-                    setAccentSource(source)
-                  }}
-                >
-                  <option value="theme">Theme Accent</option>
-                  <option value="cover-art">Cover Art (Now Playing)</option>
-                </select>
-              </label>
-              {accentSource === 'cover-art' && (
-                <label className="settings-field">
-                  <span className="settings-field-label">Cover Art Method</span>
-                  <select
-                    className="settings-select"
-                    value={coverArtAccentMethod}
-                    onChange={(event) => {
-                      const method: CoverArtAccentMethod = event.target.value === 'average'
-                        ? 'average'
-                        : event.target.value === 'vibrant'
-                          ? 'vibrant'
-                          : 'dominant'
-                      setCoverArtAccentMethod(method)
-                    }}
-                  >
-                    <option value="dominant">Dominant</option>
-                    <option value="vibrant">Vibrant</option>
-                    <option value="average">Average</option>
-                  </select>
-                </label>
-              )}
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">
-                  {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
-                </span>
-                {customAccent ? (
-                  <button className="settings-btn" onClick={usePresetAccent}>
-                    Use Preset Accent
-                  </button>
-                ) : (
-                  <span className="settings-chip">Using Preset Accent</span>
-                )}
-              </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Theme</span>
-                <button
-                  className="settings-btn settings-btn-primary"
-                  onClick={() => {
-                    resetThemeToDefault()
-                    setAccentInputValue(defaultPresetAccent)
-                  }}
-                >
-                  Reset Theme to Default
-                </button>
               </div>
             </div>
-            <p className="settings-note">The current Astra look is preserved as the default preset.</p>
-            {accentSource === 'cover-art' && (
-              <p className="settings-note">
-                Cover art accents use the selected method on the current track artwork. Vibrant favors richer, less-muted colors. If artwork is missing or no usable color is found, Astra uses the fallback accent color.
-              </p>
-            )}
           </section>
             )}
 
@@ -1225,7 +1224,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Library</h3>
-              <p>Manage folders and refresh indexed metadata.</p>
             </div>
             <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
               <button className="settings-btn settings-btn-primary" onClick={() => setShowFolderSettings(true)}>
@@ -1241,104 +1239,107 @@ export default function SettingsView() {
                 Rescan Library
               </button>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Normalization</span>
-                <button
-                  className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
-                  onClick={handleNormalizationToggle}
-                  disabled={bitPerfectModeActive}
-                  title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
-                >
-                  {normalizationEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-              <label className="settings-field">
-                <span className="settings-field-label">Normalization Target</span>
-                <div className="settings-inline-row">
-                  <input
-                    className="settings-select settings-inline-input settings-inline-input-compact"
-                    type="number"
-                    min={NORMALIZATION_TARGET_MIN_LUFS}
-                    max={NORMALIZATION_TARGET_MAX_LUFS}
-                    step={0.5}
-                    value={normalizationTargetInput}
-                    disabled={!normalizationEnabled || bitPerfectModeActive}
-                    onChange={(event) => {
-                      setNormalizationTargetInput(event.target.value)
-                      if (normalizationTargetError) {
-                        setNormalizationTargetError('')
-                      }
-                    }}
-                    onBlur={commitNormalizationTarget}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter') return
-                      event.preventDefault()
-                      commitNormalizationTarget()
-                    }}
-                  />
-                  <span className="settings-chip settings-chip-mono">LUFS</span>
-                  <button
-                    type="button"
-                    className="settings-chip settings-chip-mono settings-chip-danger"
-                    disabled={!normalizationEnabled || bitPerfectModeActive}
-                    onClick={resetNormalizationTarget}
-                  >
-                    RESET
-                  </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Normalization</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Normalization</span>
+                    <button
+                      className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
+                      onClick={handleNormalizationToggle}
+                      disabled={bitPerfectModeActive}
+                      title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                    >
+                      {normalizationEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Normalization Target</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={NORMALIZATION_TARGET_MIN_LUFS}
+                        max={NORMALIZATION_TARGET_MAX_LUFS}
+                        step={0.5}
+                        value={normalizationTargetInput}
+                        disabled={!normalizationEnabled || bitPerfectModeActive}
+                        onChange={(event) => {
+                          setNormalizationTargetInput(event.target.value)
+                          if (normalizationTargetError) {
+                            setNormalizationTargetError('')
+                          }
+                        }}
+                        onBlur={commitNormalizationTarget}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          event.preventDefault()
+                          commitNormalizationTarget()
+                        }}
+                      />
+                      <span className="settings-chip settings-chip-mono">LUFS</span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        disabled={!normalizationEnabled || bitPerfectModeActive}
+                        onClick={resetNormalizationTarget}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">ReplayGain</span>
+                    <select
+                      className="settings-select"
+                      value={replayGainSelectorValue}
+                      disabled={bitPerfectModeActive}
+                      onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
+                    >
+                      <option value="disabled">Disabled</option>
+                      <option value="auto">Auto</option>
+                      <option value="track">Track</option>
+                      <option value="album">Album</option>
+                    </select>
+                  </label>
                 </div>
-              </label>
-              <label className="settings-field">
-                <span className="settings-field-label">ReplayGain</span>
-                <select
-                  className="settings-select"
-                  value={replayGainSelectorValue}
-                  disabled={bitPerfectModeActive}
-                  onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
-                >
-                  <option value="disabled">Disabled</option>
-                  <option value="auto">Auto</option>
-                  <option value="track">Track</option>
-                  <option value="album">Album</option>
-                </select>
-              </label>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Tracklist BPM/Key Columns</span>
-                <button
-                  className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
-                  onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
-                >
-                  {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
-                </button>
               </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Tracklist Added Column</span>
-                <button
-                  className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
-                  onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
-                >
-                  {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
-                </button>
+              <div className="settings-card">
+                <div className="settings-card-label">Tracklist Columns</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">BPM / Key</span>
+                    <button
+                      className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
+                      onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
+                    >
+                      {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Added Date</span>
+                    <button
+                      className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
+                      onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
+                    >
+                      {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-            <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
-            <p className="settings-note">
-              Normalization Target applies to built-in normalization. ReplayGain values override it on tagged tracks when ReplayGain is active.
-            </p>
             {bitPerfectModeActive && (
               <p className="settings-note">
                 {BIT_PERFECT_DSP_DISABLED_MESSAGE}
               </p>
             )}
-            <p className="settings-note">
-              Experimental.
-            </p>
             {normalizationTargetError && (
               <p className="settings-note settings-note-error">{normalizationTargetError}</p>
             )}
             {!normalizationEnabled && (
               <p className="settings-note settings-note-error">
-                Normalization is disabled. ReplayGain can stay configured, but playback gain is bypassed until normalization is re-enabled.
+                ReplayGain is configured but playback gain is bypassed while normalization is off.
               </p>
             )}
             <RemoteServersPanel />
@@ -1349,34 +1350,35 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Analyzer</h3>
-              <p>Profiles, docked scope layout, and visualizer behavior.</p>
             </div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span className="settings-field-label">Mini Player Visualizer</span>
-                <select
-                  className="settings-select"
-                  value={miniPlayerVisualizerMode}
-                  onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
-                >
-                  <option value="off">Off</option>
-                  <option value="oscilloscope">Oscilloscope</option>
-                  <option value="spectrum">Spectrum</option>
-                </select>
-              </label>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Visualizer</span>
-                <button
-                  className={`settings-toggle ${isRunning ? 'active' : ''}`}
-                  onClick={() => setIsRunning(!isRunning)}
-                >
-                  {isRunning ? 'Running' : 'Paused'}
-                </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Visualizer</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Mini Player Visualizer</span>
+                    <select
+                      className="settings-select"
+                      value={miniPlayerVisualizerMode}
+                      onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
+                    >
+                      <option value="off">Off</option>
+                      <option value="oscilloscope">Oscilloscope</option>
+                      <option value="spectrum">Spectrum</option>
+                    </select>
+                  </label>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Visualizer</span>
+                    <button
+                      className={`settings-toggle ${isRunning ? 'active' : ''}`}
+                      onClick={() => setIsRunning(!isRunning)}
+                    >
+                      {isRunning ? 'Running' : 'Paused'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-            <p className="settings-note">Visualizer line color follows the active theme accent.</p>
-            <p className="settings-note">For smoother mini-player visuals, use FFT 1024/2048 in the active analyzer profile, disable oscilloscope underfill there, and avoid hero mode on lower-end GPUs.</p>
           </section>
             )}
 
@@ -1384,45 +1386,49 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Audio Output</h3>
-              <p>Output device, delay compensation, and channel routing.</p>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Playback Path</span>
-                <div className="settings-inline-row">
-                  <button
-                    className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
-                    onClick={() => handlePlaybackPathChange('standard')}
-                  >
-                    Standard
-                  </button>
-                  <div className="settings-inline-row">
-                    <button
-                      className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
-                      onClick={() => handlePlaybackPathChange('bitperfect')}
-                    >
-                      Bit-Perfect (Exclusive)
-                    </button>
-                    <span className="settings-chip settings-chip-mono settings-chip-danger">
-                      Experimental
-                    </span>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Playback Path</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Playback Path</span>
+                    <div className="settings-inline-row">
+                      <button
+                        className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
+                        onClick={() => handlePlaybackPathChange('standard')}
+                      >
+                        Standard
+                      </button>
+                      <div className="settings-inline-row">
+                        <button
+                          className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
+                          onClick={() => handlePlaybackPathChange('bitperfect')}
+                        >
+                          Bit-Perfect (Exclusive)
+                        </button>
+                        <span className="settings-chip settings-chip-mono settings-chip-danger">
+                          Experimental
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-              <div className="settings-field">
-                <span className="settings-field-label">Native Status</span>
-                <div className="settings-inline-row">
-                  <span className="settings-chip settings-chip-mono">
-                    {nativeBackendLabel}
-                  </span>
-                  {nativeAudioCapabilities.activeSampleRate && (
-                    <span className="settings-chip settings-chip-mono">
-                      {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
-                    </span>
-                  )}
-                  <span className="settings-chip settings-chip-mono">
-                    {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
-                  </span>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Native Status</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono">
+                        {nativeBackendLabel}
+                      </span>
+                      {nativeAudioCapabilities.activeSampleRate && (
+                        <span className="settings-chip settings-chip-mono">
+                          {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
+                        </span>
+                      )}
+                      <span className="settings-chip settings-chip-mono">
+                        {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1448,72 +1454,73 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Playback</h3>
-              <p>Session-level playback behavior and sleep timer controls.</p>
             </div>
-            <div className="settings-sleep-controls">
-              <div className="settings-sleep-presets">
-                {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
-                  <button
-                    key={minutes}
-                    type="button"
-                    className="settings-btn"
-                    onClick={() => handleSleepTimerPreset(minutes)}
-                    disabled={!canStartSleepTimer}
-                  >
-                    {minutes} min
-                  </button>
-                ))}
-              </div>
-              <div className="settings-sleep-custom-row">
-                <input
-                  className="settings-select"
-                  type="number"
-                  min={SLEEP_TIMER_MIN_MINUTES}
-                  max={SLEEP_TIMER_MAX_MINUTES}
-                  step={1}
-                  value={sleepTimerCustomMinutesInput}
-                  onChange={(event) => setSleepTimerCustomMinutesInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter') return
-                    event.preventDefault()
-                    handleSleepTimerCustomStart()
-                  }}
-                />
-                <button
-                  type="button"
-                  className="settings-btn settings-btn-primary"
-                  onClick={handleSleepTimerCustomStart}
-                  disabled={!canStartSleepTimer}
-                >
-                  {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
-                </button>
-                {sleepTimerIsActive && (
-                  <button
-                    type="button"
-                    className="settings-btn"
-                    onClick={handleSleepTimerCancel}
-                  >
-                    Cancel
-                  </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Sleep Timer</div>
+                <div className="settings-sleep-controls">
+                  <div className="settings-sleep-presets">
+                    {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
+                      <button
+                        key={minutes}
+                        type="button"
+                        className="settings-btn"
+                        onClick={() => handleSleepTimerPreset(minutes)}
+                        disabled={!canStartSleepTimer}
+                      >
+                        {minutes} min
+                      </button>
+                    ))}
+                  </div>
+                  <div className="settings-sleep-custom-row">
+                    <input
+                      className="settings-select"
+                      type="number"
+                      min={SLEEP_TIMER_MIN_MINUTES}
+                      max={SLEEP_TIMER_MAX_MINUTES}
+                      step={1}
+                      value={sleepTimerCustomMinutesInput}
+                      onChange={(event) => setSleepTimerCustomMinutesInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        handleSleepTimerCustomStart()
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleSleepTimerCustomStart}
+                      disabled={!canStartSleepTimer}
+                    >
+                      {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
+                    </button>
+                    {sleepTimerIsActive && (
+                      <button
+                        type="button"
+                        className="settings-btn"
+                        onClick={handleSleepTimerCancel}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className={`settings-note settings-sleep-status${sleepTimerIsActive ? ' settings-sleep-status-active' : ''}`}>
+                  {sleepTimerStatusLabel}
+                </p>
+                {sleepTimerFeedback && (
+                  <p className={`settings-note ${sleepTimerFeedbackTone === 'error' ? 'settings-note-error' : 'settings-note-success'}`}>
+                    {sleepTimerFeedback}
+                  </p>
+                )}
+                {!canStartSleepTimer && (
+                  <p className="settings-note">
+                    Load a track to start a sleep timer.
+                  </p>
                 )}
               </div>
             </div>
-            <p className={`settings-note settings-sleep-status${sleepTimerIsActive ? ' settings-sleep-status-active' : ''}`}>
-              {sleepTimerStatusLabel}
-            </p>
-            {sleepTimerFeedback && (
-              <p className={`settings-note ${sleepTimerFeedbackTone === 'error' ? 'settings-note-error' : 'settings-note-success'}`}>
-                {sleepTimerFeedback}
-              </p>
-            )}
-            {!canStartSleepTimer && (
-              <p className="settings-note">
-                Load a track and keep playback in playing or paused state to start a sleep timer.
-              </p>
-            )}
-            <p className="settings-note">
-              Sleep timer counts down in real time, pauses playback when it expires, and does not persist after restart.
-            </p>
           </section>
             )}
 
@@ -1521,7 +1528,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
-              <p>Optional platform integrations outside library sources.</p>
             </div>
             <div className="settings-integration-cards">
               <div className="settings-integration-card">
@@ -1570,9 +1576,6 @@ export default function SettingsView() {
                 <p className="settings-note">{lastFmQueueLabel}</p>
                 {lastFmAuthHint && <p className="settings-note settings-note-success">{lastFmAuthHint}</p>}
                 {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
-                <p className="settings-note">
-                  Last.fm is optional, disabled by default, and only submits listening data when connected and enabled.
-                </p>
                 {!lastFmHasApiCredentials && (
                   <p className="settings-note settings-note-error">
                     Last.fm API credentials are missing in this build.
@@ -1598,9 +1601,6 @@ export default function SettingsView() {
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
-                <p className="settings-note">
-                  Online lookup is off by default. Astra only queries LRCLIB when the Lyrics tab is opened and embedded lyrics are missing.
-                </p>
               </div>
 
               <div className="settings-integration-card">
@@ -1630,9 +1630,6 @@ export default function SettingsView() {
                   </div>
                 </div>
                 <p className="settings-note">{discordStatusMessage}</p>
-                <p className="settings-note">
-                  Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
-                </p>
               </div>
 
               <div className="settings-integration-card">
@@ -1700,8 +1697,17 @@ export default function SettingsView() {
                     <span className="settings-field-label">Local API Key</span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">
-                        {localApiToken || 'Unavailable'}
+                        {localApiToken
+                          ? (showApiKey ? localApiToken : '•'.repeat(Math.min(localApiToken.length, 24)))
+                          : 'Unavailable'}
                       </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => setShowApiKey((v) => !v)}
+                        disabled={!localApiToken}
+                      >
+                        {showApiKey ? 'Hide' : 'Show'}
+                      </button>
                       <button
                         className="settings-btn"
                         onClick={() => void copyToClipboard(localApiToken, 'API key')}
@@ -1718,12 +1724,6 @@ export default function SettingsView() {
                 <p className="settings-note">{localApiStatusLabel}</p>
                 {localApiFeedback && <p className="settings-note settings-note-success">{localApiFeedback}</p>}
                 {localApiErrorMessage && <p className="settings-note settings-note-error">{localApiErrorMessage}</p>}
-                <p className="settings-note">
-                  The local API is loopback-only and off by default.
-                </p>
-                <p className="settings-note">
-                  Phone Remote lives in Experimental and has its own guided pairing popup.
-                </p>
               </div>
             </div>
           </section>
@@ -1733,32 +1733,35 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Experimental</h3>
-              <p>Preview features that may change, move, or disappear. They are not guaranteed to be stable.</p>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Library Graph</span>
-                <button
-                  className={`settings-toggle ${libraryGraphEnabled ? 'active' : ''}`}
-                  onClick={() => setLibraryGraphEnabled(!libraryGraphEnabled)}
-                >
-                  {libraryGraphEnabled ? 'Enabled' : 'Disabled'}
-                </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Library Graph</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Library Graph</span>
+                    <button
+                      className={`settings-toggle ${libraryGraphEnabled ? 'active' : ''}`}
+                      onClick={() => setLibraryGraphEnabled(!libraryGraphEnabled)}
+                    >
+                      {libraryGraphEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Graph</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!libraryGraphEnabled}
+                      onClick={() => {
+                        openFullGraph()
+                        setActiveView('graph')
+                      }}
+                    >
+                      Open Full Map
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Open Graph</span>
-                <button
-                  className="settings-btn"
-                  disabled={!libraryGraphEnabled}
-                  onClick={() => {
-                    openFullGraph()
-                    setActiveView('graph')
-                  }}
-                >
-                  Open Full Map
-                </button>
-              </div>
-            </div>
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Phone Remote</h4>
@@ -1836,12 +1839,7 @@ export default function SettingsView() {
                   </div>
                 )}
               </div>
-            <p className="settings-note">
-              Enable Library Graph adds a dedicated graph view and an artist-page graph entrypoint.
-            </p>
-            <p className="settings-note">
-              The current version derives artist relationships from your existing library metadata only.
-            </p>
+            </div>
           </section>
             )}
 
@@ -1849,64 +1847,66 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Info</h3>
-              <p>Version, updates, attribution, and license details.</p>
             </div>
-            <div className="settings-grid settings-info-grid">
-              <div className="settings-field">
-                <span className="settings-field-label">App Version</span>
-                <button
-                  type="button"
-                  className="settings-version-reveal-btn settings-info-value"
-                  onClick={handleAppVersionClick}
-                  aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
-                >
-                  {appVersionLabel}
-                </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Updates</div>
+                <div className="settings-grid">
+                  <div className="settings-field">
+                    <span className="settings-field-label">App Version</span>
+                    <button
+                      type="button"
+                      className="settings-version-reveal-btn settings-info-value"
+                      onClick={handleAppVersionClick}
+                      aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
+                    >
+                      {appVersionLabel}
+                    </button>
+                  </div>
+                  <div className="settings-fields-row">
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Auto-check on Startup</span>
+                      <button
+                        className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
+                        onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
+                      >
+                        {autoCheckEnabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Check for Updates</span>
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        onClick={() => void checkForUpdates()}
+                        disabled={updateCheckState === 'checking'}
+                      >
+                        {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
+                      </button>
+                    </div>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Download</span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void openReleasesPage()}
+                      >
+                        Open Releases
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
+                  {updateStatusMessage}
+                </p>
+                {updateAvailable && latestTag && (
+                  <p className="settings-note settings-update-meta">
+                    Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
+                  </p>
+                )}
+                <p className="settings-note settings-update-meta">
+                  {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
+                </p>
               </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Auto-check on Startup</span>
-                <button
-                  className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
-                  onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
-                >
-                  {autoCheckEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Check for Updates</span>
-                <button
-                  className="settings-btn settings-btn-primary"
-                  onClick={() => void checkForUpdates()}
-                  disabled={updateCheckState === 'checking'}
-                >
-                  {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
-                </button>
-              </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Download</span>
-                <button
-                  className="settings-btn"
-                  onClick={() => void openReleasesPage()}
-                >
-                  Open Releases
-                </button>
-              </div>
-
             </div>
-            <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
-              {updateStatusMessage}
-            </p>
-            {updateAvailable && latestTag && (
-              <p className="settings-note settings-update-meta">
-                Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
-              </p>
-            )}
-            <p className="settings-note settings-update-meta">
-              {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
-            </p>
             <div className="settings-actions settings-info-actions">
               <button
                 type="button"
@@ -1974,7 +1974,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Developer</h3>
-              <p>Hidden diagnostics and playback-debug controls.</p>
             </div>
             <div className="settings-actions settings-info-actions">
               <button
@@ -2093,7 +2092,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel settings-danger-zone">
             <div className="settings-section-head">
               <h3>Danger Zone</h3>
-              <p>Use these actions when troubleshooting or intentionally resetting data.</p>
             </div>
             <div className="settings-danger-groups">
               <div className="settings-danger-group">
