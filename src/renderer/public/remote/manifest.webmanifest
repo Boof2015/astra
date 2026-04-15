@@ -7,8 +7,8 @@
   "scope": "/remote/",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui", "browser"],
-  "background_color": "#050912",
-  "theme_color": "#0b1220",
+  "background_color": "#05070b",
+  "theme_color": "#0b1118",
   "icons": [
     {
       "src": "/remote/icon-192.png",

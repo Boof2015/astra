@@ -6,10 +6,14 @@
   const NOTICE_TIMEOUT_MS = 3600
   const ARTWORK_RETRY_DELAY_MS = 800
   const ARTWORK_MAX_RETRIES = 4
+  const DEFAULT_ACCENT = '#38bdf8'
+  const KEYBOARD_SEEK_SMALL_STEP_SECONDS = 5
+  const KEYBOARD_SEEK_LARGE_STEP_SECONDS = 15
 
   const $ = (id) => document.getElementById(id)
 
   const elements = {
+    themeColorMeta: document.getElementById('theme-color-meta'),
     pairIdle: $('pair-idle'),
     pairPending: $('pair-pending'),
     pairPendingTitle: $('pair-pending-title'),
@@ -44,6 +48,7 @@
     elapsedTime: $('elapsed-time'),
     remainingTime: $('remaining-time'),
     seekTrack: $('seek-track'),
+    seekPreview: $('seek-preview'),
     seekFill: $('seek-fill'),
     seekThumb: $('seek-thumb'),
     previousButton: $('previous-button'),
@@ -75,6 +80,7 @@
     artworkRetryCount: 0,
     isScrubbing: false,
     scrubValue: 0,
+    optimisticSeekTime: null,
     hasInitialSnapshot: false,
     manualAuthVisible: false,
     pairingState: 'idle',
@@ -82,7 +88,8 @@
     pairingPollToken: '',
     pairingExpiresAt: 0,
     pairingAttemptCounter: 0,
-    activePairingAttemptId: 0
+    activePairingAttemptId: 0,
+    isSeekFocused: false
   }
 
   elements.originChip.textContent = window.location.origin
@@ -92,6 +99,12 @@
   // ── Helpers ──
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+
+  function clampTime(value, duration) {
+    if (!Number.isFinite(duration) || duration <= 0) return 0
+    if (!Number.isFinite(value)) return 0
+    return clamp(value, 0, duration)
+  }
 
   function formatTime(totalSeconds) {
     const s = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0
@@ -105,9 +118,77 @@
 
   function haptic(ms) { if (navigator.vibrate) navigator.vibrate(ms || 8) }
 
+  function normalizeHexColor(value) {
+    const trimmed = typeof value === 'string' ? value.trim() : ''
+    const shortMatch = /^#([0-9a-fA-F]{3})$/.exec(trimmed)
+    if (shortMatch) {
+      const [r, g, b] = shortMatch[1].split('')
+      return `#${r}${r}${g}${g}${b}${b}`.toLowerCase()
+    }
+
+    const fullMatch = /^#([0-9a-fA-F]{6})$/.exec(trimmed)
+    if (!fullMatch) return null
+    return `#${fullMatch[1].toLowerCase()}`
+  }
+
+  function hexToRgb(hex) {
+    const normalized = normalizeHexColor(hex)
+    if (!normalized) return null
+    return {
+      r: Number.parseInt(normalized.slice(1, 3), 16),
+      g: Number.parseInt(normalized.slice(3, 5), 16),
+      b: Number.parseInt(normalized.slice(5, 7), 16)
+    }
+  }
+
+  function rgbToHex(r, g, b) {
+    const clampChannel = (value) => clamp(Math.round(value), 0, 255)
+    const toHex = (value) => clampChannel(value).toString(16).padStart(2, '0')
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+  }
+
+  function mixRgb(base, target, amount) {
+    return {
+      r: Math.round(base.r + ((target.r - base.r) * amount)),
+      g: Math.round(base.g + ((target.g - base.g) * amount)),
+      b: Math.round(base.b + ((target.b - base.b) * amount))
+    }
+  }
+
+  function deriveAccentHover(hex) {
+    const rgb = hexToRgb(hex) || hexToRgb(DEFAULT_ACCENT)
+    const mixed = mixRgb(rgb, { r: 255, g: 255, b: 255 }, 0.28)
+    return rgbToHex(mixed.r, mixed.g, mixed.b)
+  }
+
+  function deriveAccentContrast(hex) {
+    const rgb = hexToRgb(hex) || hexToRgb(DEFAULT_ACCENT)
+    const brightness = ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000
+    return brightness >= 170 ? '#041017' : '#f8fbff'
+  }
+
+  function deriveThemeColor(hex) {
+    const accentRgb = hexToRgb(hex) || hexToRgb(DEFAULT_ACCENT)
+    const themeRgb = mixRgb({ r: 11, g: 17, b: 24 }, accentRgb, 0.18)
+    return rgbToHex(themeRgb.r, themeRgb.g, themeRgb.b)
+  }
+
   function setThemeAccent(color) {
-    const c = typeof color === 'string' && color.trim() ? color.trim() : '#38bdf8'
-    document.documentElement.style.setProperty('--accent', c)
+    const accent = normalizeHexColor(color) || DEFAULT_ACCENT
+    const accentHover = deriveAccentHover(accent)
+    const accentRgb = hexToRgb(accent) || hexToRgb(DEFAULT_ACCENT)
+    const accentHoverRgb = hexToRgb(accentHover) || accentRgb
+    const accentContrast = deriveAccentContrast(accent)
+    const themeColor = deriveThemeColor(accent)
+
+    document.documentElement.style.setProperty('--accent', accent)
+    document.documentElement.style.setProperty('--accent-rgb', `${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}`)
+    document.documentElement.style.setProperty('--accent-hover', accentHover)
+    document.documentElement.style.setProperty('--accent-hover-rgb', `${accentHoverRgb.r}, ${accentHoverRgb.g}, ${accentHoverRgb.b}`)
+    document.documentElement.style.setProperty('--accent-glow', `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.34)`)
+    document.documentElement.style.setProperty('--accent-contrast', accentContrast)
+    document.documentElement.style.setProperty('--browser-theme-color', themeColor)
+    if (elements.themeColorMeta) elements.themeColorMeta.setAttribute('content', themeColor)
   }
 
   // ── Artwork ──
@@ -245,6 +326,7 @@
     stopRealtime()
     clearPairingAttempt()
     state.snapshot = null
+    state.optimisticSeekTime = null
     state.hasInitialSnapshot = false
     state.token = ''
     state.manualAuthVisible = false
@@ -287,8 +369,9 @@
   }
 
   function renderStatus() {
-    const labels = { idle: 'Idle', connecting: '...', connected: 'Live', reconnecting: '...', error: 'Offline' }
+    const labels = { idle: 'Idle', connecting: 'Syncing', connected: 'Live', reconnecting: 'Retrying', error: 'Offline' }
     const classes = { idle: 'status-idle', connecting: 'status-connecting', connected: 'status-live', reconnecting: 'status-connecting', error: 'status-error' }
+    document.body.dataset.connectionState = state.connectionState
     elements.statusPill.textContent = labels[state.connectionState] || 'Idle'
     elements.statusPill.className = `status-pill ${classes[state.connectionState] || 'status-idle'}`
     elements.connectionLabel.textContent = state.connectionMessage
@@ -369,10 +452,19 @@
     const inlineArt = track && typeof track.artworkDataUrl === 'string' ? track.artworkDataUrl : null
     const duration = snapshot ? Math.max(0, snapshot.duration || 0) : 0
     const current = snapshot ? Math.max(0, snapshot.currentTime || 0) : 0
-    const display = state.isScrubbing ? state.scrubValue : current
-    const clamped = clamp(display, 0, duration)
+    const display = state.isScrubbing
+      ? state.scrubValue
+      : (state.optimisticSeekTime !== null ? state.optimisticSeekTime : current)
+    const clamped = clampTime(display, duration)
+    const progressRatio = duration > 0 ? clamp(clamped / duration, 0, 1) : 0
+    const fillWidth = `calc((100% - 30px) * ${progressRatio})`
+    const thumbLeft = `calc(15px + ((100% - 30px) * ${progressRatio}))`
+    const hasTrack = Boolean(track)
+    const seekDisabled = !track || duration <= 0
+    const showSeekPreview = !seekDisabled && (state.isScrubbing || state.isSeekFocused)
 
     // Metadata
+    document.body.dataset.hasTrack = hasTrack ? 'true' : 'false'
     elements.trackTitle.textContent = track ? track.title : 'Nothing playing'
     elements.trackArtist.textContent = track ? track.artist : ''
     elements.trackAlbum.textContent = track ? track.album : ''
@@ -383,20 +475,38 @@
     elements.iconPlay.style.display = (playing || loading) ? 'none' : 'block'
     elements.iconPause.style.display = playing ? 'block' : 'none'
     elements.iconLoading.style.display = loading ? 'block' : 'none'
+    elements.playButton.setAttribute('aria-label', loading ? 'Loading track' : (playing ? 'Pause' : 'Play'))
+    elements.playButton.setAttribute('title', loading ? 'Loading track' : (playing ? 'Pause' : 'Play'))
+    elements.playButton.setAttribute('aria-pressed', playing ? 'true' : 'false')
 
     // Favorite
     elements.favoriteButton.classList.toggle('is-active', Boolean(track && track.isFavorite))
+    elements.favoriteButton.setAttribute('aria-label', track && track.isFavorite ? 'Remove favorite' : 'Favorite')
+    elements.favoriteButton.setAttribute('title', track && track.isFavorite ? 'Remove favorite' : 'Favorite')
+    elements.favoriteButton.setAttribute('aria-pressed', track && track.isFavorite ? 'true' : 'false')
 
     // Time
     elements.elapsedTime.textContent = formatTime(clamped)
     elements.remainingTime.textContent = `-${formatTime(Math.max(0, duration - clamped))}`
 
     // Seek
-    const pct = duration > 0 ? ((clamped / duration) * 100) + '%' : '0%'
-    elements.seekFill.style.width = pct
-    elements.seekThumb.style.left = pct
-    elements.seekTrack.classList.toggle('disabled', !track || duration <= 0)
+    elements.seekFill.style.width = fillWidth
+    elements.seekThumb.style.left = thumbLeft
+    elements.seekPreview.textContent = formatTime(clamped)
+    elements.seekPreview.style.left = thumbLeft
+    elements.seekPreview.hidden = !showSeekPreview
+    elements.seekPreview.classList.toggle('is-visible', showSeekPreview)
+    elements.seekTrack.classList.toggle('disabled', seekDisabled)
     elements.seekTrack.classList.toggle('is-scrubbing', state.isScrubbing)
+    elements.seekTrack.classList.toggle('is-focused', state.isSeekFocused)
+    elements.seekTrack.tabIndex = seekDisabled ? -1 : 0
+    elements.seekTrack.setAttribute('aria-disabled', seekDisabled ? 'true' : 'false')
+    elements.seekTrack.setAttribute('aria-valuemin', '0')
+    elements.seekTrack.setAttribute('aria-valuemax', String(Math.round(duration)))
+    elements.seekTrack.setAttribute('aria-valuenow', String(Math.round(clamped)))
+    elements.seekTrack.setAttribute('aria-valuetext', seekDisabled
+      ? 'Nothing playing'
+      : `${formatTime(clamped)} of ${formatTime(duration)}`)
 
     // Button states
     const hasQueue = snapshot ? snapshot.queueLength > 0 : false
@@ -431,6 +541,7 @@
     clearPairingAttempt()
     persistToken('')
     state.snapshot = null
+    state.optimisticSeekTime = null
     state.hasInitialSnapshot = false
     state.manualAuthVisible = false
     state.connectionState = 'error'
@@ -513,6 +624,7 @@
 
   function applySnapshot(snapshot) {
     state.snapshot = snapshot
+    state.optimisticSeekTime = null
     state.hasInitialSnapshot = true
     state.connectionState = 'connected'
     state.connectionMessage = 'Connected.'
@@ -711,6 +823,34 @@
     } catch { setNotice('Could not send command.', 'error', NOTICE_TIMEOUT_MS) }
   }
 
+  function getSeekDuration() {
+    return Math.max(0, (state.snapshot && state.snapshot.duration) || 0)
+  }
+
+  function hasSeekableTrack() {
+    return Boolean(state.snapshot && state.snapshot.currentTrack && getSeekDuration() > 0)
+  }
+
+  function getSeekRatioFromClientX(clientX) {
+    const rect = elements.seekTrack.getBoundingClientRect()
+    return rect.width > 0 ? clamp((clientX - rect.left) / rect.width, 0, 1) : 0
+  }
+
+  function setScrubFromRatio(ratio) {
+    const duration = getSeekDuration()
+    state.scrubValue = clampTime(ratio * duration, duration)
+    renderPlayer()
+  }
+
+  function commitSeekTime(time) {
+    const duration = getSeekDuration()
+    if (duration <= 0) return
+    state.scrubValue = clampTime(time, duration)
+    state.optimisticSeekTime = state.scrubValue
+    renderPlayer()
+    void sendControl({ command: 'seek', time: state.scrubValue })
+  }
+
   // ── Event listeners ──
 
   elements.pairLinkForm.addEventListener('submit', (e) => { e.preventDefault(); beginPairingClaim(elements.pairLinkInput.value) })
@@ -721,6 +861,7 @@
     if (!t) { setNotice('Paste the API key first.', 'error', NOTICE_TIMEOUT_MS); return }
     clearPairingAttempt()
     state.snapshot = null
+    state.optimisticSeekTime = null
     state.hasInitialSnapshot = false
     clearArtwork(null)
     setPairingState('idle', '', 0)
@@ -747,6 +888,7 @@
     clearPairingAttempt()
     persistToken('')
     state.snapshot = null
+    state.optimisticSeekTime = null
     state.hasInitialSnapshot = false
     state.manualAuthVisible = false
     state.connectionState = 'idle'
@@ -767,38 +909,86 @@
   elements.favoriteButton.addEventListener('click', () => { haptic(6); void sendControl({ command: 'toggle-favorite' }) })
 
   // Seek bar
-  function getSeekRatio(e) {
-    const r = elements.seekTrack.getBoundingClientRect()
-    return r.width > 0 ? clamp((e.clientX - r.left) / r.width, 0, 1) : 0
-  }
-
   elements.seekTrack.addEventListener('pointerdown', (e) => {
-    if (!state.snapshot || !state.snapshot.currentTrack) return
-    const d = Math.max(0, state.snapshot.duration || 0)
-    if (d <= 0) return
+    if (!hasSeekableTrack()) return
     e.preventDefault()
+    elements.seekTrack.focus()
     elements.seekTrack.setPointerCapture(e.pointerId)
     state.isScrubbing = true
-    state.scrubValue = getSeekRatio(e) * d
+    setScrubFromRatio(getSeekRatioFromClientX(e.clientX))
     haptic(4)
-    renderPlayer()
   })
 
   elements.seekTrack.addEventListener('pointermove', (e) => {
     if (!state.isScrubbing) return
-    const d = Math.max(0, (state.snapshot && state.snapshot.duration) || 0)
-    state.scrubValue = getSeekRatio(e) * d
-    renderPlayer()
+    setScrubFromRatio(getSeekRatioFromClientX(e.clientX))
   })
 
-  elements.seekTrack.addEventListener('pointerup', () => {
+  elements.seekTrack.addEventListener('pointerup', (e) => {
+    if (!state.isScrubbing) return
+    if (elements.seekTrack.hasPointerCapture(e.pointerId)) {
+      elements.seekTrack.releasePointerCapture(e.pointerId)
+    }
+    state.isScrubbing = false
+    commitSeekTime(state.scrubValue)
+  })
+
+  elements.seekTrack.addEventListener('pointercancel', (e) => {
+    if (elements.seekTrack.hasPointerCapture(e.pointerId)) {
+      elements.seekTrack.releasePointerCapture(e.pointerId)
+    }
     if (!state.isScrubbing) return
     state.isScrubbing = false
     renderPlayer()
-    void sendControl({ command: 'seek', time: state.scrubValue })
   })
 
-  elements.seekTrack.addEventListener('pointercancel', () => { if (state.isScrubbing) { state.isScrubbing = false; renderPlayer() } })
+  elements.seekTrack.addEventListener('focus', () => {
+    state.isSeekFocused = true
+    renderPlayer()
+  })
+
+  elements.seekTrack.addEventListener('blur', () => {
+    state.isSeekFocused = false
+    state.isScrubbing = false
+    renderPlayer()
+  })
+
+  elements.seekTrack.addEventListener('keydown', (e) => {
+    if (!hasSeekableTrack()) return
+    const duration = getSeekDuration()
+    const currentValue = state.isScrubbing ? state.scrubValue : Math.max(0, (state.snapshot && state.snapshot.currentTime) || 0)
+    let nextValue = null
+
+    switch (e.key) {
+      case 'ArrowLeft':
+      case 'ArrowDown':
+        nextValue = currentValue - KEYBOARD_SEEK_SMALL_STEP_SECONDS
+        break
+      case 'ArrowRight':
+      case 'ArrowUp':
+        nextValue = currentValue + KEYBOARD_SEEK_SMALL_STEP_SECONDS
+        break
+      case 'PageDown':
+        nextValue = currentValue - KEYBOARD_SEEK_LARGE_STEP_SECONDS
+        break
+      case 'PageUp':
+        nextValue = currentValue + KEYBOARD_SEEK_LARGE_STEP_SECONDS
+        break
+      case 'Home':
+        nextValue = 0
+        break
+      case 'End':
+        nextValue = duration
+        break
+      default:
+        return
+    }
+
+    e.preventDefault()
+    state.isScrubbing = false
+    state.scrubValue = clampTime(nextValue, duration)
+    commitSeekTime(state.scrubValue)
+  })
 
   // Lifecycle
   window.addEventListener('beforeunload', () => { stopRealtime(); clearPairingAttempt(); revokeArtwork() })

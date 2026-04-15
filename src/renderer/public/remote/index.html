@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#000000" />
+    <meta id="theme-color-meta" name="theme-color" content="#0b1118" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Astra Remote</title>
@@ -17,21 +17,29 @@
     <main class="remote-shell">
       <!-- ── Header ── -->
       <header class="remote-header">
-        <span class="header-brand">Astra</span>
-        <span id="status-pill" class="status-pill status-idle">Idle</span>
-        <span class="header-spacer"></span>
-        <button id="reconnect-button" class="header-icon-btn" type="button" title="Reconnect" hidden>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
-            <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
-          </svg>
-        </button>
-        <button id="forget-button" class="header-icon-btn" type="button" title="Forget key" hidden>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
-          </svg>
-        </button>
+        <div class="remote-header-top">
+          <div class="header-brand-stack">
+            <span class="header-brand">Astra</span>
+            <span class="header-title">Phone Remote</span>
+          </div>
+          <span id="status-pill" class="status-pill status-idle">Idle</span>
+        </div>
+        <div class="remote-header-actions">
+          <button id="reconnect-button" class="header-action-btn" type="button" title="Reconnect" hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            </svg>
+            <span class="header-action-label">Reconnect</span>
+          </button>
+          <button id="forget-button" class="header-action-btn" type="button" title="Forget key" hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+            <span class="header-action-label">Forget</span>
+          </button>
+        </div>
       </header>
       <p id="connection-label" class="connection-label">Waiting for pairing or a Local API key.</p>
 
@@ -41,11 +49,21 @@
       </section>
 
       <!-- ── Pair: idle — instructions + paste form ── -->
-      <section id="pair-idle" class="glass-panel page-section pair-section">
+      <section id="pair-idle" class="glass-panel page-section pair-section pair-section-idle">
         <div class="pair-idle-intro">
           <p class="section-label">Phone Pairing</p>
-          <h2 class="section-title">Connect to Astra</h2>
-          <p class="section-copy">Open <strong>Settings → Local API → Pair Remote</strong> on your desktop, then scan the QR code with this phone.</p>
+          <h2 class="section-title">Pair this phone</h2>
+          <p class="section-copy">From Astra on your desktop, open <strong>Settings → Local API → Pair Remote</strong>, then scan the QR code or paste the pairing link here.</p>
+        </div>
+        <div class="setup-step-list" aria-hidden="true">
+          <div class="setup-step">
+            <span class="setup-step-number">1</span>
+            <span class="setup-step-copy">Open the pairing popup in Astra.</span>
+          </div>
+          <div class="setup-step">
+            <span class="setup-step-number">2</span>
+            <span class="setup-step-copy">Approve this phone when Astra asks.</span>
+          </div>
         </div>
         <div class="pair-or-divider">
           <span class="pair-or-line"></span>
@@ -68,11 +86,12 @@
             <button id="pair-link-button" class="btn-primary btn-compact" type="submit">Pair</button>
           </div>
         </form>
+        <p class="pair-helper-copy">Paste the full pairing link if scanning opens the QR preview instead of this controller.</p>
         <button id="show-manual-auth-button" class="btn-ghost btn-sm" type="button">Use API key instead</button>
       </section>
 
       <!-- ── Pair: pending — waiting for approval ── -->
-      <section id="pair-pending" class="page-section pair-section">
+      <section id="pair-pending" class="glass-panel page-section pair-section pair-section-pending">
         <div class="pair-waiting">
           <div class="pair-waiting-spinner" aria-hidden="true">
             <svg width="80" height="80" viewBox="0 0 80 80" fill="none">
@@ -87,14 +106,14 @@
       </section>
 
       <!-- ── Pair: error / rejected / expired ── -->
-      <section id="pair-error" class="glass-panel page-section pair-section">
+      <section id="pair-error" class="glass-panel page-section pair-section pair-section-error">
         <p id="pair-error-title" class="section-label section-label-error">Pairing failed</p>
         <p id="pair-error-copy" class="section-copy">Something went wrong. Try again from the desktop.</p>
         <button id="pair-retry-button" class="btn-ghost" type="button">Try again</button>
       </section>
 
       <!-- ── Manual auth ── -->
-      <section id="auth-panel" class="glass-panel page-section">
+      <section id="auth-panel" class="glass-panel page-section pair-section pair-section-manual">
         <p class="section-label">Manual Fallback</p>
         <h2 class="section-title">Enter API key</h2>
         <p class="section-copy">Paste the Local API key shown in Astra's settings.</p>
@@ -120,64 +139,83 @@
 
       <!-- ── Player ── -->
       <section id="remote-controller" class="remote-controller">
-        <div class="now-playing-panel">
-          <div class="artwork-frame">
-            <img id="artwork-image" class="artwork-image" alt="Album art" hidden />
-            <div id="artwork-placeholder" class="artwork-placeholder" aria-hidden="true">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-              </svg>
+        <div class="controller-card glass-panel">
+          <div class="controller-hero">
+            <div class="artwork-frame">
+              <img id="artwork-image" class="artwork-image" alt="Album art" hidden />
+              <div id="artwork-placeholder" class="artwork-placeholder" aria-hidden="true">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="controller-copy">
+              <p class="section-label controller-label">Now Playing</p>
+              <div class="meta-block">
+                <h2 id="track-title" class="track-title">Nothing playing</h2>
+                <p id="track-artist" class="track-artist"></p>
+                <p id="track-album" class="track-album"></p>
+              </div>
             </div>
           </div>
 
-          <div class="meta-block">
-            <h2 id="track-title" class="track-title">Nothing playing</h2>
-            <p id="track-artist" class="track-artist"></p>
-            <p id="track-album" class="track-album"></p>
-          </div>
-        </div>
+          <div id="transport-panel" class="transport-panel">
+            <div class="seek-stack">
+              <div id="seek-preview" class="seek-preview" hidden>0:00</div>
+              <div
+                class="seek-bar"
+                id="seek-track"
+                tabindex="-1"
+                role="slider"
+                aria-label="Track position"
+                aria-valuemin="0"
+                aria-valuemax="0"
+                aria-valuenow="0"
+                aria-valuetext="Nothing playing"
+                aria-disabled="true"
+              >
+                <div class="seek-bar-fill" id="seek-fill"></div>
+                <div class="seek-bar-thumb" id="seek-thumb"></div>
+              </div>
+            </div>
+            <div class="time-row">
+              <span id="elapsed-time" class="time-label">0:00</span>
+              <span id="remaining-time" class="time-label">-0:00</span>
+            </div>
 
-        <div id="transport-panel" class="transport-panel">
-          <div class="seek-bar" id="seek-track">
-            <div class="seek-bar-fill" id="seek-fill"></div>
-            <div class="seek-bar-thumb" id="seek-thumb"></div>
-          </div>
-          <div class="time-row">
-            <span id="elapsed-time" class="time-label">0:00</span>
-            <span id="remaining-time" class="time-label">-0:00</span>
-          </div>
-
-          <div class="control-grid">
-            <button id="previous-button" class="ctrl-btn" type="button" aria-label="Previous">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="4" y="5" width="2.5" height="14" rx="1"/>
-                <path d="M20 5.5a1 1 0 0 0-1.5-.86l-10 6a1 1 0 0 0 0 1.72l10 6A1 1 0 0 0 20 17.5v-12z"/>
-              </svg>
-            </button>
-            <button id="play-button" class="ctrl-btn ctrl-btn-play" type="button" aria-label="Play">
-              <svg id="icon-play" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/>
-              </svg>
-              <svg id="icon-pause" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-                <rect x="6" y="4" width="4" height="16" rx="1"/>
-                <rect x="14" y="4" width="4" height="16" rx="1"/>
-              </svg>
-              <div id="icon-loading" class="loading-spinner" style="display:none"></div>
-            </button>
-            <button id="next-button" class="ctrl-btn" type="button" aria-label="Next">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="17.5" y="5" width="2.5" height="14" rx="1"/>
-                <path d="M4 5.5a1 1 0 0 1 1.5-.86l10 6a1 1 0 0 1 0 1.72l-10 6A1 1 0 0 1 4 17.5v-12z"/>
-              </svg>
-            </button>
-            <button id="favorite-button" class="ctrl-btn" type="button" aria-label="Favorite">
-              <svg class="fav-outline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-              </svg>
-              <svg class="fav-filled" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-              </svg>
-            </button>
+            <div class="control-grid">
+              <button id="previous-button" class="ctrl-btn ctrl-btn-previous" type="button" aria-label="Previous">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="5" width="2.5" height="14" rx="1"/>
+                  <path d="M20 5.5a1 1 0 0 0-1.5-.86l-10 6a1 1 0 0 0 0 1.72l10 6A1 1 0 0 0 20 17.5v-12z"/>
+                </svg>
+              </button>
+              <button id="play-button" class="ctrl-btn ctrl-btn-play" type="button" aria-label="Play">
+                <svg id="icon-play" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/>
+                </svg>
+                <svg id="icon-pause" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+                  <rect x="6" y="4" width="4" height="16" rx="1"/>
+                  <rect x="14" y="4" width="4" height="16" rx="1"/>
+                </svg>
+                <div id="icon-loading" class="loading-spinner" style="display:none"></div>
+              </button>
+              <button id="next-button" class="ctrl-btn ctrl-btn-next" type="button" aria-label="Next">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="17.5" y="5" width="2.5" height="14" rx="1"/>
+                  <path d="M4 5.5a1 1 0 0 1 1.5-.86l10 6a1 1 0 0 1 0 1.72l-10 6A1 1 0 0 1 4 17.5v-12z"/>
+                </svg>
+              </button>
+              <button id="favorite-button" class="ctrl-btn ctrl-btn-favorite" type="button" aria-label="Favorite">
+                <svg class="fav-outline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+                <svg class="fav-filled" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </section>
