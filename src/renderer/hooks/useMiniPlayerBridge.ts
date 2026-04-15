@@ -5,9 +5,11 @@ import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audio
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
 import type {
+  MiniPlayerResolvedArtwork,
   MiniPlayerSnapshot,
   MiniPlayerWindowState
 } from '../../types/miniPlayer'
+import { selectMiniPlayerTrackArtworkData } from '../../types/miniPlayer'
 
 const SNAPSHOT_THROTTLE_MS = 120
 const MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS = 8
@@ -49,7 +51,7 @@ export function useMiniPlayerBridge(): void {
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
 
-  const [resolvedArtwork, setResolvedArtwork] = useState<string | null>(null)
+  const [resolvedArtwork, setResolvedArtwork] = useState<MiniPlayerResolvedArtwork | null>(null)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>(DEFAULT_MINI_WINDOW_STATE)
 
   const publishTimerRef = useRef<number | null>(null)
@@ -73,23 +75,35 @@ export function useMiniPlayerBridge(): void {
     }
 
     if (track.artworkData) {
-      setResolvedArtwork(track.artworkData)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: track.artworkData
+      })
       return () => {
         isActive = false
       }
     }
 
     if (!track.artworkHash) {
-      setResolvedArtwork(null)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: null
+      })
       return () => {
         isActive = false
       }
     }
 
-    setResolvedArtwork(null)
+    setResolvedArtwork({
+      trackPath: track.path,
+      dataUrl: null
+    })
     void getArtwork(track.artworkHash, { variant: 'card' }).then((url) => {
       if (!isActive) return
-      setResolvedArtwork(url)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: url
+      })
     })
 
     return () => {
@@ -271,8 +285,9 @@ export function useMiniPlayerBridge(): void {
 
     const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
     const currentTrackId = currentTrack?.id ?? null
+    const effectiveArtworkData = selectMiniPlayerTrackArtworkData(currentTrack, resolvedArtwork)
     const shouldIncludeArtwork = previousTrackIdRef.current !== currentTrackId ||
-      previousArtworkRef.current !== resolvedArtwork
+      previousArtworkRef.current !== effectiveArtworkData
     const shouldForce = shouldIncludeArtwork ||
       previousPlaybackStateRef.current !== playbackState
 
@@ -291,7 +306,7 @@ export function useMiniPlayerBridge(): void {
             artist: currentTrack.artist,
             album: currentTrack.album,
             artworkHash: currentTrack.artworkHash ?? null,
-            artworkData: shouldIncludeArtwork ? resolvedArtwork : undefined,
+            artworkData: shouldIncludeArtwork ? effectiveArtworkData : undefined,
             isFavorite,
           }
         : null
@@ -299,7 +314,7 @@ export function useMiniPlayerBridge(): void {
 
     previousTrackIdRef.current = currentTrackId
     previousPlaybackStateRef.current = playbackState
-    previousArtworkRef.current = resolvedArtwork
+    previousArtworkRef.current = effectiveArtworkData
 
     latestPendingRef.current = snapshot
 

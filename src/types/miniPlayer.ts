@@ -22,6 +22,23 @@ export interface MiniPlayerSnapshot {
   visualizerLineColor: string
 }
 
+export interface MiniPlayerResolvedArtwork {
+  trackPath: string
+  dataUrl: string | null
+}
+
+export function selectMiniPlayerTrackArtworkData(
+  currentTrack: Pick<MiniPlayerTrackSnapshot, 'path' | 'artworkData'> | null | undefined,
+  resolvedArtwork: MiniPlayerResolvedArtwork | null | undefined
+): string | null {
+  if (!currentTrack) return null
+  if (typeof currentTrack.artworkData === 'string') return currentTrack.artworkData
+  if (resolvedArtwork?.trackPath === currentTrack.path) {
+    return resolvedArtwork.dataUrl
+  }
+  return null
+}
+
 export function mergeMiniPlayerSnapshots(
   previous: MiniPlayerSnapshot | null | undefined,
   next: MiniPlayerSnapshot
