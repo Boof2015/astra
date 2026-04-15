@@ -5,6 +5,8 @@ import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
+import LocalApiPairingModal from '../settings/LocalApiPairingModal'
+import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -186,6 +188,9 @@ export default function SettingsView() {
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
   const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
+  const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
+  const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
+  const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
@@ -236,12 +241,22 @@ export default function SettingsView() {
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
+    pairedDevices: localApiPairedDevices,
+    pendingPairingRequests: localApiPendingPairingRequests,
+    activePairingTicket: localApiActivePairingTicket,
     errorMessage: localApiErrorMessage,
     init: initLocalApi,
     setEnabled: setLocalApiEnabled,
     setControlsEnabled: setLocalApiControlsEnabled,
+    setRemoteWebEnabled: setLocalApiRemoteWebEnabled,
     setPort: setLocalApiPort,
     rotateToken: rotateLocalApiToken,
+    createPairingTicket,
+    clearActivePairingTicket,
+    approvePairingRequest,
+    rejectPairingRequest,
+    revokePairedDevice,
+    revokeAllPairedDevices
   } = useLocalApiSettingsStore()
   const {
     status: lastFmStatus,
@@ -383,6 +398,18 @@ export default function SettingsView() {
     if (!localApiStatus) return
     setLocalApiPortInput(String(localApiStatus.port))
   }, [localApiStatus?.port])
+
+  useEffect(() => {
+    const lanUrls = localApiStatus?.lanUrls ?? []
+    if (lanUrls.length === 0) {
+      setLocalApiSelectedPairingBaseUrl('')
+      return
+    }
+    if (localApiSelectedPairingBaseUrl && lanUrls.includes(localApiSelectedPairingBaseUrl)) {
+      return
+    }
+    setLocalApiSelectedPairingBaseUrl(lanUrls[0])
+  }, [localApiStatus?.lanUrls, localApiSelectedPairingBaseUrl])
 
   useEffect(() => {
     if (!localApiFeedback) return
@@ -605,15 +632,46 @@ export default function SettingsView() {
     : 'No update checks have run yet.'
   const localApiEnabled = localApiStatus?.enabled ?? false
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
+  const localApiRemoteWebEnabled = localApiStatus?.remoteWebEnabled ?? false
   const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
+  const localApiLanUrls = localApiStatus?.lanUrls ?? []
+  const localApiControllerUrls = localApiLanUrls.map((url) => `${url}/remote/`)
+  const localApiSelectedPairingUrl = localApiSelectedPairingBaseUrl
+    ? `${localApiSelectedPairingBaseUrl}/remote/`
+    : localApiControllerUrls[0] ?? ''
   const localApiToken = localApiStatus?.token ?? ''
+  const localApiPairedDeviceCount = localApiStatus?.pairedDeviceCount ?? localApiPairedDevices.length
+  const localApiPendingPairingCount = localApiStatus?.pendingPairingCount ?? localApiPendingPairingRequests.length
+  const localApiPhoneRemoteSummary = !localApiEnabled
+    ? 'Phone remote needs the Local API enabled before Astra can expose a pairing page.'
+    : !localApiRemoteWebEnabled
+      ? 'Phone remote is off. Turn it on in the setup popup when you want Astra to expose `/remote/` on your LAN.'
+      : localApiLanUrls.length === 0
+        ? 'Phone remote is enabled, but Astra has not found a usable `192.168.*` LAN address yet.'
+        : localApiPendingPairingCount > 0
+          ? `${localApiPendingPairingCount} phone${localApiPendingPairingCount === 1 ? '' : 's'} waiting for approval.`
+          : localApiPairedDeviceCount > 0
+            ? `${localApiPairedDeviceCount} phone${localApiPairedDeviceCount === 1 ? '' : 's'} paired.`
+            : localApiControlsEnabled
+              ? 'Phone remote is ready for full control.'
+              : 'Phone remote is ready in read-only mode until playback controls are enabled.'
   const localApiStatusLabel = !localApiStatus
     ? 'Loading local API status...'
     : localApiStatus.active
-      ? `Local integration API active on ${localApiStatus.baseUrl}.`
+      ? localApiStatus.remoteWebEnabled
+        ? localApiControllerUrls.length > 0
+          ? `Local integration API active on ${localApiStatus.baseUrl} and exposed on your LAN via ${localApiStatus.bindHost}.`
+          : `Local integration API active on ${localApiStatus.baseUrl}. Remote controller is enabled, but no non-internal IPv4 LAN address was detected.`
+        : `Local integration API active on ${localApiStatus.baseUrl}.`
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
+  const localApiActiveDevices = useMemo(() => localApiPairedDevices.filter((d) => d.revokedAt == null), [localApiPairedDevices])
+  const localApiControllerUrl = localApiControllerUrls[0] ?? ''
+  const localApiInlineQrSvg = useMemo(() => {
+    if (!localApiControllerUrl) return ''
+    try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
+  }, [localApiControllerUrl])
   const lastFmConnected = lastFmStatus?.connected ?? false
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
@@ -776,6 +834,78 @@ export default function SettingsView() {
     void rotateLocalApiToken().then((status) => {
       if (!status) return
       setLocalApiFeedback('API key regenerated.')
+    })
+  }
+
+  const handleEnableLocalApiRemoteControl = () => {
+    void (async () => {
+      if (!localApiEnabled) {
+        const status = await setLocalApiEnabled(true)
+        if (!status) return
+      }
+
+      if (!localApiRemoteWebEnabled) {
+        const status = await setLocalApiRemoteWebEnabled(true)
+        if (!status) return
+      }
+
+      if (!localApiControlsEnabled) {
+        const status = await setLocalApiControlsEnabled(true)
+        if (!status) return
+      }
+
+      setLocalApiFeedback('Phone remote control enabled.')
+    })()
+  }
+
+  const handleOpenLocalApiPairingModal = () => {
+    setLocalApiPairingModalOpen(true)
+  }
+
+  const handleCloseLocalApiPairingModal = () => {
+    setLocalApiPairingModalOpen(false)
+    clearActivePairingTicket()
+  }
+
+  const handleCreateLocalApiPairingTicket = () => {
+    void createPairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+      if (!ticket) return
+      setLocalApiFeedback('Pairing ticket generated.')
+    })
+  }
+
+  const handleRefreshLocalApiPairingTicket = () => {
+    void createPairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+      if (!ticket) return
+      setLocalApiFeedback('Pairing ticket refreshed.')
+    })
+  }
+
+  const handleApproveLocalApiPairingRequest = (id: string) => {
+    void approvePairingRequest(id).then(() => {
+      setLocalApiFeedback('Pairing request approved.')
+    })
+  }
+
+  const handleRejectLocalApiPairingRequest = (id: string) => {
+    void rejectPairingRequest(id).then(() => {
+      setLocalApiFeedback('Pairing request rejected.')
+    })
+  }
+
+  const handleRevokeLocalApiPairedDevice = (id: string) => {
+    void revokePairedDevice(id).then(() => {
+      setLocalApiFeedback('Paired phone revoked.')
+    })
+  }
+
+  const handleRevokeAllLocalApiPairedDevices = () => {
+    void revokeAllPairedDevices().then((revokedCount) => {
+      if (revokedCount > 0) {
+        setLocalApiFeedback(`${revokedCount} paired phone${revokedCount === 1 ? '' : 's'} revoked.`)
+        return
+      }
+      setLocalApiFeedback('No paired phones to revoke.')
     })
   }
 
@@ -1589,7 +1719,10 @@ export default function SettingsView() {
                 {localApiFeedback && <p className="settings-note settings-note-success">{localApiFeedback}</p>}
                 {localApiErrorMessage && <p className="settings-note settings-note-error">{localApiErrorMessage}</p>}
                 <p className="settings-note">
-                  The local API is loopback-only, off by default, and read-only unless controls are explicitly enabled.
+                  The local API is loopback-only and off by default.
+                </p>
+                <p className="settings-note">
+                  Phone Remote lives in Experimental and has its own guided pairing popup.
                 </p>
               </div>
             </div>
@@ -1626,6 +1759,83 @@ export default function SettingsView() {
                 </button>
               </div>
             </div>
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Phone Remote</h4>
+                  <p>Experimental LAN controller setup for phones.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field">
+                    <span className="settings-field-label">Status</span>
+                    <span className="settings-info-value">{localApiPhoneRemoteSummary}</span>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Pair a New Phone</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleOpenLocalApiPairingModal}
+                    >
+                      Pair Phone
+                    </button>
+                  </div>
+                </div>
+
+                {/* Inline paired devices */}
+                {localApiActiveDevices.length > 0 && (
+                  <div className="local-api-inline-devices">
+                    <div className="local-api-inline-devices-header">
+                      <span className="local-api-inline-devices-count">
+                        {localApiActiveDevices.length} paired phone{localApiActiveDevices.length !== 1 ? 's' : ''}
+                      </span>
+                      {localApiControllerUrl && localApiInlineQrSvg && (
+                        <button
+                          className={`settings-btn${showInlinePhoneQr ? ' settings-btn-primary' : ''}`}
+                          onClick={() => setShowInlinePhoneQr((prev) => !prev)}
+                        >
+                          {showInlinePhoneQr ? 'Hide QR' : 'Open on Phone'}
+                        </button>
+                      )}
+                    </div>
+
+                    {showInlinePhoneQr && localApiControllerUrl && localApiInlineQrSvg && (
+                      <div className="local-api-inline-qr">
+                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: localApiInlineQrSvg }} />
+                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan to open the remote — no new pairing needed</p>
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => { void navigator.clipboard.writeText(localApiControllerUrl) }}
+                        >
+                          Copy Link
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="local-api-inline-devices-list">
+                      {localApiActiveDevices.map((device) => (
+                        <div key={device.id} className="local-api-inline-device">
+                          <div className="local-api-inline-device-info">
+                            <span className="local-api-inline-device-name">{device.name}</span>
+                            <span className="local-api-inline-device-detail">
+                              Last seen {device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : 'Never'}
+                            </span>
+                          </div>
+                          <button
+                            className="settings-btn settings-btn-danger"
+                            onClick={() => handleRevokeLocalApiPairedDevice(device.id)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ))}
+                      {localApiActiveDevices.length >= 2 && (
+                        <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllLocalApiPairedDevices}>
+                          Revoke All
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             <p className="settings-note">
               Enable Library Graph adds a dedicated graph view and an artist-page graph entrypoint.
             </p>
@@ -1954,6 +2164,34 @@ export default function SettingsView() {
         onCancel={() => setShowBitPerfectWarning(false)}
         onConfirm={handleConfirmBitPerfectWarning}
       />
+      {localApiPairingModalOpen && (
+        <LocalApiPairingModal
+          ticket={localApiActivePairingTicket}
+          pairedDevices={localApiPairedDevices}
+          pendingRequests={localApiPendingPairingRequests}
+          apiEnabled={localApiEnabled}
+          remoteWebEnabled={localApiRemoteWebEnabled}
+          controlsEnabled={localApiControlsEnabled}
+          lanUrls={localApiLanUrls}
+          selectedBaseUrl={localApiSelectedPairingBaseUrl}
+          selectedControllerUrl={localApiSelectedPairingUrl}
+          feedbackMessage={localApiFeedback}
+          errorMessage={localApiErrorMessage}
+          onClose={handleCloseLocalApiPairingModal}
+          onEnableRemoteControl={handleEnableLocalApiRemoteControl}
+          onSelectBaseUrl={setLocalApiSelectedPairingBaseUrl}
+          onGenerateTicket={handleCreateLocalApiPairingTicket}
+          onRefreshTicket={handleRefreshLocalApiPairingTicket}
+          onCopyPairingUrl={() => {
+            if (!localApiActivePairingTicket) return
+            void copyToClipboard(localApiActivePairingTicket.pairingUrl, 'Pairing link')
+          }}
+          onApproveRequest={handleApproveLocalApiPairingRequest}
+          onRejectRequest={handleRejectLocalApiPairingRequest}
+          onRevokeDevice={handleRevokeLocalApiPairedDevice}
+          onRevokeAllDevices={handleRevokeAllLocalApiPairedDevices}
+        />
+      )}
     </div>
   )
 }

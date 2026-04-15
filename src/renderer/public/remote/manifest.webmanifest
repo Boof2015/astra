@@ -1,0 +1,32 @@
+{
+  "id": "/remote/",
+  "name": "Astra Remote",
+  "short_name": "Astra",
+  "description": "Remote control for Astra on your local network.",
+  "start_url": "/remote/",
+  "scope": "/remote/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "background_color": "#05070b",
+  "theme_color": "#0b1118",
+  "icons": [
+    {
+      "src": "/remote/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/remote/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/remote/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

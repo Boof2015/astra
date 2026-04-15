@@ -14,6 +14,9 @@ import type {
   ScopePopoutState
 } from '../types/scopePopout'
 import type {
+  LocalApiPairedDevice,
+  LocalApiPairingTicket,
+  LocalApiPendingPairingRequest,
   LocalApiStatus
 } from '../types/localApi'
 import type {
@@ -595,9 +598,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   localApi: {
     getStatus: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:getStatus'),
+    createPairingTicket: (baseUrl?: string): Promise<LocalApiPairingTicket> =>
+      ipcRenderer.invoke('local-api:createPairingTicket', baseUrl),
+    listPairedDevices: (): Promise<LocalApiPairedDevice[]> => ipcRenderer.invoke('local-api:listPairedDevices'),
+    listPendingPairingRequests: (): Promise<LocalApiPendingPairingRequest[]> =>
+      ipcRenderer.invoke('local-api:listPendingPairingRequests'),
+    approvePairingRequest: (id: string): Promise<LocalApiPendingPairingRequest | null> =>
+      ipcRenderer.invoke('local-api:approvePairingRequest', id),
+    rejectPairingRequest: (id: string): Promise<LocalApiPendingPairingRequest | null> =>
+      ipcRenderer.invoke('local-api:rejectPairingRequest', id),
+    revokePairedDevice: (id: string): Promise<LocalApiPairedDevice | null> =>
+      ipcRenderer.invoke('local-api:revokePairedDevice', id),
+    revokeAllPairedDevices: (): Promise<number> => ipcRenderer.invoke('local-api:revokeAllPairedDevices'),
     setEnabled: (enabled: boolean): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setEnabled', enabled),
     setControlsEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
       ipcRenderer.invoke('local-api:setControlsEnabled', enabled),
+    setRemoteWebEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
+      ipcRenderer.invoke('local-api:setRemoteWebEnabled', enabled),
     setPort: (port: number): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setPort', port),
     rotateToken: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:rotateToken'),
     resetToDefaults: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:resetToDefaults'),
@@ -946,8 +963,16 @@ declare global {
       }
       localApi: {
         getStatus: () => Promise<LocalApiStatus>
+        createPairingTicket: (baseUrl?: string) => Promise<LocalApiPairingTicket>
+        listPairedDevices: () => Promise<LocalApiPairedDevice[]>
+        listPendingPairingRequests: () => Promise<LocalApiPendingPairingRequest[]>
+        approvePairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
+        rejectPairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
+        revokePairedDevice: (id: string) => Promise<LocalApiPairedDevice | null>
+        revokeAllPairedDevices: () => Promise<number>
         setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setPort: (port: number) => Promise<LocalApiStatus>
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>

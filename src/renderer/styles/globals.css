@@ -13668,6 +13668,147 @@ body::after {
   gap: 8px;
 }
 
+.settings-shell .settings-remote-url-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-api-guide {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+  gap: 12px;
+}
+
+.local-api-guide-main,
+.local-api-guide-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.local-api-guide-step,
+.local-api-guide-side-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px;
+}
+
+.local-api-guide-step.is-active,
+.local-api-guide-side-card.is-active {
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(0, 0, 0, 0.22));
+}
+
+.local-api-guide-step.is-complete {
+  border-color: rgba(134, 239, 172, 0.18);
+  background: linear-gradient(180deg, rgba(134, 239, 172, 0.05), rgba(0, 0, 0, 0.2));
+}
+
+.local-api-guide-step.is-blocked {
+  border-color: rgba(248, 113, 113, 0.18);
+}
+
+.local-api-guide-step-head,
+.local-api-guide-side-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.local-api-guide-side-head {
+  justify-content: space-between;
+}
+
+.local-api-guide-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.local-api-guide-step-copy,
+.local-api-guide-toggle-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.local-api-guide-step-copy h5,
+.local-api-guide-side-head h5 {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.local-api-guide-step-copy p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.local-api-guide-toggle-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.local-api-guide-toggle-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+}
+
+.local-api-guide-toggle-card .settings-note {
+  margin-top: 4px;
+}
+
+.local-api-guide-action-row,
+.local-api-guide-inline-chip-row,
+.local-api-guide-sidebar-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.local-api-guide-sidebar-actions {
+  justify-content: flex-end;
+}
+
+.local-api-guide-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.local-api-guide-empty-state strong {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.84);
+}
+
 .settings-sleep-controls {
   display: flex;
   flex-direction: column;
@@ -13714,8 +13855,65 @@ body::after {
   min-width: 0;
 }
 
+.settings-shell .settings-inline-input-grow {
+  flex: 1;
+  min-width: 0;
+}
+
 .settings-shell .settings-inline-input-compact {
   max-width: 140px;
+}
+
+.settings-shell .settings-pairing-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-shell .settings-pairing-request,
+.settings-shell .settings-paired-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 10px;
+}
+
+.settings-shell .settings-pairing-request-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-shell .settings-manual-setup {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 10px;
+}
+
+.settings-shell .settings-manual-setup-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.settings-shell .settings-manual-setup-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-shell .settings-manual-setup-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .settings-shell .settings-note-success {
@@ -13752,6 +13950,401 @@ body::after {
 .confirm-action-modal .settings-btn-danger:hover {
   border-color: rgba(248, 113, 113, 0.76);
   background: rgba(248, 113, 113, 0.24);
+}
+
+/* ---- Phone Remote Pairing Modal (wizard) ---- */
+
+.local-api-pairing-modal {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.local-api-pairing-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Step indicator dots */
+.local-api-pairing-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  padding: 4px 0 8px;
+}
+
+.local-api-pairing-step-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.local-api-pairing-step-item + .local-api-pairing-step-item::before {
+  content: '';
+  position: absolute;
+  right: calc(50% + 10px);
+  top: 6px;
+  width: 20px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.local-api-pairing-step-item:has(.is-completed) + .local-api-pairing-step-item::before,
+.local-api-pairing-step-item:has(.is-active) + .local-api-pairing-step-item::before {
+  background: rgba(var(--accent-rgb), 0.3);
+}
+
+.local-api-pairing-step-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  transition: all var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.local-api-pairing-step-dot svg {
+  width: 8px;
+  height: 8px;
+  color: var(--accent-text-strong);
+}
+
+.local-api-pairing-step-dot.is-active {
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.4);
+}
+
+.local-api-pairing-step-dot.is-completed {
+  background: rgba(var(--accent-rgb), 0.45);
+}
+
+.local-api-pairing-step-label {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Enable step */
+.local-api-pairing-enable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  padding: 28px 16px;
+  animation: fadeIn var(--transition-fast) ease;
+}
+
+.local-api-pairing-enable svg {
+  opacity: 0.7;
+}
+
+.local-api-pairing-enable p {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.5;
+}
+
+/* QR hero */
+.local-api-pairing-qr-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  animation: fadeIn var(--transition-fast) ease;
+}
+
+.local-api-pairing-qr-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 240px;
+  height: 240px;
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.local-api-pairing-qr {
+  width: 100%;
+}
+
+.local-api-pairing-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.local-api-pairing-qr-expired {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.local-api-pairing-qr-dim {
+  opacity: 0.15;
+  filter: blur(1px);
+}
+
+.local-api-pairing-qr-expired-btn {
+  position: absolute;
+}
+
+.local-api-pairing-qr-loading {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-pairing-scan-hint {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-pairing-qr-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-api-pairing-countdown {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  min-width: 36px;
+  text-align: center;
+}
+
+.local-api-pairing-countdown.is-expiring {
+  color: #fca5a5;
+  animation: pairingCountdownPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pairingCountdownPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.local-api-pairing-refresh-btn {
+  padding: 6px 8px !important;
+  min-width: unset !important;
+}
+
+.local-api-pairing-url-select {
+  width: 100%;
+  max-width: 320px;
+  margin-top: 4px;
+}
+
+/* Approve step */
+.local-api-pairing-approve {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn var(--transition-fast) ease;
+}
+
+.local-api-pairing-approve-title {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.9);
+  text-align: center;
+}
+
+.local-api-pairing-approve-card {
+  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb), 0.06);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.local-api-pairing-approve-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.local-api-pairing-approve-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-api-pairing-approve-detail {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-pairing-approve-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Paired devices */
+.local-api-pairing-paired {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 8px;
+}
+
+.local-api-pairing-paired-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+.local-api-pairing-paired-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-pairing-link-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 16px;
+}
+
+.local-api-pairing-paired-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.local-api-pairing-paired-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.local-api-pairing-paired-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.local-api-pairing-paired-device-name {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-api-pairing-paired-device-detail {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Waiting state */
+.local-api-pairing-waiting {
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 24px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+  animation: pairingCountdownPulse 2.5s ease-in-out infinite;
+}
+
+/* Inline device list (settings card, outside modal) */
+.local-api-inline-devices {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+
+.local-api-inline-devices-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+.local-api-inline-devices-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.local-api-inline-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 16px;
+}
+
+.local-api-inline-qr .local-api-pairing-qr {
+  width: min(100%, 220px);
+}
+
+.local-api-inline-devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.local-api-inline-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.local-api-inline-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.local-api-inline-device-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.local-api-inline-device-detail {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .settings-shell .settings-danger-zone {
