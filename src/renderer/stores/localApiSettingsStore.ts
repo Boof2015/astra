@@ -1,16 +1,8 @@
 import { create } from 'zustand'
-import type {
-  LocalApiPairedDevice,
-  LocalApiPairingTicket,
-  LocalApiPendingPairingRequest,
-  LocalApiStatus
-} from '../../types/localApi'
+import type { LocalApiStatus } from '../../types/localApi'
 
 interface LocalApiSettingsStore {
   status: LocalApiStatus | null
-  pairedDevices: LocalApiPairedDevice[]
-  pendingPairingRequests: LocalApiPendingPairingRequest[]
-  activePairingTicket: LocalApiPairingTicket | null
   isLoading: boolean
   isInitialized: boolean
   errorMessage: string
@@ -18,16 +10,9 @@ interface LocalApiSettingsStore {
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
-  setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setPort: (port: number) => Promise<LocalApiStatus | null>
   rotateToken: () => Promise<LocalApiStatus | null>
   resetToDefaults: () => Promise<LocalApiStatus | null>
-  createPairingTicket: (baseUrl?: string) => Promise<LocalApiPairingTicket | null>
-  clearActivePairingTicket: () => void
-  approvePairingRequest: (id: string) => Promise<void>
-  rejectPairingRequest: (id: string) => Promise<void>
-  revokePairedDevice: (id: string) => Promise<void>
-  revokeAllPairedDevices: () => Promise<number>
 }
 
 let statusUnsubscribe: (() => void) | null = null
@@ -46,24 +31,10 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     return status
   }
 
-  const refreshPairingState = async (): Promise<void> => {
-    const [pairedDevices, pendingPairingRequests] = await Promise.all([
-      window.electronAPI.localApi.listPairedDevices(),
-      window.electronAPI.localApi.listPendingPairingRequests()
-    ])
-    set({
-      pairedDevices,
-      pendingPairingRequests
-    })
-  }
-
   const ensureSubscription = () => {
     if (statusUnsubscribe) return
     statusUnsubscribe = window.electronAPI.localApi.onStatus((status) => {
       applyStatus(status)
-      void refreshPairingState().catch((error) => {
-        set({ errorMessage: toErrorMessage(error) })
-      })
     })
   }
 
@@ -71,15 +42,11 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     const status = await window.electronAPI.localApi.getStatus()
     ensureSubscription()
     applyStatus(status)
-    await refreshPairingState()
     return status
   }
 
   return {
     status: null,
-    pairedDevices: [],
-    pendingPairingRequests: [],
-    activePairingTicket: null,
     isLoading: false,
     isInitialized: false,
     errorMessage: '',
@@ -110,7 +77,6 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     setEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.localApi.setEnabled(enabled)
-        await refreshPairingState()
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
@@ -121,17 +87,6 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     setControlsEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.localApi.setControlsEnabled(enabled)
-        return applyStatus(status)
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return null
-      }
-    },
-
-    setRemoteWebEnabled: async (enabled: boolean) => {
-      try {
-        const status = await window.electronAPI.localApi.setRemoteWebEnabled(enabled)
-        await refreshPairingState()
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
@@ -162,71 +117,10 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     resetToDefaults: async () => {
       try {
         const status = await window.electronAPI.localApi.resetToDefaults()
-        set({
-          pairedDevices: [],
-          pendingPairingRequests: [],
-          activePairingTicket: null
-        })
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null
-      }
-    },
-
-    createPairingTicket: async (baseUrl?: string) => {
-      try {
-        const ticket = await window.electronAPI.localApi.createPairingTicket(baseUrl)
-        set({
-          activePairingTicket: ticket,
-          errorMessage: ''
-        })
-        return ticket
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return null
-      }
-    },
-
-    clearActivePairingTicket: () => {
-      set({ activePairingTicket: null })
-    },
-
-    approvePairingRequest: async (id: string) => {
-      try {
-        await window.electronAPI.localApi.approvePairingRequest(id)
-        await refreshPairingState()
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-      }
-    },
-
-    rejectPairingRequest: async (id: string) => {
-      try {
-        await window.electronAPI.localApi.rejectPairingRequest(id)
-        await refreshPairingState()
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-      }
-    },
-
-    revokePairedDevice: async (id: string) => {
-      try {
-        await window.electronAPI.localApi.revokePairedDevice(id)
-        await refreshPairingState()
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-      }
-    },
-
-    revokeAllPairedDevices: async () => {
-      try {
-        const revokedCount = await window.electronAPI.localApi.revokeAllPairedDevices()
-        await refreshPairingState()
-        return revokedCount
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return 0
       }
     }
   }

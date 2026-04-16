@@ -67,7 +67,7 @@
     token: (localStorage.getItem(STORAGE_KEY) || '').trim(),
     snapshot: null,
     connectionState: 'idle',
-    connectionMessage: 'Waiting for pairing or a Local API key.',
+    connectionMessage: 'Waiting for pairing.',
     noticeMessage: '',
     noticeTone: 'info',
     noticeTimer: null,
@@ -553,12 +553,12 @@
     state.hasInitialSnapshot = false
     state.manualAuthVisible = false
     state.connectionState = 'error'
-    state.connectionMessage = 'API key rejected.'
+    state.connectionMessage = 'Phone pairing expired.'
     clearArtwork(null)
-    setNotice('Authentication failed. Copy the latest key from Astra.', 'error', 0)
+    setNotice('Authentication failed. Pair this phone again from Astra.', 'error', 0)
     setPairingState('idle', '', 0)
     renderPage()
-    elements.authToken.focus()
+    elements.pairLinkInput.focus()
   }
 
   // ── Fetch ──

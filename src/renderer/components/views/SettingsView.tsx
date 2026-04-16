@@ -19,6 +19,7 @@ import {
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
@@ -56,6 +57,11 @@ import {
   LOCAL_API_MAX_PORT,
   LOCAL_API_MIN_PORT
 } from '../../../types/localApi'
+import {
+  PHONE_REMOTE_DEFAULT_PORT,
+  PHONE_REMOTE_MAX_PORT,
+  PHONE_REMOTE_MIN_PORT
+} from '../../../types/phoneRemote'
 
 type ResetActionId =
   | 'reset-theme'
@@ -242,23 +248,29 @@ export default function SettingsView() {
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
-    pairedDevices: localApiPairedDevices,
-    pendingPairingRequests: localApiPendingPairingRequests,
-    activePairingTicket: localApiActivePairingTicket,
     errorMessage: localApiErrorMessage,
     init: initLocalApi,
     setEnabled: setLocalApiEnabled,
     setControlsEnabled: setLocalApiControlsEnabled,
-    setRemoteWebEnabled: setLocalApiRemoteWebEnabled,
     setPort: setLocalApiPort,
     rotateToken: rotateLocalApiToken,
-    createPairingTicket,
-    clearActivePairingTicket,
-    approvePairingRequest,
-    rejectPairingRequest,
-    revokePairedDevice,
-    revokeAllPairedDevices
   } = useLocalApiSettingsStore()
+  const {
+    status: phoneRemoteStatus,
+    pairedDevices: phoneRemotePairedDevices,
+    pendingPairingRequests: phoneRemotePendingPairingRequests,
+    activePairingTicket: phoneRemoteActivePairingTicket,
+    errorMessage: phoneRemoteErrorMessage,
+    init: initPhoneRemote,
+    setEnabled: setPhoneRemoteEnabled,
+    setPort: setPhoneRemotePort,
+    createPairingTicket: createPhoneRemotePairingTicket,
+    clearActivePairingTicket: clearPhoneRemoteActivePairingTicket,
+    approvePairingRequest: approvePhoneRemotePairingRequest,
+    rejectPairingRequest: rejectPhoneRemotePairingRequest,
+    revokePairedDevice: revokePhoneRemotePairedDevice,
+    revokeAllPairedDevices: revokeAllPhoneRemotePairedDevices
+  } = usePhoneRemoteSettingsStore()
   const {
     status: lastFmStatus,
     isAuthorizing: lastFmIsAuthorizing,
@@ -300,7 +312,9 @@ export default function SettingsView() {
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
+  const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
   const [localApiFeedback, setLocalApiFeedback] = useState('')
+  const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
   const [sleepTimerCustomMinutesInput, setSleepTimerCustomMinutesInput] = useState(
     String(SLEEP_TIMER_PRESET_MINUTES[1] ?? SLEEP_TIMER_PRESET_MINUTES[0] ?? 30)
   )
@@ -389,7 +403,8 @@ export default function SettingsView() {
 
   useEffect(() => {
     void initLocalApi()
-  }, [initLocalApi])
+    void initPhoneRemote()
+  }, [initLocalApi, initPhoneRemote])
 
   useEffect(() => {
     void initDiagnostics()
@@ -401,7 +416,12 @@ export default function SettingsView() {
   }, [localApiStatus?.port])
 
   useEffect(() => {
-    const lanUrls = localApiStatus?.lanUrls ?? []
+    if (!phoneRemoteStatus) return
+    setPhoneRemotePortInput(String(phoneRemoteStatus.port))
+  }, [phoneRemoteStatus?.port])
+
+  useEffect(() => {
+    const lanUrls = phoneRemoteStatus?.lanUrls ?? []
     if (lanUrls.length === 0) {
       setLocalApiSelectedPairingBaseUrl('')
       return
@@ -410,7 +430,7 @@ export default function SettingsView() {
       return
     }
     setLocalApiSelectedPairingBaseUrl(lanUrls[0])
-  }, [localApiStatus?.lanUrls, localApiSelectedPairingBaseUrl])
+  }, [phoneRemoteStatus?.lanUrls, localApiSelectedPairingBaseUrl])
 
   useEffect(() => {
     if (!localApiFeedback) return
@@ -419,6 +439,14 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [localApiFeedback])
+
+  useEffect(() => {
+    if (!phoneRemoteFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setPhoneRemoteFeedback('')
+    }, 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [phoneRemoteFeedback])
 
   useEffect(() => {
     if (!sleepTimerFeedback) return
@@ -633,42 +661,40 @@ export default function SettingsView() {
     : 'No update checks have run yet.'
   const localApiEnabled = localApiStatus?.enabled ?? false
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
-  const localApiRemoteWebEnabled = localApiStatus?.remoteWebEnabled ?? false
   const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
-  const localApiLanUrls = localApiStatus?.lanUrls ?? []
-  const localApiControllerUrls = localApiLanUrls.map((url) => `${url}/remote/`)
+  const localApiToken = localApiStatus?.token ?? ''
+  const phoneRemoteEnabled = phoneRemoteStatus?.enabled ?? false
+  const phoneRemoteControlsEnabled = phoneRemoteStatus?.controlsEnabled ?? localApiControlsEnabled
+  const phoneRemoteLanUrls = phoneRemoteStatus?.lanUrls ?? []
+  const phoneRemoteControllerUrls = phoneRemoteLanUrls.map((url) => `${url}/remote/`)
   const localApiSelectedPairingUrl = localApiSelectedPairingBaseUrl
     ? `${localApiSelectedPairingBaseUrl}/remote/`
-    : localApiControllerUrls[0] ?? ''
-  const localApiToken = localApiStatus?.token ?? ''
-  const localApiPairedDeviceCount = localApiStatus?.pairedDeviceCount ?? localApiPairedDevices.length
-  const localApiPendingPairingCount = localApiStatus?.pendingPairingCount ?? localApiPendingPairingRequests.length
-  const localApiPhoneRemoteSummary = !localApiEnabled
-    ? 'Phone remote needs the Local API enabled before Astra can expose a pairing page.'
-    : !localApiRemoteWebEnabled
-      ? 'Phone remote is off. Turn it on in the setup popup when you want Astra to expose `/remote/` on your LAN.'
-      : localApiLanUrls.length === 0
-        ? 'Phone remote is enabled, but Astra has not found a usable `192.168.*` LAN address yet.'
-        : localApiPendingPairingCount > 0
-          ? `${localApiPendingPairingCount} phone${localApiPendingPairingCount === 1 ? '' : 's'} waiting for approval.`
-          : localApiPairedDeviceCount > 0
-            ? `${localApiPairedDeviceCount} phone${localApiPairedDeviceCount === 1 ? '' : 's'} paired.`
-            : localApiControlsEnabled
-              ? 'Phone remote is ready for full control.'
-              : 'Phone remote is ready in read-only mode until playback controls are enabled.'
+    : phoneRemoteControllerUrls[0] ?? ''
+  const phoneRemotePairedDeviceCount = phoneRemoteStatus?.pairedDeviceCount ?? phoneRemotePairedDevices.length
+  const phoneRemotePendingPairingCount = phoneRemoteStatus?.pendingPairingCount ?? phoneRemotePendingPairingRequests.length
+  const localApiPhoneRemoteSummary = !phoneRemoteEnabled
+    ? 'Phone remote is off. Turn it on when you want Astra to expose `/remote/` on your LAN.'
+    : phoneRemoteLanUrls.length === 0
+      ? 'Phone remote is enabled, but Astra has not found a usable `192.168.*` LAN address yet.'
+      : phoneRemotePendingPairingCount > 0
+        ? `${phoneRemotePendingPairingCount} phone${phoneRemotePendingPairingCount === 1 ? '' : 's'} waiting for approval.`
+        : phoneRemotePairedDeviceCount > 0
+          ? `${phoneRemotePairedDeviceCount} phone${phoneRemotePairedDeviceCount === 1 ? '' : 's'} paired.`
+          : phoneRemoteControlsEnabled
+            ? 'Phone remote is ready for full control.'
+            : 'Phone remote is ready in read-only mode until playback controls are enabled.'
   const localApiStatusLabel = !localApiStatus
     ? 'Loading local API status...'
     : localApiStatus.active
-      ? localApiStatus.remoteWebEnabled
-        ? localApiControllerUrls.length > 0
-          ? `Local integration API active on ${localApiStatus.baseUrl} and exposed on your LAN via ${localApiStatus.bindHost}.`
-          : `Local integration API active on ${localApiStatus.baseUrl}. Remote controller is enabled, but no non-internal IPv4 LAN address was detected.`
-        : `Local integration API active on ${localApiStatus.baseUrl}.`
+      ? `Local integration API active on ${localApiStatus.baseUrl}.`
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
-  const localApiActiveDevices = useMemo(() => localApiPairedDevices.filter((d) => d.revokedAt == null), [localApiPairedDevices])
-  const localApiControllerUrl = localApiControllerUrls[0] ?? ''
+  const localApiActiveDevices = useMemo(
+    () => phoneRemotePairedDevices.filter((d) => d.revokedAt == null),
+    [phoneRemotePairedDevices]
+  )
+  const localApiControllerUrl = phoneRemoteControllerUrls[0] ?? ''
   const localApiInlineQrSvg = useMemo(() => {
     if (!localApiControllerUrl) return ''
     try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
@@ -818,6 +844,15 @@ export default function SettingsView() {
     }
   }
 
+  const copyPhoneRemoteToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setPhoneRemoteFeedback(`${label} copied.`)
+    } catch {
+      setPhoneRemoteFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
   const handleSaveLocalApiPort = () => {
     const parsedPort = Number(localApiPortInput)
     if (!Number.isInteger(parsedPort) || parsedPort < LOCAL_API_MIN_PORT || parsedPort > LOCAL_API_MAX_PORT) {
@@ -838,15 +873,23 @@ export default function SettingsView() {
     })
   }
 
-  const handleEnableLocalApiRemoteControl = () => {
-    void (async () => {
-      if (!localApiEnabled) {
-        const status = await setLocalApiEnabled(true)
-        if (!status) return
-      }
+  const handleSavePhoneRemotePort = () => {
+    const parsedPort = Number(phoneRemotePortInput)
+    if (!Number.isInteger(parsedPort) || parsedPort < PHONE_REMOTE_MIN_PORT || parsedPort > PHONE_REMOTE_MAX_PORT) {
+      setPhoneRemoteFeedback(`Port must be an integer between ${PHONE_REMOTE_MIN_PORT} and ${PHONE_REMOTE_MAX_PORT}.`)
+      return
+    }
 
-      if (!localApiRemoteWebEnabled) {
-        const status = await setLocalApiRemoteWebEnabled(true)
+    void setPhoneRemotePort(parsedPort).then((status) => {
+      if (!status) return
+      setPhoneRemoteFeedback(`Phone remote port set to ${status.port}.`)
+    })
+  }
+
+  const handleEnablePhoneRemoteControl = () => {
+    void (async () => {
+      if (!phoneRemoteEnabled) {
+        const status = await setPhoneRemoteEnabled(true)
         if (!status) return
       }
 
@@ -855,58 +898,58 @@ export default function SettingsView() {
         if (!status) return
       }
 
-      setLocalApiFeedback('Phone remote control enabled.')
+      setPhoneRemoteFeedback('Phone remote control enabled.')
     })()
   }
 
-  const handleOpenLocalApiPairingModal = () => {
+  const handleOpenPhoneRemotePairingModal = () => {
     setLocalApiPairingModalOpen(true)
   }
 
-  const handleCloseLocalApiPairingModal = () => {
+  const handleClosePhoneRemotePairingModal = () => {
     setLocalApiPairingModalOpen(false)
-    clearActivePairingTicket()
+    clearPhoneRemoteActivePairingTicket()
   }
 
-  const handleCreateLocalApiPairingTicket = () => {
-    void createPairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+  const handleCreatePhoneRemotePairingTicket = () => {
+    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
       if (!ticket) return
-      setLocalApiFeedback('Pairing ticket generated.')
+      setPhoneRemoteFeedback('Pairing ticket generated.')
     })
   }
 
-  const handleRefreshLocalApiPairingTicket = () => {
-    void createPairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+  const handleRefreshPhoneRemotePairingTicket = () => {
+    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
       if (!ticket) return
-      setLocalApiFeedback('Pairing ticket refreshed.')
+      setPhoneRemoteFeedback('Pairing ticket refreshed.')
     })
   }
 
-  const handleApproveLocalApiPairingRequest = (id: string) => {
-    void approvePairingRequest(id).then(() => {
-      setLocalApiFeedback('Pairing request approved.')
+  const handleApprovePhoneRemotePairingRequest = (id: string) => {
+    void approvePhoneRemotePairingRequest(id).then(() => {
+      setPhoneRemoteFeedback('Pairing request approved.')
     })
   }
 
-  const handleRejectLocalApiPairingRequest = (id: string) => {
-    void rejectPairingRequest(id).then(() => {
-      setLocalApiFeedback('Pairing request rejected.')
+  const handleRejectPhoneRemotePairingRequest = (id: string) => {
+    void rejectPhoneRemotePairingRequest(id).then(() => {
+      setPhoneRemoteFeedback('Pairing request rejected.')
     })
   }
 
-  const handleRevokeLocalApiPairedDevice = (id: string) => {
-    void revokePairedDevice(id).then(() => {
-      setLocalApiFeedback('Paired phone revoked.')
+  const handleRevokePhoneRemotePairedDevice = (id: string) => {
+    void revokePhoneRemotePairedDevice(id).then(() => {
+      setPhoneRemoteFeedback('Paired phone revoked.')
     })
   }
 
-  const handleRevokeAllLocalApiPairedDevices = () => {
-    void revokeAllPairedDevices().then((revokedCount) => {
+  const handleRevokeAllPhoneRemoteDevices = () => {
+    void revokeAllPhoneRemotePairedDevices().then((revokedCount) => {
       if (revokedCount > 0) {
-        setLocalApiFeedback(`${revokedCount} paired phone${revokedCount === 1 ? '' : 's'} revoked.`)
+        setPhoneRemoteFeedback(`${revokedCount} paired phone${revokedCount === 1 ? '' : 's'} revoked.`)
         return
       }
-      setLocalApiFeedback('No paired phones to revoke.')
+      setPhoneRemoteFeedback('No paired phones to revoke.')
     })
   }
 
@@ -1653,7 +1696,6 @@ export default function SettingsView() {
                     <button
                       className={`settings-toggle ${localApiControlsEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiControlsEnabled(!localApiControlsEnabled)}
-                      disabled={!localApiEnabled}
                     >
                       {localApiControlsEnabled ? 'Enabled' : 'Disabled'}
                     </button>
@@ -1765,9 +1807,36 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Phone Remote</h4>
-                  <p>Experimental LAN controller setup for phones.</p>
+                  <p>Opt-in LAN controller surface for the phone PWA.</p>
                 </div>
                 <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Phone Remote</span>
+                    <button
+                      className={`settings-toggle ${phoneRemoteEnabled ? 'active' : ''}`}
+                      onClick={() => void setPhoneRemoteEnabled(!phoneRemoteEnabled)}
+                    >
+                      {phoneRemoteEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Phone Remote Port</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={PHONE_REMOTE_MIN_PORT}
+                        max={PHONE_REMOTE_MAX_PORT}
+                        step={1}
+                        value={phoneRemotePortInput}
+                        onChange={(event) => setPhoneRemotePortInput(event.target.value)}
+                        onBlur={handleSavePhoneRemotePort}
+                      />
+                      <button className="settings-btn" onClick={handleSavePhoneRemotePort}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
                   <div className="settings-field">
                     <span className="settings-field-label">Status</span>
                     <span className="settings-info-value">{localApiPhoneRemoteSummary}</span>
@@ -1776,12 +1845,14 @@ export default function SettingsView() {
                     <span className="settings-field-label">Pair a New Phone</span>
                     <button
                       className="settings-btn settings-btn-primary"
-                      onClick={handleOpenLocalApiPairingModal}
+                      onClick={handleOpenPhoneRemotePairingModal}
                     >
                       Pair Phone
                     </button>
                   </div>
                 </div>
+                {phoneRemoteFeedback && <p className="settings-note settings-note-success">{phoneRemoteFeedback}</p>}
+                {phoneRemoteErrorMessage && <p className="settings-note settings-note-error">{phoneRemoteErrorMessage}</p>}
 
                 {/* Inline paired devices */}
                 {localApiActiveDevices.length > 0 && (
@@ -1824,14 +1895,14 @@ export default function SettingsView() {
                           </div>
                           <button
                             className="settings-btn settings-btn-danger"
-                            onClick={() => handleRevokeLocalApiPairedDevice(device.id)}
+                            onClick={() => handleRevokePhoneRemotePairedDevice(device.id)}
                           >
                             Revoke
                           </button>
                         </div>
                       ))}
                       {localApiActiveDevices.length >= 2 && (
-                        <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllLocalApiPairedDevices}>
+                        <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllPhoneRemoteDevices}>
                           Revoke All
                         </button>
                       )}
@@ -2164,30 +2235,30 @@ export default function SettingsView() {
       />
       {localApiPairingModalOpen && (
         <LocalApiPairingModal
-          ticket={localApiActivePairingTicket}
-          pairedDevices={localApiPairedDevices}
-          pendingRequests={localApiPendingPairingRequests}
-          apiEnabled={localApiEnabled}
-          remoteWebEnabled={localApiRemoteWebEnabled}
+          ticket={phoneRemoteActivePairingTicket}
+          pairedDevices={phoneRemotePairedDevices}
+          pendingRequests={phoneRemotePendingPairingRequests}
+          apiEnabled={phoneRemoteEnabled}
+          remoteWebEnabled={phoneRemoteEnabled}
           controlsEnabled={localApiControlsEnabled}
-          lanUrls={localApiLanUrls}
+          lanUrls={phoneRemoteLanUrls}
           selectedBaseUrl={localApiSelectedPairingBaseUrl}
           selectedControllerUrl={localApiSelectedPairingUrl}
-          feedbackMessage={localApiFeedback}
-          errorMessage={localApiErrorMessage}
-          onClose={handleCloseLocalApiPairingModal}
-          onEnableRemoteControl={handleEnableLocalApiRemoteControl}
+          feedbackMessage={phoneRemoteFeedback}
+          errorMessage={phoneRemoteErrorMessage}
+          onClose={handleClosePhoneRemotePairingModal}
+          onEnableRemoteControl={handleEnablePhoneRemoteControl}
           onSelectBaseUrl={setLocalApiSelectedPairingBaseUrl}
-          onGenerateTicket={handleCreateLocalApiPairingTicket}
-          onRefreshTicket={handleRefreshLocalApiPairingTicket}
+          onGenerateTicket={handleCreatePhoneRemotePairingTicket}
+          onRefreshTicket={handleRefreshPhoneRemotePairingTicket}
           onCopyPairingUrl={() => {
-            if (!localApiActivePairingTicket) return
-            void copyToClipboard(localApiActivePairingTicket.pairingUrl, 'Pairing link')
+            if (!phoneRemoteActivePairingTicket) return
+            void copyPhoneRemoteToClipboard(phoneRemoteActivePairingTicket.pairingUrl, 'Pairing link')
           }}
-          onApproveRequest={handleApproveLocalApiPairingRequest}
-          onRejectRequest={handleRejectLocalApiPairingRequest}
-          onRevokeDevice={handleRevokeLocalApiPairedDevice}
-          onRevokeAllDevices={handleRevokeAllLocalApiPairedDevices}
+          onApproveRequest={handleApprovePhoneRemotePairingRequest}
+          onRejectRequest={handleRejectPhoneRemotePairingRequest}
+          onRevokeDevice={handleRevokePhoneRemotePairedDevice}
+          onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
         />
       )}
     </div>

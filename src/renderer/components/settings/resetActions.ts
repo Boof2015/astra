@@ -13,6 +13,7 @@ import {
   useVisualizerSettingsStore
 } from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
@@ -86,7 +87,11 @@ export async function resetIntegrationSettings(): Promise<string> {
   if (!status) {
     throw new Error('Failed to reset local API settings.')
   }
-  return 'Integrations reset (Discord, Last.fm, Lyrics, and Local API).'
+  const phoneRemoteStatus = await usePhoneRemoteSettingsStore.getState().resetToDefaults()
+  if (!phoneRemoteStatus) {
+    throw new Error('Failed to reset phone remote settings.')
+  }
+  return 'Integrations reset (Discord, Last.fm, Lyrics, Local API, and Phone Remote).'
 }
 
 export async function resetDiscordCoverArtCache(): Promise<string> {

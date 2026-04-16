@@ -14,11 +14,14 @@ import type {
     ScopePopoutState
 } from '../types/scopePopout'
 import type {
-    LocalApiPairedDevice,
-    LocalApiPairingTicket,
-    LocalApiPendingPairingRequest,
-    LocalApiStatus
+  LocalApiStatus
 } from '../types/localApi'
+import type {
+  PhoneRemotePairedDevice,
+  PhoneRemotePairingTicket,
+  PhoneRemotePendingPairingRequest,
+  PhoneRemoteStatus
+} from '../types/phoneRemote'
 import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
@@ -201,20 +204,26 @@ declare global {
             }
             localApi: {
                 getStatus: () => Promise<LocalApiStatus>
-                createPairingTicket: (baseUrl?: string) => Promise<LocalApiPairingTicket>
-                listPairedDevices: () => Promise<LocalApiPairedDevice[]>
-                listPendingPairingRequests: () => Promise<LocalApiPendingPairingRequest[]>
-                approvePairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
-                rejectPairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
-                revokePairedDevice: (id: string) => Promise<LocalApiPairedDevice | null>
-                revokeAllPairedDevices: () => Promise<number>
                 setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
-                setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setPort: (port: number) => Promise<LocalApiStatus>
                 rotateToken: () => Promise<LocalApiStatus>
                 resetToDefaults: () => Promise<LocalApiStatus>
                 onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+            }
+            phoneRemote: {
+                getStatus: () => Promise<PhoneRemoteStatus>
+                createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket>
+                listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
+                listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
+                approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+                rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+                revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
+                revokeAllPairedDevices: () => Promise<number>
+                setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+                setPort: (port: number) => Promise<PhoneRemoteStatus>
+                resetToDefaults: () => Promise<PhoneRemoteStatus>
+                onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
             }
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>

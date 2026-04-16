@@ -11,6 +11,7 @@
     "test:album-grouping": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumGrouping.test.ts",
     "test:library-graph": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/libraryGraph.test.ts",
     "test:local-api": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/localApi.test.ts",
+    "test:phone-remote": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/phoneRemote.test.ts",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
     "rebuild:native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",

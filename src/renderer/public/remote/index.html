@@ -41,7 +41,7 @@
           </button>
         </div>
       </header>
-      <p id="connection-label" class="connection-label">Waiting for pairing or a Local API key.</p>
+      <p id="connection-label" class="connection-label">Waiting for pairing.</p>
 
       <!-- ── Notice ── -->
       <section id="notice-banner" class="glass-panel notice-banner notice-info" hidden>
@@ -53,7 +53,7 @@
         <div class="pair-idle-intro">
           <p class="section-label">Phone Pairing</p>
           <h2 class="section-title">Pair this phone</h2>
-          <p class="section-copy">From Astra on your desktop, open <strong>Settings → Local API → Pair Remote</strong>, then scan the QR code or paste the pairing link here.</p>
+          <p class="section-copy">From Astra on your desktop, open <strong>Settings → Experimental → Phone Remote</strong>, then scan the QR code or paste the pairing link here.</p>
         </div>
         <div class="setup-step-list" aria-hidden="true">
           <div class="setup-step">
@@ -87,7 +87,7 @@
           </div>
         </form>
         <p class="pair-helper-copy">Paste the full pairing link if scanning opens the QR preview instead of this controller.</p>
-        <button id="show-manual-auth-button" class="btn-ghost btn-sm" type="button">Use API key instead</button>
+        <button id="show-manual-auth-button" class="btn-ghost btn-sm" type="button" hidden>Use API key instead</button>
       </section>
 
       <!-- ── Pair: pending — waiting for approval ── -->
@@ -113,7 +113,7 @@
       </section>
 
       <!-- ── Manual auth ── -->
-      <section id="auth-panel" class="glass-panel page-section pair-section pair-section-manual">
+      <section id="auth-panel" class="glass-panel page-section pair-section pair-section-manual" hidden>
         <p class="section-label">Manual Fallback</p>
         <h2 class="section-title">Enter API key</h2>
         <p class="section-copy">Paste the Local API key shown in Astra's settings.</p>

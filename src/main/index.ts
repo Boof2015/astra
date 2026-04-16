@@ -45,6 +45,7 @@ import {
 import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
+import { PhoneRemoteService } from './services/phoneRemote'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
@@ -87,6 +88,12 @@ import {
   LOCAL_API_MIN_PORT,
   type LocalApiServiceConfig,
 } from '../types/localApi'
+import {
+  PHONE_REMOTE_DEFAULT_PORT,
+  PHONE_REMOTE_MAX_PORT,
+  PHONE_REMOTE_MIN_PORT,
+  type PhoneRemoteServiceConfig
+} from '../types/phoneRemote'
 import type { LastFmServiceConfig } from '../types/lastFm'
 import type { LyricsTrackQuery } from '../types/lyrics'
 import type {
@@ -161,10 +168,11 @@ const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
 const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
-const LOCAL_API_REMOTE_WEB_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
-const LOCAL_API_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
+const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
+const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
+const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
 const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
@@ -210,11 +218,15 @@ let nextRemoteStreamSessionId = 1
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
   controlsEnabled: false,
-  remoteWebEnabled: false,
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
 }
-type PersistedLocalApiPairedDevice = {
+let phoneRemoteConfig: PhoneRemoteServiceConfig = {
+  enabled: false,
+  controlsEnabled: false,
+  port: PHONE_REMOTE_DEFAULT_PORT
+}
+type PersistedPhoneRemotePairedDevice = {
   id: string
   name: string
   clientLabel: string
@@ -224,7 +236,7 @@ type PersistedLocalApiPairedDevice = {
   lastSeenAt: number | null
   revokedAt: number | null
 }
-let localApiPairedDevices: PersistedLocalApiPairedDevice[] = []
+let phoneRemotePairedDevices: PersistedPhoneRemotePairedDevice[] = []
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   sessionKey: null,
@@ -449,13 +461,6 @@ const localApiService = new LocalApiService({
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
     jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
   }),
-  pairedDevices: localApiPairedDevices,
-  onPairedDevicesChange: (devices) => {
-    localApiPairedDevices = devices.map((device) => ({ ...device }))
-    void persistLocalApiPairedDevices(localApiPairedDevices).catch((error) => {
-      console.warn('Failed to persist local API paired devices:', error)
-    })
-  },
   onStatusChange: () => {
     broadcastLocalApiStatus()
     const status = localApiService.getStatus()
@@ -463,9 +468,37 @@ const localApiService = new LocalApiService({
       enabled: status.enabled,
       active: status.active,
       controlsEnabled: status.controlsEnabled,
-      remoteWebEnabled: status.remoteWebEnabled,
       port: status.port,
       mode: status.mode,
+      connectedClients: status.connectedClients,
+      lastError: status.lastError
+    })
+  }
+})
+
+const phoneRemoteService = new PhoneRemoteService({
+  config: phoneRemoteConfig,
+  getSnapshot: () => latestMiniPlayerSnapshot,
+  dispatchCommand: sendMiniPlayerCommand,
+  resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
+    maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
+    jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
+  }),
+  pairedDevices: phoneRemotePairedDevices,
+  onPairedDevicesChange: (devices) => {
+    phoneRemotePairedDevices = devices.map((device) => ({ ...device }))
+    void persistPhoneRemotePairedDevices(phoneRemotePairedDevices).catch((error) => {
+      console.warn('Failed to persist phone remote paired devices:', error)
+    })
+  },
+  onStatusChange: () => {
+    broadcastPhoneRemoteStatus()
+    const status = phoneRemoteService.getStatus()
+    logMemoryDiagnosticsMainEvent('phone_remote_status_changed', {
+      enabled: status.enabled,
+      active: status.active,
+      controlsEnabled: status.controlsEnabled,
+      port: status.port,
       connectedClients: status.connectedClients,
       pairedDeviceCount: status.pairedDeviceCount,
       pendingPairingCount: status.pendingPairingCount,
@@ -822,9 +855,20 @@ function normalizeLocalApiPort(rawPort: unknown): number {
   return parsed
 }
 
-function sanitizeLocalApiPairedDevices(rawDevices: unknown): PersistedLocalApiPairedDevice[] {
+function normalizePhoneRemotePort(rawPort: unknown): number {
+  const parsed = typeof rawPort === 'number' ? rawPort : Number(rawPort)
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Port must be an integer between ${PHONE_REMOTE_MIN_PORT} and ${PHONE_REMOTE_MAX_PORT}.`)
+  }
+  if (parsed < PHONE_REMOTE_MIN_PORT || parsed > PHONE_REMOTE_MAX_PORT) {
+    throw new Error(`Port must be between ${PHONE_REMOTE_MIN_PORT} and ${PHONE_REMOTE_MAX_PORT}.`)
+  }
+  return parsed
+}
+
+function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRemotePairedDevice[] {
   if (!Array.isArray(rawDevices)) return []
-  const sanitized: PersistedLocalApiPairedDevice[] = []
+  const sanitized: PersistedPhoneRemotePairedDevice[] = []
 
   for (const candidate of rawDevices) {
     if (!candidate || typeof candidate !== 'object') continue
@@ -866,22 +910,23 @@ function sanitizeLocalApiPairedDevices(rawDevices: unknown): PersistedLocalApiPa
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
-  await library.setAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY, config.remoteWebEnabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_PORT_META_KEY, String(config.port))
   await library.setAppMeta(LOCAL_API_TOKEN_META_KEY, config.token)
 }
 
-async function persistLocalApiPairedDevices(devices: PersistedLocalApiPairedDevice[]): Promise<void> {
-  localApiPairedDevices = devices.map((device) => ({ ...device }))
-  await library.setAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY, JSON.stringify(localApiPairedDevices))
+async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promise<void> {
+  await library.setAppMeta(PHONE_REMOTE_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
+}
+
+async function persistPhoneRemotePairedDevices(devices: PersistedPhoneRemotePairedDevice[]): Promise<void> {
+  phoneRemotePairedDevices = devices.map((device) => ({ ...device }))
+  await library.setAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY, JSON.stringify(phoneRemotePairedDevices))
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_ENABLED_META_KEY), false)
   const controlsEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY), false)
-  const remoteWebEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY), false)
-  const controlsEnabled = enabled ? controlsEnabledStored : false
-  const remoteWebEnabled = enabled ? remoteWebEnabledStored : false
 
   const rawPort = library.getAppMeta(LOCAL_API_PORT_META_KEY)
   let port = LOCAL_API_DEFAULT_PORT
@@ -901,8 +946,7 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
 
   const normalized: LocalApiServiceConfig = {
     enabled,
-    controlsEnabled,
-    remoteWebEnabled,
+    controlsEnabled: controlsEnabledStored,
     port,
     token
   }
@@ -910,7 +954,6 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const needsPersistence =
     library.getAppMeta(LOCAL_API_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY) !== (normalized.controlsEnabled ? '1' : '0') ||
-    library.getAppMeta(LOCAL_API_REMOTE_WEB_ENABLED_META_KEY) !== (normalized.remoteWebEnabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_PORT_META_KEY) !== String(normalized.port) ||
     library.getAppMeta(LOCAL_API_TOKEN_META_KEY) !== normalized.token
 
@@ -925,25 +968,59 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   return normalized
 }
 
-async function loadLocalApiPairedDevicesFromMeta(): Promise<PersistedLocalApiPairedDevice[]> {
-  let pairedDevices = sanitizeLocalApiPairedDevices([])
-  const rawPairedDevices = library.getAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY)
-  if (rawPairedDevices) {
+async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<PhoneRemoteServiceConfig> {
+  const enabled = parseMetaBoolean(library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY), false)
+
+  const rawPort = library.getAppMeta(PHONE_REMOTE_PORT_META_KEY)
+  let port = PHONE_REMOTE_DEFAULT_PORT
+  if (rawPort !== null) {
     try {
-      pairedDevices = sanitizeLocalApiPairedDevices(JSON.parse(rawPairedDevices))
+      port = normalizePhoneRemotePort(rawPort)
     } catch {
-      pairedDevices = sanitizeLocalApiPairedDevices([])
+      port = PHONE_REMOTE_DEFAULT_PORT
     }
   }
 
-  if (library.getAppMeta(LOCAL_API_PAIRED_DEVICES_META_KEY) !== JSON.stringify(pairedDevices)) {
+  const normalized: PhoneRemoteServiceConfig = {
+    enabled,
+    controlsEnabled,
+    port
+  }
+
+  const needsPersistence =
+    library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(PHONE_REMOTE_PORT_META_KEY) !== String(normalized.port)
+
+  if (needsPersistence) {
     try {
-      await persistLocalApiPairedDevices(pairedDevices)
+      await persistPhoneRemoteConfig(normalized)
     } catch (error) {
-      console.warn('Failed to persist normalized local API paired devices:', error)
+      console.warn('Failed to persist normalized phone remote settings:', error)
+    }
+  }
+
+  return normalized
+}
+
+async function loadPhoneRemotePairedDevicesFromMeta(): Promise<PersistedPhoneRemotePairedDevice[]> {
+  let pairedDevices = sanitizePhoneRemotePairedDevices([])
+  const rawPairedDevices = library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY)
+  if (rawPairedDevices) {
+    try {
+      pairedDevices = sanitizePhoneRemotePairedDevices(JSON.parse(rawPairedDevices))
+    } catch {
+      pairedDevices = sanitizePhoneRemotePairedDevices([])
+    }
+  }
+
+  if (library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY) !== JSON.stringify(pairedDevices)) {
+    try {
+      await persistPhoneRemotePairedDevices(pairedDevices)
+    } catch (error) {
+      console.warn('Failed to persist normalized phone remote paired devices:', error)
     }
   } else {
-    localApiPairedDevices = pairedDevices.map((device) => ({ ...device }))
+    phoneRemotePairedDevices = pairedDevices.map((device) => ({ ...device }))
   }
 
   return pairedDevices
@@ -953,6 +1030,14 @@ async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<Retur
   localApiConfig = { ...config }
   await persistLocalApiConfig(localApiConfig)
   return localApiService.applyConfig(localApiConfig)
+}
+
+async function applyPhoneRemoteConfig(
+  config: PhoneRemoteServiceConfig
+): Promise<ReturnType<typeof phoneRemoteService.getStatus>> {
+  phoneRemoteConfig = { ...config }
+  await persistPhoneRemoteConfig(phoneRemoteConfig)
+  return phoneRemoteService.applyConfig(phoneRemoteConfig)
 }
 
 function normalizeOptionalMetaText(value: string | null): string | null {
@@ -1217,6 +1302,14 @@ function broadcastLocalApiStatus(): void {
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('local-api:status', payload)
+  }
+}
+
+function broadcastPhoneRemoteStatus(): void {
+  const payload = phoneRemoteService.getStatus()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('phone-remote:status', payload)
   }
 }
 
@@ -2729,14 +2822,17 @@ app.whenReady().then(async () => {
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
-  localApiPairedDevices = await loadLocalApiPairedDevicesFromMeta()
-  localApiService.replacePairedDevices(localApiPairedDevices)
+  phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
+  phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
+  phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
   await localApiService.applyConfig(localApiConfig)
+  await phoneRemoteService.applyConfig(phoneRemoteConfig)
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
   lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
   lyricsService.applyConfig(lyricsOnlineEnabled)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
+  phoneRemoteService.publishSnapshot(latestMiniPlayerSnapshot)
   refreshSubsonicStatusCache(false)
   refreshJellyfinStatusCache(false)
 
@@ -2814,6 +2910,7 @@ app.on('before-quit', () => {
   closeAllScopePopoutWindows()
   void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
+  void phoneRemoteService.stop()
   lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
@@ -2902,6 +2999,7 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   const mergedSnapshot = mergeMiniPlayerSnapshots(latestMiniPlayerSnapshot, snapshot)
   latestMiniPlayerSnapshot = mergedSnapshot
   localApiService.publishSnapshot(mergedSnapshot)
+  phoneRemoteService.publishSnapshot(mergedSnapshot)
   lastFmService.publishSnapshot(mergedSnapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', mergedSnapshot)
@@ -3434,70 +3532,27 @@ ipcMain.handle('local-api:getStatus', () => {
   return localApiService.getStatus()
 })
 
-ipcMain.handle('local-api:createPairingTicket', (_event, baseUrl?: unknown) => {
-  return localApiService.createPairingTicket(typeof baseUrl === 'string' ? baseUrl : undefined)
-})
-
-ipcMain.handle('local-api:listPairedDevices', () => {
-  return localApiService.listPairedDevices()
-})
-
-ipcMain.handle('local-api:listPendingPairingRequests', () => {
-  return localApiService.listPendingPairingRequests()
-})
-
-ipcMain.handle('local-api:approvePairingRequest', (_event, id: unknown) => {
-  if (typeof id !== 'string' || !id.trim()) {
-    throw new Error('Invalid pairing request id.')
-  }
-  return localApiService.approvePairingRequest(id.trim())
-})
-
-ipcMain.handle('local-api:rejectPairingRequest', (_event, id: unknown) => {
-  if (typeof id !== 'string' || !id.trim()) {
-    throw new Error('Invalid pairing request id.')
-  }
-  return localApiService.rejectPairingRequest(id.trim())
-})
-
-ipcMain.handle('local-api:revokePairedDevice', (_event, id: unknown) => {
-  if (typeof id !== 'string' || !id.trim()) {
-    throw new Error('Invalid paired device id.')
-  }
-  return localApiService.revokePairedDevice(id.trim())
-})
-
-ipcMain.handle('local-api:revokeAllPairedDevices', () => {
-  return localApiService.revokeAllPairedDevices()
-})
-
 ipcMain.handle('local-api:setEnabled', async (_event, enabled: unknown) => {
   const nextEnabled = Boolean(enabled)
   const nextConfig: LocalApiServiceConfig = {
     ...localApiConfig,
-    enabled: nextEnabled,
-    controlsEnabled: nextEnabled ? localApiConfig.controlsEnabled : false,
-    remoteWebEnabled: nextEnabled ? localApiConfig.remoteWebEnabled : false
+    enabled: nextEnabled
   }
   return applyLocalApiConfig(nextConfig)
 })
 
 ipcMain.handle('local-api:setControlsEnabled', async (_event, controlsEnabled: unknown) => {
-  const nextControlsEnabled = localApiConfig.enabled && Boolean(controlsEnabled)
-  const nextConfig: LocalApiServiceConfig = {
+  const nextControlsEnabled = Boolean(controlsEnabled)
+  const nextLocalConfig: LocalApiServiceConfig = {
     ...localApiConfig,
     controlsEnabled: nextControlsEnabled
   }
-  return applyLocalApiConfig(nextConfig)
-})
-
-ipcMain.handle('local-api:setRemoteWebEnabled', async (_event, remoteWebEnabled: unknown) => {
-  const nextRemoteWebEnabled = localApiConfig.enabled && Boolean(remoteWebEnabled)
-  const nextConfig: LocalApiServiceConfig = {
-    ...localApiConfig,
-    remoteWebEnabled: nextRemoteWebEnabled
+  const nextPhoneRemoteConfig: PhoneRemoteServiceConfig = {
+    ...phoneRemoteConfig,
+    controlsEnabled: nextControlsEnabled
   }
-  return applyLocalApiConfig(nextConfig)
+  await applyPhoneRemoteConfig(nextPhoneRemoteConfig)
+  return applyLocalApiConfig(nextLocalConfig)
 })
 
 ipcMain.handle('local-api:setPort', async (_event, rawPort: unknown) => {
@@ -3521,13 +3576,88 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
   const nextConfig: LocalApiServiceConfig = {
     enabled: false,
     controlsEnabled: false,
-    remoteWebEnabled: false,
     port: LOCAL_API_DEFAULT_PORT,
     token: generateLocalApiToken(),
   }
-  localApiService.replacePairedDevices([])
-  await persistLocalApiPairedDevices([])
+  const nextPhoneRemoteConfig: PhoneRemoteServiceConfig = {
+    enabled: false,
+    controlsEnabled: false,
+    port: PHONE_REMOTE_DEFAULT_PORT
+  }
+  phoneRemoteService.replacePairedDevices([])
+  await persistPhoneRemotePairedDevices([])
+  await applyPhoneRemoteConfig(nextPhoneRemoteConfig)
   return applyLocalApiConfig(nextConfig)
+})
+
+// Phone remote
+ipcMain.handle('phone-remote:getStatus', () => {
+  return phoneRemoteService.getStatus()
+})
+
+ipcMain.handle('phone-remote:createPairingTicket', (_event, baseUrl?: unknown) => {
+  return phoneRemoteService.createPairingTicket(typeof baseUrl === 'string' ? baseUrl : undefined)
+})
+
+ipcMain.handle('phone-remote:listPairedDevices', () => {
+  return phoneRemoteService.listPairedDevices()
+})
+
+ipcMain.handle('phone-remote:listPendingPairingRequests', () => {
+  return phoneRemoteService.listPendingPairingRequests()
+})
+
+ipcMain.handle('phone-remote:approvePairingRequest', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid pairing request id.')
+  }
+  return phoneRemoteService.approvePairingRequest(id.trim())
+})
+
+ipcMain.handle('phone-remote:rejectPairingRequest', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid pairing request id.')
+  }
+  return phoneRemoteService.rejectPairingRequest(id.trim())
+})
+
+ipcMain.handle('phone-remote:revokePairedDevice', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid paired device id.')
+  }
+  return phoneRemoteService.revokePairedDevice(id.trim())
+})
+
+ipcMain.handle('phone-remote:revokeAllPairedDevices', () => {
+  return phoneRemoteService.revokeAllPairedDevices()
+})
+
+ipcMain.handle('phone-remote:setEnabled', async (_event, enabled: unknown) => {
+  const nextConfig: PhoneRemoteServiceConfig = {
+    ...phoneRemoteConfig,
+    enabled: Boolean(enabled)
+  }
+  return applyPhoneRemoteConfig(nextConfig)
+})
+
+ipcMain.handle('phone-remote:setPort', async (_event, rawPort: unknown) => {
+  const nextPort = normalizePhoneRemotePort(rawPort)
+  const nextConfig: PhoneRemoteServiceConfig = {
+    ...phoneRemoteConfig,
+    port: nextPort
+  }
+  return applyPhoneRemoteConfig(nextConfig)
+})
+
+ipcMain.handle('phone-remote:resetToDefaults', async () => {
+  const nextConfig: PhoneRemoteServiceConfig = {
+    enabled: false,
+    controlsEnabled: localApiConfig.controlsEnabled,
+    port: PHONE_REMOTE_DEFAULT_PORT
+  }
+  phoneRemoteService.replacePairedDevices([])
+  await persistPhoneRemotePairedDevices([])
+  return applyPhoneRemoteConfig(nextConfig)
 })
 
 // ============================================

@@ -21,6 +21,7 @@ import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useThemeStore } from './stores/themeStore'
 import { useUpdateStore } from './stores/updateStore'
 import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from './stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
@@ -176,6 +177,7 @@ function App() {
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
+    void usePhoneRemoteSettingsStore.getState().init()
     void useLastFmSettingsStore.getState().init()
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()

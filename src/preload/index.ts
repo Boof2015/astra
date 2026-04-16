@@ -14,11 +14,14 @@ import type {
   ScopePopoutState
 } from '../types/scopePopout'
 import type {
-  LocalApiPairedDevice,
-  LocalApiPairingTicket,
-  LocalApiPendingPairingRequest,
   LocalApiStatus
 } from '../types/localApi'
+import type {
+  PhoneRemotePairedDevice,
+  PhoneRemotePairingTicket,
+  PhoneRemotePendingPairingRequest,
+  PhoneRemoteStatus
+} from '../types/phoneRemote'
 import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
@@ -598,23 +601,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   localApi: {
     getStatus: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:getStatus'),
-    createPairingTicket: (baseUrl?: string): Promise<LocalApiPairingTicket> =>
-      ipcRenderer.invoke('local-api:createPairingTicket', baseUrl),
-    listPairedDevices: (): Promise<LocalApiPairedDevice[]> => ipcRenderer.invoke('local-api:listPairedDevices'),
-    listPendingPairingRequests: (): Promise<LocalApiPendingPairingRequest[]> =>
-      ipcRenderer.invoke('local-api:listPendingPairingRequests'),
-    approvePairingRequest: (id: string): Promise<LocalApiPendingPairingRequest | null> =>
-      ipcRenderer.invoke('local-api:approvePairingRequest', id),
-    rejectPairingRequest: (id: string): Promise<LocalApiPendingPairingRequest | null> =>
-      ipcRenderer.invoke('local-api:rejectPairingRequest', id),
-    revokePairedDevice: (id: string): Promise<LocalApiPairedDevice | null> =>
-      ipcRenderer.invoke('local-api:revokePairedDevice', id),
-    revokeAllPairedDevices: (): Promise<number> => ipcRenderer.invoke('local-api:revokeAllPairedDevices'),
     setEnabled: (enabled: boolean): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setEnabled', enabled),
     setControlsEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
       ipcRenderer.invoke('local-api:setControlsEnabled', enabled),
-    setRemoteWebEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
-      ipcRenderer.invoke('local-api:setRemoteWebEnabled', enabled),
     setPort: (port: number): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setPort', port),
     rotateToken: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:rotateToken'),
     resetToDefaults: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:resetToDefaults'),
@@ -622,6 +611,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, status: LocalApiStatus) => callback(status)
       ipcRenderer.on('local-api:status', handler)
       return () => ipcRenderer.removeListener('local-api:status', handler)
+    }
+  },
+
+  phoneRemote: {
+    getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:getStatus'),
+    createPairingTicket: (baseUrl?: string): Promise<PhoneRemotePairingTicket> =>
+      ipcRenderer.invoke('phone-remote:createPairingTicket', baseUrl),
+    listPairedDevices: (): Promise<PhoneRemotePairedDevice[]> =>
+      ipcRenderer.invoke('phone-remote:listPairedDevices'),
+    listPendingPairingRequests: (): Promise<PhoneRemotePendingPairingRequest[]> =>
+      ipcRenderer.invoke('phone-remote:listPendingPairingRequests'),
+    approvePairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
+      ipcRenderer.invoke('phone-remote:approvePairingRequest', id),
+    rejectPairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
+      ipcRenderer.invoke('phone-remote:rejectPairingRequest', id),
+    revokePairedDevice: (id: string): Promise<PhoneRemotePairedDevice | null> =>
+      ipcRenderer.invoke('phone-remote:revokePairedDevice', id),
+    revokeAllPairedDevices: (): Promise<number> => ipcRenderer.invoke('phone-remote:revokeAllPairedDevices'),
+    setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:setEnabled', enabled),
+    setPort: (port: number): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:setPort', port),
+    resetToDefaults: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:resetToDefaults'),
+    onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
+      ipcRenderer.on('phone-remote:status', handler)
+      return () => ipcRenderer.removeListener('phone-remote:status', handler)
     }
   },
 
@@ -963,20 +978,26 @@ declare global {
       }
       localApi: {
         getStatus: () => Promise<LocalApiStatus>
-        createPairingTicket: (baseUrl?: string) => Promise<LocalApiPairingTicket>
-        listPairedDevices: () => Promise<LocalApiPairedDevice[]>
-        listPendingPairingRequests: () => Promise<LocalApiPendingPairingRequest[]>
-        approvePairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
-        rejectPairingRequest: (id: string) => Promise<LocalApiPendingPairingRequest | null>
-        revokePairedDevice: (id: string) => Promise<LocalApiPairedDevice | null>
-        revokeAllPairedDevices: () => Promise<number>
         setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
-        setRemoteWebEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setPort: (port: number) => Promise<LocalApiStatus>
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+      }
+      phoneRemote: {
+        getStatus: () => Promise<PhoneRemoteStatus>
+        createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket>
+        listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
+        listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
+        approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+        rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+        revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
+        revokeAllPairedDevices: () => Promise<number>
+        setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        setPort: (port: number) => Promise<PhoneRemoteStatus>
+        resetToDefaults: () => Promise<PhoneRemoteStatus>
+        onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
       lastFm: {
         getStatus: () => Promise<LastFmStatus>

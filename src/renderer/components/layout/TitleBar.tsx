@@ -3,6 +3,7 @@ import type { AudioBufferMemoryStats } from '../../../types/nativeAudio'
 import { audioEngine } from '../../audio/AudioEngine'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
@@ -40,13 +41,16 @@ export default function TitleBar() {
   const updateAvailable = useUpdateStore((s) => s.updateAvailable)
   const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
   const localApiStatus = useLocalApiSettingsStore((s) => s.status)
+  const phoneRemoteStatus = usePhoneRemoteSettingsStore((s) => s.status)
   const initLocalApi = useLocalApiSettingsStore((s) => s.init)
+  const initPhoneRemote = usePhoneRemoteSettingsStore((s) => s.init)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
 
   useEffect(() => {
     void initLocalApi()
-  }, [initLocalApi])
+    void initPhoneRemote()
+  }, [initLocalApi, initPhoneRemote])
 
   useEffect(() => {
     let isMounted = true
@@ -191,6 +195,14 @@ export default function TitleBar() {
       ? `Local API active with controls on ${localApiStatus.baseUrl}`
       : `Local API active on ${localApiStatus.baseUrl}`
     : 'Local API status unavailable'
+  const pwaIndicatorLabel = phoneRemoteStatus?.active ? 'PWA' : null
+  const pwaIndicatorTitle = phoneRemoteStatus
+    ? phoneRemoteStatus.controllerUrl
+      ? phoneRemoteStatus.controlsEnabled
+        ? `Phone remote active with controls on ${phoneRemoteStatus.controllerUrl}`
+        : `Phone remote active in read-only mode on ${phoneRemoteStatus.controllerUrl}`
+      : `Phone remote active on port ${phoneRemoteStatus.port}`
+    : 'Phone remote status unavailable'
   const appMemoryTitle = rendererMemoryStats && bufferStats
     ? `Renderer-private memory excluding decoded audio buffers. Renderer private: ${formatMemoryMb(rendererMemoryStats.privateMb)}.${appStats ? ` Total app working set: ${formatMemoryMb(appStats.workingSetMb)}.` : ''}`
     : appStats && bufferStats
@@ -237,6 +249,12 @@ export default function TitleBar() {
           <span className="titlebar-api-pill" title={apiIndicatorTitle}>
             <span className="titlebar-api-pill-dot" aria-hidden="true" />
             <span>{apiIndicatorLabel}</span>
+          </span>
+        )}
+        {pwaIndicatorLabel && (
+          <span className="titlebar-api-pill" title={pwaIndicatorTitle}>
+            <span className="titlebar-api-pill-dot" aria-hidden="true" />
+            <span>{pwaIndicatorLabel}</span>
           </span>
         )}
 

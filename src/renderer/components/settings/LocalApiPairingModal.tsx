@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
-  LocalApiPairedDevice,
-  LocalApiPairingTicket,
-  LocalApiPendingPairingRequest
-} from '../../../types/localApi'
+  PhoneRemotePairedDevice,
+  PhoneRemotePairingTicket,
+  PhoneRemotePendingPairingRequest
+} from '../../../types/phoneRemote'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 
 interface LocalApiPairingModalProps {
-  ticket: LocalApiPairingTicket | null
-  pairedDevices: LocalApiPairedDevice[]
-  pendingRequests: LocalApiPendingPairingRequest[]
+  ticket: PhoneRemotePairingTicket | null
+  pairedDevices: PhoneRemotePairedDevice[]
+  pendingRequests: PhoneRemotePendingPairingRequest[]
   apiEnabled: boolean
   remoteWebEnabled: boolean
   controlsEnabled: boolean
