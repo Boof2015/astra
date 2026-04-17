@@ -290,10 +290,22 @@ button, .titlebar {
 }
 
 .titlebar-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-tertiary);
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: none;
+}
+
+.titlebar-version-separator {
+  opacity: 0.6;
+}
+
+.titlebar-build-hash {
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
 }
 
 .titlebar-spacer {
@@ -2743,6 +2755,10 @@ button, .titlebar {
   max-height: 560px;
 }
 
+.transport-lyrics-shelf-stub.transport-lyrics-shelf-open {
+  max-height: 176px;
+}
+
 .transport-lyrics-shelf-content {
   display: flex;
   flex-direction: column;
@@ -3004,6 +3020,29 @@ button, .titlebar {
 .transport-lyrics-shelf-state-error {
   color: #fecaca;
   gap: 8px;
+}
+
+.transport-lyrics-popout-stub-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 0;
+}
+
+.transport-lyrics-popout-stub-message,
+.transport-lyrics-popout-stub-track {
+  margin: 0;
+  text-align: center;
+}
+
+.transport-lyrics-popout-stub-message {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.transport-lyrics-popout-stub-track {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* ============================================
@@ -8377,6 +8416,7 @@ body::after {
 }
 
 .titlebar-version {
+  gap: 4px;
   font-size: 9px;
   color: rgba(255, 255, 255, 0.38);
   letter-spacing: 0.08em;

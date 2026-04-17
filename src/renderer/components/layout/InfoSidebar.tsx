@@ -7,50 +7,15 @@ import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
-import type { Track } from '../../types/audio'
-import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
+import {
+  buildLyricsQuery,
+  findActiveSyncedLineIndex,
+  getActiveLyricsResult,
+  INFO_SIDEBAR_LYRICS_BODY_COPY,
+  resolveLyricsBodyState
+} from '../../utils/lyricsPresentation'
 
 type InfoSidebarTab = 'info' | 'lyrics'
-
-function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
-  if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
-  return 'LRCLIB'
-}
-
-function buildLyricsQuery(track: Track | null): LyricsTrackQuery | null {
-  if (!track) return null
-  return {
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    album: track.album || undefined,
-    durationSeconds: Number.isFinite(track.duration) ? track.duration : undefined
-  }
-}
-
-function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
-    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
-    : 0
-
-  let low = 0
-  let high = lines.length - 1
-  let best = -1
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    if (lines[mid].timestampMs <= currentTimeMs) {
-      best = mid
-      low = mid + 1
-      continue
-    }
-    high = mid - 1
-  }
-
-  return best
-}
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -69,16 +34,18 @@ export default function InfoSidebar() {
   const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
-  const activeLyricsResult = useMemo(() => {
-    if (!currentTrack) return null
-    if (lyricsTrackPath !== currentTrack.path) return null
-    return lyricsResult
-  }, [currentTrack, lyricsResult, lyricsTrackPath])
+  const activeLyricsResult = useMemo(() => (
+    getActiveLyricsResult(currentTrack?.path ?? null, lyricsTrackPath, lyricsResult)
+  ), [currentTrack?.path, lyricsResult, lyricsTrackPath])
 
-  const syncedLines = useMemo(() => {
-    if (activeLyricsResult?.status !== 'hit') return []
-    return activeLyricsResult.lyrics.syncedLines
-  }, [activeLyricsResult])
+  const bodyState = useMemo(() => resolveLyricsBodyState({
+    currentTrack,
+    activeLyricsResult,
+    isLoading: lyricsIsLoading,
+    errorMessage: lyricsStoreError,
+    copy: INFO_SIDEBAR_LYRICS_BODY_COPY
+  }), [activeLyricsResult, currentTrack, lyricsIsLoading, lyricsStoreError])
+  const syncedLines = bodyState.kind === 'hit_synced' ? bodyState.syncedLines : []
   const activeSyncedLineIndex = useMemo(
     () => findActiveSyncedLineIndex(syncedLines, currentTime),
     [currentTime, syncedLines]
@@ -120,98 +87,61 @@ export default function InfoSidebar() {
   }
 
   const renderLyricsContent = () => {
-    if (!currentTrack) {
-      return (
-        <div className="info-lyrics-state">
-          No track selected.
-        </div>
-      )
-    }
-
-    if (lyricsIsLoading && !activeLyricsResult) {
-      return (
-        <div className="info-lyrics-state">
-          Loading lyrics...
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'transient_error') {
-      return (
-        <div className="info-lyrics-state info-lyrics-state-error">
-          {activeLyricsResult.message}
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'not_found') {
-      if (activeLyricsResult.reason === 'online-disabled') {
-        return (
-          <div className="info-lyrics-state">
-            No embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.
-          </div>
-        )
-      }
-      if (activeLyricsResult.reason === 'provider-not-found') {
-        return (
-          <div className="info-lyrics-state">
-            No lyrics found on LRCLIB for this track.
-          </div>
-        )
-      }
-      return (
-        <div className="info-lyrics-state">
-          No embedded lyrics found for this track.
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'hit') {
-      const plainLyrics = activeLyricsResult.lyrics.plainLyrics?.trim() ?? ''
-      const hasSyncedLyrics = syncedLines.length > 0
-
+    if (bodyState.kind === 'hit_synced') {
       return (
         <>
           <p className="info-lyrics-meta">
-            Source: {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
-            {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
-            {activeLyricsResult.cached ? ' (cached)' : ''}
+            Source: {bodyState.sourceLabel}
+            {' • Synced'}
+            {bodyState.cached ? ' (cached)' : ''}
           </p>
 
-          {hasSyncedLyrics ? (
-            <div className="info-lyrics-lines">
-              {syncedLines.map((line, index) => (
-                <p
-                  key={`${line.timestampMs}:${index}`}
-                  ref={setSyncedLineRef(index)}
-                  className={`info-lyrics-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
-                >
-                  {line.text}
-                </p>
-              ))}
-            </div>
-          ) : plainLyrics ? (
-            <pre className="info-lyrics-plain">{plainLyrics}</pre>
-          ) : (
-            <div className="info-lyrics-state">
-              Lyrics were found, but no readable text is available.
-            </div>
-          )}
+          <div className="info-lyrics-lines">
+            {bodyState.syncedLines.map((line, index) => (
+              <p
+                key={`${line.timestampMs}:${index}`}
+                ref={setSyncedLineRef(index)}
+                className={`info-lyrics-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
+              >
+                {line.text}
+              </p>
+            ))}
+          </div>
         </>
       )
     }
 
-    if (lyricsStoreError) {
+    if (bodyState.kind === 'hit_plain') {
       return (
-        <div className="info-lyrics-state info-lyrics-state-error">
-          {lyricsStoreError}
-        </div>
+        <>
+          <p className="info-lyrics-meta">
+            Source: {bodyState.sourceLabel}
+            {' • Unsynced'}
+            {bodyState.cached ? ' (cached)' : ''}
+          </p>
+          <pre className="info-lyrics-plain">{bodyState.plainLyrics}</pre>
+        </>
+      )
+    }
+
+    if (bodyState.kind === 'hit_empty') {
+      return (
+        <>
+          <p className="info-lyrics-meta">
+            Source: {bodyState.sourceLabel}
+            {' • Unsynced'}
+            {bodyState.cached ? ' (cached)' : ''}
+          </p>
+          <div className="info-lyrics-state">
+            {bodyState.message}
+          </div>
+        </>
       )
     }
 
     return (
-      <div className="info-lyrics-state">
-        Open the Lyrics tab to load lyrics for the current track.
+      <div className={`info-lyrics-state ${bodyState.kind === 'transient_error' ? 'info-lyrics-state-error' : ''}`.trim()}>
+        {bodyState.message}
       </div>
     )
   }

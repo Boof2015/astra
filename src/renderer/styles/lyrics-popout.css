@@ -1,0 +1,134 @@
+.lyrics-popout-root {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  padding: 10px 12px 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+    #040406;
+  color: #eef2f8;
+  overflow: hidden;
+}
+
+.lyrics-popout-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: 5px;
+}
+
+.lyrics-popout-panel.is-expanded {
+  display: flex;
+  flex-direction: column;
+}
+
+.lyrics-popout-panel.is-expanded .transport-lyrics-expanded-list,
+.lyrics-popout-panel.is-expanded .transport-lyrics-expanded-plain,
+.lyrics-popout-panel.is-expanded .transport-lyrics-shelf-state {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.lyrics-popout-panel.is-compact .transport-lyrics-focus-window,
+.lyrics-popout-panel.is-compact .transport-lyrics-shelf-state {
+  min-height: 124px;
+}
+
+.lyrics-popout-top {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lyrics-popout-top-drag-region {
+  position: absolute;
+  inset: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lyrics-popout-top-header,
+.lyrics-popout-subhead {
+  position: relative;
+  z-index: 1;
+}
+
+.lyrics-popout-top-text,
+.lyrics-popout-subhead,
+.lyrics-popout-track-title,
+.lyrics-popout-track-detail {
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.lyrics-popout-top-actions {
+  position: relative;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.lyrics-popout-subhead {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: -4px;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.lyrics-popout-track-title,
+.lyrics-popout-track-detail {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lyrics-popout-track-title {
+  flex-shrink: 0;
+  max-width: min(42vw, 320px);
+  font-size: 11px;
+  line-height: 1.1;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.lyrics-popout-track-title.is-empty {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.lyrics-popout-track-detail {
+  flex: 1;
+  font-size: 10px;
+  line-height: 1.1;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+@media (max-width: 760px) {
+  .lyrics-popout-root {
+    padding: 8px;
+  }
+
+  .lyrics-popout-subhead {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .lyrics-popout-track-title,
+  .lyrics-popout-track-detail {
+    max-width: 100%;
+  }
+}

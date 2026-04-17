@@ -18,6 +18,7 @@ import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
+import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 function formatTime(seconds: number): string {
@@ -125,8 +126,10 @@ export default function TransportBar() {
     showLyricsShelf,
     togglePipelineShelf,
     toggleLyricsShelf,
+    closeLyricsShelf,
     setFullscreen
   } = useUIStore()
+  const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
@@ -337,6 +340,15 @@ export default function TransportBar() {
     showPipelineShelf ? 'transport-has-pipeline-open' : '',
     showLyricsShelf ? 'transport-has-lyrics-open' : ''
   ].join(' ').trim()
+
+  const handleLyricsToggle = () => {
+    if (showLyricsShelf && lyricsPopoutIsOpen) {
+      void window.electronAPI.lyricsPopout.close()
+      closeLyricsShelf()
+      return
+    }
+    toggleLyricsShelf()
+  }
 
   return (
     <div className={transportBarClassName}>
@@ -598,8 +610,8 @@ export default function TransportBar() {
           </button>
           <button
             className={`transport-lyrics-btn ${showLyricsShelf ? 'active' : ''}`}
-            onClick={toggleLyricsShelf}
-            title="Toggle lyrics shelf"
+            onClick={handleLyricsToggle}
+            title={showLyricsShelf && lyricsPopoutIsOpen ? 'Close popped out lyrics' : 'Toggle lyrics shelf'}
             aria-label="Toggle lyrics shelf"
             aria-pressed={showLyricsShelf}
             disabled={!currentTrack}

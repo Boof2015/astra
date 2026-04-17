@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { AudioBufferMemoryStats } from '../../../types/nativeAudio'
+import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import { audioEngine } from '../../audio/AudioEngine'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
@@ -33,7 +34,7 @@ function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boole
 
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
-  const [appVersion, setAppVersion] = useState('')
+  const [appBuildInfo, setAppBuildInfo] = useState<AppBuildInfo | null>(null)
   const [appStats, setAppStats] = useState<AppPerformanceStats | null>(null)
   const [rendererMemoryStats, setRendererMemoryStats] = useState<RendererMemoryStats | null>(null)
   const [bufferStats, setBufferStats] = useState<AudioBufferMemoryStats | null>(null)
@@ -68,12 +69,29 @@ export default function TitleBar() {
       }
     }
 
-    const loadAppVersion = async () => {
+    const loadAppBuildInfo = async () => {
+      if (window.electronAPI?.getAppBuildInfo) {
+        try {
+          const buildInfo = await window.electronAPI.getAppBuildInfo()
+          if (isMounted) {
+            setAppBuildInfo(buildInfo)
+          }
+        } catch {
+          // Ignore build info load errors; title remains functional.
+        }
+        return
+      }
+
       if (window.electronAPI?.getAppVersion) {
         try {
           const version = await window.electronAPI.getAppVersion()
           if (isMounted) {
-            setAppVersion(version)
+            setAppBuildInfo({
+              version,
+              commitHash: null,
+              shortCommitHash: null,
+              isDirty: false
+            })
           }
         } catch {
           // Ignore version load errors; title remains functional.
@@ -82,7 +100,7 @@ export default function TitleBar() {
     }
 
     checkMaximized()
-    void loadAppVersion()
+    void loadAppBuildInfo()
 
     // Check on window resize
     const handleResize = () => {
@@ -187,6 +205,13 @@ export default function TitleBar() {
   const formattedOtherProcessMemory = formatMemoryMb(otherProcessMemoryMb)
   const formattedTotalMemory = formatMemoryMb(appStats?.workingSetMb ?? null)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
+  const appVersionLabel = appBuildInfo?.version ? `v${appBuildInfo.version}` : ''
+  const appCommitLabel = appBuildInfo?.shortCommitHash
+    ? `${appBuildInfo.shortCommitHash}${appBuildInfo.isDirty ? '*' : ''}`
+    : ''
+  const appBuildTooltip = appBuildInfo?.commitHash
+    ? `Astra ${appVersionLabel}\nCommit: ${appBuildInfo.commitHash}${appBuildInfo.isDirty ? '\nWorking tree was dirty when this build started.' : ''}`
+    : undefined
   const apiIndicatorLabel = localApiStatus?.active
     ? localApiStatus.controlsEnabled ? 'API+CTL' : 'API'
     : null
@@ -238,7 +263,17 @@ export default function TitleBar() {
           <span className="titlebar-logo-heart" aria-hidden="true" />
         </button>
         <span>Astra</span>
-        {appVersion && <span className="titlebar-version">v{appVersion}</span>}
+        {appVersionLabel && (
+          <span className="titlebar-version" title={appBuildTooltip}>
+            <span>{appVersionLabel}</span>
+            {appCommitLabel && (
+              <>
+                <span className="titlebar-version-separator" aria-hidden="true">&middot;</span>
+                <span className="titlebar-build-hash">{appCommitLabel}</span>
+              </>
+            )}
+          </span>
+        )}
       </div>
 
       {/* Spacer */}

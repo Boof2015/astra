@@ -62,6 +62,7 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
+import type { AppBuildInfo } from '../../../types/appBuildInfo'
 
 type ResetActionId =
   | 'reset-theme'
@@ -188,12 +189,30 @@ function persistDeveloperSectionVisibilityPreference(visible: boolean): void {
   }
 }
 
+function formatBuildLabel(buildInfo: AppBuildInfo): string {
+  if (!buildInfo.commitHash) return 'Unavailable'
+  return `${buildInfo.commitHash}${buildInfo.isDirty ? ' (dirty)' : ''}`
+}
+
+function formatBuildCopyValue(buildInfo: AppBuildInfo): string {
+  if (!buildInfo.commitHash) return ''
+  return `Astra v${buildInfo.version} (${buildInfo.commitHash}${buildInfo.isDirty ? ', dirty' : ''})`
+}
+
+function formatBuildTooltip(buildInfo: AppBuildInfo): string | undefined {
+  if (!buildInfo.commitHash) return undefined
+  return `Commit: ${buildInfo.commitHash}${buildInfo.isDirty ? '\nWorking tree was dirty when this build started.' : ''}`
+}
+
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
   const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
+  const [appBuildLabel, setAppBuildLabel] = useState('Loading...')
+  const [appBuildTooltip, setAppBuildTooltip] = useState('')
+  const [appBuildCopyValue, setAppBuildCopyValue] = useState('')
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
@@ -315,6 +334,8 @@ export default function SettingsView() {
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
   const [localApiFeedback, setLocalApiFeedback] = useState('')
   const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
+  const [infoFeedback, setInfoFeedback] = useState('')
+  const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
   const [sleepTimerCustomMinutesInput, setSleepTimerCustomMinutesInput] = useState(
     String(SLEEP_TIMER_PRESET_MINUTES[1] ?? SLEEP_TIMER_PRESET_MINUTES[0] ?? 30)
   )
@@ -752,9 +773,31 @@ export default function SettingsView() {
   useEffect(() => {
     let isMounted = true
 
-    const loadAppVersion = async () => {
+    const loadAppBuildInfo = async () => {
+      if (window.electronAPI?.getAppBuildInfo) {
+        try {
+          const buildInfo = await window.electronAPI.getAppBuildInfo()
+          if (!isMounted) return
+          setAppVersionLabel(buildInfo.version ? `v${buildInfo.version}` : 'Unavailable')
+          setAppBuildLabel(formatBuildLabel(buildInfo))
+          setAppBuildTooltip(formatBuildTooltip(buildInfo) ?? '')
+          setAppBuildCopyValue(formatBuildCopyValue(buildInfo))
+        } catch {
+          if (!isMounted) return
+          setAppVersionLabel('Unavailable')
+          setAppBuildLabel('Unavailable')
+          setAppBuildTooltip('')
+          setAppBuildCopyValue('')
+        }
+        return
+      }
+
       if (!window.electronAPI?.getAppVersion) {
-        if (isMounted) setAppVersionLabel('Unavailable')
+        if (!isMounted) return
+        setAppVersionLabel('Unavailable')
+        setAppBuildLabel('Unavailable')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
         return
       }
 
@@ -762,12 +805,19 @@ export default function SettingsView() {
         const version = await window.electronAPI.getAppVersion()
         if (!isMounted) return
         setAppVersionLabel(version ? `v${version}` : 'Unavailable')
+        setAppBuildLabel('Unavailable')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
       } catch {
-        if (isMounted) setAppVersionLabel('Unavailable')
+        if (!isMounted) return
+        setAppVersionLabel('Unavailable')
+        setAppBuildLabel('Unavailable')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
       }
     }
 
-    void loadAppVersion()
+    void loadAppBuildInfo()
     return () => {
       isMounted = false
     }
@@ -850,6 +900,17 @@ export default function SettingsView() {
       setPhoneRemoteFeedback(`${label} copied.`)
     } catch {
       setPhoneRemoteFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
+  const copyInfoToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setInfoFeedbackTone('success')
+      setInfoFeedback(`${label} copied.`)
+    } catch {
+      setInfoFeedbackTone('error')
+      setInfoFeedback(`Failed to copy ${label.toLowerCase()}.`)
     }
   }
 
@@ -1934,6 +1995,24 @@ export default function SettingsView() {
                       {appVersionLabel}
                     </button>
                   </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Build</span>
+                    <div className="settings-inline-row">
+                      <span
+                        className="settings-chip settings-chip-mono settings-chip-grow"
+                        title={appBuildTooltip || undefined}
+                      >
+                        {appBuildLabel}
+                      </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void copyInfoToClipboard(appBuildCopyValue, 'Build info')}
+                        disabled={!appBuildCopyValue}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
                   <div className="settings-fields-row">
                     <div className="settings-field settings-field-inline">
                       <span className="settings-field-label">Auto-check on Startup</span>
@@ -1965,6 +2044,11 @@ export default function SettingsView() {
                     </div>
                   </div>
                 </div>
+                {infoFeedback && (
+                  <p className={`settings-note ${infoFeedbackTone === 'success' ? 'settings-note-success' : 'settings-note-error'}`}>
+                    {infoFeedback}
+                  </p>
+                )}
                 <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
                   {updateStatusMessage}
                 </p>

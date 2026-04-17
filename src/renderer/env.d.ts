@@ -9,6 +9,11 @@ import type {
     MiniPlayerWindowState
 } from '../types/miniPlayer'
 import type {
+    LyricsPopoutCommand,
+    LyricsPopoutSnapshot,
+    LyricsPopoutWindowState
+} from '../types/lyricsPopout'
+import type {
     ScopeKind,
     ScopePopoutChunk,
     ScopePopoutState
@@ -69,6 +74,7 @@ import type {
     MemoryDiagnosticsSnapshotRequest,
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
+import type { AppBuildInfo } from '../types/appBuildInfo'
 
 declare global {
     interface Window {
@@ -117,6 +123,17 @@ declare global {
                 onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
                 onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
             }
+            lyricsPopout: {
+                open: () => Promise<void>
+                close: () => Promise<void>
+                getWindowState: () => Promise<LyricsPopoutWindowState>
+                getSnapshot: () => Promise<LyricsPopoutSnapshot | null>
+                publishSnapshot: (snapshot: LyricsPopoutSnapshot) => void
+                sendCommand: (command: LyricsPopoutCommand) => void
+                onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
+                onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
+                onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+            }
             scopePopout: {
                 open: (scope: ScopeKind) => Promise<ScopePopoutState>
                 recall: (scope: ScopeKind) => Promise<ScopePopoutState>
@@ -127,6 +144,7 @@ declare global {
             }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
+            getAppBuildInfo: () => Promise<AppBuildInfo>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
             getRendererMemoryStats: () => Promise<{
                 privateMb: number

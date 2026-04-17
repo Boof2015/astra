@@ -4,8 +4,8 @@
   "description": "Audiophile music player with advanced visualization",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node ./scripts/build/writeAppBuildMetadata.cjs && electron-vite dev",
+    "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
     "preview": "electron-vite preview",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "test:album-grouping": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumGrouping.test.ts",

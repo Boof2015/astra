@@ -9,6 +9,11 @@ import type {
   MiniPlayerWindowState
 } from '../types/miniPlayer'
 import type {
+  LyricsPopoutCommand,
+  LyricsPopoutSnapshot,
+  LyricsPopoutWindowState
+} from '../types/lyricsPopout'
+import type {
   ScopeKind,
   ScopePopoutChunk,
   ScopePopoutState
@@ -76,6 +81,7 @@ import type {
   MemoryDiagnosticsSnapshotRequest,
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
+import type { AppBuildInfo } from '../types/appBuildInfo'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
 export interface AudioFileMetadata {
@@ -509,6 +515,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  lyricsPopout: {
+    open: () => ipcRenderer.invoke('lyrics-popout:open'),
+    close: () => ipcRenderer.invoke('lyrics-popout:close'),
+    getWindowState: () => ipcRenderer.invoke('lyrics-popout:getWindowState'),
+    getSnapshot: () => ipcRenderer.invoke('lyrics-popout:getSnapshot'),
+    publishSnapshot: (snapshot: LyricsPopoutSnapshot) => ipcRenderer.send('lyrics-popout:publishSnapshot', snapshot),
+    sendCommand: (command: LyricsPopoutCommand) => ipcRenderer.send('lyrics-popout:sendCommand', command),
+    onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: LyricsPopoutSnapshot) => callback(snapshot)
+      ipcRenderer.on('lyrics-popout:snapshot', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:snapshot', handler)
+    },
+    onCommand: (callback: (command: LyricsPopoutCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: LyricsPopoutCommand) => callback(command)
+      ipcRenderer.on('lyrics-popout:command', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:command', handler)
+    },
+    onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: LyricsPopoutWindowState) => callback(state)
+      ipcRenderer.on('lyrics-popout:windowState', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:windowState', handler)
+    }
+  },
+
   scopePopout: {
     open: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:open', scope),
     recall: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:recall', scope),
@@ -529,6 +559,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Platform info
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getAppBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:getBuildInfo'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
@@ -935,6 +966,17 @@ declare global {
         onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
         onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
       }
+      lyricsPopout: {
+        open: () => Promise<void>
+        close: () => Promise<void>
+        getWindowState: () => Promise<LyricsPopoutWindowState>
+        getSnapshot: () => Promise<LyricsPopoutSnapshot | null>
+        publishSnapshot: (snapshot: LyricsPopoutSnapshot) => void
+        sendCommand: (command: LyricsPopoutCommand) => void
+        onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
+        onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
+        onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+      }
       scopePopout: {
         open: (scope: ScopeKind) => Promise<ScopePopoutState>
         recall: (scope: ScopeKind) => Promise<ScopePopoutState>
@@ -947,6 +989,7 @@ declare global {
       // Platform
       platform: NodeJS.Platform
       getAppVersion: () => Promise<string>
+      getAppBuildInfo: () => Promise<AppBuildInfo>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
       diagnostics: {

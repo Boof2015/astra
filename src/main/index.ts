@@ -3,7 +3,7 @@ import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { execFile, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
+import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
@@ -58,6 +58,10 @@ import {
   saveMiniWindowPrefs,
 } from './services/miniWindowPrefs'
 import {
+  loadLyricsPopoutWindowPrefs,
+  saveLyricsPopoutWindowPrefs,
+} from './services/lyricsPopoutWindowPrefs'
+import {
   MAIN_WINDOW_DEFAULT_HEIGHT,
   MAIN_WINDOW_DEFAULT_WIDTH,
   MAIN_WINDOW_MIN_HEIGHT,
@@ -74,6 +78,14 @@ import {
   type MiniPlayerWindowPrefs,
   type MiniPlayerWindowState,
 } from '../types/miniPlayer'
+import {
+  LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
+  LYRICS_POPOUT_WINDOW_MIN_WIDTH,
+  type LyricsPopoutCommand,
+  type LyricsPopoutSnapshot,
+  type LyricsPopoutWindowPrefs,
+  type LyricsPopoutWindowState,
+} from '../types/lyricsPopout'
 import {
   DEFAULT_SCOPE_POPOUT_STATE,
   SCOPE_KINDS,
@@ -121,12 +133,23 @@ import type {
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsSnapshotRequest
 } from '../types/diagnostics'
+import type { AppBuildInfo } from '../types/appBuildInfo'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
 
+interface ResolvedBuildMetadata {
+  commitHash: string | null
+  isDirty: boolean
+}
+
+const DIRTY_ENV_TRUE_VALUES = new Set(['1', 'true', 'yes', 'dirty'])
+const DIRTY_ENV_FALSE_VALUES = new Set(['0', 'false', 'no', 'clean'])
+let cachedBuildMetadata: ResolvedBuildMetadata | null = null
+
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
+let lyricsPopoutWindow: BrowserWindow | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   spectrum: null,
   oscilloscope: null,
@@ -139,11 +162,14 @@ const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
 let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
+let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
+let latestLyricsPopoutSnapshot: LyricsPopoutSnapshot | null = null
 const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
 let mainWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
+let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
@@ -154,6 +180,136 @@ let subsonicSyncInFlight = false
 let jellyfinSyncInFlight = false
 let associatedOpenRendererReady = false
 const associatedOpenPendingPaths: string[] = []
+
+function normalizeBuildCommitHash(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function parseDirtyEnvValue(value: unknown): boolean | null {
+  if (typeof value !== 'string') return null
+
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return null
+  if (DIRTY_ENV_TRUE_VALUES.has(normalized)) return true
+  if (DIRTY_ENV_FALSE_VALUES.has(normalized)) return false
+  return null
+}
+
+function tryReadBuildMetadataFile(filePath: string): ResolvedBuildMetadata | null {
+  try {
+    const payload = JSON.parse(readFileSync(filePath, 'utf8')) as { commitHash?: unknown; isDirty?: unknown }
+    const commitHash = normalizeBuildCommitHash(payload.commitHash)
+    const isDirty = payload.isDirty === true
+
+    if (!commitHash) {
+      return {
+        commitHash: null,
+        isDirty: false
+      }
+    }
+
+    return {
+      commitHash,
+      isDirty
+    }
+  } catch {
+    return null
+  }
+}
+
+function tryResolveGitBuildMetadataFromDirectory(directory: string): ResolvedBuildMetadata | null {
+  if (!existsSync(join(directory, '.git'))) {
+    return null
+  }
+
+  try {
+    const commitHash = normalizeBuildCommitHash(execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: directory,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }))
+
+    if (!commitHash) {
+      return null
+    }
+
+    const isDirty = execFileSync('git', ['status', '--porcelain'], {
+      cwd: directory,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim().length > 0
+
+    return {
+      commitHash,
+      isDirty
+    }
+  } catch {
+    return null
+  }
+}
+
+function resolveBuildMetadata(): ResolvedBuildMetadata {
+  if (cachedBuildMetadata) {
+    return cachedBuildMetadata
+  }
+
+  const envCommitHash = normalizeBuildCommitHash(
+    process.env.ASTRA_GIT_COMMIT ?? process.env.ASTRA_BUILD_COMMIT_HASH
+  )
+  const envDirty = parseDirtyEnvValue(
+    process.env.ASTRA_GIT_DIRTY ?? process.env.ASTRA_BUILD_DIRTY
+  )
+
+  if (envCommitHash) {
+    cachedBuildMetadata = {
+      commitHash: envCommitHash,
+      isDirty: envDirty ?? false
+    }
+    return cachedBuildMetadata
+  }
+
+  const metadataFileCandidates = Array.from(new Set([
+    join(__dirname, '..', 'build-metadata.json'),
+    join(process.cwd(), 'out', 'build-metadata.json'),
+    join(app.getAppPath(), 'out', 'build-metadata.json')
+  ]))
+
+  for (const candidate of metadataFileCandidates) {
+    const metadata = tryReadBuildMetadataFile(candidate)
+    if (metadata) {
+      cachedBuildMetadata = {
+        commitHash: metadata.commitHash,
+        isDirty: envDirty ?? metadata.isDirty
+      }
+      return cachedBuildMetadata
+    }
+  }
+
+  const gitDirectoryCandidates = Array.from(new Set([
+    process.cwd(),
+    app.getAppPath(),
+    join(__dirname, '../..')
+  ]))
+
+  for (const candidate of gitDirectoryCandidates) {
+    const metadata = tryResolveGitBuildMetadataFromDirectory(candidate)
+    if (metadata) {
+      cachedBuildMetadata = {
+        commitHash: metadata.commitHash,
+        isDirty: envDirty ?? metadata.isDirty
+      }
+      return cachedBuildMetadata
+    }
+  }
+
+  cachedBuildMetadata = {
+    commitHash: null,
+    isDirty: false
+  }
+  return cachedBuildMetadata
+}
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
@@ -261,6 +417,7 @@ function getMemoryDiagnosticsProcessLabels(): Record<number, string> {
 
   registerWindowProcess('main_window', mainWindow)
   registerWindowProcess('mini_window', miniWindow)
+  registerWindowProcess('lyrics_popout_window', lyricsPopoutWindow)
   for (const scope of SCOPE_KINDS) {
     registerWindowProcess(`scope_${scope}`, scopePopoutWindows[scope])
   }
@@ -272,6 +429,7 @@ function getMemoryDiagnosticsWindowRoleSummary(): Record<string, unknown> {
   return {
     mainWindowOpen: Boolean(mainWindow && !mainWindow.isDestroyed()),
     miniWindowOpen: Boolean(miniWindow && !miniWindow.isDestroyed()),
+    lyricsPopoutWindowOpen: Boolean(lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()),
     scopeOpenCount: SCOPE_KINDS.reduce((count, scope) => {
       const scopeWindow = getScopePopoutWindow(scope)
       return count + (scopeWindow && !scopeWindow.isDestroyed() ? 1 : 0)
@@ -734,6 +892,24 @@ function getMiniWindowState(): MiniPlayerWindowState {
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
   return { isOpen, alwaysOnTop, visualizerMode }
+}
+
+function getLyricsPopoutWindowState(): LyricsPopoutWindowState {
+  return {
+    isOpen: Boolean(lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed())
+  }
+}
+
+function getAppBuildInfo(): AppBuildInfo {
+  const buildMetadata = resolveBuildMetadata()
+  const commitHash = buildMetadata.commitHash
+
+  return {
+    version: app.getVersion(),
+    commitHash,
+    shortCommitHash: commitHash ? commitHash.slice(0, 7) : null,
+    isDirty: commitHash ? buildMetadata.isDirty : false
+  }
 }
 
 function normalizeScopeKind(value: unknown): ScopeKind | null {
@@ -1268,6 +1444,10 @@ function applyRuntimeIconImage(image: Electron.NativeImage): void {
     miniWindow.setIcon(image)
   }
 
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.setIcon(image)
+  }
+
   for (const scope of SCOPE_KINDS) {
     const scopeWindow = getScopePopoutWindow(scope)
     if (scopeWindow) {
@@ -1294,6 +1474,16 @@ function broadcastMiniWindowState(): void {
   }
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:windowState', payload)
+  }
+}
+
+function broadcastLyricsPopoutWindowState(): void {
+  const payload = getLyricsPopoutWindowState()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('lyrics-popout:windowState', payload)
+  }
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.webContents.send('lyrics-popout:windowState', payload)
   }
 }
 
@@ -2323,6 +2513,39 @@ function schedulePersistMiniWindowPrefs(): void {
   }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
 }
 
+function captureLyricsPopoutWindowPrefs(): LyricsPopoutWindowPrefs | null {
+  if (!lyricsPopoutWindow || lyricsPopoutWindow.isDestroyed()) return null
+  const bounds = lyricsPopoutWindow.getBounds()
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height
+  }
+}
+
+async function persistLyricsPopoutWindowPrefs(): Promise<void> {
+  const captured = captureLyricsPopoutWindowPrefs()
+  if (!captured) return
+
+  lyricsPopoutWindowPrefs = captured
+  try {
+    await saveLyricsPopoutWindowPrefs(captured)
+  } catch (error) {
+    console.warn('Failed to persist lyrics popout window prefs:', error)
+  }
+}
+
+function schedulePersistLyricsPopoutWindowPrefs(): void {
+  if (lyricsPopoutWindowPersistTimer !== null) {
+    clearTimeout(lyricsPopoutWindowPersistTimer)
+  }
+  lyricsPopoutWindowPersistTimer = setTimeout(() => {
+    lyricsPopoutWindowPersistTimer = null
+    void persistLyricsPopoutWindowPrefs()
+  }, MINI_WINDOW_PERSIST_DEBOUNCE_MS)
+}
+
 async function createMiniPlayerWindow(): Promise<void> {
   if (miniWindow && !miniWindow.isDestroyed()) {
     if (miniWindow.isMinimized()) {
@@ -2410,6 +2633,85 @@ async function createMiniPlayerWindow(): Promise<void> {
   broadcastMiniWindowState()
 }
 
+async function createLyricsPopoutWindow(): Promise<void> {
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    if (lyricsPopoutWindow.isMinimized()) {
+      lyricsPopoutWindow.restore()
+    }
+    lyricsPopoutWindow.focus()
+    broadcastLyricsPopoutWindowState()
+    return
+  }
+
+  const prefs = lyricsPopoutWindowPrefs ?? await loadLyricsPopoutWindowPrefs()
+  lyricsPopoutWindowPrefs = prefs
+
+  lyricsPopoutWindow = new BrowserWindow({
+    width: prefs.width,
+    height: prefs.height,
+    x: prefs.x,
+    y: prefs.y,
+    minWidth: LYRICS_POPOUT_WINDOW_MIN_WIDTH,
+    minHeight: LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
+    frame: false,
+    transparent: false,
+    backgroundColor: '#06060b',
+    autoHideMenuBar: true,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    title: 'Astra Lyrics',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  logMemoryDiagnosticsMainEvent('window_opened', {
+    windowType: 'lyrics_popout'
+  })
+
+  lyricsPopoutWindow.on('ready-to-show', () => {
+    lyricsPopoutWindow?.show()
+  })
+
+  lyricsPopoutWindow.on('move', schedulePersistLyricsPopoutWindowPrefs)
+  lyricsPopoutWindow.on('resize', schedulePersistLyricsPopoutWindowPrefs)
+  lyricsPopoutWindow.on('close', () => {
+    if (lyricsPopoutWindowPersistTimer !== null) {
+      clearTimeout(lyricsPopoutWindowPersistTimer)
+      lyricsPopoutWindowPersistTimer = null
+    }
+    void persistLyricsPopoutWindowPrefs()
+  })
+  lyricsPopoutWindow.on('closed', () => {
+    lyricsPopoutWindow = null
+    broadcastLyricsPopoutWindowState()
+    logMemoryDiagnosticsMainEvent('window_closed', {
+      windowType: 'lyrics_popout'
+    })
+  })
+
+  lyricsPopoutWindow.webContents.on('did-finish-load', () => {
+    if (latestLyricsPopoutSnapshot) {
+      lyricsPopoutWindow?.webContents.send('lyrics-popout:snapshot', latestLyricsPopoutSnapshot)
+    }
+    broadcastLyricsPopoutWindowState()
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    await lyricsPopoutWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=lyrics-popout`)
+  } else {
+    await lyricsPopoutWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+      query: { window: 'lyrics-popout' }
+    })
+  }
+
+  broadcastLyricsPopoutWindowState()
+}
+
 function createWindow(): void {
   associatedOpenRendererReady = false
 
@@ -2470,6 +2772,9 @@ function createWindow(): void {
     if (miniWindow && !miniWindow.isDestroyed()) {
       miniWindow.close()
     }
+    if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+      lyricsPopoutWindow.close()
+    }
     closeAllScopePopoutWindows()
     logMemoryDiagnosticsMainEvent('window_closed', {
       windowType: 'main'
@@ -2489,6 +2794,7 @@ function createWindow(): void {
 
   flushAssociatedOpenFiles()
   broadcastMiniWindowState()
+  broadcastLyricsPopoutWindowState()
   broadcastScopePopoutState()
   broadcastLocalApiStatus()
   broadcastLyricsStatus()
@@ -2821,6 +3127,7 @@ app.whenReady().then(async () => {
   await memoryDiagnosticsService.initialize(memoryDiagnosticsEnabled)
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
+  lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
@@ -2889,6 +3196,10 @@ app.on('before-quit', () => {
     clearTimeout(miniWindowPersistTimer)
     miniWindowPersistTimer = null
   }
+  if (lyricsPopoutWindowPersistTimer !== null) {
+    clearTimeout(lyricsPopoutWindowPersistTimer)
+    lyricsPopoutWindowPersistTimer = null
+  }
   if (audioMetadataBackfillTimer !== null) {
     clearTimeout(audioMetadataBackfillTimer)
     audioMetadataBackfillTimer = null
@@ -2907,6 +3218,7 @@ app.on('before-quit', () => {
   }
   void persistMainWindowPrefs()
   void persistMiniWindowPrefs()
+  void persistLyricsPopoutWindowPrefs()
   closeAllScopePopoutWindows()
   void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
@@ -3017,6 +3329,39 @@ ipcMain.on('mini-player:sendCommand', (_event, command: MiniPlayerCommand) => {
   sendMiniPlayerCommand(command)
 })
 
+// Lyrics popout window controls/state
+ipcMain.handle('lyrics-popout:open', async () => {
+  await createLyricsPopoutWindow()
+})
+
+ipcMain.handle('lyrics-popout:close', async () => {
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.close()
+  }
+})
+
+ipcMain.handle('lyrics-popout:getWindowState', () => {
+  return getLyricsPopoutWindowState()
+})
+
+ipcMain.handle('lyrics-popout:getSnapshot', () => {
+  return latestLyricsPopoutSnapshot
+})
+
+ipcMain.on('lyrics-popout:publishSnapshot', (_event, snapshot: LyricsPopoutSnapshot) => {
+  latestLyricsPopoutSnapshot = snapshot
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.webContents.send('lyrics-popout:snapshot', snapshot)
+  }
+})
+
+ipcMain.on('lyrics-popout:sendCommand', (_event, command: LyricsPopoutCommand) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+  mainWindow.webContents.send('lyrics-popout:command', command)
+})
+
 // Scope popout window controls/state
 ipcMain.handle('scope-popout:open', async (_event, rawScope: unknown) => {
   const scope = normalizeScopeKind(rawScope)
@@ -3058,6 +3403,10 @@ ipcMain.on('scope-popout:publishChunk', (_event, rawChunk: unknown) => {
 // App info
 ipcMain.handle('app:getVersion', () => {
   return app.getVersion()
+})
+
+ipcMain.handle('app:getBuildInfo', () => {
+  return getAppBuildInfo()
 })
 
 ipcMain.handle('app:getPerformanceStats', () => {

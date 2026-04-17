@@ -1,60 +1,19 @@
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
+import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
-import type { Track } from '../../types/audio'
-import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
-
-const COLLAPSED_LINE_HEIGHT_PX = 34
-const COLLAPSED_ACTIVE_ANCHOR_INDEX = 1
-const PROGRAMMATIC_SCROLL_RESET_MS = 300
-const EXPANDED_OPEN_RECENTER_DELAY_MS = 360
-
-function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
-  if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
-  return 'LRCLIB'
-}
-
-function buildLyricsQuery(track: Track | null): LyricsTrackQuery | null {
-  if (!track) return null
-  return {
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    album: track.album || undefined,
-    durationSeconds: Number.isFinite(track.duration) ? track.duration : undefined
-  }
-}
-
-function getLyricsRequestKey(query: LyricsTrackQuery | null): string {
-  if (!query) return '__none__'
-  return `${query.path}\u0000${query.title}\u0000${query.artist}\u0000${query.album ?? ''}\u0000${query.durationSeconds ?? ''}`
-}
-
-function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
-    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
-    : 0
-
-  let low = 0
-  let high = lines.length - 1
-  let best = -1
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    if (lines[mid].timestampMs <= currentTimeMs) {
-      best = mid
-      low = mid + 1
-      continue
-    }
-    high = mid - 1
-  }
-
-  return best
-}
+import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
+import {
+  buildLyricsQuery,
+  DEFAULT_LYRICS_BODY_COPY,
+  findActiveSyncedLineIndex,
+  getActiveLyricsResult,
+  getLyricsMetaChipText,
+  getLyricsRequestKey,
+  resolveLyricsBodyState
+} from '../../utils/lyricsPresentation'
 
 export default function TransportLyricsShelf() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -62,21 +21,14 @@ export default function TransportLyricsShelf() {
   const showLyricsShelf = useUIStore((s) => s.showLyricsShelf)
   const lyricsShelfExpanded = useUIStore((s) => s.lyricsShelfExpanded)
   const setLyricsShelfExpanded = useUIStore((s) => s.setLyricsShelfExpanded)
+  const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
   const lyricsStoreError = useLyricsStore((s) => s.errorMessage)
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
-
-  const [followPaused, setFollowPaused] = useState(false)
-  const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
-  const expandedListRef = useRef<HTMLDivElement | null>(null)
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
-  const programmaticScrollRef = useRef(false)
-  const clearProgrammaticScrollTimerRef = useRef<number | null>(null)
-  const openRecenterTimerRef = useRef<number | null>(null)
-  const hasCompletedExpandedOpenRef = useRef(false)
 
   const lyricsQuery = useMemo(
     () => buildLyricsQuery(currentTrack),
@@ -89,113 +41,54 @@ export default function TransportLyricsShelf() {
     ]
   )
 
-  const activeLyricsResult = useMemo(() => {
-    if (!currentTrack) return null
-    if (lyricsTrackPath !== currentTrack.path) return null
-    return lyricsResult
-  }, [currentTrack, lyricsResult, lyricsTrackPath])
+  const activeLyricsResult = useMemo(() => (
+    getActiveLyricsResult(currentTrack?.path ?? null, lyricsTrackPath, lyricsResult)
+  ), [currentTrack?.path, lyricsResult, lyricsTrackPath])
 
-  const syncedLines = useMemo(() => {
-    if (activeLyricsResult?.status !== 'hit') return []
-    return activeLyricsResult.lyrics.syncedLines
-  }, [activeLyricsResult])
+  const bodyState = useMemo(() => resolveLyricsBodyState({
+    currentTrack,
+    activeLyricsResult,
+    isLoading: lyricsIsLoading,
+    errorMessage: lyricsStoreError,
+    copy: DEFAULT_LYRICS_BODY_COPY
+  }), [activeLyricsResult, currentTrack, lyricsIsLoading, lyricsStoreError])
+
+  const syncedLines = bodyState.kind === 'hit_synced' ? bodyState.syncedLines : []
   const hasSyncedLyrics = syncedLines.length > 0
   const activeSyncedLineIndex = useMemo(
     () => findActiveSyncedLineIndex(syncedLines, currentTime),
     [currentTime, syncedLines]
   )
-  const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
-
-  const collapsedTrackOffsetY = (
-    COLLAPSED_ACTIVE_ANCHOR_INDEX - effectiveSyncedLineIndex
-  ) * COLLAPSED_LINE_HEIGHT_PX
-  const collapsedTrackStyle = useMemo(() => ({
-    '--transport-lyrics-focus-line-height': `${COLLAPSED_LINE_HEIGHT_PX}px`,
-    transform: `translate3d(0, ${collapsedTrackOffsetY}px, 0)`
-  } as CSSProperties), [collapsedTrackOffsetY])
-
-  const plainLyrics = activeLyricsResult?.status === 'hit'
-    ? activeLyricsResult.lyrics.plainLyrics?.trim() ?? ''
-    : ''
-
-  const metaChipText = useMemo(() => {
-    if (!currentTrack) return 'No Track'
-    if (lyricsIsLoading && !activeLyricsResult) return 'Loading'
-    if (activeLyricsResult?.status === 'hit') {
-      const sourceLabel = getLyricsSourceLabel(activeLyricsResult.lyrics.source)
-      const syncLabel = hasSyncedLyrics ? 'Synced' : 'Unsynced'
-      const cachedLabel = activeLyricsResult.cached ? ' • Cached' : ''
-      return `${sourceLabel} • ${syncLabel}${cachedLabel}`
-    }
-    if (activeLyricsResult?.status === 'transient_error') return 'Error'
-    if (activeLyricsResult?.status === 'not_found') {
-      return activeLyricsResult.reason === 'online-disabled' ? 'Online Off' : 'Not Found'
-    }
-    if (lyricsStoreError) return 'Error'
-    return 'Ready'
-  }, [activeLyricsResult, currentTrack, hasSyncedLyrics, lyricsIsLoading, lyricsStoreError])
-
-  const markProgrammaticScroll = useCallback(() => {
-    programmaticScrollRef.current = true
-    if (clearProgrammaticScrollTimerRef.current !== null) {
-      window.clearTimeout(clearProgrammaticScrollTimerRef.current)
-    }
-    clearProgrammaticScrollTimerRef.current = window.setTimeout(() => {
-      programmaticScrollRef.current = false
-      clearProgrammaticScrollTimerRef.current = null
-    }, PROGRAMMATIC_SCROLL_RESET_MS)
-  }, [])
-
-  const scrollActiveExpandedLineIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    if (activeSyncedLineIndex < 0) return
-    const container = expandedListRef.current
-    const lineNode = syncedLineRefs.current.get(activeSyncedLineIndex)
-    if (!container || !lineNode) return
-
-    const containerRect = container.getBoundingClientRect()
-    const lineRect = lineNode.getBoundingClientRect()
-    const lineOffsetWithinContainer = lineRect.top - containerRect.top
-    const centeredTop = (
-      container.scrollTop +
-      lineOffsetWithinContainer -
-      ((container.clientHeight - lineNode.clientHeight) / 2)
-    )
-    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
-    const targetTop = Math.max(0, Math.min(centeredTop, maxTop))
-
-    markProgrammaticScroll()
-    if (behavior === 'auto') {
-      container.scrollTop = targetTop
-      return
-    }
-    container.scrollTo({
-      top: targetTop,
-      behavior
+  const metaChipText = useMemo(() => (
+    getLyricsMetaChipText({
+      currentTrack,
+      activeLyricsResult,
+      hasSyncedLyrics,
+      isLoading: lyricsIsLoading,
+      errorMessage: lyricsStoreError
     })
-  }, [activeSyncedLineIndex, markProgrammaticScroll])
+  ), [activeLyricsResult, currentTrack, hasSyncedLyrics, lyricsIsLoading, lyricsStoreError])
 
-  const pauseFollowFromManualScroll = useCallback(() => {
-    if (!lyricsShelfExpanded) return
-    if (!hasSyncedLyrics) return
-    if (programmaticScrollRef.current) return
-    setFollowPaused(true)
-  }, [hasSyncedLyrics, lyricsShelfExpanded])
+  const {
+    followPaused,
+    collapsedTrackStyle,
+    effectiveSyncedLineIndex,
+    expandedListRef,
+    setSyncedLineRef,
+    pauseFollowFromManualScroll,
+    handleRecenter
+  } = useLyricsSyncedView({
+    isOpen: showLyricsShelf && !lyricsPopoutIsOpen,
+    isExpanded: lyricsShelfExpanded,
+    hasSyncedLyrics,
+    activeSyncedLineIndex,
+    contentKey: currentTrack?.path ?? null
+  })
 
   const refreshLyrics = useCallback(() => {
     if (!lyricsQuery) return
     void refreshLyricsForTrack(lyricsQuery)
   }, [lyricsQuery, refreshLyricsForTrack])
-
-  useEffect(() => {
-    return () => {
-      if (clearProgrammaticScrollTimerRef.current !== null) {
-        window.clearTimeout(clearProgrammaticScrollTimerRef.current)
-      }
-      if (openRecenterTimerRef.current !== null) {
-        window.clearTimeout(openRecenterTimerRef.current)
-      }
-    }
-  }, [])
 
   useEffect(() => {
     if (!showLyricsShelf) {
@@ -207,74 +100,6 @@ export default function TransportLyricsShelf() {
     lastLyricsRequestKeyRef.current = requestKey
     void loadLyricsForTrack(lyricsQuery)
   }, [loadLyricsForTrack, lyricsQuery, showLyricsShelf])
-
-  useEffect(() => {
-    if (!showLyricsShelf || !lyricsShelfExpanded) return
-    setFollowPaused(false)
-  }, [currentTrack?.path, lyricsShelfExpanded, showLyricsShelf])
-
-  useEffect(() => {
-    if (lyricsShelfExpanded) return
-    if (clearProgrammaticScrollTimerRef.current !== null) {
-      window.clearTimeout(clearProgrammaticScrollTimerRef.current)
-      clearProgrammaticScrollTimerRef.current = null
-    }
-    if (openRecenterTimerRef.current !== null) {
-      window.clearTimeout(openRecenterTimerRef.current)
-      openRecenterTimerRef.current = null
-    }
-    hasCompletedExpandedOpenRef.current = false
-    programmaticScrollRef.current = false
-    syncedLineRefs.current.clear()
-    if (expandedListRef.current) {
-      expandedListRef.current.scrollTop = 0
-    }
-    setFollowPaused(false)
-  }, [followPaused, lyricsShelfExpanded])
-
-  useEffect(() => {
-    if (!showLyricsShelf) return
-    if (!lyricsShelfExpanded) return
-    if (!hasSyncedLyrics) return
-    if (hasCompletedExpandedOpenRef.current) return
-    hasCompletedExpandedOpenRef.current = true
-    // Ensure expanded mode starts centered and stays centered after shelf open transition settles.
-    window.requestAnimationFrame(() => {
-      scrollActiveExpandedLineIntoView('auto')
-    })
-    openRecenterTimerRef.current = window.setTimeout(() => {
-      scrollActiveExpandedLineIntoView('auto')
-      openRecenterTimerRef.current = null
-    }, EXPANDED_OPEN_RECENTER_DELAY_MS)
-  }, [hasSyncedLyrics, lyricsShelfExpanded, scrollActiveExpandedLineIntoView, showLyricsShelf])
-
-  useEffect(() => {
-    if (!showLyricsShelf) return
-    if (!lyricsShelfExpanded) return
-    if (!hasSyncedLyrics) return
-    if (followPaused) return
-    scrollActiveExpandedLineIntoView('smooth')
-  }, [
-    activeSyncedLineIndex,
-    followPaused,
-    hasSyncedLyrics,
-    lyricsShelfExpanded,
-    scrollActiveExpandedLineIntoView,
-    showLyricsShelf
-  ])
-
-  const setSyncedLineRef = (index: number) => (node: HTMLParagraphElement | null) => {
-    if (node) {
-      syncedLineRefs.current.set(index, node)
-      return
-    }
-    syncedLineRefs.current.delete(index)
-  }
-
-  const handleRecenter = () => {
-    setFollowPaused(false)
-    scrollActiveExpandedLineIntoView('smooth')
-  }
 
   const renderCollapsedSyncedWindow = () => (
     <div key="lyrics-collapsed-window" className="transport-lyrics-focus-window" aria-live="polite">
@@ -305,33 +130,27 @@ export default function TransportLyricsShelf() {
   )
 
   const renderBody = () => {
-    if (!currentTrack) {
-      return <p className="transport-lyrics-shelf-state">No track selected.</p>
-    }
-
-    if (lyricsIsLoading && !activeLyricsResult) {
-      return <p className="transport-lyrics-shelf-state">Loading lyrics...</p>
-    }
-
-    if (activeLyricsResult?.status === 'transient_error') {
-      return (
-        <div className="transport-lyrics-shelf-state transport-lyrics-shelf-state-error">
-          <p>{activeLyricsResult.message}</p>
-          <button
-            type="button"
-            className="transport-lyrics-inline-action"
-            onClick={refreshLyrics}
-            disabled={lyricsIsLoading}
-          >
-            Retry
-          </button>
-        </div>
-      )
-    }
-
     if (!lyricsShelfExpanded) {
-      if (activeLyricsResult?.status === 'hit' && hasSyncedLyrics) {
+      if (bodyState.kind === 'hit_synced') {
         return renderCollapsedSyncedWindow()
+      }
+      if (bodyState.kind === 'no-track' || bodyState.kind === 'loading') {
+        return <p className="transport-lyrics-shelf-state">{bodyState.message}</p>
+      }
+      if (bodyState.kind === 'transient_error') {
+        return (
+          <div className="transport-lyrics-shelf-state transport-lyrics-shelf-state-error">
+            <p>{bodyState.message}</p>
+            <button
+              type="button"
+              className="transport-lyrics-inline-action"
+              onClick={refreshLyrics}
+              disabled={lyricsIsLoading}
+            >
+              Retry
+            </button>
+          </div>
+        )
       }
       return (
         <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-not-found">
@@ -340,7 +159,7 @@ export default function TransportLyricsShelf() {
       )
     }
 
-    if (activeLyricsResult?.status === 'hit' && hasSyncedLyrics) {
+    if (bodyState.kind === 'hit_synced') {
       return (
         <div
           key="lyrics-expanded-list"
@@ -350,7 +169,7 @@ export default function TransportLyricsShelf() {
           onTouchStart={pauseFollowFromManualScroll}
           aria-live="polite"
         >
-          {syncedLines.map((line, index) => (
+          {bodyState.syncedLines.map((line, index) => (
             <p
               key={`${line.timestampMs}:${index}`}
               ref={setSyncedLineRef(index)}
@@ -363,14 +182,60 @@ export default function TransportLyricsShelf() {
       )
     }
 
-    if (plainLyrics.length > 0) {
-      return <pre className="transport-lyrics-expanded-plain">{plainLyrics}</pre>
+    if (bodyState.kind === 'hit_plain') {
+      return <pre className="transport-lyrics-expanded-plain">{bodyState.plainLyrics}</pre>
     }
 
     return (
-      <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-not-found">
-        Lyrics not synced or not found.
+      <p className={`transport-lyrics-shelf-state ${bodyState.kind === 'transient_error' ? 'transport-lyrics-shelf-state-error' : 'transport-lyrics-shelf-state-not-found'}`.trim()}>
+        {bodyState.message}
       </p>
+    )
+  }
+
+  if (lyricsPopoutIsOpen) {
+    return (
+      <section
+        className={[
+          'transport-lyrics-shelf',
+          showLyricsShelf ? 'transport-lyrics-shelf-open' : '',
+          'transport-lyrics-shelf-stub'
+        ].join(' ').trim()}
+        aria-hidden={!showLyricsShelf}
+      >
+        <div className="transport-lyrics-shelf-content">
+          <header className="transport-lyrics-shelf-header">
+            <span className="transport-lyrics-shelf-label">Lyrics</span>
+            <span className="transport-lyrics-shelf-meta">Popped Out</span>
+            <div className="transport-lyrics-shelf-header-actions">
+              <button
+                type="button"
+                className="transport-lyrics-inline-action"
+                onClick={() => void window.electronAPI.lyricsPopout.open()}
+              >
+                Show Window
+              </button>
+              <button
+                type="button"
+                className="transport-lyrics-inline-action"
+                onClick={() => void window.electronAPI.lyricsPopout.close()}
+              >
+                Recall
+              </button>
+            </div>
+          </header>
+          <div className="transport-lyrics-popout-stub-body">
+            <p className="transport-lyrics-popout-stub-message">
+              Lyrics are detached in a floating window.
+            </p>
+            <p className="transport-lyrics-popout-stub-track">
+              {currentTrack
+                ? `${currentTrack.title} • ${currentTrack.artist}`
+                : 'No track selected.'}
+            </p>
+          </div>
+        </div>
+      </section>
     )
   }
 
@@ -404,6 +269,14 @@ export default function TransportLyricsShelf() {
               disabled={!currentTrack || lyricsIsLoading}
             >
               {lyricsIsLoading ? 'Loading...' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              className="transport-lyrics-inline-action"
+              onClick={() => void window.electronAPI.lyricsPopout.open()}
+              disabled={!currentTrack}
+            >
+              Pop Out
             </button>
             <button
               type="button"
