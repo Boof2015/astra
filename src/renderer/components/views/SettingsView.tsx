@@ -190,18 +190,18 @@ function persistDeveloperSectionVisibilityPreference(visible: boolean): void {
 }
 
 function formatBuildLabel(buildInfo: AppBuildInfo): string {
-  if (!buildInfo.commitHash) return 'Unavailable'
-  return `${buildInfo.commitHash}${buildInfo.isDirty ? ' (dirty)' : ''}`
+  const shortCommitHash = buildInfo.shortCommitHash ?? buildInfo.commitHash?.slice(0, 7)
+  if (!shortCommitHash) return ''
+  return `${shortCommitHash}${buildInfo.isDirty ? '*' : ''}`
 }
 
 function formatBuildCopyValue(buildInfo: AppBuildInfo): string {
-  if (!buildInfo.commitHash) return ''
-  return `Astra v${buildInfo.version} (${buildInfo.commitHash}${buildInfo.isDirty ? ', dirty' : ''})`
+  return buildInfo.commitHash ?? ''
 }
 
 function formatBuildTooltip(buildInfo: AppBuildInfo): string | undefined {
   if (!buildInfo.commitHash) return undefined
-  return `Commit: ${buildInfo.commitHash}${buildInfo.isDirty ? '\nWorking tree was dirty when this build started.' : ''}`
+  return `Commit: ${buildInfo.commitHash}${buildInfo.isDirty ? '\nWorking tree was dirty when this build started.' : ''}\nClick to copy the full commit hash.`
 }
 
 export default function SettingsView() {
@@ -210,7 +210,7 @@ export default function SettingsView() {
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
   const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
-  const [appBuildLabel, setAppBuildLabel] = useState('Loading...')
+  const [appBuildLabel, setAppBuildLabel] = useState('')
   const [appBuildTooltip, setAppBuildTooltip] = useState('')
   const [appBuildCopyValue, setAppBuildCopyValue] = useState('')
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
@@ -785,7 +785,7 @@ export default function SettingsView() {
         } catch {
           if (!isMounted) return
           setAppVersionLabel('Unavailable')
-          setAppBuildLabel('Unavailable')
+          setAppBuildLabel('')
           setAppBuildTooltip('')
           setAppBuildCopyValue('')
         }
@@ -795,7 +795,7 @@ export default function SettingsView() {
       if (!window.electronAPI?.getAppVersion) {
         if (!isMounted) return
         setAppVersionLabel('Unavailable')
-        setAppBuildLabel('Unavailable')
+        setAppBuildLabel('')
         setAppBuildTooltip('')
         setAppBuildCopyValue('')
         return
@@ -805,13 +805,13 @@ export default function SettingsView() {
         const version = await window.electronAPI.getAppVersion()
         if (!isMounted) return
         setAppVersionLabel(version ? `v${version}` : 'Unavailable')
-        setAppBuildLabel('Unavailable')
+        setAppBuildLabel('')
         setAppBuildTooltip('')
         setAppBuildCopyValue('')
       } catch {
         if (!isMounted) return
         setAppVersionLabel('Unavailable')
-        setAppBuildLabel('Unavailable')
+        setAppBuildLabel('')
         setAppBuildTooltip('')
         setAppBuildCopyValue('')
       }
@@ -1986,31 +1986,26 @@ export default function SettingsView() {
                 <div className="settings-grid">
                   <div className="settings-field">
                     <span className="settings-field-label">App Version</span>
-                    <button
-                      type="button"
-                      className="settings-version-reveal-btn settings-info-value"
-                      onClick={handleAppVersionClick}
-                      aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
-                    >
-                      {appVersionLabel}
-                    </button>
-                  </div>
-                  <div className="settings-field">
-                    <span className="settings-field-label">Build</span>
-                    <div className="settings-inline-row">
-                      <span
-                        className="settings-chip settings-chip-mono settings-chip-grow"
-                        title={appBuildTooltip || undefined}
-                      >
-                        {appBuildLabel}
-                      </span>
+                    <div className="settings-version-inline">
                       <button
-                        className="settings-btn"
-                        onClick={() => void copyInfoToClipboard(appBuildCopyValue, 'Build info')}
-                        disabled={!appBuildCopyValue}
+                        type="button"
+                        className="settings-version-reveal-btn settings-info-value"
+                        onClick={handleAppVersionClick}
+                        aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
                       >
-                        Copy
+                        {appVersionLabel}
                       </button>
+                      {appBuildLabel && (
+                        <button
+                          type="button"
+                          className="settings-build-copy-btn"
+                          title={appBuildTooltip || undefined}
+                          aria-label="Copy full build hash"
+                          onClick={() => void copyInfoToClipboard(appBuildCopyValue, 'Build hash')}
+                        >
+                          {appBuildLabel}
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="settings-fields-row">

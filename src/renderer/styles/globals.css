@@ -13556,6 +13556,38 @@ body::after {
   cursor: pointer;
 }
 
+.settings-version-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.settings-build-copy-btn {
+  appearance: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.38);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.settings-build-copy-btn:hover {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.settings-build-copy-btn:focus-visible {
+  outline: 1px solid rgba(var(--accent-rgb), 0.45);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
 .settings-info-grid {
   align-items: stretch;
 }
