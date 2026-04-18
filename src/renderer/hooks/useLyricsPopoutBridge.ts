@@ -3,41 +3,68 @@ import { usePlayerStore } from '../stores/playerStore'
 import { useLyricsStore } from '../stores/lyricsStore'
 import { useLyricsPopoutStore } from '../stores/lyricsPopoutStore'
 import { useUIStore } from '../stores/uiStore'
-import { usePlaybackClock } from './usePlaybackClock'
 import type { LyricsPopoutSnapshot } from '../../types/lyricsPopout'
 import {
   buildLyricsQuery,
   getActiveLyricsResult
 } from '../utils/lyricsPresentation'
-
-const SNAPSHOT_THROTTLE_MS = 120
+import {
+  LYRICS_POPOUT_RESYNC_INTERVAL_MS,
+  getLyricsPopoutPublishReason
+} from '../utils/lyricsPopoutBridge'
 
 function toSafeTime(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0
 }
 
+interface LyricsPopoutBridgeState {
+  preferredExpanded: boolean
+  playbackState: LyricsPopoutSnapshot['playbackState']
+  currentTime: number
+  duration: number
+  currentTrack: LyricsPopoutSnapshot['currentTrack']
+  lyricsQuery: LyricsPopoutSnapshot['lyricsQuery']
+  lyricsResult: LyricsPopoutSnapshot['lyricsResult']
+  isLoading: boolean
+  errorMessage: string
+}
+
+function buildLyricsPopoutSnapshot(
+  state: LyricsPopoutBridgeState,
+  capturedAt = Date.now()
+): LyricsPopoutSnapshot {
+  return {
+    capturedAt,
+    preferredExpanded: state.preferredExpanded,
+    playbackState: state.playbackState,
+    currentTime: state.currentTime,
+    duration: state.duration,
+    currentTrack: state.currentTrack,
+    lyricsQuery: state.lyricsQuery,
+    lyricsResult: state.lyricsResult,
+    isLoading: state.isLoading,
+    errorMessage: state.errorMessage
+  }
+}
+
 export function useLyricsPopoutBridge(): void {
+  const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
+  const setWindowState = useLyricsPopoutStore((s) => s.setWindowState)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const playbackState = usePlayerStore((s) => s.playbackState)
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlayerStore((s) => lyricsPopoutIsOpen ? s.currentTime : 0)
   const duration = usePlayerStore((s) => s.duration)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
   const lyricsStoreError = useLyricsStore((s) => s.errorMessage)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
-  const setWindowState = useLyricsPopoutStore((s) => s.setWindowState)
   const lyricsShelfExpanded = useUIStore((s) => s.lyricsShelfExpanded)
 
-  const publishTimerRef = useRef<number | null>(null)
-  const lastPublishRef = useRef(0)
-  const latestPendingRef = useRef<LyricsPopoutSnapshot | null>(null)
-  const previousTrackPathRef = useRef<string | null>(null)
-  const previousPlaybackStateRef = useRef(playbackState)
-  const previousLoadingRef = useRef(false)
-  const previousErrorRef = useRef('')
-  const previousLyricsResultRef = useRef<typeof lyricsResult>(null)
-  const previousPreferredExpandedRef = useRef(lyricsShelfExpanded)
+  const latestStateRef = useRef<LyricsPopoutBridgeState | null>(null)
+  const lastPublishedSnapshotRef = useRef<LyricsPopoutSnapshot | null>(null)
+  const previousWindowOpenRef = useRef(false)
+  const resyncTimerRef = useRef<number | null>(null)
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [
     currentTrack?.path,
@@ -50,6 +77,37 @@ export function useLyricsPopoutBridge(): void {
   const activeLyricsResult = useMemo(() => (
     getActiveLyricsResult(currentTrack?.path ?? null, lyricsTrackPath, lyricsResult)
   ), [currentTrack?.path, lyricsResult, lyricsTrackPath])
+
+  const bridgeState = useMemo(() => ({
+    preferredExpanded: lyricsShelfExpanded,
+    playbackState,
+    currentTime: toSafeTime(currentTime),
+    duration: toSafeTime(duration),
+    currentTrack: currentTrack
+      ? {
+          path: currentTrack.path,
+          title: currentTrack.title,
+          artist: currentTrack.artist,
+          album: currentTrack.album
+        }
+      : null,
+    lyricsQuery,
+    lyricsResult: activeLyricsResult,
+    isLoading: lyricsIsLoading,
+    errorMessage: lyricsStoreError
+  } satisfies LyricsPopoutBridgeState), [
+    activeLyricsResult,
+    currentTime,
+    currentTrack,
+    duration,
+    lyricsIsLoading,
+    lyricsQuery,
+    lyricsShelfExpanded,
+    lyricsStoreError,
+    playbackState
+  ])
+
+  latestStateRef.current = bridgeState
 
   useEffect(() => {
     let isMounted = true
@@ -70,15 +128,6 @@ export function useLyricsPopoutBridge(): void {
   }, [setWindowState])
 
   useEffect(() => {
-    return () => {
-      if (publishTimerRef.current !== null) {
-        window.clearTimeout(publishTimerRef.current)
-        publishTimerRef.current = null
-      }
-    }
-  }, [])
-
-  useEffect(() => {
     const unsubscribe = window.electronAPI.lyricsPopout.onCommand((command) => {
       if (command.type !== 'refresh') return
       const currentQuery = buildLyricsQuery(usePlayerStore.getState().currentTrack)
@@ -90,83 +139,64 @@ export function useLyricsPopoutBridge(): void {
   }, [refreshLyricsForTrack])
 
   useEffect(() => {
-    const snapshot: LyricsPopoutSnapshot = {
-      capturedAt: Date.now(),
-      preferredExpanded: lyricsShelfExpanded,
-      playbackState,
-      currentTime: toSafeTime(currentTime),
-      duration: toSafeTime(duration),
-      currentTrack: currentTrack
-        ? {
-            path: currentTrack.path,
-            title: currentTrack.title,
-            artist: currentTrack.artist,
-            album: currentTrack.album
-          }
-        : null,
-      lyricsQuery,
-      lyricsResult: activeLyricsResult,
-      isLoading: lyricsIsLoading,
-      errorMessage: lyricsStoreError
-    }
+    const nextSnapshot = buildLyricsPopoutSnapshot(bridgeState)
+    const reason = getLyricsPopoutPublishReason({
+      trigger: 'state-change',
+      isWindowOpen: lyricsPopoutIsOpen,
+      wasWindowOpen: previousWindowOpenRef.current,
+      nextSnapshot,
+      lastPublishedSnapshot: lastPublishedSnapshotRef.current,
+      now: nextSnapshot.capturedAt
+    })
 
-    const trackPath = currentTrack?.path ?? null
-    const shouldForce = previousTrackPathRef.current !== trackPath ||
-      previousPlaybackStateRef.current !== playbackState ||
-      previousLoadingRef.current !== lyricsIsLoading ||
-      previousErrorRef.current !== lyricsStoreError ||
-      previousLyricsResultRef.current !== activeLyricsResult ||
-      previousPreferredExpandedRef.current !== lyricsShelfExpanded
+    previousWindowOpenRef.current = lyricsPopoutIsOpen
 
-    previousTrackPathRef.current = trackPath
-    previousPlaybackStateRef.current = playbackState
-    previousLoadingRef.current = lyricsIsLoading
-    previousErrorRef.current = lyricsStoreError
-    previousLyricsResultRef.current = activeLyricsResult
-    previousPreferredExpandedRef.current = lyricsShelfExpanded
-
-    latestPendingRef.current = snapshot
-
-    const publishLatest = () => {
-      if (!latestPendingRef.current) return
-      window.electronAPI.lyricsPopout.publishSnapshot(latestPendingRef.current)
-      lastPublishRef.current = Date.now()
-      latestPendingRef.current = null
-    }
-
-    if (shouldForce) {
-      if (publishTimerRef.current !== null) {
-        window.clearTimeout(publishTimerRef.current)
-        publishTimerRef.current = null
-      }
-      publishLatest()
+    if (reason === 'closed' || reason === 'not-needed') {
       return
     }
 
-    const elapsed = Date.now() - lastPublishRef.current
-    if (elapsed >= SNAPSHOT_THROTTLE_MS) {
-      if (publishTimerRef.current !== null) {
-        window.clearTimeout(publishTimerRef.current)
-        publishTimerRef.current = null
-      }
-      publishLatest()
+    window.electronAPI.lyricsPopout.publishSnapshot(nextSnapshot)
+    lastPublishedSnapshotRef.current = nextSnapshot
+  }, [bridgeState, lyricsPopoutIsOpen])
+
+  useEffect(() => {
+    if (resyncTimerRef.current !== null) {
+      window.clearInterval(resyncTimerRef.current)
+      resyncTimerRef.current = null
+    }
+
+    if (!lyricsPopoutIsOpen || playbackState !== 'playing') {
       return
     }
 
-    if (publishTimerRef.current !== null) return
-    publishTimerRef.current = window.setTimeout(() => {
-      publishTimerRef.current = null
-      publishLatest()
-    }, SNAPSHOT_THROTTLE_MS - elapsed)
-  }, [
-    activeLyricsResult,
-    currentTime,
-    currentTrack,
-    duration,
-    lyricsIsLoading,
-    lyricsQuery,
-    lyricsShelfExpanded,
-    lyricsStoreError,
-    playbackState
-  ])
+    resyncTimerRef.current = window.setInterval(() => {
+      const latestState = latestStateRef.current
+      if (!latestState) return
+
+      const nextSnapshot = buildLyricsPopoutSnapshot(latestState)
+      const reason = getLyricsPopoutPublishReason({
+        trigger: 'resync-tick',
+        isWindowOpen: true,
+        wasWindowOpen: true,
+        nextSnapshot,
+        lastPublishedSnapshot: lastPublishedSnapshotRef.current,
+        now: nextSnapshot.capturedAt,
+        resyncIntervalMs: LYRICS_POPOUT_RESYNC_INTERVAL_MS
+      })
+
+      if (reason !== 'resync' && reason !== 'no-snapshot') {
+        return
+      }
+
+      window.electronAPI.lyricsPopout.publishSnapshot(nextSnapshot)
+      lastPublishedSnapshotRef.current = nextSnapshot
+    }, LYRICS_POPOUT_RESYNC_INTERVAL_MS)
+
+    return () => {
+      if (resyncTimerRef.current !== null) {
+        window.clearInterval(resyncTimerRef.current)
+        resyncTimerRef.current = null
+      }
+    }
+  }, [lyricsPopoutIsOpen, playbackState])
 }

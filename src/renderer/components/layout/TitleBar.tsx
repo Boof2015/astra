@@ -18,6 +18,8 @@ interface RendererMemoryStats {
 
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const BYTES_PER_MB = 1024 * 1024
+const FPS_SAMPLE_INTERVAL_MS = 1000
+const FPS_SAMPLE_WINDOW_MS = 200
 
 function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boolean } = {}): string {
   if (memoryMb === null || !Number.isFinite(memoryMb)) return '\u2014'
@@ -152,23 +154,50 @@ export default function TitleBar() {
   }, [])
 
   useEffect(() => {
-    let rafId = 0
+    let disposed = false
+    let sampleAnimationFrame = 0
+    let sampleStartTime: number | null = null
     let frameCount = 0
-    let lastSample = performance.now()
 
-    const tick = (timestamp: number) => {
-      frameCount += 1
-      const elapsed = timestamp - lastSample
-      if (elapsed >= 1000) {
-        setFps(Math.round((frameCount * 1000) / elapsed))
-        frameCount = 0
-        lastSample = timestamp
+    const clearActiveSample = () => {
+      if (sampleAnimationFrame !== 0) {
+        window.cancelAnimationFrame(sampleAnimationFrame)
+        sampleAnimationFrame = 0
       }
-      rafId = window.requestAnimationFrame(tick)
+      sampleStartTime = null
+      frameCount = 0
     }
 
-    rafId = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(rafId)
+    const tick = (timestamp: number) => {
+      if (disposed) return
+      if (sampleStartTime === null) {
+        sampleStartTime = timestamp
+      }
+      frameCount += 1
+
+      const elapsed = timestamp - sampleStartTime
+      if (elapsed >= FPS_SAMPLE_WINDOW_MS) {
+        setFps(Math.round((frameCount * 1000) / Math.max(elapsed, 1)))
+        clearActiveSample()
+        return
+      }
+
+      sampleAnimationFrame = window.requestAnimationFrame(tick)
+    }
+
+    const runSample = () => {
+      clearActiveSample()
+      sampleAnimationFrame = window.requestAnimationFrame(tick)
+    }
+
+    runSample()
+    const intervalId = window.setInterval(runSample, FPS_SAMPLE_INTERVAL_MS)
+
+    return () => {
+      disposed = true
+      window.clearInterval(intervalId)
+      clearActiveSample()
+    }
   }, [])
 
   const handleMinimize = () => window.electronAPI?.minimize()

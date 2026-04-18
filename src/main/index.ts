@@ -3349,10 +3349,12 @@ ipcMain.handle('lyrics-popout:getSnapshot', () => {
 })
 
 ipcMain.on('lyrics-popout:publishSnapshot', (_event, snapshot: LyricsPopoutSnapshot) => {
-  latestLyricsPopoutSnapshot = snapshot
-  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
-    lyricsPopoutWindow.webContents.send('lyrics-popout:snapshot', snapshot)
+  if (!lyricsPopoutWindow || lyricsPopoutWindow.isDestroyed()) {
+    return
   }
+
+  latestLyricsPopoutSnapshot = snapshot
+  lyricsPopoutWindow.webContents.send('lyrics-popout:snapshot', snapshot)
 })
 
 ipcMain.on('lyrics-popout:sendCommand', (_event, command: LyricsPopoutCommand) => {
