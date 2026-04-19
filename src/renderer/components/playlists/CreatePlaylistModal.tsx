@@ -7,6 +7,7 @@ interface CreatePlaylistModalProps {
   onCreate: (name: string, coverImagePath: string | null) => Promise<unknown>
   title?: string
   initialName?: string
+  pendingTrackCount?: number
 }
 
 function toFilePreviewSource(filePath: string): string {
@@ -19,7 +20,8 @@ export default function CreatePlaylistModal({
   onClose,
   onCreate,
   title = 'Create Playlist',
-  initialName = ''
+  initialName = '',
+  pendingTrackCount
 }: CreatePlaylistModalProps) {
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
@@ -127,6 +129,12 @@ export default function CreatePlaylistModal({
               autoFocus
             />
           </label>
+
+          {typeof pendingTrackCount === 'number' && pendingTrackCount > 0 && (
+            <div className="playlist-create-track-count" role="status">
+              {pendingTrackCount} {pendingTrackCount === 1 ? 'track' : 'tracks'} will be added after creation.
+            </div>
+          )}
 
           <div className="playlist-create-cover-row">
             <div className="playlist-create-cover-preview">

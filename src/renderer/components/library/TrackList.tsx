@@ -547,12 +547,12 @@ export default function TrackList({
   const enqueueUserTrack = usePlayerStore((state) => state.enqueueUserTrack)
   const enqueueUserTracks = usePlayerStore((state) => state.enqueueUserTracks)
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
-  const showQueue = useUIStore((state) => state.showQueue)
-  const queueInsertDrag = useUIStore((state) => state.queueInsertDrag)
-  const startQueueInsertDrag = useUIStore((state) => state.startQueueInsertDrag)
-  const setQueueInsertDragTracks = useUIStore((state) => state.setQueueInsertDragTracks)
-  const updateQueueInsertDragPointer = useUIStore((state) => state.updateQueueInsertDragPointer)
-  const clearQueueInsertDrag = useUIStore((state) => state.clearQueueInsertDrag)
+  const trackDrag = useUIStore((state) => state.trackDrag)
+  const startTrackDrag = useUIStore((state) => state.startTrackDrag)
+  const setTrackDragTracks = useUIStore((state) => state.setTrackDragTracks)
+  const updateTrackDragPointer = useUIStore((state) => state.updateTrackDragPointer)
+  const clearTrackDrag = useUIStore((state) => state.clearTrackDrag)
+  const openSidebarPlaylistCreateRequest = useUIStore((state) => state.openSidebarPlaylistCreateRequest)
   const favorites = useLibraryStore((state) => state.favorites)
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
@@ -613,17 +613,17 @@ export default function TrackList({
         queueInsertPressTimerRef.current = null
       }
       clearQueueInsertPointerListeners()
-      useUIStore.getState().clearQueueInsertDrag()
+      useUIStore.getState().clearTrackDrag()
     }
   }, [clearQueueInsertPointerListeners])
 
   useEffect(() => {
-    if (queueInsertDrag) return
+    if (trackDrag) return
     setQueueInsertArmedTrackPath(null)
     setQueueInsertSelectionRange(null)
     setIsQueueInsertDragOwner(false)
     isQueueInsertDragOwnerRef.current = false
-  }, [queueInsertDrag])
+  }, [trackDrag])
 
   useEffect(() => {
     setPlaylistPopup((current) => {
@@ -790,10 +790,10 @@ export default function TrackList({
 
   const resolveQueueInsertHoverIndex = useCallback((clientX: number, clientY: number): number | null => {
     const target = document.elementFromPoint(clientX, clientY)
-    if (!(target instanceof HTMLElement)) return null
+    if (!(target instanceof Element)) return null
 
-    const rowElement = target.closest<HTMLElement>('.track-row[data-track-index]')
-    if (!rowElement) return null
+    const rowElement = target.closest('.track-row[data-track-index]')
+    if (!(rowElement instanceof HTMLElement)) return null
     if (listBodyRef.current && !listBodyRef.current.contains(rowElement)) return null
 
     const rawIndex = rowElement.dataset.trackIndex
@@ -817,11 +817,10 @@ export default function TrackList({
   }, [])
 
   const handleQueueInsertPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
-    if (!showQueue) return
     if (event.button !== 0) return
 
     const target = event.target
-    if (target instanceof HTMLElement && target.closest('button, a, input, textarea, select, [role="button"]')) {
+    if (target instanceof Element && target.closest('button, a, input, textarea, select, [role="button"]')) {
       return
     }
 
@@ -849,7 +848,7 @@ export default function TrackList({
       }
 
       if (isQueueInsertDragOwnerRef.current) {
-        updateQueueInsertDragPointer(moveEvent.clientX, moveEvent.clientY)
+        updateTrackDragPointer(moveEvent.clientX, moveEvent.clientY)
 
         if (moveEvent.shiftKey) {
           const hoveredIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY)
@@ -863,7 +862,7 @@ export default function TrackList({
                 ? current
                 : { startIndex, endIndex }
             ))
-            setQueueInsertDragTracks(renderedQueueTracks.slice(startIndex, endIndex + 1))
+            setTrackDragTracks(renderedQueueTracks.slice(startIndex, endIndex + 1))
           }
         }
       }
@@ -872,21 +871,32 @@ export default function TrackList({
     const finalizeQueueInsert = () => {
       clearQueueInsertPointerListeners()
 
-      const dragState = useUIStore.getState().queueInsertDrag
+      const dragState = useUIStore.getState().trackDrag
       if (isQueueInsertDragOwnerRef.current) {
         suppressQueueInsertClickRef.current = true
       }
       if (dragState?.dropTarget && dragState.tracks.length > 0) {
-        enqueueUserTracks(
-          dragState.tracks,
-          dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
-        )
-        if (dragState.tracks.length === 1) {
-          setQueueActionFeedback('queue', dragState.tracks[0].path)
+        if (dragState.dropTarget.surface === 'queue') {
+          enqueueUserTracks(
+            dragState.tracks,
+            dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
+          )
+          if (dragState.tracks.length === 1) {
+            setQueueActionFeedback('queue', dragState.tracks[0].path)
+          }
+        } else if (dragState.dropTarget.kind === 'playlist') {
+          void addToPlaylist(
+            dragState.dropTarget.playlistId,
+            dragState.tracks.map((track) => track.path)
+          ).catch((error) => {
+            console.error('Failed to add dropped tracks to playlist.', error)
+          })
+        } else {
+          openSidebarPlaylistCreateRequest(dragState.tracks.map((track) => track.path))
         }
       }
 
-      clearQueueInsertDrag()
+      clearTrackDrag()
       cleanupQueueInsertPress()
       setIsQueueInsertDragOwner(false)
       isQueueInsertDragOwnerRef.current = false
@@ -900,7 +910,7 @@ export default function TrackList({
 
     const handlePointerCancel = () => {
       clearQueueInsertPointerListeners()
-      clearQueueInsertDrag()
+      clearTrackDrag()
       cleanupQueueInsertPress()
       setIsQueueInsertDragOwner(false)
       isQueueInsertDragOwnerRef.current = false
@@ -917,7 +927,7 @@ export default function TrackList({
       })
       setIsQueueInsertDragOwner(true)
       isQueueInsertDragOwnerRef.current = true
-      startQueueInsertDrag([pressState.track], event.clientX, event.clientY)
+      startTrackDrag([pressState.track], event.clientX, event.clientY)
     }, 180)
 
     document.addEventListener('pointermove', handlePointerMove)
@@ -931,15 +941,16 @@ export default function TrackList({
   }, [
     clearQueueInsertPointerListeners,
     cleanupQueueInsertPress,
-    clearQueueInsertDrag,
+    clearTrackDrag,
+    addToPlaylist,
     enqueueUserTracks,
+    openSidebarPlaylistCreateRequest,
     renderedQueueTracks,
     resolveQueueInsertHoverIndex,
     setQueueActionFeedback,
-    setQueueInsertDragTracks,
-    showQueue,
-    startQueueInsertDrag,
-    updateQueueInsertDragPointer
+    setTrackDragTracks,
+    startTrackDrag,
+    updateTrackDragPointer
   ])
 
   const handleToggleFavorite = useCallback((event: React.MouseEvent, trackPath: string) => {
@@ -1159,7 +1170,7 @@ export default function TrackList({
     ? Math.max(trackRowHeight, trackRowHeight * tracks.length)
     : listHeight
   const playlistPopupTrackPath = playlistPopup?.trackPath ?? null
-  const queueInsertPreview = isQueueInsertDragOwner ? queueInsertDrag : null
+  const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
   const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (key === 'added' ? 'desc' : 'asc')
@@ -1231,7 +1242,7 @@ export default function TrackList({
     onAddToQueue: handleAddToQueue,
     onToggleFavorite: handleToggleFavorite,
     onOpenPlaylistPopup: handleOpenPlaylistPopup,
-    showQueueInsertAffordance: showQueue,
+    showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
     queueInsertSelectionRange
   }), [
@@ -1266,7 +1277,6 @@ export default function TrackList({
     handleAddToQueue,
     handleToggleFavorite,
     handleOpenPlaylistPopup,
-    showQueue,
     queueInsertArmedTrackPath,
     queueInsertSelectionRange
   ])
@@ -1337,7 +1347,7 @@ export default function TrackList({
             <span className="track-queue-insert-preview-count">{queueInsertPreview.tracks.length}</span>
           )}
           <div className="track-queue-insert-preview-content">
-            <span className="track-queue-insert-preview-kicker">Queue</span>
+            <span className="track-queue-insert-preview-kicker">Tracks</span>
             <span className="track-queue-insert-preview-title">
               {queueInsertPreview.tracks.length > 1
                 ? `${queueInsertPreview.tracks.length} tracks`
@@ -1436,6 +1446,7 @@ export default function TrackList({
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylistForTrack}
         title="Create Playlist for Track"
+        pendingTrackCount={1}
       />
     </div>
   )

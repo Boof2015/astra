@@ -257,8 +257,8 @@ export default function QueuePanel() {
   const removeUserTrack = usePlayerStore((state) => state.removeUserTrack)
   const moveUserQueue = usePlayerStore((state) => state.moveUserQueue)
   const clearAllQueues = usePlayerStore((state) => state.clearAllQueues)
-  const queueInsertDrag = useUIStore((state) => state.queueInsertDrag)
-  const setQueueInsertDropTarget = useUIStore((state) => state.setQueueInsertDropTarget)
+  const trackDrag = useUIStore((state) => state.trackDrag)
+  const setTrackDragDropTarget = useUIStore((state) => state.setTrackDragDropTarget)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [reorderDragOverIndex, setReorderDragOverIndex] = useState<number | null>(null)
@@ -327,11 +327,11 @@ export default function QueuePanel() {
   }, [])
 
   useEffect(() => {
-    const drag = queueInsertDrag
+    const drag = trackDrag
     const element = queueContentRef.current
     if (!drag || !element) {
       setQueueScrollGlowEdge(null)
-      setQueueInsertDropTarget(null)
+      setTrackDragDropTarget('queue', null)
       return
     }
 
@@ -345,7 +345,7 @@ export default function QueuePanel() {
       || drag.pointerY > rect.bottom
     ) {
       setQueueScrollGlowEdge(null)
-      setQueueInsertDropTarget(null)
+      setTrackDragDropTarget('queue', null)
       return
     }
 
@@ -367,7 +367,11 @@ export default function QueuePanel() {
     const relativeY = drag.pointerY - rect.top + scrollElement.scrollTop
     const hasVisibleQueue = Boolean(currentTrack) || userQueue.length > 0 || autoUpcomingEntries.length > 0
     if (!hasVisibleQueue) {
-      setQueueInsertDropTarget({ kind: 'empty', index: 0 })
+      setTrackDragDropTarget('queue', {
+        surface: 'queue',
+        kind: 'empty',
+        index: 0
+      })
       return
     }
 
@@ -392,22 +396,23 @@ export default function QueuePanel() {
       }
     }
 
-    setQueueInsertDropTarget({
+    setTrackDragDropTarget('queue', {
+      surface: 'queue',
       kind: 'user',
       index: targetIndex
     })
   }, [
     autoUpcomingEntries.length,
     currentTrack,
-    queueInsertDrag,
+    trackDrag,
     queueItemRowHeight,
     queueSectionRowHeight,
-    setQueueInsertDropTarget,
+    setTrackDragDropTarget,
     userQueue.length
   ])
 
   useEffect(() => {
-    const dragActive = Boolean(queueInsertDrag)
+    const dragActive = Boolean(trackDrag)
     const hadDrag = previousDragActiveRef.current
     const previousUserQueueLength = previousUserQueueLengthRef.current
 
@@ -424,7 +429,7 @@ export default function QueuePanel() {
 
     previousDragActiveRef.current = dragActive
     previousUserQueueLengthRef.current = userQueue.length
-  }, [queueInsertDrag, userQueue.length])
+  }, [trackDrag, userQueue.length])
 
   const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
@@ -433,14 +438,14 @@ export default function QueuePanel() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }, [])
 
-  const insertDropIndex = queueInsertDrag?.dropTarget?.kind === 'empty'
+  const insertDropIndex = trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty'
     ? 0
-    : queueInsertDrag?.dropTarget?.kind === 'user'
-      ? queueInsertDrag.dropTarget.index
+    : trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'user'
+      ? trackDrag.dropTarget.index
       : null
-  const queueInsertTrackCount = queueInsertDrag?.tracks.length ?? 0
-  const isQueueDropActive = Boolean(queueInsertDrag)
-  const isQueueDropHover = Boolean(queueInsertDrag?.dropTarget)
+  const queueInsertTrackCount = trackDrag?.tracks.length ?? 0
+  const isQueueDropActive = Boolean(trackDrag)
+  const isQueueDropHover = trackDrag?.dropTarget?.surface === 'queue'
 
   const rows = useMemo<QueueVirtualRow[]>(() => {
     const nextRows: QueueVirtualRow[] = []
@@ -643,10 +648,10 @@ export default function QueuePanel() {
           <h3>Queue</h3>
         </div>
         <div className="queue-empty-drop-zone-wrap" ref={queueContentRef}>
-          <div className={`queue-empty-drop-zone ${queueInsertDrag?.dropTarget?.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
+          <div className={`queue-empty-drop-zone ${trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
             <p>No tracks in queue</p>
             <p className="queue-empty-hint">
-              {queueInsertDrag ? 'Drop here to build a user queue' : 'Open the queue and long-press a track to drop it here'}
+              {trackDrag ? 'Drop here to build a user queue' : 'Long-press a track to drop it here'}
             </p>
           </div>
         </div>

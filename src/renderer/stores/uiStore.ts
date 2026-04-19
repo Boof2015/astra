@@ -15,28 +15,58 @@ export interface LibraryTrackRevealRequest {
   trackPath: string
 }
 
-export interface QueueInsertDropTarget {
+export type TrackDragSurface = 'queue' | 'sidebar'
+
+export interface QueueTrackDragDropTarget {
+  surface: 'queue'
   kind: 'empty' | 'user'
   index: number
 }
 
-export interface QueueInsertDragState {
+export interface SidebarPlaylistTrackDragDropTarget {
+  surface: 'sidebar'
+  kind: 'playlist'
+  playlistId: number
+}
+
+export interface SidebarCreatePlaylistTrackDragDropTarget {
+  surface: 'sidebar'
+  kind: 'create-playlist'
+}
+
+export type TrackDragDropTarget =
+  | QueueTrackDragDropTarget
+  | SidebarPlaylistTrackDragDropTarget
+  | SidebarCreatePlaylistTrackDragDropTarget
+
+export interface TrackDragState {
   tracks: Track[]
   pointerX: number
   pointerY: number
-  dropTarget: QueueInsertDropTarget | null
+  dropTarget: TrackDragDropTarget | null
 }
 
-function areQueueInsertDropTargetsEqual(
-  left: QueueInsertDropTarget | null,
-  right: QueueInsertDropTarget | null
+export interface SidebarPlaylistCreateRequest {
+  trackPaths: string[]
+}
+
+function areTrackDragDropTargetsEqual(
+  left: TrackDragDropTarget | null,
+  right: TrackDragDropTarget | null
 ): boolean {
   if (left === right) return true
   if (!left || !right) return false
-  return left.kind === right.kind && left.index === right.index
+  if (left.surface !== right.surface || left.kind !== right.kind) return false
+  if (left.surface === 'queue' && right.surface === 'queue') {
+    return left.index === right.index
+  }
+  if (left.kind === 'playlist' && right.kind === 'playlist') {
+    return left.playlistId === right.playlistId
+  }
+  return true
 }
 
-function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
+function areTrackDragTracksEqual(left: Track[], right: Track[]): boolean {
   if (left === right) return true
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {
@@ -131,7 +161,8 @@ interface UIStore {
   isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
-  queueInsertDrag: QueueInsertDragState | null
+  trackDrag: TrackDragState | null
+  sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
   setActiveView: (view: AppView) => void
   toggleQueue: () => void
   toggleInfoSidebar: () => void
@@ -161,11 +192,13 @@ interface UIStore {
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
   consumePendingSettingsSection: () => SettingsSectionId | null
-  startQueueInsertDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
-  setQueueInsertDragTracks: (tracks: Track[]) => void
-  updateQueueInsertDragPointer: (pointerX: number, pointerY: number) => void
-  setQueueInsertDropTarget: (target: QueueInsertDropTarget | null) => void
-  clearQueueInsertDrag: () => void
+  startTrackDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
+  setTrackDragTracks: (tracks: Track[]) => void
+  updateTrackDragPointer: (pointerX: number, pointerY: number) => void
+  setTrackDragDropTarget: (surface: TrackDragSurface, target: TrackDragDropTarget | null) => void
+  clearTrackDrag: () => void
+  openSidebarPlaylistCreateRequest: (trackPaths: string[]) => void
+  clearSidebarPlaylistCreateRequest: () => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -185,7 +218,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
-  queueInsertDrag: null,
+  trackDrag: null,
+  sidebarPlaylistCreateRequest: null,
   setActiveView: (view) => set({ activeView: view }),
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
@@ -288,50 +322,62 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
     return section
   },
-  startQueueInsertDrag: (tracks, pointerX, pointerY) => set({
-    queueInsertDrag: {
+  startTrackDrag: (tracks, pointerX, pointerY) => set({
+    trackDrag: {
       tracks,
       pointerX,
       pointerY,
       dropTarget: null
     }
   }),
-  setQueueInsertDragTracks: (tracks) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (areQueueInsertTracksEqual(state.queueInsertDrag.tracks, tracks)) {
+  setTrackDragTracks: (tracks) => set((state) => {
+    if (!state.trackDrag) return state
+    if (areTrackDragTracksEqual(state.trackDrag.tracks, tracks)) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         tracks
       }
     }
   }),
-  updateQueueInsertDragPointer: (pointerX, pointerY) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (state.queueInsertDrag.pointerX === pointerX && state.queueInsertDrag.pointerY === pointerY) {
+  updateTrackDragPointer: (pointerX, pointerY) => set((state) => {
+    if (!state.trackDrag) return state
+    if (state.trackDrag.pointerX === pointerX && state.trackDrag.pointerY === pointerY) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         pointerX,
         pointerY
       }
     }
   }),
-  setQueueInsertDropTarget: (target) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (areQueueInsertDropTargetsEqual(state.queueInsertDrag.dropTarget, target)) {
+  setTrackDragDropTarget: (surface, target) => set((state) => {
+    if (!state.trackDrag) return state
+    if (target && target.surface !== surface) return state
+
+    const currentTarget = state.trackDrag.dropTarget
+    if (!target && currentTarget?.surface !== surface) {
+      return state
+    }
+    if (areTrackDragDropTargetsEqual(currentTarget, target)) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         dropTarget: target
       }
     }
   }),
-  clearQueueInsertDrag: () => set({ queueInsertDrag: null })
+  clearTrackDrag: () => set({ trackDrag: null }),
+  openSidebarPlaylistCreateRequest: (trackPaths) => set({
+    sidebarPlaylistCreateRequest: {
+      trackPaths: [...trackPaths]
+    }
+  }),
+  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null })
 }))
