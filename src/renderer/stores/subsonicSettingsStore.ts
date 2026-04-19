@@ -22,8 +22,8 @@ interface SubsonicSettingsStore {
   updateSource: (sourceId: number, input: SubsonicSourceUpdateInput) => Promise<SubsonicSource | null>
   deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<boolean>
   testSource: (input: SubsonicSourceTestInput) => Promise<SubsonicSourceTestResult>
-  syncSource: (sourceId: number) => Promise<boolean>
-  syncAll: () => Promise<boolean>
+  syncSource: (sourceId: number, syncSessionKey?: string) => Promise<boolean>
+  syncAll: (syncSessionKey?: string) => Promise<boolean>
 }
 
 let statusUnsubscribe: (() => void) | null = null
@@ -147,9 +147,9 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       }
     },
 
-    syncSource: async (sourceId) => {
+    syncSource: async (sourceId, syncSessionKey) => {
       try {
-        await window.electronAPI.subsonic.syncSource(sourceId)
+        await window.electronAPI.subsonic.syncSource(sourceId, syncSessionKey)
         await fetchAll()
         return true
       } catch (error) {
@@ -158,9 +158,9 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       }
     },
 
-    syncAll: async () => {
+    syncAll: async (syncSessionKey) => {
       try {
-        await window.electronAPI.subsonic.syncAll()
+        await window.electronAPI.subsonic.syncAll(syncSessionKey)
         await fetchAll()
         return true
       } catch (error) {

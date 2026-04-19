@@ -3955,6 +3955,10 @@ button, .titlebar {
 .track-col-num {
   width: 40px;
   flex-shrink: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   color: var(--text-tertiary);
   font-size: 13px;
@@ -4109,6 +4113,18 @@ button, .titlebar {
 
 .track-number {
   font-size: 13px;
+}
+
+.track-new-indicator {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.32);
+  transform: translateY(-50%);
 }
 
 .track-playing-icon {
@@ -4270,6 +4286,35 @@ button, .titlebar {
   flex-wrap: wrap;
 }
 
+.library-latest-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.album-card-sync-pill {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.library-header-sync-pill {
+  align-self: center;
+}
+
 .library-header-right {
   display: flex;
   align-items: center;
@@ -4365,6 +4410,7 @@ button, .titlebar {
 .album-card {
   display: flex;
   flex-direction: column;
+  position: relative;
   cursor: pointer;
   transition: transform var(--transition-fast);
 }
@@ -4532,6 +4578,7 @@ button, .titlebar {
   border: 1px solid rgba(255, 255, 255, 0.08);
   margin: 0;
   width: 168px;
+  position: relative;
   flex-shrink: 0;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.02);

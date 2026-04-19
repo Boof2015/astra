@@ -999,6 +999,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       await audioEngine.play()
       const currentTrack = get().currentTrack
       if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
+        void useLibraryStore.getState().markTrackLatestSyncSeen(currentTrack.path)
         startRecentPlaySession(currentTrack.path)
       }
     },
@@ -1452,6 +1453,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             showOutputDelayNotice(resolvedTrack)
           }
           await audioEngine.play()
+          void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
           get()._preBufferNextTrack()
           logMemoryDiagnosticsEvent('track_load_success', {
@@ -1492,6 +1494,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               showOutputDelayNotice(resolvedTrack)
             }
             await audioEngine.play()
+            void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
             logMemoryDiagnosticsEvent('remote_stream_started', {
               trackPath: track.path,
@@ -1599,6 +1602,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         await audioEngine.play()
+        void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
         logMemoryDiagnosticsEvent('track_load_success', {
           trackPath: track.path,

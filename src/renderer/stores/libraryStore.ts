@@ -6,6 +6,7 @@ export interface DbTrack {
   id: number
   path: string
   album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
   album: string
@@ -45,6 +46,7 @@ interface Album {
   year: number | null
   artwork_hash: string | null
   track_count: number
+  is_new: boolean
 }
 
 interface Artist {
@@ -60,7 +62,7 @@ export interface LibraryFolder {
 }
 
 interface LibrarySelectionSnapshot {
-  selectedAlbum: { identity_key?: string; album: string; artist: string } | null
+  selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
   tracks: DbTrack[]
@@ -122,7 +124,7 @@ interface LibraryStore {
   artists: Artist[]
   folders: LibraryFolder[]
   viewMode: ViewMode
-  selectedAlbum: { identity_key?: string; album: string; artist: string } | null
+  selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
   selectionHistory: LibrarySelectionSnapshot[]
@@ -189,6 +191,7 @@ interface LibraryStore {
   isFavorite: (trackPath: string) => boolean
   loadRecentlyPlayed: () => Promise<void>
   recordPlay: (trackPath: string) => Promise<void>
+  markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
   setShowTracklistBpmKey: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
 }
@@ -252,6 +255,83 @@ function loadTracklistAddedDateVisibilitySetting(): boolean {
   } catch {
     return false
   }
+}
+
+function clearTrackNewFlagInCollection(tracks: DbTrack[], trackPath: string): DbTrack[] {
+  let didChange = false
+  const nextTracks = tracks.map((track) => {
+    if (track.path !== trackPath || !track.is_new) {
+      return track
+    }
+    didChange = true
+    return {
+      ...track,
+      is_new: false
+    }
+  })
+
+  return didChange ? nextTracks : tracks
+}
+
+function updateAlbumNewFlagInCollection(albums: Album[], albumIdentityKey: string | null, isNew: boolean): Album[] {
+  if (!albumIdentityKey) return albums
+
+  let didChange = false
+  const nextAlbums = albums.map((album) => {
+    if (album.identity_key !== albumIdentityKey || album.is_new === isNew) {
+      return album
+    }
+    didChange = true
+    return {
+      ...album,
+      is_new: isNew
+    }
+  })
+
+  return didChange ? nextAlbums : albums
+}
+
+function updateSelectedAlbumNewFlag(
+  selectedAlbum: LibraryStore['selectedAlbum'],
+  albumIdentityKey: string | null,
+  isNew: boolean
+): LibraryStore['selectedAlbum'] {
+  if (!selectedAlbum || !albumIdentityKey || selectedAlbum.identity_key !== albumIdentityKey || selectedAlbum.is_new === isNew) {
+    return selectedAlbum
+  }
+
+  return {
+    ...selectedAlbum,
+    is_new: isNew
+  }
+}
+
+function updateSelectionHistoryForSeenTrack(
+  selectionHistory: LibrarySelectionSnapshot[],
+  trackPath: string,
+  albumIdentityKey: string | null,
+  albumIsNew: boolean
+): LibrarySelectionSnapshot[] {
+  let didChange = false
+  const nextHistory = selectionHistory.map((snapshot) => {
+    const nextTracks = clearTrackNewFlagInCollection(snapshot.tracks, trackPath)
+    const nextSelectedAlbum = snapshot.selectedAlbum && albumIdentityKey && snapshot.selectedAlbum.identity_key === albumIdentityKey
+      ? updateSelectedAlbumNewFlag(snapshot.selectedAlbum, albumIdentityKey, albumIsNew)
+      : snapshot.selectedAlbum
+
+    if (nextTracks === snapshot.tracks && nextSelectedAlbum === snapshot.selectedAlbum) {
+      return snapshot
+    }
+
+    didChange = true
+    return {
+      ...snapshot,
+      tracks: nextTracks,
+      selectedAlbum: nextSelectedAlbum
+    }
+  })
+
+  return didChange ? nextHistory : selectionHistory
 }
 
 function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
@@ -372,6 +452,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     if (currentSelection.album) {
       const albumSelection = currentSelection.album
+      const matchedAlbum = get().albums.find((candidate) => {
+        if (albumSelection.identity_key && candidate.identity_key === albumSelection.identity_key) return true
+        return candidate.album === albumSelection.album && candidate.artist === albumSelection.artist
+      })
       const tracks = await window.electronAPI.library.getTracksByAlbum(
         albumSelection.album,
         albumSelection.artist,
@@ -383,7 +467,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (activeAlbum.identity_key !== albumSelection.identity_key) return {}
         if (activeAlbum.album !== albumSelection.album) return {}
         if (activeAlbum.artist !== albumSelection.artist) return {}
-        return { tracks }
+        return {
+          tracks,
+          selectedAlbum: {
+            ...activeAlbum,
+            is_new: matchedAlbum?.is_new ?? false
+          }
+        }
       })
     } else if (currentSelection.artist) {
       const artistSelection = currentSelection.artist
@@ -815,8 +905,17 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     identityKey?: string
   ) => {
     const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist, identityKey)
+    const matchedAlbum = get().albums.find((candidate) => {
+      if (identityKey && candidate.identity_key === identityKey) return true
+      return candidate.album === album && candidate.artist === (artist ?? '')
+    })
     set((state) => ({
-      selectedAlbum: { identity_key: identityKey, album, artist: artist ?? '' },
+      selectedAlbum: {
+        identity_key: identityKey,
+        album,
+        artist: artist ?? '',
+        is_new: matchedAlbum?.is_new ?? false
+      },
       tracks,
       selectedArtist: null,
       selectionOrigin: origin,
@@ -983,6 +1082,57 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   loadRecentlyPlayed: async () => {
     const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
     set({ recentlyPlayed })
+  },
+
+  markTrackLatestSyncSeen: async (trackPath: string) => {
+    if (!trackPath.trim()) return
+
+    const knownTrack =
+      get().fullTracks.find((track) => track.path === trackPath)
+      ?? get().tracks.find((track) => track.path === trackPath)
+      ?? get().searchResults.find((track) => track.path === trackPath)
+      ?? get().favoriteTracks.find((track) => track.path === trackPath)
+      ?? get().recentlyPlayed.find((track) => track.path === trackPath)
+    if (knownTrack && !knownTrack.is_new) {
+      return
+    }
+
+    await window.electronAPI.library.markTrackLatestSyncSeen(trackPath)
+
+    set((state) => {
+      const matchedTrack =
+        state.fullTracks.find((track) => track.path === trackPath)
+        ?? state.tracks.find((track) => track.path === trackPath)
+        ?? state.searchResults.find((track) => track.path === trackPath)
+        ?? state.favoriteTracks.find((track) => track.path === trackPath)
+        ?? state.recentlyPlayed.find((track) => track.path === trackPath)
+
+      const albumIdentityKey = matchedTrack?.album_identity_key ?? null
+      const fullTracks = clearTrackNewFlagInCollection(state.fullTracks, trackPath)
+      const tracks = clearTrackNewFlagInCollection(state.tracks, trackPath)
+      const searchResults = clearTrackNewFlagInCollection(state.searchResults, trackPath)
+      const favoriteTracks = clearTrackNewFlagInCollection(state.favoriteTracks, trackPath)
+      const recentlyPlayed = clearTrackNewFlagInCollection(state.recentlyPlayed, trackPath)
+      const albumIsNew = albumIdentityKey
+        ? fullTracks.some((track) => track.album_identity_key === albumIdentityKey && track.is_new)
+        : false
+
+      return {
+        fullTracks,
+        tracks,
+        searchResults,
+        favoriteTracks,
+        recentlyPlayed,
+        albums: updateAlbumNewFlagInCollection(state.albums, albumIdentityKey, albumIsNew),
+        selectedAlbum: updateSelectedAlbumNewFlag(state.selectedAlbum, albumIdentityKey, albumIsNew),
+        selectionHistory: updateSelectionHistoryForSeenTrack(
+          state.selectionHistory,
+          trackPath,
+          albumIdentityKey,
+          albumIsNew
+        )
+      }
+    })
   },
 
   // Record a track play

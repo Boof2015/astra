@@ -120,6 +120,7 @@ export interface DbTrack {
   id: number
   path: string
   album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
   album: string
@@ -182,6 +183,7 @@ export interface Album {
   year: number | null
   artwork_hash: string | null
   track_count: number
+  is_new: boolean
 }
 
 export interface Artist {
@@ -717,8 +719,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('subsonic:deleteSource', sourceId, purgeTracks),
     testSource: (input: SubsonicSourceTestInput): Promise<SubsonicSourceTestResult> =>
       ipcRenderer.invoke('subsonic:testSource', input),
-    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('subsonic:syncSource', sourceId),
-    syncAll: (): Promise<void> => ipcRenderer.invoke('subsonic:syncAll'),
+    syncSource: (sourceId: number, syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('subsonic:syncSource', sourceId, syncSessionKey),
+    syncAll: (syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('subsonic:syncAll', syncSessionKey),
     getStatus: (): Promise<SubsonicStatusSnapshot> => ipcRenderer.invoke('subsonic:getStatus'),
     onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: SubsonicStatusSnapshot) => callback(status)
@@ -736,8 +738,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('jellyfin:deleteSource', sourceId, purgeTracks),
     testSource: (input: JellyfinSourceTestInput): Promise<JellyfinSourceTestResult> =>
       ipcRenderer.invoke('jellyfin:testSource', input),
-    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('jellyfin:syncSource', sourceId),
-    syncAll: (): Promise<void> => ipcRenderer.invoke('jellyfin:syncAll'),
+    syncSource: (sourceId: number, syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('jellyfin:syncSource', sourceId, syncSessionKey),
+    syncAll: (syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('jellyfin:syncAll', syncSessionKey),
     getStatus: (): Promise<JellyfinStatusSnapshot> => ipcRenderer.invoke('jellyfin:getStatus'),
     onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: JellyfinStatusSnapshot) => callback(status)
@@ -895,6 +897,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Recently played
     getRecentlyPlayed: (limit?: number) => ipcRenderer.invoke('library:getRecentlyPlayed', limit),
+    markTrackLatestSyncSeen: (trackPath: string) => ipcRenderer.invoke('library:markTrackLatestSyncSeen', trackPath),
     addRecentlyPlayed: (trackPath: string) => ipcRenderer.invoke('library:addRecentlyPlayed', trackPath),
 
     // Playlists
@@ -1069,8 +1072,8 @@ declare global {
         updateSource: (sourceId: number, input: SubsonicSourceUpdateInput) => Promise<SubsonicSource>
         deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
         testSource: (input: SubsonicSourceTestInput) => Promise<SubsonicSourceTestResult>
-        syncSource: (sourceId: number) => Promise<void>
-        syncAll: () => Promise<void>
+        syncSource: (sourceId: number, syncSessionKey?: string) => Promise<void>
+        syncAll: (syncSessionKey?: string) => Promise<void>
         getStatus: () => Promise<SubsonicStatusSnapshot>
         onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
       }
@@ -1080,8 +1083,8 @@ declare global {
         updateSource: (sourceId: number, input: JellyfinSourceUpdateInput) => Promise<JellyfinSource>
         deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
         testSource: (input: JellyfinSourceTestInput) => Promise<JellyfinSourceTestResult>
-        syncSource: (sourceId: number) => Promise<void>
-        syncAll: () => Promise<void>
+        syncSource: (sourceId: number, syncSessionKey?: string) => Promise<void>
+        syncAll: (syncSessionKey?: string) => Promise<void>
         getStatus: () => Promise<JellyfinStatusSnapshot>
         onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => () => void
       }
@@ -1200,6 +1203,7 @@ declare global {
 
         // Recently played
         getRecentlyPlayed: (limit?: number) => Promise<DbTrack[]>
+        markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
         addRecentlyPlayed: (trackPath: string) => Promise<void>
 
         // Playlists

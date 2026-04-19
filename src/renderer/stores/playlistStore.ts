@@ -40,6 +40,7 @@ interface DbTrack {
   id: number
   path: string
   album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
   album: string

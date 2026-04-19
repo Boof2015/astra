@@ -68,6 +68,14 @@ function formatTimeAgo(timestamp: number): string {
   return `${diffDays}d ago`
 }
 
+function createRemoteSyncSessionKey(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (typeof randomUuid === 'string' && randomUuid.length > 0) {
+    return randomUuid
+  }
+  return `sync-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 function getStatusDotClass(source: RemoteSourceListItem, statusItem: RemoteSourceStatusItem | undefined): string {
   if (source.enabled !== 1) return 'remote-status-dot remote-status-dot-disabled'
   const status = statusItem?.status ?? source.last_status
@@ -475,9 +483,10 @@ export default function RemoteServersPanel() {
   // Sync all
   const handleSyncAll = () => {
     if (remoteSources.length === 0) return
+    const syncSessionKey = createRemoteSyncSessionKey()
     void Promise.all([
-      subsonicSources.length > 0 ? syncAllSubsonicSources() : Promise.resolve(true),
-      jellyfinSources.length > 0 ? syncAllJellyfinSources() : Promise.resolve(true)
+      subsonicSources.length > 0 ? syncAllSubsonicSources(syncSessionKey) : Promise.resolve(true),
+      jellyfinSources.length > 0 ? syncAllJellyfinSources(syncSessionKey) : Promise.resolve(true)
     ]).then(([subOk, jelOk]) => {
       if (!subOk || !jelOk) return
       setFeedback('Sync finished for all configured remote sources.')

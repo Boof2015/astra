@@ -710,7 +710,8 @@ export default function LibraryView() {
         primary_artist: resolveBrowseArtistForTrack(track, 'canonical'),
         year: track.year,
         artwork_hash: track.artwork_hash,
-        track_count: 1
+        track_count: 1,
+        is_new: false
       })
     }
 
@@ -927,6 +928,11 @@ export default function LibraryView() {
                 void selectAlbum(album.album, album.artist, 'library', album.identity_key)
               }}
             >
+              {album.is_new && (
+                <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
+                  NEW
+                </span>
+              )}
               <div className="album-artwork">
                 <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
               </div>
@@ -1012,6 +1018,11 @@ export default function LibraryView() {
                     className="library-artist-rail-card"
                     onClick={() => void selectAlbum(album.album, album.artist, 'library', album.identity_key)}
                   >
+                    {album.is_new && (
+                      <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
+                        NEW
+                      </span>
+                    )}
                     <div className="library-artist-rail-artwork">
                       {album.artwork_hash ? (
                         <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
@@ -1039,6 +1050,7 @@ export default function LibraryView() {
             showArtist={false}
             showAlbum={!selectedAlbum}
             showAddedDate={showTracklistAddedDate}
+            showNewTrackIndicator
             externalScroll
             enableColumnSorting
             sortState={sortState}
@@ -1060,6 +1072,7 @@ export default function LibraryView() {
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
         showAddedDate={showTracklistAddedDate}
+        showNewTrackIndicator
         enableColumnSorting
         sortState={sortState}
         onSortColumnToggle={handleSortColumnToggle}
@@ -1082,6 +1095,11 @@ export default function LibraryView() {
             </button>
           )}
           <h2>{title}</h2>
+          {selectedAlbum?.is_new && (
+            <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
+              NEW
+            </span>
+          )}
           {showViewTabs && (
             <div className="view-tabs">
               <button

@@ -7,6 +7,7 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
@@ -180,6 +181,10 @@ let subsonicSyncInFlight = false
 let jellyfinSyncInFlight = false
 let associatedOpenRendererReady = false
 const associatedOpenPendingPaths: string[] = []
+const latestLibrarySyncCoordinator = new LibraryLatestSyncCoordinator({
+  getCurrentAlbumIdentityKeys: () => library.listAlbumIdentityKeys(),
+  publishSummary: (summary) => library.setLatestLibrarySyncSummary(summary)
+})
 
 function normalizeBuildCommitHash(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -195,6 +200,24 @@ function parseDirtyEnvValue(value: unknown): boolean | null {
   if (DIRTY_ENV_TRUE_VALUES.has(normalized)) return true
   if (DIRTY_ENV_FALSE_VALUES.has(normalized)) return false
   return null
+}
+
+function normalizeLatestSyncSessionKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+async function finalizeLatestLibrarySyncSession(
+  sessionKey: string,
+  success: boolean,
+  contextLabel: string
+): Promise<void> {
+  try {
+    await latestLibrarySyncCoordinator.endOperation(sessionKey, success)
+  } catch (error) {
+    console.warn(`Failed to finalize latest library sync session for ${contextLabel}:`, error)
+  }
 }
 
 function tryReadBuildMetadataFile(filePath: string): ResolvedBuildMetadata | null {
@@ -2010,15 +2033,15 @@ async function hydrateSubsonicTrackArtworkHashes(
   return hashesByArtworkId
 }
 
-async function syncOneSubsonicSource(sourceId: number): Promise<void> {
+async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
-  if (!source) return
+  if (!source) return false
 
   if (source.enabled !== 1) {
     clearSubsonicSyncProgress(sourceId)
     await setSubsonicSourceDisabledState(sourceId)
     await library.persistLibraryDatabase()
-    return
+    return false
   }
 
   await library.updateSubsonicSourceStatus(
@@ -2110,7 +2133,10 @@ async function syncOneSubsonicSource(sourceId: number): Promise<void> {
       phase: 'finalizing',
       activity: 'Applying library updates...'
     })
-    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, { persist: false })
+    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, {
+      persist: false,
+      syncSessionKey
+    })
     await library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
@@ -2128,6 +2154,7 @@ async function syncOneSubsonicSource(sourceId: number): Promise<void> {
     )
     await library.persistLibraryDatabase()
     clearSubsonicSyncProgress(sourceId)
+    return true
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown Subsonic sync failure.'
     await library.updateSubsonicSourceStatus(
@@ -2145,7 +2172,7 @@ async function syncOneSubsonicSource(sourceId: number): Promise<void> {
   }
 }
 
-async function runSubsonicSync(sourceId?: number): Promise<void> {
+async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: string | null): Promise<void> {
   if (subsonicSyncInFlight) {
     throw new Error('A Subsonic sync is already in progress.')
   }
@@ -2153,6 +2180,11 @@ async function runSubsonicSync(sourceId?: number): Promise<void> {
   const sources = sourceId
     ? library.listSubsonicSources().filter((source) => source.id === sourceId)
     : library.listSubsonicSources()
+  if (sources.length === 0) {
+    return
+  }
+
+  const syncSessionKey = latestLibrarySyncCoordinator.beginOperation(requestedSyncSessionKey)
 
   subsonicSyncInFlight = true
   broadcastSubsonicStatus(refreshSubsonicStatusCache(true))
@@ -2162,10 +2194,14 @@ async function runSubsonicSync(sourceId?: number): Promise<void> {
   })
 
   let failedSourceCount = 0
+  let successfulSourceCount = 0
   try {
     for (const source of sources) {
       try {
-        await syncOneSubsonicSource(source.id)
+        const didSync = await syncOneSubsonicSource(source.id, syncSessionKey)
+        if (didSync) {
+          successfulSourceCount += 1
+        }
       } catch (error) {
         failedSourceCount += 1
         logMemoryDiagnosticsMainEvent('subsonic_sync_failed', {
@@ -2178,10 +2214,12 @@ async function runSubsonicSync(sourceId?: number): Promise<void> {
   } finally {
     subsonicSyncInFlight = false
     broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+    await finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Subsonic sync')
     logMemoryDiagnosticsMainEvent('subsonic_sync_finished', {
       requestedSourceId: sourceId ?? null,
       sourceCount: sources.length,
-      failedSourceCount
+      failedSourceCount,
+      successfulSourceCount
     })
   }
 }
@@ -2251,15 +2289,15 @@ async function hydrateJellyfinTrackArtworkHashes(
   return hashesByArtworkId
 }
 
-async function syncOneJellyfinSource(sourceId: number): Promise<void> {
+async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
   const source = library.getJellyfinSourceById(sourceId)
-  if (!source) return
+  if (!source) return false
 
   if (source.enabled !== 1) {
     clearJellyfinSyncProgress(sourceId)
     await setJellyfinSourceDisabledState(sourceId)
     await library.persistLibraryDatabase()
-    return
+    return false
   }
 
   await library.updateJellyfinSourceStatus(
@@ -2353,7 +2391,10 @@ async function syncOneJellyfinSource(sourceId: number): Promise<void> {
       phase: 'finalizing',
       activity: 'Applying library updates...'
     })
-    await library.upsertJellyfinTracks(sourceId, tracksForUpsert, { persist: false })
+    await library.upsertJellyfinTracks(sourceId, tracksForUpsert, {
+      persist: false,
+      syncSessionKey
+    })
     await library.markMissingJellyfinTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
@@ -2371,6 +2412,7 @@ async function syncOneJellyfinSource(sourceId: number): Promise<void> {
     )
     await library.persistLibraryDatabase()
     clearJellyfinSyncProgress(sourceId)
+    return true
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown Jellyfin sync failure.'
     await library.updateJellyfinSourceStatus(
@@ -2388,7 +2430,7 @@ async function syncOneJellyfinSource(sourceId: number): Promise<void> {
   }
 }
 
-async function runJellyfinSync(sourceId?: number): Promise<void> {
+async function runJellyfinSync(sourceId?: number, requestedSyncSessionKey?: string | null): Promise<void> {
   if (jellyfinSyncInFlight) {
     throw new Error('A Jellyfin sync is already in progress.')
   }
@@ -2396,6 +2438,11 @@ async function runJellyfinSync(sourceId?: number): Promise<void> {
   const sources = sourceId
     ? library.listJellyfinSources().filter((source) => source.id === sourceId)
     : library.listJellyfinSources()
+  if (sources.length === 0) {
+    return
+  }
+
+  const syncSessionKey = latestLibrarySyncCoordinator.beginOperation(requestedSyncSessionKey)
 
   jellyfinSyncInFlight = true
   broadcastJellyfinStatus(refreshJellyfinStatusCache(true))
@@ -2405,10 +2452,14 @@ async function runJellyfinSync(sourceId?: number): Promise<void> {
   })
 
   let failedSourceCount = 0
+  let successfulSourceCount = 0
   try {
     for (const source of sources) {
       try {
-        await syncOneJellyfinSource(source.id)
+        const didSync = await syncOneJellyfinSource(source.id, syncSessionKey)
+        if (didSync) {
+          successfulSourceCount += 1
+        }
       } catch (error) {
         failedSourceCount += 1
         logMemoryDiagnosticsMainEvent('jellyfin_sync_failed', {
@@ -2421,10 +2472,12 @@ async function runJellyfinSync(sourceId?: number): Promise<void> {
   } finally {
     jellyfinSyncInFlight = false
     broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+    await finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Jellyfin sync')
     logMemoryDiagnosticsMainEvent('jellyfin_sync_finished', {
       requestedSourceId: sourceId ?? null,
       sourceCount: sources.length,
-      failedSourceCount
+      failedSourceCount,
+      successfulSourceCount
     })
   }
 }
@@ -3726,16 +3779,16 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
   }
 })
 
-ipcMain.handle('subsonic:syncSource', async (_event, sourceIdValue: unknown) => {
+ipcMain.handle('subsonic:syncSource', async (_event, sourceIdValue: unknown, syncSessionKeyValue?: unknown) => {
   const sourceId = Number(sourceIdValue)
   if (!Number.isInteger(sourceId) || sourceId <= 0) {
     throw new Error('Invalid Subsonic source id.')
   }
-  await runSubsonicSync(sourceId)
+  await runSubsonicSync(sourceId, normalizeLatestSyncSessionKey(syncSessionKeyValue))
 })
 
-ipcMain.handle('subsonic:syncAll', async () => {
-  await runSubsonicSync()
+ipcMain.handle('subsonic:syncAll', async (_event, syncSessionKeyValue?: unknown) => {
+  await runSubsonicSync(undefined, normalizeLatestSyncSessionKey(syncSessionKeyValue))
 })
 
 ipcMain.handle('subsonic:getStatus', () => {
@@ -3862,16 +3915,16 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
   }
 })
 
-ipcMain.handle('jellyfin:syncSource', async (_event, sourceIdValue: unknown) => {
+ipcMain.handle('jellyfin:syncSource', async (_event, sourceIdValue: unknown, syncSessionKeyValue?: unknown) => {
   const sourceId = Number(sourceIdValue)
   if (!Number.isInteger(sourceId) || sourceId <= 0) {
     throw new Error('Invalid Jellyfin source id.')
   }
-  await runJellyfinSync(sourceId)
+  await runJellyfinSync(sourceId, normalizeLatestSyncSessionKey(syncSessionKeyValue))
 })
 
-ipcMain.handle('jellyfin:syncAll', async () => {
-  await runJellyfinSync()
+ipcMain.handle('jellyfin:syncAll', async (_event, syncSessionKeyValue?: unknown) => {
+  await runJellyfinSync(undefined, normalizeLatestSyncSessionKey(syncSessionKeyValue))
 })
 
 ipcMain.handle('jellyfin:getStatus', () => {
@@ -4498,6 +4551,8 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
     folderPath,
     folderLabel
   })
+  const syncSessionKey = latestLibrarySyncCoordinator.beginOperation()
+  let syncSessionSucceeded = false
 
   try {
     const result = await runLibraryScanOperation(async (signal) => {
@@ -4515,7 +4570,7 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       try {
         scanResult = await library.scanFolder(folderPath, (current, total, file) => {
           mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false, onIssue })
+        }, { signal, persist: false, onIssue, syncSessionKey })
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
           throw error
@@ -4552,6 +4607,7 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       return { ...scanResult, scanIssueLog: issueCollector.build() }
     })
 
+    syncSessionSucceeded = true
     return { success: true, canceled: false, folder, ...result }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
@@ -4563,6 +4619,7 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
     }
     throw error
   } finally {
+    await finalizeLatestLibrarySyncSession(syncSessionKey, syncSessionSucceeded, 'add folder scan')
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'add_folder',
       folderPath
@@ -4600,6 +4657,8 @@ ipcMain.handle(
       folderPath,
       folderLabel
     })
+    const syncSessionKey = latestLibrarySyncCoordinator.beginOperation()
+    let syncSessionSucceeded = false
     try {
       const result = await runLibraryScanOperation(async (signal) => {
         const onIssue = (issue: library.LibraryScanIssue) => {
@@ -4616,7 +4675,7 @@ ipcMain.handle(
         try {
           scanResult = await library.scanFolder(folderPath, (current, total, file) => {
             mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue })
+          }, { signal, persist: false, onIssue, syncSessionKey })
         } catch (error) {
           if (library.isLibraryScanCancelledError(error)) {
             throw error
@@ -4672,6 +4731,7 @@ ipcMain.handle(
         return { ...scanResult, removed, summary, scanIssueLog: issueCollector.build() }
       })
 
+      syncSessionSucceeded = true
       return { success: true, canceled: false, ...result }
     } catch (error) {
       if (library.isLibraryScanCancelledError(error)) {
@@ -4683,6 +4743,7 @@ ipcMain.handle(
       }
       throw error
     } finally {
+      await finalizeLatestLibrarySyncSession(syncSessionKey, syncSessionSucceeded, 'rescan folder')
       logMemoryDiagnosticsMainEvent('library_scan_finished', {
         kind: 'rescan_folder',
         folderPath
@@ -4712,6 +4773,8 @@ ipcMain.handle('library:rescan', async () => {
     kind: 'rescan_all',
     folderCount: library.getLibraryFolders().length
   })
+  const syncSessionKey = latestLibrarySyncCoordinator.beginOperation()
+  let syncSessionSucceeded = false
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       const folders = library.getLibraryFolders()
@@ -4735,7 +4798,7 @@ ipcMain.handle('library:rescan', async () => {
         try {
           const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
             mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue })
+          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey })
           totalAdded += scanResult.added
           totalUpdated += scanResult.updated
           totalErrors += scanResult.errors
@@ -4811,6 +4874,7 @@ ipcMain.handle('library:rescan', async () => {
       }
     })
 
+    syncSessionSucceeded = true
     return { ...result, canceled: false }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
@@ -4829,6 +4893,7 @@ ipcMain.handle('library:rescan', async () => {
     }
     throw error
   } finally {
+    await finalizeLatestLibrarySyncSession(syncSessionKey, syncSessionSucceeded, 'full rescan')
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'rescan_all'
     })
@@ -4918,6 +4983,10 @@ ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
 
 ipcMain.handle('library:getRecentlyPlayed', (_event, limit?: number) => {
   return library.getRecentlyPlayed(limit)
+})
+
+ipcMain.handle('library:markTrackLatestSyncSeen', async (_event, trackPath: string) => {
+  await library.markTrackLatestSyncSeen(trackPath)
 })
 
 ipcMain.handle('library:addRecentlyPlayed', async (_event, trackPath: string) => {

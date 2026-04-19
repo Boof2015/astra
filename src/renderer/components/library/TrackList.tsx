@@ -18,6 +18,7 @@ interface DbTrack {
   id: number
   path: string
   album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
   album: string
@@ -61,6 +62,7 @@ interface TrackListProps {
   showArtist?: boolean
   showAlbum?: boolean
   showAddedDate?: boolean
+  showNewTrackIndicator?: boolean
   externalScroll?: boolean
   playlistSourceId?: number | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | null
@@ -77,6 +79,7 @@ interface TrackListRowSharedProps {
   showAlbum: boolean
   showTracklistBpmKey: boolean
   showAddedDate: boolean
+  showNewTrackIndicator: boolean
   currentTrackPath: string | null
   loadingTrackPath: string | null
   loadingTrackPercent: number | null
@@ -238,6 +241,7 @@ function TrackListRowRenderer({
   showAlbum,
   showTracklistBpmKey,
   showAddedDate,
+  showNewTrackIndicator,
   currentTrackPath,
   loadingTrackPath,
   loadingTrackPercent,
@@ -341,6 +345,9 @@ function TrackListRowRenderer({
         }}
       >
         <div className="track-col track-col-num">
+          {showNewTrackIndicator && track.is_new && (
+            <span className="track-new-indicator" title="Added in latest library sync" aria-hidden="true" />
+          )}
           {isCurrent && isPlaying ? (
             <span className="track-playing-icon">&#9654;</span>
           ) : isCurrentLoading ? (
@@ -527,6 +534,7 @@ export default function TrackList({
   showArtist = true,
   showAlbum = true,
   showAddedDate = false,
+  showNewTrackIndicator = false,
   externalScroll = false,
   playlistSourceId = null,
   jumpToTrackRequest = null,
@@ -1216,6 +1224,7 @@ export default function TrackList({
     showAlbum,
     showTracklistBpmKey,
     showAddedDate,
+    showNewTrackIndicator,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1251,6 +1260,7 @@ export default function TrackList({
     showAlbum,
     showTracklistBpmKey,
     showAddedDate,
+    showNewTrackIndicator,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,

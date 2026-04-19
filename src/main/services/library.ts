@@ -15,6 +15,11 @@ import {
   groupTracksByAlbumIdentity,
   type AlbumGroupingMode
 } from '../../shared/library/albumGrouping'
+import {
+  isAlbumNewForLatestSync,
+  isTrackNewForLatestSync,
+  type LatestLibrarySyncSummary
+} from './libraryLatestSync'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
@@ -32,6 +37,7 @@ export interface DbTrack {
   id: number
   path: string
   album_identity_key?: string
+  is_new: boolean
   title: string
   artist: string
   album: string
@@ -64,6 +70,11 @@ export interface DbTrack {
   file_created_at: number | null
   added_at: number
   modified_at: number
+}
+
+interface DbTrackRow extends Omit<DbTrack, 'is_new'> {
+  sync_session_key: string | null
+  latest_sync_dismissed_at: number | null
 }
 
 export interface SubsonicSourceRow {
@@ -270,6 +281,17 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export interface Album {
+  identity_key: string
+  album: string
+  artist: string
+  primary_artist: string | null
+  year: number | null
+  artwork_hash: string | null
+  track_count: number
+  is_new: boolean
+}
+
 export type MetadataSaveMode = 'virtual' | 'file'
 
 export interface MetadataEditChanges {
@@ -323,6 +345,7 @@ interface ScanControlOptions extends ScanIssueOptions {
 
 interface ScanWriteOptions extends ScanControlOptions {
   persist?: boolean
+  syncSessionKey?: string | null
 }
 
 export class LibraryScanCancelledError extends Error {
@@ -376,6 +399,7 @@ const BACKFILL_PARALLEL_MIN_WORKERS = 2
 const BACKFILL_PARALLEL_MAX_WORKERS = 3
 const SQLITE_SAFE_MAX_VARIABLES = 900
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
+const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
   t.path AS path,
@@ -412,6 +436,8 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.is_available AS is_available,
   t.availability_reason AS availability_reason,
   t.file_created_at AS file_created_at,
+  t.sync_session_key AS sync_session_key,
+  t.latest_sync_dismissed_at AS latest_sync_dismissed_at,
   t.added_at AS added_at,
   t.modified_at AS modified_at
 `
@@ -599,37 +625,45 @@ function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
   })
 }
 
-function readEffectiveTrackRows(sql: string): DbTrack[] {
+function readEffectiveTrackRows(sql: string): DbTrackRow[] {
   if (!db) return []
   const result = db.exec(sql)
   if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+  return rowsToObjects<DbTrackRow>(result[0].columns, result[0].values)
 }
 
-function buildAlbumIdentityKeysByPath(tracks: readonly DbTrack[]): Map<string, string> {
+function buildAlbumIdentityKeysByPath(tracks: readonly DbTrackRow[]): Map<string, string> {
   return buildAlbumIdentityKeyByTrackId(tracks, (track) => track.path)
 }
 
-function readAllTrackRowsUnordered(): DbTrack[] {
+function readAllTrackRowsUnordered(): DbTrackRow[] {
   return readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
   `)
 }
 
-function attachAlbumIdentityKeys(tracks: readonly DbTrack[], libraryTracks?: readonly DbTrack[]): DbTrack[] {
+function attachAlbumIdentityKeys(
+  tracks: readonly DbTrackRow[],
+  libraryTracks?: readonly DbTrackRow[],
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+): DbTrack[] {
   if (tracks.length === 0) return []
 
   const effectiveLibraryTracks = libraryTracks ?? readAllTrackRowsUnordered()
   const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
 
-  return tracks.map((track) => ({
-    ...track,
-    album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track)
-  }))
+  return tracks.map((track) => {
+    const { sync_session_key, latest_sync_dismissed_at, ...rest } = track
+    return {
+      ...rest,
+      album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track),
+      is_new: isTrackNewForLatestSync(sync_session_key, latestSyncSummary, latest_sync_dismissed_at)
+    }
+  })
 }
 
-function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrack[]): DbTrack[] {
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[]): DbTrack[] {
   const tracks = readEffectiveTrackRows(sql)
   return attachAlbumIdentityKeys(tracks, libraryTracks)
 }
@@ -689,7 +723,7 @@ interface AlbumGroupAccumulator {
   firstArtworkHash: string | null
   year: number | null
   trackCount: number
-  tracks: DbTrack[]
+  tracks: DbTrackRow[]
 }
 
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
@@ -795,7 +829,7 @@ function resolveCanonicalBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_art
   return normalizedPrimaryArtist || UNKNOWN_ARTIST_NAME
 }
 
-function trackMatchesBrowseArtist(track: DbTrack, targetArtistKey: string, mode: ArtistBrowseMode): boolean {
+function trackMatchesBrowseArtist(track: DbTrackRow, targetArtistKey: string, mode: ArtistBrowseMode): boolean {
   const browseArtistKey = normalizeKey(
     mode === 'strict' ? resolveStrictBrowseArtist(track) : resolveCanonicalBrowseArtist(track)
   )
@@ -866,7 +900,10 @@ function pickMostFrequentArtworkHash(
   return bestHash ?? fallback
 }
 
-function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+function compareTracksByDiscTrackTitle(
+  a: Pick<DbTrackRow, 'disc_number' | 'track_number' | 'title' | 'path'>,
+  b: Pick<DbTrackRow, 'disc_number' | 'track_number' | 'title' | 'path'>
+): number {
   const discA = a.disc_number ?? 0
   const discB = b.disc_number ?? 0
   if (discA !== discB) return discA - discB
@@ -881,7 +918,10 @@ function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
   return a.path.localeCompare(b.path)
 }
 
-function compareTracksByAlbumDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+function compareTracksByAlbumDiscTrackTitle(
+  a: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>,
+  b: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>
+): number {
   const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
   if (albumCompare !== 0) return albumCompare
   return compareTracksByDiscTrackTitle(a, b)
@@ -893,7 +933,7 @@ function addAliasArtistKey(aliasArtistKeys: Set<string>, rawValue: string): void
   aliasArtistKeys.add(key)
 }
 
-function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrack, primaryArtist: string): void {
+function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrackRow, primaryArtist: string): void {
   addAliasArtistKey(group.aliasArtistKeys, primaryArtist)
   addAliasArtistKey(group.aliasArtistKeys, track.artist)
 
@@ -938,7 +978,7 @@ function createAlbumGroupAccumulator(
 
 function addTrackToAlbumGroup(
   group: AlbumGroupAccumulator,
-  track: DbTrack,
+  track: DbTrackRow,
   albumName: string,
   displayArtist: string,
   primaryArtist: string
@@ -982,7 +1022,7 @@ function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
   }
 }
 
-function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator> {
+function buildAlbumGroups(tracks: DbTrackRow[]): Map<string, AlbumGroupAccumulator> {
   const groups = new Map<string, AlbumGroupAccumulator>()
 
   for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
@@ -1070,6 +1110,8 @@ export async function initDatabase(): Promise<void> {
       is_available INTEGER NOT NULL DEFAULT 1,
       availability_reason TEXT,
       file_created_at INTEGER,
+      sync_session_key TEXT,
+      latest_sync_dismissed_at INTEGER,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
@@ -1225,6 +1267,16 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run('ALTER TABLE tracks ADD COLUMN sync_session_key TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN latest_sync_dismissed_at INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
   } catch {
     // Column already exists.
@@ -1265,6 +1317,7 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_scope ON tracks(source_type, source_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_track ON tracks(source_type, source_id, source_track_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_sync_session_key ON tracks(sync_session_key)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_cache_updated_at ON lyrics_cache(updated_at)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_track_overrides_updated_at ON lyrics_track_overrides(updated_at)')
 
@@ -1406,6 +1459,49 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
     [key, value, now]
   )
   await saveDatabase()
+}
+
+export function getLatestLibrarySyncSummary(): LatestLibrarySyncSummary | null {
+  const rawValue = getAppMeta(LATEST_LIBRARY_SYNC_SUMMARY_META_KEY)
+  if (!rawValue) return null
+
+  try {
+    const parsed = JSON.parse(rawValue) as {
+      sessionKey?: unknown
+      completedAt?: unknown
+      newAlbumIdentityKeys?: unknown
+    }
+
+    const sessionKey = typeof parsed.sessionKey === 'string' ? parsed.sessionKey.trim() : ''
+    const completedAt = typeof parsed.completedAt === 'number' && Number.isFinite(parsed.completedAt)
+      ? parsed.completedAt
+      : Number.NaN
+    if (!sessionKey || !Number.isFinite(completedAt)) {
+      return null
+    }
+
+    const keys = Array.isArray(parsed.newAlbumIdentityKeys)
+      ? parsed.newAlbumIdentityKeys
+      : []
+    const newAlbumIdentityKeys = Array.from(new Set(
+      keys
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )).sort((a, b) => a.localeCompare(b))
+
+    return {
+      sessionKey,
+      completedAt,
+      newAlbumIdentityKeys
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function setLatestLibrarySyncSummary(summary: LatestLibrarySyncSummary): Promise<void> {
+  await setAppMeta(LATEST_LIBRARY_SYNC_SUMMARY_META_KEY, JSON.stringify(summary))
 }
 
 function normalizePlaylistTrackMemberships(): void {
@@ -2001,7 +2097,7 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
 export async function upsertSubsonicTracks(
   sourceId: number,
   tracks: SubsonicTrackUpsertInput[],
-  options: { persist?: boolean } = {}
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
     return { inserted: 0, updated: 0 }
@@ -2124,9 +2220,10 @@ export async function upsertSubsonicTracks(
         source_path,
         is_available,
         availability_reason,
+        sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -2154,6 +2251,7 @@ export async function upsertSubsonicTracks(
         sourceId,
         track.source_track_id,
         track.source_path,
+        options.syncSessionKey ?? null,
         now,
         now
       ]
@@ -2209,9 +2307,9 @@ export function getTrackByPath(trackPath: string): DbTrack | null {
     LIMIT 1
   `)
   stmt.bind([trackPath])
-  const row = stmt.step() ? (stmt.getAsObject() as DbTrack) : null
+  const row = stmt.step() ? (stmt.getAsObject() as DbTrackRow) : null
   stmt.free()
-  return row
+  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
 }
 
 export async function setTrackAvailability(
@@ -2394,7 +2492,7 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
 export async function upsertJellyfinTracks(
   sourceId: number,
   tracks: JellyfinTrackUpsertInput[],
-  options: { persist?: boolean } = {}
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
     return { inserted: 0, updated: 0 }
@@ -2517,9 +2615,10 @@ export async function upsertJellyfinTracks(
         source_path,
         is_available,
         availability_reason,
+        sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -2547,6 +2646,7 @@ export async function upsertJellyfinTracks(
         sourceId,
         track.source_track_id,
         track.source_path,
+        options.syncSessionKey ?? null,
         now,
         now
       ]
@@ -3157,20 +3257,19 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: stri
 }
 
 // Get unique albums
-export function getAlbums(): {
-  identity_key: string
-  album: string
-  artist: string
-  primary_artist: string | null
-  year: number | null
-  artwork_hash: string | null
-  track_count: number
-}[] {
+export function listAlbumIdentityKeys(): string[] {
+  const tracks = readAllTrackRowsUnordered()
+  if (tracks.length === 0) return []
+  return Array.from(buildAlbumGroups(tracks).keys()).sort((a, b) => a.localeCompare(b))
+}
+
+export function getAlbums(): Album[] {
   if (!db) return []
   const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
 
   const groups = buildAlbumGroups(tracks)
+  const latestSyncSummary = getLatestLibrarySyncSummary()
   const albums = Array.from(groups.values())
     .filter(isEligibleAlbumGroup)
     .map((group) => {
@@ -3190,6 +3289,10 @@ export function getAlbums(): {
         primaryArtist = null
       }
 
+      const hasUnplayedLatestSyncTrack = group.tracks.some((track) =>
+        isTrackNewForLatestSync(track.sync_session_key, latestSyncSummary, track.latest_sync_dismissed_at)
+      )
+
       return {
         identity_key: group.identityKey,
         album,
@@ -3197,7 +3300,8 @@ export function getAlbums(): {
         primary_artist: primaryArtist,
         year: group.year,
         artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
-        track_count: group.trackCount
+        track_count: group.trackCount,
+        is_new: isAlbumNewForLatestSync(group.identityKey, latestSyncSummary, hasUnplayedLatestSyncTrack)
       }
     })
 
@@ -3227,9 +3331,9 @@ export function searchTracks(query: string): DbTrack[] {
     LIMIT 100
   `)
   stmt.bind([pattern, pattern, pattern])
-  const tracks: DbTrack[] = []
+  const tracks: DbTrackRow[] = []
   while (stmt.step()) {
-    const row = stmt.getAsObject() as DbTrack
+    const row = stmt.getAsObject() as DbTrackRow
     tracks.push(row)
   }
   stmt.free()
@@ -3886,7 +3990,7 @@ export async function scanFolder(
   onProgress?: (current: number, total: number, file: string) => void,
   options: ScanWriteOptions = {}
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
-  const { persist = true, signal, onIssue } = options
+  const { persist = true, signal, onIssue, syncSessionKey = null } = options
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
   throwIfScanCancelled(signal)
 
@@ -3959,14 +4063,14 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, now
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
       }
@@ -5612,6 +5716,12 @@ export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   `)
 }
 
+export async function markTrackLatestSyncSeen(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath])
+  await saveDatabase()
+}
+
 export async function addRecentlyPlayed(trackPath: string): Promise<void> {
   if (!db) return
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, Date.now()])
@@ -5933,7 +6043,9 @@ type MetadataMatchResult =
   | { kind: 'ambiguous' }
   | { kind: 'none' }
 
-function buildPlaylistImportLookupIndex(tracks: DbTrack[]): PlaylistImportLookupIndex {
+function buildPlaylistImportLookupIndex(
+  tracks: Array<Pick<DbTrackRow, 'path' | 'title' | 'artist' | 'album'>>
+): PlaylistImportLookupIndex {
   const index: PlaylistImportLookupIndex = {
     exactPath: new Map(),
     caseInsensitivePath: new Map(),

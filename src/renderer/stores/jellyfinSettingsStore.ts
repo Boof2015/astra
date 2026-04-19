@@ -22,8 +22,8 @@ interface JellyfinSettingsStore {
   updateSource: (sourceId: number, input: JellyfinSourceUpdateInput) => Promise<JellyfinSource | null>
   deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<boolean>
   testSource: (input: JellyfinSourceTestInput) => Promise<JellyfinSourceTestResult>
-  syncSource: (sourceId: number) => Promise<boolean>
-  syncAll: () => Promise<boolean>
+  syncSource: (sourceId: number, syncSessionKey?: string) => Promise<boolean>
+  syncAll: (syncSessionKey?: string) => Promise<boolean>
 }
 
 let statusUnsubscribe: (() => void) | null = null
@@ -147,9 +147,9 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
       }
     },
 
-    syncSource: async (sourceId) => {
+    syncSource: async (sourceId, syncSessionKey) => {
       try {
-        await window.electronAPI.jellyfin.syncSource(sourceId)
+        await window.electronAPI.jellyfin.syncSource(sourceId, syncSessionKey)
         await fetchAll()
         return true
       } catch (error) {
@@ -158,9 +158,9 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
       }
     },
 
-    syncAll: async () => {
+    syncAll: async (syncSessionKey) => {
       try {
-        await window.electronAPI.jellyfin.syncAll()
+        await window.electronAPI.jellyfin.syncAll(syncSessionKey)
         await fetchAll()
         return true
       } catch (error) {
