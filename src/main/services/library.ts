@@ -343,9 +343,15 @@ interface ScanControlOptions extends ScanIssueOptions {
   signal?: AbortSignal
 }
 
+type LibraryFolderScanMode = 'incremental' | 'force'
+
 interface ScanWriteOptions extends ScanControlOptions {
   persist?: boolean
   syncSessionKey?: string | null
+}
+
+interface FolderScanOptions extends ScanWriteOptions {
+  mode?: LibraryFolderScanMode
 }
 
 export class LibraryScanCancelledError extends Error {
@@ -3985,12 +3991,41 @@ export async function factoryResetLibraryData(): Promise<void> {
 }
 
 // Scan a folder for audio files
+interface ExistingTrackScanState {
+  id: number
+  modified_at: number
+  file_created_at: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
+}
+
+function shouldSkipExistingTrackScan(
+  existing: ExistingTrackScanState | undefined,
+  fileModifiedAtMs: number,
+  mode: LibraryFolderScanMode
+): boolean {
+  if (!existing || mode === 'force') {
+    return false
+  }
+
+  const replayGainMissing = Boolean(
+    replayGainScanEnabled
+    && (
+      existing.replaygain_track_gain_db == null
+      || existing.replaygain_album_gain_db == null
+    )
+  )
+  const fileCreatedAtMissing = existing.file_created_at == null
+
+  return existing.modified_at >= fileModifiedAtMs && !replayGainMissing && !fileCreatedAtMissing
+}
+
 export async function scanFolder(
   folderPath: string,
   onProgress?: (current: number, total: number, file: string) => void,
-  options: ScanWriteOptions = {}
+  options: FolderScanOptions = {}
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
-  const { persist = true, signal, onIssue, syncSessionKey = null } = options
+  const { persist = true, signal, onIssue, syncSessionKey = null, mode = 'incremental' } = options
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
   throwIfScanCancelled(signal)
 
@@ -4004,14 +4039,6 @@ export async function scanFolder(
   let updated = 0
   let errors = 0
   let processed = 0
-
-  interface ExistingTrackScanState {
-    id: number
-    modified_at: number
-    file_created_at: number | null
-    replaygain_track_gain_db: number | null
-    replaygain_album_gain_db: number | null
-  }
 
   const scanWorkerCount = resolveScanWorkerCount(files.length)
 
@@ -4033,16 +4060,7 @@ export async function scanFolder(
       }
       checkStmt.free()
 
-      const replayGainMissing = Boolean(
-        replayGainScanEnabled
-        && existing
-        && (
-          existing.replaygain_track_gain_db == null
-          || existing.replaygain_album_gain_db == null
-        )
-      )
-      const fileCreatedAtMissing = Boolean(existing && existing.file_created_at == null)
-      if (existing && existing.modified_at >= fileStat.mtimeMs && !replayGainMissing && !fileCreatedAtMissing) {
+      if (shouldSkipExistingTrackScan(existing, fileStat.mtimeMs, mode)) {
         return
       }
 

@@ -4580,30 +4580,6 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
         console.error(`Folder scan failed for ${folderPath}:`, error)
       }
 
-      sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
-      let metadataBackfill: { scanned: number; updated: number; errors: number } = { scanned: 0, updated: 0, errors: 0 }
-      try {
-        metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false, onIssue })
-      } catch (error) {
-        if (library.isLibraryScanCancelledError(error)) {
-          throw error
-        }
-        issueCollector.recordError('backfill', folderPath, error, folderPath)
-        metadataBackfill.errors += 1
-        console.error(`Folder metadata backfill failed for ${folderPath}:`, error)
-      }
-
-      if (metadataBackfill.scanned > 0) {
-        console.log(
-          `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
-        )
-      }
-      if (metadataBackfill.updated > 0) {
-        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
-      }
-
       return { ...scanResult, scanIssueLog: issueCollector.build() }
     })
 
@@ -4685,29 +4661,6 @@ ipcMain.handle(
           console.error(`Folder scan failed for ${folderPath}:`, error)
         }
 
-        sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel}...`)
-        let metadataBackfill: { scanned: number; updated: number; errors: number } = { scanned: 0, updated: 0, errors: 0 }
-        try {
-          metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folderPath, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue })
-        } catch (error) {
-          if (library.isLibraryScanCancelledError(error)) {
-            throw error
-          }
-          issueCollector.recordError('backfill', folderPath, error, folderPath)
-          metadataBackfill.errors += 1
-          console.error(`Folder metadata backfill failed for ${folderPath}:`, error)
-        }
-        if (metadataBackfill.scanned > 0) {
-          console.log(
-            `Folder metadata backfill: scanned=${metadataBackfill.scanned}, updated=${metadataBackfill.updated}, errors=${metadataBackfill.errors}, folder=${folderPath}`
-          )
-        }
-        if (metadataBackfill.updated > 0) {
-          mainWindow?.webContents.send('library:audioMetadataBackfillComplete', metadataBackfill)
-        }
-
         sendLibraryScanStage('cleanup', `Finalizing ${folderLabel}...`)
         let removed = 0
         try {
@@ -4781,9 +4734,6 @@ ipcMain.handle('library:rescan', async () => {
       let totalAdded = 0
       let totalUpdated = 0
       let totalErrors = 0
-      let metadataBackfillScanned = 0
-      let metadataBackfillUpdated = 0
-      let metadataBackfillErrors = 0
       const folderWarnings: Record<string, string[]> = {}
       const totalFolders = folders.length
 
@@ -4815,35 +4765,6 @@ ipcMain.handle('library:rescan', async () => {
           continue
         }
 
-        sendLibraryScanStage('backfill', `Processing metadata for ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
-        try {
-          const metadataBackfill = await library.backfillIncompleteAudioMetadataForFolder(folder.path, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue })
-          metadataBackfillScanned += metadataBackfill.scanned
-          metadataBackfillUpdated += metadataBackfill.updated
-          metadataBackfillErrors += metadataBackfill.errors
-        } catch (error) {
-          if (library.isLibraryScanCancelledError(error)) {
-            throw error
-          }
-          issueCollector.recordError('backfill', folder.path, error, folder.path)
-          metadataBackfillErrors += 1
-          console.error(`Failed to backfill folder ${folder.path}:`, error)
-        }
-      }
-
-      if (metadataBackfillScanned > 0) {
-        console.log(
-          `Rescan metadata backfill: scanned=${metadataBackfillScanned}, updated=${metadataBackfillUpdated}, errors=${metadataBackfillErrors}`
-        )
-      }
-      if (metadataBackfillUpdated > 0) {
-        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', {
-          scanned: metadataBackfillScanned,
-          updated: metadataBackfillUpdated,
-          errors: metadataBackfillErrors
-        })
       }
 
       // Clean up tracks that no longer exist on disk
@@ -4896,6 +4817,105 @@ ipcMain.handle('library:rescan', async () => {
     await finalizeLatestLibrarySyncSession(syncSessionKey, syncSessionSucceeded, 'full rescan')
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'rescan_all'
+    })
+  }
+})
+
+ipcMain.handle('library:forceRescanAll', async () => {
+  const issueCollector = createLibraryScanIssueCollector()
+  logMemoryDiagnosticsMainEvent('library_scan_started', {
+    kind: 'force_rescan_all',
+    folderCount: library.getLibraryFolders().length
+  })
+  const syncSessionKey = latestLibrarySyncCoordinator.beginOperation()
+  let syncSessionSucceeded = false
+  try {
+    const result = await runLibraryScanOperation(async (signal) => {
+      const folders = library.getLibraryFolders()
+      let totalAdded = 0
+      let totalUpdated = 0
+      let totalErrors = 0
+      const folderWarnings: Record<string, string[]> = {}
+      const totalFolders = folders.length
+
+      for (let folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+        const folder = folders[folderIndex]
+        const folderLabel = basename(folder.path) || folder.path
+        const onFolderIssue = (issue: library.LibraryScanIssue) => {
+          issueCollector.record(issue, folder.path)
+        }
+        sendLibraryScanStage('scanning', `Force rescanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
+
+        try {
+          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
+            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey, mode: 'force' })
+          totalAdded += scanResult.added
+          totalUpdated += scanResult.updated
+          totalErrors += scanResult.errors
+          if (scanResult.skippedDirs.length > 0) {
+            folderWarnings[folder.path] = scanResult.skippedDirs
+          }
+        } catch (error) {
+          if (library.isLibraryScanCancelledError(error)) {
+            throw error
+          }
+          issueCollector.recordError('scan', folder.path, error, folder.path)
+          totalErrors += 1
+          console.error(`Failed to force rescan folder ${folder.path}:`, error)
+          continue
+        }
+      }
+
+      sendLibraryScanStage('cleanup', 'Finalizing library...')
+      let removed = 0
+      try {
+        removed = await library.cleanupMissingTracks({
+          signal,
+          persist: false,
+          onIssue: (issue) => issueCollector.record(issue)
+        })
+      } catch (error) {
+        if (library.isLibraryScanCancelledError(error)) {
+          throw error
+        }
+        issueCollector.recordError('cleanup', '(library)', error)
+        totalErrors += 1
+        console.error('Failed to finalize force rescan cleanup:', error)
+      }
+
+      return {
+        added: totalAdded,
+        updated: totalUpdated,
+        errors: totalErrors,
+        removed,
+        folderWarnings,
+        scanIssueLog: issueCollector.build()
+      }
+    })
+
+    syncSessionSucceeded = true
+    return { ...result, canceled: false }
+  } catch (error) {
+    if (library.isLibraryScanCancelledError(error)) {
+      logMemoryDiagnosticsMainEvent('library_scan_canceled', {
+        kind: 'force_rescan_all'
+      })
+      return {
+        added: 0,
+        updated: 0,
+        errors: 0,
+        removed: 0,
+        folderWarnings: {},
+        scanIssueLog: issueCollector.build(),
+        canceled: true
+      }
+    }
+    throw error
+  } finally {
+    await finalizeLatestLibrarySyncSession(syncSessionKey, syncSessionSucceeded, 'force rescan all')
+    logMemoryDiagnosticsMainEvent('library_scan_finished', {
+      kind: 'force_rescan_all'
     })
   }
 })

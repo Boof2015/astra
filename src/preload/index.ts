@@ -858,6 +858,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       canceled?: boolean
     }>,
+    forceRescanAll: () => ipcRenderer.invoke('library:forceRescanAll') as Promise<{
+      added: number
+      updated: number
+      errors: number
+      removed?: number
+      folderWarnings?: Record<string, string[]>
+      scanIssueLog?: ScanIssueLog
+      canceled?: boolean
+    }>,
     getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
@@ -1176,6 +1185,15 @@ declare global {
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
+          added: number
+          updated: number
+          errors: number
+          removed?: number
+          folderWarnings?: Record<string, string[]>
+          scanIssueLog?: ScanIssueLog
+          canceled?: boolean
+        }>
+        forceRescanAll: () => Promise<{
           added: number
           updated: number
           errors: number

@@ -167,6 +167,7 @@ interface LibraryStore {
   addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
+  forceRescanAll: () => Promise<void>
   backfillReplayGainMetadata: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
   selectAlbum: (
@@ -829,6 +830,41 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     try {
       const result = await window.electronAPI.library.rescan()
+      if (result.canceled) {
+        return
+      }
+      if (result.folderWarnings) {
+        set({ folderWarnings: result.folderWarnings })
+      } else {
+        set({ folderWarnings: {} })
+      }
+      set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
+      await get().loadLibrary()
+    } finally {
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
+    }
+  },
+
+  forceRescanAll: async () => {
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Force rescanning library...' },
+      lastScanIssueLog: null
+    })
+
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
+      set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
+    })
+
+    try {
+      const result = await window.electronAPI.library.forceRescanAll()
       if (result.canceled) {
         return
       }
