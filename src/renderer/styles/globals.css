@@ -7835,23 +7835,52 @@ body.folder-settings-open .app {
 }
 
 .eq-band-point {
-  r: 8;
+  cursor: grab;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+.eq-band-point-shape {
   fill: var(--accent);
   stroke: white;
   stroke-width: 2;
-  cursor: grab;
-  filter: drop-shadow(0 0 4px var(--accent-glow));
-  transition: r 0.1s ease;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.12s ease, fill var(--transition-fast), stroke var(--transition-fast);
 }
 
 .eq-band-point:hover,
 .eq-band-point.selected {
-  r: 10;
   filter: drop-shadow(0 0 8px var(--accent));
+}
+
+.eq-band-point:hover .eq-band-point-shape,
+.eq-band-point.selected .eq-band-point-shape {
+  transform: scale(1.15);
 }
 
 .eq-band-point:active {
   cursor: grabbing;
+}
+
+.eq-band-point.pass-filter {
+  cursor: ew-resize;
+}
+
+.eq-band-point.pass-filter:active {
+  cursor: ew-resize;
+}
+
+.eq-band-pass-guide {
+  stroke: rgba(var(--accent-rgb), 0.3);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+  pointer-events: none;
+  transition: stroke-opacity var(--transition-fast), stroke var(--transition-fast);
+}
+
+.eq-band-point.pass-filter:hover .eq-band-pass-guide,
+.eq-band-point.pass-filter.selected .eq-band-pass-guide {
+  stroke: rgba(var(--accent-rgb), 0.6);
 }
 
 /* Band Sliders Area */
@@ -7900,6 +7929,11 @@ body.folder-settings-open .app {
   cursor: pointer;
   touch-action: none;
   min-height: 88px;
+}
+
+.eq-slider-track.disabled {
+  cursor: default;
+  opacity: 0.48;
 }
 
 /* Vertical slider rail */
@@ -7978,6 +8012,19 @@ body.folder-settings-open .app {
 .eq-inline-value:hover {
   border-color: var(--glass-border);
   background: rgba(255, 255, 255, 0.02);
+}
+
+.eq-inline-value.disabled,
+.eq-inline-value:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  opacity: 0.58;
+}
+
+.eq-inline-value.disabled:hover,
+.eq-inline-value:disabled:hover {
+  border-color: transparent;
+  background: transparent;
 }
 
 .eq-inline-input {

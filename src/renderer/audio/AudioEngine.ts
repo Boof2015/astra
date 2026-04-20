@@ -4546,6 +4546,8 @@ export class AudioEngine {
       case 'lowshelf': return 'lowshelf'
       case 'highshelf': return 'highshelf'
       case 'peaking': return 'peaking'
+      case 'highpass': return 'highpass'
+      case 'lowpass': return 'lowpass'
     }
   }
 

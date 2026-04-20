@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { EQBand } from '../../types/audio'
+import { isPassEQBandType } from '../../utils/eq'
 
 interface EQBandSliderProps {
   band: EQBand
@@ -23,9 +24,11 @@ const MIN_Q = 0.1
 const MAX_Q = 18
 
 const TYPE_OPTIONS: Array<{ value: EQBand['type']; label: string }> = [
-  { value: 'lowshelf', label: 'Low Shelf' },
-  { value: 'peaking', label: 'Peaking' },
+  { value: 'highpass', label: 'High Pass' },
   { value: 'highshelf', label: 'High Shelf' },
+  { value: 'peaking', label: 'Peaking' },
+  { value: 'lowshelf', label: 'Low Shelf' },
+  { value: 'lowpass', label: 'Low Pass' },
 ]
 
 type EditableField = 'gain' | 'frequency' | 'q' | null
@@ -50,6 +53,22 @@ function formatQ(q: number): string {
 }
 
 function BandTypeIcon({ type, className }: { type: EQBand['type']; className?: string }) {
+  if (type === 'highpass') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M6.25 12V9.8C6.25 8.2 7.25 6.7 8.8 5.8L14.5 4.5" />
+      </svg>
+    )
+  }
+
+  if (type === 'lowpass') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M1.5 4.5L7.2 5.8C8.75 6.7 9.75 8.2 9.75 9.8V12" />
+      </svg>
+    )
+  }
+
   if (type === 'lowshelf') {
     return (
       <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -91,7 +110,15 @@ export default function EQBandSlider({
   const [showTypeMenu, setShowTypeMenu] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const typeMenuRef = useRef<HTMLDivElement>(null)
-  const gain = isPreamp ? band.gain : band.gain
+  const gain = band.gain
+  const gainDisabled = !isPreamp && isPassEQBandType(band.type)
+  const gainValueLabel = gainDisabled ? 'N/A' : formatGain(gain)
+  const gainTitle = gainDisabled ? 'Gain is not used for highpass/lowpass filters' : undefined
+  const gainAriaLabel = gainDisabled
+    ? `Band ${index + 1} gain is not used for ${band.type === 'highpass' ? 'highpass' : 'lowpass'} filters`
+    : isPreamp
+      ? 'Preamp gain in dB'
+      : `Band ${index + 1} gain in dB`
 
   const getGainFromClientY = useCallback(
     (clientY: number, element: HTMLDivElement): number => {
@@ -133,7 +160,7 @@ export default function EQBandSlider({
 
     const parsed = parseFloat(text)
     if (!Number.isNaN(parsed)) {
-      if (editingField === 'gain') {
+      if (editingField === 'gain' && !gainDisabled) {
         onGainChange(clamp(parsed, MIN_DB, MAX_DB))
       } else if (editingField === 'frequency' && onFrequencyChange) {
         onFrequencyChange(Math.round(clamp(parsed, MIN_FREQ, MAX_FREQ)))
@@ -143,7 +170,7 @@ export default function EQBandSlider({
     }
 
     clearEditorState()
-  }, [clearEditorState, editingField, onFrequencyChange, onGainChange, onQChange, text])
+  }, [clearEditorState, editingField, gainDisabled, onFrequencyChange, onGainChange, onQChange, text])
 
   const cancelEdit = useCallback(() => {
     clearEditorState()
@@ -183,7 +210,9 @@ export default function EQBandSlider({
     field: Exclude<EditableField, null>,
     displayValue: string,
     className: string,
-    ariaLabel: string
+    ariaLabel: string,
+    disabled = false,
+    title?: string
   ) => {
     if (editingField === field) {
       return (
@@ -215,10 +244,20 @@ export default function EQBandSlider({
     return (
       <button
         type="button"
-        className={`eq-inline-value ${className}`}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => startEdit(field, event)}
+        className={`eq-inline-value ${className} ${disabled ? 'disabled' : ''}`}
+        onPointerDown={(event) => {
+          if (!disabled) {
+            event.stopPropagation()
+          }
+        }}
+        onClick={(event) => {
+          if (disabled) return
+          startEdit(field, event)
+        }}
         aria-label={ariaLabel}
+        aria-disabled={disabled}
+        tabIndex={disabled ? -1 : undefined}
+        title={title}
       >
         {displayValue}
       </button>
@@ -227,21 +266,23 @@ export default function EQBandSlider({
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (gainDisabled) return
       e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
       onSelect()
       setShowTypeMenu(false)
       onGainChange(getGainFromClientY(e.clientY, e.currentTarget))
     },
-    [onSelect, onGainChange, getGainFromClientY]
+    [gainDisabled, onSelect, onGainChange, getGainFromClientY]
   )
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (gainDisabled) return
       if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
       onGainChange(getGainFromClientY(e.clientY, e.currentTarget))
     },
-    [onGainChange, getGainFromClientY]
+    [gainDisabled, onGainChange, getGainFromClientY]
   )
 
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -284,14 +325,16 @@ export default function EQBandSlider({
       {/* Gain display */}
       {renderEditableValue(
         'gain',
-        formatGain(gain),
+        gainValueLabel,
         'eq-band-gain',
-        isPreamp ? 'Preamp gain in dB' : `Band ${index + 1} gain in dB`
+        gainAriaLabel,
+        gainDisabled,
+        gainTitle
       )}
 
       {/* Vertical slider track */}
       <div
-        className="eq-slider-track"
+        className={`eq-slider-track ${gainDisabled ? 'disabled' : ''}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -301,6 +344,8 @@ export default function EQBandSlider({
         aria-valuemin={MIN_DB}
         aria-valuemax={MAX_DB}
         aria-label={isPreamp ? 'Preamp' : `Band ${index + 1}: ${formatFreq(band.frequency)}`}
+        aria-disabled={gainDisabled}
+        title={gainTitle}
       >
         {/* Zero line */}
         <div className="eq-slider-zero" style={{ bottom: `${zeroPercent}%` }} />

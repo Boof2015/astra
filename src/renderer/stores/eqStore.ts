@@ -2,6 +2,13 @@ import { create } from 'zustand'
 import { EQBand, EQPreset } from '../types/audio'
 import { audioEngine } from '../audio/AudioEngine'
 import { parseAutoEQ } from '../utils/autoEQParser'
+import {
+  clampEQGain,
+  createNormalizedEQBand,
+  parseEQPresetData,
+  parseEQPresetJSON,
+  serializeEQPresetData,
+} from '../utils/eq'
 import { useAudioSettingsStore } from './audioSettingsStore'
 
 let bandIdCounter = 0
@@ -33,12 +40,26 @@ function loadCustomPresets(): EQPreset[] {
   try {
     const raw = localStorage.getItem(EQ_STORAGE_KEY)
     if (!raw) return []
-    const parsed = JSON.parse(raw) as EQPreset[]
-    return parsed.map((p) => ({
-      ...p,
-      isCustom: true,
-      bands: p.bands.map((b) => ({ ...b, id: genId() })),
-    }))
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+
+    return parsed.flatMap((value, index) => {
+      try {
+        const preset = parseEQPresetData(value, genId)
+        const rawPreset = value as Partial<EQPreset>
+        const presetId = typeof rawPreset.id === 'string' && rawPreset.id.trim().length > 0
+          ? rawPreset.id.trim()
+          : `custom-restored-${index + 1}`
+
+        return [{
+          ...preset,
+          id: presetId,
+          isCustom: true,
+        }]
+      } catch {
+        return []
+      }
+    })
   } catch {
     return []
   }
@@ -47,13 +68,16 @@ function loadCustomPresets(): EQPreset[] {
 function persistCustomPresets(presets: EQPreset[]): void {
   const serializable = presets
     .filter((p) => p.isCustom)
-    .map((p) => ({
+    .map((p) => {
+      const serializedPreset = serializeEQPresetData(p)
+      return {
       id: p.id,
-      name: p.name,
-      preamp: p.preamp,
+      name: serializedPreset.name,
+      preamp: serializedPreset.preamp,
       isCustom: true,
-      bands: p.bands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
-    }))
+      bands: serializedPreset.bands,
+    }
+    })
   try {
     localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(serializable))
   } catch (error) {
@@ -309,11 +333,11 @@ interface EQStore {
 }
 
 function createDefaultBands(): EQBand[] {
-  return DEFAULT_BANDS.map((band) => ({ ...band, id: genId(), gain: 0 }))
+  return DEFAULT_BANDS.map((band) => createNormalizedEQBand(band, genId()))
 }
 
 function buildBandsFromPreset(preset: EQPreset): EQBand[] {
-  return preset.bands.map((band) => ({ ...band, id: genId() }))
+  return preset.bands.map((band) => createNormalizedEQBand(band, genId()))
 }
 
 export const useEQStore = create<EQStore>((set, get) => ({
@@ -341,7 +365,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
   },
 
   setPreamp: (dB: number) => {
-    const clamped = Math.max(-12, Math.min(12, dB))
+    const clamped = clampEQGain(dB)
     set({ preamp: clamped, activePresetId: null })
     audioEngine.updatePreamp(clamped)
     if (!isApplyingDeviceProfileRestore) {
@@ -372,13 +396,12 @@ export const useEQStore = create<EQStore>((set, get) => ({
       freq = Math.round(Math.sqrt(gapStart * gapEnd))
     }
 
-    const newBand: EQBand = {
-      id: genId(),
+    const newBand: EQBand = createNormalizedEQBand({
       type: partial?.type ?? 'peaking',
       frequency: partial?.frequency ?? freq,
       gain: partial?.gain ?? 0,
       Q: partial?.Q ?? 1.0,
-    }
+    }, genId())
 
     const newBands = [...bands, newBand].sort((a, b) => a.frequency - b.frequency)
     set({ bands: newBands, activePresetId: null })
@@ -402,7 +425,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
   updateBand: (index: number, updates: Partial<EQBand>) => {
     const { bands, enabled } = get()
     if (index < 0 || index >= bands.length) return
-    const updated = { ...bands[index], ...updates }
+    const updated = createNormalizedEQBand({ ...bands[index], ...updates }, bands[index].id)
     const newBands = [...bands]
     newBands[index] = updated
     set({ bands: newBands, activePresetId: null })
@@ -487,7 +510,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
       ...preset,
       id,
       isCustom: true,
-      bands: preset.bands.slice(0, 10).map((b) => ({ ...b, id: genId() })),
+      bands: preset.bands.slice(0, 10).map((band) => createNormalizedEQBand(band, genId())),
     }
     const updated = [...presets, imported]
     set({ presets: updated, activePresetId: id })
@@ -500,12 +523,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
     const preset = presets.find((p) => p.id === presetId)
     if (!preset) return
 
-    const exportData = {
-      version: 1,
-      name: preset.name,
-      preamp: preset.preamp,
-      bands: preset.bands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
-    }
+    const exportData = serializeEQPresetData(preset)
 
     const filePath = await window.electronAPI.showSaveDialog({
       title: 'Export EQ Preset',
@@ -526,23 +544,8 @@ export const useEQStore = create<EQStore>((set, get) => ({
 
     try {
       const content = await window.electronAPI.readTextFile(filePath)
-      const data = JSON.parse(content)
-      if (!data.name || !Array.isArray(data.bands)) {
-        throw new Error('Invalid preset file')
-      }
-      const bands: EQBand[] = data.bands.map((b: Record<string, unknown>) => ({
-        id: genId(),
-        type: b.type === 'lowshelf' ? 'lowshelf' : b.type === 'highshelf' ? 'highshelf' : 'peaking',
-        frequency: Math.max(20, Math.min(20000, Number(b.frequency) || 1000)),
-        gain: Math.max(-12, Math.min(12, Number(b.gain) || 0)),
-        Q: Math.max(0.1, Math.min(18, Number(b.Q) || 1.0)),
-      }))
-      get().importPreset({
-        id: '',
-        name: data.name,
-        preamp: Math.max(-12, Math.min(12, Number(data.preamp) || 0)),
-        bands,
-      })
+      const preset = parseEQPresetJSON(content, genId)
+      get().importPreset(preset)
     } catch (err) {
       console.error('Failed to import preset:', err)
     }

@@ -58,7 +58,7 @@ export interface AudioEngineEvents {
 // EQ Band
 export interface EQBand {
   id: string
-  type: 'lowshelf' | 'peaking' | 'highshelf'
+  type: 'lowshelf' | 'peaking' | 'highshelf' | 'highpass' | 'lowpass'
   frequency: number
   gain: number
   Q: number
