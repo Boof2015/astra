@@ -210,15 +210,9 @@ export default function EQFrequencyResponse({
                 />
               )}
               {passFilter ? (
-                <rect
+                <polygon
                   className="eq-band-point-shape"
-                  x={cx - 6}
-                  y={cy - 6}
-                  width={12}
-                  height={12}
-                  rx={2}
-                  ry={2}
-                  transform={`rotate(45 ${cx} ${cy})`}
+                  points={`${cx},${cy - 8} ${cx + 8},${cy} ${cx},${cy + 8} ${cx - 8},${cy}`}
                 />
               ) : (
                 <circle
