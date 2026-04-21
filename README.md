@@ -16,7 +16,7 @@ Astra plays your local music - FLACs, MP3s, whatever your collection looks like.
 
 ## Playback
 
-Gapless playback with pre-buffering so albums flow the way they were mastered. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF natively, with an FFmpeg fallback for anything else. Dolby Atmos multichannel decoding works without Atmos-compatible hardware. Shuffle, repeat, and a drag-and-drop queue handle the basics.
+Gapless playback with pre-buffering so albums flow the way they were intended. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF natively, with an FFmpeg fallback for anything else. Dolby Atmos multichannel decoding works without Atmos-compatible hardware.
 
 ## Visualizers
 
@@ -38,13 +38,17 @@ Output device selection, loudness normalization, per-channel remapping for multi
 
 ## Interface
 
-The UI pulls its accent color from whatever's playing, or you can pick from a handful of dark themes and set your own. A waveform seek bar shows the shape of the track as you scrub through it. The home page has a sky that shifts with the time of day.
+Fullscreen mode shows album art with an ambient spectrum backdrop.
 
 ![Astra fullscreen mode](assets/Fullscreen.png)
 
-Fullscreen mode shows album art with an ambient spectrum backdrop. The mini player keeps controls accessible when you want Astra out of the way.
+The mini player keeps controls accessible when you want Astra out of the way.
 
 ![Astra mini player](assets/Miniplayer.png)
+
+There's also synced lyrics with auto-scroll, pulled automatically from embedded lyrics, an .lrc file, or from LRCLIB.
+
+![Astra lyrics](assets/Lyrics.png)
 
 ## Integrations
 
