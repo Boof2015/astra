@@ -8,7 +8,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
-import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
+import type { LyricsLine, LyricsSource, LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
@@ -24,9 +24,10 @@ interface LyricsDockLayout {
   openHeightPx: number
 }
 
-function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
+function getLyricsSourceLabel(source: LyricsSource): string {
   if (source === 'embedded') return 'Embedded'
   if (source === 'manual') return 'Manual'
+  if (source === 'lrc') return 'LRC File'
   return 'LRCLIB'
 }
 

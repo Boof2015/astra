@@ -4288,8 +4288,8 @@ ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) =
 })
 
 // Get all albums
-ipcMain.handle('library:getAlbums', () => {
-  return library.getAlbums()
+ipcMain.handle('library:getAlbums', (_event, options?: library.AlbumListOptions) => {
+  return library.getAlbums(options)
 })
 
 // Search tracks

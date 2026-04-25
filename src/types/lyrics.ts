@@ -1,5 +1,5 @@
 export type LyricsProvider = 'lrclib'
-export type LyricsSource = 'embedded' | 'lrclib' | 'manual'
+export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc'
 export type LyricsLookupStatus = 'hit' | 'not_found' | 'transient_error'
 
 export interface LyricsLine {

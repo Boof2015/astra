@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { findActiveSyncedLineIndex } from './lyricsPresentation.ts'
+import { findActiveSyncedLineIndex, getLyricsSourceLabel } from './lyricsPresentation.ts'
 
 const lines = [
   { timestampMs: 1_000, text: 'line 1' },
@@ -22,4 +22,8 @@ test('findActiveSyncedLineIndex returns the latest line before the current time'
 
 test('findActiveSyncedLineIndex returns the final line after the last timestamp', () => {
   assert.equal(findActiveSyncedLineIndex(lines, 9), 2)
+})
+
+test('getLyricsSourceLabel labels local LRC files', () => {
+  assert.equal(getLyricsSourceLabel('lrc'), 'LRC File')
 })

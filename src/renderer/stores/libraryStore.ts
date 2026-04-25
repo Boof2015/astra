@@ -121,6 +121,8 @@ interface LibraryStore {
   fullTracks: DbTrack[]
   totalTrackCount: number
   albums: Album[]
+  albumsIncludingSingles: Album[]
+  albumsIncludingSinglesLoaded: boolean
   artists: Artist[]
   folders: LibraryFolder[]
   viewMode: ViewMode
@@ -152,6 +154,7 @@ interface LibraryStore {
   loadFullTracks: () => Promise<void>
   loadTrackCount: () => Promise<void>
   loadAlbums: () => Promise<void>
+  loadAlbumsIncludingSingles: () => Promise<void>
   loadArtists: () => Promise<void>
   loadFolders: () => Promise<void>
   loadFolderSubfolderSummary: (folderPath: string) => Promise<FolderSubfolderSummary>
@@ -421,6 +424,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   fullTracks: [],
   totalTrackCount: 0,
   albums: [],
+  albumsIncludingSingles: [],
+  albumsIncludingSinglesLoaded: false,
   artists: [],
   folders: [],
   viewMode: 'tracks',
@@ -449,6 +454,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Load entire library
   loadLibrary: async () => {
     set({ isLoading: true })
+    const shouldReloadAlbumsIncludingSingles = get().albumsIncludingSinglesLoaded
     const currentSelection = {
       album: get().selectedAlbum,
       artist: get().selectedArtist,
@@ -458,6 +464,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       get().loadTracks(),
       get().loadTrackCount(),
       get().loadAlbums(),
+      shouldReloadAlbumsIncludingSingles ? get().loadAlbumsIncludingSingles() : Promise.resolve(),
       get().loadArtists(),
       get().loadFolders(),
       get().loadFavorites(),
@@ -544,6 +551,11 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   loadAlbums: async () => {
     const albums = await window.electronAPI.library.getAlbums()
     set({ albums })
+  },
+
+  loadAlbumsIncludingSingles: async () => {
+    const albumsIncludingSingles = await window.electronAPI.library.getAlbums({ includeSingles: true })
+    set({ albumsIncludingSingles, albumsIncludingSinglesLoaded: true })
   },
 
   // Load artists
@@ -1190,6 +1202,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         favoriteTracks,
         recentlyPlayed,
         albums: updateAlbumNewFlagInCollection(state.albums, albumIdentityKey, albumIsNew),
+        albumsIncludingSingles: updateAlbumNewFlagInCollection(state.albumsIncludingSingles, albumIdentityKey, albumIsNew),
         selectedAlbum: updateSelectedAlbumNewFlag(state.selectedAlbum, albumIdentityKey, albumIsNew),
         selectionHistory: updateSelectionHistoryForSeenTrack(
           state.selectionHistory,

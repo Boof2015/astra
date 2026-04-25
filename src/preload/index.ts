@@ -186,6 +186,10 @@ export interface Album {
   is_new: boolean
 }
 
+export interface AlbumListOptions {
+  includeSingles?: boolean
+}
+
 export interface Artist {
   artist: string
   track_count: number
@@ -793,7 +797,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
-    getAlbums: () => ipcRenderer.invoke('library:getAlbums'),
+    getAlbums: (options?: AlbumListOptions) => ipcRenderer.invoke('library:getAlbums', options),
     search: (query: string) => ipcRenderer.invoke('library:search', query),
     getMetadataOverridePaths: () => ipcRenderer.invoke('library:getMetadataOverridePaths'),
     clearMetadataOverrides: (trackPaths: string[]) => ipcRenderer.invoke('library:clearMetadataOverrides', trackPaths),
@@ -1126,7 +1130,7 @@ declare global {
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
-        getAlbums: () => Promise<Album[]>
+        getAlbums: (options?: AlbumListOptions) => Promise<Album[]>
         search: (query: string) => Promise<DbTrack[]>
         getMetadataOverridePaths: () => Promise<string[]>
         clearMetadataOverrides: (trackPaths: string[]) => Promise<{ cleared: number }>

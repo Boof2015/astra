@@ -1724,7 +1724,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Lyrics</h4>
-                  <p>Embedded lyrics with optional LRCLIB fallback.</p>
+                  <p>LRC files and embedded lyrics with optional LRCLIB fallback.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">

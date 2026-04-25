@@ -1531,7 +1531,7 @@ export default function MetadataView() {
             </div>
 
             <p className="metadata-lyrics-tools-note">
-              Imported manual lyrics override embedded and LRCLIB results. Sync offset retimes synced lyrics from any source.
+              Imported manual lyrics override LRC files, embedded tags, and LRCLIB results. Sync offset retimes synced lyrics from any source.
             </p>
 
             <div className="metadata-lyrics-tools-actions">

@@ -34,9 +34,9 @@ export const DEFAULT_LYRICS_BODY_COPY: LyricsBodyCopy = {
   loadingMessage: 'Loading lyrics...',
   idleMessage: 'Lyrics are ready when a track is selected.',
   noReadableTextMessage: 'Lyrics were found, but no readable text is available.',
-  onlineDisabledMessage: 'No embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.',
+  onlineDisabledMessage: 'No local or embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.',
   providerNotFoundMessage: 'No lyrics found on LRCLIB for this track.',
-  embeddedMissingMessage: 'No embedded lyrics found for this track.'
+  embeddedMissingMessage: 'No local or embedded lyrics found for this track.'
 }
 
 export const INFO_SIDEBAR_LYRICS_BODY_COPY: LyricsBodyCopy = {
@@ -47,6 +47,7 @@ export const INFO_SIDEBAR_LYRICS_BODY_COPY: LyricsBodyCopy = {
 export function getLyricsSourceLabel(source: LyricsSource): string {
   if (source === 'embedded') return 'Embedded'
   if (source === 'manual') return 'Manual'
+  if (source === 'lrc') return 'LRC File'
   return 'LRCLIB'
 }
 

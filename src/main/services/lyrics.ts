@@ -1,6 +1,15 @@
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './library'
+import { lookupSidecarLrcLyrics } from './lyricsSidecar'
+import {
+  createLyricsPayload,
+  normalizeLyricsText,
+  parseLyricsText,
+  parseLrcSyncedLines,
+  sanitizeSyncLines,
+  toPlainLyricsFromLines
+} from './lyricsParsing'
 import type {
   LyricsLine,
   LyricsManualClearResult,
@@ -47,12 +56,6 @@ function normalizeText(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
-function normalizeLyricsText(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const normalized = value.replace(/\r\n/g, '\n').trim()
-  return normalized.length > 0 ? normalized : null
-}
-
 function normalizeMatchKey(value: string): string {
   return value
     .normalize('NFKD')
@@ -83,68 +86,6 @@ function normalizeTrackPathList(trackPaths: string[]): string[] {
   return Array.from(new Set(normalized))
 }
 
-function sanitizeSyncLines(raw: unknown): LyricsLine[] {
-  if (!Array.isArray(raw)) return []
-
-  const lines: LyricsLine[] = []
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-    const record = entry as { text?: unknown; timestamp?: unknown }
-    if (typeof record.text !== 'string') continue
-    const text = record.text.trim()
-    if (!text) continue
-
-    const timestampMs = typeof record.timestamp === 'number' && Number.isFinite(record.timestamp)
-      ? Math.max(0, Math.floor(record.timestamp))
-      : null
-    if (timestampMs === null) continue
-
-    lines.push({ timestampMs, text })
-  }
-
-  lines.sort((left, right) => left.timestampMs - right.timestampMs)
-  return lines
-}
-
-function parseLrcSyncedLines(lyricsText: string): LyricsLine[] {
-  const out: LyricsLine[] = []
-  const rows = lyricsText.split(/\r?\n/)
-
-  for (const row of rows) {
-    const timestampRegex = /\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?]/g
-    const timestamps: number[] = []
-    let match: RegExpExecArray | null
-    while ((match = timestampRegex.exec(row)) !== null) {
-      const minutes = Number(match[1])
-      const seconds = Number(match[2])
-      const fractionRaw = match[3] ?? ''
-      const fractionMs = fractionRaw.length === 3
-        ? Number(fractionRaw)
-        : fractionRaw.length === 2
-          ? Number(fractionRaw) * 10
-          : fractionRaw.length === 1
-            ? Number(fractionRaw) * 100
-            : 0
-      if (!Number.isFinite(minutes) || !Number.isFinite(seconds) || !Number.isFinite(fractionMs)) continue
-      timestamps.push((minutes * 60_000) + (seconds * 1_000) + fractionMs)
-    }
-
-    if (timestamps.length === 0) continue
-    const text = row.replace(/\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?]/g, '').trim()
-    if (!text) continue
-
-    for (const timestampMs of timestamps) {
-      out.push({
-        timestampMs: Math.max(0, Math.floor(timestampMs)),
-        text
-      })
-    }
-  }
-
-  out.sort((left, right) => left.timestampMs - right.timestampMs)
-  return out
-}
-
 function scoreMatch(candidate: string | null, target: string): number {
   if (!candidate) return 0
   const normalizedCandidate = normalizeMatchKey(candidate)
@@ -154,41 +95,6 @@ function scoreMatch(candidate: string | null, target: string): number {
   if (normalizedCandidate.startsWith(normalizedTarget) || normalizedTarget.startsWith(normalizedCandidate)) return 60
   if (normalizedCandidate.includes(normalizedTarget) || normalizedTarget.includes(normalizedCandidate)) return 30
   return 0
-}
-
-function toPlainLyricsFromLines(lines: LyricsLine[]): string | null {
-  if (lines.length === 0) return null
-  return lines.map((line) => line.text).join('\n')
-}
-
-function createLyricsPayload(
-  source: LyricsPayload['source'],
-  provider: LyricsPayload['provider'],
-  plainLyrics: string | null,
-  syncedLyrics: string | null,
-  syncedLines: LyricsLine[]
-): LyricsPayload | null {
-  const normalizedPlain = normalizeLyricsText(plainLyrics)
-  const normalizedSynced = normalizeLyricsText(syncedLyrics)
-  const normalizedLines = syncedLines
-    .map((line) => ({
-      timestampMs: Math.max(0, Math.floor(line.timestampMs)),
-      text: line.text.trim()
-    }))
-    .filter((line) => line.text.length > 0)
-    .sort((left, right) => left.timestampMs - right.timestampMs)
-
-  if (!normalizedPlain && !normalizedSynced && normalizedLines.length === 0) {
-    return null
-  }
-
-  return {
-    source,
-    provider,
-    plainLyrics: normalizedPlain ?? toPlainLyricsFromLines(normalizedLines),
-    syncedLyrics: normalizedSynced ?? toPlainLyricsFromLines(normalizedLines),
-    syncedLines: normalizedLines
-  }
 }
 
 function hasManualLyricsOverride(entry: {
@@ -455,20 +361,6 @@ async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload |
   }
 }
 
-function parseManualLyrics(lyricsText: string): LyricsPayload | null {
-  const normalizedText = normalizeLyricsText(lyricsText)
-  if (!normalizedText) return null
-
-  const syncedLines = parseLrcSyncedLines(normalizedText)
-  const hasSyncedLyrics = syncedLines.length > 0
-  const syncedLyrics = hasSyncedLyrics ? normalizedText : null
-  const plainLyrics = hasSyncedLyrics
-    ? (toPlainLyricsFromLines(syncedLines) ?? normalizedText)
-    : normalizedText
-
-  return createLyricsPayload('manual', null, plainLyrics, syncedLyrics, syncedLines)
-}
-
 export class LyricsService {
   private enabled: boolean
   private lastError: string | null = null
@@ -484,7 +376,7 @@ export class LyricsService {
       return {
         enabled: false,
         provider: 'lrclib',
-        statusMessage: 'Online lyrics lookup is disabled. Astra will only use embedded lyrics.',
+        statusMessage: 'Online lyrics lookup is disabled. Astra will only use local LRC and embedded lyrics.',
         lastError: this.lastError
       }
     }
@@ -570,7 +462,7 @@ export class LyricsService {
       throw new Error('Select at least one track before importing lyrics.')
     }
 
-    const payload = parseManualLyrics(lyricsText)
+    const payload = parseLyricsText(lyricsText, 'manual')
     if (!payload) {
       throw new Error('Selected lyrics file is empty or could not be parsed.')
     }
@@ -663,6 +555,15 @@ export class LyricsService {
           lyrics: applyTrackOffsetToPayload(manualPayload, trackOffsetMs),
           cached: false
         }
+      }
+    }
+
+    const sidecarLrc = await lookupSidecarLrcLyrics(path)
+    if (sidecarLrc) {
+      this.setLastError(null)
+      return {
+        ...sidecarLrc,
+        lyrics: applyTrackOffsetToPayload(sidecarLrc.lyrics, trackOffsetMs)
       }
     }
 

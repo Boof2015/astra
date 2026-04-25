@@ -18,6 +18,7 @@ type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
 type AlbumSortMode = 'title' | 'artist'
 const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
+const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
   try {
@@ -26,6 +27,18 @@ function loadAlbumSortModeSetting(): AlbumSortMode {
   } catch {
     return 'title'
   }
+}
+
+function loadIncludeSinglesInAlbumsSetting(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function formatTrackCount(count: number): string {
+  return `${count} ${count === 1 ? 'track' : 'tracks'}`
 }
 
 function normalizeSortText(value: string | null | undefined): string {
@@ -199,6 +212,8 @@ function toQueueTrack(track: {
 export default function LibraryView() {
   const tracks = useLibraryStore((state) => state.tracks)
   const albums = useLibraryStore((state) => state.albums)
+  const albumsIncludingSingles = useLibraryStore((state) => state.albumsIncludingSingles)
+  const albumsIncludingSinglesLoaded = useLibraryStore((state) => state.albumsIncludingSinglesLoaded)
   const artists = useLibraryStore((state) => state.artists)
   const folders = useLibraryStore((state) => state.folders)
   const viewMode = useLibraryStore((state) => state.viewMode)
@@ -211,6 +226,7 @@ export default function LibraryView() {
   const scanProgress = useLibraryStore((state) => state.scanProgress)
   const scanStage = useLibraryStore((state) => state.scanStage)
   const cancelScan = useLibraryStore((state) => state.cancelScan)
+  const loadAlbumsIncludingSingles = useLibraryStore((state) => state.loadAlbumsIncludingSingles)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
@@ -239,6 +255,7 @@ export default function LibraryView() {
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
+  const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const previousInDetailViewRef = useRef(false)
@@ -302,6 +319,19 @@ export default function LibraryView() {
       // Ignore localStorage write failures in restricted environments.
     }
   }, [albumSortMode])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY, includeSinglesInAlbums ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  }, [includeSinglesInAlbums])
+
+  useEffect(() => {
+    if (!includeSinglesInAlbums || !isAlbumRootView || albumsIncludingSinglesLoaded) return
+    void loadAlbumsIncludingSingles()
+  }, [albumsIncludingSinglesLoaded, includeSinglesInAlbums, isAlbumRootView, loadAlbumsIncludingSingles])
 
   useEffect(() => {
     const validFilterKeys = new Set<string>([
@@ -392,6 +422,10 @@ export default function LibraryView() {
 
   const handleSetAlbumSortMode = useCallback((mode: AlbumSortMode) => {
     setAlbumSortMode(mode)
+  }, [])
+
+  const handleToggleIncludeSinglesInAlbums = useCallback(() => {
+    setIncludeSinglesInAlbums((current) => !current)
   }, [])
 
   const handleResetSourceFilters = useCallback(() => {
@@ -517,6 +551,10 @@ export default function LibraryView() {
     )
   }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
 
+  const albumGridSourceAlbums = isAlbumRootView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
+    ? albumsIncludingSingles
+    : albums
+
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -526,9 +564,9 @@ export default function LibraryView() {
   }, [sourceFilteredTracks])
 
   const sourceFilteredAlbums = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return albums
-    return albums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albums, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredAlbumIdentityKeys])
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return albumGridSourceAlbums
+    return albumGridSourceAlbums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
+  }, [albumGridSourceAlbums, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
     const visibleAlbums = !hasSearchQuery
@@ -878,7 +916,7 @@ export default function LibraryView() {
               <div className="album-info">
                 <div className="album-title">{album.album}</div>
                 <div className="album-artist">{album.artist}</div>
-                <div className="album-meta">{album.track_count} tracks{album.year ? ` \u2022 ${album.year}` : ''}</div>
+                <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` \u2022 ${album.year}` : ''}</div>
               </div>
             </div>
           ))}
@@ -963,7 +1001,7 @@ export default function LibraryView() {
                     <div className="library-artist-rail-title">{album.album}</div>
                     <div className="library-artist-rail-artist">{album.artist}</div>
                     <div className="library-artist-rail-meta">
-                      {album.track_count} tracks{album.year ? ` \u00b7 ${album.year}` : ''}
+                      {formatTrackCount(album.track_count)}{album.year ? ` \u00b7 ${album.year}` : ''}
                     </div>
                   </button>
                 ))}
@@ -1092,30 +1130,43 @@ export default function LibraryView() {
         </div>
         <div className="library-header-right">
           {isAlbumRootView && (
-            <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
-              <span
-                className="library-segmented-highlight"
-                aria-hidden="true"
-                style={{ transform: albumSortMode === 'artist' ? 'translateX(100%)' : 'translateX(0%)' }}
-              />
+            <div className="library-album-view-controls">
               <button
                 type="button"
-                className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
-                onClick={() => handleSetAlbumSortMode('title')}
-                aria-pressed={albumSortMode === 'title'}
-                title="Sort albums by title"
+                className={`library-album-singles-toggle ${includeSinglesInAlbums ? 'active' : ''}`}
+                onClick={handleToggleIncludeSinglesInAlbums}
+                role="switch"
+                aria-checked={includeSinglesInAlbums}
+                aria-label="Include singles in albums"
+                title="Include singles in albums"
               >
-                Title
+                Singles
               </button>
-              <button
-                type="button"
-                className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
-                onClick={() => handleSetAlbumSortMode('artist')}
-                aria-pressed={albumSortMode === 'artist'}
-                title="Sort albums by artist"
-              >
-                Artist
-              </button>
+              <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
+                <span
+                  className="library-segmented-highlight"
+                  aria-hidden="true"
+                  style={{ transform: albumSortMode === 'artist' ? 'translateX(100%)' : 'translateX(0%)' }}
+                />
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
+                  onClick={() => handleSetAlbumSortMode('title')}
+                  aria-pressed={albumSortMode === 'title'}
+                  title="Sort albums by title"
+                >
+                  Title
+                </button>
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
+                  onClick={() => handleSetAlbumSortMode('artist')}
+                  aria-pressed={albumSortMode === 'artist'}
+                  title="Sort albums by artist"
+                >
+                  Artist
+                </button>
+              </div>
             </div>
           )}
           {isTracklistContext && (

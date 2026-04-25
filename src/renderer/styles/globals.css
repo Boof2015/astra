@@ -5622,6 +5622,49 @@ button, .titlebar {
   font-weight: normal;
 }
 
+.library-album-view-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.library-album-singles-toggle {
+  appearance: none;
+  height: 32px;
+  min-width: 72px;
+  padding: 0 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.library-album-singles-toggle:hover {
+  color: var(--text-primary);
+  background: var(--glass-highlight);
+}
+
+.library-album-singles-toggle.active {
+  color: var(--accent-text);
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.library-album-singles-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .library-segmented-toggle {
   position: relative;
   display: grid;
@@ -12297,6 +12340,18 @@ body::after {
 
   .search-input {
     width: 130px;
+  }
+
+  .library-album-view-controls {
+    gap: 6px;
+  }
+
+  .library-album-singles-toggle {
+    height: 30px;
+    min-width: 66px;
+    padding: 0 10px;
+    font-size: 9px;
+    letter-spacing: 0.05em;
   }
 
   .library-segmented-toggle {

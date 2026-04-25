@@ -1,0 +1,71 @@
+import { access, readdir, readFile } from 'fs/promises'
+import { basename, dirname, extname, join } from 'path'
+import { parseLyricsText } from './lyricsParsing'
+import type { LyricsLookupResult, LyricsPayload } from '../../types/lyrics'
+
+const LRC_EXTENSION = '.lrc'
+const URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//
+
+type SidecarLrcLookupResult = Extract<LyricsLookupResult, { status: 'hit' }>
+
+function isLocalFilesystemPath(trackPath: string): boolean {
+  return !URL_SCHEME_PATTERN.test(trackPath)
+}
+
+async function findExtensionCaseFallback(candidateDirectory: string, audioStem: string): Promise<string | null> {
+  try {
+    const entries = await readdir(candidateDirectory, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      if (!entry.name.startsWith(audioStem)) continue
+      const extension = entry.name.slice(audioStem.length)
+      if (extension.toLocaleLowerCase() !== LRC_EXTENSION) continue
+      return join(candidateDirectory, entry.name)
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+export async function resolveSidecarLrcPath(trackPath: string): Promise<string | null> {
+  const normalizedTrackPath = trackPath.trim()
+  if (!normalizedTrackPath || !isLocalFilesystemPath(normalizedTrackPath)) return null
+
+  const trackExtension = extname(normalizedTrackPath)
+  const audioStem = basename(normalizedTrackPath, trackExtension)
+  if (!audioStem) return null
+
+  const candidateDirectory = dirname(normalizedTrackPath)
+  const exactCandidate = join(candidateDirectory, `${audioStem}${LRC_EXTENSION}`)
+  try {
+    await access(exactCandidate)
+    return exactCandidate
+  } catch {
+    return findExtensionCaseFallback(candidateDirectory, audioStem)
+  }
+}
+
+export async function resolveSidecarLrcLyrics(trackPath: string): Promise<LyricsPayload | null> {
+  const sidecarPath = await resolveSidecarLrcPath(trackPath)
+  if (!sidecarPath) return null
+
+  try {
+    const content = await readFile(sidecarPath, 'utf-8')
+    return parseLyricsText(content, 'lrc')
+  } catch {
+    return null
+  }
+}
+
+export async function lookupSidecarLrcLyrics(trackPath: string): Promise<SidecarLrcLookupResult | null> {
+  const lyrics = await resolveSidecarLrcLyrics(trackPath)
+  if (!lyrics) return null
+
+  return {
+    status: 'hit',
+    lyrics,
+    cached: false
+  }
+}

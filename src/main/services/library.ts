@@ -16,6 +16,10 @@ import {
   type AlbumGroupingMode
 } from '../../shared/library/albumGrouping'
 import {
+  isAlbumGroupEligible,
+  type AlbumEligibilityOptions
+} from '../../shared/library/albumEligibility'
+import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
@@ -291,6 +295,8 @@ export interface Album {
   track_count: number
   is_new: boolean
 }
+
+export type AlbumListOptions = AlbumEligibilityOptions
 
 export type MetadataSaveMode = 'virtual' | 'file'
 
@@ -733,9 +739,7 @@ interface AlbumGroupAccumulator {
 }
 
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
-const UNKNOWN_ALBUM_KEY = UNKNOWN_ALBUM_NAME.toLocaleLowerCase()
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
-const MIN_TRACKS_FOR_ALBUM = 2
 const VARIOUS_ARTISTS_NAME = 'Various Artists'
 
 export type ArtistBrowseMode = 'strict' | 'canonical'
@@ -751,16 +755,6 @@ function normalizeKey(value: string): string {
 function normalizeAlbumName(album: string): string {
   const normalized = normalizeDisplay(album)
   return normalized || UNKNOWN_ALBUM_NAME
-}
-
-function isUnknownAlbumKey(albumKey: string): boolean {
-  return albumKey === UNKNOWN_ALBUM_KEY
-}
-
-function isEligibleAlbumGroup(group: AlbumGroupAccumulator): boolean {
-  if (group.trackCount < MIN_TRACKS_FOR_ALBUM) return false
-  if (isUnknownAlbumKey(group.albumKey)) return false
-  return true
 }
 
 function splitCollaborators(rawArtist: string): string[] {
@@ -3269,15 +3263,18 @@ export function listAlbumIdentityKeys(): string[] {
   return Array.from(buildAlbumGroups(tracks).keys()).sort((a, b) => a.localeCompare(b))
 }
 
-export function getAlbums(): Album[] {
+export function getAlbums(options: AlbumListOptions = {}): Album[] {
   if (!db) return []
   const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
 
   const groups = buildAlbumGroups(tracks)
   const latestSyncSummary = getLatestLibrarySyncSummary()
+  const albumEligibilityOptions: AlbumEligibilityOptions = {
+    includeSingles: options.includeSingles === true
+  }
   const albums = Array.from(groups.values())
-    .filter(isEligibleAlbumGroup)
+    .filter((group) => isAlbumGroupEligible(group, albumEligibilityOptions))
     .map((group) => {
       const album = pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album')
       const artist = pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist')
