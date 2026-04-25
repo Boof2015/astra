@@ -20,6 +20,14 @@ import {
   type AlbumEligibilityOptions
 } from '../../shared/library/albumEligibility'
 import {
+  getArtistImageKey,
+  isSupportedArtistImageExtension,
+  pickBestArtistImageCandidate,
+  resolveArtistArtwork,
+  type ArtistArtworkSource,
+  type ArtistImageCandidate
+} from '../../shared/library/artistImages'
+import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
@@ -270,6 +278,13 @@ export interface Playlist {
   track_count: number
 }
 
+export interface ArtistRecord {
+  artist: string
+  track_count: number
+  artwork_hash: string | null
+  artwork_source: ArtistArtworkSource
+}
+
 export interface PlaylistImportResult {
   sourceFilePath: string
   detectedFormat: PlaylistImportDetectedFormat
@@ -402,6 +417,7 @@ let db: Database | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
+let artistImageDir: string = ''
 let replayGainScanEnabled: boolean = true
 const SCAN_PARALLEL_MIN_FILES = 250
 const SCAN_PARALLEL_MIN_WORKERS = 2
@@ -411,6 +427,7 @@ const BACKFILL_PARALLEL_MIN_WORKERS = 2
 const BACKFILL_PARALLEL_MAX_WORKERS = 3
 const SQLITE_SAFE_MAX_VARIABLES = 900
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
+const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
 const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
@@ -623,6 +640,17 @@ async function clearPlaylistCoverDirectory(): Promise<void> {
     await mkdir(playlistCoverDir, { recursive: true })
   } catch (error) {
     console.warn('Failed to clear playlist cover directory:', playlistCoverDir, error)
+  }
+}
+
+async function clearArtistImageDirectory(): Promise<void> {
+  if (!artistImageDir) return
+
+  try {
+    await rm(artistImageDir, { recursive: true, force: true })
+    await mkdir(artistImageDir, { recursive: true })
+  } catch (error) {
+    console.warn('Failed to clear artist image directory:', artistImageDir, error)
   }
 }
 
@@ -1055,13 +1083,15 @@ export async function initDatabase(): Promise<void> {
   dbPath = join(userDataPath, 'library.db')
   artworkDir = join(userDataPath, 'artwork')
   playlistCoverDir = join(userDataPath, 'playlist-covers')
+  artistImageDir = join(userDataPath, 'artist-images')
 
-  // Create artwork and playlist cover directories.
+  // Create artwork and custom image directories.
   try {
     await mkdir(artworkDir, { recursive: true })
     await mkdir(playlistCoverDir, { recursive: true })
+    await mkdir(artistImageDir, { recursive: true })
   } catch (err) {
-    console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir }, err)
+    console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir, artistImageDir }, err)
   }
 
   // Initialize sql.js
@@ -1400,6 +1430,22 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
+
+  // Artist images table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS artist_images (
+      browse_mode TEXT NOT NULL,
+      artist_key TEXT NOT NULL,
+      artist_name TEXT NOT NULL,
+      manual_image_hash TEXT,
+      detected_image_hash TEXT,
+      detected_source_path TEXT,
+      detected_source_mtime INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (browse_mode, artist_key)
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_artist_images_browse_mode ON artist_images(browse_mode)')
 
   // Playlist tracks table
   db.run(`
@@ -3186,13 +3232,359 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
   return attachAlbumIdentityKeys(fallback.sort(compareTracksByDiscTrackTitle), tracks)
 }
 
+interface ArtistImageRow {
+  browse_mode: ArtistBrowseMode
+  artist_key: string
+  artist_name: string
+  manual_image_hash: string | null
+  detected_image_hash: string | null
+  detected_source_path: string | null
+  detected_source_mtime: number | null
+  updated_at: number
+}
+
+function normalizeArtistBrowseMode(mode?: ArtistBrowseMode): ArtistBrowseMode {
+  return mode === 'strict' ? 'strict' : 'canonical'
+}
+
+function normalizeArtistImageInput(artist: string, mode?: ArtistBrowseMode): {
+  mode: ArtistBrowseMode
+  artistName: string
+  artistKey: string
+} {
+  const artistName = normalizeDisplay(artist) || UNKNOWN_ARTIST_NAME
+  const artistKey = getArtistImageKey(artistName)
+  if (!artistKey) {
+    throw new Error('Artist name is required.')
+  }
+
+  return {
+    mode: normalizeArtistBrowseMode(mode),
+    artistName,
+    artistKey
+  }
+}
+
+function readArtistImageRowsForMode(mode: ArtistBrowseMode): Map<string, ArtistImageRow> {
+  const rows = new Map<string, ArtistImageRow>()
+  if (!db) return rows
+
+  const stmt = db.prepare(`
+    SELECT
+      browse_mode,
+      artist_key,
+      artist_name,
+      manual_image_hash,
+      detected_image_hash,
+      detected_source_path,
+      detected_source_mtime,
+      updated_at
+    FROM artist_images
+    WHERE browse_mode = ?
+  `)
+  stmt.bind([mode])
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as Record<string, unknown>
+    const artistKey = typeof row.artist_key === 'string' ? row.artist_key : ''
+    if (!artistKey) continue
+
+    const detectedSourceMtime = typeof row.detected_source_mtime === 'number'
+      ? row.detected_source_mtime
+      : (row.detected_source_mtime == null ? null : Number(row.detected_source_mtime))
+    const normalizedDetectedSourceMtime = typeof detectedSourceMtime === 'number' && Number.isFinite(detectedSourceMtime)
+      ? detectedSourceMtime
+      : null
+
+    rows.set(artistKey, {
+      browse_mode: mode,
+      artist_key: artistKey,
+      artist_name: typeof row.artist_name === 'string' ? row.artist_name : UNKNOWN_ARTIST_NAME,
+      manual_image_hash: typeof row.manual_image_hash === 'string' ? row.manual_image_hash : null,
+      detected_image_hash: typeof row.detected_image_hash === 'string' ? row.detected_image_hash : null,
+      detected_source_path: typeof row.detected_source_path === 'string' ? row.detected_source_path : null,
+      detected_source_mtime: normalizedDetectedSourceMtime,
+      updated_at: typeof row.updated_at === 'number' ? row.updated_at : Date.now()
+    })
+  }
+  stmt.free()
+
+  return rows
+}
+
+function normalizeCachedImageExtension(imagePath: string): string {
+  const rawExtension = extname(imagePath).toLowerCase()
+  if (rawExtension === '.png') return '.png'
+  if (rawExtension === '.webp') return '.webp'
+  if (rawExtension === '.gif') return '.gif'
+  if (rawExtension === '.bmp') return '.bmp'
+  if (rawExtension === '.jpg' || rawExtension === '.jpeg') return '.jpg'
+  return '.jpg'
+}
+
+async function cacheArtistImageFile(imagePath: string): Promise<string> {
+  const normalizedPath = imagePath.trim()
+  if (!normalizedPath) {
+    throw new Error('Artist image path is required.')
+  }
+
+  const imageData = await readFile(normalizedPath)
+  if (imageData.length === 0) {
+    throw new Error('Artist image file is empty.')
+  }
+
+  await mkdir(artistImageDir, { recursive: true })
+  const extension = normalizeCachedImageExtension(normalizedPath)
+  const contentHash = createHash('sha256').update(imageData).digest('hex')
+  const fileName = `${contentHash}${extension}`
+  const targetPath = join(artistImageDir, fileName)
+
+  try {
+    await writeFile(targetPath, imageData, { flag: 'wx' })
+  } catch (error) {
+    if (getErrorCode(error) !== 'EEXIST') {
+      throw error
+    }
+  }
+
+  return `${ARTIST_IMAGE_HASH_PREFIX}${fileName}`
+}
+
+export async function setArtistImageFromFile(
+  artist: string,
+  mode: ArtistBrowseMode,
+  imagePath: string
+): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+
+  const input = normalizeArtistImageInput(artist, mode)
+  const imageHash = await cacheArtistImageFile(imagePath)
+  const now = Date.now()
+
+  db.run(
+    `INSERT INTO artist_images (
+      browse_mode,
+      artist_key,
+      artist_name,
+      manual_image_hash,
+      detected_image_hash,
+      detected_source_path,
+      detected_source_mtime,
+      updated_at
+    ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?)
+    ON CONFLICT(browse_mode, artist_key) DO UPDATE SET
+      artist_name = excluded.artist_name,
+      manual_image_hash = excluded.manual_image_hash,
+      updated_at = excluded.updated_at`,
+    [
+      input.mode,
+      input.artistKey,
+      input.artistName,
+      imageHash,
+      now
+    ]
+  )
+
+  await saveDatabase()
+}
+
+export async function clearArtistImage(
+  artist: string,
+  mode: ArtistBrowseMode
+): Promise<void> {
+  if (!db) return
+
+  const input = normalizeArtistImageInput(artist, mode)
+  db.run(
+    `UPDATE artist_images
+     SET artist_name = ?,
+         manual_image_hash = NULL,
+         updated_at = ?
+     WHERE browse_mode = ? AND artist_key = ?`,
+    [
+      input.artistName,
+      Date.now(),
+      input.mode,
+      input.artistKey
+    ]
+  )
+
+  await saveDatabase()
+}
+
+function collectArtistImageSearchDirectories(trackPath: string): string[] {
+  const directories: string[] = []
+  const trackDirectory = dirname(trackPath)
+  const parentDirectory = dirname(trackDirectory)
+
+  for (const directory of [parentDirectory, trackDirectory]) {
+    if (!directory || directories.includes(directory)) continue
+    directories.push(directory)
+  }
+
+  return directories
+}
+
+async function readArtistImageCandidatesInDirectory(directoryPath: string): Promise<ArtistImageCandidate[]> {
+  try {
+    const entries = await readdir(directoryPath, { withFileTypes: true })
+    const candidates: ArtistImageCandidate[] = []
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+
+      const extension = extname(entry.name).toLowerCase()
+      if (!isSupportedArtistImageExtension(extension)) continue
+
+      const filePath = join(directoryPath, entry.name)
+      let fileStat: Awaited<ReturnType<typeof stat>>
+      try {
+        fileStat = await stat(filePath)
+      } catch {
+        continue
+      }
+      if (!fileStat.isFile()) continue
+
+      const sourceMtime = Math.round(fileStat.mtimeMs)
+      candidates.push({
+        path: filePath,
+        baseName: basename(entry.name, extension),
+        extension,
+        mtimeMs: sourceMtime
+      })
+    }
+
+    return candidates
+  } catch {
+    return []
+  }
+}
+
+async function refreshDetectedArtistImagesForMode(
+  mode: ArtistBrowseMode,
+  localTracks: DbTrackRow[]
+): Promise<void> {
+  if (!db) return
+
+  const browseArtistResolver = mode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
+  const artists = new Map<string, { artistName: string; directories: Set<string> }>()
+
+  for (const track of localTracks) {
+    const artistName = browseArtistResolver(track)
+    const artistKey = getArtistImageKey(artistName)
+    if (!artistKey) continue
+
+    let entry = artists.get(artistKey)
+    if (!entry) {
+      entry = { artistName, directories: new Set() }
+      artists.set(artistKey, entry)
+    }
+
+    for (const directory of collectArtistImageSearchDirectories(track.path)) {
+      entry.directories.add(directory)
+    }
+  }
+
+  const existingRows = readArtistImageRowsForMode(mode)
+  const directoryCandidateCache = new Map<string, Promise<ArtistImageCandidate[]>>()
+  const now = Date.now()
+
+  for (const [artistKey, entry] of artists.entries()) {
+    const candidates: ArtistImageCandidate[] = []
+    for (const directory of entry.directories) {
+      let pendingCandidates = directoryCandidateCache.get(directory)
+      if (!pendingCandidates) {
+        pendingCandidates = readArtistImageCandidatesInDirectory(directory)
+        directoryCandidateCache.set(directory, pendingCandidates)
+      }
+      candidates.push(...await pendingCandidates)
+    }
+
+    const bestCandidate = pickBestArtistImageCandidate(candidates, entry.artistName)
+    const existing = existingRows.get(artistKey)
+    let detectedImageHash: string | null = null
+    let detectedSourcePath: string | null = null
+    let detectedSourceMtime: number | null = null
+
+    if (bestCandidate) {
+      detectedSourcePath = bestCandidate.path
+      detectedSourceMtime = Math.round(bestCandidate.mtimeMs)
+      try {
+        detectedImageHash = (
+          existing?.detected_image_hash &&
+          existing.detected_source_path === detectedSourcePath &&
+          existing.detected_source_mtime === detectedSourceMtime
+        )
+          ? existing.detected_image_hash
+          : await cacheArtistImageFile(bestCandidate.path)
+      } catch (error) {
+        console.warn('Failed to cache detected artist image:', bestCandidate.path, error)
+        detectedImageHash = null
+        detectedSourcePath = null
+        detectedSourceMtime = null
+      }
+    }
+
+    db.run(
+      `INSERT INTO artist_images (
+        browse_mode,
+        artist_key,
+        artist_name,
+        manual_image_hash,
+        detected_image_hash,
+        detected_source_path,
+        detected_source_mtime,
+        updated_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+      ON CONFLICT(browse_mode, artist_key) DO UPDATE SET
+        artist_name = excluded.artist_name,
+        detected_image_hash = excluded.detected_image_hash,
+        detected_source_path = excluded.detected_source_path,
+        detected_source_mtime = excluded.detected_source_mtime,
+        updated_at = excluded.updated_at`,
+      [
+        mode,
+        artistKey,
+        entry.artistName,
+        detectedImageHash,
+        detectedSourcePath,
+        detectedSourceMtime,
+        now
+      ]
+    )
+  }
+
+  for (const [artistKey, row] of existingRows.entries()) {
+    if (artists.has(artistKey)) continue
+    if (!row.detected_image_hash && !row.detected_source_path && row.detected_source_mtime == null) continue
+
+    db.run(
+      `UPDATE artist_images
+       SET detected_image_hash = NULL,
+           detected_source_path = NULL,
+           detected_source_mtime = NULL,
+           updated_at = ?
+       WHERE browse_mode = ? AND artist_key = ?`,
+      [now, mode, artistKey]
+    )
+  }
+}
+
+export async function refreshDetectedArtistImages(): Promise<void> {
+  if (!db) return
+
+  const localTracks = readAllTrackRowsUnordered().filter((track) => track.source_type === 'local')
+  await refreshDetectedArtistImagesForMode('canonical', localTracks)
+  await refreshDetectedArtistImagesForMode('strict', localTracks)
+}
+
 // Get unique artists
-export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: string; track_count: number; artwork_hash: string | null }[] {
+export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[] {
   if (!db) return []
   const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
-  const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+  const resolvedMode = normalizeArtistBrowseMode(mode)
   const browseArtistResolver = resolvedMode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
+  const artistImageRows = readArtistImageRowsForMode(resolvedMode)
 
   interface ArtistAggregate {
     artist: string
@@ -3252,7 +3644,20 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: stri
   }
 
   return Array.from(artistCounts.values())
-    .map(({ artist, track_count, artwork_hash }) => ({ artist, track_count, artwork_hash }))
+    .map(({ artist, track_count, artwork_hash }) => {
+      const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
+      const resolvedArtwork = resolveArtistArtwork(
+        artistImageRow?.manual_image_hash,
+        artistImageRow?.detected_image_hash,
+        artwork_hash
+      )
+      return {
+        artist,
+        track_count,
+        artwork_hash: resolvedArtwork.artwork_hash,
+        artwork_source: resolvedArtwork.artwork_source
+      }
+    })
     .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
 }
 
@@ -3961,6 +4366,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
+  db.run('UPDATE artist_images SET detected_image_hash = NULL, detected_source_path = NULL, detected_source_mtime = NULL, updated_at = ?', [Date.now()])
 
   await clearArtworkCacheDirectory()
   await saveDatabase()
@@ -3980,10 +4386,12 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
+  db.run('DELETE FROM artist_images')
   db.run('DELETE FROM app_meta')
 
   await clearArtworkCacheDirectory()
   await clearPlaylistCoverDirectory()
+  await clearArtistImageDirectory()
   await saveDatabase()
 }
 
@@ -5315,6 +5723,9 @@ export async function cacheArtworkBuffer(
 export function getArtworkPath(hash: string): string {
   if (hash.startsWith(PLAYLIST_COVER_HASH_PREFIX)) {
     return join(playlistCoverDir, hash.slice(PLAYLIST_COVER_HASH_PREFIX.length))
+  }
+  if (hash.startsWith(ARTIST_IMAGE_HASH_PREFIX)) {
+    return join(artistImageDir, hash.slice(ARTIST_IMAGE_HASH_PREFIX.length))
   }
 
   // New format: hash includes extension (e.g., "abc123.png")

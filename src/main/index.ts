@@ -4287,6 +4287,14 @@ ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) =
   return library.getArtists(mode)
 })
 
+ipcMain.handle('library:setArtistImageFromFile', async (_event, artist: string, mode: library.ArtistBrowseMode, imagePath: string) => {
+  await library.setArtistImageFromFile(artist, mode, imagePath)
+})
+
+ipcMain.handle('library:clearArtistImage', async (_event, artist: string, mode: library.ArtistBrowseMode) => {
+  await library.clearArtistImage(artist, mode)
+})
+
 // Get all albums
 ipcMain.handle('library:getAlbums', (_event, options?: library.AlbumListOptions) => {
   return library.getAlbums(options)
@@ -4581,6 +4589,9 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
         console.error(`Folder scan failed for ${folderPath}:`, error)
       }
 
+      sendLibraryScanStage('cleanup', 'Updating artist images...')
+      await library.refreshDetectedArtistImages()
+
       return { ...scanResult, scanIssueLog: issueCollector.build() }
     })
 
@@ -4681,6 +4692,9 @@ ipcMain.handle(
           issueCollector.recordError('cleanup', folderPath, error, folderPath)
           console.error(`Failed to refresh folder summary for ${folderPath}:`, error)
         }
+
+        sendLibraryScanStage('cleanup', 'Updating artist images...')
+        await library.refreshDetectedArtistImages()
 
         return { ...scanResult, removed, summary, scanIssueLog: issueCollector.build() }
       })
@@ -4786,6 +4800,9 @@ ipcMain.handle('library:rescan', async () => {
         console.error('Failed to finalize library cleanup:', error)
       }
 
+      sendLibraryScanStage('cleanup', 'Updating artist images...')
+      await library.refreshDetectedArtistImages()
+
       return {
         added: totalAdded,
         updated: totalUpdated,
@@ -4884,6 +4901,9 @@ ipcMain.handle('library:forceRescanAll', async () => {
         totalErrors += 1
         console.error('Failed to finalize force rescan cleanup:', error)
       }
+
+      sendLibraryScanStage('cleanup', 'Updating artist images...')
+      await library.refreshDetectedArtistImages()
 
       return {
         added: totalAdded,

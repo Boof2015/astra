@@ -254,16 +254,21 @@ export default function LibraryView() {
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
+  const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
   const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
+  const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
+  const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const shufflePlayPendingRef = useRef(false)
   const albumGridRef = useRef<HTMLDivElement | null>(null)
   const albumGridScrollRef = useRef(0)
   const artistListRef = useRef<ListImperativeAPI | null>(null)
   const artistScrollRef = useRef(0)
+  const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const pendingScrollRef = useRef<'albums' | 'artists' | null>(null)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
@@ -295,6 +300,14 @@ export default function LibraryView() {
     ]
   }, [jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
+  const selectedArtistRecord = useMemo(() => {
+    if (!selectedArtist) return null
+    const selectedArtistKey = normalizeKey(selectedArtist)
+    return artists.find((artist) => normalizeKey(artist.artist) === selectedArtistKey) ?? null
+  }, [artists, selectedArtist])
+  const selectedArtistArtworkHash = selectedArtistRecord?.artwork_hash ?? null
+  const selectedArtistArtworkSource = selectedArtistRecord?.artwork_source ?? null
+  const canResetSelectedArtistImage = selectedArtistArtworkSource === 'manual'
 
   useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
@@ -311,6 +324,33 @@ export default function LibraryView() {
     }
     previousInDetailViewRef.current = inDetailView
   }, [inDetailView])
+
+  useEffect(() => {
+    setIsArtistImageMenuOpen(false)
+  }, [selectedArtist])
+
+  useEffect(() => {
+    if (!isArtistImageMenuOpen) return
+
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (artistImageControlRef.current?.contains(target)) return
+      setIsArtistImageMenuOpen(false)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setIsArtistImageMenuOpen(false)
+    }
+
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isArtistImageMenuOpen])
 
   useEffect(() => {
     try {
@@ -783,6 +823,36 @@ export default function LibraryView() {
     setActiveView('graph')
   }
 
+  const handleChangeSelectedArtistImage = useCallback(async () => {
+    if (!selectedArtist || isUpdatingArtistImage) return
+    setIsArtistImageMenuOpen(false)
+
+    const imagePath = await window.electronAPI.openFileDialog({
+      title: 'Choose artist image',
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+    })
+    if (!imagePath) return
+
+    setIsUpdatingArtistImage(true)
+    try {
+      await setArtistImageFromFile(selectedArtist, artistBrowseMode, imagePath)
+    } finally {
+      setIsUpdatingArtistImage(false)
+    }
+  }, [artistBrowseMode, isUpdatingArtistImage, selectedArtist, setArtistImageFromFile])
+
+  const handleResetSelectedArtistImage = useCallback(async () => {
+    if (!selectedArtist || isUpdatingArtistImage || !canResetSelectedArtistImage) return
+    setIsArtistImageMenuOpen(false)
+
+    setIsUpdatingArtistImage(true)
+    try {
+      await clearArtistImage(selectedArtist, artistBrowseMode)
+    } finally {
+      setIsUpdatingArtistImage(false)
+    }
+  }, [artistBrowseMode, canResetSelectedArtistImage, clearArtistImage, isUpdatingArtistImage, selectedArtist])
+
   // Header
   let title = 'Library'
   let showViewTabs = true
@@ -1061,6 +1131,58 @@ export default function LibraryView() {
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>
             </button>
+          )}
+          {selectedArtist && (
+            <div className="library-header-artist-image-control" ref={artistImageControlRef}>
+              <div className="library-header-artist-avatar">
+                {selectedArtistArtworkHash ? (
+                  <AlbumArtwork
+                    hash={selectedArtistArtworkHash}
+                    alt={`${selectedArtist} artwork`}
+                    className="library-header-artist-artwork"
+                    variant="thumbnail"
+                  />
+                ) : (
+                  selectedArtist.charAt(0).toUpperCase()
+                )}
+              </div>
+              <button
+                type="button"
+                className="library-header-artist-edit-btn"
+                onClick={() => setIsArtistImageMenuOpen((isOpen) => !isOpen)}
+                disabled={isUpdatingArtistImage}
+                aria-haspopup="menu"
+                aria-expanded={isArtistImageMenuOpen}
+                aria-label="Edit artist image"
+                title="Edit artist image"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                </svg>
+              </button>
+              {isArtistImageMenuOpen && (
+                <div className="library-header-artist-image-menu" role="menu">
+                  <button
+                    type="button"
+                    className="library-header-artist-image-menu-item"
+                    role="menuitem"
+                    onClick={() => void handleChangeSelectedArtistImage()}
+                  >
+                    Change image
+                  </button>
+                  <button
+                    type="button"
+                    className="library-header-artist-image-menu-item"
+                    role="menuitem"
+                    onClick={() => void handleResetSelectedArtistImage()}
+                    disabled={!canResetSelectedArtistImage}
+                  >
+                    Reset image
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           <h2>{title}</h2>
           {selectedAlbum?.is_new && (

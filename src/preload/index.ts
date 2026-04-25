@@ -194,6 +194,7 @@ export interface Artist {
   artist: string
   track_count: number
   artwork_hash: string | null
+  artwork_source: 'manual' | 'detected' | 'track' | null
 }
 
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
@@ -797,6 +798,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
+    setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) =>
+      ipcRenderer.invoke('library:setArtistImageFromFile', artist, mode, imagePath),
+    clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) =>
+      ipcRenderer.invoke('library:clearArtistImage', artist, mode),
     getAlbums: (options?: AlbumListOptions) => ipcRenderer.invoke('library:getAlbums', options),
     search: (query: string) => ipcRenderer.invoke('library:search', query),
     getMetadataOverridePaths: () => ipcRenderer.invoke('library:getMetadataOverridePaths'),
@@ -1130,6 +1135,8 @@ declare global {
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
+        setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
+        clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
         getAlbums: (options?: AlbumListOptions) => Promise<Album[]>
         search: (query: string) => Promise<DbTrack[]>
         getMetadataOverridePaths: () => Promise<string[]>

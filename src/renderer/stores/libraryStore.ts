@@ -53,6 +53,7 @@ interface Artist {
   artist: string
   track_count: number
   artwork_hash: string | null
+  artwork_source: 'manual' | 'detected' | 'track' | null
 }
 
 export interface LibraryFolder {
@@ -156,6 +157,8 @@ interface LibraryStore {
   loadAlbums: () => Promise<void>
   loadAlbumsIncludingSingles: () => Promise<void>
   loadArtists: () => Promise<void>
+  setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
+  clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
   loadFolders: () => Promise<void>
   loadFolderSubfolderSummary: (folderPath: string) => Promise<FolderSubfolderSummary>
   listFolderSubdirectories: (folderPath: string, parentRelativePath?: string) => Promise<FolderSubdirectoryEntry[]>
@@ -566,6 +569,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       if (state.artistBrowseMode !== mode) return {}
       return { artists }
     })
+  },
+
+  setArtistImageFromFile: async (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => {
+    await window.electronAPI.library.setArtistImageFromFile(artist, mode, imagePath)
+    await get().loadArtists()
+  },
+
+  clearArtistImage: async (artist: string, mode: LibraryArtistBrowseMode) => {
+    await window.electronAPI.library.clearArtistImage(artist, mode)
+    await get().loadArtists()
   },
 
   // Load folders
