@@ -13,6 +13,9 @@ import ScopePopoutApp from './components/popout/ScopePopoutApp'
 import './styles/globals.css'
 
 const windowMode = new URLSearchParams(window.location.search).get('window')
+document.documentElement.dataset.windowMode = windowMode ?? 'main'
+document.body.dataset.windowMode = windowMode ?? 'main'
+
 const RootComponent = windowMode === 'mini'
   ? MiniPlayerApp
   : windowMode === 'lyrics-popout'

@@ -1,3 +1,14 @@
+html[data-window-mode='mini'],
+html[data-window-mode='mini'] body,
+html[data-window-mode='mini'] #root {
+  background: transparent;
+}
+
+html[data-window-mode='mini'] body::before,
+html[data-window-mode='mini'] body::after {
+  content: none;
+}
+
 .mini-player-root {
   --mini-accent: var(--accent);
   --mini-accent-glow: var(--accent-glow);
@@ -10,6 +21,8 @@
   overflow: hidden;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.15);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .mini-player-backdrop {
