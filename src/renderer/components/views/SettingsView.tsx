@@ -258,6 +258,8 @@ export default function SettingsView() {
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  const setArtistBrowseMode = useLibraryStore((state) => state.setArtistBrowseMode)
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
@@ -1413,6 +1415,32 @@ export default function SettingsView() {
                       <option value="album">Album</option>
                     </select>
                   </label>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Artist Parsing</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Artist Parsing</span>
+                    <div className="settings-inline-row">
+                      <button
+                        className={`settings-toggle ${artistBrowseMode === 'strict' ? 'active' : ''}`}
+                        onClick={() => setArtistBrowseMode('strict')}
+                        aria-pressed={artistBrowseMode === 'strict'}
+                        title="Use stored Album Artist and Artist tags as written"
+                      >
+                        File tags
+                      </button>
+                      <button
+                        className={`settings-toggle ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
+                        onClick={() => setArtistBrowseMode('canonical')}
+                        aria-pressed={artistBrowseMode === 'canonical'}
+                        title="Use Astra's primary artist and collaboration grouping"
+                      >
+                        Astra grouping
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="settings-card">

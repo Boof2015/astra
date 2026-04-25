@@ -402,6 +402,7 @@ export default function TransportBar() {
                 ? (
                   <ArtistNameLinks
                     artistText={currentTrack.artist}
+                    browseArtistText={currentTrack.albumArtist}
                     onArtistClick={openArtistInLibrary}
                     className="now-playing-artist-links"
                     linkClassName="artist-name-link-inline"

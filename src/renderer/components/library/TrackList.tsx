@@ -409,6 +409,7 @@ function TrackListRowRenderer({
           <div className="track-col track-col-artist">
             <ArtistNameLinks
               artistText={track.artist}
+              browseArtistText={track.album_artist}
               onArtistClick={openArtistInLibrary}
               className="track-artist"
               linkClassName="artist-name-link-inline"

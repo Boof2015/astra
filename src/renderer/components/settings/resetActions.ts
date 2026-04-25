@@ -1,7 +1,7 @@
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { EQ_DEVICE_PROFILE_STORAGE_KEY, EQ_STORAGE_KEY, useEQStore } from '../../stores/eqStore'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { ARTIST_BROWSE_MODE_STORAGE_KEY, useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
@@ -51,6 +51,7 @@ export const RENDERER_SETTINGS_KEYS = [
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
+  ARTIST_BROWSE_MODE_STORAGE_KEY,
   'astra-library-tracklist-bpm-key-visible-v1',
   EQ_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,

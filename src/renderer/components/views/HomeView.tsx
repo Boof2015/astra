@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -768,8 +768,15 @@ function getPrimaryContributor(rawArtist: string): string {
   return contributors[0] ?? 'Unknown Artist'
 }
 
-function getRecentArtistCandidate(track: Pick<HomeTrack, 'artist' | 'album_artist'>): string {
+function getRecentArtistCandidate(
+  track: Pick<HomeTrack, 'artist' | 'album_artist'>,
+  mode: LibraryArtistBrowseMode
+): string {
   const albumArtist = (track.album_artist ?? '').replace(/\s+/g, ' ').trim()
+  if (mode === 'strict') {
+    return albumArtist || track.artist.replace(/\s+/g, ' ').trim() || 'Unknown Artist'
+  }
+
   const albumArtistKey = normalizeKey(albumArtist)
 
   if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
@@ -783,6 +790,7 @@ export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
+  const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
   const recentlyPlayed = useLibraryStore((s) => s.recentlyPlayed as HomeTrack[])
   const favoriteTracks = useLibraryStore((s) => s.favoriteTracks as HomeTrack[])
   const setLibraryViewMode = useLibraryStore((s) => s.setViewMode)
@@ -802,7 +810,6 @@ export default function HomeView() {
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
-  const [strictArtistCount, setStrictArtistCount] = useState(() => artists.length)
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined'
       ? HOME_RECENT_MEDIUM_BREAKPOINT_PX
@@ -848,32 +855,6 @@ export default function HomeView() {
       window.clearTimeout(timeoutId)
     }
   }, [playlistImportStatus])
-
-  useEffect(() => {
-    if (totalTrackCount <= 0) {
-      setStrictArtistCount(0)
-      return
-    }
-
-    let canceled = false
-
-    void window.electronAPI.library.getArtists('strict')
-      .then((strictArtists) => {
-        if (!canceled) {
-          setStrictArtistCount(strictArtists.length)
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load strict artist count for Home view:', error)
-        if (!canceled) {
-          setStrictArtistCount(artists.length)
-        }
-      })
-
-    return () => {
-      canceled = true
-    }
-  }, [artists.length, totalTrackCount])
 
   useEffect(() => {
     if (!hasLibraryContent) return
@@ -1036,7 +1017,7 @@ export default function HomeView() {
     const uniqueArtists: HomeArtist[] = []
 
     for (const track of recentlyPlayed) {
-      const candidateArtist = getRecentArtistCandidate(track) || 'Unknown Artist'
+      const candidateArtist = getRecentArtistCandidate(track, artistBrowseMode) || 'Unknown Artist'
       const key = normalizeKey(candidateArtist)
       if (!key || seenArtistKeys.has(key)) continue
       seenArtistKeys.add(key)
@@ -1054,7 +1035,7 @@ export default function HomeView() {
     }
 
     return uniqueArtists
-  }, [recentlyPlayed, artistByKey, recentLimits])
+  }, [artistBrowseMode, recentlyPlayed, artistByKey, recentLimits])
 
   const recentAlbums = useMemo(() => {
     const seenAlbumIdentityKeys = new Set<string>()
@@ -1217,7 +1198,7 @@ export default function HomeView() {
             </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Artists</span>
-              <span className="home-greeting-stat-value">{strictArtistCount}</span>
+              <span className="home-greeting-stat-value">{artists.length}</span>
             </div>
           </div>
         </section>

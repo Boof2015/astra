@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
@@ -16,19 +16,8 @@ import { type ListImperativeAPI } from 'react-window'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
-type ArtistBrowseMode = 'strict' | 'canonical'
 type AlbumSortMode = 'title' | 'artist'
-const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
-
-function loadArtistBrowseModeSetting(): ArtistBrowseMode {
-  try {
-    const stored = localStorage.getItem(ARTIST_BROWSE_MODE_STORAGE_KEY)
-    return stored === 'strict' ? 'strict' : 'canonical'
-  } catch {
-    return 'canonical'
-  }
-}
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
   try {
@@ -143,7 +132,7 @@ function compareAlbumSequence(
 
 function resolveBrowseArtistForTrack(
   track: { artist: string; album_artist: string | null },
-  mode: ArtistBrowseMode
+  mode: LibraryArtistBrowseMode
 ): string {
   const normalizedAlbumArtist = track.album_artist?.trim() ?? ''
   if (normalizedAlbumArtist) {
@@ -209,7 +198,6 @@ function toQueueTrack(track: {
 
 export default function LibraryView() {
   const tracks = useLibraryStore((state) => state.tracks)
-  const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const albums = useLibraryStore((state) => state.albums)
   const artists = useLibraryStore((state) => state.artists)
   const folders = useLibraryStore((state) => state.folders)
@@ -249,11 +237,9 @@ export default function LibraryView() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
-  const [artistBrowseMode, setArtistBrowseMode] = useState<ArtistBrowseMode>(() => loadArtistBrowseModeSetting())
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
-  const [strictArtists, setStrictArtists] = useState<typeof artists>([])
-  const [isStrictArtistsLoading, setIsStrictArtistsLoading] = useState(false)
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const shufflePlayPendingRef = useRef(false)
@@ -266,7 +252,6 @@ export default function LibraryView() {
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
-  const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
   const sortContextKey = useMemo(() => {
@@ -312,14 +297,6 @@ export default function LibraryView() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(ARTIST_BROWSE_MODE_STORAGE_KEY, artistBrowseMode)
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [artistBrowseMode])
-
-  useEffect(() => {
-    try {
       localStorage.setItem(ALBUM_SORT_MODE_STORAGE_KEY, albumSortMode)
     } catch {
       // Ignore localStorage write failures in restricted environments.
@@ -349,39 +326,6 @@ export default function LibraryView() {
     if (shouldShowSourceFilters) return
     setSelectedSourceFilters((current) => (current.size === 0 ? current : new Set()))
   }, [shouldShowSourceFilters])
-
-  useEffect(() => {
-    if (!isArtistRootView || artistBrowseMode !== 'strict') return
-    if (totalTrackCount <= 0) {
-      setStrictArtists([])
-      return
-    }
-
-    let cancelled = false
-    setIsStrictArtistsLoading(true)
-
-    void window.electronAPI.library.getArtists('strict')
-      .then((nextArtists) => {
-        if (!cancelled) {
-          setStrictArtists(nextArtists)
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load strict artist list:', error)
-        if (!cancelled) {
-          setStrictArtists([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsStrictArtistsLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [artistBrowseMode, isArtistRootView, totalTrackCount])
 
   useEffect(() => {
     setArtistAlbumRailMode('albums')
@@ -446,10 +390,6 @@ export default function LibraryView() {
     setSortState(null)
   }, [])
 
-  const handleSetArtistBrowseMode = useCallback((mode: ArtistBrowseMode) => {
-    setArtistBrowseMode(mode)
-  }, [])
-
   const handleSetAlbumSortMode = useCallback((mode: AlbumSortMode) => {
     setAlbumSortMode(mode)
   }, [])
@@ -472,8 +412,8 @@ export default function LibraryView() {
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
     artistScrollRef.current = artistListRef.current?.element?.scrollTop ?? 0
-    await selectArtist(artistName, 'library', artistBrowseMode)
-  }, [artistBrowseMode, selectArtist])
+    await selectArtist(artistName, 'library')
+  }, [selectArtist])
 
   const sourceFilteredTracks = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return tracks
@@ -631,10 +571,9 @@ export default function LibraryView() {
   }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleArtists = useMemo(() => {
-    const rawVisibleArtists = artistBrowseMode === 'strict' ? strictArtists : artists
-    if (!sourceFilteredArtistKeys) return rawVisibleArtists
-    return rawVisibleArtists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
-  }, [artistBrowseMode, artists, sourceFilteredArtistKeys, strictArtists])
+    if (!sourceFilteredArtistKeys) return artists
+    return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
+  }, [artists, sourceFilteredArtistKeys])
 
   const filteredArtists = useMemo(() => {
     if (!hasSearchQuery) return visibleArtists
@@ -949,15 +888,6 @@ export default function LibraryView() {
 
     // Artists list
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist) {
-      if (artistBrowseMode === 'strict' && isStrictArtistsLoading) {
-        return (
-          <div className="library-loading">
-            <div className="loading-spinner" />
-            <p>Loading artists...</p>
-          </div>
-        )
-      }
-
       if (filteredArtists.length === 0) {
         return hasSearchQuery
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
@@ -1185,33 +1115,6 @@ export default function LibraryView() {
                 title="Sort albums by artist"
               >
                 Artist
-              </button>
-            </div>
-          )}
-          {isArtistRootView && (
-            <div className="library-segmented-toggle" role="group" aria-label="Artist matching mode">
-              <span
-                className="library-segmented-highlight"
-                aria-hidden="true"
-                style={{ transform: artistBrowseMode === 'canonical' ? 'translateX(100%)' : 'translateX(0%)' }}
-              />
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistBrowseMode === 'strict' ? 'active' : ''}`}
-                onClick={() => handleSetArtistBrowseMode('strict')}
-                aria-pressed={artistBrowseMode === 'strict'}
-                title="Use strict tag matching"
-              >
-                Strict
-              </button>
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
-                onClick={() => handleSetArtistBrowseMode('canonical')}
-                aria-pressed={artistBrowseMode === 'canonical'}
-                title="Use canonical artist matching"
-              >
-                Canonical
               </button>
             </div>
           )}

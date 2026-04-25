@@ -142,6 +142,7 @@ interface LibraryStore {
   favorites: Set<string>
   favoriteTracks: DbTrack[]
   recentlyPlayed: DbTrack[]
+  artistBrowseMode: LibraryArtistBrowseMode
   showTracklistBpmKey: boolean
   showTracklistAddedDate: boolean
 
@@ -176,11 +177,7 @@ interface LibraryStore {
     origin?: Exclude<SelectionOrigin, null>,
     identityKey?: string
   ) => Promise<void>
-  selectArtist: (
-    artist: string,
-    origin?: Exclude<SelectionOrigin, null>,
-    mode?: LibraryArtistBrowseMode
-  ) => Promise<void>
+  selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   releaseFullTracks: () => void
   clearSelection: () => void
   goBackSelection: () => Promise<boolean>
@@ -193,6 +190,7 @@ interface LibraryStore {
   loadRecentlyPlayed: () => Promise<void>
   recordPlay: (trackPath: string) => Promise<void>
   markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
+  setArtistBrowseMode: (mode: LibraryArtistBrowseMode) => void
   setShowTracklistBpmKey: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
 }
@@ -204,6 +202,7 @@ const MAX_FULL_ARTWORK_CACHE_ENTRIES = 8
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
+export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
 const artworkCache = new Map<string, string>()
@@ -255,6 +254,18 @@ function loadTracklistAddedDateVisibilitySetting(): boolean {
     return localStorage.getItem(TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY) === '1'
   } catch {
     return false
+  }
+}
+
+function normalizeArtistBrowseMode(mode: LibraryArtistBrowseMode | string | null | undefined): LibraryArtistBrowseMode {
+  return mode === 'strict' ? 'strict' : 'canonical'
+}
+
+function loadArtistBrowseModeSetting(): LibraryArtistBrowseMode {
+  try {
+    return normalizeArtistBrowseMode(localStorage.getItem(ARTIST_BROWSE_MODE_STORAGE_KEY))
+  } catch {
+    return 'canonical'
   }
 }
 
@@ -431,6 +442,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   favorites: new Set<string>(),
   favoriteTracks: [],
   recentlyPlayed: [],
+  artistBrowseMode: loadArtistBrowseModeSetting(),
   showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
 
@@ -439,7 +451,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ isLoading: true })
     const currentSelection = {
       album: get().selectedAlbum,
-      artist: get().selectedArtist
+      artist: get().selectedArtist,
+      artistBrowseMode: get().artistBrowseMode
     }
     await Promise.all([
       get().loadTracks(),
@@ -478,9 +491,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       })
     } else if (currentSelection.artist) {
       const artistSelection = currentSelection.artist
-      const tracks = await window.electronAPI.library.getTracksByArtist(artistSelection)
+      const tracks = await window.electronAPI.library.getTracksByArtist(
+        artistSelection,
+        currentSelection.artistBrowseMode
+      )
       set((state) => {
         if (state.selectedArtist !== artistSelection) return {}
+        if (state.artistBrowseMode !== currentSelection.artistBrowseMode) return {}
         return { tracks }
       })
     }
@@ -531,8 +548,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Load artists
   loadArtists: async () => {
-    const artists = await window.electronAPI.library.getArtists()
-    set({ artists })
+    const mode = get().artistBrowseMode
+    const artists = await window.electronAPI.library.getArtists(mode)
+    set((state) => {
+      if (state.artistBrowseMode !== mode) return {}
+      return { artists }
+    })
   },
 
   // Load folders
@@ -960,11 +981,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   // Select artist
-  selectArtist: async (
-    artist: string,
-    origin: Exclude<SelectionOrigin, null> = 'library',
-    mode: LibraryArtistBrowseMode = 'canonical'
-  ) => {
+  selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
+    const mode = get().artistBrowseMode
     const tracks = await window.electronAPI.library.getTracksByArtist(artist, mode)
     set((state) => ({
       selectedArtist: artist,
@@ -994,6 +1012,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Restore previous detail selection when available.
   goBackSelection: async () => {
     let didRestore = false
+    let restoredArtist: string | null = null
 
     set((state) => {
       const historyLength = state.selectionHistory.length
@@ -1003,6 +1022,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       if (!previous) return {}
 
       didRestore = true
+      restoredArtist = previous.selectedArtist
       return {
         selectedAlbum: previous.selectedAlbum ? { ...previous.selectedAlbum } : null,
         selectedArtist: previous.selectedArtist,
@@ -1011,6 +1031,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectionHistory: state.selectionHistory.slice(0, -1)
       }
     })
+
+    if (restoredArtist) {
+      const mode = get().artistBrowseMode
+      const tracks = await window.electronAPI.library.getTracksByArtist(restoredArtist, mode)
+      set((state) => {
+        if (state.selectedArtist !== restoredArtist) return {}
+        if (state.artistBrowseMode !== mode) return {}
+        return { tracks }
+      })
+    }
 
     return didRestore
   },
@@ -1177,6 +1207,33 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     // Reload recently played list
     const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
     set({ recentlyPlayed })
+  },
+
+  setArtistBrowseMode: (mode: LibraryArtistBrowseMode) => {
+    const normalized = normalizeArtistBrowseMode(mode)
+    if (get().artistBrowseMode === normalized) return
+
+    set({ artistBrowseMode: normalized })
+
+    try {
+      localStorage.setItem(ARTIST_BROWSE_MODE_STORAGE_KEY, normalized)
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+
+    void (async () => {
+      await get().loadArtists()
+
+      const selectedArtist = get().selectedArtist
+      if (!selectedArtist) return
+
+      const tracks = await window.electronAPI.library.getTracksByArtist(selectedArtist, normalized)
+      set((state) => {
+        if (state.selectedArtist !== selectedArtist) return {}
+        if (state.artistBrowseMode !== normalized) return {}
+        return { tracks }
+      })
+    })()
   },
 
   setShowTracklistBpmKey: (enabled: boolean) => {
