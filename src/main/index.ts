@@ -345,6 +345,10 @@ const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
 const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
+const MAX_RUNTIME_ICON_IMAGE_SET_DATA_URL_LENGTH = 3_500_000
+const MAX_RUNTIME_ICON_IMAGE_SET_IMAGES = 10
+const MIN_RUNTIME_ICON_IMAGE_SIZE = 16
+const MAX_RUNTIME_ICON_IMAGE_SIZE = 2048
 const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
@@ -1479,12 +1483,95 @@ function applyRuntimeIconImage(image: Electron.NativeImage): void {
   }
 }
 
-function applyRuntimeIconDataUrl(dataUrl: string): boolean {
-  if (!dataUrl.startsWith(RUNTIME_ICON_DATA_URL_PREFIX)) return false
-  if (dataUrl.length > MAX_RUNTIME_ICON_DATA_URL_LENGTH) return false
+interface RuntimeIconImageSetEntry {
+  size: number
+  dataUrl: string
+}
 
+function isRuntimeIconDataUrl(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.startsWith(RUNTIME_ICON_DATA_URL_PREFIX) &&
+    value.length <= MAX_RUNTIME_ICON_DATA_URL_LENGTH
+}
+
+function createRuntimeIconImageFromDataUrl(dataUrl: string): Electron.NativeImage | null {
   const image = nativeImage.createFromDataURL(dataUrl)
-  if (image.isEmpty()) return false
+  if (image.isEmpty()) return null
+
+  return image
+}
+
+function normalizeRuntimeIconImageSetPayload(payload: unknown): RuntimeIconImageSetEntry[] | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+
+  const images = (payload as Record<string, unknown>).images
+  if (!Array.isArray(images) || images.length === 0 || images.length > MAX_RUNTIME_ICON_IMAGE_SET_IMAGES) {
+    return null
+  }
+
+  const entries: RuntimeIconImageSetEntry[] = []
+  const seenSizes = new Set<number>()
+  let totalDataUrlLength = 0
+
+  for (const image of images) {
+    if (!image || typeof image !== 'object' || Array.isArray(image)) return null
+
+    const record = image as Record<string, unknown>
+    const size = record.size
+    const dataUrl = record.dataUrl
+    if (
+      !Number.isInteger(size) ||
+      typeof size !== 'number' ||
+      size < MIN_RUNTIME_ICON_IMAGE_SIZE ||
+      size > MAX_RUNTIME_ICON_IMAGE_SIZE ||
+      seenSizes.has(size) ||
+      !isRuntimeIconDataUrl(dataUrl)
+    ) {
+      return null
+    }
+
+    totalDataUrlLength += dataUrl.length
+    if (totalDataUrlLength > MAX_RUNTIME_ICON_IMAGE_SET_DATA_URL_LENGTH) return null
+
+    seenSizes.add(size)
+    entries.push({ size, dataUrl })
+  }
+
+  return entries.sort((left, right) => left.size - right.size)
+}
+
+function createRuntimeIconImageFromImageSet(entries: RuntimeIconImageSetEntry[]): Electron.NativeImage | null {
+  if (entries.length === 0) return null
+
+  const sortedEntries = [...entries].sort((left, right) => right.size - left.size)
+  const [baseEntry, ...alternateEntries] = sortedEntries
+  if (!baseEntry) return null
+
+  const image = nativeImage.createFromDataURL(baseEntry.dataUrl)
+  if (image.isEmpty()) return null
+
+  const baseSize = image.getSize()
+  if (baseSize.width !== baseEntry.size || baseSize.height !== baseEntry.size) return null
+
+  for (const entry of alternateEntries) {
+    const representation = nativeImage.createFromDataURL(entry.dataUrl)
+    if (representation.isEmpty()) return null
+
+    const size = representation.getSize()
+    if (size.width !== entry.size || size.height !== entry.size) return null
+
+    image.addRepresentation({ dataURL: entry.dataUrl })
+  }
+
+  return image.isEmpty() ? null : image
+}
+
+function applyRuntimeIconPayload(payload: unknown): boolean {
+  const image = typeof payload === 'string'
+    ? (isRuntimeIconDataUrl(payload) ? createRuntimeIconImageFromDataUrl(payload) : null)
+    : createRuntimeIconImageFromImageSet(normalizeRuntimeIconImageSetPayload(payload) ?? [])
+
+  if (!image) return false
 
   applyRuntimeIconImage(image)
   return true
@@ -3531,15 +3618,10 @@ ipcMain.handle('updates:openReleasesPage', async (_event, releaseUrl: unknown) =
   return true
 })
 
-ipcMain.on('theme:setRuntimeIconDataUrl', (_event, dataUrl: unknown) => {
-  if (typeof dataUrl !== 'string') {
-    console.warn('Ignored runtime icon update: payload must be a data URL string')
-    return
-  }
-
+ipcMain.on('theme:setRuntimeIconDataUrl', (_event, payload: unknown) => {
   try {
-    if (!applyRuntimeIconDataUrl(dataUrl)) {
-      console.warn('Ignored runtime icon update: invalid data URL payload')
+    if (!applyRuntimeIconPayload(payload)) {
+      console.warn('Ignored runtime icon update: invalid icon payload')
     }
   } catch (error) {
     console.warn('Failed to apply runtime icon update:', error)

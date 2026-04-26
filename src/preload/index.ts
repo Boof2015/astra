@@ -84,6 +84,13 @@ import type {
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
+type RuntimeIconImageSetPayload = {
+  images: Array<{
+    size: number
+    dataUrl: string
+  }>
+}
+
 export interface AudioFileMetadata {
   title?: string
   artist?: string
@@ -624,7 +631,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   theme: {
-    setRuntimeIconDataUrl: (dataUrl: string) => ipcRenderer.send('theme:setRuntimeIconDataUrl', dataUrl),
+    setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) =>
+      ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
   },
 
   // Integrations
@@ -1030,7 +1038,7 @@ declare global {
         openReleasesPage: (releaseUrl?: string) => Promise<boolean>
       }
       theme: {
-        setRuntimeIconDataUrl: (dataUrl: string) => void
+        setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
       }
 
       // Integrations

@@ -76,6 +76,13 @@ import type {
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 
+type RuntimeIconImageSetPayload = {
+    images: Array<{
+        size: number
+        dataUrl: string
+    }>
+}
+
 declare global {
     interface Window {
         visualizerAPI: VisualizerDSP | null
@@ -188,7 +195,7 @@ declare global {
                 openReleasesPage: (releaseUrl?: string) => Promise<boolean>
             }
             theme: {
-                setRuntimeIconDataUrl: (dataUrl: string) => void
+                setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
             }
             discord: {
                 configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>

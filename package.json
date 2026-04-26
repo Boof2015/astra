@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node ./scripts/build/writeAppBuildMetadata.cjs && electron-vite dev",
     "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
+    "build:icons": "node scripts/build/generate-astra-icons.mjs",
     "preview": "electron-vite preview",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
