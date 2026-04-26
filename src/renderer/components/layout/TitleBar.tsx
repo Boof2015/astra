@@ -172,6 +172,8 @@ export default function TitleBar() {
       if (disposed) return
       if (sampleStartTime === null) {
         sampleStartTime = timestamp
+        sampleAnimationFrame = window.requestAnimationFrame(tick)
+        return
       }
       frameCount += 1
 
