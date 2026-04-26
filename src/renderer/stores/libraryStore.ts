@@ -148,6 +148,8 @@ interface LibraryStore {
   artistBrowseMode: LibraryArtistBrowseMode
   showTracklistBpmKey: boolean
   showTracklistAddedDate: boolean
+  folderViewExpandedPaths: Set<string>
+  folderViewScrollTop: number
 
   // Actions
   loadLibrary: () => Promise<void>
@@ -199,6 +201,9 @@ interface LibraryStore {
   setArtistBrowseMode: (mode: LibraryArtistBrowseMode) => void
   setShowTracklistBpmKey: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
+  setFolderViewExpandedPaths: (paths: Iterable<string>) => void
+  setFolderViewScrollTop: (scrollTop: number) => void
+  pruneFolderViewExpandedPaths: (validFolderPaths: ReadonlySet<string>) => void
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
@@ -453,6 +458,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   artistBrowseMode: loadArtistBrowseModeSetting(),
   showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
+  folderViewExpandedPaths: new Set<string>(),
+  folderViewScrollTop: 0,
 
   // Load entire library
   loadLibrary: async () => {
@@ -1282,6 +1289,32 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     } catch {
       // Ignore localStorage write failures in restricted environments.
     }
+  },
+
+  setFolderViewExpandedPaths: (paths: Iterable<string>) => {
+    set({ folderViewExpandedPaths: new Set(paths) })
+  },
+
+  setFolderViewScrollTop: (scrollTop: number) => {
+    const normalized = Number.isFinite(scrollTop) ? Math.max(0, Math.round(scrollTop)) : 0
+    if (get().folderViewScrollTop === normalized) return
+    set({ folderViewScrollTop: normalized })
+  },
+
+  pruneFolderViewExpandedPaths: (validFolderPaths: ReadonlySet<string>) => {
+    set((state) => {
+      if (state.folderViewExpandedPaths.size === 0) return {}
+
+      const nextExpandedPaths = new Set<string>()
+      for (const folderPath of state.folderViewExpandedPaths) {
+        if (validFolderPaths.has(folderPath)) {
+          nextExpandedPaths.add(folderPath)
+        }
+      }
+
+      if (nextExpandedPaths.size === state.folderViewExpandedPaths.size) return {}
+      return { folderViewExpandedPaths: nextExpandedPaths }
+    })
   }
 }))
 

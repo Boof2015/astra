@@ -954,7 +954,7 @@ export default function LibraryView() {
 
     // Folder tree
     if (viewMode === 'folders' && !selectedAlbum && !selectedArtist) {
-      return <FolderTreeView tracks={sourceFilteredTracks} folders={folders} searchQuery={searchQuery} />
+      return <FolderTreeView tracks={sourceFilteredTracks} allTracks={tracks} folders={folders} searchQuery={searchQuery} />
     }
 
     // Albums grid

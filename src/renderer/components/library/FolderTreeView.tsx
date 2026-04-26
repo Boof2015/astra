@@ -1,6 +1,6 @@
-import { memo, ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { List, RowComponentProps } from 'react-window'
-import { type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
+import { memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
+import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import type { Track } from '../../types/audio'
@@ -9,6 +9,7 @@ import PlaylistCover from '../playlists/PlaylistCover'
 
 interface FolderTreeViewProps {
   tracks: DbTrack[]
+  allTracks: DbTrack[]
   folders: LibraryFolder[]
   searchQuery: string
 }
@@ -134,6 +135,68 @@ function finalizeFolderNode(node: FolderTreeNode): number {
   return totalTrackCount
 }
 
+function buildFolderTree(folders: LibraryFolder[], tracks: DbTrack[]): FolderTreeNode[] {
+  const roots: FolderTreeNode[] = folders.map((folder) => ({
+    name: getFolderName(folder.path),
+    fullPath: folder.path,
+    children: new Map(),
+    tracks: [],
+    subtreeTracks: [],
+    totalTrackCount: 0
+  }))
+
+  const sortedRoots = [...roots].sort((a, b) => b.fullPath.length - a.fullPath.length)
+
+  for (const track of tracks) {
+    const root = sortedRoots.find((candidate) => (
+      track.path.startsWith(candidate.fullPath + '/')
+      || track.path.startsWith(candidate.fullPath + '\\')
+    ))
+    if (!root) continue
+
+    const relative = track.path.slice(root.fullPath.length + 1)
+    const segments = relative.split(/[/\\]/)
+    segments.pop()
+
+    let current = root
+    let pathSoFar = root.fullPath
+
+    for (const segment of segments) {
+      pathSoFar += '/' + segment
+      if (!current.children.has(segment)) {
+        current.children.set(segment, {
+          name: segment,
+          fullPath: pathSoFar,
+          children: new Map(),
+          tracks: [],
+          subtreeTracks: [],
+          totalTrackCount: 0
+        })
+      }
+      current = current.children.get(segment)!
+    }
+
+    current.tracks.push(track)
+  }
+
+  roots.forEach(finalizeFolderNode)
+  return roots.filter((root) => root.totalTrackCount > 0)
+}
+
+function collectFolderNodePaths(tree: FolderTreeNode[]): Set<string> {
+  const paths = new Set<string>()
+
+  const visit = (node: FolderTreeNode) => {
+    paths.add(node.fullPath)
+    for (const child of node.children.values()) {
+      visit(child)
+    }
+  }
+
+  tree.forEach(visit)
+  return paths
+}
+
 function FolderTreeRowRenderer({
   ariaAttributes,
   index,
@@ -256,14 +319,17 @@ function FolderTreeRowRenderer({
 
 const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
-export default function FolderTreeView({ tracks, folders, searchQuery }: FolderTreeViewProps) {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
+export default function FolderTreeView({ tracks, allTracks, folders, searchQuery }: FolderTreeViewProps) {
   const [folderPlaylistPopup, setFolderPlaylistPopup] = useState<FolderPlaylistPopupState | null>(null)
   const [folderPlaylistSearch, setFolderPlaylistSearch] = useState('')
   const [folderPlaylistFeedback, setFolderPlaylistFeedback] = useState<FolderPlaylistFeedback | null>(null)
   const [isFolderPlaylistMutating, setIsFolderPlaylistMutating] = useState(false)
   const [createPlaylistTarget, setCreatePlaylistTarget] = useState<FolderPlaylistCreateState | null>(null)
 
+  const expandedNodes = useLibraryStore((state) => state.folderViewExpandedPaths)
+  const setFolderViewExpandedPaths = useLibraryStore((state) => state.setFolderViewExpandedPaths)
+  const setFolderViewScrollTop = useLibraryStore((state) => state.setFolderViewScrollTop)
+  const pruneFolderViewExpandedPaths = useLibraryStore((state) => state.pruneFolderViewExpandedPaths)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
   const shuffle = usePlayerStore((state) => state.shuffle)
@@ -275,6 +341,10 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
 
   const folderPlaylistPopupRef = useRef<HTMLDivElement | null>(null)
   const folderPlaylistTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const listRef = useRef<ListImperativeAPI | null>(null)
+  const restoreScrollTopRef = useRef(useLibraryStore.getState().folderViewScrollTop)
+  const latestScrollTopRef = useRef(restoreScrollTopRef.current)
+  const hasRestoredScrollRef = useRef(restoreScrollTopRef.current <= 0)
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
 
@@ -288,53 +358,11 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
     ))
   }, [tracks, normalizedQuery])
 
-  const tree = useMemo(() => {
-    const roots: FolderTreeNode[] = folders.map((folder) => ({
-      name: getFolderName(folder.path),
-      fullPath: folder.path,
-      children: new Map(),
-      tracks: [],
-      subtreeTracks: [],
-      totalTrackCount: 0
-    }))
+  const tree = useMemo(() => buildFolderTree(folders, filteredTracks), [filteredTracks, folders])
 
-    const sortedRoots = [...roots].sort((a, b) => b.fullPath.length - a.fullPath.length)
-
-    for (const track of filteredTracks) {
-      const root = sortedRoots.find((candidate) => (
-        track.path.startsWith(candidate.fullPath + '/')
-        || track.path.startsWith(candidate.fullPath + '\\')
-      ))
-      if (!root) continue
-
-      const relative = track.path.slice(root.fullPath.length + 1)
-      const segments = relative.split(/[/\\]/)
-      segments.pop()
-
-      let current = root
-      let pathSoFar = root.fullPath
-
-      for (const segment of segments) {
-        pathSoFar += '/' + segment
-        if (!current.children.has(segment)) {
-          current.children.set(segment, {
-            name: segment,
-            fullPath: pathSoFar,
-            children: new Map(),
-            tracks: [],
-            subtreeTracks: [],
-            totalTrackCount: 0
-          })
-        }
-        current = current.children.get(segment)!
-      }
-
-      current.tracks.push(track)
-    }
-
-    roots.forEach(finalizeFolderNode)
-    return roots.filter((root) => root.totalTrackCount > 0)
-  }, [filteredTracks, folders])
+  const fullFolderNodePaths = useMemo(() => (
+    collectFolderNodePaths(buildFolderTree(folders, allTracks))
+  ), [allTracks, folders])
 
   const folderNodesByPath = useMemo(() => {
     const next = new Map<string, FolderTreeNode>()
@@ -385,6 +413,64 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
 
     return rows
   }, [tree, expandedNodes])
+
+  useEffect(() => {
+    if (expandedNodes.size === 0) return
+    pruneFolderViewExpandedPaths(fullFolderNodePaths)
+  }, [expandedNodes.size, fullFolderNodePaths, pruneFolderViewExpandedPaths])
+
+  const restoreScrollPosition = useCallback(() => {
+    if (hasRestoredScrollRef.current) return true
+    if (visibleRows.length === 0) return false
+    const element = listRef.current?.element
+    if (!element) return false
+
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
+    if (maxScrollTop <= 0) return false
+
+    const nextScrollTop = Math.min(restoreScrollTopRef.current, maxScrollTop)
+
+    if (nextScrollTop > 0) {
+      element.scrollTop = nextScrollTop
+    }
+
+    latestScrollTopRef.current = nextScrollTop
+    setFolderViewScrollTop(nextScrollTop)
+    hasRestoredScrollRef.current = true
+    return true
+  }, [setFolderViewScrollTop, visibleRows.length])
+
+  useLayoutEffect(() => {
+    if (restoreScrollPosition()) return
+
+    let frameId: number | null = null
+    let attempts = 0
+    const maxAttempts = 8
+
+    const retryRestore = () => {
+      frameId = null
+      if (restoreScrollPosition()) return
+
+      attempts += 1
+      if (attempts < maxAttempts) {
+        frameId = window.requestAnimationFrame(retryRestore)
+      }
+    }
+
+    frameId = window.requestAnimationFrame(retryRestore)
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [restoreScrollPosition])
+
+  useLayoutEffect(() => {
+    return () => {
+      setFolderViewScrollTop(listRef.current?.element?.scrollTop ?? latestScrollTopRef.current)
+    }
+  }, [setFolderViewScrollTop])
 
   const currentFolderPlaylistNode = useMemo(() => {
     if (!folderPlaylistPopup) return null
@@ -478,16 +564,14 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
 
   const toggleExpand = useCallback((fullPath: string) => {
     closeFolderPlaylistPopup()
-    setExpandedNodes((current) => {
-      const next = new Set(current)
-      if (next.has(fullPath)) {
-        next.delete(fullPath)
-      } else {
-        next.add(fullPath)
-      }
-      return next
-    })
-  }, [closeFolderPlaylistPopup])
+    const next = new Set(expandedNodes)
+    if (next.has(fullPath)) {
+      next.delete(fullPath)
+    } else {
+      next.add(fullPath)
+    }
+    setFolderViewExpandedPaths(next)
+  }, [closeFolderPlaylistPopup, expandedNodes, setFolderViewExpandedPaths])
 
   const handlePlayTrack = useCallback(async (track: DbTrack, folderTracks: DbTrack[]) => {
     const queueTracks = folderTracks.map(dbTrackToTrack)
@@ -605,9 +689,36 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
     closeFolderPlaylistPopup()
   }, [closeFolderPlaylistPopup, createPlaylistTarget, createPlaylistWithOptions])
 
-  const handleListScroll = useCallback(() => {
+  const recordScrollTop = useCallback((scrollTop: number) => {
+    if (!hasRestoredScrollRef.current && restoreScrollTopRef.current > 0 && scrollTop === 0) {
+      return
+    }
+    latestScrollTopRef.current = scrollTop
+    setFolderViewScrollTop(scrollTop)
+  }, [setFolderViewScrollTop])
+
+  useLayoutEffect(() => {
+    const element = listRef.current?.element
+    if (!element) return
+
+    const handleNativeScroll = () => {
+      recordScrollTop(element.scrollTop)
+    }
+
+    element.addEventListener('scroll', handleNativeScroll, { passive: true })
+    return () => {
+      element.removeEventListener('scroll', handleNativeScroll)
+    }
+  }, [recordScrollTop, visibleRows.length])
+
+  const handleListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    recordScrollTop(event.currentTarget.scrollTop)
     closeFolderPlaylistPopup()
-  }, [closeFolderPlaylistPopup])
+  }, [closeFolderPlaylistPopup, recordScrollTop])
+
+  const handleListMeasured = useCallback(() => {
+    restoreScrollPosition()
+  }, [restoreScrollPosition])
 
   const filteredPlaylists = useMemo(() => {
     const query = folderPlaylistSearch.trim().toLocaleLowerCase()
@@ -672,6 +783,9 @@ export default function FolderTreeView({ tracks, folders, searchQuery }: FolderT
       <List
         className="folder-browse-virtualized"
         defaultHeight={TRACK_ROW_HEIGHT * 8}
+        listRef={listRef}
+        onResize={handleListMeasured}
+        onRowsRendered={handleListMeasured}
         onScroll={handleListScroll}
         overscanCount={FOLDER_TREE_OVERSCAN_COUNT}
         rowComponent={MemoizedRow}
