@@ -82,6 +82,13 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import type {
+  IntegrityFinding,
+  IntegrityScanMode,
+  IntegrityScanProgress,
+  IntegrityScanResult,
+  IntegrityScanScope
+} from '../types/libraryIntegrity'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
 
 type RuntimeIconImageSetPayload = {
@@ -866,6 +873,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
     }>,
     cancelScan: () => ipcRenderer.invoke('library:cancelScan') as Promise<{ canceled: boolean }>,
+    startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) =>
+      ipcRenderer.invoke('library:startIntegrityScan', request) as Promise<IntegrityScanResult>,
+    cancelIntegrityScan: () => ipcRenderer.invoke('library:cancelIntegrityScan') as Promise<{ canceled: boolean }>,
+    checkTrackIntegrity: (trackPath: string) =>
+      ipcRenderer.invoke('library:checkTrackIntegrity', trackPath) as Promise<IntegrityScanResult>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
@@ -900,6 +912,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanStageProgress) => callback(progress)
       ipcRenderer.on('library:scanStage', handler)
       return () => ipcRenderer.removeListener('library:scanStage', handler)
+    },
+    onIntegrityScanProgress: (callback: (progress: IntegrityScanProgress) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: IntegrityScanProgress) => callback(progress)
+      ipcRenderer.on('library:integrityScanProgress', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanProgress', handler)
+    },
+    onIntegrityScanFinding: (callback: (finding: IntegrityFinding) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, finding: IntegrityFinding) => callback(finding)
+      ipcRenderer.on('library:integrityScanFinding', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanFinding', handler)
+    },
+    onIntegrityScanComplete: (callback: (result: IntegrityScanResult) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: IntegrityScanResult) => callback(result)
+      ipcRenderer.on('library:integrityScanComplete', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanComplete', handler)
     },
     onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
@@ -1203,6 +1230,9 @@ declare global {
           scanIssueLog?: ScanIssueLog
         }>
         cancelScan: () => Promise<{ canceled: boolean }>
+        startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) => Promise<IntegrityScanResult>
+        cancelIntegrityScan: () => Promise<{ canceled: boolean }>
+        checkTrackIntegrity: (trackPath: string) => Promise<IntegrityScanResult>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
@@ -1230,6 +1260,9 @@ declare global {
         getArtworkCardDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onScanStage: (callback: (progress: ScanStageProgress) => void) => () => void
+        onIntegrityScanProgress: (callback: (progress: IntegrityScanProgress) => void) => () => void
+        onIntegrityScanFinding: (callback: (finding: IntegrityFinding) => void) => () => void
+        onIntegrityScanComplete: (callback: (result: IntegrityScanResult) => void) => () => void
         onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void

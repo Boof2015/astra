@@ -74,7 +74,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'experimental',
     label: 'Experimental',
-    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network']
+    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality']
   },
   {
     id: 'info',

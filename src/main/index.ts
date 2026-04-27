@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -7,6 +7,16 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import {
+  deepScanFlacIntegrityTrack,
+  isFlacTarget,
+  isIntegrityScanCancelledError,
+  quickScanIntegrityTrack,
+  resolveIntegrityWorkerCount,
+  runIntegrityWithConcurrency,
+  type IntegrityFindingInput,
+  type IntegrityScanTrackTarget
+} from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import {
   buildSubsonicStreamUrl,
@@ -135,6 +145,14 @@ import type {
   MemoryDiagnosticsSnapshotRequest
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import type {
+  IntegrityFinding,
+  IntegrityScanMode,
+  IntegrityScanProgress,
+  IntegrityScanResult,
+  IntegrityScanScope,
+  IntegrityScanSummary
+} from '../types/libraryIntegrity'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -4619,6 +4637,333 @@ ipcMain.handle('library:cancelScan', () => {
     stage: activeLibraryScanStage ?? 'scanning'
   })
   return { canceled: true }
+})
+
+let activeIntegrityScanAbortController: AbortController | null = null
+
+function normalizeIntegrityScanMode(value: unknown): IntegrityScanMode {
+  return value === 'deep' ? 'deep' : 'quick'
+}
+
+function normalizeIntegrityScanScope(value: unknown): IntegrityScanScope {
+  if (!value || typeof value !== 'object') return { type: 'all' }
+  const scope = value as Partial<IntegrityScanScope> & { folderPath?: unknown; trackPath?: unknown }
+  if (scope.type === 'folder' && typeof scope.folderPath === 'string' && scope.folderPath.trim()) {
+    return { type: 'folder', folderPath: scope.folderPath }
+  }
+  if (scope.type === 'track' && typeof scope.trackPath === 'string' && scope.trackPath.trim()) {
+    return { type: 'track', trackPath: scope.trackPath }
+  }
+  return { type: 'all' }
+}
+
+function getIntegrityScopePath(scope: IntegrityScanScope): string {
+  if (scope.type === 'folder') return scope.folderPath
+  if (scope.type === 'track') return scope.trackPath
+  return ''
+}
+
+function isOnBatteryPowerMain(): boolean {
+  if (!app.isReady()) return false
+  try {
+    return powerMonitor.isOnBatteryPower()
+  } catch {
+    return false
+  }
+}
+
+function createIntegrityScanAbortController(): AbortController {
+  if (activeIntegrityScanAbortController && !activeIntegrityScanAbortController.signal.aborted) {
+    throw new Error('An integrity scan is already in progress.')
+  }
+  const controller = new AbortController()
+  activeIntegrityScanAbortController = controller
+  return controller
+}
+
+function sendIntegrityScanProgress(progress: IntegrityScanProgress): void {
+  mainWindow?.webContents.send('library:integrityScanProgress', progress)
+}
+
+function sendIntegrityScanFinding(finding: IntegrityFinding): void {
+  mainWindow?.webContents.send('library:integrityScanFinding', finding)
+}
+
+function sendIntegrityScanComplete(result: IntegrityScanResult): void {
+  mainWindow?.webContents.send('library:integrityScanComplete', result)
+}
+
+function countIntegrityFindings(findings: readonly IntegrityFinding[]): Pick<IntegrityScanSummary, 'errors' | 'warnings' | 'info'> {
+  let errors = 0
+  let warnings = 0
+  let info = 0
+  for (const finding of findings) {
+    if (finding.severity === 'error') {
+      errors += 1
+    } else if (finding.severity === 'warning') {
+      warnings += 1
+    } else {
+      info += 1
+    }
+  }
+  return { errors, warnings, info }
+}
+
+function createIntegrityFindingRecorder(runId: string, emitEvents = true): {
+  findings: IntegrityFinding[]
+  record: (finding: IntegrityFindingInput) => IntegrityFinding
+} {
+  const findings: IntegrityFinding[] = []
+  let sequence = 0
+
+  const record = (input: IntegrityFindingInput): IntegrityFinding => {
+    sequence += 1
+    const finding: IntegrityFinding = {
+      ...input,
+      id: `${runId}:${sequence}`
+    }
+    findings.push(finding)
+    if (emitEvents) {
+      sendIntegrityScanFinding(finding)
+    }
+    return finding
+  }
+
+  return { findings, record }
+}
+
+function buildIntegritySummary(
+  mode: IntegrityScanMode,
+  scope: IntegrityScanScope,
+  findings: readonly IntegrityFinding[],
+  scanned: number,
+  skipped: number,
+  canceled: boolean,
+  startedAt: number
+): IntegrityScanSummary {
+  return {
+    mode,
+    scope,
+    scanned,
+    skipped,
+    ...countIntegrityFindings(findings),
+    canceled,
+    startedAt,
+    completedAt: Date.now()
+  }
+}
+
+function buildIntegrityResult(
+  mode: IntegrityScanMode,
+  scope: IntegrityScanScope,
+  findings: IntegrityFinding[],
+  scanned: number,
+  skipped: number,
+  canceled: boolean,
+  startedAt: number
+): IntegrityScanResult {
+  return {
+    summary: buildIntegritySummary(mode, scope, findings, scanned, skipped, canceled, startedAt),
+    findings
+  }
+}
+
+async function scanIntegrityTarget(
+  target: IntegrityScanTrackTarget,
+  mode: IntegrityScanMode,
+  ffmpegPath: string | null,
+  signal?: AbortSignal
+): Promise<IntegrityFindingInput[]> {
+  if (mode === 'quick') {
+    return quickScanIntegrityTrack(target, { signal })
+  }
+
+  if (!isFlacTarget(target)) {
+    return []
+  }
+
+  if (!ffmpegPath) {
+    return [{
+      severity: 'error',
+      code: 'ffmpeg_unavailable',
+      path: target.path,
+      title: target.title,
+      message: 'FFmpeg is unavailable for deep integrity checks.',
+      detail: 'A packaged or system FFmpeg binary could not be resolved.'
+    }]
+  }
+
+  return deepScanFlacIntegrityTrack(target, ffmpegPath, { signal, onBattery: isOnBatteryPowerMain() })
+}
+
+async function runIntegrityScan(
+  mode: IntegrityScanMode,
+  scope: IntegrityScanScope
+): Promise<IntegrityScanResult> {
+  const controller = createIntegrityScanAbortController()
+  const startedAt = Date.now()
+  const runId = `integrity:${startedAt}`
+  const recorder = createIntegrityFindingRecorder(runId)
+  let scanned = 0
+  let skipped = 0
+  let total = 0
+  let completed = 0
+  let canceled = false
+
+  try {
+    sendIntegrityScanProgress({
+      mode,
+      scope,
+      current: 0,
+      total: 0,
+      filePath: getIntegrityScopePath(scope),
+      message: 'Preparing integrity scan...',
+      phase: 'preparing'
+    })
+
+    const allTargets = library.getIntegrityScanTrackTargets(scope)
+    const targets = mode === 'deep' ? allTargets.filter(isFlacTarget) : allTargets
+    skipped = mode === 'deep' ? allTargets.length - targets.length : 0
+    total = targets.length
+    const ffmpegPath = mode === 'deep' && targets.length > 0 ? await resolveBinary('ffmpeg') : null
+    const workerCount = resolveIntegrityWorkerCount(total, mode, {
+      onBattery: isOnBatteryPowerMain()
+    })
+
+    sendIntegrityScanProgress({
+      mode,
+      scope,
+      current: 0,
+      total,
+      filePath: getIntegrityScopePath(scope),
+      message: total === 0 ? 'No matching local tracks to scan.' : `Scanning with ${workerCount} worker${workerCount === 1 ? '' : 's'}...`,
+      phase: mode
+    })
+
+    await runIntegrityWithConcurrency(targets, workerCount, async (target) => {
+      const phase = mode === 'deep' ? 'deep' : 'quick'
+      sendIntegrityScanProgress({
+        mode,
+        scope,
+        current: completed,
+        total,
+        filePath: target.path,
+        message: mode === 'deep' ? 'Decoding FLAC and checking quality signals...' : 'Checking file headers and metadata...',
+        phase
+      })
+
+      try {
+        const findings = await scanIntegrityTarget(target, mode, ffmpegPath, controller.signal)
+        for (const finding of findings) {
+          recorder.record(finding)
+        }
+      } catch (error) {
+        if (isIntegrityScanCancelledError(error)) {
+          throw error
+        }
+        recorder.record({
+          severity: 'error',
+          code: 'integrity_scan_failed',
+          path: target.path,
+          title: target.title,
+          message: 'Integrity scan failed for this file.',
+          detail: error instanceof Error ? error.message : 'Unknown error'
+        })
+      } finally {
+        scanned += 1
+        completed += 1
+        sendIntegrityScanProgress({
+          mode,
+          scope,
+          current: completed,
+          total,
+          filePath: target.path,
+          message: completed >= total ? 'Finalizing report...' : 'Continuing integrity scan...',
+          phase
+        })
+      }
+    }, { signal: controller.signal })
+  } catch (error) {
+    if (isIntegrityScanCancelledError(error)) {
+      canceled = true
+    } else {
+      throw error
+    }
+  } finally {
+    if (activeIntegrityScanAbortController === controller) {
+      activeIntegrityScanAbortController = null
+    }
+  }
+
+  const result = buildIntegrityResult(mode, scope, recorder.findings, scanned, skipped, canceled, startedAt)
+  sendIntegrityScanProgress({
+    mode,
+    scope,
+    current: completed,
+    total,
+    filePath: getIntegrityScopePath(scope),
+    message: canceled ? 'Integrity scan canceled.' : 'Integrity scan complete.',
+    phase: canceled ? 'canceled' : 'complete'
+  })
+  sendIntegrityScanComplete(result)
+  return result
+}
+
+ipcMain.handle('library:startIntegrityScan', async (_event, request?: { mode?: unknown; scope?: unknown }) => {
+  const mode = normalizeIntegrityScanMode(request?.mode)
+  const scope = normalizeIntegrityScanScope(request?.scope)
+  return runIntegrityScan(mode, scope)
+})
+
+ipcMain.handle('library:cancelIntegrityScan', () => {
+  if (!activeIntegrityScanAbortController || activeIntegrityScanAbortController.signal.aborted) {
+    return { canceled: false }
+  }
+  activeIntegrityScanAbortController.abort()
+  return { canceled: true }
+})
+
+ipcMain.handle('library:checkTrackIntegrity', async (_event, trackPath: string) => {
+  const scope: IntegrityScanScope = { type: 'track', trackPath }
+  const startedAt = Date.now()
+  const runId = `track-integrity:${startedAt}`
+  const recorder = createIntegrityFindingRecorder(runId, false)
+  const targets = library.getIntegrityScanTrackTargets(scope)
+  const target = targets[0]
+  let scanned = 0
+  let skipped = 0
+  let mode: IntegrityScanMode = 'quick'
+
+  if (!target) {
+    recorder.record({
+      severity: 'error',
+      code: 'track_not_found',
+      path: trackPath,
+      message: 'Track is not a local indexed library file.'
+    })
+  } else if (isFlacTarget(target)) {
+    mode = 'deep'
+    const ffmpegPath = await resolveBinary('ffmpeg')
+    const findings = await scanIntegrityTarget(target, mode, ffmpegPath)
+    findings.forEach(recorder.record)
+    scanned = 1
+  } else {
+    const findings = await scanIntegrityTarget(target, mode, null)
+    findings.forEach(recorder.record)
+    scanned = 1
+    skipped = 1
+    recorder.record({
+      severity: 'info',
+      code: 'deep_scan_flac_only',
+      path: target.path,
+      title: target.title,
+      message: 'Deep integrity traversal is FLAC-only in this version.',
+      detail: `${target.format.toUpperCase()} was checked with quick file and metadata validation.`,
+      confidence: 'high'
+    })
+  }
+
+  return buildIntegrityResult(mode, scope, recorder.findings, scanned, skipped, false, startedAt)
 })
 
 ipcMain.handle('library:backfillReplayGainMetadata', async () => {

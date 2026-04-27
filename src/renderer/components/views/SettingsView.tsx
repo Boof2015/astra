@@ -32,6 +32,7 @@ import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
+import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -372,6 +373,9 @@ export default function SettingsView() {
   const libraryGraphEnabled = useGraphStore((state) => state.enabled)
   const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
   const openFullGraph = useGraphStore((state) => state.openFullMap)
+  const libraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
+  const setLibraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.setEnabled)
+  const openLibraryIntegrityPanel = useLibraryIntegrityStore((state) => state.openPanel)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const sleepTimerIsActive = useSleepTimerStore((state) => state.isActive)
@@ -1962,6 +1966,33 @@ export default function SettingsView() {
                       Open Full Map
                     </button>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Library Integrity Check</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Integrity Check</span>
+                    <button
+                      className={`settings-toggle ${libraryIntegrityEnabled ? 'active' : ''}`}
+                      onClick={() => setLibraryIntegrityEnabled(!libraryIntegrityEnabled)}
+                    >
+                      {libraryIntegrityEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Scanner</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!libraryIntegrityEnabled}
+                      onClick={openLibraryIntegrityPanel}
+                    >
+                      Open Integrity Check
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Quick scans inspect local file headers and metadata. Deep scans decode FLAC files and add quality-signal hints.
+                  </p>
                 </div>
               </div>
               <div className="settings-integration-card">

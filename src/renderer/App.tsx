@@ -14,6 +14,8 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
+import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
+import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -316,6 +318,8 @@ function App() {
         <UpdateAvailableCue />
         <QuickLaunchPalette />
         <KeyboardShortcutsModal />
+        <LibraryIntegrityPanel />
+        <TrackIntegrityResultModal />
         {isFullscreen && <FullscreenMode />}
       </div>
     </div>

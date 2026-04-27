@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore, type LibraryTrackRevealRequest } from '../../stores/uiStore'
+import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
@@ -113,6 +114,7 @@ interface TrackListRowSharedProps {
   onAddToQueue: (event: React.MouseEvent, track: DbTrack) => void
   onToggleFavorite: (event: React.MouseEvent, trackPath: string) => void
   onOpenPlaylistPopup: (event: React.MouseEvent<HTMLButtonElement>, trackPath: string) => void
+  onTrackContextMenu: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => void
   showQueueInsertAffordance: boolean
   queueInsertArmedTrackPath: string | null
   queueInsertSelectionRange: { startIndex: number; endIndex: number } | null
@@ -144,6 +146,12 @@ interface TrackPlaylistFeedback {
 
 interface TrackPlaylistCreateState {
   trackPath: string
+}
+
+interface TrackContextMenuState {
+  track: DbTrack
+  x: number
+  y: number
 }
 
 // Convert DbTrack to Track
@@ -272,6 +280,7 @@ function TrackListRowRenderer({
   onAddToQueue,
   onToggleFavorite,
   onOpenPlaylistPopup,
+  onTrackContextMenu,
   showQueueInsertAffordance,
   queueInsertArmedTrackPath,
   queueInsertSelectionRange
@@ -344,6 +353,7 @@ function TrackListRowRenderer({
         data-track-index={index}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={(event) => onQueueInsertPointerDown(event, track, index)}
+        onContextMenu={(event) => onTrackContextMenu(event, track)}
         onClick={() => {
           void onTrackClick(track, index)
         }}
@@ -578,8 +588,12 @@ export default function TrackList({
   const getPlaylistsContainingTrack = usePlaylistStore((state) => state.getPlaylistsContainingTrack)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
+  const integrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
+  const checkTrackIntegrity = useLibraryIntegrityStore((state) => state.checkTrack)
+  const integrityBusyPath = useLibraryIntegrityStore((state) => state.singleTrackBusyPath)
 
   const [playlistPopup, setPlaylistPopup] = useState<TrackPlaylistPopupState | null>(null)
+  const [trackContextMenu, setTrackContextMenu] = useState<TrackContextMenuState | null>(null)
   const [playlistPopupSearch, setPlaylistPopupSearch] = useState('')
   const [playlistPopupFeedback, setPlaylistPopupFeedback] = useState<TrackPlaylistFeedback | null>(null)
   const [playlistMemberships, setPlaylistMemberships] = useState<Set<number>>(new Set())
@@ -1003,6 +1017,7 @@ export default function TrackList({
 
   const handleOpenPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>, trackPath: string) => {
     event.stopPropagation()
+    setTrackContextMenu(null)
 
     if (playlistPopup?.trackPath === trackPath) {
       closePlaylistPopup()
@@ -1029,6 +1044,25 @@ export default function TrackList({
     })
     void refreshPlaylistMembership(trackPath)
   }, [closePlaylistPopup, playlistPopup?.trackPath, refreshPlaylistMembership])
+
+  const handleTrackContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => {
+    if (!integrityEnabled || track.source_type !== 'local') return
+    event.preventDefault()
+    event.stopPropagation()
+    closePlaylistPopup()
+    setTrackContextMenu({
+      track,
+      x: event.clientX,
+      y: event.clientY
+    })
+  }, [closePlaylistPopup, integrityEnabled])
+
+  const handleCheckTrackIntegrity = useCallback(() => {
+    if (!trackContextMenu) return
+    const trackPath = trackContextMenu.track.path
+    setTrackContextMenu(null)
+    void checkTrackIntegrity(trackPath)
+  }, [checkTrackIntegrity, trackContextMenu])
 
   const handleToggleTrackPlaylistMembership = useCallback(async (event: React.MouseEvent, playlistId: number, trackPath: string) => {
     event.stopPropagation()
@@ -1090,6 +1124,7 @@ export default function TrackList({
 
   const handleListScroll = useCallback(() => {
     closePlaylistPopup()
+    setTrackContextMenu(null)
   }, [closePlaylistPopup])
 
   useEffect(() => {
@@ -1145,6 +1180,33 @@ export default function TrackList({
     }
   }, [closePlaylistPopup, playlistPopup])
 
+  useEffect(() => {
+    if (!trackContextMenu) return
+
+    const handlePointerDown = () => {
+      setTrackContextMenu(null)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setTrackContextMenu(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', handlePointerDown)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handlePointerDown)
+    }
+  }, [trackContextMenu])
+
   const filteredPlaylists = useMemo(() => {
     const query = playlistPopupSearch.trim().toLocaleLowerCase()
     if (!query) return playlists
@@ -1179,6 +1241,24 @@ export default function TrackList({
       maxHeight: Math.max(150, window.innerHeight - top - edgePadding)
     }
   }, [playlistPopup])
+
+  const trackContextMenuStyle = useMemo(() => {
+    if (!trackContextMenu) return undefined
+
+    const panelWidth = 220
+    const panelHeight = 54
+    const edgePadding = 8
+    const left = Math.min(
+      Math.max(edgePadding, trackContextMenu.x),
+      Math.max(edgePadding, window.innerWidth - panelWidth - edgePadding)
+    )
+    const top = Math.min(
+      Math.max(edgePadding, trackContextMenu.y),
+      Math.max(edgePadding, window.innerHeight - panelHeight - edgePadding)
+    )
+
+    return { top, left }
+  }, [trackContextMenu])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const resolvedListHeight = externalScroll
@@ -1258,6 +1338,7 @@ export default function TrackList({
     onAddToQueue: handleAddToQueue,
     onToggleFavorite: handleToggleFavorite,
     onOpenPlaylistPopup: handleOpenPlaylistPopup,
+    onTrackContextMenu: handleTrackContextMenu,
     showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
     queueInsertSelectionRange
@@ -1294,6 +1375,7 @@ export default function TrackList({
     handleAddToQueue,
     handleToggleFavorite,
     handleOpenPlaylistPopup,
+    handleTrackContextMenu,
     queueInsertArmedTrackPath,
     queueInsertSelectionRange
   ])
@@ -1456,6 +1538,28 @@ export default function TrackList({
               <div className="track-playlist-popup-empty">No matching playlists</div>
             )}
           </div>
+        </div>
+      )}
+      {trackContextMenu && (
+        <div
+          className="track-context-menu"
+          style={trackContextMenuStyle}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="track-context-menu-item"
+            onClick={handleCheckTrackIntegrity}
+            disabled={integrityBusyPath === trackContextMenu.track.path}
+          >
+            <span className="track-context-menu-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </span>
+            {integrityBusyPath === trackContextMenu.track.path ? 'Checking...' : 'Check Integrity'}
+          </button>
         </div>
       )}
       <CreatePlaylistModal

@@ -44,6 +44,11 @@ import type {
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
+import type { IntegrityScanScope } from '../../types/libraryIntegrity'
+import {
+  filterIntegrityTargetsByScope,
+  type IntegrityScanTrackTarget
+} from './libraryIntegrity'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -3259,6 +3264,32 @@ export function getAllTracks(): DbTrack[] {
       t.path COLLATE NOCASE
   `)
   return attachAlbumIdentityKeys(tracks, tracks)
+}
+
+export function getIntegrityScanTrackTargets(scope: IntegrityScanScope): IntegrityScanTrackTarget[] {
+  if (!db) return []
+  const tracks = readEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE t.source_type = 'local'
+    ORDER BY t.path COLLATE NOCASE
+  `)
+
+  return filterIntegrityTargetsByScope(
+    tracks.map((track) => ({
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      format: track.format,
+      sampleRate: track.sample_rate,
+      bitDepth: track.bit_depth,
+      bitrate: track.bitrate,
+      channels: track.channels
+    })),
+    scope
+  )
 }
 
 // Get tracks by artist
