@@ -786,6 +786,21 @@ function getRecentArtistCandidate(
   return getPrimaryContributor(track.artist)
 }
 
+function formatHomeClockTime(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date)
+}
+
+function formatHomeClockDate(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  }).format(date)
+}
+
 export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
@@ -805,11 +820,13 @@ export default function HomeView() {
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
+  const homeGreetingTextMode = useUIStore((s) => s.homeGreetingTextMode)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
+  const [clockNow, setClockNow] = useState(() => new Date())
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined'
       ? HOME_RECENT_MEDIUM_BREAKPOINT_PX
@@ -832,6 +849,28 @@ export default function HomeView() {
     }, GREETING_ROTATION_MS)
     return () => window.clearInterval(intervalId)
   }, [])
+
+  useEffect(() => {
+    if (homeGreetingTextMode !== 'clock') return
+
+    let intervalId: number | null = null
+    const updateClock = () => setClockNow(new Date())
+    updateClock()
+
+    const now = new Date()
+    const msUntilNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds())
+    const timeoutId = window.setTimeout(() => {
+      updateClock()
+      intervalId = window.setInterval(updateClock, 60000)
+    }, Math.max(100, msUntilNextMinute))
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [homeGreetingTextMode])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1073,6 +1112,11 @@ export default function HomeView() {
     [playlists, favoriteTracks]
   )
 
+  const clockGreeting = useMemo(() => ({
+    primary: formatHomeClockTime(clockNow),
+    subline: formatHomeClockDate(clockNow)
+  }), [clockNow])
+
   const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
     const queueTracks: Track[] = recentTracks.map((recentTrack) => ({
       id: recentTrack.path,
@@ -1183,10 +1227,20 @@ export default function HomeView() {
         <section ref={greetingCardRef} className={`home-greeting-card is-${greeting.bucket}`}>
           <canvas ref={skyCanvasRef} className="home-greeting-sky-canvas" aria-hidden="true" />
           <canvas ref={starCanvasRef} className="home-greeting-star-canvas" aria-hidden="true" />
-          <div className="home-greeting-content">
-            <h1 className="home-greeting-message">{greeting.primary}</h1>
-            {greeting.subline.trim().length > 0 && <p className="home-greeting-subline">{greeting.subline}</p>}
-          </div>
+          {homeGreetingTextMode === 'off' ? (
+            <div className="home-greeting-content" aria-hidden="true" />
+          ) : (
+            <div className="home-greeting-content">
+              <h1 className="home-greeting-message">
+                {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
+              </h1>
+              {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
+                <p className="home-greeting-subline">
+                  {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
+                </p>
+              )}
+            </div>
+          )}
           <div className="home-greeting-stats">
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Tracks</span>

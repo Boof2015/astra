@@ -14,7 +14,8 @@ import {
   MAX_UI_SCALE_PERCENT,
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
-  useUIStore
+  useUIStore,
+  type HomeGreetingTextMode
 } from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -363,6 +364,8 @@ export default function SettingsView() {
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
+  const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
+  const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -1359,6 +1362,28 @@ export default function SettingsView() {
                         RESET
                       </button>
                     </div>
+                  </label>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Text</span>
+                    <select
+                      className="settings-select"
+                      value={homeGreetingTextMode}
+                      onChange={(event) => {
+                        const mode = event.target.value === 'clock' || event.target.value === 'off'
+                          ? event.target.value
+                          : 'messages'
+                        setHomeGreetingTextMode(mode as HomeGreetingTextMode)
+                      }}
+                    >
+                      <option value="messages">Messages</option>
+                      <option value="clock">Clock</option>
+                      <option value="off">Off</option>
+                    </select>
                   </label>
                 </div>
               </div>
