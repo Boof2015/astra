@@ -3,7 +3,7 @@ import { readdirSync } from 'fs'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { normalizeDiscordActivityDetails, truncateDiscordField } from './discordRpcActivity'
+import { buildDiscordActivityFromPresence } from './discordRpcActivity'
 
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
@@ -18,7 +18,6 @@ const OPCODE_FRAME = 1
 const OPCODE_CLOSE = 2
 const OPCODE_PING = 3
 const OPCODE_PONG = 4
-const DISCORD_ACTIVITY_NAME = 'Astra'
 const DISCORD_LINUX_SOCKET_PREFIXES = ['discord-ipc', 'vesktop-ipc'] as const
 const DISCORD_LINUX_RUNTIME_APP_DIR_HINTS = [
   'app/com.discordapp.Discord',
@@ -98,48 +97,6 @@ function normalizeHttpsUrl(value: unknown): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function toTrackLine(artist?: string): string {
-  const normalized = artist?.trim()
-  if (!normalized) return 'Astra'
-  return normalized
-}
-
-function formatSampleRate(sampleRate?: number): string | null {
-  const normalized = normalizeNumber(sampleRate)
-  if (!normalized || normalized <= 0) return null
-  if (normalized >= 1000) {
-    const khz = Math.round((normalized / 1000) * 10) / 10
-    return Number.isInteger(khz) ? `${khz.toFixed(0)}kHz` : `${khz.toFixed(1)}kHz`
-  }
-  return `${Math.round(normalized)}Hz`
-}
-
-function buildQualityLine(track: DiscordTrackPresence): string | null {
-  const parts: string[] = []
-
-  if (track.isAtmosJoc) {
-    parts.push('Atmos JOC')
-  } else {
-    const codec = normalizeText(track.codec)
-    const format = normalizeText(track.format)
-    const codecLine = codec ?? (format ? format.toUpperCase() : null)
-    if (codecLine) {
-      parts.push(codecLine)
-    }
-  }
-
-  const bitDepth = normalizeNumber(track.bitDepth)
-  if (bitDepth && bitDepth > 0) {
-    parts.push(`${Math.round(bitDepth)}-bit`)
-  }
-
-  const sampleRate = formatSampleRate(track.sampleRate)
-  if (sampleRate) parts.push(sampleRate)
-
-  if (parts.length === 0) return null
-  return parts.join(' - ')
 }
 
 function listDirectories(path: string): string[] {
@@ -468,58 +425,9 @@ export class DiscordRpcService {
   private buildActivityFromPresence(
     presence: DiscordPresenceUpdate | null
   ): Record<string, unknown> | null {
-    if (!presence || !presence.track) return null
-    if (presence.playbackState === 'stopped') return null
-
-    const details = normalizeDiscordActivityDetails(presence.track.title, 128)
-    if (!details) return null
-
-    const activityType = presence.playbackState === 'playing' ? 2 : 0
-    const activity: Record<string, unknown> = {
-      name: DISCORD_ACTIVITY_NAME,
-      type: activityType,
-      details,
-      state: '',
-      instance: false
-    }
-
-    const identityLine = toTrackLine(presence.track.artist)
-    const qualityLine = buildQualityLine(presence.track)
-    const combinedStateLine = [identityLine !== 'Astra' ? identityLine : null, qualityLine]
-      .filter(Boolean)
-      .join(' - ') || identityLine
-    activity.state = truncateDiscordField(combinedStateLine, 128)
-
-    if (presence.playbackState === 'paused') {
-      activity.state = truncateDiscordField(`Paused • ${combinedStateLine}`, 128)
-    } else if (presence.playbackState === 'loading') {
-      activity.state = truncateDiscordField(`Loading • ${combinedStateLine}`, 128)
-    }
-
-    if (presence.playbackState === 'playing') {
-      const duration = normalizeNumber(presence.durationSeconds ?? presence.track.durationSeconds)
-      const current = normalizeNumber(presence.currentTimeSeconds) ?? 0
-      const now = Math.floor(Date.now() / 1000)
-      const start = Math.max(0, now - Math.floor(current))
-      if (duration && duration > 0) {
-        activity.timestamps = {
-          start,
-          end: start + Math.floor(duration)
-        }
-      } else {
-        activity.timestamps = { start }
-      }
-    }
-
-    const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence.track.coverArtUrl) : undefined
-    const largeImage = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
-    if (largeImage) {
-      activity.assets = {
-        large_image: largeImage
-      }
-    }
-
-    return activity
+    const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence?.track?.coverArtUrl) : undefined
+    const largeImageUrl = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
+    return buildDiscordActivityFromPresence(presence, { largeImageUrl })
   }
 
   private async ensureFallbackLargeImageUrl(): Promise<void> {
