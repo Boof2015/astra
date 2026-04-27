@@ -16,8 +16,10 @@ interface HomeTrack {
   album_identity_key: string
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   format: string
   artwork_hash: string | null
@@ -769,7 +771,7 @@ function getPrimaryContributor(rawArtist: string): string {
 }
 
 function getRecentArtistCandidate(
-  track: Pick<HomeTrack, 'artist' | 'album_artist'>,
+  track: Pick<HomeTrack, 'artist' | 'artist_names' | 'album_artist' | 'album_artist_names'>,
   mode: LibraryArtistBrowseMode
 ): string {
   const albumArtist = (track.album_artist ?? '').replace(/\s+/g, ' ').trim()
@@ -781,6 +783,13 @@ function getRecentArtistCandidate(
 
   if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
     return getPrimaryContributor(albumArtist)
+  }
+
+  if (track.artist_names.length > 0) {
+    return track.artist_names[0]
+  }
+  if (track.album_artist_names.length > 0) {
+    return track.album_artist_names[0]
   }
 
   return getPrimaryContributor(track.artist)
@@ -1123,8 +1132,10 @@ export default function HomeView() {
       path: recentTrack.path,
       title: recentTrack.title,
       artist: recentTrack.artist,
+      artistNames: recentTrack.artist_names,
       album: recentTrack.album,
       albumArtist: recentTrack.album_artist ?? undefined,
+      albumArtistNames: recentTrack.album_artist_names,
       albumIdentityKey: recentTrack.album_identity_key,
       duration: recentTrack.duration,
       format: recentTrack.format,

@@ -4,6 +4,7 @@ import {
   normalizeKey,
   splitCollaborators
 } from './albumIdentity.ts'
+import { normalizeArtistNames } from '../../shared/library/artistCredits.ts'
 
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
@@ -18,8 +19,10 @@ export interface ArtistGraphTrackLike {
   path: string
   title: string
   artist: string
+  artist_names?: string[] | null
   album: string
   album_artist?: string | null
+  album_artist_names?: string[] | null
   album_identity_key?: string | null
   year?: number | null
   artwork_hash?: string | null
@@ -199,8 +202,26 @@ function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
     }
   }
 
-  addParticipants(track.album_artist)
-  addParticipants(track.artist)
+  const addParticipantNames = (rawNames: readonly unknown[] | null | undefined): boolean => {
+    const names = normalizeArtistNames(rawNames)
+    if (names.length === 0) return false
+
+    for (const name of names) {
+      const display = normalizeDisplay(name)
+      if (!display) continue
+      if (isIgnorableArtist(display)) {
+        sawIgnorableArtist = true
+        continue
+      }
+      const key = normalizeKey(display)
+      if (!key || participants.has(key)) continue
+      participants.set(key, display)
+    }
+    return true
+  }
+
+  if (!addParticipantNames(track.album_artist_names)) addParticipants(track.album_artist)
+  if (!addParticipantNames(track.artist_names)) addParticipants(track.artist)
 
   if (participants.size === 0 && !sawIgnorableArtist) {
     participants.set(normalizeKey(UNKNOWN_ARTIST_NAME), UNKNOWN_ARTIST_NAME)

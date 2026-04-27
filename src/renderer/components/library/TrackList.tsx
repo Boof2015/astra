@@ -21,8 +21,10 @@ interface DbTrack {
   is_new: boolean
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   artwork_hash: string | null
@@ -151,8 +153,10 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     path: dbTrack.path,
     title: dbTrack.title,
     artist: dbTrack.artist,
+    artistNames: dbTrack.artist_names,
     album: dbTrack.album,
     albumArtist: dbTrack.album_artist ?? undefined,
+    albumArtistNames: dbTrack.album_artist_names,
     albumIdentityKey: dbTrack.album_identity_key,
     duration: dbTrack.duration,
     format: dbTrack.format,
@@ -409,7 +413,9 @@ function TrackListRowRenderer({
           <div className="track-col track-col-artist">
             <ArtistNameLinks
               artistText={track.artist}
+              artistNames={track.artist_names}
               browseArtistText={track.album_artist}
+              browseArtistNames={track.album_artist_names}
               onArtistClick={openArtistInLibrary}
               className="track-artist"
               linkClassName="artist-name-link-inline"

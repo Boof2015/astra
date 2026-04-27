@@ -39,8 +39,10 @@ function toQueueTrack(track: QuickLaunchTrackRecord): Track {
     path: track.path,
     title: track.title,
     artist: track.artist,
+    artistNames: track.artist_names,
     album: track.album,
     albumArtist: track.album_artist ?? undefined,
+    albumArtistNames: track.album_artist_names,
     albumIdentityKey: track.album_identity_key,
     duration: track.duration,
     trackNumber: track.track_number ?? undefined,
@@ -285,6 +287,8 @@ export default function QuickLaunchPalette() {
       const result = multiFieldScore(trimmedQuery, [
         { value: track.title, weight: 1.5 },
         { value: track.artist, weight: 1.2 },
+        { value: track.artist_names.join(' '), weight: 1.2 },
+        { value: track.album_artist_names.join(' '), weight: 1.0 },
         { value: track.album, weight: 1.0 }
       ])
       if (!result || result < MIN_SCORE_THRESHOLD) return null

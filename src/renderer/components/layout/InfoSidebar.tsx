@@ -205,7 +205,9 @@ export default function InfoSidebar() {
             <div className="info-sidebar-artist">
               <ArtistNameLinks
                 artistText={currentTrack.artist}
+                artistNames={currentTrack.artistNames}
                 browseArtistText={currentTrack.albumArtist}
+                browseArtistNames={currentTrack.albumArtistNames}
                 onArtistClick={openArtistInLibrary}
                 className="info-sidebar-artist-links"
                 linkClassName="artist-name-link-inline"

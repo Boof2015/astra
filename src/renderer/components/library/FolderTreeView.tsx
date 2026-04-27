@@ -84,8 +84,10 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     path: dbTrack.path,
     title: dbTrack.title,
     artist: dbTrack.artist,
+    artistNames: dbTrack.artist_names,
     album: dbTrack.album,
     albumArtist: dbTrack.album_artist ?? undefined,
+    albumArtistNames: dbTrack.album_artist_names,
     albumIdentityKey: dbTrack.album_identity_key,
     duration: dbTrack.duration,
     format: dbTrack.format,
@@ -353,6 +355,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     return tracks.filter((track) => (
       track.title.toLowerCase().includes(normalizedQuery)
       || track.artist.toLowerCase().includes(normalizedQuery)
+      || track.artist_names.some((artist) => artist.toLowerCase().includes(normalizedQuery))
+      || track.album_artist_names.some((artist) => artist.toLowerCase().includes(normalizedQuery))
       || track.album.toLowerCase().includes(normalizedQuery)
       || track.path.toLowerCase().includes(normalizedQuery)
     ))

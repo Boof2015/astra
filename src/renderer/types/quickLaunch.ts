@@ -9,8 +9,10 @@ export interface QuickLaunchTrackRecord {
   album_identity_key: string
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null

@@ -173,6 +173,7 @@ let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let artistCreditsBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
 let jellyfinSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -340,6 +341,8 @@ const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
+const ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS = 16_000
+const ARTIST_CREDITS_BACKFILL_MIGRATION_KEY = 'artist_credits_backfill_v1_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
@@ -3019,6 +3022,49 @@ function scheduleAudioMetadataBackfillMigration(): void {
   }, AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS)
 }
 
+async function maybeRunArtistCreditsBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(ARTIST_CREDITS_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  let completed = false
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingArtistCreditMetadata()
+    if (scanned > 0) {
+      console.log(`Artist credit metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+    completed = true
+  } catch (err) {
+    console.warn('Artist credit metadata backfill failed:', err)
+  } finally {
+    if (completed) {
+      try {
+        await library.setAppMeta(ARTIST_CREDITS_BACKFILL_MIGRATION_KEY, '1')
+      } catch (err) {
+        console.warn('Failed to persist artist credit metadata backfill migration flag:', err)
+      }
+    }
+  }
+}
+
+function scheduleArtistCreditsBackfillMigration(): void {
+  if (library.getAppMeta(ARTIST_CREDITS_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (artistCreditsBackfillTimer !== null) {
+    clearTimeout(artistCreditsBackfillTimer)
+  }
+
+  artistCreditsBackfillTimer = setTimeout(() => {
+    artistCreditsBackfillTimer = null
+    void maybeRunArtistCreditsBackfillOnce()
+  }, ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS)
+}
+
 async function maybeRunReplayGainBackfillOnce(): Promise<void> {
   if (!replayGainScanEnabled) {
     return
@@ -3313,6 +3359,7 @@ app.whenReady().then(async () => {
   })()
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
+  scheduleArtistCreditsBackfillMigration()
   scheduleReplayGainBackfillMigration()
 
   app.on('activate', () => {
@@ -3344,6 +3391,10 @@ app.on('before-quit', () => {
   if (audioMetadataBackfillTimer !== null) {
     clearTimeout(audioMetadataBackfillTimer)
     audioMetadataBackfillTimer = null
+  }
+  if (artistCreditsBackfillTimer !== null) {
+    clearTimeout(artistCreditsBackfillTimer)
+    artistCreditsBackfillTimer = null
   }
   if (replayGainBackfillTimer !== null) {
     clearTimeout(replayGainBackfillTimer)

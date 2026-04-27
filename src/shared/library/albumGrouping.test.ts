@@ -15,7 +15,9 @@ function createTrack(overrides: Partial<TestTrack> & Pick<TestTrack, 'id' | 'alb
     id: overrides.id,
     album: overrides.album,
     artist: overrides.artist,
+    artist_names: overrides.artist_names ?? null,
     album_artist: overrides.album_artist ?? null,
+    album_artist_names: overrides.album_artist_names ?? null,
     artwork_hash: overrides.artwork_hash ?? null,
     base_artwork_hash: overrides.base_artwork_hash ?? null
   }
@@ -37,6 +39,32 @@ test('groups missing-albumartist tracks by primary artist even when artwork diff
   const [group] = Array.from(groups.values())
   assert.equal(group.groupingMode, 'track-artist')
   assert.equal(group.displayArtist, 'Jane Remover')
+  assert.deepEqual(group.tracks.map((track) => track.id), ['1', '2'])
+})
+
+test('uses parsed multi-value artist credits for primary artist grouping', () => {
+  const tracks = [
+    createTrack({
+      id: '1',
+      album: 'duets',
+      artist: 'Earth, Wind & Fire & The Emotions',
+      artist_names: ['Earth, Wind & Fire', 'The Emotions'],
+      base_artwork_hash: 'cover-a'
+    }),
+    createTrack({
+      id: '2',
+      album: 'duets',
+      artist: 'Earth, Wind & Fire & The Emotions',
+      artist_names: ['Earth, Wind & Fire', 'The Emotions'],
+      base_artwork_hash: 'cover-b'
+    }),
+  ]
+
+  const groups = groupTracks(tracks)
+
+  assert.equal(groups.size, 1)
+  const [group] = Array.from(groups.values())
+  assert.equal(group.displayArtist, 'Earth, Wind & Fire')
   assert.deepEqual(group.tracks.map((track) => track.id), ['1', '2'])
 })
 

@@ -5,8 +5,10 @@ export interface Track {
   origin?: 'library' | 'associated-external'
   title: string
   artist: string
+  artistNames?: string[]
   album: string
   albumArtist?: string
+  albumArtistNames?: string[]
   albumIdentityKey?: string
   duration: number
   trackNumber?: number
