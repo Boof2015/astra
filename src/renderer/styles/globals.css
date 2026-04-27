@@ -105,13 +105,23 @@ button, .titlebar {
 /* ============================================
    App Layout
    ============================================ */
-.app {
+.app-scale-host {
   height: 100vh;
   width: 100vw;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-primary);
+}
+
+.app {
+  height: var(--ui-scale-size, 100%);
+  width: var(--ui-scale-size, 100%);
   display: flex;
   flex-direction: column;
   position: relative;
   background: var(--bg-primary);
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: top left;
 }
 
 .app-body {
@@ -14145,6 +14155,23 @@ body::after {
   gap: 8px;
 }
 
+.settings-shell .settings-scale-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-shell .settings-scale-slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.settings-shell .settings-scale-value {
+  min-width: 56px;
+  justify-content: center;
+}
+
 .settings-shell .settings-remote-url-list {
   display: flex;
   flex-direction: column;
@@ -15567,6 +15594,16 @@ body::after {
 
   .settings-shell .settings-theme-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-shell .settings-scale-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-shell .settings-scale-value,
+  .settings-shell .settings-scale-row .settings-chip {
+    width: 100%;
+    justify-content: center;
   }
 
   .settings-shell .settings-danger-item {

@@ -21,6 +21,7 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 import {
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
 
@@ -50,6 +51,7 @@ export const RENDERER_SETTINGS_KEYS = [
   SPECTRUM_HEATMAP_STORAGE_KEY,
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  UI_SCALE_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   ARTIST_BROWSE_MODE_STORAGE_KEY,
   'astra-library-tracklist-bpm-key-visible-v1',
@@ -114,6 +116,7 @@ export async function resetAllSettings(): Promise<string> {
   clearRendererSettingsKeys()
   useVisualizerSettingsStore.getState().resetToDefaults()
   useUIStore.getState().resetAnalyzerRackPreferences()
+  useUIStore.getState().resetUIScalePercent()
   return 'All renderer settings reset.'
 }
 

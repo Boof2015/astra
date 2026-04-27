@@ -90,13 +90,19 @@ function App() {
   const hideAnalyzerRack = useUIStore((s) => s.hideAnalyzerRack)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
+  const uiScalePercent = useUIStore((s) => s.uiScalePercent)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
   const graphEnabled = useGraphStore((s) => s.enabled)
 
-  const appStyle = useMemo(() => ({
-    '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
-  }) as CSSProperties, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible])
+  const appStyle = useMemo(() => {
+    const uiScale = uiScalePercent / 100
+    return {
+      '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
+      '--ui-scale': String(uiScale),
+      '--ui-scale-size': `${100 / uiScale}%`,
+    } as CSSProperties
+  }, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible, uiScalePercent])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible) {
@@ -237,80 +243,81 @@ function App() {
   }, [])
 
   return (
-    <div
-      className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
-      style={appStyle}
-    >
-      <TitleBar />
-      {isAnalyzerRackVisible && (
-        <div
-          ref={rackShellRef}
-          className={`analyzer-rack-shell ${isCollapseToggleNearby ? 'is-collapse-toggle-nearby' : ''}`.trim()}
-        >
-          <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
-          {!isAnalyzerEditMode && (
-            <button
-              ref={collapseToggleRef}
-              type="button"
-              className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
-              onClick={hideAnalyzerRack}
-              title="Hide analyzer rack"
-              aria-label="Hide analyzer rack"
-            >
-              <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
-                <path
-                  d="M1 7l6-5 6 5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          )}
+    <div className="app-scale-host" style={appStyle}>
+      <div
+        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
+      >
+        <TitleBar />
+        {isAnalyzerRackVisible && (
+          <div
+            ref={rackShellRef}
+            className={`analyzer-rack-shell ${isCollapseToggleNearby ? 'is-collapse-toggle-nearby' : ''}`.trim()}
+          >
+            <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+            {!isAnalyzerEditMode && (
+              <button
+                ref={collapseToggleRef}
+                type="button"
+                className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
+                onClick={hideAnalyzerRack}
+                title="Hide analyzer rack"
+                aria-label="Hide analyzer rack"
+              >
+                <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+                  <path
+                    d="M1 7l6-5 6 5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+        {!isAnalyzerRackVisible && (
+          <button
+            type="button"
+            className="analyzer-rack-toggle analyzer-rack-restore-toggle"
+            onClick={showAnalyzerRack}
+            title="Show analyzer rack"
+            aria-label="Show analyzer rack"
+          >
+            <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+              <path
+                d="M1 7l6-5 6 5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+        <div className="app-body">
+          <Sidebar />
+          <div className="app-content">
+            <ViewRouter />
+            {showQueue && (
+              <div className="queue-sidebar">
+                <QueuePanelBoundary>
+                  <QueuePanel />
+                </QueuePanelBoundary>
+              </div>
+            )}
+            {showInfoSidebar && <InfoSidebar />}
+          </div>
         </div>
-      )}
-      {!isAnalyzerRackVisible && (
-        <button
-          type="button"
-          className="analyzer-rack-toggle analyzer-rack-restore-toggle"
-          onClick={showAnalyzerRack}
-          title="Show analyzer rack"
-          aria-label="Show analyzer rack"
-        >
-          <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
-            <path
-              d="M1 7l6-5 6 5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      )}
-      <div className="app-body">
-        <Sidebar />
-        <div className="app-content">
-          <ViewRouter />
-          {showQueue && (
-            <div className="queue-sidebar">
-              <QueuePanelBoundary>
-                <QueuePanel />
-              </QueuePanelBoundary>
-            </div>
-          )}
-          {showInfoSidebar && <InfoSidebar />}
-        </div>
+        <TransportBar />
+        <DecodeFallbackCue />
+        <OutputDelayCue />
+        <AssociatedOpenCue />
+        <UpdateAvailableCue />
+        <QuickLaunchPalette />
+        <KeyboardShortcutsModal />
+        {isFullscreen && <FullscreenMode />}
       </div>
-      <TransportBar />
-      <DecodeFallbackCue />
-      <OutputDelayCue />
-      <AssociatedOpenCue />
-      <UpdateAvailableCue />
-      <QuickLaunchPalette />
-      <KeyboardShortcutsModal />
-      {isFullscreen && <FullscreenMode />}
     </div>
   )
 }

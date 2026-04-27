@@ -9,7 +9,13 @@ import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { useUIStore } from '../../stores/uiStore'
+import {
+  DEFAULT_UI_SCALE_PERCENT,
+  MAX_UI_SCALE_PERCENT,
+  MIN_UI_SCALE_PERCENT,
+  UI_SCALE_STEP_PERCENT,
+  useUIStore
+} from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
   DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -354,6 +360,9 @@ export default function SettingsView() {
   const developerRevealClickCountRef = useRef(0)
   const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
+  const uiScalePercent = useUIStore((state) => state.uiScalePercent)
+  const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
+  const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -1320,6 +1329,37 @@ export default function SettingsView() {
                       Reset Theme to Default
                     </button>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Interface Scale</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">UI Scale</span>
+                    <div className="settings-scale-row">
+                      <input
+                        className="settings-scale-slider"
+                        type="range"
+                        min={MIN_UI_SCALE_PERCENT}
+                        max={MAX_UI_SCALE_PERCENT}
+                        step={UI_SCALE_STEP_PERCENT}
+                        value={uiScalePercent}
+                        onChange={(event) => setUIScalePercent(Number(event.target.value))}
+                        aria-label="UI scale"
+                      />
+                      <span className="settings-chip settings-chip-mono settings-scale-value">
+                        {uiScalePercent}%
+                      </span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        onClick={resetUIScalePercent}
+                        disabled={uiScalePercent === DEFAULT_UI_SCALE_PERCENT}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
                 </div>
               </div>
             </div>

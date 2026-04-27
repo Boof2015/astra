@@ -94,9 +94,8 @@ function clampPreviewWeight(value: number): number {
 }
 
 function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivElement): void {
-  const rect = container.getBoundingClientRect()
-  const width = Math.max(1, Math.floor(rect.width))
-  const height = Math.max(1, Math.floor(rect.height))
+  const width = Math.max(1, Math.floor(container.clientWidth))
+  const height = Math.max(1, Math.floor(container.clientHeight))
   const dpr = window.devicePixelRatio || 1
 
   canvas.style.width = `${width}px`

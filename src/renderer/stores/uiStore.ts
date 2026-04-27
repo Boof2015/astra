@@ -9,6 +9,11 @@ export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
 export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
 export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
+export const MIN_UI_SCALE_PERCENT = 80
+export const DEFAULT_UI_SCALE_PERCENT = 100
+export const MAX_UI_SCALE_PERCENT = 125
+export const UI_SCALE_STEP_PERCENT = 5
+export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -90,6 +95,17 @@ export function normalizeAnalyzerHeightPx(value: unknown): number {
   return Math.min(MAX_ANALYZER_HEIGHT_PX, Math.max(MIN_ANALYZER_HEIGHT_PX, snapped))
 }
 
+export function normalizeUIScalePercent(value: unknown): number {
+  if (value == null) return DEFAULT_UI_SCALE_PERCENT
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_UI_SCALE_PERCENT
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_UI_SCALE_PERCENT
+
+  const snapped = Math.round(numeric / UI_SCALE_STEP_PERCENT) * UI_SCALE_STEP_PERCENT
+  return Math.min(MAX_UI_SCALE_PERCENT, Math.max(MIN_UI_SCALE_PERCENT, snapped))
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
@@ -139,9 +155,26 @@ function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
   }
 }
 
+function readUIScalePreference(): number {
+  try {
+    return normalizeUIScalePercent(localStorage.getItem(UI_SCALE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_UI_SCALE_PERCENT
+  }
+}
+
+function persistUIScalePreference(percent: number): void {
+  try {
+    localStorage.setItem(UI_SCALE_STORAGE_KEY, String(normalizeUIScalePercent(percent)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
+const initialUIScalePercent = readUIScalePreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -155,6 +188,7 @@ interface UIStore {
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
   analyzerHeightPx: number
+  uiScalePercent: number
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
@@ -180,6 +214,8 @@ interface UIStore {
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
+  setUIScalePercent: (percent: number) => void
+  resetUIScalePercent: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -212,6 +248,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
   analyzerHeightPx: initialAnalyzerHeightPx,
+  uiScalePercent: initialUIScalePercent,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
@@ -285,6 +322,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isAnalyzerEditMode: false,
       analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX,
     })
+  },
+  setUIScalePercent: (percent) => {
+    const nextScalePercent = normalizeUIScalePercent(percent)
+    persistUIScalePreference(nextScalePercent)
+    set({ uiScalePercent: nextScalePercent })
+  },
+  resetUIScalePercent: () => {
+    persistUIScalePreference(DEFAULT_UI_SCALE_PERCENT)
+    set({ uiScalePercent: DEFAULT_UI_SCALE_PERCENT })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'
