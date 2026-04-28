@@ -324,7 +324,7 @@ button, .titlebar {
 }
 
 .titlebar-activity-indicator .astra-activity-indicator-light {
-  filter: drop-shadow(0 0 3px rgba(var(--accent-rgb), 0.18));
+  filter: none;
 }
 
 .titlebar-version-separator {
@@ -9220,7 +9220,6 @@ body::after {
 .astra-activity-indicator-light {
   fill: var(--accent);
   opacity: 0;
-  filter: drop-shadow(0 0 4px rgba(var(--accent-rgb), 0.22));
 }
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-idle .astra-activity-indicator-light {
