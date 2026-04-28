@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   ASTRA_ACTIVITY_EVENT_DURATIONS_MS,
-  ASTRA_ACTIVITY_STATE_ORDER,
   type AstraActivityEvent,
   type AstraActivityState,
 } from '../../utils/astraActivity'
@@ -169,12 +168,19 @@ function LightDots({ delays }: { delays: number[] }) {
   )
 }
 
-function StateSvg({ pattern }: { pattern: IndicatorPattern }) {
+function BaseSvg() {
   return (
-    <svg viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg className="astra-activity-indicator-base-grid" viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       {COORDS.map(([cx, cy], index) => (
         <circle key={`base-${index}`} cx={cx} cy={cy} r="2.4" className="astra-activity-indicator-base" />
       ))}
+    </svg>
+  )
+}
+
+function StateSvg({ pattern }: { pattern: IndicatorPattern }) {
+  return (
+    <svg viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <LightDots delays={pattern.delays} />
       {pattern.extra && <LightDots delays={pattern.extra} />}
     </svg>
@@ -256,18 +262,18 @@ export default function AstraActivityIndicator({
     className,
   ].filter(Boolean).join(' ')
   const rootStyle = { '--astra-activity-indicator-size': `${size}px` } as CSSProperties
+  const statePattern = STATE_PATTERNS[state]
 
   return (
     <span className={rootClassName} style={rootStyle} aria-hidden="true">
-      {ASTRA_ACTIVITY_STATE_ORDER.map((activityState) => (
-        <span
-          key={activityState}
-          className={`astra-activity-indicator-layer astra-activity-indicator-state-${activityState} ${state === activityState ? 'is-on' : ''}`.trim()}
-          data-state={activityState}
-        >
-          <StateSvg pattern={STATE_PATTERNS[activityState]} />
-        </span>
-      ))}
+      <BaseSvg />
+      <span
+        key={state}
+        className={`astra-activity-indicator-layer astra-activity-indicator-state-${state} is-on`}
+        data-state={state}
+      >
+        <StateSvg pattern={statePattern} />
+      </span>
       <span
         className={`astra-activity-indicator-overlay ${overlayPlaying ? 'is-playing' : ''}`.trim()}
         data-event={currentEvent ?? undefined}

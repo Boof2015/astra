@@ -7,6 +7,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import AstraLogo from '../icons/AstraLogo'
 
@@ -23,6 +24,7 @@ const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const BYTES_PER_MB = 1024 * 1024
 const FPS_SAMPLE_INTERVAL_MS = 1000
 const FPS_SAMPLE_WINDOW_MS = 200
+const ANALYZER_RAIL_COLLAPSE_QUERY = '(max-width: 1040px)'
 
 function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boolean } = {}): string {
   if (memoryMb === null || !Number.isFinite(memoryMb)) return '\u2014'
@@ -71,8 +73,11 @@ export default function TitleBar() {
   const initPhoneRemote = usePhoneRemoteSettingsStore((s) => s.init)
   const activityIndicatorExperimentEnabled = useUIStore((s) => s.activityIndicatorExperimentEnabled)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
+  const analyzerRailCollapsed = useMediaQuery(ANALYZER_RAIL_COLLAPSE_QUERY)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
+  const showTitlebarActivityIndicator = activityIndicatorExperimentEnabled
+    && (!isAnalyzerRackVisible || analyzerRailCollapsed)
 
   useEffect(() => {
     void initLocalApi()
@@ -318,7 +323,7 @@ export default function TitleBar() {
           <span className="titlebar-logo-heart" aria-hidden="true" />
         </button>
         <span>Astra</span>
-        {activityIndicatorExperimentEnabled && (
+        {showTitlebarActivityIndicator && (
           <TitleBarActivityFallback rackVisible={isAnalyzerRackVisible} />
         )}
         {appVersionLabel && (

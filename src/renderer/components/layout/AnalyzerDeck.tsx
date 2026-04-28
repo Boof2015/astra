@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { DEFAULT_ANALYZER_HEIGHT_PX, normalizeAnalyzerHeightPx, useUIStore } from '../../stores/uiStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
@@ -22,9 +23,12 @@ interface HeightResizeSession {
   startHeightPx: number
 }
 
+const ANALYZER_RAIL_COLLAPSE_QUERY = '(max-width: 1040px)'
+
 function AnalyzerBrandActivity() {
   const enabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
-  if (!enabled) {
+  const analyzerRailCollapsed = useMediaQuery(ANALYZER_RAIL_COLLAPSE_QUERY)
+  if (!enabled || analyzerRailCollapsed) {
     return <div className="analyzer-brand-dot" />
   }
 
