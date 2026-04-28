@@ -9148,6 +9148,14 @@ body::after {
   100% { opacity: 1; }
 }
 
+@keyframes astraActivityBitDecode {
+  0%, 100% { opacity: 0.04; }
+  14% { opacity: 0.12; }
+  30% { opacity: 0.78; }
+  48% { opacity: 0.3; }
+  72% { opacity: 0.09; }
+}
+
 @keyframes astraActivityTripleTapSoft {
   0%, 100% { opacity: 0; }
   15% { opacity: 0.85; }
@@ -9227,7 +9235,7 @@ body::after {
 }
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-playing .astra-activity-indicator-light {
-  animation: astraActivityPulseSoft 4200ms infinite both;
+  animation: astraActivityBitDecode 4200ms cubic-bezier(0.45, 0, 0.2, 1) infinite both;
 }
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-paused .astra-activity-indicator-light {

@@ -46,18 +46,6 @@ function idleBreath(): number[] {
   return out
 }
 
-function radialOut(durationMs = 3600): number[] {
-  const out: number[] = []
-  for (let row = 0; row < 5; row += 1) {
-    for (let column = 0; column < 5; column += 1) {
-      const distance = Math.max(Math.abs(row - 2), Math.abs(column - 2))
-      const drift = Math.abs(row - column) * 28
-      out.push(distance * (durationMs / 4) + drift)
-    }
-  }
-  return out
-}
-
 function rain(): number[] {
   const out: number[] = []
   const phase = [0, 800, 1500, 400, 1900]
@@ -115,6 +103,16 @@ function orbit(durationMs = 1500): number[] {
   return out
 }
 
+function bitDecode(): number[] {
+  return [
+    3280, 2920, 2540, 3140, 3540,
+    2760, 1680, 520, 1940, 3020,
+    2320, 760, 0, 1120, 2680,
+    3360, 2160, 1440, 2460, 3620,
+    3920, 3480, 2860, 3760, 4040,
+  ]
+}
+
 function metaFill(): number[] {
   const out: number[] = []
   for (let row = 0; row < 5; row += 1) {
@@ -134,7 +132,7 @@ const IDLE_PATTERN: IndicatorPattern = { delays: idleBreath() }
 
 const STATE_PATTERNS: Record<AstraActivityState, IndicatorPattern> = {
   idle: IDLE_PATTERN,
-  playing: { delays: radialOut(3600) },
+  playing: { delays: bitDecode() },
   paused: IDLE_PATTERN,
   'loading-track': { delays: orbit(1500) },
   'library-scan': { delays: readingOrder(3000, false) },
