@@ -22,6 +22,7 @@ export interface AstraActivityInputs {
   isLibraryScanning?: boolean
   isRemoteSyncing?: boolean
   isRemoteStreaming?: boolean
+  isInternetLookup?: boolean
   isLyricsLookup?: boolean
 }
 
@@ -52,7 +53,7 @@ export const ASTRA_ACTIVITY_STATE_NOTES: Record<AstraActivityState, string> = {
   'remote-streaming': 'Buffering remote audio',
   'remote-sync': 'Subsonic / Jellyfin sync',
   'integrity-scan': 'Verifying library integrity',
-  'lyrics-lookup': 'Network ping for lyrics',
+  'lyrics-lookup': 'Internet lookup active',
 }
 
 export const ASTRA_ACTIVITY_EVENT_DURATIONS_MS: Record<AstraActivityEvent, number> = {
@@ -67,7 +68,7 @@ export function resolveAstraActivityState(input: AstraActivityInputs): AstraActi
   if (input.isRemoteSyncing) return 'remote-sync'
   if (input.playbackState === 'loading') return 'loading-track'
   if (input.isRemoteStreaming) return 'remote-streaming'
-  if (input.isLyricsLookup) return 'lyrics-lookup'
+  if (input.isInternetLookup || input.isLyricsLookup) return 'lyrics-lookup'
   if (input.playbackState === 'playing') return 'playing'
   if (input.playbackState === 'paused') return 'paused'
   return 'idle'

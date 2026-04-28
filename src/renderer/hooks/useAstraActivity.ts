@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AstraActivityPulse } from '../components/activity/AstraActivityIndicator'
+import { useDiscordSettingsStore } from '../stores/discordSettingsStore'
 import { useJellyfinSettingsStore } from '../stores/jellyfinSettingsStore'
 import { useLastFmSettingsStore } from '../stores/lastFmSettingsStore'
 import { useLibraryIntegrityStore } from '../stores/libraryIntegrityStore'
@@ -43,6 +44,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
   const integrityError = useLibraryIntegrityStore((state) => Boolean(state.errorMessage || state.singleTrackError))
   const isLyricsLookup = useLyricsStore((state) => state.isLoading)
   const lyricsError = useLyricsStore((state) => Boolean(state.errorMessage || state.status?.lastError))
+  const discordCoverArtLookupActive = useDiscordSettingsStore((state) => state.coverArtLookupActive)
   const metadataSaving = useMetadataEditorStore((state) => state.isSaving)
   const metadataFailed = useMetadataEditorStore((state) => (state.lastResult?.failed ?? 0) > 0)
 
@@ -88,7 +90,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
     isLibraryScanning,
     isRemoteSyncing: subsonicSyncing || jellyfinSyncing,
     isRemoteStreaming,
-    isLyricsLookup,
+    isInternetLookup: isLyricsLookup || discordCoverArtLookupActive,
   })
 
   const eventFlags = useMemo<AstraActivityEventFlags>(() => ({

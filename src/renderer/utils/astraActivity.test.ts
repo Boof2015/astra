@@ -48,6 +48,11 @@ test('activity resolver orders remote sync, loading, streaming, lookup, and play
     playbackState: 'playing',
     isLyricsLookup: true,
   }), 'lyrics-lookup')
+
+  assert.equal(resolveAstraActivityState({
+    playbackState: 'playing',
+    isInternetLookup: true,
+  }), 'lyrics-lookup')
 })
 
 test('activity resolver falls back to playback and idle states', () => {

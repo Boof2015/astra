@@ -75,6 +75,10 @@ let cachedCoverArtStore: CachedCoverArtStore | null = null
 const pendingCoverArtLookups = new Map<string, Promise<DiscordCoverArtLookupResult>>()
 const coverArtLogTimestamps = new Map<string, number>()
 
+function syncCoverArtLookupActivity(): void {
+  useDiscordSettingsStore.getState().setCoverArtLookupActive(pendingCoverArtLookups.size > 0)
+}
+
 function estimateStringBytes(value: string): number {
   return value.length * 2
 }
@@ -88,6 +92,7 @@ export function clearDiscordCoverArtLookupCache(): void {
   cachedCoverArtStore = null
   pendingCoverArtLookups.clear()
   coverArtLogTimestamps.clear()
+  syncCoverArtLookupActivity()
 
   try {
     localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
@@ -521,9 +526,11 @@ async function resolveCoverArtWithCache(
     })
     .finally(() => {
       pendingCoverArtLookups.delete(lookupKey)
+      syncCoverArtLookupActivity()
     })
 
   pendingCoverArtLookups.set(lookupKey, request)
+  syncCoverArtLookupActivity()
   return request
 }
 
@@ -678,6 +685,10 @@ export function useDiscordPresence(): void {
       disposed = true
       lookupToken += 1
       unsubscribe()
+      const discordSettings = useDiscordSettingsStore.getState()
+      if (!discordSettings.enabled || !discordSettings.coverArtEnabled) {
+        useDiscordSettingsStore.getState().setCoverArtLookupActive(false)
+      }
     }
   }, [enabled, coverArtEnabled])
 }
