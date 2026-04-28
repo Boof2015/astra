@@ -6,6 +6,7 @@ import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
@@ -93,17 +94,6 @@ function clampPreviewWeight(value: number): number {
   return Math.min(MAX_PREVIEW_WEIGHT, Math.max(MIN_PREVIEW_WEIGHT, normalized))
 }
 
-function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivElement): void {
-  const width = Math.max(1, Math.floor(container.clientWidth))
-  const height = Math.max(1, Math.floor(container.clientHeight))
-  const dpr = window.devicePixelRatio || 1
-
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
-  canvas.width = Math.max(1, Math.floor(width * dpr))
-  canvas.height = Math.max(1, Math.floor(height * dpr))
-}
-
 function DockedSpectrumTile({
   lineColor,
   fftSize,
@@ -124,15 +114,12 @@ function DockedSpectrumTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<SpectrumAnalyzer | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
@@ -157,12 +144,13 @@ function DockedSpectrumTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({
@@ -188,21 +176,6 @@ function DockedSpectrumTile({
     }
   }, [isRunning])
 
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
-
   return (
     <div ref={containerRef} className="visualizer-surface">
       <canvas ref={canvasRef} className="visualizer-canvas" />
@@ -226,15 +199,12 @@ function DockedOscilloscopeTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Oscilloscope | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Oscilloscope(canvasRef.current, {
@@ -250,12 +220,13 @@ function DockedOscilloscopeTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, pitchLock, underfillEnabled })
@@ -268,21 +239,6 @@ function DockedOscilloscopeTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -307,15 +263,12 @@ function DockedVectorscopeTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Vectorscope | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Vectorscope(canvasRef.current, {
@@ -331,12 +284,13 @@ function DockedVectorscopeTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode, multiband: vectorscopeMultiband })
@@ -349,21 +303,6 @@ function DockedVectorscopeTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -392,15 +331,12 @@ function DockedSpectrogramTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Spectrogram | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Spectrogram(canvasRef.current, {
@@ -416,12 +352,13 @@ function DockedSpectrogramTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, fftSize, scrollSpeed, clarityMode, scaleMode })
@@ -434,21 +371,6 @@ function DockedSpectrogramTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -473,15 +395,12 @@ function DockedVUMeterTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<VUMeter | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new VUMeter(canvasRef.current, {
@@ -495,12 +414,13 @@ function DockedVUMeterTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode, orientation: vuMeterOrientation })
@@ -513,21 +433,6 @@ function DockedVUMeterTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -548,15 +453,12 @@ function DockedLUFSMeterTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<LUFSMeter | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new LUFSMeter(canvasRef.current, {
@@ -568,12 +470,13 @@ function DockedLUFSMeterTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor })
@@ -586,21 +489,6 @@ function DockedLUFSMeterTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -627,15 +515,12 @@ function DockedWaveformTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Waveform | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Waveform(canvasRef.current, {
@@ -650,12 +535,13 @@ function DockedWaveformTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, scrollSpeed, gainDb, multiband })
@@ -668,21 +554,6 @@ function DockedWaveformTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">

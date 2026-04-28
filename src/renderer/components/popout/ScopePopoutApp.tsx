@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type MutableRefObject, type RefObject } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   isNativeAvailable,
   oscilloscope as nativeOscilloscope,
@@ -39,6 +39,7 @@ import {
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE
 } from '../../../types/spectrum'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
 import '../../styles/scope-popout.css'
@@ -153,63 +154,6 @@ function getSpectrumGradientColors(lineColor: string): string[] {
   return ['rgba(0, 255, 255, 0)', `${lineColor}33`, `${lineColor}66`]
 }
 
-function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivElement): void {
-  const rect = container.getBoundingClientRect()
-  const width = Math.max(1, Math.floor(rect.width))
-  const height = Math.max(1, Math.floor(rect.height))
-  const dpr = window.devicePixelRatio || 1
-
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
-  canvas.width = Math.max(1, Math.floor(width * dpr))
-  canvas.height = Math.max(1, Math.floor(height * dpr))
-}
-
-function useHiDpiCanvasSize(
-  containerRef: RefObject<HTMLDivElement | null>,
-  canvasRef: RefObject<HTMLCanvasElement | null>
-): MutableRefObject<{ width: number; height: number }> {
-  const sizeRef = useRef({ width: 0, height: 0 })
-
-  const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (!canvas || !container) return
-
-    const rect = container.getBoundingClientRect()
-    const width = Math.max(1, Math.floor(rect.width))
-    const height = Math.max(1, Math.floor(rect.height))
-    const dpr = window.devicePixelRatio || 1
-
-    canvas.width = Math.max(1, Math.floor(width * dpr))
-    canvas.height = Math.max(1, Math.floor(height * dpr))
-
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    }
-
-    sizeRef.current = { width, height }
-  }, [canvasRef, containerRef])
-
-  useEffect(() => {
-    resizeCanvas()
-    const observer = new ResizeObserver(() => resizeCanvas())
-    const container = containerRef.current
-    if (container) {
-      observer.observe(container)
-    }
-
-    window.addEventListener('resize', resizeCanvas)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', resizeCanvas)
-    }
-  }, [containerRef, resizeCanvas])
-
-  return sizeRef
-}
-
 function SpectrumScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -223,12 +167,9 @@ function SpectrumScopeCanvas() {
   const heatmapRef = useRef(false)
   const heatmapTiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)
   const isPlayingRef = useRef(false)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -279,7 +220,7 @@ function SpectrumScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
@@ -306,6 +247,7 @@ function SpectrumScopeCanvas() {
     }
 
     visualizerRef.current?.start()
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
@@ -313,22 +255,7 @@ function SpectrumScopeCanvas() {
       pendingChunksRef.current = []
       isPlayingRef.current = false
     }
-  }, [handleResize])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -340,7 +267,9 @@ function SpectrumScopeCanvas() {
 function OscilloscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const canvasSizeRef = useHiDpiCanvasSize(containerRef, canvasRef)
+  const { sizeRef: canvasSizeRef } = useBufferedCanvasResize(containerRef, canvasRef, {
+    scaleContextToDpr: true,
+  })
   const animationRef = useRef<number | null>(null)
 
   const pendingChunksRef = useRef<Float32Array[]>([])
@@ -522,7 +451,9 @@ function OscilloscopeScopeCanvas() {
 function VectorscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const canvasSizeRef = useHiDpiCanvasSize(containerRef, canvasRef)
+  const { sizeRef: canvasSizeRef } = useBufferedCanvasResize(containerRef, canvasRef, {
+    scaleContextToDpr: true,
+  })
   const animationRef = useRef<number | null>(null)
 
   const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
@@ -733,12 +664,9 @@ function SpectrogramScopeCanvas() {
   const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
   const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
   const isPlayingRef = useRef(false)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -783,7 +711,7 @@ function SpectrogramScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Spectrogram(canvasRef.current, {
@@ -806,6 +734,7 @@ function SpectrogramScopeCanvas() {
     }
 
     visualizerRef.current?.start()
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
@@ -813,22 +742,7 @@ function SpectrogramScopeCanvas() {
       pendingChunksRef.current = []
       isPlayingRef.current = false
     }
-  }, [handleResize])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -848,12 +762,9 @@ function VUMeterScopeCanvas() {
   const vuMeterModeRef = useRef<VUMeterMode>(DEFAULT_VU_METER_MODE)
   const vuMeterOrientationRef = useRef<VUMeterOrientation>(DEFAULT_VU_METER_ORIENTATION)
   const isPlayingRef = useRef(false)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -889,7 +800,7 @@ function VUMeterScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new VUMeter(canvasRef.current, {
@@ -909,6 +820,7 @@ function VUMeterScopeCanvas() {
     }
 
     visualizerRef.current?.start()
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
@@ -916,22 +828,7 @@ function VUMeterScopeCanvas() {
       pendingChunksRef.current = []
       isPlayingRef.current = false
     }
-  }, [handleResize])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -949,12 +846,9 @@ function LUFSMeterScopeCanvas() {
   const sampleRateRef = useRef(48000)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const isPlayingRef = useRef(false)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -981,7 +875,7 @@ function LUFSMeterScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new LUFSMeter(canvasRef.current, {
@@ -999,6 +893,7 @@ function LUFSMeterScopeCanvas() {
     }
 
     visualizerRef.current?.start()
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
@@ -1006,22 +901,7 @@ function LUFSMeterScopeCanvas() {
       pendingChunksRef.current = []
       isPlayingRef.current = false
     }
-  }, [handleResize])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -1042,12 +922,9 @@ function WaveformScopeCanvas() {
   const gainDbRef = useRef(DEFAULT_WAVEFORM_GAIN_DB)
   const multibandRef = useRef(false)
   const isPlayingRef = useRef(false)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
@@ -1080,7 +957,7 @@ function WaveformScopeCanvas() {
   }, [])
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Waveform(canvasRef.current, {
@@ -1101,6 +978,7 @@ function WaveformScopeCanvas() {
     }
 
     visualizerRef.current?.start()
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
@@ -1108,22 +986,7 @@ function WaveformScopeCanvas() {
       pendingChunksRef.current = []
       isPlayingRef.current = false
     }
-  }, [handleResize])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
