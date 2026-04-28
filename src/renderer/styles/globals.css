@@ -9228,7 +9228,7 @@ body::after {
 }
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-playing .astra-activity-indicator-light {
-  animation: astraActivityPulseSoft 3600ms infinite both;
+  animation: astraActivityPulseSoft 4200ms infinite both;
 }
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-paused .astra-activity-indicator-light {

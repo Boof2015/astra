@@ -46,15 +46,13 @@ function idleBreath(): number[] {
   return out
 }
 
-function playingMeter(): number[] {
-  const out = Array(25).fill(-1)
-  const columnPhase = [620, 260, 0, 320, 720]
-  const columnHeights = [1, 2, 3, 2, 1]
-  for (let column = 0; column < 5; column += 1) {
-    const height = columnHeights[column]
-    for (let level = 0; level < height; level += 1) {
-      const row = 4 - level
-      out[row * 5 + column] = columnPhase[column] + level * 170
+function radialOut(durationMs = 3600): number[] {
+  const out: number[] = []
+  for (let row = 0; row < 5; row += 1) {
+    for (let column = 0; column < 5; column += 1) {
+      const distance = Math.max(Math.abs(row - 2), Math.abs(column - 2))
+      const drift = Math.abs(row - column) * 28
+      out.push(distance * (durationMs / 4) + drift)
     }
   }
   return out
@@ -136,7 +134,7 @@ const IDLE_PATTERN: IndicatorPattern = { delays: idleBreath() }
 
 const STATE_PATTERNS: Record<AstraActivityState, IndicatorPattern> = {
   idle: IDLE_PATTERN,
-  playing: { delays: playingMeter() },
+  playing: { delays: radialOut(3600) },
   paused: IDLE_PATTERN,
   'loading-track': { delays: orbit(1500) },
   'library-scan': { delays: readingOrder(3000, false) },
