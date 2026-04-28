@@ -21,6 +21,7 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 import {
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   useUIStore
@@ -52,6 +53,7 @@ export const RENDERER_SETTINGS_KEYS = [
   SPECTRUM_HEATMAP_STORAGE_KEY,
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
@@ -120,6 +122,7 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetAnalyzerRackPreferences()
   useUIStore.getState().resetUIScalePercent()
   useUIStore.getState().resetHomeGreetingTextMode()
+  useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   return 'All renderer settings reset.'
 }
 

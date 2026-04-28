@@ -17,6 +17,7 @@ export const UI_SCALE_STEP_PERCENT = 5
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
+export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -196,11 +197,28 @@ function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void
   }
 }
 
+function readActivityIndicatorExperimentPreference(): boolean {
+  try {
+    return localStorage.getItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -216,6 +234,7 @@ interface UIStore {
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
+  activityIndicatorExperimentEnabled: boolean
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
@@ -245,6 +264,7 @@ interface UIStore {
   resetUIScalePercent: () => void
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
+  setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -279,6 +299,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
+  activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
@@ -370,6 +391,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetHomeGreetingTextMode: () => {
     persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
     set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setActivityIndicatorExperimentEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistActivityIndicatorExperimentPreference(normalized)
+    set({ activityIndicatorExperimentEnabled: normalized })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'

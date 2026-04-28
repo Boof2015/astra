@@ -5,6 +5,9 @@ import { audioEngine } from '../../audio/AudioEngine'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useAstraActivity } from '../../hooks/useAstraActivity'
+import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import AstraLogo from '../icons/AstraLogo'
 
 interface AppPerformanceStats {
@@ -34,6 +37,25 @@ function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boole
     : `${normalized.toFixed(normalized >= 100 ? 0 : 1)} MB`
 }
 
+function TitleBarActivityFallback({ rackVisible }: { rackVisible: boolean }) {
+  const activity = useAstraActivity()
+
+  return (
+    <span
+      className={`titlebar-activity-fallback ${rackVisible ? 'is-rack-visible' : 'is-rack-hidden'}`.trim()}
+      title={activity.note}
+      aria-label={`Astra activity: ${activity.note}`}
+    >
+      <AstraActivityIndicator
+        className="titlebar-activity-indicator"
+        state={activity.state}
+        event={activity.event}
+        size={16}
+      />
+    </span>
+  )
+}
+
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [appBuildInfo, setAppBuildInfo] = useState<AppBuildInfo | null>(null)
@@ -47,6 +69,8 @@ export default function TitleBar() {
   const phoneRemoteStatus = usePhoneRemoteSettingsStore((s) => s.status)
   const initLocalApi = useLocalApiSettingsStore((s) => s.init)
   const initPhoneRemote = usePhoneRemoteSettingsStore((s) => s.init)
+  const activityIndicatorExperimentEnabled = useUIStore((s) => s.activityIndicatorExperimentEnabled)
+  const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
   const platform = window.electronAPI?.platform ?? 'linux'
   const isMac = platform === 'darwin'
 
@@ -294,6 +318,9 @@ export default function TitleBar() {
           <span className="titlebar-logo-heart" aria-hidden="true" />
         </button>
         <span>Astra</span>
+        {activityIndicatorExperimentEnabled && (
+          <TitleBarActivityFallback rackVisible={isAnalyzerRackVisible} />
+        )}
         {appVersionLabel && (
           <span className="titlebar-version" title={appBuildTooltip}>
             <span>{appVersionLabel}</span>

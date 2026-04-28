@@ -367,6 +367,8 @@ export default function SettingsView() {
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
   const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
+  const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
+  const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -1941,6 +1943,23 @@ export default function SettingsView() {
               <h3>Experimental</h3>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Activity Indicator</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Scope Rail Activity Indicator</span>
+                    <button
+                      className={`settings-toggle ${activityIndicatorExperimentEnabled ? 'active' : ''}`}
+                      onClick={() => setActivityIndicatorExperimentEnabled(!activityIndicatorExperimentEnabled)}
+                    >
+                      {activityIndicatorExperimentEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, scans, syncs, and transient background work.
+                  </p>
+                </div>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Library Graph</div>
                 <div className="settings-grid">
