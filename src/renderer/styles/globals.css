@@ -13253,6 +13253,9 @@ body::after {
 
 .settings-library-remote-card {
   margin-top: 12px;
+  overflow: visible;
+  position: relative;
+  z-index: 1;
 }
 
 /* ============================================
@@ -13290,6 +13293,12 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  position: relative;
+  z-index: 0;
+}
+
+.remote-source-card-menu-open {
+  z-index: 30;
 }
 
 .remote-source-card-header {
@@ -13411,7 +13420,7 @@ body::after {
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   padding: 4px;
-  z-index: 20;
+  z-index: 60;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
