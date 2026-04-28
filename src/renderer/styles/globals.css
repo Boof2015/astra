@@ -9223,39 +9223,39 @@ body::after {
   filter: drop-shadow(0 0 4px rgba(var(--accent-rgb), 0.22));
 }
 
-.astra-activity-indicator-state-idle .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-idle .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 5200ms infinite both;
 }
 
-.astra-activity-indicator-state-playing .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-playing .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 3600ms infinite both;
 }
 
-.astra-activity-indicator-state-paused .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-paused .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 5200ms infinite both;
 }
 
-.astra-activity-indicator-state-loading-track .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-loading-track .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 1500ms infinite both;
 }
 
-.astra-activity-indicator-state-library-scan .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-library-scan .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 3000ms infinite both;
 }
 
-.astra-activity-indicator-state-remote-streaming .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-remote-streaming .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 2400ms infinite both;
 }
 
-.astra-activity-indicator-state-remote-sync .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-remote-sync .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 3000ms infinite both;
 }
 
-.astra-activity-indicator-state-integrity-scan .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-integrity-scan .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 2800ms infinite both;
 }
 
-.astra-activity-indicator-state-lyrics-lookup .astra-activity-indicator-light {
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-lyrics-lookup .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 1800ms infinite both;
 }
 
