@@ -164,6 +164,7 @@
         "dmg",
         "zip"
       ],
+      "artifactName": "Astra-${version}-Mac-${arch}.${ext}",
       "icon": "resources/icon.icns",
       "category": "public.app-category.music",
       "hardenedRuntime": true,
@@ -239,7 +240,11 @@
         "rpm",
         "tar.gz"
       ],
+      "artifactName": "Astra-${version}-Linux-${arch}.${ext}",
       "category": "Audio"
+    },
+    "appImage": {
+      "artifactName": "Astra-${version}-Linux.${ext}"
     },
     "dmg": {
       "background": "resources/background.png",
@@ -256,7 +261,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Astra.Setup.${version}.Windows.${ext}"
+    },
+    "portable": {
+      "artifactName": "Astra.Portable.${version}.Windows.${ext}"
     }
   }
 }
