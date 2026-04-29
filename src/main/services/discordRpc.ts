@@ -56,6 +56,7 @@ export interface DiscordPresenceUpdate {
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled?: boolean
+  showAlbumInHover?: boolean
 }
 
 export interface DiscordRpcConfigureResult {
@@ -112,6 +113,7 @@ function listDirectories(path: string): string[] {
 export class DiscordRpcService {
   private enabled = false
   private coverArtEnabled = false
+  private showAlbumInHover = false
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -125,10 +127,13 @@ export class DiscordRpcService {
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
     const nextCoverArtEnabled = Boolean(options.coverArtEnabled)
+    const nextShowAlbumInHover = Boolean(options.showAlbumInHover)
     const enabledChanged = this.enabled !== nextEnabled
+    const settingsChanged = this.coverArtEnabled !== nextCoverArtEnabled || this.showAlbumInHover !== nextShowAlbumInHover
 
     this.enabled = nextEnabled
     this.coverArtEnabled = nextCoverArtEnabled
+    this.showAlbumInHover = nextShowAlbumInHover
 
     if (!this.enabled) {
       this.clearReconnectTimer()
@@ -148,6 +153,12 @@ export class DiscordRpcService {
     if (!this.fallbackLargeImageUrl) {
       void this.ensureFallbackLargeImageUrl()
     }
+
+    // Re-send presence if settings changed and we're connected
+    if (settingsChanged && connected && this.ready && this.pendingPresence) {
+      this.sendPendingPresence(true)
+    }
+
     if (connected) {
       return {
         ok: true,
@@ -427,7 +438,7 @@ export class DiscordRpcService {
   ): Record<string, unknown> | null {
     const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence?.track?.coverArtUrl) : undefined
     const largeImageUrl = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
-    return buildDiscordActivityFromPresence(presence, { largeImageUrl })
+    return buildDiscordActivityFromPresence(presence, { largeImageUrl, showAlbumInHover: this.showAlbumInHover })
   }
 
   private async ensureFallbackLargeImageUrl(): Promise<void> {

@@ -32,6 +32,7 @@ export interface DiscordActivityPresenceUpdate {
 
 export interface BuildDiscordActivityOptions {
   largeImageUrl?: string
+  showAlbumInHover?: boolean
   nowSeconds?: number
 }
 
@@ -98,7 +99,13 @@ function formatAudioLabel(value?: string): string | null {
   return /^[a-z0-9._+-]+$/i.test(normalized) ? normalized.toUpperCase() : normalized
 }
 
-function buildQualityLine(track: DiscordActivityTrackPresence): string | null {
+function buildHoverLine(track: DiscordActivityTrackPresence, showAlbum: boolean): string | null {
+  if (showAlbum) {
+    const album = normalizeText(track.album)
+    return album ? truncateDiscordField(album, 128) : null
+  }
+
+  // Show codec stats
   const parts: string[] = []
 
   if (track.isAtmosJoc) {
@@ -182,12 +189,12 @@ export function buildDiscordActivityFromPresence(
   }
 
   if (options.largeImageUrl) {
-    const qualityLine = buildQualityLine(presence.track)
+    const hoverLine = buildHoverLine(presence.track, Boolean(options.showAlbumInHover))
     activity.assets = {
       large_image: options.largeImageUrl
     }
-    if (qualityLine) {
-      activity.assets.large_text = truncateDiscordField(qualityLine, 128)
+    if (hoverLine) {
+      activity.assets.large_text = truncateDiscordField(hoverLine, 128)
     }
   }
 

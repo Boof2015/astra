@@ -646,7 +646,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Integrations
   discord: {
-    configure: (options: { enabled: boolean; coverArtEnabled: boolean }): Promise<DiscordRpcConfigureResult> =>
+    configure: (options: { enabled: boolean; coverArtEnabled: boolean; showAlbumInHover?: boolean }): Promise<DiscordRpcConfigureResult> =>
       ipcRenderer.invoke('discord:configure', options),
     updatePresence: (update: DiscordPresenceUpdate) => ipcRenderer.send('discord:updatePresence', update),
     clearPresence: () => ipcRenderer.send('discord:clearPresence'),
@@ -1072,7 +1072,7 @@ declare global {
 
       // Integrations
       discord: {
-        configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<DiscordRpcConfigureResult>
+        configure: (options: { enabled: boolean; coverArtEnabled: boolean; showAlbumInHover?: boolean }) => Promise<DiscordRpcConfigureResult>
         updatePresence: (update: DiscordPresenceUpdate) => void
         clearPresence: () => void
         resolveCoverArt: (query: DiscordCoverArtLookupQuery) => Promise<DiscordCoverArtLookupResult>

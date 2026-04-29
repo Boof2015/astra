@@ -271,9 +271,11 @@ export default function SettingsView() {
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
+    showAlbumInHover: discordShowAlbumInHover,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
     setCoverArtEnabled: setDiscordCoverArtEnabled,
+    setShowAlbumInHover: setDiscordShowAlbumInHover,
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
@@ -1837,6 +1839,18 @@ export default function SettingsView() {
                       {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Show Album in Hover Tooltip</span>
+                    <select
+                      className="settings-select"
+                      value={discordShowAlbumInHover ? 'album' : 'codec'}
+                      onChange={(e) => void setDiscordShowAlbumInHover(e.target.value === 'album')}
+                      disabled={!discordEnabled}
+                    >
+                      <option value="codec">Codec Stats</option>
+                      <option value="album">Album</option>
+                    </select>
+                  </label>
                 </div>
                 <p className="settings-note">{discordStatusMessage}</p>
               </div>
