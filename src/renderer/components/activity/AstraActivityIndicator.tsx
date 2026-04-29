@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   ASTRA_ACTIVITY_EVENT_DURATIONS_MS,
   type AstraActivityEvent,
@@ -20,8 +20,22 @@ interface AstraActivityIndicatorProps {
 const COORDS = Array.from({ length: 25 }, (_, index) => {
   const row = Math.floor(index / 5)
   const column = index % 5
-  return [6 + column * 11, 6 + row * 11] as const
+  return { cx: 6 + column * 11, cy: 6 + row * 11 }
 })
+
+const VIEWBOX = 56
+const LIT_DOT = 6.2
+const BASE_DOT = 4.8
+
+function dotStyle(cx: number, cy: number, dotSize: number, delay?: number): CSSProperties {
+  const half = dotSize / 2
+  const style: CSSProperties = {
+    left: `${((cx - half) / VIEWBOX) * 100}%`,
+    top: `${((cy - half) / VIEWBOX) * 100}%`,
+  }
+  if (delay !== undefined) style.animationDelay = `${delay}ms`
+  return style
+}
 
 function uniform(): number[] {
   return Array(25).fill(0)
@@ -152,15 +166,12 @@ function LightDots({ delays }: { delays: number[] }) {
     <>
       {delays.map((delay, index) => {
         if (delay < 0) return null
-        const [cx, cy] = COORDS[index]
+        const { cx, cy } = COORDS[index]
         return (
-          <circle
+          <span
             key={`${index}-${delay}`}
-            cx={cx}
-            cy={cy}
-            r="3.1"
             className="astra-activity-indicator-light"
-            style={{ animationDelay: `${delay}ms` }}
+            style={dotStyle(cx, cy, LIT_DOT, delay)}
           />
         )
       })}
@@ -168,34 +179,34 @@ function LightDots({ delays }: { delays: number[] }) {
   )
 }
 
-function BaseSvg() {
+function BaseGrid() {
   return (
-    <svg className="astra-activity-indicator-base-grid" viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      {COORDS.map(([cx, cy], index) => (
-        <circle key={`base-${index}`} cx={cx} cy={cy} r="2.4" className="astra-activity-indicator-base" />
+    <span className="astra-activity-indicator-base-grid" aria-hidden="true">
+      {COORDS.map(({ cx, cy }, index) => (
+        <span
+          key={`base-${index}`}
+          className="astra-activity-indicator-base"
+          style={dotStyle(cx, cy, BASE_DOT)}
+        />
       ))}
-    </svg>
+    </span>
   )
 }
 
-function StateSvg({ pattern }: { pattern: IndicatorPattern }) {
+function StateDots({ pattern }: { pattern: IndicatorPattern }) {
   return (
-    <svg viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <>
       <LightDots delays={pattern.delays} />
       {pattern.extra && <LightDots delays={pattern.extra} />}
-    </svg>
+    </>
   )
 }
 
-function EventSvg({ event }: { event: AstraActivityEvent }) {
-  return (
-    <svg viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <LightDots delays={EVENT_PATTERNS[event]} />
-    </svg>
-  )
+function EventDots({ event }: { event: AstraActivityEvent }) {
+  return <LightDots delays={EVENT_PATTERNS[event]} />
 }
 
-export default function AstraActivityIndicator({
+function AstraActivityIndicatorImpl({
   state,
   event,
   className = '',
@@ -266,22 +277,24 @@ export default function AstraActivityIndicator({
 
   return (
     <span className={rootClassName} style={rootStyle} aria-hidden="true">
-      <BaseSvg />
+      <BaseGrid />
       <span
         key={state}
         className={`astra-activity-indicator-layer astra-activity-indicator-state-${state} is-on`}
         data-state={state}
       >
-        <StateSvg pattern={statePattern} />
+        <StateDots pattern={statePattern} />
       </span>
       <span
         className={`astra-activity-indicator-overlay ${overlayPlaying ? 'is-playing' : ''}`.trim()}
         data-event={currentEvent ?? undefined}
       >
         {currentEvent && currentEventId !== null && (
-          <EventSvg key={`${currentEvent}-${currentEventId}`} event={currentEvent} />
+          <EventDots key={`${currentEvent}-${currentEventId}`} event={currentEvent} />
         )}
       </span>
     </span>
   )
 }
+
+export default memo(AstraActivityIndicatorImpl)

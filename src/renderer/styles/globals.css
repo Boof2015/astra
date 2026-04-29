@@ -9183,6 +9183,8 @@ body::after {
   height: var(--astra-activity-indicator-size, 22px);
   flex-shrink: 0;
   pointer-events: none;
+  contain: layout style paint;
+  isolation: isolate;
 }
 
 .astra-activity-indicator-layer,
@@ -9200,6 +9202,8 @@ body::after {
 
 .astra-activity-indicator-layer.is-on {
   opacity: 1;
+  will-change: opacity;
+  transform: translateZ(0);
 }
 
 .astra-activity-indicator.is-event-active .astra-activity-indicator-layer.is-on {
@@ -9217,18 +9221,23 @@ body::after {
   opacity: 1;
 }
 
-.astra-activity-indicator svg {
-  width: 100%;
-  height: 100%;
-  display: block;
+.astra-activity-indicator-base,
+.astra-activity-indicator-light {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
 }
 
 .astra-activity-indicator-base {
-  fill: rgba(255, 255, 255, 0.08);
+  width: 8.571%;
+  height: 8.571%;
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
 .astra-activity-indicator-light {
-  fill: var(--accent);
+  width: 11.071%;
+  height: 11.071%;
+  background-color: var(--accent);
   opacity: 0;
 }
 
