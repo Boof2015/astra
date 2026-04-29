@@ -27,16 +27,6 @@ const VIEWBOX = 56
 const LIT_DOT = 6.2
 const BASE_DOT = 4.8
 
-function dotStyle(cx: number, cy: number, dotSize: number, delay?: number): CSSProperties {
-  const half = dotSize / 2
-  const style: CSSProperties = {
-    left: `${((cx - half) / VIEWBOX) * 100}%`,
-    top: `${((cy - half) / VIEWBOX) * 100}%`,
-  }
-  if (delay !== undefined) style.animationDelay = `${delay}ms`
-  return style
-}
-
 function uniform(): number[] {
   return Array(25).fill(0)
 }
@@ -168,10 +158,13 @@ function LightDots({ delays }: { delays: number[] }) {
         if (delay < 0) return null
         const { cx, cy } = COORDS[index]
         return (
-          <span
+          <circle
             key={`${index}-${delay}`}
+            cx={cx}
+            cy={cy}
+            r={LIT_DOT / 2}
             className="astra-activity-indicator-light"
-            style={dotStyle(cx, cy, LIT_DOT, delay)}
+            style={{ animationDelay: `${delay}ms` }}
           />
         )
       })}
@@ -202,15 +195,27 @@ function BaseGrid() {
 
 function StateDots({ pattern }: { pattern: IndicatorPattern }) {
   return (
-    <>
+    <svg
+      viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <LightDots delays={pattern.delays} />
       {pattern.extra && <LightDots delays={pattern.extra} />}
-    </>
+    </svg>
   )
 }
 
 function EventDots({ event }: { event: AstraActivityEvent }) {
-  return <LightDots delays={EVENT_PATTERNS[event]} />
+  return (
+    <svg
+      viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <LightDots delays={EVENT_PATTERNS[event]} />
+    </svg>
+  )
 }
 
 function AstraActivityIndicatorImpl({

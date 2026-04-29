@@ -9221,7 +9221,7 @@ body::after {
   opacity: 1;
 }
 
-.astra-activity-indicator-base-grid {
+.astra-activity-indicator svg {
   width: 100%;
   height: 100%;
   display: block;
@@ -9232,12 +9232,7 @@ body::after {
 }
 
 .astra-activity-indicator-light {
-  position: absolute;
-  width: 11.071%;
-  height: 11.071%;
-  border-radius: 50%;
-  background-color: var(--accent);
-  pointer-events: none;
+  fill: var(--accent);
   opacity: 0;
 }
 
