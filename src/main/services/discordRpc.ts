@@ -12,6 +12,8 @@ const DISCORD_RPC_CLIENT_ID = '1471059486100815915'
 const DISCORD_APP_INFO_LOOKUP_URL = `https://discord.com/api/v10/oauth2/applications/${DISCORD_RPC_CLIENT_ID}/rpc`
 const DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS = 5000
 const DISCORD_RPC_USER_AGENT = 'Astra-Discord-RPC/0.2.0 (https://github.com/Boof2015/astra)'
+const DISCORD_SET_ACTIVITY_COALESCE_MS = 150
+const DISCORD_SET_ACTIVITY_ACK_TIMEOUT_MS = 1500
 
 const OPCODE_HANDSHAKE = 0
 const OPCODE_FRAME = 1
@@ -119,6 +121,11 @@ export class DiscordRpcService {
   private connectPromise: Promise<boolean> | null = null
   private pendingPresence: DiscordPresenceUpdate | null = null
   private lastPresenceSignature: string | null = null
+  private presenceSendTimer: NodeJS.Timeout | null = null
+  private pendingForcePresenceSend = false
+  private setActivityInFlightNonce: string | null = null
+  private setActivityInFlightTimer: NodeJS.Timeout | null = null
+  private sendAfterInFlight = false
   private fallbackLargeImageUrl: string | null = null
   private fallbackLargeImageLookupPromise: Promise<void> | null = null
 
@@ -131,6 +138,9 @@ export class DiscordRpcService {
     this.coverArtEnabled = nextCoverArtEnabled
 
     if (!this.enabled) {
+      this.clearPresenceSendTimer()
+      this.clearSetActivityInFlight()
+      this.pendingForcePresenceSend = false
       this.clearReconnectTimer()
       this.disconnectSocket()
       return {
@@ -195,20 +205,27 @@ export class DiscordRpcService {
       return
     }
 
-    this.sendPendingPresence()
+    this.queuePendingPresenceSend()
   }
 
   clearPresence(): void {
     this.pendingPresence = null
     this.lastPresenceSignature = null
-    if (!this.ready) return
-    this.sendSetActivity(null)
+    this.pendingForcePresenceSend = true
+    if (!this.ready) {
+      this.clearPresenceSendTimer()
+      return
+    }
+    this.queuePendingPresenceSend(0, true)
   }
 
   shutdown(): void {
     this.enabled = false
     this.pendingPresence = null
     this.lastPresenceSignature = null
+    this.clearPresenceSendTimer()
+    this.clearSetActivityInFlight()
+    this.pendingForcePresenceSend = false
     this.clearReconnectTimer()
     this.disconnectSocket()
   }
@@ -297,6 +314,7 @@ export class DiscordRpcService {
   }
 
   private disconnectSocket(): void {
+    this.clearSetActivityInFlight()
     if (!this.socket) return
     const socket = this.socket
     this.socket = null
@@ -393,6 +411,48 @@ export class DiscordRpcService {
     })
   }
 
+  private clearPresenceSendTimer(): void {
+    if (!this.presenceSendTimer) return
+    clearTimeout(this.presenceSendTimer)
+    this.presenceSendTimer = null
+  }
+
+  private clearSetActivityInFlight(): void {
+    if (this.setActivityInFlightTimer) {
+      clearTimeout(this.setActivityInFlightTimer)
+      this.setActivityInFlightTimer = null
+    }
+    this.setActivityInFlightNonce = null
+    this.sendAfterInFlight = false
+  }
+
+  private queuePendingPresenceSend(
+    delayMs = DISCORD_SET_ACTIVITY_COALESCE_MS,
+    force = false
+  ): void {
+    if (!this.enabled || !this.ready) return
+
+    this.pendingForcePresenceSend = this.pendingForcePresenceSend || force
+    this.clearPresenceSendTimer()
+
+    this.presenceSendTimer = setTimeout(() => {
+      this.presenceSendTimer = null
+      const forceSend = this.pendingForcePresenceSend
+      this.pendingForcePresenceSend = false
+      this.flushPendingPresence(forceSend)
+    }, Math.max(0, delayMs))
+  }
+
+  private flushPendingPresence(force = false): void {
+    if (this.setActivityInFlightNonce) {
+      this.sendAfterInFlight = true
+      this.pendingForcePresenceSend = this.pendingForcePresenceSend || force
+      return
+    }
+
+    this.sendPendingPresence(force)
+  }
+
   private sendPendingPresence(force = false): void {
     const activity = this.buildActivityFromPresence(this.pendingPresence)
     const signature = JSON.stringify(activity)
@@ -406,20 +466,28 @@ export class DiscordRpcService {
       return
     }
     if (!force && signature === this.lastPresenceSignature) return
-    if (this.sendSetActivity(activity)) {
+    const nonce = this.sendSetActivity(activity)
+    if (nonce) {
       this.lastPresenceSignature = signature
+      this.setActivityInFlightNonce = nonce
+      this.setActivityInFlightTimer = setTimeout(() => {
+        if (this.setActivityInFlightNonce !== nonce) return
+        this.clearSetActivityInFlight()
+        this.queuePendingPresenceSend(0, this.pendingForcePresenceSend)
+      }, DISCORD_SET_ACTIVITY_ACK_TIMEOUT_MS)
     }
   }
 
-  private sendSetActivity(activity: Record<string, unknown> | null): boolean {
+  private sendSetActivity(activity: Record<string, unknown> | null): string | null {
+    const nonce = randomUUID()
     return this.sendFrame(OPCODE_FRAME, {
       cmd: 'SET_ACTIVITY',
       args: {
         pid: process.pid,
         activity
       },
-      nonce: randomUUID()
-    })
+      nonce
+    }) ? nonce : null
   }
 
   private buildActivityFromPresence(
@@ -478,7 +546,7 @@ export class DiscordRpcService {
 
       this.fallbackLargeImageUrl = iconUrl
       if (this.enabled && this.ready && this.pendingPresence) {
-        this.sendPendingPresence(true)
+        this.queuePendingPresenceSend(0, true)
       }
     } finally {
       clearTimeout(timeout)
@@ -552,18 +620,38 @@ export class DiscordRpcService {
     if (opcode !== OPCODE_FRAME || !payload || typeof payload !== 'object') return
 
     const record = payload as Record<string, unknown>
+    const nonce = typeof record.nonce === 'string' ? record.nonce : null
+    if (nonce) {
+      this.handleSetActivityResponse(nonce)
+    }
+
     if (record.evt === 'READY') {
       this.ready = true
       if (!this.fallbackLargeImageUrl) {
         void this.ensureFallbackLargeImageUrl()
       }
-      this.sendPendingPresence(true)
+      this.queuePendingPresenceSend(0, true)
       return
     }
 
     if (record.evt === 'ERROR') {
       const errorData = record.data
       console.warn('Discord RPC protocol error:', errorData)
+    }
+  }
+
+  private handleSetActivityResponse(nonce: string): void {
+    if (nonce !== this.setActivityInFlightNonce) return
+
+    if (this.setActivityInFlightTimer) {
+      clearTimeout(this.setActivityInFlightTimer)
+      this.setActivityInFlightTimer = null
+    }
+    this.setActivityInFlightNonce = null
+
+    if (this.sendAfterInFlight) {
+      this.sendAfterInFlight = false
+      this.queuePendingPresenceSend(0, this.pendingForcePresenceSend)
     }
   }
 }
