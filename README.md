@@ -9,6 +9,8 @@ A desktop music player for people who still have a music library. <a href="https
 ![GitHub License](https://img.shields.io/github/license/Boof2015/astra)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Boof2015/astra/main.yml)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/boof2015/astra/total)
+![WinGet Package Version](https://img.shields.io/winget/v/Boof2015.Astra)
+
 
 ![Astra home screen](assets/Homescreen.png)
 
