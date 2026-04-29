@@ -28,6 +28,12 @@ import {
   type ArtistImageCandidate
 } from '../../shared/library/artistImages'
 import {
+  deserializeArtistNames,
+  formatArtistNames,
+  normalizeArtistNames,
+  serializeArtistNames
+} from '../../shared/library/artistCredits'
+import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
@@ -38,6 +44,11 @@ import type {
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
+import type { IntegrityScanScope } from '../../types/libraryIntegrity'
+import {
+  filterIntegrityTargetsByScope,
+  type IntegrityScanTrackTarget
+} from './libraryIntegrity'
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -52,8 +63,10 @@ export interface DbTrack {
   is_new: boolean
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -84,7 +97,9 @@ export interface DbTrack {
   modified_at: number
 }
 
-interface DbTrackRow extends Omit<DbTrack, 'is_new'> {
+interface DbTrackRow extends Omit<DbTrack, 'is_new' | 'artist_names' | 'album_artist_names'> {
+  artist_names_json: string | null
+  album_artist_names_json: string | null
   sync_session_key: string | null
   latest_sync_dismissed_at: number | null
 }
@@ -434,8 +449,16 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.path AS path,
   COALESCE(o.title, t.title) AS title,
   COALESCE(o.artist, t.artist) AS artist,
+  CASE
+    WHEN o.artist IS NULL THEN t.artist_names_json
+    ELSE NULL
+  END AS artist_names_json,
   COALESCE(o.album, t.album) AS album,
   COALESCE(o.album_artist, t.album_artist) AS album_artist,
+  CASE
+    WHEN o.album_artist IS NULL THEN t.album_artist_names_json
+    ELSE NULL
+  END AS album_artist_names_json,
   t.duration AS duration,
   COALESCE(o.track_number, t.track_number) AS track_number,
   COALESCE(o.disc_number, t.disc_number) AS disc_number,
@@ -694,9 +717,17 @@ function attachAlbumIdentityKeys(
   const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
 
   return tracks.map((track) => {
-    const { sync_session_key, latest_sync_dismissed_at, ...rest } = track
+    const {
+      sync_session_key,
+      latest_sync_dismissed_at,
+      artist_names_json,
+      album_artist_names_json,
+      ...rest
+    } = track
     return {
       ...rest,
+      artist_names: deserializeArtistNames(artist_names_json),
+      album_artist_names: deserializeArtistNames(album_artist_names_json),
       album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track),
       is_new: isTrackNewForLatestSync(sync_session_key, latestSyncSummary, latest_sync_dismissed_at)
     }
@@ -828,9 +859,45 @@ function splitAlbumArtistCollaborators(rawAlbumArtist: string): string[] {
   return Array.from(unique.values())
 }
 
+function getParsedTrackArtistNames(track: Pick<DbTrackRow, 'artist_names_json'>): string[] {
+  return deserializeArtistNames(track.artist_names_json)
+}
+
+function getParsedAlbumArtistNames(track: Pick<DbTrackRow, 'album_artist_names_json'>): string[] {
+  return deserializeArtistNames(track.album_artist_names_json)
+}
+
+function getCanonicalArtistIndexNames(track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>): string[] {
+  const unique = new Map<string, string>()
+  const addArtistName = (artistName: string) => {
+    const display = normalizeDisplay(artistName)
+    const key = normalizeKey(display)
+    if (!key || unique.has(key)) return
+    unique.set(key, display)
+  }
+
+  addArtistName(resolveCanonicalBrowseArtist(track))
+
+  const parsedTrackArtists = getParsedTrackArtistNames(track)
+  for (const artistName of parsedTrackArtists) addArtistName(artistName)
+
+  const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+  if (parsedTrackArtists.length === 0) {
+    for (const artistName of parsedAlbumArtists) addArtistName(artistName)
+  }
+
+  return Array.from(unique.values())
+}
+
 function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   const contributors = splitCollaborators(trackArtist)
   return contributors[0] ?? UNKNOWN_ARTIST_NAME
+}
+
+function getPrimaryArtistFromTrack(track: Pick<DbTrackRow, 'artist' | 'artist_names_json'>): string {
+  const parsedTrackArtists = getParsedTrackArtistNames(track)
+  if (parsedTrackArtists.length > 0) return parsedTrackArtists[0]
+  return getPrimaryArtistFromTrackArtist(track.artist)
 }
 
 function getPrimaryArtistFromAlbumArtist(albumArtist: string): string {
@@ -847,13 +914,17 @@ function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist
   return normalizedTrackArtist || UNKNOWN_ARTIST_NAME
 }
 
-function resolveCanonicalBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
+function resolveCanonicalBrowseArtist(
+  track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>
+): string {
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
+    const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+    if (parsedAlbumArtists.length > 0) return parsedAlbumArtists[0]
     return getPrimaryArtistFromAlbumArtist(normalizedAlbumArtist)
   }
 
-  const normalizedPrimaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist))
+  const normalizedPrimaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track))
   return normalizedPrimaryArtist || UNKNOWN_ARTIST_NAME
 }
 
@@ -866,6 +937,9 @@ function trackMatchesBrowseArtist(track: DbTrackRow, targetArtistKey: string, mo
   if (mode === 'strict') {
     return false
   }
+
+  if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
+  if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
 
   const albumArtistKey = normalizeKey(track.album_artist ?? '')
   if (albumArtistKey && albumArtistKey === targetArtistKey) return true
@@ -968,10 +1042,16 @@ function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrackRow, 
   for (const collaborator of splitCollaborators(track.artist)) {
     addAliasArtistKey(group.aliasArtistKeys, collaborator)
   }
+  for (const artistName of getParsedTrackArtistNames(track)) {
+    addAliasArtistKey(group.aliasArtistKeys, artistName)
+  }
 
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
     addAliasArtistKey(group.aliasArtistKeys, normalizedAlbumArtist)
+  }
+  for (const artistName of getParsedAlbumArtistNames(track)) {
+    addAliasArtistKey(group.aliasArtistKeys, artistName)
   }
 }
 
@@ -1063,7 +1143,7 @@ function buildAlbumGroups(tracks: DbTrackRow[]): Map<string, AlbumGroupAccumulat
 
     for (const track of identityGroup.tracks) {
       const albumName = normalizeAlbumName(track.album)
-      const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || UNKNOWN_ARTIST_NAME
+      const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
       addTrackToAlbumGroup(group, track, albumName, identityGroup.displayArtist, primaryArtist)
     }
 
@@ -1113,8 +1193,10 @@ export async function initDatabase(): Promise<void> {
       path TEXT UNIQUE NOT NULL,
       title TEXT NOT NULL,
       artist TEXT NOT NULL,
+      artist_names_json TEXT,
       album TEXT NOT NULL,
       album_artist TEXT,
+      album_artist_names_json TEXT,
       duration REAL NOT NULL,
       track_number INTEGER,
       disc_number INTEGER,
@@ -1221,6 +1303,16 @@ export async function initDatabase(): Promise<void> {
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN artist_names_json TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN album_artist_names_json TEXT')
   } catch {
     // Column already exists.
   }
@@ -2172,8 +2264,10 @@ export async function upsertSubsonicTracks(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
+             artist_names_json = NULL,
              album = ?,
              album_artist = ?,
+             album_artist_names_json = NULL,
              duration = ?,
              track_number = ?,
              disc_number = ?,
@@ -2567,8 +2661,10 @@ export async function upsertJellyfinTracks(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
+             artist_names_json = NULL,
              album = ?,
              album_artist = ?,
+             album_artist_names_json = NULL,
              duration = ?,
              track_number = ?,
              disc_number = ?,
@@ -3170,6 +3266,32 @@ export function getAllTracks(): DbTrack[] {
   return attachAlbumIdentityKeys(tracks, tracks)
 }
 
+export function getIntegrityScanTrackTargets(scope: IntegrityScanScope): IntegrityScanTrackTarget[] {
+  if (!db) return []
+  const tracks = readEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE t.source_type = 'local'
+    ORDER BY t.path COLLATE NOCASE
+  `)
+
+  return filterIntegrityTargetsByScope(
+    tracks.map((track) => ({
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      format: track.format,
+      sampleRate: track.sample_rate,
+      bitDepth: track.bit_depth,
+      bitrate: track.bitrate,
+      channels: track.channels
+    })),
+    scope
+  )
+}
+
 // Get tracks by artist
 export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'canonical'): DbTrack[] {
   if (!db) return []
@@ -3227,6 +3349,8 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
     if (normalizeKey(normalizeAlbumName(track.album)) !== albumKey) return false
     if (normalizeKey(track.album_artist ?? '') === artistKey) return true
     if (normalizeKey(track.artist) === artistKey) return true
+    if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
+    if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
     return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
   })
   return attachAlbumIdentityKeys(fallback.sort(compareTracksByDiscTrackTitle), tracks)
@@ -3583,7 +3707,6 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
   const tracks = readAllTrackRowsUnordered()
   if (tracks.length === 0) return []
   const resolvedMode = normalizeArtistBrowseMode(mode)
-  const browseArtistResolver = resolvedMode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
   const artistImageRows = readArtistImageRowsForMode(resolvedMode)
 
   interface ArtistAggregate {
@@ -3597,10 +3720,9 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
   const artistCounts = new Map<string, ArtistAggregate>()
 
-  for (const track of tracks) {
-    const browseArtist = browseArtistResolver(track)
+  const addTrackToArtist = (track: DbTrackRow, browseArtist: string) => {
     const key = normalizeKey(browseArtist)
-    if (!key) continue
+    if (!key) return
 
     const existing = artistCounts.get(key)
     if (existing) {
@@ -3616,9 +3738,9 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       })
     }
 
-    if (!track.artwork_hash) continue
+    if (!track.artwork_hash) return
     const aggregate = artistCounts.get(key)
-    if (!aggregate) continue
+    if (!aggregate) return
 
     const candidateYear = track.year ?? -1
     const shouldReplaceArtwork = (
@@ -3636,11 +3758,25 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       )
     )
 
-    if (!shouldReplaceArtwork) continue
+    if (!shouldReplaceArtwork) return
     aggregate.artwork_hash = track.artwork_hash
     aggregate.newestArtworkYear = candidateYear
     aggregate.newestArtworkAddedAt = track.added_at
     aggregate.newestArtworkModifiedAt = track.modified_at
+  }
+
+  for (const track of tracks) {
+    const browseArtists = resolvedMode === 'strict'
+      ? [resolveStrictBrowseArtist(track)]
+      : getCanonicalArtistIndexNames(track)
+
+    const seenTrackArtistKeys = new Set<string>()
+    for (const browseArtist of browseArtists) {
+      const key = normalizeKey(browseArtist)
+      if (!key || seenTrackArtistKeys.has(key)) continue
+      seenTrackArtistKeys.add(key)
+      addTrackToArtist(track, browseArtist)
+    }
   }
 
   return Array.from(artistCounts.values())
@@ -3729,7 +3865,11 @@ export function searchTracks(query: string): DbTrack[] {
   const stmt = db.prepare(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
-    WHERE COALESCE(o.title, t.title) LIKE ? OR COALESCE(o.artist, t.artist) LIKE ? OR COALESCE(o.album, t.album) LIKE ?
+    WHERE COALESCE(o.title, t.title) LIKE ?
+      OR COALESCE(o.artist, t.artist) LIKE ?
+      OR (o.artist IS NULL AND t.artist_names_json LIKE ?)
+      OR COALESCE(o.album, t.album) LIKE ?
+      OR (o.album_artist IS NULL AND t.album_artist_names_json LIKE ?)
     ORDER BY
       COALESCE(o.title, t.title) COLLATE NOCASE,
       COALESCE(o.album, t.album) COLLATE NOCASE,
@@ -3738,7 +3878,7 @@ export function searchTracks(query: string): DbTrack[] {
       t.path COLLATE NOCASE
     LIMIT 100
   `)
-  stmt.bind([pattern, pattern, pattern])
+  stmt.bind([pattern, pattern, pattern, pattern, pattern])
   const tracks: DbTrackRow[] = []
   while (stmt.step()) {
     const row = stmt.getAsObject() as DbTrackRow
@@ -4474,10 +4614,10 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
-          metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+          metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
@@ -4486,10 +4626,10 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
-          filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+          filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
@@ -5227,8 +5367,10 @@ async function resolveCodecMetadata(
 async function extractMetadata(filePath: string): Promise<{
   title: string
   artist: string
+  artistNamesJson: string | null
   album: string
   albumArtist: string | null
+  albumArtistNamesJson: string | null
   duration: number
   trackNumber: number | null
   discNumber: number | null
@@ -5293,12 +5435,18 @@ async function extractMetadata(filePath: string): Promise<{
   }
 
   const fileName = basename(filePath, extname(filePath))
+  const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
+  const parsedAlbumArtistNames = normalizeArtistNames(common.albumartists ?? [])
+  const artistDisplay = toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
+  const albumArtistDisplay = toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
 
   return {
     title: common.title || fileName,
-    artist: common.artist || 'Unknown Artist',
+    artist: artistDisplay,
+    artistNamesJson: parsedArtistNames.length > 1 ? serializeArtistNames(parsedArtistNames) : null,
     album: common.album || 'Unknown Album',
-    albumArtist: common.albumartist || null,
+    albumArtist: albumArtistDisplay,
+    albumArtistNamesJson: parsedAlbumArtistNames.length > 1 ? serializeArtistNames(parsedAlbumArtistNames) : null,
     duration: format.duration || 0,
     trackNumber: common.track?.no || null,
     discNumber: common.disk?.no || null,
@@ -5399,6 +5547,20 @@ function getFileCreatedAtBackfillCandidatePaths(): string[] {
     .filter((value): value is string => value !== null)
 }
 
+function getArtistCreditBackfillCandidatePaths(): string[] {
+  if (!db) return []
+  const result = db.exec(`
+    SELECT path
+    FROM tracks
+    WHERE source_type = 'local'
+    ORDER BY path COLLATE NOCASE
+  `)
+  if (result.length === 0) return []
+  return result[0].values
+    .map((row) => (typeof row[0] === 'string' ? row[0] : null))
+    .filter((value): value is string => value !== null)
+}
+
 async function backfillTrackAudioMetadata(path: string): Promise<void> {
   if (!db) return
 
@@ -5434,6 +5596,22 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
       resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
       bpm,
       musicalKey,
+      path
+    ]
+  )
+}
+
+async function backfillTrackArtistCreditMetadata(path: string): Promise<void> {
+  if (!db) return
+  const metadata = await mm.parseFile(path, getMusicMetadataParseOptions(path, { skipCovers: true }))
+  const artistNames = normalizeArtistNames(metadata.common.artists ?? [])
+  const albumArtistNames = normalizeArtistNames(metadata.common.albumartists ?? [])
+
+  db.run(
+    "UPDATE tracks SET artist_names_json = ?, album_artist_names_json = ? WHERE path = ? AND source_type = 'local'",
+    [
+      artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
+      albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
       path
     ]
   )
@@ -5558,6 +5736,52 @@ export async function backfillMissingFileCreatedAt(
         console.warn(`Failed to backfill file creation time for ${path}:`, err)
       }
       errors += 1
+    }
+  }, { signal })
+
+  throwIfScanCancelled(signal)
+  if (persist && updated > 0) {
+    await saveDatabase()
+  }
+
+  return { scanned: paths.length, updated, errors }
+}
+
+export async function backfillMissingArtistCreditMetadata(
+  onProgress?: BackfillProgressCallback,
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
+  const { persist = true, signal, onIssue } = options
+  const paths = getArtistCreditBackfillCandidatePaths()
+  if (paths.length === 0) {
+    onProgress?.(0, 0, '')
+    return { scanned: 0, updated: 0, errors: 0 }
+  }
+
+  let updated = 0
+  let errors = 0
+  let processed = 0
+  const workerCount = resolveBackfillWorkerCount(paths.length)
+  onProgress?.(0, paths.length, '')
+
+  await runWithConcurrency(paths, workerCount, async (path) => {
+    try {
+      throwIfScanCancelled(signal)
+      await backfillTrackArtistCreditMetadata(path)
+      updated += 1
+    } catch (err) {
+      if (isLibraryScanCancelledError(err)) {
+        throw err
+      }
+      const issue = createLibraryScanIssue('backfill', path, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Failed to backfill artist credit metadata for ${path}:`, err)
+      }
+      errors += 1
+    } finally {
+      processed += 1
+      onProgress?.(processed, paths.length, path)
     }
   }, { signal })
 
@@ -5795,18 +6019,23 @@ function buildFfmpegMetadataArgs(values: {
   year: number | null
   trackNumber: number | null
   discNumber: number | null
-}): string[] {
-  const args: string[] = [
-    '-metadata', `title=${values.title}`,
-    '-metadata', `artist=${values.artist}`,
-    '-metadata', `album=${values.album}`,
-    '-metadata', `album_artist=${values.albumArtist ?? ''}`,
-    '-metadata', `genre=${values.genre ?? ''}`,
-    '-metadata', `date=${values.year !== null ? String(values.year) : ''}`,
-    '-metadata', `year=${values.year !== null ? String(values.year) : ''}`,
-    '-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`,
-    '-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`
-  ]
+}, changedFields: MetadataEditChanges): string[] {
+  const args: string[] = []
+  if (changedFields.title !== undefined) args.push('-metadata', `title=${values.title}`)
+  if (changedFields.artist !== undefined) args.push('-metadata', `artist=${values.artist}`)
+  if (changedFields.album !== undefined) args.push('-metadata', `album=${values.album}`)
+  if (changedFields.albumArtist !== undefined) args.push('-metadata', `album_artist=${values.albumArtist ?? ''}`)
+  if (changedFields.genre !== undefined) args.push('-metadata', `genre=${values.genre ?? ''}`)
+  if (changedFields.year !== undefined) {
+    const yearValue = values.year !== null ? String(values.year) : ''
+    args.push('-metadata', `date=${yearValue}`, '-metadata', `year=${yearValue}`)
+  }
+  if (changedFields.trackNumber !== undefined) {
+    args.push('-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`)
+  }
+  if (changedFields.discNumber !== undefined) {
+    args.push('-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`)
+  }
   return args
 }
 
@@ -5840,6 +6069,7 @@ async function writeTrackMetadataToFile(
     trackNumber: number | null
     discNumber: number | null
   },
+  changedFields: MetadataEditChanges,
   artworkChange: ResolvedMetadataArtworkChange
 ): Promise<void> {
   const ffmpegPath = await resolveFfmpegBinaryPath()
@@ -5872,7 +6102,7 @@ async function writeTrackMetadataToFile(
     }
 
     ffmpegArgs.push(
-      ...buildFfmpegMetadataArgs(values),
+      ...buildFfmpegMetadataArgs(values, changedFields),
       outputPath
     )
 
@@ -5896,10 +6126,10 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
-    metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+    metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
@@ -5992,7 +6222,7 @@ export async function saveMetadataEdits(
         upsertTrackMetadataOverride(trackPath, row)
       } else {
         const resolvedValues = resolveEditableValuesForSave(snapshot, normalizedChanges)
-        await writeTrackMetadataToFile(trackPath, resolvedValues, artworkChange)
+        await writeTrackMetadataToFile(trackPath, resolvedValues, normalizedChanges, artworkChange)
         await updateTrackRowFromFileMetadata(trackPath)
         db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
       }
@@ -6470,7 +6700,7 @@ type MetadataMatchResult =
   | { kind: 'none' }
 
 function buildPlaylistImportLookupIndex(
-  tracks: Array<Pick<DbTrackRow, 'path' | 'title' | 'artist' | 'album'>>
+  tracks: Array<Pick<DbTrackRow, 'path' | 'title' | 'artist' | 'artist_names_json' | 'album' | 'album_artist_names_json'>>
 ): PlaylistImportLookupIndex {
   const index: PlaylistImportLookupIndex = {
     exactPath: new Map(),
@@ -6488,17 +6718,29 @@ function buildPlaylistImportLookupIndex(
     }
 
     const titleKey = normalizeKey(track.title)
-    const artistKey = normalizeKey(track.artist)
+    const artistKeys = new Set<string>()
+    const displayArtistKey = normalizeKey(track.artist)
+    if (displayArtistKey) artistKeys.add(displayArtistKey)
+    for (const artistName of getParsedTrackArtistNames(track)) {
+      const key = normalizeKey(artistName)
+      if (key) artistKeys.add(key)
+    }
+    for (const artistName of getParsedAlbumArtistNames(track)) {
+      const key = normalizeKey(artistName)
+      if (key) artistKeys.add(key)
+    }
     const albumKey = normalizeKey(track.album)
 
     if (titleKey) {
       upsertUniqueLookupEntry(index.metadataByTitle, titleKey, track.path)
     }
-    if (titleKey && artistKey) {
-      upsertUniqueLookupEntry(index.metadataByTitleArtist, `${titleKey}\u0000${artistKey}`, track.path)
-    }
-    if (titleKey && artistKey && albumKey) {
-      upsertUniqueLookupEntry(index.metadataByTitleArtistAlbum, `${titleKey}\u0000${artistKey}\u0000${albumKey}`, track.path)
+    for (const artistKey of artistKeys) {
+      if (titleKey && artistKey) {
+        upsertUniqueLookupEntry(index.metadataByTitleArtist, `${titleKey}\u0000${artistKey}`, track.path)
+      }
+      if (titleKey && artistKey && albumKey) {
+        upsertUniqueLookupEntry(index.metadataByTitleArtistAlbum, `${titleKey}\u0000${artistKey}\u0000${albumKey}`, track.path)
+      }
     }
   }
 

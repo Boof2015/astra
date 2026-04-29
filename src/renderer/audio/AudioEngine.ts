@@ -81,6 +81,24 @@ const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
   totalBytes: 0
 }
 
+export class SupersededAudioLoadError extends Error {
+  constructor(message = 'Audio load was superseded by a newer request.') {
+    super(message)
+    this.name = 'SupersededAudioLoadError'
+  }
+}
+
+export function isSupersededAudioLoadError(error: unknown): boolean {
+  return error instanceof SupersededAudioLoadError
+    || (
+      error instanceof Error
+      && (
+        error.name === 'SupersededAudioLoadError'
+        || error.name === 'SupersededNativeAudioLoadError'
+      )
+    )
+}
+
 type GainApplicationMode = 'off' | 'normalization' | 'replaygain'
 
 interface GainState {
@@ -315,6 +333,8 @@ export class AudioEngine {
   private remotePlayResolver: (() => void) | null = null
   private remotePlayRejecter: ((error: Error) => void) | null = null
   private normalizationApproximate: boolean = false
+  private loadGeneration = 0
+  private prebufferGeneration = 0
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -1086,8 +1106,42 @@ export class AudioEngine {
     }
   }
 
+  private beginLoadOperation(): number {
+    this.loadGeneration += 1
+    this.prebufferGeneration += 1
+    return this.loadGeneration
+  }
+
+  private invalidateLoadOperations(): void {
+    this.loadGeneration += 1
+    this.prebufferGeneration += 1
+  }
+
+  private beginPrebufferOperation(): number {
+    this.prebufferGeneration += 1
+    return this.prebufferGeneration
+  }
+
+  private invalidatePrebufferOperations(): void {
+    this.prebufferGeneration += 1
+  }
+
+  private assertCurrentLoadOperation(generation: number): void {
+    if (generation !== this.loadGeneration) {
+      throw new SupersededAudioLoadError()
+    }
+  }
+
+  private assertCurrentPrebufferOperation(generation: number): void {
+    if (generation !== this.prebufferGeneration) {
+      throw new SupersededAudioLoadError('Audio prebuffer was superseded by a newer request.')
+    }
+  }
+
   async loadTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+    const loadOperation = this.beginLoadOperation()
     await this.initNativeAudio()
+    this.assertCurrentLoadOperation(loadOperation)
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
@@ -1097,16 +1151,29 @@ export class AudioEngine {
       } catch {
         // Ignore stop failures here; the next load attempt will surface a hard error if the backend is unhealthy.
       }
+      this.assertCurrentLoadOperation(loadOperation)
     }
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
+    this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
     this.currentBufferTrackPath = null
     this.nativeNextTrackBuffered = false
-    const result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
+    let result: NativeAudioTrackLoadResult
+    try {
+      result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
+    } catch (error) {
+      if (isSupersededAudioLoadError(error) || loadOperation !== this.loadGeneration) {
+        throw new SupersededAudioLoadError()
+      }
+      throw error
+    }
+    this.assertCurrentLoadOperation(loadOperation)
     this.currentBufferTrackPath = track.path
     await this.refreshNativeCapabilities()
+    this.assertCurrentLoadOperation(loadOperation)
     await this.refreshNativeSnapshot()
+    this.assertCurrentLoadOperation(loadOperation)
     this.notifyTrackChange()
     this._playbackState = 'stopped'
     this.emit('stateChange', this._playbackState)
@@ -1115,8 +1182,19 @@ export class AudioEngine {
   }
 
   async preBufferNextTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+    const prebufferOperation = this.beginPrebufferOperation()
     await this.initNativeAudio()
-    const result = await window.nativeAudioAPI.preloadNextTrack(track.path, this.buildNativeTrackMetadata(track))
+    this.assertCurrentPrebufferOperation(prebufferOperation)
+    let result: NativeAudioTrackLoadResult
+    try {
+      result = await window.nativeAudioAPI.preloadNextTrack(track.path, this.buildNativeTrackMetadata(track))
+    } catch (error) {
+      if (isSupersededAudioLoadError(error) || prebufferOperation !== this.prebufferGeneration) {
+        throw new SupersededAudioLoadError('Audio prebuffer was superseded by a newer request.')
+      }
+      throw error
+    }
+    this.assertCurrentPrebufferOperation(prebufferOperation)
     this.nativeNextTrackBuffered = true
     this.nextBufferTrackPath = track.path
     return result
@@ -1715,7 +1793,9 @@ export class AudioEngine {
       throw new Error('Bit-perfect mode requires path-based native loading.')
     }
 
+    const loadOperation = this.beginLoadOperation()
     await this.initContext()
+    this.assertCurrentLoadOperation(loadOperation)
     if (!this.context || !this.workletLoaded) {
       throw new Error('Audio worklet could not be initialized for remote streaming.')
     }
@@ -1727,17 +1807,35 @@ export class AudioEngine {
     this.stopSource()
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
+    this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
     this.currentBufferTrackPath = null
     this.pauseTime = 0
     this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
     this.notifyTrackChange()
 
-    const info = await window.electronAPI.startRemoteStream(
-      track.path,
-      this.context.sampleRate,
-      track.channels ?? null
-    )
+    let info: RemoteStreamInfo
+    try {
+      info = await window.electronAPI.startRemoteStream(
+        track.path,
+        this.context.sampleRate,
+        track.channels ?? null
+      )
+    } catch (error) {
+      if (loadOperation !== this.loadGeneration) {
+        throw new SupersededAudioLoadError()
+      }
+      throw error
+    }
+
+    if (loadOperation !== this.loadGeneration) {
+      try {
+        await window.electronAPI.cancelRemoteStream(info.sessionId)
+      } catch {
+        // Ignore cleanup failures for superseded stream sessions.
+      }
+      throw new SupersededAudioLoadError()
+    }
 
     this.remoteStreamNode = this.createRemoteStreamNode(info.channels)
     this.currentBufferTrackPath = track.path
@@ -1798,6 +1896,7 @@ export class AudioEngine {
       this.handleRemoteStreamChunk(info.initialChunk)
     }
 
+    this.assertCurrentLoadOperation(loadOperation)
     return info
   }
 
@@ -3972,7 +4071,9 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Bit-perfect mode requires path-based native loading.')
     }
+    const loadOperation = this.beginLoadOperation()
     await this.initContext()
+    this.assertCurrentLoadOperation(loadOperation)
     if (!this.context) throw new Error('AudioContext not initialized')
 
     this._playbackState = 'loading'
@@ -3984,6 +4085,7 @@ export class AudioEngine {
       this.stopSource()
       this.clearNextBuffer()
       await this.clearRemoteStreamState(true)
+      this.assertCurrentLoadOperation(loadOperation)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
       this.currentBufferTrackPath = null
@@ -3991,7 +4093,9 @@ export class AudioEngine {
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
       // Decode audio data
-      this.audioBuffer = await this.context.decodeAudioData(arrayBuffer)
+      const decodedBuffer = await this.context.decodeAudioData(arrayBuffer)
+      this.assertCurrentLoadOperation(loadOperation)
+      this.audioBuffer = decodedBuffer
       this.currentBufferTrackPath = options.trackPath ?? null
       this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
@@ -4006,6 +4110,9 @@ export class AudioEngine {
       this.emit('durationChange', this.audioBuffer.duration)
       this.emit('bufferReady', this.audioBuffer)
     } catch (err) {
+      if (isSupersededAudioLoadError(err) || loadOperation !== this.loadGeneration) {
+        throw new SupersededAudioLoadError()
+      }
       this.audioBuffer = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
@@ -4023,14 +4130,18 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Bit-perfect mode requires path-based native prebuffering.')
     }
+    const prebufferOperation = this.beginPrebufferOperation()
     await this.initContext()
+    this.assertCurrentPrebufferOperation(prebufferOperation)
     if (!this.context) throw new Error('AudioContext not initialized')
 
     try {
       // Clone the ArrayBuffer since decodeAudioData detaches it
       const clonedBuffer = arrayBuffer.slice(0)
+      const decodedBuffer = await this.context.decodeAudioData(clonedBuffer)
+      this.assertCurrentPrebufferOperation(prebufferOperation)
       this.nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
-      this.nextBuffer = await this.context.decodeAudioData(clonedBuffer)
+      this.nextBuffer = decodedBuffer
       this.nextBufferTrackPath = options.trackPath ?? null
       this.updateNextNormalizationCache()
 
@@ -4039,6 +4150,9 @@ export class AudioEngine {
         this.scheduleGaplessTransition()
       }
     } catch (err) {
+      if (isSupersededAudioLoadError(err) || prebufferOperation !== this.prebufferGeneration) {
+        return
+      }
       console.error('Failed to pre-buffer next track:', err)
       this.nextBuffer = null
       this.nextBufferTrackPath = null
@@ -4157,6 +4271,7 @@ export class AudioEngine {
 
   // Clear pre-buffered next track
   clearNextBuffer(): void {
+    this.invalidatePrebufferOperations()
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
       this.nextBufferTrackPath = null
@@ -4188,9 +4303,12 @@ export class AudioEngine {
 
   // Play
   async play(): Promise<void> {
+    const playLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
       await this.initNativeAudio()
+      this.assertCurrentLoadOperation(playLoadGeneration)
       this.nativeSnapshot = await window.nativeAudioAPI.play()
+      this.assertCurrentLoadOperation(playLoadGeneration)
       this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
       this.emit('stateChange', this._playbackState)
       this.syncNativeScopePolling()
@@ -4233,6 +4351,7 @@ export class AudioEngine {
     // Resume context if suspended (autoplay policy)
     if (this.context.state === 'suspended') {
       await this.context.resume()
+      this.assertCurrentLoadOperation(playLoadGeneration)
     }
 
     // If already playing, do nothing
@@ -4322,11 +4441,14 @@ export class AudioEngine {
 
   // Stop
   stop(): void {
+    this.invalidateLoadOperations()
+    const stopLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
       this.currentBufferTrackPath = null
       this.nextBufferTrackPath = null
       void window.nativeAudioAPI.stop().then((snapshot) => {
+        if (stopLoadGeneration !== this.loadGeneration) return
         this.nativeSnapshot = snapshot
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)

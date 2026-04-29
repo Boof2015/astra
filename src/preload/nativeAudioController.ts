@@ -76,6 +76,13 @@ interface NativeAudioControllerOptions {
   unavailableReason?: string | null
 }
 
+class SupersededNativeAudioLoadError extends Error {
+  constructor(message = 'Native audio load was superseded by a newer request.') {
+    super(message)
+    this.name = 'SupersededNativeAudioLoadError'
+  }
+}
+
 interface DecodedPcmTrack {
   filePath: string
   sampleRate: number
@@ -463,6 +470,8 @@ export function createNativeAudioController(
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
   let nextDecodedTrack: DecodedPcmTrack | null = null
   let currentTrackRequest: LoadedTrackRequest | null = null
+  let loadGeneration = 0
+  let prebufferGeneration = 0
   let currentBufferBytes = 0
   let nextBufferBytes = 0
   const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
@@ -476,6 +485,38 @@ export function createNativeAudioController(
     nextBytes: nextBufferBytes,
     totalBytes: currentBufferBytes + nextBufferBytes
   })
+
+  const beginLoadOperation = (): number => {
+    loadGeneration += 1
+    prebufferGeneration += 1
+    return loadGeneration
+  }
+
+  const invalidateLoadOperations = (): void => {
+    loadGeneration += 1
+    prebufferGeneration += 1
+  }
+
+  const beginPrebufferOperation = (): number => {
+    prebufferGeneration += 1
+    return prebufferGeneration
+  }
+
+  const invalidatePrebufferOperations = (): void => {
+    prebufferGeneration += 1
+  }
+
+  const assertCurrentLoadOperation = (generation: number): void => {
+    if (generation !== loadGeneration) {
+      throw new SupersededNativeAudioLoadError()
+    }
+  }
+
+  const assertCurrentPrebufferOperation = (generation: number): void => {
+    if (generation !== prebufferGeneration) {
+      throw new SupersededNativeAudioLoadError('Native audio prebuffer was superseded by a newer request.')
+    }
+  }
 
   const notify = (event: NativeAudioEvent) => {
     if (event.type === 'gaplessTransition') {
@@ -646,11 +687,14 @@ export function createNativeAudioController(
     },
 
     loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
+      const loadOperation = beginLoadOperation()
       const engine = await ensureAvailable()
+      assertCurrentLoadOperation(loadOperation)
       const backendKind = capabilitiesCache.activeBackend
       const decoded = nextDecodedTrack?.filePath === filePath
         ? nextDecodedTrack
         : await decodeFileToPcm(filePath, metadata, { backendKind })
+      assertCurrentLoadOperation(loadOperation)
       nextDecodedTrack = null
       currentTrackRequest = {
         filePath,
@@ -664,10 +708,13 @@ export function createNativeAudioController(
     },
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
+      const prebufferOperation = beginPrebufferOperation()
       const engine = await ensureAvailable()
+      assertCurrentPrebufferOperation(prebufferOperation)
       const decoded = await decodeFileToPcm(filePath, metadata, {
         backendKind: capabilitiesCache.activeBackend
       })
+      assertCurrentPrebufferOperation(prebufferOperation)
       engine.preloadNextTrack(
         new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
         decoded.sampleRate,
@@ -721,6 +768,7 @@ export function createNativeAudioController(
     },
 
     stop: async () => {
+      invalidateLoadOperations()
       const engine = await ensureAvailable()
       nextDecodedTrack = null
       return normalizePlaybackSnapshot(engine.stop())
@@ -732,6 +780,7 @@ export function createNativeAudioController(
     },
 
     clearNextTrack: async () => {
+      invalidatePrebufferOperations()
       const engine = await ensureAvailable()
       nextDecodedTrack = null
       nextBufferBytes = 0

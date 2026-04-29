@@ -3,7 +3,9 @@ import { create } from 'zustand'
 interface DiscordSettingsStore {
   enabled: boolean
   coverArtEnabled: boolean
+  coverArtLookupActive: boolean
   statusMessage: string
+  setCoverArtLookupActive: (coverArtLookupActive: boolean) => void
   setEnabled: (enabled: boolean) => Promise<void>
   setCoverArtEnabled: (enabled: boolean) => Promise<void>
   initFromSaved: () => Promise<void>
@@ -41,16 +43,21 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
   return {
     enabled: false,
     coverArtEnabled: false,
+    coverArtLookupActive: false,
     statusMessage: 'Discord Rich Presence is disabled.',
 
+    setCoverArtLookupActive: (coverArtLookupActive: boolean) => {
+      set({ coverArtLookupActive })
+    },
+
     setEnabled: async (enabled: boolean) => {
-      set({ enabled })
+      set({ enabled, coverArtLookupActive: enabled ? get().coverArtLookupActive : false })
       localStorage.setItem(ENABLED_STORAGE_KEY, enabled ? '1' : '0')
       await applyDiscordConfig()
     },
 
     setCoverArtEnabled: async (coverArtEnabled: boolean) => {
-      set({ coverArtEnabled })
+      set({ coverArtEnabled, coverArtLookupActive: coverArtEnabled ? get().coverArtLookupActive : false })
       localStorage.setItem(COVER_ART_ENABLED_STORAGE_KEY, coverArtEnabled ? '1' : '0')
       await applyDiscordConfig()
     },
@@ -59,12 +66,12 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
       clearLegacyClientId()
       const enabled = localStorage.getItem(ENABLED_STORAGE_KEY) === '1'
       const coverArtEnabled = localStorage.getItem(COVER_ART_ENABLED_STORAGE_KEY) === '1'
-      set({ enabled, coverArtEnabled })
+      set({ enabled, coverArtEnabled, coverArtLookupActive: false })
       await applyDiscordConfig()
     },
 
     resetToDefaults: async () => {
-      set({ enabled: false, coverArtEnabled: false })
+      set({ enabled: false, coverArtEnabled: false, coverArtLookupActive: false })
       localStorage.removeItem(ENABLED_STORAGE_KEY)
       localStorage.removeItem(COVER_ART_ENABLED_STORAGE_KEY)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)

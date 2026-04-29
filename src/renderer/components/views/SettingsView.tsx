@@ -9,7 +9,14 @@ import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { useUIStore } from '../../stores/uiStore'
+import {
+  DEFAULT_UI_SCALE_PERCENT,
+  MAX_UI_SCALE_PERCENT,
+  MIN_UI_SCALE_PERCENT,
+  UI_SCALE_STEP_PERCENT,
+  useUIStore,
+  type HomeGreetingTextMode
+} from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
   DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -25,6 +32,7 @@ import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
+import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -354,12 +362,22 @@ export default function SettingsView() {
   const developerRevealClickCountRef = useRef(0)
   const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
+  const uiScalePercent = useUIStore((state) => state.uiScalePercent)
+  const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
+  const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
+  const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
+  const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
+  const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
+  const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const libraryGraphEnabled = useGraphStore((state) => state.enabled)
   const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
   const openFullGraph = useGraphStore((state) => state.openFullMap)
+  const libraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
+  const setLibraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.setEnabled)
+  const openLibraryIntegrityPanel = useLibraryIntegrityStore((state) => state.openPanel)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const sleepTimerIsActive = useSleepTimerStore((state) => state.isActive)
@@ -1322,6 +1340,59 @@ export default function SettingsView() {
                   </div>
                 </div>
               </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Interface Scale</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">UI Scale</span>
+                    <div className="settings-scale-row">
+                      <input
+                        className="settings-scale-slider"
+                        type="range"
+                        min={MIN_UI_SCALE_PERCENT}
+                        max={MAX_UI_SCALE_PERCENT}
+                        step={UI_SCALE_STEP_PERCENT}
+                        value={uiScalePercent}
+                        onChange={(event) => setUIScalePercent(Number(event.target.value))}
+                        aria-label="UI scale"
+                      />
+                      <span className="settings-chip settings-chip-mono settings-scale-value">
+                        {uiScalePercent}%
+                      </span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        onClick={resetUIScalePercent}
+                        disabled={uiScalePercent === DEFAULT_UI_SCALE_PERCENT}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Text</span>
+                    <select
+                      className="settings-select"
+                      value={homeGreetingTextMode}
+                      onChange={(event) => {
+                        const mode = event.target.value === 'clock' || event.target.value === 'off'
+                          ? event.target.value
+                          : 'messages'
+                        setHomeGreetingTextMode(mode as HomeGreetingTextMode)
+                      }}
+                    >
+                      <option value="messages">Messages</option>
+                      <option value="clock">Clock</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
             </div>
           </section>
             )}
@@ -1873,6 +1944,23 @@ export default function SettingsView() {
             </div>
             <div className="settings-cards">
               <div className="settings-card">
+                <div className="settings-card-label">Activity Indicator</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Scope Rail Activity Indicator</span>
+                    <button
+                      className={`settings-toggle ${activityIndicatorExperimentEnabled ? 'active' : ''}`}
+                      onClick={() => setActivityIndicatorExperimentEnabled(!activityIndicatorExperimentEnabled)}
+                    >
+                      {activityIndicatorExperimentEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, scans, syncs, and transient background work.
+                  </p>
+                </div>
+              </div>
+              <div className="settings-card">
                 <div className="settings-card-label">Library Graph</div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -1897,6 +1985,33 @@ export default function SettingsView() {
                       Open Full Map
                     </button>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Library Integrity Check</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Integrity Check</span>
+                    <button
+                      className={`settings-toggle ${libraryIntegrityEnabled ? 'active' : ''}`}
+                      onClick={() => setLibraryIntegrityEnabled(!libraryIntegrityEnabled)}
+                    >
+                      {libraryIntegrityEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Scanner</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!libraryIntegrityEnabled}
+                      onClick={openLibraryIntegrityPanel}
+                    >
+                      Open Integrity Check
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Quick scans inspect local file headers and metadata. Deep scans decode FLAC files and add quality-signal hints.
+                  </p>
                 </div>
               </div>
               <div className="settings-integration-card">

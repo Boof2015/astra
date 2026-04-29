@@ -1,6 +1,12 @@
+import { deserializeArtistNames, formatArtistNames, normalizeArtistNames } from './artistCredits.ts'
+
 export interface AlbumIdentityArtistTrackLike {
   artist: string
+  artist_names?: readonly string[] | null
+  artist_names_json?: string | null
   album_artist?: string | null
+  album_artist_names?: readonly string[] | null
+  album_artist_names_json?: string | null
 }
 
 export interface AlbumIdentityTrackLike extends AlbumIdentityArtistTrackLike {
@@ -78,19 +84,38 @@ export function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   return contributors[0] ?? UNKNOWN_ARTIST_NAME
 }
 
+function getPrimaryArtistFromTrack<T extends AlbumIdentityArtistTrackLike>(track: T): string {
+  const parsedArtists = normalizeArtistNames(track.artist_names)
+  if (parsedArtists.length > 0) return parsedArtists[0]
+  const parsedArtistsJson = deserializeArtistNames(track.artist_names_json)
+  if (parsedArtistsJson.length > 0) return parsedArtistsJson[0]
+  return getPrimaryArtistFromTrackArtist(track.artist)
+}
+
+function getNormalizedAlbumArtist<T extends AlbumIdentityArtistTrackLike>(track: T): string {
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) return normalizedAlbumArtist
+
+  const parsedAlbumArtists = normalizeArtistNames(track.album_artist_names)
+  if (parsedAlbumArtists.length > 0) return formatArtistNames(parsedAlbumArtists)
+  const parsedAlbumArtistsJson = deserializeArtistNames(track.album_artist_names_json)
+  if (parsedAlbumArtistsJson.length > 0) return formatArtistNames(parsedAlbumArtistsJson)
+  return ''
+}
+
 export function buildCanonicalAlbumIdentityKey(albumKey: string, discriminator: string): string {
   return `album:${albumKey}::${discriminator}`
 }
 
 export function buildAlbumIdentityKeyFromTrack(track: AlbumIdentityTrackLike): string {
   const albumKey = normalizeKey(normalizeAlbumName(track.album))
-  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  const normalizedAlbumArtist = getNormalizedAlbumArtist(track)
   if (normalizedAlbumArtist) {
     const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
     return buildCanonicalAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`)
   }
 
-  const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || UNKNOWN_ARTIST_NAME
+  const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
   const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
   return buildCanonicalAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`)
 }
@@ -133,8 +158,8 @@ export function groupTracksByAlbumIdentity<T extends AlbumIdentityTrackLike>(
   for (const track of tracks) {
     const trackId = getTrackId(track)
     const albumKey = normalizeKey(normalizeAlbumName(track.album))
-    const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
-    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || UNKNOWN_ARTIST_NAME
+    const normalizedAlbumArtist = getNormalizedAlbumArtist(track)
+    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
     const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
     const artworkIdentityHash = normalizeArtworkHash(track.base_artwork_hash)
 

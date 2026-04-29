@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { audioEngine } from '../audio/AudioEngine'
+import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import { Track, PlaybackState } from '../types/audio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore } from './libraryStore'
@@ -24,6 +24,7 @@ interface RemoteLoadProgress {
 }
 
 export type QueueTrackSource = 'user' | 'auto' | 'manual'
+type PlaybackLoadOutcome = 'loaded' | 'failed' | 'superseded'
 
 export interface PlaybackHistoryEntry {
   track: Track
@@ -150,7 +151,7 @@ interface PlayerStore {
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<boolean>
+  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<PlaybackLoadOutcome>
   _preBufferNextTrack: () => Promise<void>
   _getNextEntry: () => ResolvedQueueTrack | null
   _generateShuffleOrder: (currentAutoQueueIndex: number) => void
@@ -169,6 +170,13 @@ const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
+
+class SupersededPlaybackLoadError extends Error {
+  constructor() {
+    super('Playback load was superseded by a newer request.')
+    this.name = 'SupersededPlaybackLoadError'
+  }
+}
 
 function estimateWaveformCacheBytes(): number {
   let total = 0
@@ -461,6 +469,44 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const associatedMetadataInflight = new Set<string>()
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
+  let activeLoadRequestId = 0
+  let activePrebufferRequestId = 0
+
+  const beginLoadRequest = (): number => {
+    activeLoadRequestId += 1
+    activePrebufferRequestId += 1
+    return activeLoadRequestId
+  }
+
+  const invalidateLoadRequest = (): void => {
+    activeLoadRequestId += 1
+    activePrebufferRequestId += 1
+  }
+
+  const isActiveLoadRequest = (requestId: number): boolean => {
+    return requestId === activeLoadRequestId
+  }
+
+  const throwIfSupersededLoad = (requestId: number): void => {
+    if (!isActiveLoadRequest(requestId)) {
+      throw new SupersededPlaybackLoadError()
+    }
+  }
+
+  const isSupersededPlaybackLoad = (error: unknown, requestId: number): boolean => {
+    return error instanceof SupersededPlaybackLoadError
+      || isSupersededAudioLoadError(error)
+      || !isActiveLoadRequest(requestId)
+  }
+
+  const beginPrebufferRequest = (): number => {
+    activePrebufferRequestId += 1
+    return activePrebufferRequestId
+  }
+
+  const isActivePrebufferRequest = (requestId: number): boolean => {
+    return requestId === activePrebufferRequestId
+  }
 
   const hydrateAssociatedCurrentTrackMetadata = (track: Track): void => {
     if (track.origin !== 'associated-external') {
@@ -842,6 +888,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
       const loadStart = performance.now()
+      const loadRequestId = beginLoadRequest()
       pendingManualLoadCueTrack = null
       // Initialize listeners on first load
       if (!listenersInitialized) {
@@ -864,12 +911,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         await ensureCompatiblePlaybackMode(track)
+        throwIfSupersededLoad(loadRequestId)
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         if (shouldUseBitPerfectPath(track)) {
           const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const result = await audioEngine.loadTrackFromPath(track)
+          throwIfSupersededLoad(loadRequestId)
           const decodeMs = Math.round(performance.now() - decodeStart)
           const resolvedTrack: Track = {
             ...track,
@@ -901,8 +950,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         try {
           await audioEngine.loadAudioData(audioData, { replayGainDb, trackPath: track.path })
+          throwIfSupersededLoad(loadRequestId)
         } catch (primaryDecodeError) {
+          if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
+            throw primaryDecodeError
+          }
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+          throwIfSupersededLoad(loadRequestId)
           if (!fallbackData) {
             throw primaryDecodeError
           }
@@ -910,6 +964,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
           await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
+          throwIfSupersededLoad(loadRequestId)
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -943,6 +998,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
         return true
       } catch (error) {
+        if (isSupersededPlaybackLoad(error, loadRequestId)) {
+          return false
+        }
         console.error('Failed to load track:', error)
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
@@ -973,7 +1031,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }))
 
         const loaded = await get()._loadAndPlayTrack(track, { manualStart: true })
-        if (!loaded && track.sourceType && track.sourceType !== 'local') {
+        if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
         return
@@ -987,7 +1045,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         && state.remoteStreamSessionId === null
       ) {
         const reloaded = await get()._loadAndPlayTrack(state.currentTrack, { manualStart: true })
-        if (!reloaded) {
+        if (reloaded === 'failed') {
           markTrackUnavailableInState(state.currentTrack.path)
         }
         return
@@ -1018,6 +1076,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     stop: () => {
+      invalidateLoadRequest()
       pendingManualLoadCueTrack = null
       recentPlaySession = null
       set({
@@ -1086,7 +1145,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (!targetTrack || isUnavailableRemoteTrack(targetTrack)) return
 
       const loaded = await get()._loadAndPlayTrack(targetTrack, { manualStart: true })
-      if (!loaded && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+      if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
         markTrackUnavailableInState(targetTrack.path)
       }
     },
@@ -1211,7 +1270,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const loaded = await get()._loadAndPlayTrack(candidate.track, {
         manualStart: options?.manualStart ?? true
       })
-      if (!loaded && candidate.track.sourceType && candidate.track.sourceType !== 'local') {
+      if (loaded === 'failed' && candidate.track.sourceType && candidate.track.sourceType !== 'local') {
         markTrackUnavailableInState(candidate.track.path)
       }
     },
@@ -1228,7 +1287,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }))
 
       const loaded = await get()._loadAndPlayTrack(track)
-      if (!loaded && track.sourceType && track.sourceType !== 'local') {
+      if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
         markTrackUnavailableInState(track.path)
       }
     },
@@ -1255,7 +1314,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       const loaded = await get()._loadAndPlayTrack(previousEntry.track, { manualStart: true })
-      if (!loaded && previousEntry.track.sourceType && previousEntry.track.sourceType !== 'local') {
+      if (loaded === 'failed' && previousEntry.track.sourceType && previousEntry.track.sourceType !== 'local') {
         markTrackUnavailableInState(previousEntry.track.path)
       }
     },
@@ -1409,6 +1468,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Internal: Load and play a track from queue
     _loadAndPlayTrack: async (track: Track, options = {}) => {
       const loadStart = performance.now()
+      const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
       pendingManualLoadCueTrack = null
       // Initialize listeners if needed
@@ -1433,10 +1493,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       try {
         await ensureCompatiblePlaybackMode(track)
+        throwIfSupersededLoad(loadRequestId)
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         if (shouldUseBitPerfectPath(track)) {
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const loadResult = await audioEngine.loadTrackFromPath(track)
+          throwIfSupersededLoad(loadRequestId)
           const resolvedTrack: Track = {
             ...track,
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
@@ -1452,7 +1514,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           if (manualStart) {
             showOutputDelayNotice(resolvedTrack)
           }
+          throwIfSupersededLoad(loadRequestId)
           await audioEngine.play()
+          throwIfSupersededLoad(loadRequestId)
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
           get()._preBufferNextTrack()
@@ -1467,12 +1531,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             trackPath: track.path,
             usedNativeBitPerfect: true
           })
-          return true
+          return 'loaded'
         }
 
         if (track.sourceType && track.sourceType !== 'local') {
           try {
             const streamInfo = await audioEngine.loadRemoteStream(track, { replayGainDb })
+            throwIfSupersededLoad(loadRequestId)
             const resolvedTrack: Track = {
               ...track,
               duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
@@ -1493,7 +1558,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (manualStart) {
               showOutputDelayNotice(resolvedTrack)
             }
+            throwIfSupersededLoad(loadRequestId)
             await audioEngine.play()
+            throwIfSupersededLoad(loadRequestId)
             void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
             logMemoryDiagnosticsEvent('remote_stream_started', {
@@ -1515,8 +1582,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               trackPath: track.path,
               usedRemoteStream: true
             })
-            return true
+            return 'loaded'
           } catch (streamError) {
+            if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
+              throw streamError
+            }
             console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
             logMemoryDiagnosticsEvent('remote_stream_fallback', {
               trackPath: track.path,
@@ -1537,6 +1607,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const fileLoadStart = performance.now()
         // Load audio file from path
         const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+        throwIfSupersededLoad(loadRequestId)
         const fileLoadMs = Math.round(performance.now() - fileLoadStart)
         if (!result) {
           console.error('Failed to load audio file:', track.path)
@@ -1551,15 +1622,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             remoteBufferedSeconds: 0,
             remoteStreamSessionId: null
           })
-          return false
+          return 'failed'
         }
 
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         try {
           await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path })
+          throwIfSupersededLoad(loadRequestId)
         } catch (primaryDecodeError) {
+          if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
+            throw primaryDecodeError
+          }
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+          throwIfSupersededLoad(loadRequestId)
           if (!fallbackData) {
             throw primaryDecodeError
           }
@@ -1567,6 +1643,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
           await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
+          throwIfSupersededLoad(loadRequestId)
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -1601,7 +1678,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (manualStart) {
           showOutputDelayNotice(resolvedTrack)
         }
+        throwIfSupersededLoad(loadRequestId)
         await audioEngine.play()
+        throwIfSupersededLoad(loadRequestId)
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
         logMemoryDiagnosticsEvent('track_load_success', {
@@ -1621,8 +1700,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           decodeMs,
           usedFfmpegFallback
         })
-        return true
+        return 'loaded'
       } catch (error) {
+        if (isSupersededPlaybackLoad(error, loadRequestId)) {
+          return 'superseded'
+        }
         console.error('Failed to load track:', error)
         logMemoryDiagnosticsEvent('track_load_failed', {
           trackPath: track.path,
@@ -1642,14 +1724,34 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null
         })
-        return false
+        return 'failed'
       }
     },
 
     // Pre-buffer the next track for gapless playback
     _preBufferNextTrack: async () => {
       const bufferStart = performance.now()
+      const prebufferRequestId = beginPrebufferRequest()
       const state = get()
+
+      const resolveExpectedPrebufferTrackPath = (): string | null => {
+        const latestState = get()
+        if (latestState.repeat === 'one') return null
+
+        for (const candidate of collectNextCandidates(latestState)) {
+          const candidateTrack = candidate.kind === 'future' ? candidate.entry.track : candidate.track
+          if (!candidateTrack) continue
+          if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') continue
+          if (isUnavailableRemoteTrack(candidateTrack)) continue
+          return candidateTrack.path
+        }
+        return null
+      }
+
+      const canApplyPrebufferResult = (nextTrack: Track): boolean => {
+        return isActivePrebufferRequest(prebufferRequestId)
+          && resolveExpectedPrebufferTrackPath() === nextTrack.path
+      }
 
       if (useAudioSettingsStore.getState().disableGaplessPrebufferDev) {
         return
@@ -1672,8 +1774,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (isUnavailableRemoteTrack(nextTrack)) continue
 
         try {
+          if (!canApplyPrebufferResult(nextTrack)) return
           if (shouldUseBitPerfectPath(nextTrack)) {
             await audioEngine.preBufferNextTrackFromPath(nextTrack)
+            if (!canApplyPrebufferResult(nextTrack)) {
+              audioEngine.clearNextBuffer()
+              return
+            }
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
               loaded: true,
@@ -1713,8 +1820,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
 
           const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
-          // Re-check repeat mode after async gap — may have changed to 'one'
-          if (get().repeat === 'one') {
+          if (!canApplyPrebufferResult(nextTrack)) {
             return
           }
           if (result) {
@@ -1722,18 +1828,25 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode),
               trackPath: nextTrack.path
             })
+            if (!canApplyPrebufferResult(nextTrack)) {
+              audioEngine.clearNextBuffer()
+              return
+            }
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
               loaded: true
             })
             return
           }
-          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+          if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
             markTrackUnavailableInState(nextTrack.path)
           }
         } catch (error) {
+          if (isSupersededAudioLoadError(error) || !isActivePrebufferRequest(prebufferRequestId)) {
+            return
+          }
           console.error('Failed to pre-buffer next track:', error)
-          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+          if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
             markTrackUnavailableInState(nextTrack.path)
           }
           logSlowPath('preBufferNextTrack', bufferStart, {

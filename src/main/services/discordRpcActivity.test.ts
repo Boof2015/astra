@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeDiscordActivityDetails } from './discordRpcActivity.ts'
+import { buildDiscordActivityFromPresence, normalizeDiscordActivityDetails } from './discordRpcActivity.ts'
 
 test('pads one-character titles with a zero-width space', () => {
   assert.equal(normalizeDiscordActivityDetails('X', 128), 'X\u200B')
@@ -25,4 +25,117 @@ test("truncates long titles to Discord's max length after normalization", () => 
 
   assert.equal(normalized, `${'A'.repeat(127)}\u2026`)
   assert.equal(normalized?.length, 128)
+})
+
+test('builds a Spotify-like listening activity while playing', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    currentTimeSeconds: 12,
+    durationSeconds: 180,
+    track: {
+      title: '0',
+      artist: 'Ado',
+      format: 'flac',
+      sampleRate: 48000,
+      bitDepth: 24
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    nowSeconds: 1000
+  })
+
+  assert.deepEqual(activity, {
+    name: 'Astra',
+    type: 2,
+    details: '0\u200B',
+    state: 'Ado',
+    status_display_type: 2,
+    instance: false,
+    timestamps: {
+      start: 988,
+      end: 1168
+    },
+    assets: {
+      large_image: 'https://example.com/cover.jpg',
+      large_text: 'FLAC • 24-bit • 48kHz'
+    }
+  })
+})
+
+test('keeps paused tracks as listening activity without moving timestamps', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'paused',
+    currentTimeSeconds: 61,
+    durationSeconds: 180,
+    track: {
+      title: '0',
+      artist: 'Ado',
+      format: 'flac',
+      sampleRate: 48000,
+      bitDepth: 24
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    nowSeconds: 1000
+  })
+
+  assert.equal(activity?.type, 2)
+  assert.equal(activity?.details, '0\u200B')
+  assert.equal(activity?.state, 'Paused • Ado')
+  assert.equal(activity?.status_display_type, 2)
+  assert.equal(activity?.timestamps, undefined)
+  assert.deepEqual(activity?.assets, {
+    large_image: 'https://example.com/cover.jpg',
+    large_text: 'FLAC • 24-bit • 48kHz'
+  })
+})
+
+test('keeps loading tracks as listening activity without timestamps', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'loading',
+    track: {
+      title: '0',
+      artist: 'Ado'
+    }
+  })
+
+  assert.equal(activity?.type, 2)
+  assert.equal(activity?.details, '0\u200B')
+  assert.equal(activity?.state, 'Loading • Ado')
+  assert.equal(activity?.timestamps, undefined)
+})
+
+test('keeps quality metadata out of the activity state line', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: 'Song',
+      artist: 'Artist',
+      codec: 'flac',
+      sampleRate: 96000,
+      bitDepth: 24
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    nowSeconds: 1000
+  })
+
+  assert.equal(activity?.state, 'Artist')
+  assert.equal(activity?.assets?.large_text, 'FLAC • 24-bit • 96kHz')
+})
+
+test('clears presence for stopped playback and blank titles', () => {
+  assert.equal(buildDiscordActivityFromPresence({
+    playbackState: 'stopped',
+    track: {
+      title: 'Song'
+    }
+  }), null)
+
+  assert.equal(buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: '   '
+    }
+  }), null)
 })

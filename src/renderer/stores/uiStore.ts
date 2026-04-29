@@ -4,11 +4,20 @@ import type { Track } from '../types/audio'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
+export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
 export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
 export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
+export const MIN_UI_SCALE_PERCENT = 80
+export const DEFAULT_UI_SCALE_PERCENT = 100
+export const MAX_UI_SCALE_PERCENT = 125
+export const UI_SCALE_STEP_PERCENT = 5
+export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
+export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
+export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
+export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -90,6 +99,23 @@ export function normalizeAnalyzerHeightPx(value: unknown): number {
   return Math.min(MAX_ANALYZER_HEIGHT_PX, Math.max(MIN_ANALYZER_HEIGHT_PX, snapped))
 }
 
+export function normalizeUIScalePercent(value: unknown): number {
+  if (value == null) return DEFAULT_UI_SCALE_PERCENT
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_UI_SCALE_PERCENT
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_UI_SCALE_PERCENT
+
+  const snapped = Math.round(numeric / UI_SCALE_STEP_PERCENT) * UI_SCALE_STEP_PERCENT
+  return Math.min(MAX_UI_SCALE_PERCENT, Math.max(MIN_UI_SCALE_PERCENT, snapped))
+}
+
+export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {
+  return value === 'clock' || value === 'off' || value === 'messages'
+    ? value
+    : DEFAULT_HOME_GREETING_TEXT_MODE
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
@@ -139,9 +165,60 @@ function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
   }
 }
 
+function readUIScalePreference(): number {
+  try {
+    return normalizeUIScalePercent(localStorage.getItem(UI_SCALE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_UI_SCALE_PERCENT
+  }
+}
+
+function persistUIScalePreference(percent: number): void {
+  try {
+    localStorage.setItem(UI_SCALE_STORAGE_KEY, String(normalizeUIScalePercent(percent)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readHomeGreetingTextModePreference(): HomeGreetingTextMode {
+  try {
+    return normalizeHomeGreetingTextMode(localStorage.getItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_HOME_GREETING_TEXT_MODE
+  }
+}
+
+function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void {
+  try {
+    localStorage.setItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY, normalizeHomeGreetingTextMode(mode))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readActivityIndicatorExperimentPreference(): boolean {
+  try {
+    return localStorage.getItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
+const initialUIScalePercent = readUIScalePreference()
+const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -155,6 +232,9 @@ interface UIStore {
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
   analyzerHeightPx: number
+  uiScalePercent: number
+  homeGreetingTextMode: HomeGreetingTextMode
+  activityIndicatorExperimentEnabled: boolean
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
@@ -180,6 +260,11 @@ interface UIStore {
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
+  setUIScalePercent: (percent: number) => void
+  resetUIScalePercent: () => void
+  setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
+  resetHomeGreetingTextMode: () => void
+  setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -212,6 +297,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
   analyzerHeightPx: initialAnalyzerHeightPx,
+  uiScalePercent: initialUIScalePercent,
+  homeGreetingTextMode: initialHomeGreetingTextMode,
+  activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
@@ -285,6 +373,29 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isAnalyzerEditMode: false,
       analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX,
     })
+  },
+  setUIScalePercent: (percent) => {
+    const nextScalePercent = normalizeUIScalePercent(percent)
+    persistUIScalePreference(nextScalePercent)
+    set({ uiScalePercent: nextScalePercent })
+  },
+  resetUIScalePercent: () => {
+    persistUIScalePreference(DEFAULT_UI_SCALE_PERCENT)
+    set({ uiScalePercent: DEFAULT_UI_SCALE_PERCENT })
+  },
+  setHomeGreetingTextMode: (mode) => {
+    const nextMode = normalizeHomeGreetingTextMode(mode)
+    persistHomeGreetingTextModePreference(nextMode)
+    set({ homeGreetingTextMode: nextMode })
+  },
+  resetHomeGreetingTextMode: () => {
+    persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
+    set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setActivityIndicatorExperimentEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistActivityIndicatorExperimentPreference(normalized)
+    set({ activityIndicatorExperimentEnabled: normalized })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'

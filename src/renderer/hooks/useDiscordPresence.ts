@@ -6,6 +6,8 @@ type PlayerSnapshot = ReturnType<typeof usePlayerStore.getState>
 
 const PLAYING_PROGRESS_BUCKET_SECONDS = 15
 const IDLE_PROGRESS_BUCKET_SECONDS = 1
+const PRESENCE_EMIT_DEBOUNCE_MS = 250
+const LOADING_PRESENCE_EMIT_DELAY_MS = 900
 const COVER_ART_CACHE_STORAGE_KEY_V4 = 'astra-discord-cover-art-cache-v4'
 const COVER_ART_CACHE_STORAGE_KEY_V3 = 'astra-discord-cover-art-cache-v3'
 const COVER_ART_CACHE_STORAGE_KEY_V2 = 'astra-discord-cover-art-cache-v2'
@@ -75,6 +77,10 @@ let cachedCoverArtStore: CachedCoverArtStore | null = null
 const pendingCoverArtLookups = new Map<string, Promise<DiscordCoverArtLookupResult>>()
 const coverArtLogTimestamps = new Map<string, number>()
 
+function syncCoverArtLookupActivity(): void {
+  useDiscordSettingsStore.getState().setCoverArtLookupActive(pendingCoverArtLookups.size > 0)
+}
+
 function estimateStringBytes(value: string): number {
   return value.length * 2
 }
@@ -88,6 +94,7 @@ export function clearDiscordCoverArtLookupCache(): void {
   cachedCoverArtStore = null
   pendingCoverArtLookups.clear()
   coverArtLogTimestamps.clear()
+  syncCoverArtLookupActivity()
 
   try {
     localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
@@ -521,9 +528,11 @@ async function resolveCoverArtWithCache(
     })
     .finally(() => {
       pendingCoverArtLookups.delete(lookupKey)
+      syncCoverArtLookupActivity()
     })
 
   pendingCoverArtLookups.set(lookupKey, request)
+  syncCoverArtLookupActivity()
   return request
 }
 
@@ -610,9 +619,10 @@ export function useDiscordPresence(): void {
     let disposed = false
     let lastKey = ''
     let lookupToken = 0
+    let emitTimer: number | null = null
     const coverArtByTrackPath = new Map<string, string>()
 
-    const emitLatest = (): DiscordPresenceSnapshot => {
+    const buildLatestSnapshot = (): DiscordPresenceSnapshot => {
       const state = usePlayerStore.getState()
       let snapshot = buildPresenceUpdate(state, coverArtByTrackPath)
 
@@ -629,10 +639,38 @@ export function useDiscordPresence(): void {
         }
       }
 
+      return snapshot
+    }
+
+    const sendSnapshot = (snapshot: DiscordPresenceSnapshot): void => {
       if (snapshot.key !== lastKey) {
         lastKey = snapshot.key
         window.electronAPI.discord.updatePresence(snapshot.payload)
       }
+    }
+
+    const emitLatest = (): DiscordPresenceSnapshot => {
+      const snapshot = buildLatestSnapshot()
+      sendSnapshot(snapshot)
+      return snapshot
+    }
+
+    const scheduleEmitLatest = (): DiscordPresenceSnapshot => {
+      const snapshot = buildLatestSnapshot()
+      const delay = snapshot.payload.playbackState === 'loading'
+        ? LOADING_PRESENCE_EMIT_DELAY_MS
+        : PRESENCE_EMIT_DEBOUNCE_MS
+
+      if (emitTimer !== null) {
+        window.clearTimeout(emitTimer)
+      }
+
+      emitTimer = window.setTimeout(() => {
+        emitTimer = null
+        if (disposed) return
+        emitLatest()
+      }, delay)
+
       return snapshot
     }
 
@@ -658,17 +696,17 @@ export function useDiscordPresence(): void {
           logCoverArtLookup('presence-cover-applied', requestLookupKey, {
             trackPath: requestTrackPath
           })
-          emitLatest()
+          scheduleEmitLatest()
         })
     }
 
-    const initialSnapshot = emitLatest()
+    const initialSnapshot = scheduleEmitLatest()
     resolveCoverArtForSnapshot(initialSnapshot)
 
     const unsubscribe = usePlayerStore.subscribe((nextState, prevState) => {
       if (!shouldEmitUpdate(nextState, prevState)) return
 
-      const snapshot = emitLatest()
+      const snapshot = scheduleEmitLatest()
       if (nextState.currentTrack?.path !== prevState.currentTrack?.path) {
         resolveCoverArtForSnapshot(snapshot)
       }
@@ -677,7 +715,15 @@ export function useDiscordPresence(): void {
     return () => {
       disposed = true
       lookupToken += 1
+      if (emitTimer !== null) {
+        window.clearTimeout(emitTimer)
+        emitTimer = null
+      }
       unsubscribe()
+      const discordSettings = useDiscordSettingsStore.getState()
+      if (!discordSettings.enabled || !discordSettings.coverArtEnabled) {
+        useDiscordSettingsStore.getState().setCoverArtLookupActive(false)
+      }
     }
   }, [enabled, coverArtEnabled])
 }

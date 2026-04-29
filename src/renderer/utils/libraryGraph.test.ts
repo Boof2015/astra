@@ -11,8 +11,10 @@ function createTrack(id: string, overrides: Partial<ArtistGraphTrackLike> = {}):
     path: `/music/${id}.flac`,
     title: overrides.title ?? `Track ${id}`,
     artist: overrides.artist ?? 'Artist One',
+    artist_names: overrides.artist_names ?? null,
     album: overrides.album ?? 'Album One',
     album_artist: overrides.album_artist ?? null,
+    album_artist_names: overrides.album_artist_names ?? null,
     album_identity_key: overrides.album_identity_key ?? `album:${overrides.album ?? 'Album One'}:${id}`,
     year: overrides.year ?? 2024,
     artwork_hash: overrides.artwork_hash ?? null
@@ -48,6 +50,19 @@ test('buildArtistGraph collapses duplicate artist mentions and avoids self-links
   assert.equal(graph.nodes.length, 1)
   assert.equal(graph.nodes[0]?.artist, 'Solo Artist')
   assert.equal(graph.edges.length, 0)
+})
+
+test('buildArtistGraph uses parsed artist credits without splitting names that contain separators', () => {
+  const graph = buildArtistGraph([
+    createTrack('parsed-collab', {
+      artist: 'Earth, Wind & Fire & The Emotions',
+      artist_names: ['Earth, Wind & Fire', 'The Emotions'],
+      album_identity_key: 'album:parsed-collab'
+    })
+  ])
+
+  assert.deepEqual(graph.nodes.map((node) => node.artist).sort(), ['Earth, Wind & Fire', 'The Emotions'])
+  assert.equal(graph.edges.length, 1)
 })
 
 test('buildArtistGraph tolerates missing metadata and falls back to Unknown Artist', () => {

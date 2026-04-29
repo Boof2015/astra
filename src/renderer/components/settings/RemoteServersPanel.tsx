@@ -779,7 +779,10 @@ export default function RemoteServersPanel() {
             }
 
             return (
-              <div key={key} className="remote-source-card">
+              <div
+                key={key}
+                className={`remote-source-card ${openMenuKey === key ? 'remote-source-card-menu-open' : ''}`}
+              >
                 <div className="remote-source-card-header">
                   <span className={getStatusDotClass(source, statusItem)} />
                   <span className="remote-source-card-header-title">{source.name}</span>

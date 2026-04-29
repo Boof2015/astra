@@ -144,7 +144,7 @@ function compareAlbumSequence(
 }
 
 function resolveBrowseArtistForTrack(
-  track: { artist: string; album_artist: string | null },
+  track: { artist: string; artist_names?: string[] | null; album_artist: string | null; album_artist_names?: string[] | null },
   mode: LibraryArtistBrowseMode
 ): string {
   const normalizedAlbumArtist = track.album_artist?.trim() ?? ''
@@ -156,17 +156,32 @@ function resolveBrowseArtistForTrack(
 
   const normalizedArtist = track.artist.trim()
   if (mode === 'strict') return normalizedArtist || 'Unknown Artist'
+  if (track.artist_names && track.artist_names.length > 0) return track.artist_names[0]
+  if (track.album_artist_names && track.album_artist_names.length > 0) return track.album_artist_names[0]
   const artistContributors = splitCollaborators(normalizedArtist)
   return artistContributors[0] ?? (normalizedArtist || 'Unknown Artist')
+}
+
+function trackMatchesLibraryQuery(
+  track: { title: string; artist: string; artist_names?: string[] | null; album: string; album_artist_names?: string[] | null },
+  normalizedQuery: string
+): boolean {
+  return track.title.toLowerCase().includes(normalizedQuery)
+    || track.artist.toLowerCase().includes(normalizedQuery)
+    || track.album.toLowerCase().includes(normalizedQuery)
+    || (track.artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
+    || (track.album_artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
 }
 
 function toQueueTrack(track: {
   path: string
   title: string
   artist: string
+  artist_names?: string[] | null
   album: string
   album_identity_key: string
   album_artist: string | null
+  album_artist_names?: string[] | null
   duration: number
   format: string
   artwork_hash: string | null
@@ -188,8 +203,10 @@ function toQueueTrack(track: {
     path: track.path,
     title: track.title,
     artist: track.artist,
+    artistNames: track.artist_names ?? undefined,
     album: track.album,
     albumArtist: track.album_artist ?? undefined,
+    albumArtistNames: track.album_artist_names ?? undefined,
     albumIdentityKey: track.album_identity_key,
     duration: track.duration,
     format: track.format,
@@ -584,11 +601,7 @@ export default function LibraryView() {
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) =>
-      track.title.toLowerCase().includes(normalizedQuery)
-      || track.artist.toLowerCase().includes(normalizedQuery)
-      || track.album.toLowerCase().includes(normalizedQuery)
-    )
+    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, normalizedQuery))
   }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
 
   const albumGridSourceAlbums = isAlbumRootView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
@@ -639,10 +652,20 @@ export default function LibraryView() {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
-      const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
-      const normalizedArtistKey = normalizeKey(browseArtist)
-      if (normalizedArtistKey) {
-        keys.add(normalizedArtistKey)
+      const parsedArtistNames = track.artist_names.length > 0 ? track.artist_names : track.album_artist_names
+      if (artistBrowseMode === 'canonical' && parsedArtistNames.length > 0) {
+        const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
+        if (browseArtistKey) keys.add(browseArtistKey)
+        for (const artistName of parsedArtistNames) {
+          const normalizedArtistKey = normalizeKey(artistName)
+          if (normalizedArtistKey) keys.add(normalizedArtistKey)
+        }
+      } else {
+        const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
+        const normalizedArtistKey = normalizeKey(browseArtist)
+        if (normalizedArtistKey) {
+          keys.add(normalizedArtistKey)
+        }
       }
     }
     return keys
