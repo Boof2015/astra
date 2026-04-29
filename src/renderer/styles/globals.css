@@ -9221,23 +9221,23 @@ body::after {
   opacity: 1;
 }
 
-.astra-activity-indicator-base,
-.astra-activity-indicator-light {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
+.astra-activity-indicator-base-grid {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .astra-activity-indicator-base {
-  width: 8.571%;
-  height: 8.571%;
-  background-color: rgba(255, 255, 255, 0.08);
+  fill: rgba(255, 255, 255, 0.08);
 }
 
 .astra-activity-indicator-light {
+  position: absolute;
   width: 11.071%;
   height: 11.071%;
+  border-radius: 50%;
   background-color: var(--accent);
+  pointer-events: none;
   opacity: 0;
 }
 

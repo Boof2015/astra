@@ -181,15 +181,22 @@ function LightDots({ delays }: { delays: number[] }) {
 
 function BaseGrid() {
   return (
-    <span className="astra-activity-indicator-base-grid" aria-hidden="true">
+    <svg
+      className="astra-activity-indicator-base-grid"
+      viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       {COORDS.map(({ cx, cy }, index) => (
-        <span
+        <circle
           key={`base-${index}`}
+          cx={cx}
+          cy={cy}
+          r={BASE_DOT / 2}
           className="astra-activity-indicator-base"
-          style={dotStyle(cx, cy, BASE_DOT)}
         />
       ))}
-    </span>
+    </svg>
   )
 }
 
