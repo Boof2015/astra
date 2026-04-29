@@ -235,9 +235,10 @@
       ],
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "rpm",
+        "tar.gz"
       ],
-      "icon": "resources/icon.png",
       "category": "Audio"
     },
     "dmg": {

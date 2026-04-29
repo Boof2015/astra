@@ -80,5 +80,7 @@ jobs:
             dist/*.zip
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 30
