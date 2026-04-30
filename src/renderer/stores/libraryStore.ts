@@ -68,7 +68,7 @@ interface LibrarySelectionSnapshot {
   selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
-  tracks: DbTrack[]
+  trackPaths: string[]
 }
 
 export interface FolderSubfolderSummary {
@@ -209,9 +209,9 @@ interface LibraryStore {
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
-const MAX_THUMBNAIL_CACHE_ENTRIES = 512
-const MAX_CARD_ARTWORK_CACHE_ENTRIES = 96
-const MAX_FULL_ARTWORK_CACHE_ENTRIES = 8
+const MAX_THUMBNAIL_CACHE_ENTRIES = 128
+const MAX_CARD_ARTWORK_CACHE_ENTRIES = 64
+const MAX_FULL_ARTWORK_CACHE_ENTRIES = 4
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
@@ -239,8 +239,43 @@ function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 's
     selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
     selectedArtist: state.selectedArtist,
     selectionOrigin: state.selectionOrigin,
-    tracks: state.tracks
+    trackPaths: state.tracks.map((track) => track.path)
   }
+}
+
+function resolveTracksFromPaths(
+  trackPaths: readonly string[],
+  fullTracks: readonly DbTrack[]
+): { tracks: DbTrack[]; complete: boolean } {
+  if (trackPaths.length === 0) {
+    return { tracks: [], complete: true }
+  }
+
+  const tracksByPath = new Map(fullTracks.map((track) => [track.path, track]))
+  const tracks: DbTrack[] = []
+  for (const trackPath of trackPaths) {
+    const track = tracksByPath.get(trackPath)
+    if (track) {
+      tracks.push(track)
+    }
+  }
+
+  return {
+    tracks,
+    complete: tracks.length === trackPaths.length
+  }
+}
+
+function isSameAlbumSelection(
+  current: LibraryStore['selectedAlbum'],
+  target: NonNullable<LibraryStore['selectedAlbum']>
+): boolean {
+  return Boolean(
+    current &&
+    current.identity_key === target.identity_key &&
+    current.album === target.album &&
+    current.artist === target.artist
+  )
 }
 
 function appendSelectionHistory(
@@ -333,25 +368,22 @@ function updateSelectedAlbumNewFlag(
 
 function updateSelectionHistoryForSeenTrack(
   selectionHistory: LibrarySelectionSnapshot[],
-  trackPath: string,
   albumIdentityKey: string | null,
   albumIsNew: boolean
 ): LibrarySelectionSnapshot[] {
   let didChange = false
   const nextHistory = selectionHistory.map((snapshot) => {
-    const nextTracks = clearTrackNewFlagInCollection(snapshot.tracks, trackPath)
     const nextSelectedAlbum = snapshot.selectedAlbum && albumIdentityKey && snapshot.selectedAlbum.identity_key === albumIdentityKey
       ? updateSelectedAlbumNewFlag(snapshot.selectedAlbum, albumIdentityKey, albumIsNew)
       : snapshot.selectedAlbum
 
-    if (nextTracks === snapshot.tracks && nextSelectedAlbum === snapshot.selectedAlbum) {
+    if (nextSelectedAlbum === snapshot.selectedAlbum) {
       return snapshot
     }
 
     didChange = true
     return {
       ...snapshot,
-      tracks: nextTracks,
       selectedAlbum: nextSelectedAlbum
     }
   })
@@ -1045,25 +1077,23 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Restore previous detail selection when available.
   goBackSelection: async () => {
-    let didRestore = false
-    let restoredArtist: string | null = null
+    const state = get()
+    const historyLength = state.selectionHistory.length
+    if (historyLength === 0) return false
 
-    set((state) => {
-      const historyLength = state.selectionHistory.length
-      if (historyLength === 0) return {}
+    const previous = state.selectionHistory[historyLength - 1]
+    if (!previous) return false
 
-      const previous = state.selectionHistory[historyLength - 1]
-      if (!previous) return {}
+    const restoredTracks = resolveTracksFromPaths(previous.trackPaths, state.fullTracks)
+    const restoredAlbum = previous.selectedAlbum ? { ...previous.selectedAlbum } : null
+    const restoredArtist = previous.selectedArtist
 
-      didRestore = true
-      restoredArtist = previous.selectedArtist
-      return {
-        selectedAlbum: previous.selectedAlbum ? { ...previous.selectedAlbum } : null,
-        selectedArtist: previous.selectedArtist,
-        selectionOrigin: previous.selectionOrigin,
-        tracks: previous.tracks,
-        selectionHistory: state.selectionHistory.slice(0, -1)
-      }
+    set({
+      selectedAlbum: restoredAlbum,
+      selectedArtist: restoredArtist,
+      selectionOrigin: previous.selectionOrigin,
+      tracks: restoredTracks.tracks,
+      selectionHistory: state.selectionHistory.slice(0, -1)
     })
 
     if (restoredArtist) {
@@ -1074,9 +1104,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (state.artistBrowseMode !== mode) return {}
         return { tracks }
       })
+    } else if (restoredAlbum && !restoredTracks.complete) {
+      const tracks = await window.electronAPI.library.getTracksByAlbum(
+        restoredAlbum.album,
+        restoredAlbum.artist,
+        restoredAlbum.identity_key
+      )
+      set((state) => {
+        if (!isSameAlbumSelection(state.selectedAlbum, restoredAlbum)) return {}
+        return { tracks }
+      })
     }
 
-    return didRestore
+    return true
   },
 
   // Search
@@ -1228,7 +1268,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectedAlbum: updateSelectedAlbumNewFlag(state.selectedAlbum, albumIdentityKey, albumIsNew),
         selectionHistory: updateSelectionHistoryForSeenTrack(
           state.selectionHistory,
-          trackPath,
           albumIdentityKey,
           albumIsNew
         )
@@ -1346,7 +1385,7 @@ export function getLibraryDiagnosticsSnapshot(): {
 } {
   const state = useLibraryStore.getState()
   const selectionHistoryTrackCount = state.selectionHistory.reduce((total, snapshot) => {
-    return total + snapshot.tracks.length
+    return total + snapshot.trackPaths.length
   }, 0)
   return {
     totalTrackCount: state.totalTrackCount,
