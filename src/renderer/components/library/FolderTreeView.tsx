@@ -3,7 +3,6 @@ import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
-import type { Track } from '../../types/audio'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
@@ -77,35 +76,6 @@ const FOLDER_ROW_HEIGHT = 32
 const FOLDER_ROOT_ROW_HEIGHT = 42
 const TRACK_ROW_HEIGHT = 28
 const FOLDER_TREE_OVERSCAN_COUNT = 10
-
-function dbTrackToTrack(dbTrack: DbTrack): Track {
-  return {
-    id: dbTrack.path,
-    path: dbTrack.path,
-    title: dbTrack.title,
-    artist: dbTrack.artist,
-    artistNames: dbTrack.artist_names,
-    album: dbTrack.album,
-    albumArtist: dbTrack.album_artist ?? undefined,
-    albumArtistNames: dbTrack.album_artist_names,
-    albumIdentityKey: dbTrack.album_identity_key,
-    duration: dbTrack.duration,
-    format: dbTrack.format,
-    artworkHash: dbTrack.artwork_hash ?? undefined,
-    sampleRate: dbTrack.sample_rate ?? undefined,
-    bitDepth: dbTrack.bit_depth ?? undefined,
-    bitrate: dbTrack.bitrate ?? undefined,
-    channels: dbTrack.channels ?? undefined,
-    replayGainTrackDb: dbTrack.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined,
-    sourceType: dbTrack.source_type,
-    sourceId: dbTrack.source_id ?? undefined,
-    sourceTrackId: dbTrack.source_track_id ?? undefined,
-    sourcePath: dbTrack.source_path ?? undefined,
-    isAvailable: dbTrack.is_available === 1,
-    availabilityReason: dbTrack.availability_reason ?? undefined
-  }
-}
 
 function formatDuration(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return '--:--'
@@ -333,7 +303,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const setFolderViewScrollTop = useLibraryStore((state) => state.setFolderViewScrollTop)
   const pruneFolderViewExpandedPaths = useLibraryStore((state) => state.pruneFolderViewExpandedPaths)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
-  const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
+  const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
   const shuffle = usePlayerStore((state) => state.shuffle)
   const toggleShuffle = usePlayerStore((state) => state.toggleShuffle)
   const playlists = usePlaylistStore((state) => state.playlists)
@@ -578,22 +548,22 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   }, [closeFolderPlaylistPopup, expandedNodes, setFolderViewExpandedPaths])
 
   const handlePlayTrack = useCallback(async (track: DbTrack, folderTracks: DbTrack[]) => {
-    const queueTracks = folderTracks.map(dbTrackToTrack)
+    const queueTrackPaths = folderTracks.map((candidate) => candidate.path)
     const index = folderTracks.findIndex((candidate) => candidate.path === track.path)
     const queueIndex = index >= 0 ? index : 0
-    await startPlaybackContext(queueTracks, queueIndex, {
+    await startPlaybackContextByPaths(queueTrackPaths, queueIndex, {
       contextLabel: 'Folder'
     })
-  }, [startPlaybackContext])
+  }, [startPlaybackContextByPaths])
 
   const handleShuffleFolder = useCallback(async (node: FolderTreeNode) => {
     if (node.subtreeTracks.length === 0) return
 
     try {
-      const queueTracks = node.subtreeTracks.map(dbTrackToTrack)
-      const randomStartIndex = Math.floor(Math.random() * queueTracks.length)
+      const queueTrackPaths = node.subtreeTracks.map((track) => track.path)
+      const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
-      await startPlaybackContext(queueTracks, randomStartIndex, {
+      await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
         contextLabel: node.name || node.fullPath
       })
 
@@ -603,7 +573,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     } catch (error) {
       console.error('Failed to shuffle folder playback:', error)
     }
-  }, [shuffle, startPlaybackContext, toggleShuffle])
+  }, [shuffle, startPlaybackContextByPaths, toggleShuffle])
 
   const handleOpenPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FolderTreeNode) => {
     event.stopPropagation()

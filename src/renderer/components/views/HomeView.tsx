@@ -3,7 +3,6 @@ import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libr
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
-import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
@@ -823,7 +822,7 @@ export default function HomeView() {
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
-  const startPlaybackContext = usePlayerStore((s) => s.startPlaybackContext)
+  const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
@@ -1137,37 +1136,7 @@ export default function HomeView() {
   }), [clockNow])
 
   const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
-    const queueTracks: Track[] = recentTracks.map((recentTrack) => ({
-      id: recentTrack.path,
-      path: recentTrack.path,
-      title: recentTrack.title,
-      artist: recentTrack.artist,
-      artistNames: recentTrack.artist_names,
-      album: recentTrack.album,
-      albumArtist: recentTrack.album_artist ?? undefined,
-      albumArtistNames: recentTrack.album_artist_names,
-      albumIdentityKey: recentTrack.album_identity_key,
-      duration: recentTrack.duration,
-      format: recentTrack.format,
-      artworkHash: recentTrack.artwork_hash ?? undefined,
-      sampleRate: recentTrack.sample_rate ?? undefined,
-      bitDepth: recentTrack.bit_depth ?? undefined,
-      bitrate: recentTrack.bitrate ?? undefined,
-      channels: recentTrack.channels ?? undefined,
-      codec: recentTrack.codec ?? undefined,
-      codecProfile: recentTrack.codec_profile ?? undefined,
-      isAtmosJoc: recentTrack.is_atmos_joc === 1,
-      replayGainTrackDb: recentTrack.replaygain_track_gain_db ?? undefined,
-      replayGainAlbumDb: recentTrack.replaygain_album_gain_db ?? undefined,
-      sourceType: recentTrack.source_type,
-      sourceId: recentTrack.source_id ?? undefined,
-      sourceTrackId: recentTrack.source_track_id ?? undefined,
-      sourcePath: recentTrack.source_path ?? undefined,
-      isAvailable: recentTrack.is_available === 1,
-      availabilityReason: recentTrack.availability_reason ?? undefined
-    }))
-
-    await startPlaybackContext(queueTracks, index, {
+    await startPlaybackContextByPaths(recentTracks.map((recentTrack) => recentTrack.path), index, {
       contextLabel: 'Recently Played'
     })
   }

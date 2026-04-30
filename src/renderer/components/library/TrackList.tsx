@@ -567,10 +567,9 @@ export default function TrackList({
   const userQueue = usePlayerStore((state) => state.userQueue)
   const autoQueue = usePlayerStore((state) => state.autoQueue)
   const autoQueueSourcePlaylistId = usePlayerStore((state) => state.autoQueueSourcePlaylistId)
-  const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
+  const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
   const playQueuedTrack = usePlayerStore((state) => state.playQueuedTrack)
-  const enqueueUserTrack = usePlayerStore((state) => state.enqueueUserTrack)
-  const enqueueUserTracks = usePlayerStore((state) => state.enqueueUserTracks)
+  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
   const trackDrag = useUIStore((state) => state.trackDrag)
   const startTrackDrag = useUIStore((state) => state.startTrackDrag)
@@ -709,7 +708,8 @@ export default function TrackList({
 
   const queuedTrackPaths = useMemo(() => new Set(userQueue.map((queuedTrack) => queuedTrack.path)), [userQueue])
   const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
-  const queueSeedQueueTracks = useMemo(() => queueSeedTracks.map(dbTrackToTrack), [queueSeedTracks])
+  const renderedQueueTrackPaths = useMemo(() => tracks.map((track) => track.path), [tracks])
+  const queueSeedTrackPaths = useMemo(() => queueSeedTracks.map((track) => track.path), [queueSeedTracks])
   const queueSeedTrackPathToIndex = useMemo(() => {
     const indexByPath = new Map<string, number>()
     queueSeedTracks.forEach((track, index) => {
@@ -774,7 +774,7 @@ export default function TrackList({
 
     const queueSeedIndex = queueSeedTrackPathToIndex.get(dbTrack.path)
     if (queueSeedIndex === undefined) {
-      await startPlaybackContext(renderedQueueTracks, index, {
+      await startPlaybackContextByPaths(renderedQueueTrackPaths, index, {
         sourcePlaylistId: playlistSourceId,
         contextLabel: queueContextLabel
       })
@@ -782,11 +782,11 @@ export default function TrackList({
     }
 
     const queueMatchesSeed = autoQueueSourcePlaylistId === playlistSourceId
-      && autoQueue.length === queueSeedQueueTracks.length
+      && autoQueue.length === queueSeedTrackPaths.length
       && autoQueue[queueSeedIndex]?.path === dbTrack.path
-      && autoQueue.every((track, autoIndex) => track?.path === queueSeedQueueTracks[autoIndex]?.path)
+      && autoQueue.every((track, autoIndex) => track?.path === queueSeedTrackPaths[autoIndex])
     if (!queueMatchesSeed) {
-      await startPlaybackContext(queueSeedQueueTracks, queueSeedIndex, {
+      await startPlaybackContextByPaths(queueSeedTrackPaths, queueSeedIndex, {
         sourcePlaylistId: playlistSourceId,
         contextLabel: queueContextLabel
       })
@@ -797,25 +797,25 @@ export default function TrackList({
     autoQueue,
     autoQueueSourcePlaylistId,
     playlistSourceId,
-    queueSeedQueueTracks,
+    queueSeedTrackPaths,
     queueSeedTrackPathToIndex,
     queueContextLabel,
-    renderedQueueTracks,
-    startPlaybackContext,
+    renderedQueueTrackPaths,
+    startPlaybackContextByPaths,
     playQueuedTrack
   ])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
-    enqueueUserTrack(dbTrackToTrack(dbTrack), 'next')
+    enqueueUserTrackPaths([dbTrack.path], 'next')
     setQueueActionFeedback('next', dbTrack.path)
-  }, [enqueueUserTrack, setQueueActionFeedback])
+  }, [enqueueUserTrackPaths, setQueueActionFeedback])
 
   const handleAddToQueue = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
-    enqueueUserTrack(dbTrackToTrack(dbTrack), 'end')
+    enqueueUserTrackPaths([dbTrack.path], 'end')
     setQueueActionFeedback('queue', dbTrack.path)
-  }, [enqueueUserTrack, setQueueActionFeedback])
+  }, [enqueueUserTrackPaths, setQueueActionFeedback])
 
   const resolveQueueInsertHoverIndex = useCallback((clientX: number, clientY: number): number | null => {
     const target = document.elementFromPoint(clientX, clientY)
@@ -906,8 +906,8 @@ export default function TrackList({
       }
       if (dragState?.dropTarget && dragState.tracks.length > 0) {
         if (dragState.dropTarget.surface === 'queue') {
-          enqueueUserTracks(
-            dragState.tracks,
+          enqueueUserTrackPaths(
+            dragState.tracks.map((track) => track.path),
             dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
           )
           if (dragState.tracks.length === 1) {
@@ -972,7 +972,7 @@ export default function TrackList({
     cleanupQueueInsertPress,
     clearTrackDrag,
     addToPlaylist,
-    enqueueUserTracks,
+    enqueueUserTrackPaths,
     openSidebarPlaylistCreateRequest,
     renderedQueueTracks,
     resolveQueueInsertHoverIndex,

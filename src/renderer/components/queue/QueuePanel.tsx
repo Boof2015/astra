@@ -13,6 +13,7 @@ import {
 } from 'react'
 import { List, RowComponentProps } from 'react-window'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useLibraryStore } from '../../stores/libraryStore'
 import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
 
@@ -252,11 +253,14 @@ export default function QueuePanel() {
   const shuffle = usePlayerStore((state) => state.shuffle)
   const shuffledAutoIndices = usePlayerStore((state) => state.shuffledAutoIndices)
   const playbackHistory = usePlayerStore((state) => state.playbackHistory)
+  const getResolvedUserQueueEntries = usePlayerStore((state) => state.getResolvedUserQueueEntries)
   const getResolvedAutoUpcomingEntries = usePlayerStore((state) => state.getResolvedAutoUpcomingEntries)
+  const getResolvedPreviousEntries = usePlayerStore((state) => state.getResolvedPreviousEntries)
   const playQueuedTrack = usePlayerStore((state) => state.playQueuedTrack)
   const removeUserTrack = usePlayerStore((state) => state.removeUserTrack)
   const moveUserQueue = usePlayerStore((state) => state.moveUserQueue)
   const clearAllQueues = usePlayerStore((state) => state.clearAllQueues)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
   const trackDrag = useUIStore((state) => state.trackDrag)
   const setTrackDragDropTarget = useUIStore((state) => state.setTrackDragDropTarget)
 
@@ -272,6 +276,14 @@ export default function QueuePanel() {
   const previousDragActiveRef = useRef(false)
   const previousUserQueueLengthRef = useRef(userQueue.length)
   const settleTimerRef = useRef<number | null>(null)
+  const userQueueEntries = useMemo(
+    () => getResolvedUserQueueEntries(),
+    [
+      getResolvedUserQueueEntries,
+      trackCacheVersion,
+      userQueue
+    ]
+  )
   const autoUpcomingEntries = useMemo(
     () => getResolvedAutoUpcomingEntries(),
     [
@@ -281,7 +293,16 @@ export default function QueuePanel() {
       currentTrackSource,
       getResolvedAutoUpcomingEntries,
       shuffle,
-      shuffledAutoIndices
+      shuffledAutoIndices,
+      trackCacheVersion
+    ]
+  )
+  const previousEntries = useMemo(
+    () => getResolvedPreviousEntries(),
+    [
+      getResolvedPreviousEntries,
+      playbackHistory,
+      trackCacheVersion
     ]
   )
 
@@ -476,15 +497,15 @@ export default function QueuePanel() {
         label: `Queued by You (${userQueue.length} ${userQueue.length === 1 ? 'track' : 'tracks'})`
       })
 
-      userQueue.forEach((track, index) => {
+      userQueueEntries.forEach((entry) => {
         nextRows.push({
           kind: 'track',
-          key: `track-user-${track.id}-${index}`,
-          track,
+          key: `track-user-${entry.track.id}-${entry.index}`,
+          track: entry.track,
           variant: 'user',
           source: 'user',
-          actualIndex: index,
-          dragIndex: index,
+          actualIndex: entry.index,
+          dragIndex: entry.index,
           draggable: true,
           removable: true
         })
@@ -524,7 +545,7 @@ export default function QueuePanel() {
       })
     }
 
-    if (playbackHistory.length > 0) {
+    if (previousEntries.length > 0) {
       nextRows.push({
         kind: 'section',
         key: 'section-previously-played',
@@ -532,10 +553,10 @@ export default function QueuePanel() {
         faded: true
       })
 
-      playbackHistory.forEach((entry, index) => {
+      previousEntries.forEach((entry) => {
         nextRows.push({
           kind: 'track',
-          key: `track-previous-${entry.track.id}-${index}`,
+          key: `track-previous-${entry.track.id}-${entry.index}`,
           track: entry.track,
           variant: 'previous',
           source: null,
@@ -553,10 +574,11 @@ export default function QueuePanel() {
     autoUpcomingEntries,
     currentTrack,
     insertDropIndex,
-    playbackHistory,
+    previousEntries,
     queueInsertTrackCount,
     shuffle,
-    userQueue
+    userQueue,
+    userQueueEntries
   ])
 
   const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {

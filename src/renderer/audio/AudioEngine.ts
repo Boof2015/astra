@@ -1,4 +1,4 @@
-import { PlaybackState, EQBand, Track } from '../types/audio'
+import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
   AudioBufferMemoryStats,

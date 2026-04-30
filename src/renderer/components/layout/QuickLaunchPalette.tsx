@@ -5,7 +5,6 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useGraphStore } from '../../stores/graphStore'
-import type { Track } from '../../types/audio'
 import type {
   QuickLaunchAlbumRecord,
   QuickLaunchArtistRecord,
@@ -31,42 +30,6 @@ interface ResultGroup {
   id: string
   label: string
   results: QuickLaunchResult[]
-}
-
-function toQueueTrack(track: QuickLaunchTrackRecord): Track {
-  return {
-    id: track.path,
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    artistNames: track.artist_names,
-    album: track.album,
-    albumArtist: track.album_artist ?? undefined,
-    albumArtistNames: track.album_artist_names,
-    albumIdentityKey: track.album_identity_key,
-    duration: track.duration,
-    trackNumber: track.track_number ?? undefined,
-    discNumber: track.disc_number ?? undefined,
-    year: track.year ?? undefined,
-    genre: track.genre ?? undefined,
-    artworkHash: track.artwork_hash ?? undefined,
-    format: track.format,
-    sampleRate: track.sample_rate ?? undefined,
-    bitDepth: track.bit_depth ?? undefined,
-    bitrate: track.bitrate ?? undefined,
-    channels: track.channels ?? undefined,
-    codec: track.codec ?? undefined,
-    codecProfile: track.codec_profile ?? undefined,
-    isAtmosJoc: track.is_atmos_joc === 1,
-    replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined,
-    sourceType: track.source_type,
-    sourceId: track.source_id ?? undefined,
-    sourceTrackId: track.source_track_id ?? undefined,
-    sourcePath: track.source_path ?? undefined,
-    isAvailable: track.is_available === 1,
-    availabilityReason: track.availability_reason ?? undefined
-  }
 }
 
 function compareScoredResults<T extends { score: number; id: string }>(a: T, b: T): number {
@@ -171,8 +134,8 @@ export default function QuickLaunchPalette() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
-  const enqueueUserTrack = usePlayerStore((state) => state.enqueueUserTrack)
-  const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
+  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
+  const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
   const clearPlaylistSelection = usePlaylistStore((state) => state.clearSelection)
@@ -610,15 +573,15 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        enqueueUserTrack(toQueueTrack(result.track), 'next')
+        enqueueUserTrackPaths([result.track.path], 'next')
         closeQuickLaunch()
         return
       }
 
-      const queueTracks = trackCorpus.map(toQueueTrack)
+      const queueTrackPaths = trackCorpus.map((track) => track.path)
       const queueIndex = trackCorpus.findIndex((track) => track.path === result.track.path)
       if (queueIndex >= 0) {
-        await startPlaybackContext(queueTracks, queueIndex, {
+        await startPlaybackContextByPaths(queueTrackPaths, queueIndex, {
           contextLabel: 'Search Results'
         })
         closeQuickLaunch()
@@ -632,7 +595,7 @@ export default function QuickLaunchPalette() {
     }
   }, [
     clearPlaylistSelection,
-    enqueueUserTrack,
+    enqueueUserTrackPaths,
     clearSelection,
     closeQuickLaunch,
     isExecuting,
@@ -646,7 +609,7 @@ export default function QuickLaunchPalette() {
     setPendingLibrarySearchQuery,
     setPendingSettingsSection,
     setViewMode,
-    startPlaybackContext,
+    startPlaybackContextByPaths,
     trackCorpus
   ])
 

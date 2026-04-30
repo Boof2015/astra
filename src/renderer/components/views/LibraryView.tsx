@@ -173,59 +173,6 @@ function trackMatchesLibraryQuery(
     || (track.album_artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
 }
 
-function toQueueTrack(track: {
-  path: string
-  title: string
-  artist: string
-  artist_names?: string[] | null
-  album: string
-  album_identity_key: string
-  album_artist: string | null
-  album_artist_names?: string[] | null
-  duration: number
-  format: string
-  artwork_hash: string | null
-  sample_rate: number | null
-  bit_depth: number | null
-  bitrate: number | null
-  channels: number | null
-  replaygain_track_gain_db: number | null
-  replaygain_album_gain_db: number | null
-  source_type: 'local' | 'subsonic' | 'jellyfin'
-  source_id: number | null
-  source_track_id: string | null
-  source_path: string | null
-  is_available: number
-  availability_reason: string | null
-}): Track {
-  return {
-    id: track.path,
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    artistNames: track.artist_names ?? undefined,
-    album: track.album,
-    albumArtist: track.album_artist ?? undefined,
-    albumArtistNames: track.album_artist_names ?? undefined,
-    albumIdentityKey: track.album_identity_key,
-    duration: track.duration,
-    format: track.format,
-    artworkHash: track.artwork_hash ?? undefined,
-    sampleRate: track.sample_rate ?? undefined,
-    bitDepth: track.bit_depth ?? undefined,
-    bitrate: track.bitrate ?? undefined,
-    channels: track.channels ?? undefined,
-    replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined,
-    sourceType: track.source_type,
-    sourceId: track.source_id ?? undefined,
-    sourceTrackId: track.source_track_id ?? undefined,
-    sourcePath: track.source_path ?? undefined,
-    isAvailable: track.is_available === 1,
-    availabilityReason: track.availability_reason ?? undefined
-  }
-}
-
 export default function LibraryView() {
   const trackPaths = useLibraryStore((state) => state.trackPaths)
   const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
@@ -264,7 +211,7 @@ export default function LibraryView() {
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
   const autoQueue = usePlayerStore((s) => s.autoQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
-  const startPlaybackContext = usePlayerStore((s) => s.startPlaybackContext)
+  const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
   const graphEnabled = useGraphStore((s) => s.enabled)
@@ -605,10 +552,10 @@ export default function LibraryView() {
     setIsShufflePlayPending(true)
 
     try {
-      const queueTracks = queueSeedSortedTracks.map(toQueueTrack)
-      const randomStartIndex = Math.floor(Math.random() * queueTracks.length)
+      const queueTrackPaths = queueSeedSortedTracks.map((track) => track.path)
+      const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
-      await startPlaybackContext(queueTracks, randomStartIndex, {
+      await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
         contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library'
       })
       if (!shuffle) {
@@ -620,7 +567,7 @@ export default function LibraryView() {
       shufflePlayPendingRef.current = false
       setIsShufflePlayPending(false)
     }
-  }, [queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContext, toggleShuffle])
+  }, [queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContextByPaths, toggleShuffle])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
