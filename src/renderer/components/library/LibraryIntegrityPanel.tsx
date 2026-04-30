@@ -262,9 +262,12 @@ export function IntegrityFindingList({ findings, emptyLabel }: IntegrityFindingL
 
 export default function LibraryIntegrityPanel() {
   const folders = useLibraryStore((state) => state.folders)
-  const fullTracks = useLibraryStore((state) => state.fullTracks)
+  const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const loadFolders = useLibraryStore((state) => state.loadFolders)
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
+  const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const enabled = useLibraryIntegrityStore((state) => state.enabled)
   const isPanelOpen = useLibraryIntegrityStore((state) => state.isPanelOpen)
   const closePanel = useLibraryIntegrityStore((state) => state.closePanel)
@@ -288,8 +291,16 @@ export default function LibraryIntegrityPanel() {
   useEffect(() => {
     if (!isPanelOpen) return
     void loadFolders()
-    void loadFullTracks()
-  }, [isPanelOpen, loadFolders, loadFullTracks])
+    void loadFullTracks('integrity')
+    return () => {
+      releaseFullTracks('integrity')
+    }
+  }, [isPanelOpen, loadFolders, loadFullTracks, releaseFullTracks])
+
+  const fullTracks = useMemo(
+    () => resolveTrackPaths(fullTrackPaths),
+    [fullTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
 
   useEffect(() => {
     if (!isPanelOpen || fullTracks.length === 0) return

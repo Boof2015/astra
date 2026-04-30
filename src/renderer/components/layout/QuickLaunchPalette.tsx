@@ -161,7 +161,9 @@ export default function QuickLaunchPalette() {
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
-  const recentlyPlayed = useLibraryStore((state) => state.recentlyPlayed)
+  const recentlyPlayedPaths = useLibraryStore((state) => state.recentlyPlayedPaths)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
@@ -188,6 +190,10 @@ export default function QuickLaunchPalette() {
 
   const trimmedQuery = query.trim()
   const hasQuery = trimmedQuery.length > 0
+  const recentlyPlayed = useMemo(
+    () => resolveTrackPaths(recentlyPlayedPaths),
+    [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
+  )
 
   useEffect(() => {
     if (!isQuickLaunchOpen) return

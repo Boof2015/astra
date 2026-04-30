@@ -815,8 +815,10 @@ export default function HomeView() {
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
-  const recentlyPlayed = useLibraryStore((s) => s.recentlyPlayed as HomeTrack[])
-  const favoriteTracks = useLibraryStore((s) => s.favoriteTracks as HomeTrack[])
+  const recentlyPlayedPaths = useLibraryStore((s) => s.recentlyPlayedPaths)
+  const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
+  const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
   const setLibraryViewMode = useLibraryStore((s) => s.setViewMode)
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
@@ -833,6 +835,14 @@ export default function HomeView() {
   const setActiveView = useUIStore((s) => s.setActiveView)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
+  const recentlyPlayed = useMemo(
+    () => resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[],
+    [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
+  )
+  const favoriteTracks = useMemo(
+    () => resolveTrackPaths(favoriteTrackPaths) as HomeTrack[],
+    [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
   const [clockNow, setClockNow] = useState(() => new Date())

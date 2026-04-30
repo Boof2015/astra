@@ -483,6 +483,7 @@ export function useMemoryDiagnosticsBridge(): void {
           library: {
             totalTrackCount: librarySnapshot.totalTrackCount,
             visibleTrackCount: librarySnapshot.visibleTrackCount,
+            fullTrackCount: librarySnapshot.fullTrackCount,
             albumCount: librarySnapshot.albumCount,
             artistCount: librarySnapshot.artistCount,
             folderCount: librarySnapshot.folderCount,

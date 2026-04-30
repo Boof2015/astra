@@ -227,7 +227,11 @@ function toQueueTrack(track: {
 }
 
 export default function LibraryView() {
-  const tracks = useLibraryStore((state) => state.tracks)
+  const trackPaths = useLibraryStore((state) => state.trackPaths)
+  const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
+  const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const albums = useLibraryStore((state) => state.albums)
   const albumsIncludingSingles = useLibraryStore((state) => state.albumsIncludingSingles)
   const albumsIncludingSinglesLoaded = useLibraryStore((state) => state.albumsIncludingSinglesLoaded)
@@ -244,6 +248,8 @@ export default function LibraryView() {
   const scanStage = useLibraryStore((state) => state.scanStage)
   const cancelScan = useLibraryStore((state) => state.cancelScan)
   const loadAlbumsIncludingSingles = useLibraryStore((state) => state.loadAlbumsIncludingSingles)
+  const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
+  const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
@@ -293,6 +299,15 @@ export default function LibraryView() {
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
+  const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && (
+    viewMode === 'tracks' || viewMode === 'folders' || selectedSourceFilters.size > 0
+  )
+  const isFullTrackListPending = shouldRetainFullTracks && totalTrackCount > 0 && fullTrackPaths.length === 0
+  const activeTrackPaths = shouldRetainFullTracks ? fullTrackPaths : trackPaths
+  const tracks = useMemo(
+    () => resolveTrackPaths(activeTrackPaths),
+    [activeTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
   const sortContextKey = useMemo(() => {
     if (selectedAlbum) {
       const identityKey = selectedAlbum.identity_key?.trim()
@@ -389,6 +404,14 @@ export default function LibraryView() {
     if (!includeSinglesInAlbums || !isAlbumRootView || albumsIncludingSinglesLoaded) return
     void loadAlbumsIncludingSingles()
   }, [albumsIncludingSinglesLoaded, includeSinglesInAlbums, isAlbumRootView, loadAlbumsIncludingSingles])
+
+  useEffect(() => {
+    if (!shouldRetainFullTracks) return
+    void loadFullTracks('library')
+    return () => {
+      releaseFullTracks('library')
+    }
+  }, [loadFullTracks, releaseFullTracks, shouldRetainFullTracks])
 
   useEffect(() => {
     const validFilterKeys = new Set<string>([
@@ -947,7 +970,7 @@ export default function LibraryView() {
 
   // Content
   const renderContent = () => {
-    if (isLoading) {
+    if (isLoading || isFullTrackListPending) {
       return (
         <div className="library-loading">
           <div className="loading-spinner" />

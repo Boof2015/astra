@@ -107,7 +107,13 @@ export default function Sidebar() {
   const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
   const clearPlaylistSelection = usePlaylistStore((s) => s.clearSelection)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
-  const favoriteTracks = useLibraryStore((s) => s.favoriteTracks)
+  const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
+  const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
+  const favoriteTracks = useMemo(
+    () => resolveTrackPaths(favoriteTrackPaths),
+    [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
 
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)

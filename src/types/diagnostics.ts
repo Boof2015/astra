@@ -81,6 +81,7 @@ export interface MemoryDiagnosticsVisualizerSnapshot {
 export interface MemoryDiagnosticsLibrarySnapshot {
   totalTrackCount: number
   visibleTrackCount: number
+  fullTrackCount: number
   albumCount: number
   artistCount: number
   folderCount: number

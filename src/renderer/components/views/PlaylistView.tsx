@@ -133,7 +133,13 @@ export default function PlaylistView() {
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
-  const favoriteTracks = useLibraryStore((s) => s.favoriteTracks)
+  const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
+  const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
+  const favoriteTracks = useMemo(
+    () => resolveTrackPaths(favoriteTrackPaths),
+    [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
 
   const isPlaylistBrowser = selectedPlaylistId === null
   const isFavoritesPlaylist = isSystemFavoritesPlaylistId(selectedPlaylistId)
