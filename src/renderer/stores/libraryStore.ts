@@ -89,9 +89,16 @@ type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
+type ArtworkResponseFormat = 'object-url' | 'data-url'
 
 export interface ArtworkRequestOptions {
   variant?: ArtworkVariant
+  format?: ArtworkResponseFormat
+}
+
+interface ArtworkCacheEntry {
+  url: string
+  byteLength: number
 }
 
 type ScanStage = 'scanning' | 'backfill' | 'cleanup'
@@ -143,7 +150,7 @@ interface LibraryStore {
   folderWarnings: Record<string, string[]>
   lastScanIssueLog: ScanIssueLog | null
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
-  artworkCache: Map<string, string>
+  artworkCache: Map<string, ArtworkCacheEntry>
   favorites: Set<string>
   favoriteTracks: DbTrack[]
   recentlyPlayed: DbTrack[]
@@ -218,16 +225,16 @@ const MAX_SELECTION_HISTORY_ENTRIES = 40
 export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
-const artworkCache = new Map<string, string>()
-const cardArtworkCache = new Map<string, string>()
-const thumbnailArtworkCache = new Map<string, string>()
+const artworkCache = new Map<string, ArtworkCacheEntry>()
+const cardArtworkCache = new Map<string, ArtworkCacheEntry>()
+const thumbnailArtworkCache = new Map<string, ArtworkCacheEntry>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
 let fullTracksRequestId = 0
 
-function estimateStringMapBytes(cache: Map<string, string>): number {
+function estimateArtworkCacheBytes(cache: Map<string, ArtworkCacheEntry>): number {
   let total = 0
-  for (const [key, value] of cache.entries()) {
-    total += (key.length * 2) + (value.length * 2)
+  for (const [key, entry] of cache.entries()) {
+    total += (key.length * 2) + (entry.url.length * 2) + entry.byteLength
   }
   return total
 }
@@ -397,31 +404,93 @@ function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
   return `full:${hash}`
 }
 
+function getArtworkRequestKey(cacheKey: string, format: ArtworkResponseFormat): string {
+  return `${format}:${cacheKey}`
+}
+
+function revokeArtworkCacheEntry(entry: ArtworkCacheEntry | undefined): void {
+  if (!entry?.url.startsWith('blob:')) return
+  URL.revokeObjectURL(entry.url)
+}
+
+function dataUrlToArtworkCacheEntry(dataUrl: string): ArtworkCacheEntry | null {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex <= 0) return null
+
+  const header = dataUrl.slice(0, commaIndex)
+  const payload = dataUrl.slice(commaIndex + 1)
+  const mime = header.match(/^data:([^;,]+)/)?.[1] ?? 'image/jpeg'
+
+  try {
+    if (header.toLocaleLowerCase().includes(';base64')) {
+      const binary = atob(payload)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: mime })
+      return {
+        url: URL.createObjectURL(blob),
+        byteLength: blob.size
+      }
+    }
+
+    const decoded = decodeURIComponent(payload)
+    const blob = new Blob([decoded], { type: mime })
+    return {
+      url: URL.createObjectURL(blob),
+      byteLength: blob.size
+    }
+  } catch {
+    return null
+  }
+}
+
 function setLruCacheEntry(
-  cache: Map<string, string>,
+  cache: Map<string, ArtworkCacheEntry>,
   cacheKey: string,
-  dataUrl: string,
+  entry: ArtworkCacheEntry,
   maxEntries: number
 ): void {
-  if (cache.has(cacheKey)) {
-    cache.delete(cacheKey)
+  const existing = cache.get(cacheKey)
+  if (existing) {
+    revokeArtworkCacheEntry(existing)
   }
-  cache.set(cacheKey, dataUrl)
+  cache.delete(cacheKey)
+  cache.set(cacheKey, entry)
 
   while (cache.size > maxEntries) {
     const oldestKey = cache.keys().next().value
     if (!oldestKey) return
+    revokeArtworkCacheEntry(cache.get(oldestKey))
     cache.delete(oldestKey)
   }
 }
 
-function getLruCacheEntry(cache: Map<string, string>, cacheKey: string): string | undefined {
+function getLruCacheEntry(cache: Map<string, ArtworkCacheEntry>, cacheKey: string): string | undefined {
   const cached = cache.get(cacheKey)
   if (!cached) return undefined
   // Touch entry to keep LRU order.
   cache.delete(cacheKey)
   cache.set(cacheKey, cached)
-  return cached
+  return cached.url
+}
+
+function clearArtworkCache(cache: Map<string, ArtworkCacheEntry>): void {
+  for (const entry of cache.values()) {
+    revokeArtworkCacheEntry(entry)
+  }
+  cache.clear()
+}
+
+function clearAllArtworkCaches(): void {
+  clearArtworkCache(artworkCache)
+  clearArtworkCache(cardArtworkCache)
+  clearArtworkCache(thumbnailArtworkCache)
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', clearAllArtworkCaches)
 }
 
 function normalizeScanIssueLog(scanIssueLog: ScanIssueLog | null | undefined): ScanIssueLog | null {
@@ -1135,26 +1204,29 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ searchQuery: '', searchResults: [] })
   },
 
-  // Get artwork data URL (with caching)
+  // Get artwork URL (with caching)
   getArtwork: async (hash: string | null, options?: ArtworkRequestOptions) => {
     if (!hash) return null
     const variant: ArtworkVariant = options?.variant ?? 'card'
+    const format: ArtworkResponseFormat = options?.format ?? 'object-url'
     const cacheKey = getArtworkCacheKey(hash, variant)
+    const requestKey = getArtworkRequestKey(cacheKey, format)
 
-    // Check cache first
     const cache = variant === 'thumbnail'
       ? thumbnailArtworkCache
       : variant === 'card'
         ? cardArtworkCache
         : artworkCache
-    const cached = getLruCacheEntry(cache, cacheKey)
-    if (cached) {
-      return cached
+    if (format === 'object-url') {
+      const cached = getLruCacheEntry(cache, cacheKey)
+      if (cached) {
+        return cached
+      }
     }
 
     // Deduplicate concurrent requests for the same artwork hash + variant.
-    if (artworkRequestCache.has(cacheKey)) {
-      return artworkRequestCache.get(cacheKey)!
+    if (artworkRequestCache.has(requestKey)) {
+      return artworkRequestCache.get(requestKey)!
     }
 
     const request = (
@@ -1165,23 +1237,27 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           : window.electronAPI.library.getArtworkDataUrl(hash)
     )
       .then((dataUrl) => {
-        if (dataUrl) {
-          if (variant === 'thumbnail') {
-            setLruCacheEntry(thumbnailArtworkCache, cacheKey, dataUrl, MAX_THUMBNAIL_CACHE_ENTRIES)
-          } else if (variant === 'card') {
-            setLruCacheEntry(cardArtworkCache, cacheKey, dataUrl, MAX_CARD_ARTWORK_CACHE_ENTRIES)
-          } else {
-            setLruCacheEntry(artworkCache, cacheKey, dataUrl, MAX_FULL_ARTWORK_CACHE_ENTRIES)
-          }
+        if (!dataUrl) return null
+        if (format === 'data-url') return dataUrl
+
+        const entry = dataUrlToArtworkCacheEntry(dataUrl)
+        if (!entry) return dataUrl
+
+        if (variant === 'thumbnail') {
+          setLruCacheEntry(thumbnailArtworkCache, cacheKey, entry, MAX_THUMBNAIL_CACHE_ENTRIES)
+        } else if (variant === 'card') {
+          setLruCacheEntry(cardArtworkCache, cacheKey, entry, MAX_CARD_ARTWORK_CACHE_ENTRIES)
+        } else {
+          setLruCacheEntry(artworkCache, cacheKey, entry, MAX_FULL_ARTWORK_CACHE_ENTRIES)
         }
-        return dataUrl
+        return entry.url
       })
       .catch(() => null)
       .finally(() => {
-        artworkRequestCache.delete(cacheKey)
+        artworkRequestCache.delete(requestKey)
       })
 
-    artworkRequestCache.set(cacheKey, request)
+    artworkRequestCache.set(requestKey, request)
     return request
   },
 
@@ -1403,11 +1479,11 @@ export function getLibraryDiagnosticsSnapshot(): {
     scanInProgress: state.isScanning,
     caches: {
       artworkFullEntries: artworkCache.size,
-      artworkFullBytes: estimateStringMapBytes(artworkCache),
+      artworkFullBytes: estimateArtworkCacheBytes(artworkCache),
       artworkThumbnailEntries: thumbnailArtworkCache.size,
-      artworkThumbnailBytes: estimateStringMapBytes(thumbnailArtworkCache),
+      artworkThumbnailBytes: estimateArtworkCacheBytes(thumbnailArtworkCache),
       artworkCardEntries: cardArtworkCache.size,
-      artworkCardBytes: estimateStringMapBytes(cardArtworkCache),
+      artworkCardBytes: estimateArtworkCacheBytes(cardArtworkCache),
       artworkRequests: artworkRequestCache.size
     }
   }
