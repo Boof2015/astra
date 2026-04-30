@@ -1800,6 +1800,7 @@ button, .titlebar {
   margin-top: 0;
   opacity: 0;
   overflow: hidden;
+  border-radius: 16px;
   pointer-events: none;
   transform: translateY(22px) scale(0.94);
   will-change: transform, opacity, max-height;
@@ -1904,14 +1905,11 @@ button, .titlebar {
 
 .fullscreen-lyrics-dock-line {
   margin: 0;
-  height: var(--fullscreen-lyrics-line-height);
+  min-height: var(--fullscreen-lyrics-line-height);
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   text-align: center;
   line-height: 1.24;
   color: rgba(255, 255, 255, 0.4);
@@ -1929,10 +1927,9 @@ button, .titlebar {
 .fullscreen-lyrics-dock-line-text {
   display: block;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: center;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .fullscreen-lyrics-dock-line.is-near {
@@ -1959,7 +1956,7 @@ button, .titlebar {
   transform: scale(1);
   font-size: clamp(23px, 2.8vw, 34px);
   font-weight: 700;
-  text-shadow: 0 2px 24px rgba(255, 255, 255, 0.22);
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.1);
 }
 
 .fullscreen-lyrics-dock-line.is-distant {
