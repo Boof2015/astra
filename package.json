@@ -21,8 +21,10 @@
     "test:activity-indicator": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/astraActivity.test.ts",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
-    "rebuild:native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
-    "postinstall": "npm run rebuild:native || echo 'Native build failed, will use JS fallback'",
+    "rebuild:astra-native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
+    "rebuild:better-sqlite3": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:native": "npm run rebuild:astra-native && npm run rebuild:better-sqlite3",
+    "postinstall": "npm run rebuild:native || echo 'Native rebuild failed, app may use fallbacks or database access may fail'",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -47,6 +49,7 @@
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "better-sqlite3": "^12.9.0",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "music-metadata": "^11.10.6",
@@ -54,7 +57,6 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-window": "^2.2.7",
-    "sql.js": "^1.13.0",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
@@ -82,7 +84,8 @@
     "afterPack": "./scripts/electron-builder/afterPack-prune-ffprobe.cjs",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**"
+      "node_modules/ffprobe-static/**",
+      "node_modules/better-sqlite3/**"
     ],
     "files": [
       "out/**/*",

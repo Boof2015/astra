@@ -1,4 +1,3 @@
-import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
@@ -49,6 +48,33 @@ import {
   filterIntegrityTargetsByScope,
   type IntegrityScanTrackTarget
 } from './libraryIntegrity'
+
+interface BetterSqliteDatabaseConstructor {
+  new(filename: string, options?: { timeout?: number; fileMustExist?: boolean }): BetterSqliteDatabase
+}
+
+interface BetterSqliteDatabase {
+  inTransaction: boolean
+  prepare(sql: string): BetterSqliteStatement
+  exec(sql: string): BetterSqliteDatabase
+  pragma(sql: string): unknown
+  close(): BetterSqliteDatabase
+}
+
+interface BetterSqliteStatement {
+  reader: boolean
+  columns(): Array<{ name: string }>
+  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint }
+  all(...params: unknown[]): unknown[]
+  raw(toggleState?: boolean): BetterSqliteStatement
+}
+
+interface SqliteExecResult {
+  columns: string[]
+  values: unknown[][]
+}
+
+const BetterSqliteDatabase = require('better-sqlite3') as BetterSqliteDatabaseConstructor
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -428,7 +454,92 @@ function createLibraryScanIssue(phase: LibraryScanIssuePhase, path: string, erro
   }
 }
 
-let db: Database | null = null
+class LibrarySqliteStatement {
+  private boundParams: unknown[] = []
+  private rows: Record<string, unknown>[] | null = null
+  private currentRow: Record<string, unknown> | null = null
+  private rowIndex = 0
+
+  constructor(private readonly statement: BetterSqliteStatement) {}
+
+  bind(params: unknown[]): void {
+    this.boundParams = params
+    this.rows = null
+    this.currentRow = null
+    this.rowIndex = 0
+  }
+
+  step(): boolean {
+    if (!this.rows) {
+      this.rows = this.statement.all(...this.boundParams) as Record<string, unknown>[]
+      this.rowIndex = 0
+    }
+
+    const row = this.rows[this.rowIndex]
+    if (!row) {
+      this.currentRow = null
+      return false
+    }
+
+    this.currentRow = row
+    this.rowIndex += 1
+    return true
+  }
+
+  getAsObject<T = any>(): T {
+    return (this.currentRow ?? {}) as T
+  }
+
+  free(): void {
+    this.boundParams = []
+    this.rows = null
+    this.currentRow = null
+    this.rowIndex = 0
+  }
+}
+
+class LibrarySqliteDatabase {
+  constructor(private readonly database: BetterSqliteDatabase) {}
+
+  get inTransaction(): boolean {
+    return this.database.inTransaction
+  }
+
+  run(sql: string, params: unknown[] = []): void {
+    if (params.length > 0) {
+      this.database.prepare(sql).run(...params)
+      return
+    }
+
+    this.database.exec(sql)
+  }
+
+  exec(sql: string): SqliteExecResult[] {
+    const statement = this.database.prepare(sql)
+    if (!statement.reader) {
+      this.database.exec(sql)
+      return []
+    }
+
+    const columns = statement.columns().map((column) => column.name)
+    const values = statement.raw(true).all() as unknown[][]
+    return [{ columns, values }]
+  }
+
+  prepare(sql: string): LibrarySqliteStatement {
+    return new LibrarySqliteStatement(this.database.prepare(sql))
+  }
+
+  pragma(sql: string): unknown {
+    return this.database.pragma(sql)
+  }
+
+  close(): void {
+    this.database.close()
+  }
+}
+
+let db: LibrarySqliteDatabase | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
@@ -609,12 +720,28 @@ async function runWithConcurrency<T>(
   await Promise.all(Array.from({ length: workerCount }, () => runWorker()))
 }
 
-// Save database to file
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function backupExistingSqlJsDatabase(): Promise<void> {
+  if (!dbPath || !(await pathExists(dbPath))) return
+
+  const backupPath = `${dbPath}.sqljs-backup`
+  if (await pathExists(backupPath)) return
+
+  await copyFile(dbPath, backupPath)
+}
+
+// Writes are file-backed with better-sqlite3, so persistence no longer exports
+// the entire database into JS memory.
 async function saveDatabase(): Promise<void> {
-  if (!db || !dbPath) return
-  const data = db.export()
-  const buffer = Buffer.from(data)
-  await writeFile(dbPath, buffer)
+  return
 }
 
 export function beginLibraryWriteTransaction(): void {
@@ -1174,17 +1301,11 @@ export async function initDatabase(): Promise<void> {
     console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir, artistImageDir }, err)
   }
 
-  // Initialize sql.js
-  const SQL = await initSqlJs()
+  await backupExistingSqlJsDatabase()
 
-  // Try to load existing database
-  try {
-    const fileBuffer = await readFile(dbPath)
-    db = new SQL.Database(fileBuffer)
-  } catch {
-    // Create new database
-    db = new SQL.Database()
-  }
+  db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
+  db.pragma('foreign_keys = ON')
+  db.pragma('busy_timeout = 5000')
 
   // Create tables
   db.run(`
