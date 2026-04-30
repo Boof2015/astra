@@ -77,7 +77,9 @@ import type {
   MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsProcessMemoryStats,
   MemoryDiagnosticsRendererSnapshot,
+  MemoryDiagnosticsRendererMemoryStats,
   MemoryDiagnosticsSnapshotRequest,
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
@@ -325,21 +327,8 @@ export interface AppPerformanceStats {
   workingSetMb: number
 }
 
-export interface RendererMemoryStats {
-  privateMb: number
-  rssBytes: number
-  heapUsedBytes: number
-  heapTotalBytes: number
-  externalBytes: number
-  arrayBuffersBytes: number
-  heapSpaces: {
-    oldSpaceUsedBytes: number | null
-    newSpaceUsedBytes: number | null
-    codeSpaceUsedBytes: number | null
-    mapSpaceUsedBytes: number | null
-    largeObjectSpaceUsedBytes: number | null
-  }
-}
+export type MainProcessMemoryStats = MemoryDiagnosticsProcessMemoryStats
+export type RendererMemoryStats = MemoryDiagnosticsRendererMemoryStats
 
 export interface DiscordTrackPresence {
   title: string
@@ -584,6 +573,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:getBuildInfo'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
+  getMainProcessMemoryStats: (): Promise<MainProcessMemoryStats> => ipcRenderer.invoke('app:getMainProcessMemoryStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
     const memoryUsage = process.memoryUsage()
@@ -1049,6 +1039,7 @@ declare global {
       getAppVersion: () => Promise<string>
       getAppBuildInfo: () => Promise<AppBuildInfo>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      getMainProcessMemoryStats: () => Promise<MainProcessMemoryStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
       diagnostics: {
         getStatus: () => Promise<MemoryDiagnosticsStatus>

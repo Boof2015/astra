@@ -1,27 +1,21 @@
 import { useState, useEffect } from 'react'
-import type { AudioBufferMemoryStats } from '../../../types/nativeAudio'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
-import { audioEngine } from '../../audio/AudioEngine'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
+import {
+  captureTitleBarPerformanceSample,
+  createEmptyTitleBarPerformanceSample,
+  TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS,
+  type TitleBarPerformanceSample
+} from '../../utils/titleBarMemoryStats'
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import AstraLogo from '../icons/AstraLogo'
 
-interface AppPerformanceStats {
-  cpuPercent: number
-  workingSetMb: number
-}
-
-interface RendererMemoryStats {
-  privateMb: number
-}
-
 const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
-const BYTES_PER_MB = 1024 * 1024
 const FPS_SAMPLE_INTERVAL_MS = 1000
 const FPS_SAMPLE_WINDOW_MS = 200
 const ANALYZER_RAIL_COLLAPSE_QUERY = '(max-width: 1040px)'
@@ -61,9 +55,9 @@ function TitleBarActivityFallback({ rackVisible }: { rackVisible: boolean }) {
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [appBuildInfo, setAppBuildInfo] = useState<AppBuildInfo | null>(null)
-  const [appStats, setAppStats] = useState<AppPerformanceStats | null>(null)
-  const [rendererMemoryStats, setRendererMemoryStats] = useState<RendererMemoryStats | null>(null)
-  const [bufferStats, setBufferStats] = useState<AudioBufferMemoryStats | null>(null)
+  const [performanceSample, setPerformanceSample] = useState<TitleBarPerformanceSample>(
+    createEmptyTitleBarPerformanceSample
+  )
   const [fps, setFps] = useState(0)
   const updateAvailable = useUpdateStore((s) => s.updateAvailable)
   const openReleasesPage = useUpdateStore((s) => s.openReleasesPage)
@@ -147,34 +141,16 @@ export default function TitleBar() {
   useEffect(() => {
     let isMounted = true
 
-    const loadAppStats = async () => {
-      const [appStatsResult, rendererMemoryResult, bufferStatsResult] = await Promise.allSettled([
-        window.electronAPI?.getAppPerformanceStats
-          ? window.electronAPI.getAppPerformanceStats()
-          : Promise.reject(new Error('App performance stats unavailable.')),
-        window.electronAPI?.getRendererMemoryStats
-          ? window.electronAPI.getRendererMemoryStats()
-          : Promise.reject(new Error('Renderer memory stats unavailable.')),
-        audioEngine.getBufferMemoryStats()
-      ])
-
+    const loadPerformanceSample = async () => {
+      const nextSample = await captureTitleBarPerformanceSample()
       if (!isMounted) return
-
-      if (appStatsResult.status === 'fulfilled') {
-        setAppStats(appStatsResult.value)
-      }
-      if (rendererMemoryResult.status === 'fulfilled') {
-        setRendererMemoryStats(rendererMemoryResult.value)
-      }
-      if (bufferStatsResult.status === 'fulfilled') {
-        setBufferStats(bufferStatsResult.value)
-      }
+      setPerformanceSample(nextSample)
     }
 
-    void loadAppStats()
+    void loadPerformanceSample()
     const intervalId = window.setInterval(() => {
-      void loadAppStats()
-    }, 1000)
+      void loadPerformanceSample()
+    }, TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS)
 
     return () => {
       isMounted = false
@@ -245,25 +221,25 @@ export default function TitleBar() {
     window.open(ASTRA_SUPPORT_URL, '_blank', 'noopener,noreferrer')
   }
 
-  const formattedCpu = appStats ? `${Math.max(0, Math.round(appStats.cpuPercent))}%` : '\u2014'
-  const bufferMemoryMb = bufferStats ? bufferStats.totalBytes / BYTES_PER_MB : null
-  const currentBufferMemoryMb = bufferStats ? bufferStats.currentBytes / BYTES_PER_MB : null
-  const nextBufferMemoryMb = bufferStats ? bufferStats.nextBytes / BYTES_PER_MB : null
-  const otherProcessMemoryMb = appStats && rendererMemoryStats
-    ? Math.max(appStats.workingSetMb - rendererMemoryStats.privateMb, 0)
-    : null
-  const appMemoryMb = rendererMemoryStats && bufferMemoryMb !== null
-    ? Math.max(rendererMemoryStats.privateMb - bufferMemoryMb, 0)
-    : appStats && bufferMemoryMb !== null
-      ? Math.max(appStats.workingSetMb - bufferMemoryMb, 0)
-    : null
-  const formattedRendererMemory = formatMemoryMb(rendererMemoryStats?.privateMb ?? null)
-  const formattedAppMemory = formatMemoryMb(appMemoryMb)
-  const formattedBufferMemory = formatMemoryMb(bufferMemoryMb, { zeroAsZeroMb: true })
-  const formattedCurrentBufferMemory = formatMemoryMb(currentBufferMemoryMb, { zeroAsZeroMb: true })
-  const formattedNextBufferMemory = formatMemoryMb(nextBufferMemoryMb, { zeroAsZeroMb: true })
-  const formattedOtherProcessMemory = formatMemoryMb(otherProcessMemoryMb)
-  const formattedTotalMemory = formatMemoryMb(appStats?.workingSetMb ?? null)
+  const memorySample = performanceSample.memory
+  const formattedCpu = performanceSample.cpuPercent !== null && Number.isFinite(performanceSample.cpuPercent)
+    ? `${Math.max(0, Math.round(performanceSample.cpuPercent))}%`
+    : '\u2014'
+  const formattedRendererJsMemory = formatMemoryMb(memorySample.rendererHeapUsedMb)
+  const formattedRendererPrivateMemory = formatMemoryMb(memorySample.rendererPrivateMb)
+  const formattedRendererExternalMemory = formatMemoryMb(memorySample.rendererExternalMb, { zeroAsZeroMb: true })
+  const formattedRendererArrayBuffersMemory = formatMemoryMb(memorySample.rendererArrayBuffersMb, { zeroAsZeroMb: true })
+  const formattedRendererOldSpaceMemory = formatMemoryMb(memorySample.rendererOldSpaceMb, { zeroAsZeroMb: true })
+  const formattedRendererLargeObjectSpaceMemory = formatMemoryMb(memorySample.rendererLargeObjectSpaceMb, { zeroAsZeroMb: true })
+  const formattedMainHeapMemory = formatMemoryMb(memorySample.mainHeapUsedMb)
+  const formattedMainRssMemory = formatMemoryMb(memorySample.mainRssMb)
+  const formattedMainExternalMemory = formatMemoryMb(memorySample.mainExternalMb, { zeroAsZeroMb: true })
+  const formattedMainArrayBuffersMemory = formatMemoryMb(memorySample.mainArrayBuffersMb, { zeroAsZeroMb: true })
+  const formattedBufferMemory = formatMemoryMb(memorySample.bufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedCurrentBufferMemory = formatMemoryMb(memorySample.currentBufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedNextBufferMemory = formatMemoryMb(memorySample.nextBufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedNonRendererWorkingSetMemory = formatMemoryMb(memorySample.otherProcessMemoryMb)
+  const formattedTotalMemory = formatMemoryMb(memorySample.totalWorkingSetMb)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
   const appVersionLabel = appBuildInfo?.version ? `v${appBuildInfo.version}` : ''
   const appCommitLabel = appBuildInfo?.shortCommitHash
@@ -288,17 +264,19 @@ export default function TitleBar() {
         : `Phone remote active in read-only mode on ${phoneRemoteStatus.controllerUrl}`
       : `Phone remote active on port ${phoneRemoteStatus.port}`
     : 'Phone remote status unavailable'
-  const appMemoryTitle = rendererMemoryStats && bufferStats
-    ? `Renderer-private memory excluding decoded audio buffers. Renderer private: ${formatMemoryMb(rendererMemoryStats.privateMb)}.${appStats ? ` Total app working set: ${formatMemoryMb(appStats.workingSetMb)}.` : ''}`
-    : appStats && bufferStats
-      ? `Fallback app working set excluding decoded audio buffers. Total working set: ${formatMemoryMb(appStats.workingSetMb)}.`
-      : 'App memory excluding decoded audio buffers.'
-  const bufferMemoryTitle = bufferStats
-    ? `Decoded audio buffers held by Astra. Current: ${formatMemoryMb(bufferStats.currentBytes / BYTES_PER_MB, { zeroAsZeroMb: true })}. Next: ${formatMemoryMb(bufferStats.nextBytes / BYTES_PER_MB, { zeroAsZeroMb: true })}.`
-    : 'Decoded audio buffer memory for the current and next track.'
-  const totalMemoryTitle = appStats
-    ? `Total app working set across renderer, main, GPU, and utility processes: ${formatMemoryMb(appStats.workingSetMb)}.`
-    : 'Total app working set.'
+  const rendererJsTitle = `Renderer JS heap used from process.memoryUsage().heapUsed: ${formattedRendererJsMemory}.`
+  const rendererPrivateTitle = `Renderer private memory from process.getProcessMemoryInfo().private: ${formattedRendererPrivateMemory}.`
+  const rendererExternalTitle = `Renderer external memory from process.memoryUsage().external: ${formattedRendererExternalMemory}.`
+  const rendererArrayBuffersTitle = `Renderer ArrayBuffer memory from process.memoryUsage().arrayBuffers: ${formattedRendererArrayBuffersMemory}.`
+  const rendererOldSpaceTitle = `Renderer V8 old_space used: ${formattedRendererOldSpaceMemory}.`
+  const rendererLargeObjectSpaceTitle = `Renderer V8 large_object_space used: ${formattedRendererLargeObjectSpaceMemory}.`
+  const mainHeapTitle = `Main process heap used from process.memoryUsage().heapUsed: ${formattedMainHeapMemory}. Main RSS is shown in the breakdown.`
+  const mainRssTitle = `Main process RSS from process.memoryUsage().rss: ${formattedMainRssMemory}.`
+  const mainExternalTitle = `Main process external memory from process.memoryUsage().external: ${formattedMainExternalMemory}.`
+  const mainArrayBuffersTitle = `Main process ArrayBuffer memory from process.memoryUsage().arrayBuffers: ${formattedMainArrayBuffersMemory}.`
+  const bufferMemoryTitle = `Decoded audio buffers held by Astra. Current: ${formattedCurrentBufferMemory}. Next: ${formattedNextBufferMemory}.`
+  const nonRendererWorkingSetTitle = `Total Electron working set minus renderer private memory; includes main, GPU, utility, and other app processes: ${formattedNonRendererWorkingSetMemory}.`
+  const totalMemoryTitle = `Total Electron working set across renderer, main, GPU, and utility processes from app.getAppMetrics(): ${formattedTotalMemory}.`
 
   return (
     <header className="titlebar">
@@ -366,10 +344,6 @@ export default function TitleBar() {
               <span className="titlebar-stat-label">CPU</span>
               <span>{formattedCpu}</span>
             </span>
-            <span className="titlebar-stat" title={appMemoryTitle}>
-              <span className="titlebar-stat-label">APP</span>
-              <span>{formattedAppMemory}</span>
-            </span>
             <span className="titlebar-stat" title={bufferMemoryTitle}>
               <span className="titlebar-stat-label">BUF</span>
               <span>{formattedBufferMemory}</span>
@@ -384,33 +358,65 @@ export default function TitleBar() {
             </span>
           </div>
           <div className="titlebar-stats-breakdown" role="tooltip" aria-label="Memory breakdown">
-            <div className="titlebar-stats-breakdown-title">Memory</div>
-            <div className="titlebar-stats-breakdown-row">
-              <span className="titlebar-stats-breakdown-label">Renderer</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererMemory}</span>
+            <div className="titlebar-stats-breakdown-title">Memory breakdown</div>
+            <div className="titlebar-stats-breakdown-row" title={rendererJsTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer JS heap</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererJsMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row">
-              <span className="titlebar-stats-breakdown-label">APP</span>
-              <span className="titlebar-stats-breakdown-value">{formattedAppMemory}</span>
+            <div className="titlebar-stats-breakdown-row" title={rendererPrivateTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer private</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererPrivateMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row">
-              <span className="titlebar-stats-breakdown-label">Buffers</span>
+            <div className="titlebar-stats-breakdown-row" title={rendererExternalTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer external</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererExternalMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={rendererArrayBuffersTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer ArrayBuffers</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererArrayBuffersMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={rendererOldSpaceTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer old_space</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererOldSpaceMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={rendererLargeObjectSpaceTitle}>
+              <span className="titlebar-stats-breakdown-label">Renderer large_object</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererLargeObjectSpaceMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={mainHeapTitle}>
+              <span className="titlebar-stats-breakdown-label">Main heap used</span>
+              <span className="titlebar-stats-breakdown-value">{formattedMainHeapMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={mainRssTitle}>
+              <span className="titlebar-stats-breakdown-label">Main RSS</span>
+              <span className="titlebar-stats-breakdown-value">{formattedMainRssMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={mainExternalTitle}>
+              <span className="titlebar-stats-breakdown-label">Main external</span>
+              <span className="titlebar-stats-breakdown-value">{formattedMainExternalMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={mainArrayBuffersTitle}>
+              <span className="titlebar-stats-breakdown-label">Main ArrayBuffers</span>
+              <span className="titlebar-stats-breakdown-value">{formattedMainArrayBuffersMemory}</span>
+            </div>
+            <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
+              <span className="titlebar-stats-breakdown-label">Decoded buffers</span>
               <span className="titlebar-stats-breakdown-value">{formattedBufferMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row">
+            <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
               <span className="titlebar-stats-breakdown-label">Current buf</span>
               <span className="titlebar-stats-breakdown-value">{formattedCurrentBufferMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row">
+            <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
               <span className="titlebar-stats-breakdown-label">Next buf</span>
               <span className="titlebar-stats-breakdown-value">{formattedNextBufferMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row">
-              <span className="titlebar-stats-breakdown-label">Other procs</span>
-              <span className="titlebar-stats-breakdown-value">{formattedOtherProcessMemory}</span>
+            <div className="titlebar-stats-breakdown-row" title={nonRendererWorkingSetTitle}>
+              <span className="titlebar-stats-breakdown-label">Non-renderer WS</span>
+              <span className="titlebar-stats-breakdown-value">{formattedNonRendererWorkingSetMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total">
-              <span className="titlebar-stats-breakdown-label">Total</span>
+            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={totalMemoryTitle}>
+              <span className="titlebar-stats-breakdown-label">Total working set</span>
               <span className="titlebar-stats-breakdown-value">{formattedTotalMemory}</span>
             </div>
           </div>

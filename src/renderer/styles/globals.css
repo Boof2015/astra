@@ -401,7 +401,7 @@ button, .titlebar {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  min-width: 224px;
+  min-width: 300px;
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -8752,7 +8752,7 @@ body::after {
 }
 
 .titlebar-stats-breakdown {
-  min-width: 206px;
+  min-width: 280px;
   padding: 9px 10px;
 }
 

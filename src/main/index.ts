@@ -3632,6 +3632,17 @@ ipcMain.handle('app:getPerformanceStats', () => {
   }
 })
 
+ipcMain.handle('app:getMainProcessMemoryStats', () => {
+  const memoryUsage = process.memoryUsage()
+  return {
+    rssBytes: memoryUsage.rss,
+    heapUsedBytes: memoryUsage.heapUsed,
+    heapTotalBytes: memoryUsage.heapTotal,
+    externalBytes: memoryUsage.external,
+    arrayBuffersBytes: memoryUsage.arrayBuffers,
+  }
+})
+
 ipcMain.handle('diagnostics:getStatus', () => {
   return getMemoryDiagnosticsStatusSnapshot()
 })

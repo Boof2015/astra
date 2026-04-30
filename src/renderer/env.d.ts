@@ -70,7 +70,9 @@ import type {
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsProcessMemoryStats,
     MemoryDiagnosticsRendererSnapshot,
+    MemoryDiagnosticsRendererMemoryStats,
     MemoryDiagnosticsSnapshotRequest,
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
@@ -153,21 +155,8 @@ declare global {
             getAppVersion: () => Promise<string>
             getAppBuildInfo: () => Promise<AppBuildInfo>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
-            getRendererMemoryStats: () => Promise<{
-                privateMb: number
-                rssBytes: number
-                heapUsedBytes: number
-                heapTotalBytes: number
-                externalBytes: number
-                arrayBuffersBytes: number
-                heapSpaces: {
-                    oldSpaceUsedBytes: number | null
-                    newSpaceUsedBytes: number | null
-                    codeSpaceUsedBytes: number | null
-                    mapSpaceUsedBytes: number | null
-                    largeObjectSpaceUsedBytes: number | null
-                }
-            }>
+            getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
+            getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
             diagnostics: {
                 getStatus: () => Promise<MemoryDiagnosticsStatus>
                 setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
