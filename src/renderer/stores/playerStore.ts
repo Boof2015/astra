@@ -168,6 +168,7 @@ interface PlayerStore {
   _cleanupListeners: () => void
   _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<PlaybackLoadOutcome>
   _preBufferNextTrack: () => Promise<void>
+  _schedulePreBufferNextTrack: (options?: { invalidatePending?: boolean }) => void
   _getNextEntry: () => ResolvedQueueTrack | null
   _generateShuffleOrder: (currentAutoQueueIndex: number) => void
 }
@@ -183,6 +184,9 @@ const CURRENT_TIME_STORE_THROTTLE_MS = 100
 const BYTES_PER_FLOAT32_SAMPLE = 4
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
+export const GAPLESS_PREBUFFER_LEAD_SECONDS = 15
+const GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS = 250
+const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
 export const MAX_PLAYBACK_HISTORY = 500
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
@@ -219,6 +223,29 @@ function estimateDecodedTrackBytes(track: Track | null | undefined): number | nu
   if (typeof channels !== 'number' || !Number.isFinite(channels) || channels <= 0) return null
 
   return Math.round(durationSeconds * sampleRate * channels * BYTES_PER_FLOAT32_SAMPLE)
+}
+
+export function getGaplessPrebufferDelayMs(
+  currentTime: number,
+  duration: number,
+  leadSeconds: number = GAPLESS_PREBUFFER_LEAD_SECONDS
+): number {
+  if (!Number.isFinite(duration) || duration <= 0) return 0
+
+  const normalizedCurrentTime = Number.isFinite(currentTime)
+    ? Math.max(0, currentTime)
+    : 0
+  const normalizedLeadSeconds = Number.isFinite(leadSeconds)
+    ? Math.max(0, leadSeconds)
+    : GAPLESS_PREBUFFER_LEAD_SECONDS
+  const remainingSeconds = Math.max(0, duration - normalizedCurrentTime)
+  const delaySeconds = remainingSeconds - normalizedLeadSeconds
+
+  if (delaySeconds <= 0) return 0
+  return Math.min(
+    MAX_GAPLESS_PREBUFFER_TIMER_MS,
+    Math.round(delaySeconds * 1000)
+  )
 }
 
 function getFileNameFromPath(trackPath: string): string {
@@ -630,16 +657,46 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let recentPlaySession: RecentPlaySession | null = null
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
+  let prebufferScheduleTimerId: ReturnType<typeof globalThis.setTimeout> | null = null
+  let prebufferScheduleDueAtMs: number | null = null
+  let prebufferScheduleTrackPath: string | null = null
+  let prebufferInFlightRequestId: number | null = null
+  let prebufferInFlightTrackPath: string | null = null
+  let prebufferAttemptedTrackPath: string | null = null
+
+  const clearScheduledPrebufferTimer = (): void => {
+    if (prebufferScheduleTimerId !== null) {
+      globalThis.clearTimeout(prebufferScheduleTimerId)
+      prebufferScheduleTimerId = null
+    }
+    prebufferScheduleDueAtMs = null
+    prebufferScheduleTrackPath = null
+  }
+
+  const invalidatePrebufferRequest = (): void => {
+    activePrebufferRequestId += 1
+    prebufferInFlightRequestId = null
+    prebufferInFlightTrackPath = null
+    prebufferAttemptedTrackPath = null
+  }
+
+  const clearBufferedNextTrack = (): void => {
+    clearScheduledPrebufferTimer()
+    invalidatePrebufferRequest()
+    audioEngine.clearNextBuffer()
+  }
 
   const beginLoadRequest = (): number => {
     activeLoadRequestId += 1
-    activePrebufferRequestId += 1
+    clearScheduledPrebufferTimer()
+    invalidatePrebufferRequest()
     return activeLoadRequestId
   }
 
   const invalidateLoadRequest = (): void => {
     activeLoadRequestId += 1
-    activePrebufferRequestId += 1
+    clearScheduledPrebufferTimer()
+    invalidatePrebufferRequest()
   }
 
   const isActiveLoadRequest = (requestId: number): boolean => {
@@ -968,6 +1025,109 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return null
   }
 
+  const resolveExpectedPrebufferTrackPath = (state: PlayerStore = get()): string | null => {
+    if (state.repeat === 'one') return null
+
+    for (const candidate of collectNextCandidates(state)) {
+      const candidateTrack = candidate.track
+      if (!candidateTrack) continue
+      if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') continue
+      if (isUnavailableRemoteTrack(candidateTrack)) continue
+      return candidateTrack.path
+    }
+
+    return null
+  }
+
+  const schedulePreBufferNextTrack = (options: { invalidatePending?: boolean } = {}): void => {
+    if (options.invalidatePending) {
+      clearScheduledPrebufferTimer()
+      invalidatePrebufferRequest()
+    }
+
+    const state = get()
+    const expectedTrackPath = resolveExpectedPrebufferTrackPath(state)
+
+    if (
+      useAudioSettingsStore.getState().disableGaplessPrebufferDev
+      || !state.currentTrack
+      || state.repeat === 'one'
+      || !expectedTrackPath
+      || (state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local')
+    ) {
+      clearScheduledPrebufferTimer()
+      if (audioEngine.hasNextBuffered) {
+        clearBufferedNextTrack()
+      } else if (prebufferInFlightTrackPath !== null) {
+        clearBufferedNextTrack()
+      }
+      return
+    }
+
+    const bufferedTrackPath = audioEngine.nextBufferedTrackPath
+    if (bufferedTrackPath !== null && bufferedTrackPath !== expectedTrackPath) {
+      clearBufferedNextTrack()
+    } else if (bufferedTrackPath === null && audioEngine.hasNextBuffered) {
+      clearBufferedNextTrack()
+    } else if (prebufferInFlightTrackPath !== null && prebufferInFlightTrackPath !== expectedTrackPath) {
+      clearBufferedNextTrack()
+    }
+
+    const duration = audioEngine.duration > 0 ? audioEngine.duration : state.duration
+    const currentTime = Number.isFinite(audioEngine.currentTime) ? audioEngine.currentTime : state.currentTime
+    const delayMs = getGaplessPrebufferDelayMs(currentTime, duration)
+
+    if (delayMs > 0) {
+      if (
+        audioEngine.nextBufferedTrackPath === expectedTrackPath
+        || prebufferInFlightTrackPath === expectedTrackPath
+      ) {
+        clearBufferedNextTrack()
+      }
+      if (prebufferAttemptedTrackPath === expectedTrackPath) {
+        prebufferAttemptedTrackPath = null
+      }
+
+      if (state.playbackState !== 'playing') {
+        clearScheduledPrebufferTimer()
+        return
+      }
+
+      const dueAtMs = performance.now() + delayMs
+      if (
+        prebufferScheduleTimerId !== null
+        && prebufferScheduleTrackPath === expectedTrackPath
+        && prebufferScheduleDueAtMs !== null
+        && Math.abs(prebufferScheduleDueAtMs - dueAtMs) <= GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS
+      ) {
+        return
+      }
+
+      clearScheduledPrebufferTimer()
+      prebufferScheduleTrackPath = expectedTrackPath
+      prebufferScheduleDueAtMs = dueAtMs
+      prebufferScheduleTimerId = globalThis.setTimeout(() => {
+        prebufferScheduleTimerId = null
+        prebufferScheduleDueAtMs = null
+        prebufferScheduleTrackPath = null
+        schedulePreBufferNextTrack()
+      }, delayMs)
+      return
+    }
+
+    if (state.playbackState !== 'playing') {
+      clearScheduledPrebufferTimer()
+      return
+    }
+
+    clearScheduledPrebufferTimer()
+    if (audioEngine.nextBufferedTrackPath === expectedTrackPath) return
+    if (prebufferInFlightTrackPath === expectedTrackPath && prebufferInFlightRequestId !== null) return
+    if (prebufferAttemptedTrackPath === expectedTrackPath) return
+
+    void get()._preBufferNextTrack()
+  }
+
   const applyCandidateTransition = (
     state: PlayerStore,
     candidate: NextCandidate,
@@ -1041,7 +1201,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     })
 
     if (normalizedStartIndex < 0) {
-      audioEngine.clearNextBuffer()
+      clearBufferedNextTrack()
       return
     }
 
@@ -1067,8 +1227,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     nextUserQueue.splice(insertionIndex, 0, ...entries)
     set({ userQueue: nextUserQueue })
-    audioEngine.clearNextBuffer()
-    void get()._preBufferNextTrack()
+    clearBufferedNextTrack()
+    schedulePreBufferNextTrack()
   }
 
   return {
@@ -1155,7 +1315,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           pendingManualLoadCueTrack = resolvedTrack
-          get()._preBufferNextTrack()
+          schedulePreBufferNextTrack()
           logSlowPath('loadTrack', loadStart, {
             trackPath: track.path,
             usedNativeBitPerfect: true,
@@ -1206,8 +1366,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         pendingManualLoadCueTrack = resolvedTrack
 
-        // Pre-buffer next track for gapless playback
-        get()._preBufferNextTrack()
+        // Schedule next-track prebuffering for the gapless handoff window.
+        schedulePreBufferNextTrack()
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
           usedFfmpegFallback,
@@ -1363,8 +1523,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       nextUserQueue.splice(toIndex, 0, removed)
       set({ userQueue: nextUserQueue })
 
-      audioEngine.clearNextBuffer()
-      void get()._preBufferNextTrack()
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     removeUserTrack: (index: number) => {
@@ -1375,18 +1535,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         userQueue: state.userQueue.filter((_, trackIndex) => trackIndex !== index)
       })
 
-      audioEngine.clearNextBuffer()
-      void get()._preBufferNextTrack()
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     clearUserQueue: () => {
       set({ userQueue: [] })
-      audioEngine.clearNextBuffer()
-      void get()._preBufferNextTrack()
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     clearAllQueues: () => {
-      audioEngine.clearNextBuffer()
+      clearBufferedNextTrack()
       set({
         userQueue: [],
         autoQueue: [],
@@ -1510,8 +1670,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           ? buildAutoShuffleOrder(state.autoQueue.length, state.autoQueueIndex >= 0 ? state.autoQueueIndex : 0)
           : []
       })
-      audioEngine.clearNextBuffer()
-      void get()._preBufferNextTrack()
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     toggleRepeat: () => {
@@ -1520,8 +1680,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const currentIndex = modes.indexOf(state.repeat)
         return { repeat: modes[(currentIndex + 1) % modes.length] }
       })
-      audioEngine.clearNextBuffer()
-      void get()._preBufferNextTrack()
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     getResolvedUpcomingTracks: () => {
@@ -1730,7 +1890,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           throwIfSupersededLoad(loadRequestId)
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
-          get()._preBufferNextTrack()
+          schedulePreBufferNextTrack()
           logMemoryDiagnosticsEvent('track_load_success', {
             trackPath: track.path,
             sourceType: track.sourceType ?? 'local',
@@ -1903,8 +2063,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           usedFfmpegFallback
         })
 
-        // Pre-buffer next track for gapless playback
-        get()._preBufferNextTrack()
+        // Schedule next-track prebuffering for the gapless handoff window.
+        schedulePreBufferNextTrack()
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           fileLoadMs,
@@ -1944,128 +2104,129 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const bufferStart = performance.now()
       const prebufferRequestId = beginPrebufferRequest()
       const state = get()
-
-      const resolveExpectedPrebufferTrackPath = (): string | null => {
-        const latestState = get()
-        if (latestState.repeat === 'one') return null
-
-        for (const candidate of collectNextCandidates(latestState)) {
-          const candidateTrack = candidate.track
-          if (!candidateTrack) continue
-          if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') continue
-          if (isUnavailableRemoteTrack(candidateTrack)) continue
-          return candidateTrack.path
-        }
-        return null
-      }
+      const expectedPrebufferTrackPath = resolveExpectedPrebufferTrackPath(state)
+      prebufferInFlightRequestId = prebufferRequestId
+      prebufferInFlightTrackPath = expectedPrebufferTrackPath
+      prebufferAttemptedTrackPath = expectedPrebufferTrackPath
 
       const canApplyPrebufferResult = (nextTrack: Track): boolean => {
         return isActivePrebufferRequest(prebufferRequestId)
           && resolveExpectedPrebufferTrackPath() === nextTrack.path
       }
 
-      if (useAudioSettingsStore.getState().disableGaplessPrebufferDev) {
-        return
-      }
-
-      if (state.repeat === 'one') {
-        return
-      }
-
-      const candidates = collectNextCandidates(state)
-      if (candidates.length === 0) return
-
-      for (const candidate of candidates) {
-        const nextTrack = candidate.track
-        if (!nextTrack) continue
-        if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-          // Remote prebuffering downloads entire files and can stall click-to-play on constrained links.
-          continue
+      try {
+        if (useAudioSettingsStore.getState().disableGaplessPrebufferDev) {
+          return
         }
-        if (isUnavailableRemoteTrack(nextTrack)) continue
 
-        try {
-          if (!canApplyPrebufferResult(nextTrack)) return
-          if (shouldUseBitPerfectPath(nextTrack)) {
-            await audioEngine.preBufferNextTrackFromPath(nextTrack)
-            if (!canApplyPrebufferResult(nextTrack)) {
-              audioEngine.clearNextBuffer()
+        if (state.repeat === 'one') {
+          return
+        }
+
+        const candidates = collectNextCandidates(state)
+        if (candidates.length === 0) return
+
+        for (const candidate of candidates) {
+          const nextTrack = candidate.track
+          if (!nextTrack) continue
+          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+            // Remote prebuffering downloads entire files and can stall click-to-play on constrained links.
+            continue
+          }
+          if (isUnavailableRemoteTrack(nextTrack)) continue
+
+          try {
+            if (!canApplyPrebufferResult(nextTrack)) return
+            if (shouldUseBitPerfectPath(nextTrack)) {
+              await audioEngine.preBufferNextTrackFromPath(nextTrack)
+              if (!canApplyPrebufferResult(nextTrack)) {
+                audioEngine.clearNextBuffer()
+                return
+              }
+              logSlowPath('preBufferNextTrack', bufferStart, {
+                trackPath: nextTrack.path,
+                loaded: true,
+                usedNativeBitPerfect: true
+              })
               return
+            }
+
+            const bufferStats = await audioEngine.getBufferMemoryStats()
+            const estimatedNextTrackBytes = estimateDecodedTrackBytes(nextTrack)
+            const currentBufferedBytes = bufferStats.totalBytes
+            const wouldExceedTotalBudget =
+              estimatedNextTrackBytes !== null
+              && (currentBufferedBytes + estimatedNextTrackBytes) > MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+
+            if (
+              currentBufferedBytes >= MAX_STANDARD_PREBUFFER_TOTAL_BYTES
+              || (estimatedNextTrackBytes !== null && estimatedNextTrackBytes > MAX_STANDARD_PREBUFFER_TRACK_BYTES)
+              || wouldExceedTotalBudget
+            ) {
+              logMemoryDiagnosticsEvent('prebuffer_skipped_budget', {
+                trackPath: nextTrack.path,
+                currentBufferedMb: Number((currentBufferedBytes / (1024 * 1024)).toFixed(1)),
+                estimatedNextTrackMb: estimatedNextTrackBytes === null
+                  ? null
+                  : Number((estimatedNextTrackBytes / (1024 * 1024)).toFixed(1)),
+                maxTrackMb: MAX_STANDARD_PREBUFFER_TRACK_BYTES / (1024 * 1024),
+                maxTotalMb: MAX_STANDARD_PREBUFFER_TOTAL_BYTES / (1024 * 1024)
+              })
+              logSlowPath('preBufferNextTrack', bufferStart, {
+                trackPath: nextTrack.path,
+                skippedBudget: true,
+                currentBufferedBytes,
+                estimatedNextTrackBytes
+              })
+              return
+            }
+
+            const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
+            if (!canApplyPrebufferResult(nextTrack)) {
+              return
+            }
+            if (result) {
+              await audioEngine.preBufferNext(result.data, {
+                replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode),
+                trackPath: nextTrack.path
+              })
+              if (!canApplyPrebufferResult(nextTrack)) {
+                audioEngine.clearNextBuffer()
+                return
+              }
+              logSlowPath('preBufferNextTrack', bufferStart, {
+                trackPath: nextTrack.path,
+                loaded: true
+              })
+              return
+            }
+            if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+              markTrackUnavailableInState(nextTrack.path)
+            }
+          } catch (error) {
+            if (isSupersededAudioLoadError(error) || !isActivePrebufferRequest(prebufferRequestId)) {
+              return
+            }
+            console.error('Failed to pre-buffer next track:', error)
+            if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
+              markTrackUnavailableInState(nextTrack.path)
             }
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
-              loaded: true,
-              usedNativeBitPerfect: true
+              failed: true
             })
-            return
           }
-
-          const bufferStats = await audioEngine.getBufferMemoryStats()
-          const estimatedNextTrackBytes = estimateDecodedTrackBytes(nextTrack)
-          const currentBufferedBytes = bufferStats.totalBytes
-          const wouldExceedTotalBudget =
-            estimatedNextTrackBytes !== null
-            && (currentBufferedBytes + estimatedNextTrackBytes) > MAX_STANDARD_PREBUFFER_TOTAL_BYTES
-
-          if (
-            currentBufferedBytes >= MAX_STANDARD_PREBUFFER_TOTAL_BYTES
-            || (estimatedNextTrackBytes !== null && estimatedNextTrackBytes > MAX_STANDARD_PREBUFFER_TRACK_BYTES)
-            || wouldExceedTotalBudget
-          ) {
-            logMemoryDiagnosticsEvent('prebuffer_skipped_budget', {
-              trackPath: nextTrack.path,
-              currentBufferedMb: Number((currentBufferedBytes / (1024 * 1024)).toFixed(1)),
-              estimatedNextTrackMb: estimatedNextTrackBytes === null
-                ? null
-                : Number((estimatedNextTrackBytes / (1024 * 1024)).toFixed(1)),
-              maxTrackMb: MAX_STANDARD_PREBUFFER_TRACK_BYTES / (1024 * 1024),
-              maxTotalMb: MAX_STANDARD_PREBUFFER_TOTAL_BYTES / (1024 * 1024)
-            })
-            logSlowPath('preBufferNextTrack', bufferStart, {
-              trackPath: nextTrack.path,
-              skippedBudget: true,
-              currentBufferedBytes,
-              estimatedNextTrackBytes
-            })
-            return
-          }
-
-          const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
-          if (!canApplyPrebufferResult(nextTrack)) {
-            return
-          }
-          if (result) {
-            await audioEngine.preBufferNext(result.data, {
-              replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode),
-              trackPath: nextTrack.path
-            })
-            if (!canApplyPrebufferResult(nextTrack)) {
-              audioEngine.clearNextBuffer()
-              return
-            }
-            logSlowPath('preBufferNextTrack', bufferStart, {
-              trackPath: nextTrack.path,
-              loaded: true
-            })
-            return
-          }
-          if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-            markTrackUnavailableInState(nextTrack.path)
-          }
-        } catch (error) {
-          if (isSupersededAudioLoadError(error) || !isActivePrebufferRequest(prebufferRequestId)) {
-            return
-          }
-          console.error('Failed to pre-buffer next track:', error)
-          if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-            markTrackUnavailableInState(nextTrack.path)
-          }
-          logSlowPath('preBufferNextTrack', bufferStart, {
-            trackPath: nextTrack.path,
-            failed: true
-          })
+        }
+      } finally {
+        if (prebufferInFlightRequestId === prebufferRequestId) {
+          prebufferInFlightRequestId = null
+          prebufferInFlightTrackPath = null
         }
       }
+    },
+
+    _schedulePreBufferNextTrack: (options = {}) => {
+      schedulePreBufferNextTrack(options)
     },
 
     // Initialize audio engine event listeners
@@ -2095,9 +2256,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             playbackState: nextPlaybackState,
             currentTime: audioEngine.currentTime
           })
+          schedulePreBufferNextTrack()
           return
         }
 
+        clearScheduledPrebufferTimer()
         lastCommittedCurrentTimeMs = performance.now()
         set({
           playbackState: nextPlaybackState,
@@ -2110,6 +2273,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         maybeCommitRecentPlay(normalizedTime)
 
         const state = get()
+        if (state.playbackState === 'playing' || state.playbackState === 'paused') {
+          schedulePreBufferNextTrack()
+        }
+
         if (state.playbackState === 'loading') {
           if (normalizedTime !== 0) {
             return
@@ -2153,6 +2320,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('durationChange', (duration) => {
         set({ duration: duration as number })
+        schedulePreBufferNextTrack()
       })
 
       audioEngine.on('remoteWaveformUpdate', (payload) => {
@@ -2264,9 +2432,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
         )
         startRecentPlaySession(nextTrack.path)
+        prebufferAttemptedTrackPath = null
 
-        // Pre-buffer the NEXT next track
-        void get()._preBufferNextTrack()
+        // Schedule the NEXT next track for the new handoff window.
+        schedulePreBufferNextTrack()
       })
 
       // Handle non-gapless track end (when no next track buffered)
@@ -2295,6 +2464,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Cleanup listeners
     _cleanupListeners: () => {
+      clearScheduledPrebufferTimer()
       // Audio engine handles its own cleanup
       if (remoteLoadProgressUnsubscribe) {
         remoteLoadProgressUnsubscribe()
@@ -2312,7 +2482,7 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   const replayGainDb = getReplayGainCandidateDb(playerState.currentTrack, nextState.replayGainMode)
   audioEngine.setCurrentReplayGainDb(replayGainDb)
   audioEngine.clearNextBuffer()
-  void playerState._preBufferNextTrack()
+  playerState._schedulePreBufferNextTrack({ invalidatePending: true })
 })
 
 useAudioSettingsStore.subscribe((nextState, prevState) => {
@@ -2320,10 +2490,7 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
 
   const playerState = usePlayerStore.getState()
   audioEngine.clearNextBuffer()
-
-  if (!nextState.disableGaplessPrebufferDev) {
-    void playerState._preBufferNextTrack()
-  }
+  playerState._schedulePreBufferNextTrack({ invalidatePending: true })
 })
 
 export function getPlayerDiagnosticsSnapshot(): {

@@ -4096,6 +4096,10 @@ export class AudioEngine {
     return this.nextBuffer !== null
   }
 
+  get nextBufferedTrackPath(): string | null {
+    return this.hasNextBuffered ? this.nextBufferTrackPath : null
+  }
+
   // Load audio from ArrayBuffer
   async loadAudioData(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {

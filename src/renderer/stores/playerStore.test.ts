@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   createQueueEntriesFromPaths,
   createQueueEntryFromTrack,
+  GAPLESS_PREBUFFER_LEAD_SECONDS,
+  getGaplessPrebufferDelayMs,
   MAX_PLAYBACK_HISTORY,
   usePlayerStore,
   type QueueTrackEntry
@@ -175,6 +177,14 @@ test('associated external queue entries use sanitized snapshots instead of libra
   assert.equal(resolved?.track.title, 'Opened File Title')
   assert.equal(resolved?.track.origin, 'associated-external')
   assert.equal(Object.hasOwn(resolved?.track as unknown as Record<string, unknown>, 'artworkData'), false)
+})
+
+test('gapless prebuffer delay waits until the late handoff window', () => {
+  assert.equal(getGaplessPrebufferDelayMs(0, 180), 165_000)
+  assert.equal(getGaplessPrebufferDelayMs(164.6, 180), 400)
+  assert.equal(getGaplessPrebufferDelayMs(165, 180), 0)
+  assert.equal(getGaplessPrebufferDelayMs(0, GAPLESS_PREBUFFER_LEAD_SECONDS), 0)
+  assert.equal(getGaplessPrebufferDelayMs(0, 0), 0)
 })
 
 test('playback history is capped and stores sanitized queue entries', async () => {
