@@ -185,6 +185,10 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
       }
       pendingResizeRef.current = null
       resizeStateRef.current = null
+      if (snapshotCanvasRef.current) {
+        snapshotCanvasRef.current.width = 0
+        snapshotCanvasRef.current.height = 0
+      }
       snapshotCanvasRef.current = null
       sizeRef.current = { width: 0, height: 0 }
     }

@@ -455,5 +455,22 @@ export class Waveform {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.waterfallCanvas.width = 0
+    this.waterfallCanvas.height = 0
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
+    this.columnAccumulator = new Float32Array(0)
+    this.bandLowAcc = new Float32Array(0)
+    this.bandMidAcc = new Float32Array(0)
+    this.bandHighAcc = new Float32Array(0)
+    this.columnAccumulatorPos = 0
+    this.samplesPerColumn = 0
+    this.lastSampleRate = 0
+    this.splitter.reset()
   }
 }

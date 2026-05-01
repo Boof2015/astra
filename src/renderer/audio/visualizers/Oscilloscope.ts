@@ -401,6 +401,13 @@ export class Oscilloscope {
       nativeOscilloscope.reset()
     }
 
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
+
     // Reset warmup state
     this.samplesReceived = 0
     this.lastSampleRate = 0

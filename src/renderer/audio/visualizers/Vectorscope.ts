@@ -394,5 +394,17 @@ export class Vectorscope {
     if (isNativeAvailable()) {
       nativeVectorscope.reset()
     }
+
+    this.splitter.reset()
+    this.multibandBuffer.reset()
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.offscreenCanvas.width = 0
+    this.offscreenCanvas.height = 0
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
+    this.lastSampleRate = 0
   }
 }
