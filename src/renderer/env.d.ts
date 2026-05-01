@@ -94,6 +94,7 @@ declare global {
             setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
             loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             play: () => Promise<NativeAudioPlaybackSnapshot>
             pause: () => Promise<NativeAudioPlaybackSnapshot>
             stop: () => Promise<NativeAudioPlaybackSnapshot>

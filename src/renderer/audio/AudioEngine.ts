@@ -1153,11 +1153,41 @@ export class AudioEngine {
       }
       this.assertCurrentLoadOperation(loadOperation)
     }
-    this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
     this.currentBufferTrackPath = null
+
+    const canPromoteNativeNext = this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
+    if (canPromoteNativeNext) {
+      let result: NativeAudioTrackLoadResult | null = null
+      try {
+        result = await window.nativeAudioAPI.promoteNextTrack(track.path, this.buildNativeTrackMetadata(track))
+      } catch (error) {
+        if (isSupersededAudioLoadError(error) || loadOperation !== this.loadGeneration) {
+          throw new SupersededAudioLoadError()
+        }
+        this.nativeNextTrackBuffered = false
+        this.nextBufferTrackPath = null
+      }
+      if (result) {
+        this.assertCurrentLoadOperation(loadOperation)
+        this.nativeNextTrackBuffered = false
+        this.nextBufferTrackPath = null
+        this.currentBufferTrackPath = track.path
+        await this.refreshNativeCapabilities()
+        this.assertCurrentLoadOperation(loadOperation)
+        await this.refreshNativeSnapshot()
+        this.assertCurrentLoadOperation(loadOperation)
+        this.notifyTrackChange()
+        this._playbackState = 'stopped'
+        this.emit('stateChange', this._playbackState)
+        this.emit('durationChange', result.duration)
+        return result
+      }
+    }
+
+    this.clearNextBuffer()
     this.nativeNextTrackBuffered = false
     let result: NativeAudioTrackLoadResult
     try {

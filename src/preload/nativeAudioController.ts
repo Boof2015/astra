@@ -33,6 +33,7 @@ export interface NativeAudioAddonPlayback {
     sampleFormat: NativeAudioSampleFormat,
     duration: number
   ): void
+  promoteNextTrack(): NativeAudioPlaybackSnapshot
   play(): NativeAudioPlaybackSnapshot
   pause(): NativeAudioPlaybackSnapshot
   stop(): NativeAudioPlaybackSnapshot
@@ -57,6 +58,7 @@ interface NativeAudioControllerApi {
   setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
   loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+  promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   play: () => Promise<NativeAudioPlaybackSnapshot>
   pause: () => Promise<NativeAudioPlaybackSnapshot>
   stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -100,7 +102,10 @@ interface DecodeFileOptions {
 interface LoadedTrackRequest {
   filePath: string
   metadata?: NativeAudioTrackMetadata
+  sampleRate: number
+  channels: number
   sampleFormat: NativeAudioSampleFormat
+  duration: number
 }
 
 interface FfprobeStreamInfo {
@@ -145,6 +150,13 @@ const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
   currentBytes: 0,
   nextBytes: 0,
   totalBytes: 0
+}
+
+const EMPTY_PCM_BUFFER = Buffer.alloc(0)
+
+function releaseDecodedPcmBuffer(decoded: DecodedPcmTrack): void {
+  // Native copies PCM synchronously; keep metadata/byte counts without pinning external memory.
+  decoded.pcmData = EMPTY_PCM_BUFFER
 }
 
 function looksLikePath(candidate: string): boolean {
@@ -304,6 +316,19 @@ function normalizeTrackLoadResult(
     channels: snapshot.channels ?? decoded.channels,
     sampleFormat: snapshot.sampleFormat ?? decoded.sampleFormat,
     duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration,
+    bitPerfectActive: snapshot.bitPerfectActive
+  }
+}
+
+function normalizePromotedTrackLoadResult(
+  snapshot: NativeAudioPlaybackSnapshot,
+  fallback: LoadedTrackRequest | null
+): NativeAudioTrackLoadResult {
+  return {
+    sampleRate: snapshot.sampleRate ?? fallback?.sampleRate ?? fallback?.metadata?.sampleRate ?? 0,
+    channels: snapshot.channels ?? fallback?.channels ?? fallback?.metadata?.channels ?? 2,
+    sampleFormat: snapshot.sampleFormat ?? fallback?.sampleFormat ?? 'f32',
+    duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0,
     bitPerfectActive: snapshot.bitPerfectActive
   }
 }
@@ -468,8 +493,8 @@ export function createNativeAudioController(
   const playback = nativeModule?.playback ?? null
   const listeners = new Set<(event: NativeAudioEvent) => void>()
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
-  let nextDecodedTrack: DecodedPcmTrack | null = null
   let currentTrackRequest: LoadedTrackRequest | null = null
+  let nextTrackRequest: LoadedTrackRequest | null = null
   let loadGeneration = 0
   let prebufferGeneration = 0
   let currentBufferBytes = 0
@@ -522,9 +547,8 @@ export function createNativeAudioController(
     if (event.type === 'gaplessTransition') {
       currentBufferBytes = nextBufferBytes
       nextBufferBytes = 0
-      nextDecodedTrack = null
-    } else if (event.type === 'ended') {
-      nextDecodedTrack = null
+      currentTrackRequest = nextTrackRequest
+      nextTrackRequest = null
     }
 
     for (const listener of listeners) {
@@ -691,20 +715,26 @@ export function createNativeAudioController(
       const engine = await ensureAvailable()
       assertCurrentLoadOperation(loadOperation)
       const backendKind = capabilitiesCache.activeBackend
-      const decoded = nextDecodedTrack?.filePath === filePath
-        ? nextDecodedTrack
-        : await decodeFileToPcm(filePath, metadata, { backendKind })
-      assertCurrentLoadOperation(loadOperation)
-      nextDecodedTrack = null
-      currentTrackRequest = {
-        filePath,
-        metadata,
-        sampleFormat: decoded.sampleFormat
+      const decoded = await decodeFileToPcm(filePath, metadata, { backendKind })
+      const decodedByteLength = decoded.pcmData.byteLength
+      try {
+        assertCurrentLoadOperation(loadOperation)
+        currentTrackRequest = {
+          filePath,
+          metadata,
+          sampleRate: decoded.sampleRate,
+          channels: decoded.channels,
+          sampleFormat: decoded.sampleFormat,
+          duration: decoded.duration
+        }
+        const result = loadDecodedTrack(engine, decoded)
+        currentBufferBytes = decodedByteLength
+        nextBufferBytes = 0
+        nextTrackRequest = null
+        return result
+      } finally {
+        releaseDecodedPcmBuffer(decoded)
       }
-      const result = loadDecodedTrack(engine, decoded)
-      currentBufferBytes = decoded.pcmData.byteLength
-      nextBufferBytes = 0
-      return result
     },
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
@@ -714,18 +744,56 @@ export function createNativeAudioController(
       const decoded = await decodeFileToPcm(filePath, metadata, {
         backendKind: capabilitiesCache.activeBackend
       })
-      assertCurrentPrebufferOperation(prebufferOperation)
-      engine.preloadNextTrack(
-        new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
-        decoded.sampleRate,
-        decoded.channels,
-        decoded.sampleFormat,
-        decoded.duration
+      const decodedByteLength = decoded.pcmData.byteLength
+      try {
+        assertCurrentPrebufferOperation(prebufferOperation)
+        engine.preloadNextTrack(
+          new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
+          decoded.sampleRate,
+          decoded.channels,
+          decoded.sampleFormat,
+          decoded.duration
+        )
+        nextBufferBytes = decodedByteLength
+        nextTrackRequest = {
+          filePath,
+          metadata,
+          sampleRate: decoded.sampleRate,
+          channels: decoded.channels,
+          sampleFormat: decoded.sampleFormat,
+          duration: decoded.duration
+        }
+        const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+        return normalizeTrackLoadResult(snapshot, decoded)
+      } finally {
+        releaseDecodedPcmBuffer(decoded)
+      }
+    },
+
+    promoteNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
+      const loadOperation = beginLoadOperation()
+      const engine = await ensureAvailable()
+      assertCurrentLoadOperation(loadOperation)
+      const promotedRequest = nextTrackRequest?.filePath === filePath
+        ? nextTrackRequest
+        : null
+      const snapshot = normalizePlaybackSnapshot(engine.promoteNextTrack())
+      currentTrackRequest = promotedRequest ?? (
+        snapshot.sampleRate && snapshot.channels && snapshot.sampleFormat
+          ? {
+              filePath,
+              metadata,
+              sampleRate: snapshot.sampleRate,
+              channels: snapshot.channels,
+              sampleFormat: snapshot.sampleFormat,
+              duration: snapshot.duration
+            }
+          : null
       )
-      nextDecodedTrack = decoded
-      nextBufferBytes = decoded.pcmData.byteLength
-      const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
-      return normalizeTrackLoadResult(snapshot, decoded)
+      currentBufferBytes = nextBufferBytes
+      nextBufferBytes = 0
+      nextTrackRequest = null
+      return normalizePromotedTrackLoadResult(snapshot, currentTrackRequest)
     },
 
     play: async () => {
@@ -751,14 +819,23 @@ export function createNativeAudioController(
           backendKind: capabilitiesCache.activeBackend,
           forcedSampleFormat: retrySampleFormat
         })
+        const decodedByteLength = decoded.pcmData.byteLength
         currentTrackRequest = {
           ...currentTrackRequest,
-          sampleFormat: decoded.sampleFormat
+          sampleRate: decoded.sampleRate,
+          channels: decoded.channels,
+          sampleFormat: decoded.sampleFormat,
+          duration: decoded.duration
         }
-        loadDecodedTrack(engine, decoded)
-        currentBufferBytes = decoded.pcmData.byteLength
-        nextBufferBytes = 0
-        return normalizePlaybackSnapshot(engine.play())
+        try {
+          loadDecodedTrack(engine, decoded)
+          currentBufferBytes = decodedByteLength
+          nextBufferBytes = 0
+          nextTrackRequest = null
+          return normalizePlaybackSnapshot(engine.play())
+        } finally {
+          releaseDecodedPcmBuffer(decoded)
+        }
       }
     },
 
@@ -770,7 +847,6 @@ export function createNativeAudioController(
     stop: async () => {
       invalidateLoadOperations()
       const engine = await ensureAvailable()
-      nextDecodedTrack = null
       return normalizePlaybackSnapshot(engine.stop())
     },
 
@@ -782,8 +858,8 @@ export function createNativeAudioController(
     clearNextTrack: async () => {
       invalidatePrebufferOperations()
       const engine = await ensureAvailable()
-      nextDecodedTrack = null
       nextBufferBytes = 0
+      nextTrackRequest = null
       engine.clearNextTrack()
     },
 

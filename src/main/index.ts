@@ -449,6 +449,7 @@ let lastFmConfig: LastFmServiceConfig = {
 }
 let lyricsOnlineEnabled = false
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
+let isAppQuitting = false
 
 function getMemoryDiagnosticsProcessLabels(): Record<number, string> {
   const labels: Record<number, string> = {
@@ -483,6 +484,27 @@ function getMemoryDiagnosticsWindowRoleSummary(): Record<string, unknown> {
       return count + (scopeWindow && !scopeWindow.isDestroyed() ? 1 : 0)
     }, 0),
     scopePopouts: getScopePopoutState()
+  }
+}
+
+function sendToWindow(window: BrowserWindow | null, channel: string, ...args: unknown[]): boolean {
+  if (isAppQuitting || !window || window.isDestroyed() || window.webContents.isDestroyed()) {
+    return false
+  }
+
+  try {
+    const frame = window.webContents.mainFrame
+    if (frame.isDestroyed() || frame.detached) {
+      return false
+    }
+    frame.send(channel, ...args)
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!message.includes('Render frame was disposed')) {
+      console.warn(`Failed to send ${channel}:`, error)
+    }
+    return false
   }
 }
 
@@ -1619,42 +1641,30 @@ function broadcastLyricsPopoutWindowState(): void {
 }
 
 function broadcastLocalApiStatus(): void {
+  if (isAppQuitting) return
   const payload = localApiService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('local-api:status', payload)
-  }
+  sendToWindow(mainWindow, 'local-api:status', payload)
 }
 
 function broadcastPhoneRemoteStatus(): void {
+  if (isAppQuitting) return
   const payload = phoneRemoteService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('phone-remote:status', payload)
-  }
+  sendToWindow(mainWindow, 'phone-remote:status', payload)
 }
 
 function broadcastLastFmStatus(): void {
   const payload = lastFmService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('lastfm:status', payload)
-  }
+  sendToWindow(mainWindow, 'lastfm:status', payload)
 }
 
 function broadcastLyricsStatus(): void {
   const payload = lyricsService.getStatus()
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('lyrics:status', payload)
-  }
+  sendToWindow(mainWindow, 'lyrics:status', payload)
 }
 
 function broadcastSubsonicStatus(snapshot?: SubsonicStatusSnapshot): void {
   const payload = snapshot ?? subsonicStatusCache
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('subsonic:status', payload)
-  }
+  sendToWindow(mainWindow, 'subsonic:status', payload)
 }
 
 function setSubsonicSyncProgress(
@@ -1709,9 +1719,7 @@ function refreshSubsonicStatusCache(isSyncing: boolean = subsonicSyncInFlight): 
 
 function broadcastJellyfinStatus(snapshot?: JellyfinStatusSnapshot): void {
   const payload = snapshot ?? jellyfinStatusCache
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('jellyfin:status', payload)
-  }
+  sendToWindow(mainWindow, 'jellyfin:status', payload)
 }
 
 function setJellyfinSyncProgress(
@@ -3394,6 +3402,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  isAppQuitting = true
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
     mainWindowPersistTimer = null
