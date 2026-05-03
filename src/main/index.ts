@@ -4443,6 +4443,10 @@ ipcMain.handle('library:getTracks', () => {
   return library.getAllTracks()
 })
 
+ipcMain.handle('library:getTracksPage', (_event, request?: library.LibraryTrackPageRequest) => {
+  return library.getTrackPage(request)
+})
+
 // Get tracks by artist
 ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: library.ArtistBrowseMode) => {
   return library.getTracksByArtist(artist, mode)

@@ -147,3 +147,24 @@ test('library search returns public track shape with album identities', async (t
   assert.ok(results.every((track) => Array.isArray(track.album_artist_names)))
   assert.ok(results.every((track) => track.is_new === false))
 })
+
+test('library track pages preserve ordering and album identities across page boundaries', async (t) => {
+  await setupSeededLibrary(t)
+
+  const allTracks = library.getAllTracks()
+  const firstPage = library.getTrackPage({ offset: 0, limit: 1 })
+  const secondPage = library.getTrackPage({ offset: 1, limit: 2 })
+
+  assert.equal(firstPage.total, allTracks.length)
+  assert.equal(firstPage.limit, 1)
+  assert.equal(firstPage.offset, 0)
+  assert.equal(firstPage.nextOffset, 1)
+  assert.equal(firstPage.hasMore, true)
+  assert.deepEqual(firstPage.tracks.map((track) => track.path), allTracks.slice(0, 1).map((track) => track.path))
+  assert.deepEqual(secondPage.tracks.map((track) => track.path), allTracks.slice(1, 3).map((track) => track.path))
+
+  const splitAlbum = library.getAlbums().find((album) => album.album === 'Split Release')
+  assert.ok(splitAlbum)
+  assert.equal(firstPage.tracks[0].album_identity_key, splitAlbum.identity_key)
+  assert.equal(secondPage.tracks[0].album_identity_key, splitAlbum.identity_key)
+})

@@ -121,6 +121,20 @@ export interface DbTrack {
   modified_at: number
 }
 
+export interface LibraryTrackPageRequest {
+  offset?: number
+  limit?: number
+}
+
+export interface LibraryTrackPage {
+  tracks: DbTrack[]
+  offset: number
+  limit: number
+  total: number
+  nextOffset: number
+  hasMore: boolean
+}
+
 interface DbTrackRow extends Omit<DbTrack, 'is_new' | 'artist_names' | 'album_artist_names'> {
   artist_names_json: string | null
   album_artist_names_json: string | null
@@ -514,6 +528,8 @@ const BACKFILL_PARALLEL_MIN_FILES = 80
 const BACKFILL_PARALLEL_MIN_WORKERS = 2
 const BACKFILL_PARALLEL_MAX_WORKERS = 3
 const SQLITE_SAFE_MAX_VARIABLES = 900
+const DEFAULT_LIBRARY_TRACK_PAGE_LIMIT = 500
+const MAX_LIBRARY_TRACK_PAGE_LIMIT = 2000
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
 const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
@@ -3477,20 +3493,72 @@ export async function setLyricsTrackSyncOffset(trackPaths: string[], offsetMs: n
   return updated
 }
 
+const ALL_TRACKS_ORDER_BY_CLAUSE = `
+  ORDER BY
+    COALESCE(o.title, t.title) COLLATE NOCASE,
+    COALESCE(o.album, t.album) COLLATE NOCASE,
+    COALESCE(o.disc_number, t.disc_number, 0),
+    COALESCE(o.track_number, t.track_number, 0),
+    t.path COLLATE NOCASE
+`
+
+function normalizeLibraryTrackPageRequest(
+  request?: LibraryTrackPageRequest | null
+): { offset: number; limit: number } {
+  const rawOffset = Number(request?.offset)
+  const rawLimit = Number(request?.limit)
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.trunc(rawOffset) : 0
+  const requestedLimit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.trunc(rawLimit)
+    : DEFAULT_LIBRARY_TRACK_PAGE_LIMIT
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIBRARY_TRACK_PAGE_LIMIT)
+  return { offset, limit }
+}
+
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
   return measureLibraryQuery('getTracks', () => {
     const tracks = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
-      ORDER BY
-        COALESCE(o.title, t.title) COLLATE NOCASE,
-        COALESCE(o.album, t.album) COLLATE NOCASE,
-        COALESCE(o.disc_number, t.disc_number, 0),
-        COALESCE(o.track_number, t.track_number, 0),
-        t.path COLLATE NOCASE
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     return attachAlbumIdentityKeys(tracks, tracks)
+  })
+}
+
+export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryTrackPage {
+  return measureLibraryQuery('getTrackPage', () => {
+    const { offset, limit } = normalizeLibraryTrackPageRequest(request)
+    const total = getTrackCount()
+    if (!db || total === 0 || offset >= total) {
+      return {
+        tracks: [],
+        offset,
+        limit,
+        total,
+        nextOffset: offset,
+        hasMore: false
+      }
+    }
+
+    const rows = readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
+      LIMIT ? OFFSET ?
+    `, [limit, offset])
+    const tracks = attachAlbumIdentityKeys(rows)
+    const nextOffset = offset + rows.length
+
+    return {
+      tracks,
+      offset,
+      limit,
+      total,
+      nextOffset,
+      hasMore: nextOffset < total
+    }
   })
 }
 

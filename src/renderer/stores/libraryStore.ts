@@ -227,6 +227,7 @@ const MAX_FULL_ARTWORK_CACHE_ENTRIES = 4
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
+const FULL_TRACK_PAGE_LIMIT = 500
 export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
@@ -323,9 +324,18 @@ export function updateFullTrackConsumers(
   }
 }
 
+interface TrackCacheFinalizeOptions {
+  prune?: boolean
+}
+
+interface TrackCacheIngestOptions extends TrackCacheFinalizeOptions {
+  mutate?: boolean
+}
+
 function ingestTracksIntoCache(
   trackByPath: ReadonlyMap<string, DbTrack>,
-  tracks: readonly DbTrack[]
+  tracks: readonly DbTrack[],
+  options: TrackCacheIngestOptions = {}
 ): { trackByPath: Map<string, DbTrack>; paths: string[]; changed: boolean } {
   const paths: string[] = []
   const seen = new Set<string>()
@@ -340,7 +350,7 @@ function ingestTracksIntoCache(
       paths.push(path)
     }
     if (next.get(path) === track) continue
-    if (!changed) {
+    if (!changed && !options.mutate) {
       next = new Map(next)
     }
     next.set(path, track)
@@ -396,11 +406,13 @@ function finalizeTrackCachePatch(
   state: LibraryStore,
   patch: TrackCachePatch,
   trackByPath: Map<string, DbTrack>,
-  cacheChanged: boolean
+  cacheChanged: boolean,
+  options: TrackCacheFinalizeOptions = {}
 ): TrackCachePatch & Pick<LibraryStore, 'trackByPath' | 'trackCacheVersion'> {
-  const retainedPaths = collectRetainedTrackPaths(state, patch)
-  const prunedTrackByPath = pruneCachedTracks(trackByPath, retainedPaths)
-  const didPrune = prunedTrackByPath !== trackByPath
+  const shouldPrune = options.prune !== false
+  const retainedPaths = shouldPrune ? collectRetainedTrackPaths(state, patch) : null
+  const prunedTrackByPath = retainedPaths ? pruneCachedTracks(trackByPath, retainedPaths) : trackByPath
+  const didPrune = shouldPrune && prunedTrackByPath !== trackByPath
 
   return {
     ...patch,
@@ -412,10 +424,11 @@ function finalizeTrackCachePatch(
 function ingestTracksForPatch(
   state: LibraryStore,
   tracks: readonly DbTrack[],
-  patch: TrackCachePatch
+  patch: TrackCachePatch,
+  options: TrackCacheIngestOptions = {}
 ): TrackCachePatch & Pick<LibraryStore, 'trackByPath' | 'trackCacheVersion'> {
-  const ingested = ingestTracksIntoCache(state.trackByPath, tracks)
-  return finalizeTrackCachePatch(state, patch, ingested.trackByPath, ingested.changed)
+  const ingested = ingestTracksIntoCache(state.trackByPath, tracks, options)
+  return finalizeTrackCachePatch(state, patch, ingested.trackByPath, ingested.changed, options)
 }
 
 function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectionOrigin' | 'trackPaths'>): LibrarySelectionSnapshot | null {
@@ -843,25 +856,62 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       })
     }
 
-    const requestId = ++fullTracksRequestId
-    const tracks = await window.electronAPI.library.getTracks()
-    if (requestId !== fullTracksRequestId) {
+    if (get().fullTrackConsumers.size === 0) {
       return
     }
 
+    const requestId = ++fullTracksRequestId
+    const paths: string[] = []
+    const seenPaths = new Set<string>()
+    let offset = 0
+
+    while (true) {
+      const page = await window.electronAPI.library.getTracksPage({
+        offset,
+        limit: FULL_TRACK_PAGE_LIMIT
+      })
+      if (requestId !== fullTracksRequestId) {
+        return
+      }
+      if (get().fullTrackConsumers.size === 0) {
+        return
+      }
+
+      for (const track of page.tracks) {
+        if (!track.path || seenPaths.has(track.path)) continue
+        seenPaths.add(track.path)
+        paths.push(track.path)
+      }
+
+      set((state) => {
+        if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+          return {}
+        }
+        return ingestTracksForPatch(state, page.tracks, {}, { mutate: true, prune: false })
+      })
+
+      if (!page.hasMore || page.tracks.length === 0) {
+        break
+      }
+
+      const nextOffset = Number(page.nextOffset)
+      offset = Number.isFinite(nextOffset) && nextOffset > offset
+        ? Math.trunc(nextOffset)
+        : offset + page.tracks.length
+    }
+
     set((state) => {
-      if (state.fullTrackConsumers.size === 0) {
+      if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
         return {}
       }
 
-      const paths = getUniqueTrackPaths(tracks)
       const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && (
         state.viewMode === 'tracks' || state.viewMode === 'folders'
       )
-      return ingestTracksForPatch(state, tracks, {
+      return finalizeTrackCachePatch(state, {
         fullTrackPaths: paths,
         ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
-      })
+      }, state.trackByPath, false)
     })
   },
 

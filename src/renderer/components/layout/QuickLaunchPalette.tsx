@@ -25,6 +25,7 @@ const PLAYLIST_RESULT_LIMIT = 4
 const EMPTY_RECENT_TRACKS_LIMIT = 3
 const EMPTY_SHORTCUT_NAV_IDS = ['nav:eq', 'nav:library'] as const
 const EMPTY_SHORTCUT_SETTING_IDS = ['library', 'playback'] as const
+const QUICK_LAUNCH_TRACK_PAGE_LIMIT = 500
 
 interface ResultGroup {
   id: string
@@ -176,10 +177,34 @@ export default function QuickLaunchPalette() {
     let canceled = false
     setIsTrackCorpusLoading(true)
 
-    void window.electronAPI.library.getTracks()
+    const loadTrackCorpus = async () => {
+      const tracks: QuickLaunchTrackRecord[] = []
+      let offset = 0
+
+      while (true) {
+        const page = await window.electronAPI.library.getTracksPage({
+          offset,
+          limit: QUICK_LAUNCH_TRACK_PAGE_LIMIT
+        })
+
+        tracks.push(...page.tracks)
+        if (!page.hasMore || page.tracks.length === 0) {
+          break
+        }
+
+        const nextOffset = Number(page.nextOffset)
+        offset = Number.isFinite(nextOffset) && nextOffset > offset
+          ? Math.trunc(nextOffset)
+          : offset + page.tracks.length
+      }
+
+      return tracks
+    }
+
+    void loadTrackCorpus()
       .then((tracks) => {
         if (!canceled) {
-          setTrackCorpus(tracks as QuickLaunchTrackRecord[])
+          setTrackCorpus(tracks)
         }
       })
       .catch(() => {

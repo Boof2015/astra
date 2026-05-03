@@ -173,6 +173,20 @@ export interface DbTrack {
   modified_at: number
 }
 
+export interface LibraryTrackPageRequest {
+  offset?: number
+  limit?: number
+}
+
+export interface LibraryTrackPage {
+  tracks: DbTrack[]
+  offset: number
+  limit: number
+  total: number
+  nextOffset: number
+  hasMore: boolean
+}
+
 export interface LibraryFolder {
   id: number
   path: string
@@ -477,6 +491,32 @@ function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
     fonts: { ...usage.fonts },
     other: { ...usage.other }
   }
+}
+
+const LIBRARY_TRACK_PAGE_LIMIT = 500
+
+async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
+  const tracks: DbTrack[] = []
+  let offset = 0
+
+  while (true) {
+    const page = await ipcRenderer.invoke('library:getTracksPage', {
+      offset,
+      limit: LIBRARY_TRACK_PAGE_LIMIT
+    }) as LibraryTrackPage
+
+    tracks.push(...page.tracks)
+    if (!page.hasMore || page.tracks.length === 0) {
+      break
+    }
+
+    const nextOffset = Number(page.nextOffset)
+    offset = Number.isFinite(nextOffset) && nextOffset > offset
+      ? Math.trunc(nextOffset)
+      : offset + page.tracks.length
+  }
+
+  return tracks
 }
 
 // Expose APIs to renderer
@@ -799,7 +839,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Library operations
   library: {
-    getTracks: () => ipcRenderer.invoke('library:getTracks'),
+    getTracks: () => getAllLibraryTracksPaged(),
+    getTracksPage: (request?: LibraryTrackPageRequest) =>
+      ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
@@ -1161,6 +1203,7 @@ declare global {
       // Library operations
       library: {
         getTracks: () => Promise<DbTrack[]>
+        getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
