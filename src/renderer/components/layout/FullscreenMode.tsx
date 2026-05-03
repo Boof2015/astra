@@ -8,6 +8,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
+import { getFullscreenBackdropArtworkCandidates } from '../../utils/fullscreenBackdropArtwork'
 import type { LyricsLine, LyricsSource, LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
@@ -569,12 +570,17 @@ export default function FullscreenMode() {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
+  const currentTrackSource = usePlayerStore((s) => s.currentTrackSource)
+  const playbackFuture = usePlayerStore((s) => s.playbackFuture)
+  const userQueue = usePlayerStore((s) => s.userQueue)
+  const autoQueue = usePlayerStore((s) => s.autoQueue)
+  const autoQueueIndex = usePlayerStore((s) => s.autoQueueIndex)
+  const shuffledAutoIndices = usePlayerStore((s) => s.shuffledAutoIndices)
   const togglePlay = usePlayerStore((s) => s.togglePlay)
   const playNext = usePlayerStore((s) => s.playNext)
   const playPrevious = usePlayerStore((s) => s.playPrevious)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
-  const nextTrack = usePlayerStore((s) => s.getResolvedNextTrack())
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const favorites = useLibraryStore((s) => s.favorites)
@@ -607,6 +613,17 @@ export default function FullscreenMode() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
+  const nextTrack = useMemo(() => usePlayerStore.getState().getResolvedNextTrack(), [
+    autoQueue,
+    autoQueueIndex,
+    currentTrack,
+    currentTrackSource,
+    playbackFuture,
+    repeat,
+    shuffle,
+    shuffledAutoIndices,
+    userQueue
+  ])
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
   const currentTrackId = currentTrack?.id ?? null
   const resolvedChannelCount = currentTrack?.channels ?? null
@@ -705,25 +722,8 @@ export default function FullscreenMode() {
         return
       }
 
-      const artworkCandidates: string[] = []
-
-      if (currentTrack.artworkHash) {
-        try {
-          const hashArtwork = await getArtwork(currentTrack.artworkHash, { variant: 'full' })
-          if (backdropRequestTokenRef.current !== requestToken) return
-          if (hashArtwork) {
-            artworkCandidates.push(hashArtwork)
-          }
-        } catch {
-          if (backdropRequestTokenRef.current !== requestToken) return
-        }
-      }
-
-      if (currentTrack.artworkData) {
-        artworkCandidates.push(currentTrack.artworkData)
-      }
-
-      const uniqueCandidates = [...new Set(artworkCandidates)]
+      const uniqueCandidates = await getFullscreenBackdropArtworkCandidates(currentTrack, getArtwork)
+      if (backdropRequestTokenRef.current !== requestToken) return
       if (uniqueCandidates.length === 0) {
         setResolvedIfCurrent(null)
         return

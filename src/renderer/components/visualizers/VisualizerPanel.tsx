@@ -117,16 +117,14 @@ function hasRenderedBox(element: HTMLElement): boolean {
 }
 
 function useAnalyzerSurfaceVisible(
-  panelRef: RefObject<HTMLDivElement | null>,
-  forcedHidden: boolean
+  panelRef: RefObject<HTMLDivElement | null>
 ): boolean {
   const [isSurfaceVisible, setIsSurfaceVisible] = useState(() => {
-    if (forcedHidden) return false
     return typeof document === 'undefined' || document.visibilityState === 'visible'
   })
 
   const updateSurfaceVisible = useCallback(() => {
-    if (forcedHidden || document.visibilityState === 'hidden') {
+    if (document.visibilityState === 'hidden') {
       setIsSurfaceVisible(false)
       return
     }
@@ -138,7 +136,7 @@ function useAnalyzerSurfaceVisible(
     }
 
     setIsSurfaceVisible(hasRenderedBox(panel))
-  }, [forcedHidden, panelRef])
+  }, [panelRef])
 
   useEffect(() => {
     updateSurfaceVisible()
@@ -163,7 +161,7 @@ function useAnalyzerSurfaceVisible(
     }
   }, [panelRef, updateSurfaceVisible])
 
-  return !forcedHidden && isSurfaceVisible
+  return isSurfaceVisible
 }
 
 function DockedSpectrumTile({
@@ -771,7 +769,8 @@ export default function VisualizerPanel({
     return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
   }, [hiddenScopes, scopeOrder])
   const visibleScopes = visibleScopesProp ?? visibleScopesFromStore
-  const isAnalyzerSurfaceVisible = useAnalyzerSurfaceVisible(panelRef, isFullscreen)
+  const isAnalyzerSurfaceVisible = useAnalyzerSurfaceVisible(panelRef)
+  const isDockedAnalyzerActive = isAnalyzerSurfaceVisible && !isFullscreen
   const mountedVisibleScopes = isAnalyzerSurfaceVisible ? visibleScopes : EMPTY_VISIBLE_SCOPES
 
   const effectiveWidthWeights = useMemo(() => {
@@ -817,11 +816,16 @@ export default function VisualizerPanel({
   }, [isAnalyzerSurfaceVisible, stopResize])
 
   useEffect(() => {
+    if (!isFullscreen) return
+    stopResize(false)
+  }, [isFullscreen, stopResize])
+
+  useEffect(() => {
     stopResize(false)
   }, [mountedVisibleScopes.length, stopResize])
 
   const updateHandleOffsets = useCallback(() => {
-    if (!isAnalyzerSurfaceVisible || !isEditMode || mountedVisibleScopes.length < 2) {
+    if (!isDockedAnalyzerActive || !isEditMode || mountedVisibleScopes.length < 2) {
       setHandleOffsets([])
       return
     }
@@ -833,7 +837,7 @@ export default function VisualizerPanel({
       nextOffsets.push(leftElement.offsetLeft + leftElement.offsetWidth)
     }
     setHandleOffsets(nextOffsets)
-  }, [isAnalyzerSurfaceVisible, isEditMode, mountedVisibleScopes])
+  }, [isDockedAnalyzerActive, isEditMode, mountedVisibleScopes])
 
   useEffect(() => {
     updateHandleOffsets()
@@ -867,26 +871,26 @@ export default function VisualizerPanel({
   useEffect(() => {
     const visibleScopeSet = new Set(mountedVisibleScopes)
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
-      spectrum: isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
-      oscilloscope: isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
-      vectorscope: isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
-      spectrogram: isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
-      vumeter: isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
-      lufsmeter: isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
-      waveform: isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform,
+      spectrum: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
+      oscilloscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
+      vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
+      spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
+      vumeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
+      lufsmeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
+      waveform: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform,
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isRunning, mountedVisibleScopes, scopePopoutState])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, scopePopoutState])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()
   }, [openAnalyzerEditMode])
 
   const startResizeDrag = useCallback((handleIndex: number, event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!isAnalyzerSurfaceVisible || !isEditMode) return
+    if (!isDockedAnalyzerActive || !isEditMode) return
 
     const leftScope = mountedVisibleScopes[handleIndex]
     const rightScope = mountedVisibleScopes[handleIndex + 1]
@@ -987,7 +991,7 @@ export default function VisualizerPanel({
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', handlePointerUp)
     window.addEventListener('pointercancel', handlePointerUp)
-  }, [isAnalyzerSurfaceVisible, isEditMode, mountedVisibleScopes, onResizePreviewChange, stopResize, widthWeights])
+  }, [isDockedAnalyzerActive, isEditMode, mountedVisibleScopes, onResizePreviewChange, stopResize, widthWeights])
 
   const renderScopeItem = (scope: ScopeKind) => {
     const isPoppedOut = scopePopoutState[scope]
@@ -1090,7 +1094,7 @@ export default function VisualizerPanel({
             tiltDbPerOctave={spectrumTiltDbPerOctave}
             heatmapFill={spectrumHeatmap}
             heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'oscilloscope' ? (
           <DockedOscilloscopeTile
@@ -1098,7 +1102,7 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             pitchLock={pitchLock}
             underfillEnabled={oscilloscopeUnderfillEnabled}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'spectrogram' ? (
           <DockedSpectrogramTile
@@ -1108,7 +1112,7 @@ export default function VisualizerPanel({
             scrollSpeed={spectrogramScrollSpeed}
             clarityMode={spectrogramClarityMode}
             scaleMode={spectrogramScaleMode}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'vumeter' ? (
           <DockedVUMeterTile
@@ -1116,13 +1120,13 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             vuMeterMode={vuMeterMode}
             vuMeterOrientation={vuMeterOrientation}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'lufsmeter' ? (
           <DockedLUFSMeterTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'waveform' ? (
           <DockedWaveformTile
@@ -1131,7 +1135,7 @@ export default function VisualizerPanel({
             scrollSpeed={waveformScrollSpeed}
             gainDb={waveformGainDb}
             multiband={waveformMultiband}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : (
           <DockedVectorscopeTile
@@ -1139,7 +1143,7 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             vectorscopeMode={vectorscopeMode}
             vectorscopeMultiband={vectorscopeMultiband}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         )}
       </div>
