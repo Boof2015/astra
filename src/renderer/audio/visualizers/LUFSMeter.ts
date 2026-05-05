@@ -476,5 +476,17 @@ export class LUFSMeter {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.ringBufferL = new Float32Array(0)
+    this.ringBufferR = new Float32Array(0)
+    this.ringBufferPos = 0
+    this.ringBufferFilled = 0
+    this.integratedBlockLoudness = []
+    this.integratedBlockSumL = 0
+    this.integratedBlockSumR = 0
+    this.integratedBlockSamples = 0
+    this.integratedHopCounter = 0
   }
 }

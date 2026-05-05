@@ -81,6 +81,7 @@ export interface MemoryDiagnosticsVisualizerSnapshot {
 export interface MemoryDiagnosticsLibrarySnapshot {
   totalTrackCount: number
   visibleTrackCount: number
+  fullTrackCount: number
   albumCount: number
   artistCount: number
   folderCount: number
@@ -100,6 +101,19 @@ export interface MemoryDiagnosticsRendererHeapSpacesSnapshot {
   codeSpaceUsedBytes: number | null
   mapSpaceUsedBytes: number | null
   largeObjectSpaceUsedBytes: number | null
+}
+
+export interface MemoryDiagnosticsProcessMemoryStats {
+  rssBytes: number
+  heapUsedBytes: number
+  heapTotalBytes: number
+  externalBytes: number
+  arrayBuffersBytes: number
+}
+
+export interface MemoryDiagnosticsRendererMemoryStats extends MemoryDiagnosticsProcessMemoryStats {
+  privateMb: number
+  heapSpaces: MemoryDiagnosticsRendererHeapSpacesSnapshot
 }
 
 export interface MemoryDiagnosticsBlinkResourceUsageBucketSnapshot {
@@ -137,6 +151,15 @@ export interface MemoryDiagnosticsTitleBarSampleSnapshot {
   nextBufferMemoryMb: number | null
   otherProcessMemoryMb: number | null
   totalWorkingSetMb: number | null
+  rendererHeapUsedMb: number | null
+  rendererExternalMb: number | null
+  rendererArrayBuffersMb: number | null
+  rendererOldSpaceMb: number | null
+  rendererLargeObjectSpaceMb: number | null
+  mainRssMb: number | null
+  mainHeapUsedMb: number | null
+  mainExternalMb: number | null
+  mainArrayBuffersMb: number | null
 }
 
 export interface MemoryDiagnosticsTitleBarPeakSnapshot {
@@ -148,6 +171,15 @@ export interface MemoryDiagnosticsTitleBarPeakSnapshot {
   nextBufferMemoryMb: number | null
   otherProcessMemoryMb: number | null
   totalWorkingSetMb: number | null
+  rendererHeapUsedMb: number | null
+  rendererExternalMb: number | null
+  rendererArrayBuffersMb: number | null
+  rendererOldSpaceMb: number | null
+  rendererLargeObjectSpaceMb: number | null
+  mainRssMb: number | null
+  mainHeapUsedMb: number | null
+  mainExternalMb: number | null
+  mainArrayBuffersMb: number | null
 }
 
 export interface MemoryDiagnosticsRemoteLoadSnapshot {

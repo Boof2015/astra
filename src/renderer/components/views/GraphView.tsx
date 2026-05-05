@@ -192,8 +192,10 @@ const closeIcon = (
 )
 
 export default function GraphView() {
-  const tracks = useLibraryStore((state) => state.tracks)
-  const fullTracks = useLibraryStore((state) => state.fullTracks)
+  const trackPaths = useLibraryStore((state) => state.trackPaths)
+  const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
   const isLibraryLoading = useLibraryStore((state) => state.isLoading)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
@@ -240,13 +242,21 @@ export default function GraphView() {
     viewportRef.current = viewport
   }, [viewport])
 
+  const tracks = useMemo(
+    () => resolveTrackPaths(trackPaths),
+    [resolveTrackPaths, trackCacheVersion, trackPaths]
+  )
+  const fullTracks = useMemo(
+    () => resolveTrackPaths(fullTrackPaths),
+    [resolveTrackPaths, fullTrackPaths, trackCacheVersion]
+  )
   const graphTracks = fullTracks.length > 0
     ? fullTracks
     : (!selectedAlbum && !selectedArtist ? tracks : [])
 
   useEffect(() => {
     if (totalTrackCount <= 0 || graphTracks.length > 0 || isLibraryLoading) return
-    void loadFullTracks()
+    void loadFullTracks('graph')
   }, [graphTracks.length, isLibraryLoading, loadFullTracks, totalTrackCount])
 
   useEffect(() => {
@@ -643,7 +653,7 @@ export default function GraphView() {
       dragStateRef.current = null
       simulationNodesRef.current = []
       viewportRef.current = DEFAULT_VIEWPORT
-      releaseFullTracks()
+      releaseFullTracks('graph')
     }
   }, [releaseFullTracks])
 

@@ -17,9 +17,16 @@ import { useAudioSettingsStore } from '../stores/audioSettingsStore'
 import { useScopePopoutStore } from '../stores/scopePopoutStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import {
+  captureTitleBarSample,
+  createEmptyTitleBarPeaks,
+  createEmptyTitleBarSample,
+  createTitleBarPeaksFromSample,
+  TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS,
+  updateTitleBarPeaks
+} from '../utils/titleBarMemoryStats'
 
-const TITLE_BAR_SAMPLE_INTERVAL_MS = 1000
-const TITLE_BAR_STALE_SAMPLE_MS = TITLE_BAR_SAMPLE_INTERVAL_MS * 2
+const TITLE_BAR_STALE_SAMPLE_MS = TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS * 2
 
 type PerformanceWithMemoryDiagnostics = Performance & {
   memory?: {
@@ -126,121 +133,6 @@ function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot | 
   }
 }
 
-function createEmptyTitleBarSample(): MemoryDiagnosticsTitleBarSampleSnapshot {
-  return {
-    sampledAt: null,
-    rendererPrivateMb: null,
-    appMemoryMb: null,
-    bufferMemoryMb: null,
-    currentBufferMemoryMb: null,
-    nextBufferMemoryMb: null,
-    otherProcessMemoryMb: null,
-    totalWorkingSetMb: null
-  }
-}
-
-function createEmptyTitleBarPeaks(): MemoryDiagnosticsTitleBarPeakSnapshot {
-  return {
-    capturedAt: null,
-    rendererPrivateMb: null,
-    appMemoryMb: null,
-    bufferMemoryMb: null,
-    currentBufferMemoryMb: null,
-    nextBufferMemoryMb: null,
-    otherProcessMemoryMb: null,
-    totalWorkingSetMb: null
-  }
-}
-
-function maxNullable(current: number | null, next: number | null): number | null {
-  if (next === null || !Number.isFinite(next)) return current
-  if (current === null || !Number.isFinite(current)) return next
-  return next > current ? next : current
-}
-
-function buildTitleBarSample(values: {
-  sampledAt: number
-  rendererPrivateMb: number | null
-  totalWorkingSetMb: number | null
-  bufferMemoryMb: number | null
-  currentBufferMemoryMb: number | null
-  nextBufferMemoryMb: number | null
-}): MemoryDiagnosticsTitleBarSampleSnapshot {
-  const appMemoryMb = values.rendererPrivateMb === null || values.bufferMemoryMb === null
-    ? null
-    : Math.max(values.rendererPrivateMb - values.bufferMemoryMb, 0)
-  const otherProcessMemoryMb = values.totalWorkingSetMb === null || values.rendererPrivateMb === null
-    ? null
-    : Math.max(values.totalWorkingSetMb - values.rendererPrivateMb, 0)
-
-  return {
-    sampledAt: values.sampledAt,
-    rendererPrivateMb: values.rendererPrivateMb,
-    appMemoryMb,
-    bufferMemoryMb: values.bufferMemoryMb,
-    currentBufferMemoryMb: values.currentBufferMemoryMb,
-    nextBufferMemoryMb: values.nextBufferMemoryMb,
-    otherProcessMemoryMb,
-    totalWorkingSetMb: values.totalWorkingSetMb
-  }
-}
-
-function updateTitleBarPeaks(
-  current: MemoryDiagnosticsTitleBarPeakSnapshot,
-  sample: MemoryDiagnosticsTitleBarSampleSnapshot
-): MemoryDiagnosticsTitleBarPeakSnapshot {
-  let capturedAt = current.capturedAt
-  const next: MemoryDiagnosticsTitleBarPeakSnapshot = {
-    capturedAt,
-    rendererPrivateMb: current.rendererPrivateMb,
-    appMemoryMb: current.appMemoryMb,
-    bufferMemoryMb: current.bufferMemoryMb,
-    currentBufferMemoryMb: current.currentBufferMemoryMb,
-    nextBufferMemoryMb: current.nextBufferMemoryMb,
-    otherProcessMemoryMb: current.otherProcessMemoryMb,
-    totalWorkingSetMb: current.totalWorkingSetMb
-  }
-
-  const applyPeak = (
-    key: Exclude<keyof MemoryDiagnosticsTitleBarPeakSnapshot, 'capturedAt'>,
-    value: number | null
-  ) => {
-    const previous = next[key]
-    const peak = maxNullable(previous, value)
-    next[key] = peak
-    if (peak !== previous && sample.sampledAt !== null) {
-      capturedAt = sample.sampledAt
-    }
-  }
-
-  applyPeak('rendererPrivateMb', sample.rendererPrivateMb)
-  applyPeak('appMemoryMb', sample.appMemoryMb)
-  applyPeak('bufferMemoryMb', sample.bufferMemoryMb)
-  applyPeak('currentBufferMemoryMb', sample.currentBufferMemoryMb)
-  applyPeak('nextBufferMemoryMb', sample.nextBufferMemoryMb)
-  applyPeak('otherProcessMemoryMb', sample.otherProcessMemoryMb)
-  applyPeak('totalWorkingSetMb', sample.totalWorkingSetMb)
-
-  next.capturedAt = capturedAt
-  return next
-}
-
-function createTitleBarPeaksFromSample(sample: MemoryDiagnosticsTitleBarSampleSnapshot): MemoryDiagnosticsTitleBarPeakSnapshot {
-  if (sample.sampledAt === null) {
-    return createEmptyTitleBarPeaks()
-  }
-  return {
-    capturedAt: sample.sampledAt,
-    rendererPrivateMb: sample.rendererPrivateMb,
-    appMemoryMb: sample.appMemoryMb,
-    bufferMemoryMb: sample.bufferMemoryMb,
-    currentBufferMemoryMb: sample.currentBufferMemoryMb,
-    nextBufferMemoryMb: sample.nextBufferMemoryMb,
-    otherProcessMemoryMb: sample.otherProcessMemoryMb,
-    totalWorkingSetMb: sample.totalWorkingSetMb
-  }
-}
-
 export function useMemoryDiagnosticsBridge(): void {
   const miniVisualizerModeRef = useRef<string>('unknown')
   const diagnosticsEnabledRef = useRef(false)
@@ -248,34 +140,6 @@ export function useMemoryDiagnosticsBridge(): void {
   const titleBarPeaksRef = useRef<MemoryDiagnosticsTitleBarPeakSnapshot>(createEmptyTitleBarPeaks())
   const titleBarSamplerTimerRef = useRef<number | null>(null)
   const titleBarSamplerInFlightRef = useRef<Promise<MemoryDiagnosticsTitleBarSampleSnapshot> | null>(null)
-
-  const captureTitleBarSample = async (): Promise<MemoryDiagnosticsTitleBarSampleSnapshot> => {
-    const sampledAt = Date.now()
-    const [appStatsResult, rendererMemoryResult, bufferStatsResult] = await Promise.allSettled([
-      window.electronAPI.getAppPerformanceStats(),
-      window.electronAPI.getRendererMemoryStats(),
-      audioEngine.getBufferMemoryStats()
-    ])
-
-    return buildTitleBarSample({
-      sampledAt,
-      totalWorkingSetMb: appStatsResult.status === 'fulfilled'
-        ? appStatsResult.value.workingSetMb
-        : null,
-      rendererPrivateMb: rendererMemoryResult.status === 'fulfilled'
-        ? rendererMemoryResult.value.privateMb
-        : null,
-      bufferMemoryMb: bufferStatsResult.status === 'fulfilled'
-        ? bufferStatsResult.value.totalBytes / (1024 * 1024)
-        : null,
-      currentBufferMemoryMb: bufferStatsResult.status === 'fulfilled'
-        ? bufferStatsResult.value.currentBytes / (1024 * 1024)
-        : null,
-      nextBufferMemoryMb: bufferStatsResult.status === 'fulfilled'
-        ? bufferStatsResult.value.nextBytes / (1024 * 1024)
-        : null
-    })
-  }
 
   const refreshTitleBarSample = async (force = false): Promise<MemoryDiagnosticsTitleBarSampleSnapshot> => {
     if (!force && !diagnosticsEnabledRef.current) {
@@ -343,7 +207,7 @@ export function useMemoryDiagnosticsBridge(): void {
       void refreshTitleBarSample(true)
       titleBarSamplerTimerRef.current = window.setInterval(() => {
         void refreshTitleBarSample()
-      }, TITLE_BAR_SAMPLE_INTERVAL_MS)
+      }, TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS)
     }
 
     const applyEnabledState = (enabled: boolean) => {
@@ -483,6 +347,7 @@ export function useMemoryDiagnosticsBridge(): void {
           library: {
             totalTrackCount: librarySnapshot.totalTrackCount,
             visibleTrackCount: librarySnapshot.visibleTrackCount,
+            fullTrackCount: librarySnapshot.fullTrackCount,
             albumCount: librarySnapshot.albumCount,
             artistCount: librarySnapshot.artistCount,
             folderCount: librarySnapshot.folderCount,

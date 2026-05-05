@@ -53,7 +53,8 @@ import type {
     SubsonicSourceTestInput,
     SubsonicSourceTestResult,
     SubsonicSourceUpdateInput,
-    SubsonicStatusSnapshot
+    SubsonicStatusSnapshot,
+    TrackSourceType
 } from '../types/subsonic'
 import type {
     AudioBufferMemoryStats,
@@ -70,7 +71,9 @@ import type {
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsProcessMemoryStats,
     MemoryDiagnosticsRendererSnapshot,
+    MemoryDiagnosticsRendererMemoryStats,
     MemoryDiagnosticsSnapshotRequest,
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
@@ -83,6 +86,61 @@ type RuntimeIconImageSetPayload = {
     }>
 }
 
+interface DbTrack {
+    id: number
+    path: string
+    album_identity_key: string
+    is_new: boolean
+    title: string
+    artist: string
+    artist_names: string[]
+    album: string
+    album_artist: string | null
+    album_artist_names: string[]
+    duration: number
+    track_number: number | null
+    disc_number: number | null
+    year: number | null
+    genre: string | null
+    artwork_hash: string | null
+    base_artwork_hash: string | null
+    format: string
+    sample_rate: number | null
+    bit_depth: number | null
+    bitrate: number | null
+    channels: number | null
+    codec: string | null
+    codec_profile: string | null
+    is_atmos_joc: number | null
+    replaygain_track_gain_db: number | null
+    replaygain_album_gain_db: number | null
+    bpm: number | null
+    musical_key: string | null
+    source_type: TrackSourceType
+    source_id: number | null
+    source_track_id: string | null
+    source_path: string | null
+    is_available: number
+    availability_reason: string | null
+    file_created_at: number | null
+    added_at: number
+    modified_at: number
+}
+
+interface LibraryTrackPageRequest {
+    offset?: number
+    limit?: number
+}
+
+interface LibraryTrackPage {
+    tracks: DbTrack[]
+    offset: number
+    limit: number
+    total: number
+    nextOffset: number
+    hasMore: boolean
+}
+
 declare global {
     interface Window {
         visualizerAPI: VisualizerDSP | null
@@ -92,6 +150,7 @@ declare global {
             setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
             loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             play: () => Promise<NativeAudioPlaybackSnapshot>
             pause: () => Promise<NativeAudioPlaybackSnapshot>
             stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -153,21 +212,8 @@ declare global {
             getAppVersion: () => Promise<string>
             getAppBuildInfo: () => Promise<AppBuildInfo>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
-            getRendererMemoryStats: () => Promise<{
-                privateMb: number
-                rssBytes: number
-                heapUsedBytes: number
-                heapTotalBytes: number
-                externalBytes: number
-                arrayBuffersBytes: number
-                heapSpaces: {
-                    oldSpaceUsedBytes: number | null
-                    newSpaceUsedBytes: number | null
-                    codeSpaceUsedBytes: number | null
-                    mapSpaceUsedBytes: number | null
-                    largeObjectSpaceUsedBytes: number | null
-                }
-            }>
+            getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
+            getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
             diagnostics: {
                 getStatus: () => Promise<MemoryDiagnosticsStatus>
                 setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
@@ -449,7 +495,11 @@ declare global {
             readFileAsDataUrl: (filePath: string) => Promise<string | null>
             writeFile: (filePath: string, content: string) => Promise<boolean>
             revealFileInFolder: (filePath: string) => Promise<boolean>
-            library: any
+            library: {
+                getTracks: () => Promise<DbTrack[]>
+                getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
+                [key: string]: any
+            }
         }
     }
 }

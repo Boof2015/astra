@@ -140,6 +140,7 @@ public:
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);
+    bool promoteNextTrack();
     void clearNextTrack();
 
     PlaybackSnapshot play();

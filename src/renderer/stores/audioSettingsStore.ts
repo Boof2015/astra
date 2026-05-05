@@ -205,8 +205,12 @@ function normalizeReplayGainMode(value: unknown): ReplayGainMode {
   return 'auto'
 }
 
+function isDevBuild(): boolean {
+  return Boolean(import.meta.env?.DEV)
+}
+
 function readDevDisableGaplessPrebuffer(): boolean {
-  if (!import.meta.env.DEV) return false
+  if (!isDevBuild()) return false
   try {
     return localStorage.getItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY) === '1'
   } catch {
@@ -215,7 +219,7 @@ function readDevDisableGaplessPrebuffer(): boolean {
 }
 
 function readDevDisableStandardAnalysisGraph(): boolean {
-  if (!import.meta.env.DEV) return false
+  if (!isDevBuild()) return false
   try {
     return localStorage.getItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY) === '1'
   } catch {
@@ -1097,7 +1101,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     setDisableGaplessPrebufferDev: (disabled: boolean) => {
-      const normalized = import.meta.env.DEV && Boolean(disabled)
+      const normalized = isDevBuild() && Boolean(disabled)
       if (get().disableGaplessPrebufferDev === normalized) {
         return
       }
@@ -1124,7 +1128,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     setDisableStandardAnalysisGraphDev: (disabled: boolean) => {
-      const normalized = import.meta.env.DEV && Boolean(disabled)
+      const normalized = isDevBuild() && Boolean(disabled)
       if (get().disableStandardAnalysisGraphDev === normalized) {
         return
       }

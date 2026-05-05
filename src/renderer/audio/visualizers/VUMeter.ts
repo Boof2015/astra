@@ -965,6 +965,7 @@ export class VUMeter {
 
   dispose(): void {
     this.stop()
+    this.frameLoop.dispose()
     if (this.unsubscribeTrackChange) {
       this.unsubscribeTrackChange()
       this.unsubscribeTrackChange = null
@@ -973,5 +974,13 @@ export class VUMeter {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.rmsLevels = []
+    this.peakLevels = []
+    this.peakHoldFrames = []
+    this.activeChannelCount = 0
+    this.correlation = 0
   }
 }

@@ -702,5 +702,25 @@ export class Spectrogram {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.waterfallCanvas.width = 0
+    this.waterfallCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.fftRe = new Float32Array(0)
+    this.fftIm = new Float32Array(0)
+    this.sampleBuffer = new Float32Array(0)
+    this.sampleBufferPos = 0
+    this.rowCenterBins = new Float32Array(0)
+    this.rowBandStartBins = new Float32Array(0)
+    this.rowBandEndBins = new Float32Array(0)
+    this.columnValues = new Float32Array(0)
+    this.rawColumnValues = new Float32Array(0)
+    this.columnImageData = null
+    this.lastWidth = 0
+    this.lastHeight = 0
+    this.lastFftSize = 0
+    this.lastSampleRate = 0
   }
 }

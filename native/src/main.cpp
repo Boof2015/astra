@@ -468,6 +468,16 @@ Napi::Value PlaybackPreloadNextTrack(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+Napi::Value PlaybackPromoteNextTrack(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!playbackEngine.promoteNextTrack()) {
+        Napi::Error::New(env, "No native preloaded next track is available.").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+}
+
 Napi::Value PlaybackPlay(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     try {
@@ -649,6 +659,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("setOutputDevice", Napi::Function::New(env, PlaybackSetOutputDevice));
     playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));
     playbackExports.Set("preloadNextTrack", Napi::Function::New(env, PlaybackPreloadNextTrack));
+    playbackExports.Set("promoteNextTrack", Napi::Function::New(env, PlaybackPromoteNextTrack));
     playbackExports.Set("play", Napi::Function::New(env, PlaybackPlay));
     playbackExports.Set("pause", Napi::Function::New(env, PlaybackPause));
     playbackExports.Set("stop", Napi::Function::New(env, PlaybackStop));

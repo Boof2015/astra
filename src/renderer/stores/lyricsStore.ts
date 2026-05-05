@@ -20,6 +20,8 @@ interface LyricsStore {
 let statusUnsubscribe: (() => void) | null = null
 let activeRequestId = 0
 
+export const LYRICS_RESULT_CACHE_LIMIT = 64
+
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   return 'Failed to update lyrics settings.'
@@ -29,6 +31,50 @@ function normalizeTrackPath(path: string | undefined): string | null {
   if (!path) return null
   const normalized = path.trim()
   return normalized.length > 0 ? normalized : null
+}
+
+export function putLyricsResultInCache(
+  cache: Record<string, LyricsLookupResult>,
+  trackPath: string,
+  result: LyricsLookupResult,
+  currentTrackPath: string | null,
+  limit = LYRICS_RESULT_CACHE_LIMIT
+): Record<string, LyricsLookupResult> {
+  const maxEntries = Math.max(1, Math.floor(limit))
+  const entries = Object.entries(cache).filter(([path]) => path !== trackPath)
+  entries.push([trackPath, result])
+
+  if (entries.length <= maxEntries) {
+    return Object.fromEntries(entries)
+  }
+
+  const bounded = new Map(entries)
+  while (bounded.size > maxEntries) {
+    const oldestPath = bounded.keys().next().value as string | undefined
+    if (oldestPath === undefined) break
+
+    if (oldestPath === currentTrackPath) {
+      const currentResult = bounded.get(oldestPath)
+      if (currentResult === undefined) break
+      bounded.delete(oldestPath)
+      bounded.set(oldestPath, currentResult)
+      continue
+    }
+
+    bounded.delete(oldestPath)
+  }
+
+  return Object.fromEntries(bounded)
+}
+
+function touchLyricsResultCacheEntry(
+  cache: Record<string, LyricsLookupResult>,
+  trackPath: string,
+  currentTrackPath: string | null
+): Record<string, LyricsLookupResult> {
+  const result = cache[trackPath]
+  if (result === undefined) return cache
+  return putLyricsResultInCache(cache, trackPath, result, currentTrackPath)
 }
 
 export const useLyricsStore = create<LyricsStore>((set, get) => {
@@ -60,10 +106,7 @@ export const useLyricsStore = create<LyricsStore>((set, get) => {
   ): LyricsLookupResult => {
     if (requestId !== activeRequestId) return result
     set((state) => ({
-      resultByTrackPath: {
-        ...state.resultByTrackPath,
-        [trackPath]: result
-      },
+      resultByTrackPath: putLyricsResultInCache(state.resultByTrackPath, trackPath, result, trackPath),
       currentTrackPath: trackPath,
       currentResult: result,
       isLoading: false,
@@ -130,6 +173,7 @@ export const useLyricsStore = create<LyricsStore>((set, get) => {
       const requestId = activeRequestId + 1
       activeRequestId = requestId
       set((state) => ({
+        resultByTrackPath: touchLyricsResultCacheEntry(state.resultByTrackPath, trackPath, trackPath),
         currentTrackPath: trackPath,
         currentResult: state.resultByTrackPath[trackPath] ?? null,
         isLoading: true,
@@ -157,11 +201,12 @@ export const useLyricsStore = create<LyricsStore>((set, get) => {
 
       const requestId = activeRequestId + 1
       activeRequestId = requestId
-      set({
+      set((state) => ({
+        resultByTrackPath: touchLyricsResultCacheEntry(state.resultByTrackPath, trackPath, trackPath),
         currentTrackPath: trackPath,
         isLoading: true,
         errorMessage: ''
-      })
+      }))
 
       try {
         const result = await window.electronAPI.lyrics.refreshForTrack(query)

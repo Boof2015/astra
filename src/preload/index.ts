@@ -77,7 +77,9 @@ import type {
   MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsProcessMemoryStats,
   MemoryDiagnosticsRendererSnapshot,
+  MemoryDiagnosticsRendererMemoryStats,
   MemoryDiagnosticsSnapshotRequest,
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
@@ -169,6 +171,20 @@ export interface DbTrack {
   file_created_at: number | null
   added_at: number
   modified_at: number
+}
+
+export interface LibraryTrackPageRequest {
+  offset?: number
+  limit?: number
+}
+
+export interface LibraryTrackPage {
+  tracks: DbTrack[]
+  offset: number
+  limit: number
+  total: number
+  nextOffset: number
+  hasMore: boolean
 }
 
 export interface LibraryFolder {
@@ -325,21 +341,8 @@ export interface AppPerformanceStats {
   workingSetMb: number
 }
 
-export interface RendererMemoryStats {
-  privateMb: number
-  rssBytes: number
-  heapUsedBytes: number
-  heapTotalBytes: number
-  externalBytes: number
-  arrayBuffersBytes: number
-  heapSpaces: {
-    oldSpaceUsedBytes: number | null
-    newSpaceUsedBytes: number | null
-    codeSpaceUsedBytes: number | null
-    mapSpaceUsedBytes: number | null
-    largeObjectSpaceUsedBytes: number | null
-  }
-}
+export type MainProcessMemoryStats = MemoryDiagnosticsProcessMemoryStats
+export type RendererMemoryStats = MemoryDiagnosticsRendererMemoryStats
 
 export interface DiscordTrackPresence {
   title: string
@@ -490,6 +493,32 @@ function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
   }
 }
 
+const LIBRARY_TRACK_PAGE_LIMIT = 500
+
+async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
+  const tracks: DbTrack[] = []
+  let offset = 0
+
+  while (true) {
+    const page = await ipcRenderer.invoke('library:getTracksPage', {
+      offset,
+      limit: LIBRARY_TRACK_PAGE_LIMIT
+    }) as LibraryTrackPage
+
+    tracks.push(...page.tracks)
+    if (!page.hasMore || page.tracks.length === 0) {
+      break
+    }
+
+    const nextOffset = Number(page.nextOffset)
+    offset = Number.isFinite(nextOffset) && nextOffset > offset
+      ? Math.trunc(nextOffset)
+      : offset + page.tracks.length
+  }
+
+  return tracks
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -584,6 +613,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:getBuildInfo'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
+  getMainProcessMemoryStats: (): Promise<MainProcessMemoryStats> => ipcRenderer.invoke('app:getMainProcessMemoryStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
     const memoryUsage = process.memoryUsage()
@@ -809,7 +839,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Library operations
   library: {
-    getTracks: () => ipcRenderer.invoke('library:getTracks'),
+    getTracks: () => getAllLibraryTracksPaged(),
+    getTracksPage: (request?: LibraryTrackPageRequest) =>
+      ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
@@ -985,6 +1017,7 @@ declare global {
       setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
       loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       play: () => Promise<NativeAudioPlaybackSnapshot>
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -1049,6 +1082,7 @@ declare global {
       getAppVersion: () => Promise<string>
       getAppBuildInfo: () => Promise<AppBuildInfo>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      getMainProcessMemoryStats: () => Promise<MainProcessMemoryStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
       diagnostics: {
         getStatus: () => Promise<MemoryDiagnosticsStatus>
@@ -1169,6 +1203,7 @@ declare global {
       // Library operations
       library: {
         getTracks: () => Promise<DbTrack[]>
+        getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>

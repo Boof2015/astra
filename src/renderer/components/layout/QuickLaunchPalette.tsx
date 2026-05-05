@@ -5,7 +5,6 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useGraphStore } from '../../stores/graphStore'
-import type { Track } from '../../types/audio'
 import type {
   QuickLaunchAlbumRecord,
   QuickLaunchArtistRecord,
@@ -26,47 +25,12 @@ const PLAYLIST_RESULT_LIMIT = 4
 const EMPTY_RECENT_TRACKS_LIMIT = 3
 const EMPTY_SHORTCUT_NAV_IDS = ['nav:eq', 'nav:library'] as const
 const EMPTY_SHORTCUT_SETTING_IDS = ['library', 'playback'] as const
+const QUICK_LAUNCH_TRACK_PAGE_LIMIT = 500
 
 interface ResultGroup {
   id: string
   label: string
   results: QuickLaunchResult[]
-}
-
-function toQueueTrack(track: QuickLaunchTrackRecord): Track {
-  return {
-    id: track.path,
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    artistNames: track.artist_names,
-    album: track.album,
-    albumArtist: track.album_artist ?? undefined,
-    albumArtistNames: track.album_artist_names,
-    albumIdentityKey: track.album_identity_key,
-    duration: track.duration,
-    trackNumber: track.track_number ?? undefined,
-    discNumber: track.disc_number ?? undefined,
-    year: track.year ?? undefined,
-    genre: track.genre ?? undefined,
-    artworkHash: track.artwork_hash ?? undefined,
-    format: track.format,
-    sampleRate: track.sample_rate ?? undefined,
-    bitDepth: track.bit_depth ?? undefined,
-    bitrate: track.bitrate ?? undefined,
-    channels: track.channels ?? undefined,
-    codec: track.codec ?? undefined,
-    codecProfile: track.codec_profile ?? undefined,
-    isAtmosJoc: track.is_atmos_joc === 1,
-    replayGainTrackDb: track.replaygain_track_gain_db ?? undefined,
-    replayGainAlbumDb: track.replaygain_album_gain_db ?? undefined,
-    sourceType: track.source_type,
-    sourceId: track.source_id ?? undefined,
-    sourceTrackId: track.source_track_id ?? undefined,
-    sourcePath: track.source_path ?? undefined,
-    isAvailable: track.is_available === 1,
-    availabilityReason: track.availability_reason ?? undefined
-  }
 }
 
 function compareScoredResults<T extends { score: number; id: string }>(a: T, b: T): number {
@@ -161,7 +125,9 @@ export default function QuickLaunchPalette() {
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
-  const recentlyPlayed = useLibraryStore((state) => state.recentlyPlayed)
+  const recentlyPlayedPaths = useLibraryStore((state) => state.recentlyPlayedPaths)
+  const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
@@ -169,8 +135,8 @@ export default function QuickLaunchPalette() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
-  const enqueueUserTrack = usePlayerStore((state) => state.enqueueUserTrack)
-  const startPlaybackContext = usePlayerStore((state) => state.startPlaybackContext)
+  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
+  const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
   const clearPlaylistSelection = usePlaylistStore((state) => state.clearSelection)
@@ -188,6 +154,10 @@ export default function QuickLaunchPalette() {
 
   const trimmedQuery = query.trim()
   const hasQuery = trimmedQuery.length > 0
+  const recentlyPlayed = useMemo(
+    () => resolveTrackPaths(recentlyPlayedPaths),
+    [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
+  )
 
   useEffect(() => {
     if (!isQuickLaunchOpen) return
@@ -207,10 +177,34 @@ export default function QuickLaunchPalette() {
     let canceled = false
     setIsTrackCorpusLoading(true)
 
-    void window.electronAPI.library.getTracks()
+    const loadTrackCorpus = async () => {
+      const tracks: QuickLaunchTrackRecord[] = []
+      let offset = 0
+
+      while (true) {
+        const page = await window.electronAPI.library.getTracksPage({
+          offset,
+          limit: QUICK_LAUNCH_TRACK_PAGE_LIMIT
+        })
+
+        tracks.push(...page.tracks)
+        if (!page.hasMore || page.tracks.length === 0) {
+          break
+        }
+
+        const nextOffset = Number(page.nextOffset)
+        offset = Number.isFinite(nextOffset) && nextOffset > offset
+          ? Math.trunc(nextOffset)
+          : offset + page.tracks.length
+      }
+
+      return tracks
+    }
+
+    void loadTrackCorpus()
       .then((tracks) => {
         if (!canceled) {
-          setTrackCorpus(tracks as QuickLaunchTrackRecord[])
+          setTrackCorpus(tracks)
         }
       })
       .catch(() => {
@@ -604,15 +598,15 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        enqueueUserTrack(toQueueTrack(result.track), 'next')
+        enqueueUserTrackPaths([result.track.path], 'next')
         closeQuickLaunch()
         return
       }
 
-      const queueTracks = trackCorpus.map(toQueueTrack)
+      const queueTrackPaths = trackCorpus.map((track) => track.path)
       const queueIndex = trackCorpus.findIndex((track) => track.path === result.track.path)
       if (queueIndex >= 0) {
-        await startPlaybackContext(queueTracks, queueIndex, {
+        await startPlaybackContextByPaths(queueTrackPaths, queueIndex, {
           contextLabel: 'Search Results'
         })
         closeQuickLaunch()
@@ -626,7 +620,7 @@ export default function QuickLaunchPalette() {
     }
   }, [
     clearPlaylistSelection,
-    enqueueUserTrack,
+    enqueueUserTrackPaths,
     clearSelection,
     closeQuickLaunch,
     isExecuting,
@@ -640,7 +634,7 @@ export default function QuickLaunchPalette() {
     setPendingLibrarySearchQuery,
     setPendingSettingsSection,
     setViewMode,
-    startPlaybackContext,
+    startPlaybackContextByPaths,
     trackCorpus
   ])
 

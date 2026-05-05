@@ -98,7 +98,7 @@ export function useMiniPlayerBridge(): void {
       trackPath: track.path,
       dataUrl: null
     })
-    void getArtwork(track.artworkHash, { variant: 'card' }).then((url) => {
+    void getArtwork(track.artworkHash, { variant: 'card', format: 'data-url' }).then((url) => {
       if (!isActive) return
       setResolvedArtwork({
         trackPath: track.path,

@@ -229,6 +229,35 @@ void PlaybackEngine::preloadNextTrack(TrackBuffer track) {
     hasNextTrack_ = true;
 }
 
+bool PlaybackEngine::promoteNextTrack() {
+    bool hadTrack = false;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!hasNextTrack_) {
+            return false;
+        }
+
+        hadTrack = hasCurrentTrack_;
+        currentTrack_ = std::move(nextTrack_);
+        hasCurrentTrack_ = true;
+        nextTrack_ = TrackBuffer{};
+        hasNextTrack_ = false;
+        nextRenderFrame_ = 0;
+        playedFrame_ = 0;
+        lastTimeUpdateFrame_ = 0;
+        fadeInRemaining_ = 0;
+        state_ = State::Stopped;
+    }
+    clearTapBuffers();
+    clearPendingEvents();
+
+    if (hadTrack) {
+        sink_->close();
+    }
+
+    return true;
+}
+
 void PlaybackEngine::clearNextTrack() {
     std::lock_guard<std::mutex> lock(stateMutex_);
     nextTrack_ = TrackBuffer{};
@@ -666,7 +695,11 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
             }
 
             if (shouldCaptureTaps && tapChunkCount < tapChunks.size()) {
-                tapChunks[tapChunkCount++] = { source, framesToCopy, currentTrack_.format };
+                tapChunks[tapChunkCount++] = {
+                    output + (framesWritten * bytesPerFrame),
+                    framesToCopy,
+                    currentTrack_.format
+                };
             }
             nextRenderFrame_ += framesToCopy;
             framesWritten += framesToCopy;
@@ -684,7 +717,9 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
 
     for (size_t i = 0; i < tapChunkCount; i++) {
         const TapChunk& chunk = tapChunks[i];
-        appendTapSamples(chunk.source, chunk.frames, chunk.format, tapDemand);
+        if (chunk.source != nullptr) {
+            appendTapSamples(chunk.source, chunk.frames, chunk.format, tapDemand);
+        }
     }
 
     return totalFramesWritten;
