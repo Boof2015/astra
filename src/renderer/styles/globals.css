@@ -3951,18 +3951,6 @@ button, .titlebar {
   background: rgba(var(--accent-rgb), 0.09);
 }
 
-.track-row-queue-selected-start {
-  background: rgba(var(--accent-rgb), 0.09);
-}
-
-.track-row-queue-selected-end {
-  background: rgba(var(--accent-rgb), 0.09);
-}
-
-.track-row-queue-selected-start.track-row-queue-selected-end {
-  background: rgba(var(--accent-rgb), 0.1);
-}
-
 .track-row-queue-armed {
   background: rgba(var(--accent-rgb), 0.1);
   box-shadow:

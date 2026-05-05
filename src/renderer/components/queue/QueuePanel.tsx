@@ -673,7 +673,7 @@ export default function QueuePanel() {
           <div className={`queue-empty-drop-zone ${trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
             <p>No tracks in queue</p>
             <p className="queue-empty-hint">
-              {trackDrag ? 'Drop here to build a user queue' : 'Long-press a track to drop it here'}
+              {trackDrag ? 'Drop here to build a user queue' : 'Cmd/Ctrl-select tracks to drop them here'}
             </p>
           </div>
         </div>

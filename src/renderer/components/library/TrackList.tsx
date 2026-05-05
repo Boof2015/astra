@@ -108,7 +108,7 @@ interface TrackListRowSharedProps {
   formatAddedDate: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
   formatAddedDateTitle: (track: Pick<DbTrack, 'source_type' | 'file_created_at' | 'added_at'>) => string
   formatDuration: (seconds: number) => string
-  onTrackClick: (track: DbTrack, index: number) => Promise<void>
+  onTrackClick: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack, index: number) => Promise<void>
   onQueueInsertPointerDown: (event: React.PointerEvent<HTMLDivElement>, track: DbTrack, index: number) => void
   onPlayNext: (event: React.MouseEvent, track: DbTrack) => void
   onAddToQueue: (event: React.MouseEvent, track: DbTrack) => void
@@ -117,11 +117,12 @@ interface TrackListRowSharedProps {
   onTrackContextMenu: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => void
   showQueueInsertAffordance: boolean
   queueInsertArmedTrackPath: string | null
-  queueInsertSelectionRange: { startIndex: number; endIndex: number } | null
+  selectedTrackPaths: Set<string>
 }
 
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_LIST_OVERSCAN_COUNT = 8
+const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
 const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'numeric',
   day: 'numeric',
@@ -152,6 +153,16 @@ interface TrackContextMenuState {
   track: DbTrack
   x: number
   y: number
+}
+
+interface TrackSelectionPointerState {
+  anchorIndex: number
+  pointerId: number
+  startX: number
+  startY: number
+  mode: 'modifier-selection' | 'selected-drag'
+  baseSelectedPaths: Set<string>
+  activeSelectedPaths: Set<string> | null
 }
 
 // Convert DbTrack to Track
@@ -244,6 +255,44 @@ function isUnavailableRemoteTrack(track: Pick<DbTrack, 'source_type' | 'is_avail
   return track.source_type !== 'local' && track.is_available !== 1
 }
 
+function isTrackSelectionModifierActive(event: Pick<MouseEvent | PointerEvent | React.MouseEvent | React.PointerEvent, 'ctrlKey' | 'metaKey'>): boolean {
+  return event.ctrlKey || event.metaKey
+}
+
+function areTrackPathSetsEqual(left: Set<string>, right: Set<string>): boolean {
+  if (left === right) return true
+  if (left.size !== right.size) return false
+  for (const path of left) {
+    if (!right.has(path)) return false
+  }
+  return true
+}
+
+function addTrackRangeToSelection(
+  baseSelectedPaths: Set<string>,
+  tracks: Track[],
+  anchorIndex: number,
+  hoverIndex: number
+): Set<string> {
+  const nextSelectedPaths = new Set(baseSelectedPaths)
+  const startIndex = Math.max(0, Math.min(anchorIndex, hoverIndex))
+  const endIndex = Math.min(tracks.length - 1, Math.max(anchorIndex, hoverIndex))
+
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const track = tracks[index]
+    if (track) {
+      nextSelectedPaths.add(track.path)
+    }
+  }
+
+  return nextSelectedPaths
+}
+
+function resolveSelectedTracksInOrder(selectedTrackPaths: Set<string>, tracks: Track[]): Track[] {
+  if (selectedTrackPaths.size === 0) return []
+  return tracks.filter((track) => selectedTrackPaths.has(track.path))
+}
+
 function TrackListRowRenderer({
   ariaAttributes,
   index,
@@ -283,7 +332,7 @@ function TrackListRowRenderer({
   onTrackContextMenu,
   showQueueInsertAffordance,
   queueInsertArmedTrackPath,
-  queueInsertSelectionRange
+  selectedTrackPaths
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
   const track = tracks[index]
   if (!track) return null
@@ -334,11 +383,7 @@ function TrackListRowRenderer({
     ? `${Math.round(Math.max(0, Math.min(1, loadingTrackPercent)) * 100)}%`
     : null
   const isQueueInsertArmed = queueInsertArmedTrackPath === track.path
-  const isQueueInsertSelected = queueInsertSelectionRange !== null
-    && index >= queueInsertSelectionRange.startIndex
-    && index <= queueInsertSelectionRange.endIndex
-  const isQueueInsertSelectionStart = queueInsertSelectionRange?.startIndex === index
-  const isQueueInsertSelectionEnd = queueInsertSelectionRange?.endIndex === index
+  const isQueueInsertSelected = selectedTrackPaths.has(track.path)
 
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
@@ -347,15 +392,13 @@ function TrackListRowRenderer({
           isUnavailable ? 'track-row-unavailable' : ''
         } ${showQueueInsertAffordance ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
-        } ${isQueueInsertSelectionStart ? 'track-row-queue-selected-start' : ''} ${
-          isQueueInsertSelectionEnd ? 'track-row-queue-selected-end' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
         data-track-index={index}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={(event) => onQueueInsertPointerDown(event, track, index)}
         onContextMenu={(event) => onTrackContextMenu(event, track)}
-        onClick={() => {
-          void onTrackClick(track, index)
+        onClick={(event) => {
+          void onTrackClick(event, track, index)
         }}
       >
         <div className="track-col track-col-num">
@@ -601,22 +644,15 @@ export default function TrackList({
   const [createPlaylistTarget, setCreatePlaylistTarget] = useState<TrackPlaylistCreateState | null>(null)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
   const [queueInsertArmedTrackPath, setQueueInsertArmedTrackPath] = useState<string | null>(null)
-  const [queueInsertSelectionRange, setQueueInsertSelectionRange] = useState<{ startIndex: number; endIndex: number } | null>(null)
+  const [selectedTrackPaths, setSelectedTrackPaths] = useState<Set<string>>(new Set())
   const [isQueueInsertDragOwner, setIsQueueInsertDragOwner] = useState(false)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-  const queueInsertPressTimerRef = useRef<number | null>(null)
   const isQueueInsertDragOwnerRef = useRef(false)
   const queueInsertPointerCleanupRef = useRef<(() => void) | null>(null)
-  const queueInsertPressStateRef = useRef<{
-    track: Track
-    anchorIndex: number
-    pointerId: number
-    startX: number
-    startY: number
-  } | null>(null)
+  const queueInsertPointerStateRef = useRef<TrackSelectionPointerState | null>(null)
   const suppressQueueInsertClickRef = useRef(false)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<ListImperativeAPI>(null)
@@ -636,10 +672,6 @@ export default function TrackList({
         clearTimeout(timer)
       }
       queueFeedbackTimersRef.current.clear()
-      if (queueInsertPressTimerRef.current !== null) {
-        window.clearTimeout(queueInsertPressTimerRef.current)
-        queueInsertPressTimerRef.current = null
-      }
       clearQueueInsertPointerListeners()
       useUIStore.getState().clearTrackDrag()
     }
@@ -648,7 +680,6 @@ export default function TrackList({
   useEffect(() => {
     if (trackDrag) return
     setQueueInsertArmedTrackPath(null)
-    setQueueInsertSelectionRange(null)
     setIsQueueInsertDragOwner(false)
     isQueueInsertDragOwnerRef.current = false
   }, [trackDrag])
@@ -709,6 +740,10 @@ export default function TrackList({
   const queuedTrackPaths = useMemo(() => new Set(userQueue.map((queuedTrack) => queuedTrack.path)), [userQueue])
   const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
   const renderedQueueTrackPaths = useMemo(() => tracks.map((track) => track.path), [tracks])
+  const selectedQueueTracks = useMemo(
+    () => resolveSelectedTracksInOrder(selectedTrackPaths, renderedQueueTracks),
+    [renderedQueueTracks, selectedTrackPaths]
+  )
   const queueSeedTrackPaths = useMemo(() => queueSeedTracks.map((track) => track.path), [queueSeedTracks])
   const queueSeedTrackPathToIndex = useMemo(() => {
     const indexByPath = new Map<string, number>()
@@ -735,6 +770,44 @@ export default function TrackList({
     || currentCodec.includes('atmos')
     || currentCodec.includes('joc')
   )
+
+  useEffect(() => {
+    const validTrackPaths = new Set(renderedQueueTrackPaths)
+    setSelectedTrackPaths((current) => {
+      if (current.size === 0) return current
+
+      const next = new Set<string>()
+      for (const path of current) {
+        if (validTrackPaths.has(path)) {
+          next.add(path)
+        }
+      }
+
+      return areTrackPathSetsEqual(current, next) ? current : next
+    })
+  }, [renderedQueueTrackPaths])
+
+  useEffect(() => {
+    if (selectedTrackPaths.size === 0) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setSelectedTrackPaths(new Set())
+      if (isQueueInsertDragOwnerRef.current) {
+        clearQueueInsertPointerListeners()
+        clearTrackDrag()
+        setQueueInsertArmedTrackPath(null)
+        setIsQueueInsertDragOwner(false)
+        isQueueInsertDragOwnerRef.current = false
+        queueInsertPointerStateRef.current = null
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [clearQueueInsertPointerListeners, clearTrackDrag, selectedTrackPaths.size])
 
   const setQueueActionFeedback = useCallback((action: 'queue' | 'next', trackPath: string) => {
     const feedbackKey = `${action}:${trackPath}`
@@ -766,10 +839,28 @@ export default function TrackList({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }, [])
 
-  const handleTrackClick = useCallback(async (dbTrack: DbTrack, index: number) => {
+  const handleTrackClick = useCallback(async (event: React.MouseEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
     if (suppressQueueInsertClickRef.current) {
       suppressQueueInsertClickRef.current = false
       return
+    }
+
+    if (isTrackSelectionModifierActive(event)) {
+      event.preventDefault()
+      setSelectedTrackPaths((current) => {
+        const next = new Set(current)
+        if (next.has(dbTrack.path)) {
+          next.delete(dbTrack.path)
+        } else {
+          next.add(dbTrack.path)
+        }
+        return areTrackPathSetsEqual(current, next) ? current : next
+      })
+      return
+    }
+
+    if (selectedTrackPaths.size > 0) {
+      setSelectedTrackPaths(new Set())
     }
 
     const queueSeedIndex = queueSeedTrackPathToIndex.get(dbTrack.path)
@@ -801,6 +892,7 @@ export default function TrackList({
     queueSeedTrackPathToIndex,
     queueContextLabel,
     renderedQueueTrackPaths,
+    selectedTrackPaths.size,
     startPlaybackContextByPaths,
     playQueuedTrack
   ])
@@ -835,14 +927,9 @@ export default function TrackList({
     return parsedIndex
   }, [renderedQueueTracks.length])
 
-  const cleanupQueueInsertPress = useCallback(() => {
-    if (queueInsertPressTimerRef.current !== null) {
-      window.clearTimeout(queueInsertPressTimerRef.current)
-      queueInsertPressTimerRef.current = null
-    }
-    queueInsertPressStateRef.current = null
+  const cleanupQueueInsertPointerState = useCallback(() => {
+    queueInsertPointerStateRef.current = null
     setQueueInsertArmedTrackPath(null)
-    setQueueInsertSelectionRange(null)
   }, [])
 
   const handleQueueInsertPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
@@ -853,45 +940,96 @@ export default function TrackList({
       return
     }
 
+    const hasSelectionModifier = isTrackSelectionModifierActive(event)
+    const isTrackSelected = selectedTrackPaths.has(dbTrack.path)
+    if (!hasSelectionModifier && !isTrackSelected) {
+      return
+    }
+
     const track = dbTrackToTrack(dbTrack)
     clearQueueInsertPointerListeners()
-    cleanupQueueInsertPress()
+    cleanupQueueInsertPointerState()
 
-    queueInsertPressStateRef.current = {
-      track,
+    queueInsertPointerStateRef.current = {
       anchorIndex: index,
       pointerId: event.pointerId,
       startX: event.clientX,
-      startY: event.clientY
+      startY: event.clientY,
+      mode: hasSelectionModifier ? 'modifier-selection' : 'selected-drag',
+      baseSelectedPaths: new Set(selectedTrackPaths),
+      activeSelectedPaths: null
+    }
+
+    const beginQueueInsertDrag = (tracksForDrag: Track[], pointerX: number, pointerY: number) => {
+      if (tracksForDrag.length === 0) return false
+      setQueueInsertArmedTrackPath(track.path)
+      setIsQueueInsertDragOwner(true)
+      isQueueInsertDragOwnerRef.current = true
+      startTrackDrag(tracksForDrag, pointerX, pointerY)
+      return true
+    }
+
+    const updateModifierSelectionDrag = (pressState: TrackSelectionPointerState, hoverIndex: number) => {
+      const nextSelectedPaths = addTrackRangeToSelection(
+        pressState.baseSelectedPaths,
+        renderedQueueTracks,
+        pressState.anchorIndex,
+        hoverIndex
+      )
+      if (pressState.activeSelectedPaths && areTrackPathSetsEqual(pressState.activeSelectedPaths, nextSelectedPaths)) {
+        return
+      }
+
+      const tracksForDrag = resolveSelectedTracksInOrder(nextSelectedPaths, renderedQueueTracks)
+      if (tracksForDrag.length === 0) return
+
+      queueInsertPointerStateRef.current = {
+        ...pressState,
+        activeSelectedPaths: nextSelectedPaths
+      }
+      setSelectedTrackPaths((current) => (
+        areTrackPathSetsEqual(current, nextSelectedPaths) ? current : nextSelectedPaths
+      ))
+      setTrackDragTracks(tracksForDrag)
     }
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      const pressState = queueInsertPressStateRef.current
+      const pressState = queueInsertPointerStateRef.current
       if (!pressState || moveEvent.pointerId !== pressState.pointerId) return
 
       const distance = Math.hypot(moveEvent.clientX - pressState.startX, moveEvent.clientY - pressState.startY)
-      if (!isQueueInsertDragOwnerRef.current && distance > 6) {
-        cleanupQueueInsertPress()
-        clearQueueInsertPointerListeners()
-        return
+      if (!isQueueInsertDragOwnerRef.current && distance > TRACK_SELECTION_DRAG_THRESHOLD_PX) {
+        if (pressState.mode === 'modifier-selection') {
+          const hoveredIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY) ?? pressState.anchorIndex
+          const nextSelectedPaths = addTrackRangeToSelection(
+            pressState.baseSelectedPaths,
+            renderedQueueTracks,
+            pressState.anchorIndex,
+            hoveredIndex
+          )
+          const tracksForDrag = resolveSelectedTracksInOrder(nextSelectedPaths, renderedQueueTracks)
+          if (!beginQueueInsertDrag(tracksForDrag, moveEvent.clientX, moveEvent.clientY)) return
+
+          queueInsertPointerStateRef.current = {
+            ...pressState,
+            activeSelectedPaths: nextSelectedPaths
+          }
+          setSelectedTrackPaths((current) => (
+            areTrackPathSetsEqual(current, nextSelectedPaths) ? current : nextSelectedPaths
+          ))
+        } else {
+          if (!beginQueueInsertDrag(selectedQueueTracks, moveEvent.clientX, moveEvent.clientY)) return
+        }
       }
 
       if (isQueueInsertDragOwnerRef.current) {
         updateTrackDragPointer(moveEvent.clientX, moveEvent.clientY)
 
-        if (moveEvent.shiftKey) {
+        const latestPressState = queueInsertPointerStateRef.current
+        if (latestPressState?.mode === 'modifier-selection' && isTrackSelectionModifierActive(moveEvent)) {
           const hoveredIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY)
           if (hoveredIndex !== null) {
-            const startIndex = Math.min(pressState.anchorIndex, hoveredIndex)
-            const endIndex = Math.max(pressState.anchorIndex, hoveredIndex)
-            setQueueInsertSelectionRange((current) => (
-              current
-              && current.startIndex === startIndex
-              && current.endIndex === endIndex
-                ? current
-                : { startIndex, endIndex }
-            ))
-            setTrackDragTracks(renderedQueueTracks.slice(startIndex, endIndex + 1))
+            updateModifierSelectionDrag(latestPressState, hoveredIndex)
           }
         }
       }
@@ -926,13 +1064,13 @@ export default function TrackList({
       }
 
       clearTrackDrag()
-      cleanupQueueInsertPress()
+      cleanupQueueInsertPointerState()
       setIsQueueInsertDragOwner(false)
       isQueueInsertDragOwnerRef.current = false
     }
 
     const handlePointerUp = (upEvent: PointerEvent) => {
-      const pressState = queueInsertPressStateRef.current
+      const pressState = queueInsertPointerStateRef.current
       if (!pressState || upEvent.pointerId !== pressState.pointerId) return
       finalizeQueueInsert()
     }
@@ -940,24 +1078,10 @@ export default function TrackList({
     const handlePointerCancel = () => {
       clearQueueInsertPointerListeners()
       clearTrackDrag()
-      cleanupQueueInsertPress()
+      cleanupQueueInsertPointerState()
       setIsQueueInsertDragOwner(false)
       isQueueInsertDragOwnerRef.current = false
     }
-
-    queueInsertPressTimerRef.current = window.setTimeout(() => {
-      const pressState = queueInsertPressStateRef.current
-      if (!pressState) return
-
-      setQueueInsertArmedTrackPath(pressState.track.path)
-      setQueueInsertSelectionRange({
-        startIndex: pressState.anchorIndex,
-        endIndex: pressState.anchorIndex
-      })
-      setIsQueueInsertDragOwner(true)
-      isQueueInsertDragOwnerRef.current = true
-      startTrackDrag([pressState.track], event.clientX, event.clientY)
-    }, 180)
 
     document.addEventListener('pointermove', handlePointerMove)
     document.addEventListener('pointerup', handlePointerUp)
@@ -969,13 +1093,15 @@ export default function TrackList({
     }
   }, [
     clearQueueInsertPointerListeners,
-    cleanupQueueInsertPress,
+    cleanupQueueInsertPointerState,
     clearTrackDrag,
     addToPlaylist,
     enqueueUserTrackPaths,
     openSidebarPlaylistCreateRequest,
     renderedQueueTracks,
     resolveQueueInsertHoverIndex,
+    selectedQueueTracks,
+    selectedTrackPaths,
     setQueueActionFeedback,
     setTrackDragTracks,
     startTrackDrag,
@@ -1341,7 +1467,7 @@ export default function TrackList({
     onTrackContextMenu: handleTrackContextMenu,
     showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
-    queueInsertSelectionRange
+    selectedTrackPaths
   }), [
     tracks,
     showArtist,
@@ -1377,7 +1503,7 @@ export default function TrackList({
     handleOpenPlaylistPopup,
     handleTrackContextMenu,
     queueInsertArmedTrackPath,
-    queueInsertSelectionRange
+    selectedTrackPaths
   ])
 
   if (tracks.length === 0) {
