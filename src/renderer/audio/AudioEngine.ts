@@ -14,6 +14,13 @@ import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
+import {
+  ProgressiveKWeightedLoudnessAnalyzer,
+  analyzeAudioBufferLoudness,
+  dbToLinear,
+  resolveStaticNormalizationGain,
+  type LoudnessAnalysis
+} from './loudness'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -27,6 +34,7 @@ const REMOTE_NORMALIZATION_SLEW_MS = 250
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
+const NORMALIZATION_PEAK_CEILING_LINEAR = 0.98
 const BIT_PERFECT_OSCILLOSCOPE_QUANTUM = 128
 const BIT_PERFECT_VISUALIZER_TARGET_PEAK = 0.92
 const BIT_PERFECT_VISUALIZER_GAIN_RISE_SMOOTHING = 0.08
@@ -135,8 +143,7 @@ interface PlaybackModeSwitchResult {
 }
 
 interface ProgressiveNormalizationAccumulator {
-  sumSquares: number
-  sampleCount: number
+  analyzer: ProgressiveKWeightedLoudnessAnalyzer
   nextUpdateFrameThreshold: number
   approximate: boolean
 }
@@ -275,6 +282,8 @@ export class AudioEngine {
   private audioBuffer: AudioBuffer | null = null
   private currentBufferTrackPath: string | null = null
   private nextBufferTrackPath: string | null = null
+  private currentNormalizationAnalysis: LoudnessAnalysis | null = null
+  private nextNormalizationAnalysis: LoudnessAnalysis | null = null
   private startTime: number = 0
   private pauseTime: number = 0
   private _playbackState: PlaybackState = 'stopped'
@@ -416,6 +425,7 @@ export class AudioEngine {
     }
     this.clearNextBuffer()
     this.audioBuffer = null
+    this.currentNormalizationAnalysis = null
     this.playbackOutputMode = 'bitperfect'
     this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
     this.notifyTrackChange()
@@ -1156,6 +1166,7 @@ export class AudioEngine {
     await this.clearRemoteStreamState(true)
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
+    this.currentNormalizationAnalysis = null
     this.currentBufferTrackPath = null
 
     const canPromoteNativeNext = this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
@@ -1604,34 +1615,18 @@ export class AudioEngine {
     return node
   }
 
-  private createProgressiveNormalizationAccumulator(): ProgressiveNormalizationAccumulator {
+  private createProgressiveNormalizationAccumulator(sampleRate: number): ProgressiveNormalizationAccumulator {
     return {
-      sumSquares: 0,
-      sampleCount: 0,
+      analyzer: new ProgressiveKWeightedLoudnessAnalyzer(sampleRate),
       nextUpdateFrameThreshold: 0,
       approximate: true
     }
   }
 
   private resolveProgressiveNormalizationGain(accumulator: ProgressiveNormalizationAccumulator): GainState | null {
-    if (accumulator.sampleCount <= 0) return null
-
-    const rms = Math.sqrt(accumulator.sumSquares / accumulator.sampleCount)
-    if (!Number.isFinite(rms) || rms <= 0) {
-      return {
-        gainDb: 0,
-        linearGain: 1,
-        mode: 'normalization'
-      }
-    }
-
-    const currentDb = 20 * Math.log10(rms + 1e-10)
-    const clampedGainDb = this.clampGainDb(this._targetLufs - currentDb)
-    return {
-      gainDb: clampedGainDb,
-      linearGain: this.toLinearGain(clampedGainDb),
-      mode: 'normalization'
-    }
+    const analysis = accumulator.analyzer.getAnalysis()
+    if (!analysis) return null
+    return this.computeNormalizationForAnalysis(analysis, { log: false })
   }
 
   private applyRemoteNormalizationIfNeeded(
@@ -1749,14 +1744,7 @@ export class AudioEngine {
     remoteState.waveform.ingestChunk(channelData, startFrame)
 
     if (remoteState.normalization) {
-      for (const channel of channelData) {
-        for (let index = 0; index < channel.length; index++) {
-          const sample = channel[index]
-          remoteState.normalization.sumSquares += sample * sample
-        }
-      }
-      remoteState.normalization.sampleCount += channelData[0]?.length ? channelData[0].length * channelData.length : 0
-
+      remoteState.normalization.analyzer.ingest(channelData)
       const playableThresholdFrames = Math.floor(remoteState.sampleRate * REMOTE_STREAM_PLAYABLE_SECONDS)
       if (remoteState.normalization.nextUpdateFrameThreshold === 0 && remoteState.analyzedFrames >= playableThresholdFrames) {
         remoteState.normalization.nextUpdateFrameThreshold = Math.floor(remoteState.sampleRate * REMOTE_NORMALIZATION_UPDATE_SECONDS)
@@ -1839,6 +1827,7 @@ export class AudioEngine {
     await this.clearRemoteStreamState(true)
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
+    this.currentNormalizationAnalysis = null
     this.currentBufferTrackPath = null
     this.pauseTime = 0
     this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
@@ -1891,7 +1880,7 @@ export class AudioEngine {
       ),
       normalization: this._replayGainEnabled && this.currentReplayGainDb != null
         ? null
-        : this.createProgressiveNormalizationAccumulator()
+        : this.createProgressiveNormalizationAccumulator(info.sampleRate)
     }
 
     this.applyChannelRoutingPreferences(info.channels)
@@ -2053,58 +2042,51 @@ export class AudioEngine {
     }
   }
 
-  /**
-   * Calculate approximate loudness of an audio buffer in dB
-   * Uses RMS (root mean square) measurement
-   */
-  private calculateLoudness(buffer: AudioBuffer): number {
-    const channels = buffer.numberOfChannels
-    const length = buffer.length
-    let sumSquares = 0
-
-    // Sum squares across all channels
-    for (let ch = 0; ch < channels; ch++) {
-      const data = buffer.getChannelData(ch)
-      for (let i = 0; i < length; i++) {
-        sumSquares += data[i] * data[i]
-      }
-    }
-
-    // Calculate RMS and convert to dB
-    const rms = Math.sqrt(sumSquares / (length * channels))
-    const dB = 20 * Math.log10(rms + 1e-10)
-
-    return dB
-  }
-
   private clampGainDb(gainDb: number): number {
     return Math.max(NORMALIZATION_MIN_GAIN_DB, Math.min(NORMALIZATION_MAX_GAIN_DB, gainDb))
   }
 
   private toLinearGain(gainDb: number): number {
-    return Math.pow(10, gainDb / 20)
+    return dbToLinear(gainDb)
   }
 
   private normalizeReplayGainCandidate(value: number | null | undefined): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
-  private computeNormalizationForBuffer(buffer: AudioBuffer): GainState {
-    const currentDb = this.calculateLoudness(buffer)
-    const gainDb = this._targetLufs - currentDb
-    const clampedGainDb = this.clampGainDb(gainDb)
-    const linearGain = this.toLinearGain(clampedGainDb)
+  private async analyzeNormalizationForBuffer(buffer: AudioBuffer): Promise<LoudnessAnalysis> {
+    return analyzeAudioBufferLoudness(buffer)
+  }
 
-    console.log(`Normalization: ${currentDb.toFixed(1)} dB -> ${this._targetLufs} dB (gain: ${clampedGainDb.toFixed(1)} dB)`)
+  private computeNormalizationForAnalysis(
+    analysis: LoudnessAnalysis,
+    options: { log?: boolean } = {}
+  ): GainState {
+    const normalizationGain = resolveStaticNormalizationGain({
+      targetLufs: this._targetLufs,
+      loudnessLufs: analysis.loudnessLufs,
+      peakLinear: analysis.peakLinear,
+      minGainDb: NORMALIZATION_MIN_GAIN_DB,
+      maxGainDb: NORMALIZATION_MAX_GAIN_DB,
+      peakCeilingLinear: NORMALIZATION_PEAK_CEILING_LINEAR
+    })
+
+    if (options.log !== false) {
+      const peakNote = normalizationGain.peakLimited ? ', peak-limited' : ''
+      console.log(
+        `Normalization: ${analysis.loudnessLufs.toFixed(1)} LUFS -> ${this._targetLufs} LUFS ` +
+        `(gain: ${normalizationGain.gainDb.toFixed(1)} dB${peakNote})`
+      )
+    }
 
     return {
-      gainDb: clampedGainDb,
-      linearGain,
+      gainDb: normalizationGain.gainDb,
+      linearGain: normalizationGain.linearGain,
       mode: 'normalization'
     }
   }
 
-  private resolveGainStateForBuffer(buffer: AudioBuffer, replayGainDb: number | null): GainState {
+  private resolveGainStateForAnalysis(analysis: LoudnessAnalysis | null, replayGainDb: number | null): GainState {
     if (!this._normalizationEnabled) {
       return {
         gainDb: 0,
@@ -2122,7 +2104,15 @@ export class AudioEngine {
       }
     }
 
-    return this.computeNormalizationForBuffer(buffer)
+    if (!analysis) {
+      return {
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'normalization'
+      }
+    }
+
+    return this.computeNormalizationForAnalysis(analysis)
   }
 
   private applyGainState(gainState: GainState): void {
@@ -2148,18 +2138,18 @@ export class AudioEngine {
   }
 
   private updateNextNormalizationCache(): void {
-    if (!this.nextBuffer) {
+    if (!this.nextBuffer || !this.nextNormalizationAnalysis) {
       this.clearNextNormalizationCache()
       return
     }
 
-    const nextGain = this.resolveGainStateForBuffer(this.nextBuffer, this.nextReplayGainDb)
+    const nextGain = this.resolveGainStateForAnalysis(this.nextNormalizationAnalysis, this.nextReplayGainDb)
     this.nextNormalizationGainDb = nextGain.gainDb
     this.nextNormalizationLinearGain = nextGain.linearGain
     this.nextNormalizationMode = nextGain.mode
   }
 
-  private getPendingNextNormalization(buffer: AudioBuffer): GainState {
+  private getPendingNextNormalization(): GainState {
     if (
       this.nextNormalizationGainDb != null
       && this.nextNormalizationLinearGain != null
@@ -2172,7 +2162,7 @@ export class AudioEngine {
       }
     }
 
-    return this.resolveGainStateForBuffer(buffer, this.nextReplayGainDb)
+    return this.resolveGainStateForAnalysis(this.nextNormalizationAnalysis, this.nextReplayGainDb)
   }
 
   private scheduleNormalizationTransition(targetLinearGain: number, transitionTime: number): void {
@@ -2202,8 +2192,8 @@ export class AudioEngine {
     }
   }
 
-  private applyNormalization(buffer: AudioBuffer): void {
-    const normalization = this.resolveGainStateForBuffer(buffer, this.currentReplayGainDb)
+  private applyNormalization(): void {
+    const normalization = this.resolveGainStateForAnalysis(this.currentNormalizationAnalysis, this.currentReplayGainDb)
     this.applyGainState(normalization)
   }
 
@@ -2231,7 +2221,7 @@ export class AudioEngine {
         mode: 'off'
       })
     } else if (enabled && this.audioBuffer) {
-      this.applyNormalization(this.audioBuffer)
+      this.applyNormalization()
     } else {
       this.applyGainState({
         gainDb: 0,
@@ -2263,7 +2253,7 @@ export class AudioEngine {
       return
     }
     if (this._normalizationEnabled && this.audioBuffer) {
-      this.applyNormalization(this.audioBuffer)
+      this.applyNormalization()
     }
 
     this.updateNextNormalizationCache()
@@ -2298,7 +2288,7 @@ export class AudioEngine {
     }
 
     if (this.audioBuffer) {
-      this.applyNormalization(this.audioBuffer)
+      this.applyNormalization()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -2325,7 +2315,7 @@ export class AudioEngine {
     if (this.remoteStreamState) {
       this.remoteStreamState.normalization = this._replayGainEnabled && this.currentReplayGainDb != null
         ? null
-        : this.remoteStreamState.normalization ?? this.createProgressiveNormalizationAccumulator()
+        : this.remoteStreamState.normalization ?? this.createProgressiveNormalizationAccumulator(this.remoteStreamState.sampleRate)
       this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
@@ -2334,7 +2324,7 @@ export class AudioEngine {
     }
 
     if (this.audioBuffer) {
-      this.applyNormalization(this.audioBuffer)
+      this.applyNormalization()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -4122,6 +4112,7 @@ export class AudioEngine {
       this.assertCurrentLoadOperation(loadOperation)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
+      this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
@@ -4129,14 +4120,17 @@ export class AudioEngine {
       // Decode audio data
       const decodedBuffer = await this.context.decodeAudioData(arrayBuffer)
       this.assertCurrentLoadOperation(loadOperation)
+      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
+      this.currentNormalizationAnalysis = normalizationAnalysis
       this.currentBufferTrackPath = options.trackPath ?? null
       this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
       // Notify visualizers of track change (reset their state for fresh pitch detection)
       this.notifyTrackChange()
 
-      this.applyNormalization(this.audioBuffer)
+      this.applyNormalization()
 
       this._playbackState = 'stopped'
       this.pauseTime = 0
@@ -4148,6 +4142,7 @@ export class AudioEngine {
         throw new SupersededAudioLoadError()
       }
       this.audioBuffer = null
+      this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
       this.currentReplayGainDb = null
@@ -4174,8 +4169,11 @@ export class AudioEngine {
       const clonedBuffer = arrayBuffer.slice(0)
       const decodedBuffer = await this.context.decodeAudioData(clonedBuffer)
       this.assertCurrentPrebufferOperation(prebufferOperation)
+      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      this.assertCurrentPrebufferOperation(prebufferOperation)
       this.nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
       this.nextBuffer = decodedBuffer
+      this.nextNormalizationAnalysis = normalizationAnalysis
       this.nextBufferTrackPath = options.trackPath ?? null
       this.updateNextNormalizationCache()
 
@@ -4189,6 +4187,7 @@ export class AudioEngine {
       }
       console.error('Failed to pre-buffer next track:', err)
       this.nextBuffer = null
+      this.nextNormalizationAnalysis = null
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
       this.clearNextNormalizationCache()
@@ -4241,6 +4240,7 @@ export class AudioEngine {
   private performGaplessTransition(): void {
     if (!this.nextBuffer || !this.nextSourceNode) {
       this.nextReplayGainDb = null
+      this.nextNormalizationAnalysis = null
       this.clearNextNormalizationCache()
       // No next track buffered, emit ended normally
       this._playbackState = 'stopped'
@@ -4255,12 +4255,15 @@ export class AudioEngine {
 
     const nextBuffer = this.nextBuffer
     const nextSourceNode = this.nextSourceNode
-    const nextNormalization = this.getPendingNextNormalization(nextBuffer)
+    const nextNormalization = this.getPendingNextNormalization()
+    const nextNormalizationAnalysis = this.nextNormalizationAnalysis
     const nextReplayGainDb = this.nextReplayGainDb
 
     // Swap buffers
     this.audioBuffer = nextBuffer
     this.nextBuffer = null
+    this.currentNormalizationAnalysis = nextNormalizationAnalysis
+    this.nextNormalizationAnalysis = null
     this.currentBufferTrackPath = this.nextBufferTrackPath
     this.nextBufferTrackPath = null
     this.currentReplayGainDb = nextReplayGainDb
@@ -4306,6 +4309,7 @@ export class AudioEngine {
   // Clear pre-buffered next track
   clearNextBuffer(): void {
     this.invalidatePrebufferOperations()
+    this.nextNormalizationAnalysis = null
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
       this.nextBufferTrackPath = null
@@ -4842,6 +4846,8 @@ export class AudioEngine {
     this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.nextBuffer = null
+    this.currentNormalizationAnalysis = null
+    this.nextNormalizationAnalysis = null
     this.currentBufferTrackPath = null
     this.nextBufferTrackPath = null
     this.remoteStreamState = null
