@@ -5364,7 +5364,7 @@ ipcMain.handle('library:forceRescanAll', async () => {
         const onFolderIssue = (issue: library.LibraryScanIssue) => {
           issueCollector.record(issue, folder.path)
         }
-        sendLibraryScanStage('scanning', `Force rescanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
+        sendLibraryScanStage('scanning', `Rewriting metadata in ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
         try {
           const scanResult = await library.scanFolder(folder.path, (current, total, file) => {

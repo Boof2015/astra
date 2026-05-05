@@ -1,9 +1,65 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'fs/promises'
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import test from 'node:test'
 import * as library from './library.ts'
+
+function createRiffChunk(id: string, payload: Buffer): Buffer {
+  const header = Buffer.alloc(8)
+  header.write(id, 0, 'ascii')
+  header.writeUInt32LE(payload.length, 4)
+  const padding = payload.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0)
+  return Buffer.concat([header, payload, padding])
+}
+
+function createInfoTextChunk(id: string, value: string): Buffer {
+  return createRiffChunk(id, Buffer.from(`${value}\0`, 'ascii'))
+}
+
+function createTaggedWavFixture(title: string, artist: string): Buffer {
+  const formatPayload = Buffer.alloc(16)
+  formatPayload.writeUInt16LE(1, 0)
+  formatPayload.writeUInt16LE(1, 2)
+  formatPayload.writeUInt32LE(8000, 4)
+  formatPayload.writeUInt32LE(16000, 8)
+  formatPayload.writeUInt16LE(2, 12)
+  formatPayload.writeUInt16LE(16, 14)
+
+  const infoPayload = Buffer.concat([
+    Buffer.from('INFO', 'ascii'),
+    createInfoTextChunk('INAM', title),
+    createInfoTextChunk('IART', artist)
+  ])
+  const body = Buffer.concat([
+    Buffer.from('WAVE', 'ascii'),
+    createRiffChunk('fmt ', formatPayload),
+    createRiffChunk('LIST', infoPayload),
+    createRiffChunk('data', Buffer.alloc(2))
+  ])
+  const header = Buffer.alloc(8)
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(body.length, 4)
+  return Buffer.concat([header, body])
+}
+
+async function writeTaggedWavFixture(filePath: string, title: string, artist: string): Promise<void> {
+  await writeFile(filePath, createTaggedWavFixture(title, artist))
+}
+
+async function setupEmptyLibrary(t: test.TestContext): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'astra-library-sqlite-'))
+  process.env.ASTRA_TEST_USER_DATA = dir
+  await library.initDatabase()
+
+  t.after(async () => {
+    library.closeDatabase()
+    delete process.env.ASTRA_TEST_USER_DATA
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  return dir
+}
 
 function createRemoteTrack(
   overrides: Partial<library.SubsonicTrackUpsertInput> & Pick<library.SubsonicTrackUpsertInput, 'path' | 'title' | 'artist' | 'album'>
@@ -38,15 +94,7 @@ function createRemoteTrack(
 }
 
 async function setupSeededLibrary(t: test.TestContext): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), 'astra-library-sqlite-'))
-  process.env.ASTRA_TEST_USER_DATA = dir
-  await library.initDatabase()
-
-  t.after(async () => {
-    library.closeDatabase()
-    delete process.env.ASTRA_TEST_USER_DATA
-    await rm(dir, { recursive: true, force: true })
-  })
+  await setupEmptyLibrary(t)
 
   const source = await library.createSubsonicSource({
     name: 'Test Source',
@@ -167,4 +215,40 @@ test('library track pages preserve ordering and album identities across page bou
   assert.ok(splitAlbum)
   assert.equal(firstPage.tracks[0].album_identity_key, splitAlbum.identity_key)
   assert.equal(secondPage.tracks[0].album_identity_key, splitAlbum.identity_key)
+})
+
+test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Initial Title', 'Initial Artist')
+
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+  assert.equal(initialScan.updated, 0)
+  assert.equal(initialScan.errors, 0)
+  assert.equal(library.getTrackByPath(trackPath)?.title, 'Initial Title')
+
+  const originalStat = await stat(trackPath)
+  await writeTaggedWavFixture(trackPath, 'Updated Title', 'Updated Artist')
+  await utimes(trackPath, originalStat.atime, originalStat.mtime)
+
+  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental' })
+  assert.equal(incrementalScan.added, 0)
+  assert.equal(incrementalScan.updated, 0)
+  assert.equal(incrementalScan.errors, 0)
+  assert.equal(library.getTrackByPath(trackPath)?.title, 'Initial Title')
+
+  const forceScan = await library.scanFolder(musicDir, undefined, { mode: 'force' })
+  assert.equal(forceScan.added, 0)
+  assert.equal(forceScan.updated, 1)
+  assert.equal(forceScan.errors, 0)
+  assert.equal(library.getTrackByPath(trackPath)?.title, 'Updated Title')
+  assert.equal(library.getTrackByPath(trackPath)?.artist, 'Updated Artist')
 })

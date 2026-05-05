@@ -1276,7 +1276,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       isScanning: true,
       isCancelingScan: false,
       scanProgress: { current: 0, total: 0, file: '' },
-      scanStage: { stage: 'scanning', message: 'Force rescanning library...' },
+      scanStage: { stage: 'scanning', message: 'Rewriting library metadata...' },
       lastScanIssueLog: null
     })
 

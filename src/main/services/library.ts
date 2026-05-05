@@ -4848,12 +4848,11 @@ interface ExistingTrackScanState {
   replaygain_album_gain_db: number | null
 }
 
-function shouldSkipExistingTrackScan(
+function shouldSkipIncrementalTrackScan(
   existing: ExistingTrackScanState | undefined,
-  fileModifiedAtMs: number,
-  mode: LibraryFolderScanMode
+  fileModifiedAtMs: number
 ): boolean {
-  if (!existing || mode === 'force') {
+  if (!existing) {
     return false
   }
 
@@ -4904,7 +4903,8 @@ export async function scanFolder(
         [filePath]
       )
 
-      if (shouldSkipExistingTrackScan(existing, fileStat.mtimeMs, mode)) {
+      const shouldSkipKnownFile = mode === 'incremental' && shouldSkipIncrementalTrackScan(existing, fileStat.mtimeMs)
+      if (shouldSkipKnownFile) {
         return
       }
 
