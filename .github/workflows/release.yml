@@ -20,7 +20,9 @@ jobs:
             dist_cmd: dist:linux
           - os: macos-latest
             dist_cmd: dist:mac
-          - os: windows-latest
+          # Pin Windows to VS 2022; windows-latest can roll to VS 2026 before
+          # Electron's node-gyp stack recognizes the new Visual Studio version.
+          - os: windows-2022
             dist_cmd: dist:win
 
     steps:
