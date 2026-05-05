@@ -344,12 +344,123 @@ jobs:
 
   publish-winget:
     name: Publish to winget
-    # Disabled until the initial Boof2015.Astra manifest exists in winget-pkgs.
-    if: ${{ false }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WINGET_INSTALLERS_REGEX: 'Astra\.Setup\..+\.Windows\.exe$'
     steps:
+      - name: Preflight winget release
+        id: winget-preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TAG="${RELEASE_TAG:-}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Release tag could not be resolved from the workflow event." >&2
+            exit 1
+          fi
+
+          VER="${TAG#v}"
+          if [ -z "$VER" ]; then
+            echo "::error::Release tag '$TAG' does not contain a package version." >&2
+            exit 1
+          fi
+
+          RELEASE_JSON="$(mktemp)"
+          WINGET_RESPONSE="$(mktemp)"
+          trap 'rm -f "$RELEASE_JSON" "$WINGET_RESPONSE"' EXIT
+
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            -o "$RELEASE_JSON"
+
+          MATCH_COUNT="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))] | length' "$RELEASE_JSON")"
+          if [ "$MATCH_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one winget installer asset matching '$WINGET_INSTALLERS_REGEX' for $TAG, found $MATCH_COUNT." >&2
+            echo "Release assets:" >&2
+            jq -r '.assets[]?.name // empty' "$RELEASE_JSON" >&2
+            exit 1
+          fi
+
+          MATCH_NAME="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))][0].name' "$RELEASE_JSON")"
+          MATCH_URL="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))][0].browser_download_url' "$RELEASE_JSON")"
+          echo "Validated winget installer asset: $MATCH_NAME"
+          echo "Installer URL: $MATCH_URL"
+
+          WINGET_STATUS="$(curl -sS \
+            -o "$WINGET_RESPONSE" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/b/Boof2015/Astra/${VER}?ref=master")"
+
+          if [ "$WINGET_STATUS" = "200" ]; then
+            echo "Boof2015.Astra $VER already exists in winget-pkgs; skipping winget PR submission."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$WINGET_STATUS" = "404" ]; then
+            echo "Boof2015.Astra $VER is not in winget-pkgs yet; winget PR submission will run."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not check existing winget-pkgs manifest for Boof2015.Astra $VER. GitHub API returned HTTP $WINGET_STATUS." >&2
+            cat "$WINGET_RESPONSE" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify winget token
+        if: ${{ steps.winget-preflight.outputs.should_publish == 'true' }}
+        shell: bash
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_TOKEN:-}" ]; then
+            echo "::error::WINGET_TOKEN is empty or missing. Add a GitHub PAT that can push to Boof2015/winget-pkgs and open PRs against microsoft/winget-pkgs." >&2
+            exit 1
+          fi
+
+          FORK_JSON="$(mktemp)"
+          trap 'rm -f "$FORK_JSON"' EXIT
+          FORK_STATUS="$(curl -sS \
+            -o "$FORK_JSON" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Boof2015/winget-pkgs")"
+
+          if [ "$FORK_STATUS" != "200" ]; then
+            echo "::error::WINGET_TOKEN could not access Boof2015/winget-pkgs. GitHub API returned HTTP $FORK_STATUS." >&2
+            cat "$FORK_JSON" >&2
+            exit 1
+          fi
+
+          CAN_PUSH="$(jq -r '.permissions.push // false' "$FORK_JSON")"
+          if [ "$CAN_PUSH" != "true" ]; then
+            echo "::error::WINGET_TOKEN can access Boof2015/winget-pkgs but does not have push permission." >&2
+            exit 1
+          fi
+
+          echo "WINGET_TOKEN can push to Boof2015/winget-pkgs."
+
       - uses: vedantmgoyal9/winget-releaser@v2
+        if: ${{ steps.winget-preflight.outputs.should_publish == 'true' }}
         with:
           identifier: Boof2015.Astra
+          version: ${{ steps.winget-preflight.outputs.version }}
+          release-tag: ${{ steps.winget-preflight.outputs.tag }}
+          release-repository: astra
+          fork-user: Boof2015
           token: ${{ secrets.WINGET_TOKEN }}
-          installers-regex: 'Astra\.Setup\..+\.Windows\.exe$'
+          installers-regex: ${{ env.WINGET_INSTALLERS_REGEX }}
