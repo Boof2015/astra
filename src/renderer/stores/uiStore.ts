@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
+import type { UIScaleShortcutAction } from '../../types/uiScale'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = 'remaining' | 'duration'
@@ -108,6 +109,15 @@ export function normalizeUIScalePercent(value: unknown): number {
 
   const snapped = Math.round(numeric / UI_SCALE_STEP_PERCENT) * UI_SCALE_STEP_PERCENT
   return Math.min(MAX_UI_SCALE_PERCENT, Math.max(MIN_UI_SCALE_PERCENT, snapped))
+}
+
+export function getNextUIScalePercent(currentPercent: number, action: UIScaleShortcutAction): number {
+  if (action === 'reset') return DEFAULT_UI_SCALE_PERCENT
+
+  const delta = action === 'increase'
+    ? UI_SCALE_STEP_PERCENT
+    : -UI_SCALE_STEP_PERCENT
+  return normalizeUIScalePercent(currentPercent + delta)
 }
 
 export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {

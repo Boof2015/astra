@@ -78,6 +78,7 @@ import type {
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import type { UIScaleShortcutAction } from '../types/uiScale'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -242,6 +243,9 @@ declare global {
             }
             theme: {
                 setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
+            }
+            uiScale: {
+                onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
             }
             discord: {
                 configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>

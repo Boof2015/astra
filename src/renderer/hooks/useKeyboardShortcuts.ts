@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { SEEK_STEP_SECONDS, VOLUME_STEP } from '../constants/keyboardShortcuts'
 import { usePlayerStore } from '../stores/playerStore'
-import { useUIStore } from '../stores/uiStore'
+import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
 import { useJumpToNowPlaying } from './useJumpToNowPlaying'
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -47,6 +47,22 @@ const focusShortcutSearchInput = (): boolean => {
 
 export function useKeyboardShortcuts(): void {
   const jumpToNowPlaying = useJumpToNowPlaying()
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.uiScale?.onShortcut((action) => {
+      const ui = useUIStore.getState()
+      if (action === 'reset') {
+        ui.resetUIScalePercent()
+        return
+      }
+
+      ui.setUIScalePercent(getNextUIScalePercent(ui.uiScalePercent, action))
+    })
+
+    return () => {
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {

@@ -14,6 +14,9 @@ export type ShortcutToken =
   | 'right'
   | '/'
   | '?'
+  | '+'
+  | '-'
+  | '0'
   | 'k'
   | 'n'
   | 'p'
@@ -80,6 +83,27 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
       { tokens: ['?'] },
       { tokens: ['mod', '/'] }
     ]
+  },
+  {
+    id: 'ui-scale-increase',
+    section: 'global',
+    action: 'Increase UI Scale',
+    description: 'Increase the app interface scale.',
+    bindings: [{ tokens: ['mod', '+'] }]
+  },
+  {
+    id: 'ui-scale-decrease',
+    section: 'global',
+    action: 'Decrease UI Scale',
+    description: 'Decrease the app interface scale.',
+    bindings: [{ tokens: ['mod', '-'] }]
+  },
+  {
+    id: 'ui-scale-reset',
+    section: 'global',
+    action: 'Reset UI Scale',
+    description: 'Reset the app interface scale.',
+    bindings: [{ tokens: ['mod', '0'] }]
   },
   {
     id: 'playback-toggle',

@@ -119,6 +119,7 @@ import {
 } from '../types/phoneRemote'
 import type { LastFmServiceConfig } from '../types/lastFm'
 import type { LyricsTrackQuery } from '../types/lyrics'
+import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -153,6 +154,7 @@ import type {
   IntegrityScanScope,
   IntegrityScanSummary
 } from '../types/libraryIntegrity'
+import { resolveUIScaleShortcutAction } from './uiScaleShortcuts'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -2954,6 +2956,15 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const action: UIScaleShortcutAction | null = resolveUIScaleShortcutAction(input, process.platform)
+    if (!action) return
+
+    event.preventDefault()
+    mainWindow?.webContents.setZoomLevel(0)
+    mainWindow?.webContents.send('ui-scale:shortcut', action)
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {

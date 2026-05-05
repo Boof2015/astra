@@ -84,6 +84,7 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   IntegrityFinding,
   IntegrityScanMode,
@@ -674,6 +675,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
   },
 
+  uiScale: {
+    onShortcut: (callback: (action: UIScaleShortcutAction) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, action: UIScaleShortcutAction) => callback(action)
+      ipcRenderer.on('ui-scale:shortcut', handler)
+      return () => ipcRenderer.removeListener('ui-scale:shortcut', handler)
+    }
+  },
+
   // Integrations
   discord: {
     configure: (options: { enabled: boolean; coverArtEnabled: boolean }): Promise<DiscordRpcConfigureResult> =>
@@ -1102,6 +1111,9 @@ declare global {
       }
       theme: {
         setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
+      }
+      uiScale: {
+        onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
       }
 
       // Integrations
