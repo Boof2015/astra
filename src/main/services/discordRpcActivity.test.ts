@@ -124,6 +124,77 @@ test('keeps quality metadata out of the activity state line', () => {
   assert.equal(activity?.assets?.large_text, 'FLAC • 24-bit • 96kHz')
 })
 
+test('can use the artist as the compact status field', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: 'Charles',
+      artist: 'Ado'
+    }
+  }, {
+    compactStatusMode: 'artist'
+  })
+
+  assert.equal(activity?.details, 'Charles')
+  assert.equal(activity?.state, 'Ado')
+  assert.equal(activity?.status_display_type, 1)
+})
+
+test('falls back to song title compact status when artist is missing', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: 'Charles'
+    }
+  }, {
+    compactStatusMode: 'artist'
+  })
+
+  assert.equal(activity?.details, 'Charles')
+  assert.equal(activity?.state, undefined)
+  assert.equal(activity?.status_display_type, 2)
+})
+
+test('can use album as the profile info line', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: 'Charles',
+      artist: 'Ado',
+      album: 'Fall Apart',
+      codec: 'flac',
+      sampleRate: 44100,
+      bitDepth: 16
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    expandedInfoMode: 'album'
+  })
+
+  assert.equal(activity?.assets?.large_text, 'Fall Apart')
+})
+
+test('omits the profile info line in album mode when album is blank', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: {
+      title: 'Charles',
+      artist: 'Ado',
+      album: '   ',
+      codec: 'flac',
+      sampleRate: 44100,
+      bitDepth: 16
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    expandedInfoMode: 'album'
+  })
+
+  assert.deepEqual(activity?.assets, {
+    large_image: 'https://example.com/cover.jpg'
+  })
+})
+
 test('clears presence for stopped playback and blank titles', () => {
   assert.equal(buildDiscordActivityFromPresence({
     playbackState: 'stopped',

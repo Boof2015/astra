@@ -271,9 +271,13 @@ export default function SettingsView() {
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
+    compactStatusMode: discordCompactStatusMode,
+    expandedInfoMode: discordExpandedInfoMode,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
     setCoverArtEnabled: setDiscordCoverArtEnabled,
+    setCompactStatusMode: setDiscordCompactStatusMode,
+    setExpandedInfoMode: setDiscordExpandedInfoMode,
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
@@ -1836,6 +1840,64 @@ export default function SettingsView() {
                     >
                       {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
                     </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Compact Status</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord compact status"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{ transform: discordCompactStatusMode === 'artist' ? 'translateX(100%)' : 'translateX(0)' }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordCompactStatusMode === 'title' ? 'active' : ''}`}
+                        onClick={() => void setDiscordCompactStatusMode('title')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordCompactStatusMode === 'title'}
+                      >
+                        Title
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordCompactStatusMode === 'artist' ? 'active' : ''}`}
+                        onClick={() => void setDiscordCompactStatusMode('artist')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordCompactStatusMode === 'artist'}
+                      >
+                        Artist
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Profile Info Line</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord profile info line"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{ transform: discordExpandedInfoMode === 'album' ? 'translateX(100%)' : 'translateX(0)' }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordExpandedInfoMode === 'file-info' ? 'active' : ''}`}
+                        onClick={() => void setDiscordExpandedInfoMode('file-info')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordExpandedInfoMode === 'file-info'}
+                      >
+                        File Info
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordExpandedInfoMode === 'album' ? 'active' : ''}`}
+                        onClick={() => void setDiscordExpandedInfoMode('album')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordExpandedInfoMode === 'album'}
+                      >
+                        Album
+                      </button>
+                    </div>
                   </div>
                 </div>
                 <p className="settings-note">{discordStatusMessage}</p>

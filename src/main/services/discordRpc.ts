@@ -3,7 +3,11 @@ import { readdirSync } from 'fs'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { buildDiscordActivityFromPresence } from './discordRpcActivity'
+import {
+  buildDiscordActivityFromPresence,
+  type DiscordActivityCompactStatusMode,
+  type DiscordActivityExpandedInfoMode
+} from './discordRpcActivity'
 
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
@@ -58,6 +62,8 @@ export interface DiscordPresenceUpdate {
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled?: boolean
+  compactStatusMode?: DiscordActivityCompactStatusMode
+  expandedInfoMode?: DiscordActivityExpandedInfoMode
 }
 
 export interface DiscordRpcConfigureResult {
@@ -87,6 +93,14 @@ function normalizeBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined
 }
 
+function normalizeCompactStatusMode(value: unknown): DiscordActivityCompactStatusMode {
+  return value === 'artist' ? 'artist' : 'title'
+}
+
+function normalizeExpandedInfoMode(value: unknown): DiscordActivityExpandedInfoMode {
+  return value === 'album' ? 'album' : 'file-info'
+}
+
 function normalizeHttpsUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = value.trim()
@@ -114,6 +128,8 @@ function listDirectories(path: string): string[] {
 export class DiscordRpcService {
   private enabled = false
   private coverArtEnabled = false
+  private compactStatusMode: DiscordActivityCompactStatusMode = 'title'
+  private expandedInfoMode: DiscordActivityExpandedInfoMode = 'file-info'
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -132,10 +148,17 @@ export class DiscordRpcService {
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
     const nextCoverArtEnabled = Boolean(options.coverArtEnabled)
+    const nextCompactStatusMode = normalizeCompactStatusMode(options.compactStatusMode)
+    const nextExpandedInfoMode = normalizeExpandedInfoMode(options.expandedInfoMode)
     const enabledChanged = this.enabled !== nextEnabled
+    const displayChanged = this.coverArtEnabled !== nextCoverArtEnabled
+      || this.compactStatusMode !== nextCompactStatusMode
+      || this.expandedInfoMode !== nextExpandedInfoMode
 
     this.enabled = nextEnabled
     this.coverArtEnabled = nextCoverArtEnabled
+    this.compactStatusMode = nextCompactStatusMode
+    this.expandedInfoMode = nextExpandedInfoMode
 
     if (!this.enabled) {
       this.clearPresenceSendTimer()
@@ -157,6 +180,9 @@ export class DiscordRpcService {
     const connected = await this.ensureConnected()
     if (!this.fallbackLargeImageUrl) {
       void this.ensureFallbackLargeImageUrl()
+    }
+    if (displayChanged && this.ready && this.pendingPresence) {
+      this.queuePendingPresenceSend(0, true)
     }
     if (connected) {
       return {
@@ -495,7 +521,11 @@ export class DiscordRpcService {
   ): Record<string, unknown> | null {
     const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence?.track?.coverArtUrl) : undefined
     const largeImageUrl = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
-    return buildDiscordActivityFromPresence(presence, { largeImageUrl })
+    return buildDiscordActivityFromPresence(presence, {
+      largeImageUrl,
+      compactStatusMode: this.compactStatusMode,
+      expandedInfoMode: this.expandedInfoMode
+    })
   }
 
   private async ensureFallbackLargeImageUrl(): Promise<void> {

@@ -5883,6 +5883,22 @@ button, .titlebar {
   border-radius: 5px;
 }
 
+.settings-discord-segmented {
+  width: 178px;
+}
+
+.library-segmented-toggle.is-disabled {
+  opacity: 0.55;
+}
+
+.library-segmented-btn:disabled {
+  cursor: not-allowed;
+}
+
+.library-segmented-btn:disabled:hover {
+  color: var(--text-secondary);
+}
+
 .icon-btn {
   display: flex;
   align-items: center;

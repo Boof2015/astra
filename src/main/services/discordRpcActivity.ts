@@ -2,9 +2,12 @@ const DISCORD_SHORT_TITLE_PADDING = '\u200B'
 const DISCORD_TRUNCATION_SUFFIX = '\u2026'
 const DISCORD_ACTIVITY_NAME = 'Astra'
 const DISCORD_LISTENING_ACTIVITY_TYPE = 2
+const DISCORD_STATUS_DISPLAY_STATE = 1
 const DISCORD_STATUS_DISPLAY_DETAILS = 2
 
 export type DiscordActivityPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+export type DiscordActivityCompactStatusMode = 'title' | 'artist'
+export type DiscordActivityExpandedInfoMode = 'file-info' | 'album'
 
 export interface DiscordActivityTrackPresence {
   title: string
@@ -33,6 +36,8 @@ export interface DiscordActivityPresenceUpdate {
 export interface BuildDiscordActivityOptions {
   largeImageUrl?: string
   nowSeconds?: number
+  compactStatusMode?: DiscordActivityCompactStatusMode
+  expandedInfoMode?: DiscordActivityExpandedInfoMode
 }
 
 export interface DiscordRichPresenceActivity {
@@ -143,6 +148,17 @@ function buildPlaybackStateLine(
   return undefined
 }
 
+function buildExpandedInfoLine(
+  track: DiscordActivityTrackPresence,
+  mode: DiscordActivityExpandedInfoMode
+): string | null {
+  if (mode === 'album') {
+    return normalizeText(track.album) ?? null
+  }
+
+  return buildQualityLine(track)
+}
+
 export function buildDiscordActivityFromPresence(
   presence: DiscordActivityPresenceUpdate | null,
   options: BuildDiscordActivityOptions = {}
@@ -153,15 +169,21 @@ export function buildDiscordActivityFromPresence(
   const details = normalizeDiscordActivityDetails(presence.track.title, 128)
   if (!details) return null
 
+  const compactStatusMode = options.compactStatusMode ?? 'title'
+  const expandedInfoMode = options.expandedInfoMode ?? 'file-info'
+  const artistLine = normalizeText(presence.track.artist)
+
   const activity: DiscordRichPresenceActivity = {
     name: DISCORD_ACTIVITY_NAME,
     type: DISCORD_LISTENING_ACTIVITY_TYPE,
     details,
-    status_display_type: DISCORD_STATUS_DISPLAY_DETAILS,
+    status_display_type: compactStatusMode === 'artist' && artistLine
+      ? DISCORD_STATUS_DISPLAY_STATE
+      : DISCORD_STATUS_DISPLAY_DETAILS,
     instance: false
   }
 
-  const state = buildPlaybackStateLine(presence.playbackState, presence.track.artist)
+  const state = buildPlaybackStateLine(presence.playbackState, artistLine)
   if (state) {
     activity.state = state
   }
@@ -182,12 +204,12 @@ export function buildDiscordActivityFromPresence(
   }
 
   if (options.largeImageUrl) {
-    const qualityLine = buildQualityLine(presence.track)
+    const expandedInfoLine = buildExpandedInfoLine(presence.track, expandedInfoMode)
     activity.assets = {
       large_image: options.largeImageUrl
     }
-    if (qualityLine) {
-      activity.assets.large_text = truncateDiscordField(qualityLine, 128)
+    if (expandedInfoLine) {
+      activity.assets.large_text = truncateDiscordField(expandedInfoLine, 128)
     }
   }
 

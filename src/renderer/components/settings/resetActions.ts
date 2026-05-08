@@ -42,6 +42,8 @@ export const RENDERER_SETTINGS_KEYS = [
   PLAYER_VOLUME_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
+  'astra-discord-rpc-compact-status-mode-v1',
+  'astra-discord-rpc-expanded-info-mode-v1',
   'astra-discord-cover-art-cache-v1',
   'astra-discord-cover-art-cache-v2',
   'astra-discord-cover-art-cache-v3',

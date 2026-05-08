@@ -369,6 +369,16 @@ export interface DiscordPresenceUpdate {
   track?: DiscordTrackPresence | null
 }
 
+export type DiscordRpcCompactStatusMode = 'title' | 'artist'
+export type DiscordRpcExpandedInfoMode = 'file-info' | 'album'
+
+export interface DiscordRpcConfigureOptions {
+  enabled: boolean
+  coverArtEnabled: boolean
+  compactStatusMode?: DiscordRpcCompactStatusMode
+  expandedInfoMode?: DiscordRpcExpandedInfoMode
+}
+
 export interface DiscordRpcConfigureResult {
   ok: boolean
   connected: boolean
@@ -685,7 +695,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Integrations
   discord: {
-    configure: (options: { enabled: boolean; coverArtEnabled: boolean }): Promise<DiscordRpcConfigureResult> =>
+    configure: (options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> =>
       ipcRenderer.invoke('discord:configure', options),
     updatePresence: (update: DiscordPresenceUpdate) => ipcRenderer.send('discord:updatePresence', update),
     clearPresence: () => ipcRenderer.send('discord:clearPresence'),
@@ -1118,7 +1128,7 @@ declare global {
 
       // Integrations
       discord: {
-        configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<DiscordRpcConfigureResult>
+        configure: (options: DiscordRpcConfigureOptions) => Promise<DiscordRpcConfigureResult>
         updatePresence: (update: DiscordPresenceUpdate) => void
         clearPresence: () => void
         resolveCoverArt: (query: DiscordCoverArtLookupQuery) => Promise<DiscordCoverArtLookupResult>
