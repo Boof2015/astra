@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, relative } from 'path'
 import test from 'node:test'
 import * as library from './library.ts'
 
@@ -251,4 +251,46 @@ test('force scan rewrites unchanged local metadata that incremental scan skips',
   assert.equal(forceScan.errors, 0)
   assert.equal(library.getTrackByPath(trackPath)?.title, 'Updated Title')
   assert.equal(library.getTrackByPath(trackPath)?.artist, 'Updated Artist')
+})
+
+test('playlist import matches percent-encoded local M3U paths', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const encodedTrackPath = join(musicDir, 'Encoded Name.wav')
+  const literalPercentTrackPath = join(musicDir, 'Literal%20Name.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(encodedTrackPath, 'Encoded Name', 'Import Artist')
+  await writeTaggedWavFixture(literalPercentTrackPath, 'Literal Percent Name', 'Import Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 2)
+  assert.equal(scan.errors, 0)
+
+  const encodedEntry = relative(dir, encodedTrackPath).replace('Encoded Name', 'Encoded%20Name')
+  const encodedPlaylistPath = join(dir, 'encoded-path.m3u')
+  await writeFile(encodedPlaylistPath, `#EXTM3U\n${encodedEntry}\n`, 'utf-8')
+
+  const encodedResult = await library.importPlaylistFromFile(encodedPlaylistPath)
+  assert.equal(encodedResult.detectedFormat, 'm3u')
+  assert.equal(encodedResult.entriesTotal, 1)
+  assert.equal(encodedResult.importedCount, 1)
+  assert.equal(encodedResult.matchedByPathCount, 1)
+  assert.equal(encodedResult.unmatchedCount, 0)
+  assert.equal(encodedResult.unsupportedEntryCount, 0)
+  assert.ok(encodedResult.playlistId)
+  assert.deepEqual(library.getPlaylistTracks(encodedResult.playlistId).map((track) => track.path), [encodedTrackPath])
+
+  const literalPercentPlaylistPath = join(dir, 'literal-percent-path.m3u')
+  await writeFile(literalPercentPlaylistPath, `#EXTM3U\n${relative(dir, literalPercentTrackPath)}\n`, 'utf-8')
+
+  const literalPercentResult = await library.importPlaylistFromFile(literalPercentPlaylistPath)
+  assert.equal(literalPercentResult.importedCount, 1)
+  assert.equal(literalPercentResult.matchedByPathCount, 1)
+  assert.ok(literalPercentResult.playlistId)
+  assert.deepEqual(library.getPlaylistTracks(literalPercentResult.playlistId).map((track) => track.path), [literalPercentTrackPath])
 })

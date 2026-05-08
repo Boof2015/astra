@@ -7031,27 +7031,8 @@ function stripOuterQuotes(value: string): string {
   return value.slice(1, -1)
 }
 
-function resolveImportedPlaylistEntryPath(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
-  const trimmed = stripOuterQuotes(rawPath.trim())
-  if (!trimmed) return null
-
-  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
-  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
-  let candidatePath = trimmed
-
-  if (schemeMatch && !isWindowsAbsolutePath) {
-    const scheme = schemeMatch[1].toLocaleLowerCase()
-    if (scheme === 'file') {
-      try {
-        candidatePath = fileURLToPath(trimmed)
-      } catch {
-        return null
-      }
-    } else {
-      return null
-    }
-  }
-
+function resolveImportedPlaylistEntryPathCandidate(candidatePath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
+  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(candidatePath) || /^\\\\[^\\]/.test(candidatePath)
   let absolutePath = candidatePath
   if (isWindowsAbsolutePath && process.platform !== 'win32') {
     // Keep explicit Windows absolute paths as-is; these can still match on Windows,
@@ -7073,6 +7054,58 @@ function resolveImportedPlaylistEntryPath(rawPath: string, importFilePath: strin
     normalizedPath,
     caseInsensitivePath: normalizedPath.toLocaleLowerCase()
   }
+}
+
+function decodeUriEncodedPlaylistPath(candidatePath: string): string | null {
+  if (!candidatePath.includes('%')) return null
+
+  try {
+    const decodedPath = decodeURIComponent(candidatePath)
+    return decodedPath !== candidatePath ? decodedPath : null
+  } catch {
+    return null
+  }
+}
+
+function resolveImportedPlaylistEntryPaths(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath[] | null {
+  const trimmed = stripOuterQuotes(rawPath.trim())
+  if (!trimmed) return null
+
+  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
+  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
+  const candidatePaths: string[] = []
+
+  if (schemeMatch && !isWindowsAbsolutePath) {
+    const scheme = schemeMatch[1].toLocaleLowerCase()
+    if (scheme === 'file') {
+      try {
+        candidatePaths.push(fileURLToPath(trimmed))
+      } catch {
+        return null
+      }
+    } else {
+      return null
+    }
+  } else {
+    candidatePaths.push(trimmed)
+
+    // Some M3U exporters percent-encode plain local paths without a file:// scheme.
+    const decodedPath = decodeUriEncodedPlaylistPath(trimmed)
+    if (decodedPath) {
+      candidatePaths.push(decodedPath)
+    }
+  }
+
+  const resolvedPaths: ResolvedPlaylistImportPath[] = []
+  const seenNormalizedPaths = new Set<string>()
+  for (const candidatePath of candidatePaths) {
+    const resolvedPath = resolveImportedPlaylistEntryPathCandidate(candidatePath, importFilePath)
+    if (!resolvedPath || seenNormalizedPaths.has(resolvedPath.normalizedPath)) continue
+    seenNormalizedPaths.add(resolvedPath.normalizedPath)
+    resolvedPaths.push(resolvedPath)
+  }
+
+  return resolvedPaths.length > 0 ? resolvedPaths : null
 }
 
 function matchPlaylistEntryByMetadata(entry: ParsedPlaylistEntry, index: PlaylistImportLookupIndex): MetadataMatchResult {
@@ -7132,20 +7165,24 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
     let matchedTrackPath: string | null = null
 
     if (entry.path) {
-      const resolvedPath = resolveImportedPlaylistEntryPath(entry.path, sourceFilePath)
-      if (!resolvedPath) {
+      const resolvedPaths = resolveImportedPlaylistEntryPaths(entry.path, sourceFilePath)
+      if (!resolvedPaths) {
         unsupportedEntryCount += 1
         continue
       }
 
-      matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
-        ?? null
+      for (const resolvedPath of resolvedPaths) {
+        matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
+          ?? null
 
-      if (!matchedTrackPath) {
-        const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
-        if (typeof caseInsensitiveMatch === 'string') {
-          matchedTrackPath = caseInsensitiveMatch
+        if (!matchedTrackPath) {
+          const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
+          if (typeof caseInsensitiveMatch === 'string') {
+            matchedTrackPath = caseInsensitiveMatch
+          }
         }
+
+        if (matchedTrackPath) break
       }
 
       if (matchedTrackPath) {
