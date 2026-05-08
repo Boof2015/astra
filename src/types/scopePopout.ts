@@ -1,5 +1,6 @@
 import type { MultichannelAudioChunk } from './audioAnalysis'
 import type { LUFSMeterMode } from './lufsmeter'
+import type { SpectrumDisplayMode } from './spectrum'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from './vumeter'
 
@@ -43,6 +44,7 @@ export interface ScopePopoutSpectrumChunk extends ScopePopoutChunkBase {
   scope: 'spectrum'
   monoChunks: Float32Array[]
   fftSize: number
+  spectrumDisplayMode: SpectrumDisplayMode
   spectrumTiltDbPerOctave: number
   spectrumHeatmap: boolean
   spectrumHeatmapTiltDbPerOctave: number

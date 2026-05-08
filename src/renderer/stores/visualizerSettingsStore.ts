@@ -31,10 +31,13 @@ import {
   clampWaveformScrollSpeed,
 } from '../../types/waveform'
 import {
+  DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
+  isSpectrumDisplayMode,
+  type SpectrumDisplayMode,
 } from '../../types/spectrum'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
@@ -52,6 +55,7 @@ export function isVectorscopeMode(value: unknown): value is VectorscopeMode {
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
     fftSize: FFTSize
+    displayMode: SpectrumDisplayMode
     tiltDbPerOctave: number
     heatmap: boolean
     heatmapTiltDbPerOctave: number
@@ -110,6 +114,7 @@ interface VisualizerSettingsSnapshot {
   vectorscopeMultiband: boolean
   waveformMultiband: boolean
   spectrumHeatmap: boolean
+  spectrumDisplayMode: SpectrumDisplayMode
   spectrumTiltDbPerOctave: number
   spectrumHeatmapTiltDbPerOctave: number
   profiles: Record<string, AnalyzerProfile>
@@ -169,6 +174,7 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
   setWaveformMultiband: (enabled: boolean) => void
+  setSpectrumDisplayMode: (mode: SpectrumDisplayMode) => void
   setSpectrumHeatmap: (enabled: boolean) => void
   setSpectrumTiltDbPerOctave: (value: number) => void
   setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
@@ -267,6 +273,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   scopeSettings: {
     spectrum: {
       fftSize: DEFAULT_FFT_SIZE,
+      displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
       tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
       heatmap: false,
       heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
@@ -493,6 +500,9 @@ function normalizeScopeSettings(
   return {
     spectrum: {
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
+      displayMode: isSpectrumDisplayMode(rawSpectrum.displayMode)
+        ? rawSpectrum.displayMode
+        : DEFAULT_SPECTRUM_DISPLAY_MODE,
       tiltDbPerOctave: clampSpectrumTiltDbPerOctave(rawSpectrum.tiltDbPerOctave),
       heatmap: typeof rawSpectrum.heatmap === 'boolean'
         ? rawSpectrum.heatmap
@@ -679,6 +689,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
 
   return (
     left.scopeSettings.spectrum.fftSize === right.scopeSettings.spectrum.fftSize
+    && left.scopeSettings.spectrum.displayMode === right.scopeSettings.spectrum.displayMode
     && left.scopeSettings.spectrum.tiltDbPerOctave === right.scopeSettings.spectrum.tiltDbPerOctave
     && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
     && left.scopeSettings.spectrum.heatmapTiltDbPerOctave === right.scopeSettings.spectrum.heatmapTiltDbPerOctave
@@ -773,6 +784,7 @@ function buildSnapshot(
     vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
     waveformMultiband: workingState.scopeSettings.waveform.multiband,
     spectrumHeatmap: workingState.scopeSettings.spectrum.heatmap,
+    spectrumDisplayMode: workingState.scopeSettings.spectrum.displayMode,
     spectrumTiltDbPerOctave: workingState.scopeSettings.spectrum.tiltDbPerOctave,
     spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
     profiles,
@@ -1301,6 +1313,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         waveform: {
           ...state.workingState.scopeSettings.waveform,
           multiband: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumDisplayMode: (mode) => {
+    if (!isSpectrumDisplayMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          displayMode: mode,
         },
       },
     })

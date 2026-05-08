@@ -26,6 +26,7 @@ import {
   MAX_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   MIN_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   SPECTRUM_HEATMAP_TILT_STEP,
+  type SpectrumDisplayMode,
 } from '../../../types/spectrum'
 import {
   useVisualizerSettingsStore,
@@ -119,9 +120,14 @@ function spectrogramScaleLabel(mode: SpectrogramScaleMode): string {
   }
 }
 
+function spectrumDisplayModeLabel(mode: SpectrumDisplayMode): string {
+  return mode === 'bars' ? 'BARS' : 'CURVE'
+}
+
 function scopeStateLabel(
   scope: ScopeKind,
   spectrumFftSize: FFTSize,
+  spectrumDisplayMode: SpectrumDisplayMode,
   spectrogramFftSize: FFTSize,
   spectrogramScrollSpeed: number,
   waveformScrollSpeed: number,
@@ -136,7 +142,7 @@ function scopeStateLabel(
 ): string {
   switch (scope) {
     case 'spectrum':
-      return `FFT ${spectrumFftSize}`
+      return `${spectrumDisplayModeLabel(spectrumDisplayMode)} · FFT ${spectrumFftSize}`
     case 'oscilloscope':
       return pitchLock
         ? underfillEnabled ? 'Pitch-lock + underfill' : 'Pitch-lock'
@@ -286,8 +292,10 @@ export default function AnalyzerEditOverlay({
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((state) => state.spectrumHeatmap)
+  const spectrumDisplayMode = useVisualizerSettingsStore((state) => state.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumHeatmapTiltDbPerOctave)
+  const setSpectrumDisplayMode = useVisualizerSettingsStore((state) => state.setSpectrumDisplayMode)
   const setSpectrumHeatmap = useVisualizerSettingsStore((state) => state.setSpectrumHeatmap)
   const setSpectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumTiltDbPerOctave)
   const setSpectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumHeatmapTiltDbPerOctave)
@@ -440,6 +448,17 @@ export default function AnalyzerEditOverlay({
       case 'spectrum':
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Display</span>
+              <select
+                className="analyzer-edit-select"
+                value={spectrumDisplayMode}
+                onChange={(event) => setSpectrumDisplayMode(event.target.value as SpectrumDisplayMode)}
+              >
+                <option value="curve">Curve</option>
+                <option value="bars">Bars</option>
+              </select>
+            </div>
             <div className="analyzer-edit-mini-control">
               <span className="analyzer-edit-corner-label">FFT</span>
               <select
@@ -865,6 +884,7 @@ export default function AnalyzerEditOverlay({
                   {scopeStateLabel(
                     activeScope,
                     fftSize,
+                    spectrumDisplayMode,
                     spectrogramFftSize,
                     spectrogramScrollSpeed,
                     waveformScrollSpeed,
@@ -927,6 +947,7 @@ export default function AnalyzerEditOverlay({
                 {scopeStateLabel(
                   scope,
                   fftSize,
+                  spectrumDisplayMode,
                   spectrogramFftSize,
                   spectrogramScrollSpeed,
                   waveformScrollSpeed,

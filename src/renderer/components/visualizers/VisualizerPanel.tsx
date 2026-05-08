@@ -9,6 +9,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
+import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 
 interface VisualizerPanelProps {
@@ -167,6 +168,7 @@ function useAnalyzerSurfaceVisible(
 function DockedSpectrumTile({
   lineColor,
   fftSize,
+  displayMode,
   tiltDbPerOctave,
   heatmapFill,
   heatmapTiltDbPerOctave,
@@ -175,6 +177,7 @@ function DockedSpectrumTile({
 }: {
   lineColor: string
   fftSize: number
+  displayMode: SpectrumDisplayMode
   tiltDbPerOctave: number
   heatmapFill: boolean
   heatmapTiltDbPerOctave: number
@@ -201,6 +204,7 @@ function DockedSpectrumTile({
         tiltDbPerOctave,
         heatmapTiltDbPerOctave,
         fftSize,
+        displayMode,
         gradientColors: [
           'rgba(0, 255, 255, 0)',
           `${lineColor}33`,
@@ -226,6 +230,7 @@ function DockedSpectrumTile({
     visualizerRef.current?.setOptions({
       lineColor,
       fftSize,
+      displayMode,
       fillGradient: !heatmapFill,
       heatmapFill,
       tiltDbPerOctave,
@@ -236,7 +241,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
+  }, [lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
 
   useEffect(() => {
     if (isRunning) {
@@ -663,6 +668,10 @@ function vuMeterLabelShort(mode: VUMeterMode, orientation: VUMeterOrientation): 
   return orientation === 'vertical' ? 'BAR VERT' : 'BAR HORZ'
 }
 
+function spectrumDisplayModeLabelShort(mode: SpectrumDisplayMode): string {
+  return mode === 'bars' ? 'BARS' : 'CURVE'
+}
+
 function scopeLabel(scope: ScopeKind): string {
   switch (scope) {
     case 'spectrum':
@@ -729,6 +738,7 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
@@ -1019,7 +1029,7 @@ export default function VisualizerPanel({
       if (isPoppedOut) return 'POPPED OUT'
       switch (scope) {
         case 'spectrum':
-          return `FFT ${fftSize}`
+          return `${spectrumDisplayModeLabelShort(spectrumDisplayMode)} · FFT ${fftSize}`
         case 'oscilloscope':
           return pitchLock ? 'PITCH-LOCK' : 'FREE-RUN'
         case 'vectorscope':
@@ -1091,6 +1101,7 @@ export default function VisualizerPanel({
             frameScheduler={frameScheduler}
             lineColor={lineColor}
             fftSize={fftSize}
+            displayMode={spectrumDisplayMode}
             tiltDbPerOctave={spectrumTiltDbPerOctave}
             heatmapFill={spectrumHeatmap}
             heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}

@@ -3,10 +3,12 @@ import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
+  DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
+  type SpectrumDisplayMode,
 } from '../../../types/spectrum'
 
 export interface SpectrumAnalyzerDataSource {
@@ -34,6 +36,7 @@ export interface SpectrumAnalyzerOptions {
   heatmapTiltDbPerOctave?: number
   tiltReferenceHz?: number
   fftSize?: number
+  displayMode?: SpectrumDisplayMode
   dataSource?: SpectrumAnalyzerDataSource
   frameScheduler?: FrameScheduler
 }
@@ -88,8 +91,16 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   tiltReferenceHz: 1000,
-  fftSize: 2048
+  fftSize: 2048,
+  displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
 }
+
+const CLASSIC_BAR_FREQUENCIES = [
+  20, 25, 31.5, 40, 50, 63, 80, 100,
+  125, 160, 200, 250, 315, 400, 500, 630,
+  800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
+  5000, 6300, 8000, 10000, 12500, 16000, 20000,
+] as const
 
 const defaultSpectrumDataSource: SpectrumAnalyzerDataSource = {
   getPendingSpectrumSamples: () => audioEngine.flushPendingSpectrumSamples(),
@@ -264,6 +275,32 @@ export class SpectrumAnalyzer {
     )
   }
 
+  private getAverageDbInRange(data: Float32Array, startIndex: number, endIndex: number): number {
+    const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
+    const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
+    const lo = Math.floor(Math.min(clampedStart, clampedEnd))
+    const hi = Math.ceil(Math.max(clampedStart, clampedEnd))
+
+    if (hi <= lo) {
+      return this.getInterpolatedValue(data, clampedStart)
+    }
+
+    let powerSum = 0
+    let count = 0
+    for (let i = lo; i <= hi; i++) {
+      const db = data[i]
+      if (!Number.isFinite(db)) continue
+      powerSum += Math.pow(10, db / 10)
+      count += 1
+    }
+
+    if (count === 0) {
+      return this.getInterpolatedValue(data, clampedStart)
+    }
+
+    return 10 * Math.log10(Math.max(1e-12, powerSum / count))
+  }
+
   private applyTilt(db: number, frequency: number, tiltDbPerOctave = this.options.tiltDbPerOctave): number {
     const safeFreq = Math.max(1, frequency)
     const reference = Math.max(1, this.options.tiltReferenceHz)
@@ -286,6 +323,70 @@ export class SpectrumAnalyzer {
     }
 
     return monoData
+  }
+
+  private drawBars(
+    frequencyData: Float32Array,
+    bufferLength: number,
+    binWidth: number,
+    minFrequency: number,
+    maxFrequency: number,
+  ): void {
+    const { canvas, ctx, options } = this
+    const width = canvas.width
+    const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
+    const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter((frequency) => {
+      return frequency >= minFrequency && frequency <= maxFrequency
+    })
+    const barCount = bandFrequencies.length
+    if (barCount === 0) return
+
+    const slotWidth = width / barCount
+    const gapWidth = Math.min(slotWidth * 0.36, Math.max(dpr, 2 * dpr))
+    const barWidth = Math.max(1, slotWidth - gapWidth)
+
+    for (let i = 0; i < barCount; i++) {
+      const centerFrequency = bandFrequencies[i]
+      const lowerBandEdge = i === 0
+        ? barCount === 1
+          ? centerFrequency / Math.SQRT2
+          : centerFrequency / Math.sqrt(bandFrequencies[i + 1] / centerFrequency)
+        : Math.sqrt(bandFrequencies[i - 1] * centerFrequency)
+      const upperBandEdge = i === barCount - 1
+        ? barCount === 1
+          ? centerFrequency * Math.SQRT2
+          : centerFrequency * Math.sqrt(centerFrequency / bandFrequencies[i - 1])
+        : Math.sqrt(centerFrequency * bandFrequencies[i + 1])
+      const frequency0 = Math.max(minFrequency, lowerBandEdge)
+      const frequency1 = Math.min(maxFrequency, upperBandEdge)
+      const bin0 = frequency0 / binWidth
+      const bin1 = Math.min(frequency1 / binWidth, bufferLength - 1)
+      const rawDb = this.getAverageDbInRange(frequencyData, bin0, bin1)
+      const db = this.applyTilt(rawDb, centerFrequency)
+      const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
+      const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
+      const heatmapNormalized = (heatmapDb - options.minDecibels) / (options.maxDecibels - options.minDecibels)
+      const clamped = Math.max(0, Math.min(1, normalized))
+      const heatmapIntensity = Math.pow(Math.max(0, Math.min(1, heatmapNormalized)), HEATMAP_GAMMA)
+      const barHeight = clamped <= 0 ? 0 : Math.max(dpr, clamped * height)
+      if (barHeight <= 0) continue
+
+      const x = Math.floor((i * slotWidth) + (gapWidth / 2))
+      const y = Math.max(0, Math.floor(height - barHeight))
+
+      if (options.heatmapFill) {
+        const li = Math.round(heatmapIntensity * 255)
+        const r = HEAT_LUT[li * 3]
+        const g = HEAT_LUT[li * 3 + 1]
+        const b = HEAT_LUT[li * 3 + 2]
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
+      } else {
+        ctx.fillStyle = options.lineColor
+      }
+
+      ctx.fillRect(x, y, Math.ceil(barWidth), height - y)
+    }
   }
 
   private drawFrame = (): void => {
@@ -338,6 +439,11 @@ export class SpectrumAnalyzer {
 
     // Calculate frequency mapping
     const binWidth = nyquist / bufferLength
+
+    if (options.displayMode === 'bars') {
+      this.drawBars(frequencyData, bufferLength, binWidth, minFrequency, maxFrequency)
+      return
+    }
 
     // Build one point per horizontal pixel and preserve local peaks.
     const points: { x: number; y: number; heatmapIntensity: number }[] = []

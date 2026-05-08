@@ -35,8 +35,11 @@ import {
   clampWaveformScrollSpeed,
 } from '../../../types/waveform'
 import {
+  DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
-  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE
+  DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  isSpectrumDisplayMode,
+  type SpectrumDisplayMode,
 } from '../../../types/spectrum'
 import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
@@ -162,6 +165,7 @@ function SpectrumScopeCanvas() {
   const pendingChunksRef = useRef<Float32Array[]>([])
   const sampleRateRef = useRef(48000)
   const fftSizeRef = useRef(DEFAULT_SPECTRUM_FFT_SIZE)
+  const displayModeRef = useRef<SpectrumDisplayMode>(DEFAULT_SPECTRUM_DISPLAY_MODE)
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)
   const heatmapRef = useRef(false)
@@ -176,18 +180,23 @@ function SpectrumScopeCanvas() {
       if (chunk.scope !== 'spectrum') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       const nextFftSize = Math.max(1024, chunk.fftSize)
+      const nextDisplayMode = isSpectrumDisplayMode(chunk.spectrumDisplayMode)
+        ? chunk.spectrumDisplayMode
+        : DEFAULT_SPECTRUM_DISPLAY_MODE
       const nextLineColor = chunk.lineColor
       const nextTiltDbPerOctave = chunk.spectrumTiltDbPerOctave
       const nextHeatmap = Boolean(chunk.spectrumHeatmap)
       const nextHeatmapTiltDbPerOctave = chunk.spectrumHeatmapTiltDbPerOctave
       const optionsChanged =
         nextFftSize !== fftSizeRef.current ||
+        nextDisplayMode !== displayModeRef.current ||
         nextLineColor !== lineColorRef.current ||
         nextTiltDbPerOctave !== tiltDbPerOctaveRef.current ||
         nextHeatmap !== heatmapRef.current ||
         nextHeatmapTiltDbPerOctave !== heatmapTiltDbPerOctaveRef.current
 
       fftSizeRef.current = nextFftSize
+      displayModeRef.current = nextDisplayMode
       lineColorRef.current = nextLineColor
       tiltDbPerOctaveRef.current = nextTiltDbPerOctave
       heatmapRef.current = nextHeatmap
@@ -207,6 +216,7 @@ function SpectrumScopeCanvas() {
         visualizerRef.current?.setOptions({
           lineColor: nextLineColor,
           fftSize: nextFftSize,
+          displayMode: nextDisplayMode,
           fillGradient: !nextHeatmap,
           heatmapFill: nextHeatmap,
           tiltDbPerOctave: nextTiltDbPerOctave,
@@ -231,6 +241,7 @@ function SpectrumScopeCanvas() {
         tiltDbPerOctave: tiltDbPerOctaveRef.current,
         heatmapTiltDbPerOctave: heatmapTiltDbPerOctaveRef.current,
         fftSize: fftSizeRef.current,
+        displayMode: displayModeRef.current,
         gradientColors: getSpectrumGradientColors(lineColorRef.current),
         scaleType: 'log',
         showGrid: true,

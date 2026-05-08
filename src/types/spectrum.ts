@@ -1,3 +1,11 @@
+export type SpectrumDisplayMode = 'curve' | 'bars'
+
+export const DEFAULT_SPECTRUM_DISPLAY_MODE: SpectrumDisplayMode = 'curve'
+
+export function isSpectrumDisplayMode(value: unknown): value is SpectrumDisplayMode {
+  return value === 'curve' || value === 'bars'
+}
+
 export const DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE = 2.0
 export const MIN_SPECTRUM_TILT_DB_PER_OCTAVE = -2.0
 export const MAX_SPECTRUM_TILT_DB_PER_OCTAVE = 8.0
