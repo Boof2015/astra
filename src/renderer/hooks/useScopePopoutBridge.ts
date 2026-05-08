@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
+import { isNativeAvailable } from '../audio/native/index'
 import { usePlayerStore } from '../stores/playerStore'
 import { useScopePopoutStore } from '../stores/scopePopoutStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
@@ -70,6 +71,7 @@ export function useScopePopoutBridge(): void {
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
+  const nativeVisualizersAvailable = isNativeAvailable()
 
   const streamTimerRef = useRef<number | null>(null)
   const resetSentRef = useRef<ResetState>({ ...EMPTY_RESET_STATE })
@@ -94,8 +96,8 @@ export function useScopePopoutBridge(): void {
 
   useEffect(() => {
     audioEngine.setVisualizerConsumerDemand('scope-popout-bridge', {
-      spectrum: isVisualizerRunning && scopePopoutState.spectrum,
-      oscilloscope: isVisualizerRunning && scopePopoutState.oscilloscope,
+      spectrum: nativeVisualizersAvailable && isVisualizerRunning && scopePopoutState.spectrum,
+      oscilloscope: nativeVisualizersAvailable && isVisualizerRunning && scopePopoutState.oscilloscope,
       vectorscope: isVisualizerRunning && scopePopoutState.vectorscope,
       spectrogram: isVisualizerRunning && scopePopoutState.spectrogram,
       vumeter: isVisualizerRunning && scopePopoutState.vumeter,
@@ -106,7 +108,7 @@ export function useScopePopoutBridge(): void {
     return () => {
       audioEngine.clearVisualizerConsumerDemand('scope-popout-bridge')
     }
-  }, [isVisualizerRunning, scopePopoutState])
+  }, [isVisualizerRunning, nativeVisualizersAvailable, scopePopoutState])
 
   useEffect(() => {
     if (streamTimerRef.current !== null) {
@@ -234,6 +236,13 @@ export function useScopePopoutBridge(): void {
 
         switch (scope) {
           case 'spectrum': {
+            if (!nativeVisualizersAvailable) {
+              flushScopeQueue(scope)
+              if (!resetSentRef.current[scope]) {
+                emitReset(scope)
+              }
+              continue
+            }
             const monoChunks = audioEngine.flushPendingSpectrumSamples()
             if (monoChunks.length === 0) continue
             window.electronAPI.scopePopout.publishChunk({
@@ -253,6 +262,13 @@ export function useScopePopoutBridge(): void {
             break
           }
           case 'oscilloscope': {
+            if (!nativeVisualizersAvailable) {
+              flushScopeQueue(scope)
+              if (!resetSentRef.current[scope]) {
+                emitReset(scope)
+              }
+              continue
+            }
             const leftChunks = audioEngine.flushPendingOscilloscopeSamples()
             if (leftChunks.length === 0) continue
             window.electronAPI.scopePopout.publishChunk({
@@ -362,6 +378,7 @@ export function useScopePopoutBridge(): void {
     }
   }, [
     scopePopoutState,
+    nativeVisualizersAvailable,
     playbackState,
     isVisualizerRunning,
     lineColor,

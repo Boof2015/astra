@@ -1,5 +1,5 @@
 import { audioEngine } from '../AudioEngine'
-import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
+import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native/index'
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'

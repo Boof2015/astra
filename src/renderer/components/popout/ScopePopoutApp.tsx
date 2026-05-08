@@ -4,7 +4,7 @@ import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
   vectorscope as nativeVectorscope
-} from '../../audio/native'
+} from '../../audio/native/index'
 import { LUFSMeter, SpectrumAnalyzer, Spectrogram, VUMeter, Waveform } from '../../audio/visualizers'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
@@ -331,7 +331,7 @@ function OscilloscopeScopeCanvas() {
 
       if (!isNativeAvailable()) {
         drawUnavailableMessage(ctx, width, height)
-        animationRef.current = window.requestAnimationFrame(draw)
+        animationRef.current = null
         return
       }
 

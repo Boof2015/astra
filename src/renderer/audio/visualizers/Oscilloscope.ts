@@ -2,8 +2,9 @@ import { audioEngine } from '../AudioEngine'
 import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
-  isNativeAvailable
-} from '../native'
+  isNativeAvailable,
+  warnNativeUnavailableOnce
+} from '../native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
@@ -114,7 +115,7 @@ export class Oscilloscope {
     this.options = { ...defaultOptions, ...optionOverrides }
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => audioEngine.playbackState === 'playing',
+      shouldRun: () => this.nativeInitialized && audioEngine.playbackState === 'playing',
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
@@ -146,7 +147,7 @@ export class Oscilloscope {
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP not available!')
+      warnNativeUnavailableOnce('Oscilloscope')
     }
   }
 
@@ -204,7 +205,7 @@ export class Oscilloscope {
 
     // Native C++ is being fed continuously by AudioWorklet via AudioEngine
     if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP required')
+      warnNativeUnavailableOnce('Oscilloscope')
       return
     }
 

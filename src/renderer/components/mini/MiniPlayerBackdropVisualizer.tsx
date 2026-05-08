@@ -17,7 +17,7 @@ import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
   spectrum as nativeSpectrum
-} from '../../audio/native'
+} from '../../audio/native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
 import {
   deriveFallbackBackdropMetrics,
@@ -725,8 +725,12 @@ export default function MiniPlayerBackdropVisualizer({
 
     drawRef.current = () => {
       const { width, height } = canvasSizeRef.current
-      if (!isNativeAvailable() || width <= 0 || height <= 0) {
+      if (width <= 0 || height <= 0) {
         scheduleNextFrame()
+        return
+      }
+      if (!isNativeAvailable()) {
+        ctx.clearRect(0, 0, width, height)
         return
       }
 

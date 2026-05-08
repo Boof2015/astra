@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
 import { FrameScheduler } from '../../audio/visualizers/frameScheduler'
+import { isNativeAvailable } from '../../audio/native/index'
 import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
@@ -781,6 +782,7 @@ export default function VisualizerPanel({
   const visibleScopes = visibleScopesProp ?? visibleScopesFromStore
   const isAnalyzerSurfaceVisible = useAnalyzerSurfaceVisible(panelRef)
   const isDockedAnalyzerActive = isAnalyzerSurfaceVisible && !isFullscreen
+  const nativeVisualizersAvailable = isNativeAvailable()
   const mountedVisibleScopes = isAnalyzerSurfaceVisible ? visibleScopes : EMPTY_VISIBLE_SCOPES
 
   const effectiveWidthWeights = useMemo(() => {
@@ -881,8 +883,8 @@ export default function VisualizerPanel({
   useEffect(() => {
     const visibleScopeSet = new Set(mountedVisibleScopes)
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
-      spectrum: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
-      oscilloscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
+      spectrum: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
+      oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
       vumeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
@@ -893,7 +895,7 @@ export default function VisualizerPanel({
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, scopePopoutState])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()

@@ -4,6 +4,7 @@ import { useLibraryStore } from '../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
+import { isNativeAvailable } from '../audio/native/index'
 import type {
   MiniPlayerResolvedArtwork,
   MiniPlayerSnapshot,
@@ -53,6 +54,7 @@ export function useMiniPlayerBridge(): void {
 
   const [resolvedArtwork, setResolvedArtwork] = useState<MiniPlayerResolvedArtwork | null>(null)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>(DEFAULT_MINI_WINDOW_STATE)
+  const nativeVisualizersAvailable = isNativeAvailable()
 
   const publishTimerRef = useRef<number | null>(null)
   const lastPublishRef = useRef(0)
@@ -185,14 +187,14 @@ export function useMiniPlayerBridge(): void {
 
   useEffect(() => {
     audioEngine.setVisualizerConsumerDemand('mini-player-bridge', {
-      miniSpectrum: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
-      miniOscilloscope: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
+      miniSpectrum: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
+      miniOscilloscope: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('mini-player-bridge')
     }
-  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode])
+  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode, nativeVisualizersAvailable])
 
   useEffect(() => {
     if (visualizerStreamTimerRef.current !== null) {
@@ -223,7 +225,7 @@ export function useMiniPlayerBridge(): void {
       visualizerResetSentRef.current = true
     }
 
-    const shouldBridgeToMini = miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
+    const shouldBridgeToMini = nativeVisualizersAvailable && miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
     if (!shouldBridgeToMini) {
       audioEngine.flushPendingMiniVisualizerChunks()
       emitReset()
@@ -269,6 +271,7 @@ export function useMiniPlayerBridge(): void {
   }, [
     miniWindowState.isOpen,
     miniWindowState.visualizerMode,
+    nativeVisualizersAvailable,
     playbackState,
     isVisualizerRunning,
     fftSize,
