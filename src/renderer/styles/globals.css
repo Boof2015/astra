@@ -2097,6 +2097,15 @@ button, .titlebar {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fullscreen-footer-primary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .fullscreen-favorite-btn {
@@ -2130,6 +2139,52 @@ button, .titlebar {
 .fullscreen-favorite-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.fullscreen-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 2px 10px 2px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.fullscreen-volume .volume-btn {
+  width: 26px;
+  height: 26px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.fullscreen-volume .volume-btn:hover:not(:disabled) {
+  color: #fff;
+}
+
+.fullscreen-volume .volume-slider {
+  width: 104px;
+}
+
+.fullscreen-volume .volume-slider::before {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.fullscreen-volume .volume-fill {
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.fullscreen-volume .volume-slider:hover .volume-fill {
+  background: #fff;
+}
+
+.fullscreen-volume .volume-label {
+  width: 34px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.62);
+  text-align: right;
 }
 
 .fullscreen-file-readout {
@@ -3595,6 +3650,15 @@ button, .titlebar {
   background: white;
 }
 
+.volume-slider.disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.volume-slider.disabled:hover .volume-fill {
+  background: rgba(255, 255, 255, 0.6);
+}
+
 /* ============================================
    Scrollbar Styling
    ============================================ */
@@ -3659,6 +3723,15 @@ button, .titlebar {
 
 .volume-btn:hover {
   color: var(--text-primary);
+}
+
+.volume-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.volume-btn:disabled:hover {
+  color: var(--text-secondary);
 }
 
 /* Loading spinner */
@@ -12578,6 +12651,10 @@ body::after {
     padding: 0 16px;
   }
 
+  .fullscreen-volume .volume-slider {
+    width: 96px;
+  }
+
   .fullscreen-stage.lyrics-open {
     transform: translateY(-5px);
   }
@@ -12972,6 +13049,19 @@ body::after {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .fullscreen-footer-primary {
+    width: 100%;
+  }
+
+  .fullscreen-volume {
+    flex: 1 1 174px;
+    max-width: 220px;
+  }
+
+  .fullscreen-volume .volume-slider {
+    width: 88px;
   }
 
   .fullscreen-file-readout {

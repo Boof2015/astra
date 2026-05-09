@@ -14,6 +14,7 @@ import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import WaveformSeekBar from '../player/WaveformSeekBar'
+import VolumeControl from '../player/VolumeControl'
 import EQPopover from '../eq/EQPopover'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
@@ -103,11 +104,7 @@ function TransportWaveformSection({
 export default function TransportBar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const playbackState = usePlayerStore((s) => s.playbackState)
-  const volume = usePlayerStore((s) => s.volume)
-  const isMuted = usePlayerStore((s) => s.isMuted)
   const togglePlay = usePlayerStore((s) => s.togglePlay)
-  const setVolume = usePlayerStore((s) => s.setVolume)
-  const toggleMute = usePlayerStore((s) => s.toggleMute)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
   const playNext = usePlayerStore((s) => s.playNext)
@@ -210,36 +207,9 @@ export default function TransportBar() {
     setShowEQPopover(false)
   }, [playbackOutputMode, showEQPopover])
 
-  const getPercentFromClientX = (clientX: number, element: HTMLDivElement): number => {
-    const rect = element.getBoundingClientRect()
-    if (rect.width <= 0) return 0
-    const percent = (clientX - rect.left) / rect.width
-    return Math.max(0, Math.min(1, percent))
-  }
-
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
   const disabledControlMessage = playbackModeStatusMessage ?? BIT_PERFECT_DSP_DISABLED_MESSAGE
-  const volumeControlDisabled = bitPerfectModeActive
   const eqControlDisabled = bitPerfectModeActive
-
-  const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (volumeControlDisabled) return
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
-  }
-
-  const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (volumeControlDisabled) return
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
-    setVolume(getPercentFromClientX(e.clientX, e.currentTarget))
-  }
-
-  const releaseVolumePointer = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-  }
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -552,48 +522,7 @@ export default function TransportBar() {
         <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent} />
 
         {/* Volume */}
-        <div className="transport-volume">
-          <button
-            className="volume-btn"
-            onClick={volumeControlDisabled ? undefined : toggleMute}
-            aria-label={isMuted ? 'Unmute' : 'Mute'}
-            title={volumeControlDisabled ? disabledControlMessage : (isMuted ? 'Unmute' : 'Mute')}
-            disabled={volumeControlDisabled}
-          >
-            {isMuted || volume === 0 ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-              </svg>
-            ) : volume < 0.5 ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M7 9v6h4l5 5V4l-5 5H7z"/>
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-              </svg>
-            )}
-          </button>
-          <div
-            className={`volume-slider${volumeControlDisabled ? ' disabled' : ''}`}
-            onPointerDown={handleVolumePointerDown}
-            onPointerMove={handleVolumePointerMove}
-            onPointerUp={releaseVolumePointer}
-            onPointerCancel={releaseVolumePointer}
-            role="slider"
-            aria-valuenow={volume * 100}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-disabled={volumeControlDisabled}
-            title={volumeControlDisabled ? disabledControlMessage : 'Playback volume'}
-          >
-            <div
-              className="volume-fill"
-              style={{ width: `${isMuted ? 0 : volume * 100}%` }}
-            />
-          </div>
-          <span className="volume-label">{Math.round(isMuted ? 0 : volume * 100)}</span>
-        </div>
+        <VolumeControl className="transport-volume" />
       </div>
 
       {/* Right: EQ + Queue/Info + File readout */}
