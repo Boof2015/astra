@@ -1,14 +1,21 @@
 import { createHash } from 'crypto'
 import type { MiniPlayerSnapshot } from '../../types/miniPlayer'
-import type {
-  LastFmAuthFinishResult,
-  LastFmAuthStartResult,
-  LastFmPendingScrobble,
-  LastFmServiceConfig,
-  LastFmStatus
+import {
+  LASTFM_OFFICIAL_API_BASE_URL,
+  LASTFM_OFFICIAL_PROFILE_ID,
+  isLastFmCustomEndpoint,
+  normalizeLastFmApiBaseUrl,
+  parseLastFmApiBaseUrl,
+  type LastFmAuthFinishResult,
+  type LastFmAuthStartResult,
+  type LastFmCustomProfileInput,
+  type LastFmPendingScrobble,
+  type LastFmProfileConfig,
+  type LastFmProfileStatus,
+  type LastFmServiceConfig,
+  type LastFmStatus
 } from '../../types/lastFm'
 
-const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
 const LASTFM_AUTH_URL = 'https://www.last.fm/api/auth/'
 const LASTFM_USER_AGENT = 'Astra-LastFM/0.1.0 (https://github.com/Boof2015/astra)'
 const LASTFM_REQUEST_TIMEOUT_MS = 12_000
@@ -173,16 +180,143 @@ function createApiSignature(params: Record<string, string>, sharedSecret: string
   return hash.digest('hex')
 }
 
-function normalizeConfig(config: LastFmServiceConfig, hasApiCredentials: boolean): LastFmServiceConfig {
-  const sessionKey = normalizeText(config.sessionKey)
-  const username = normalizeText(config.username)
-  const connected = Boolean(sessionKey && username)
+function normalizeProfileName(value: unknown, fallback: string): string {
+  return (normalizeText(value) ?? fallback).slice(0, 80)
+}
+
+function isConnectedProfile(profile: LastFmProfileConfig): boolean {
+  return Boolean(profile.sessionKey && profile.username)
+}
+
+function buildCustomProfileId(name: string, existingIds: Set<string>): string {
+  const base = normalizeDisplay(name)
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'endpoint'
+
+  let candidate = `custom-${base}`
+  let suffix = 2
+  while (existingIds.has(candidate) || candidate === LASTFM_OFFICIAL_PROFILE_ID) {
+    candidate = `custom-${base}-${suffix}`
+    suffix += 1
+  }
+  existingIds.add(candidate)
+  return candidate
+}
+
+function createOfficialProfile(raw?: unknown): LastFmProfileConfig {
+  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {}
 
   return {
-    enabled: Boolean(config.enabled) && connected && hasApiCredentials,
-    sessionKey,
-    username,
-    pendingScrobbles: sanitizePendingScrobbles(config.pendingScrobbles)
+    id: LASTFM_OFFICIAL_PROFILE_ID,
+    kind: 'official',
+    name: 'Official Last.fm',
+    apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    sessionKey: normalizeText(record.sessionKey),
+    username: normalizeText(record.username),
+    pendingScrobbles: sanitizePendingScrobbles(record.pendingScrobbles)
+  }
+}
+
+function normalizeCustomProfile(raw: unknown, existingIds: Set<string>): LastFmProfileConfig | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const apiBaseUrl = parseLastFmApiBaseUrl(record.apiBaseUrl)
+  if (!apiBaseUrl || apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) return null
+
+  const name = normalizeProfileName(record.name, 'Custom endpoint')
+  const rawId = normalizeText(record.id)
+  const id = rawId && rawId !== LASTFM_OFFICIAL_PROFILE_ID && !existingIds.has(rawId)
+    ? rawId
+    : buildCustomProfileId(name, existingIds)
+  existingIds.add(id)
+
+  return {
+    id,
+    kind: 'custom',
+    name,
+    apiBaseUrl,
+    sessionKey: normalizeText(record.sessionKey),
+    username: normalizeText(record.username),
+    pendingScrobbles: sanitizePendingScrobbles(record.pendingScrobbles)
+  }
+}
+
+function createLegacyConfig(record: Record<string, unknown>, hasApiCredentials: boolean): LastFmServiceConfig {
+  const apiBaseUrl = normalizeLastFmApiBaseUrl(record.apiBaseUrl)
+  const sessionKey = normalizeText(record.sessionKey)
+  const username = normalizeText(record.username)
+  const pendingScrobbles = sanitizePendingScrobbles(record.pendingScrobbles)
+  const connected = Boolean(sessionKey && username)
+  const enabled = Boolean(record.enabled) && connected && hasApiCredentials
+
+  if (isLastFmCustomEndpoint(apiBaseUrl)) {
+    const customProfile: LastFmProfileConfig = {
+      id: 'custom-lastfm-endpoint',
+      kind: 'custom',
+      name: 'Custom Last.fm endpoint',
+      apiBaseUrl,
+      sessionKey,
+      username,
+      pendingScrobbles
+    }
+
+    return {
+      enabled,
+      activeProfileId: customProfile.id,
+      profiles: [createOfficialProfile(), customProfile]
+    }
+  }
+
+  return {
+    enabled,
+    activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
+    profiles: [
+      {
+        ...createOfficialProfile(),
+        sessionKey,
+        username,
+        pendingScrobbles
+      }
+    ]
+  }
+}
+
+function normalizeConfig(config: LastFmServiceConfig, hasApiCredentials: boolean): LastFmServiceConfig {
+  const record = config as unknown as Record<string, unknown>
+  if (!Array.isArray(record.profiles)) {
+    return createLegacyConfig(record, hasApiCredentials)
+  }
+
+  const rawProfiles = record.profiles
+  const existingIds = new Set<string>([LASTFM_OFFICIAL_PROFILE_ID])
+  const officialRaw = rawProfiles.find((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+    const profile = item as Record<string, unknown>
+    return profile.id === LASTFM_OFFICIAL_PROFILE_ID || profile.kind === 'official'
+  })
+
+  const profiles: LastFmProfileConfig[] = [createOfficialProfile(officialRaw)]
+  for (const rawProfile of rawProfiles) {
+    if (!rawProfile || typeof rawProfile !== 'object' || Array.isArray(rawProfile)) continue
+    const recordProfile = rawProfile as Record<string, unknown>
+    if (recordProfile.id === LASTFM_OFFICIAL_PROFILE_ID || recordProfile.kind === 'official') continue
+    const customProfile = normalizeCustomProfile(rawProfile, existingIds)
+    if (customProfile) {
+      profiles.push(customProfile)
+    }
+  }
+
+  const requestedActiveProfileId = normalizeText(record.activeProfileId)
+  const activeProfile = profiles.find((profile) => profile.id === requestedActiveProfileId) ?? profiles[0]
+  const activeConnected = isConnectedProfile(activeProfile)
+
+  return {
+    enabled: Boolean(record.enabled) && activeConnected && hasApiCredentials,
+    activeProfileId: activeProfile.id,
+    profiles
   }
 }
 
@@ -252,6 +386,7 @@ export class LastFmService {
   private readonly onStatusChange?: (status: LastFmStatus) => void
 
   private pendingAuthToken: string | null = null
+  private pendingAuthProfileId: string | null = null
   private currentPlayback: PlaybackSession | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private flushInFlight = false
@@ -268,27 +403,41 @@ export class LastFmService {
   }
 
   getStatus(): LastFmStatus {
-    const connected = this.isConnected()
-    const pendingCount = this.config.pendingScrobbles.length
+    const activeProfile = this.getActiveProfile()
+    const connected = isConnectedProfile(activeProfile)
+    const pendingCount = activeProfile.pendingScrobbles.length
+    const apiBaseUrl = activeProfile.apiBaseUrl
+    const usingCustomEndpoint = activeProfile.kind === 'custom'
+    const serviceLabel = usingCustomEndpoint ? activeProfile.name : 'Last.fm'
+    const profileStatuses = this.config.profiles.map((profile) => this.toProfileStatus(profile))
+    const activeProfileStatus = profileStatuses.find((profile) => profile.id === activeProfile.id) ?? profileStatuses[0]
 
-    let statusMessage = 'Last.fm account not connected.'
+    let statusMessage = `${serviceLabel} account not connected.`
     if (!this.hasApiCredentials) {
-      statusMessage = 'Last.fm integration is unavailable: API credentials are not configured.'
+      statusMessage = `${serviceLabel} integration is unavailable: API credentials are not configured.`
     } else if (this.pendingAuthToken) {
       statusMessage = 'Last.fm authorization pending. Approve Astra in your browser; Astra will complete connection automatically.'
+    } else if (usingCustomEndpoint && !connected) {
+      statusMessage = 'Last.fm-compatible endpoint not connected. Enter a username and session key/token.'
     } else if (connected && !this.config.enabled) {
-      statusMessage = `Connected as ${this.config.username}. Last.fm scrobbling is disabled.`
+      statusMessage = `Connected as ${activeProfile.username}. ${serviceLabel} scrobbling is disabled.`
     } else if (connected && this.config.enabled && pendingCount > 0) {
-      statusMessage = `Connected as ${this.config.username}. ${pendingCount} scrobble${pendingCount === 1 ? '' : 's'} pending retry.`
+      statusMessage = `Connected as ${activeProfile.username}. ${pendingCount} scrobble${pendingCount === 1 ? '' : 's'} pending retry.`
     } else if (connected && this.config.enabled) {
-      statusMessage = `Connected as ${this.config.username}. Last.fm scrobbling is active.`
+      statusMessage = `Connected as ${activeProfile.username}. ${serviceLabel} scrobbling is active.`
     }
 
     return {
       enabled: this.config.enabled,
       connected,
-      username: this.config.username,
+      username: activeProfile.username,
+      apiBaseUrl,
+      usingCustomEndpoint,
       authPending: Boolean(this.pendingAuthToken),
+      authPendingProfileId: this.pendingAuthProfileId,
+      activeProfileId: activeProfile.id,
+      activeProfile: activeProfileStatus,
+      profiles: profileStatuses,
       pendingScrobbles: pendingCount,
       hasApiCredentials: this.hasApiCredentials,
       statusMessage,
@@ -307,9 +456,138 @@ export class LastFmService {
     return this.getStatus()
   }
 
+  async createCustomProfile(input: LastFmCustomProfileInput): Promise<LastFmStatus> {
+    const normalized = this.normalizeCustomProfileInput(input, null)
+    if (!normalized.ok) return this.failWithStatus(normalized.message)
+
+    const existingIds = new Set(this.config.profiles.map((profile) => profile.id))
+    const profile: LastFmProfileConfig = {
+      id: buildCustomProfileId(normalized.name, existingIds),
+      kind: 'custom',
+      name: normalized.name,
+      apiBaseUrl: normalized.apiBaseUrl,
+      sessionKey: normalized.sessionKey,
+      username: normalized.username,
+      pendingScrobbles: []
+    }
+
+    this.config.profiles.push(profile)
+    this.config.activeProfileId = profile.id
+    this.config.enabled = isConnectedProfile(profile) && this.hasApiCredentials
+    this.pendingAuthToken = null
+    this.pendingAuthProfileId = null
+    this.currentPlayback = null
+    this.clearFlushTimer()
+    this.lastError = null
+    await this.persistAndEmitStatus()
+    this.scheduleFlush(0)
+    return this.getStatus()
+  }
+
+  async updateCustomProfile(profileId: string, input: LastFmCustomProfileInput): Promise<LastFmStatus> {
+    const profile = this.findProfile(profileId)
+    if (!profile || profile.kind !== 'custom') {
+      return this.failWithStatus('Custom profile not found.')
+    }
+
+    const normalized = this.normalizeCustomProfileInput(input, profile)
+    if (!normalized.ok) return this.failWithStatus(normalized.message)
+
+    const endpointChanged = profile.apiBaseUrl !== normalized.apiBaseUrl
+    const sessionChanged = normalized.sessionKey !== null && normalized.sessionKey !== profile.sessionKey
+
+    profile.name = normalized.name
+    profile.apiBaseUrl = normalized.apiBaseUrl
+
+    if (normalized.sessionKey) {
+      profile.sessionKey = normalized.sessionKey
+      profile.username = normalized.username
+    } else if (endpointChanged) {
+      profile.sessionKey = null
+      profile.username = null
+    } else {
+      profile.username = normalized.username ?? profile.username
+    }
+
+    if (endpointChanged || sessionChanged) {
+      profile.pendingScrobbles = []
+      if (this.config.activeProfileId === profile.id) {
+        this.pendingAuthToken = null
+        this.pendingAuthProfileId = null
+        this.currentPlayback = null
+        this.clearFlushTimer()
+      }
+    }
+
+    if (this.config.activeProfileId === profile.id && (!isConnectedProfile(profile) || !this.hasApiCredentials)) {
+      this.config.enabled = false
+    }
+
+    this.lastError = null
+    await this.persistAndEmitStatus()
+    this.scheduleFlush(0)
+    return this.getStatus()
+  }
+
+  async deleteCustomProfile(profileId: string): Promise<LastFmStatus> {
+    const profile = this.findProfile(profileId)
+    if (!profile || profile.kind !== 'custom') {
+      return this.failWithStatus('Custom profile not found.')
+    }
+
+    this.config.profiles = this.config.profiles.filter((item) => item.id !== profile.id)
+    if (this.pendingAuthProfileId === profile.id) {
+      this.pendingAuthToken = null
+      this.pendingAuthProfileId = null
+    }
+    if (this.config.activeProfileId === profile.id) {
+      this.config.activeProfileId = LASTFM_OFFICIAL_PROFILE_ID
+      this.config.enabled = false
+      this.currentPlayback = null
+      this.clearFlushTimer()
+    }
+
+    this.lastError = null
+    await this.persistAndEmitStatus()
+    this.scheduleFlush(0)
+    return this.getStatus()
+  }
+
+  async setActiveProfile(profileId: string): Promise<LastFmStatus> {
+    const profile = this.findProfile(profileId)
+    if (!profile) {
+      return this.failWithStatus('Scrobble profile not found.')
+    }
+
+    if (profile.id !== this.config.activeProfileId) {
+      this.pendingAuthToken = null
+      this.pendingAuthProfileId = null
+      this.currentPlayback = null
+      this.clearFlushTimer()
+    }
+
+    this.config.activeProfileId = profile.id
+    if (!isConnectedProfile(profile) || !this.hasApiCredentials) {
+      this.config.enabled = false
+    }
+
+    this.lastError = null
+    await this.persistAndEmitStatus()
+    this.scheduleFlush(0)
+    return this.getStatus()
+  }
+
   async beginAuth(): Promise<LastFmAuthStartResult> {
+    const profile = this.getActiveProfile()
     if (!this.hasApiCredentials) {
       const message = 'Last.fm credentials are not configured for this build.'
+      this.lastError = message
+      this.emitStatus()
+      return { ok: false, authPending: false, message }
+    }
+
+    if (profile.kind !== 'official') {
+      const message = 'Browser authorization is only available for official Last.fm. Enter custom endpoint credentials manually.'
       this.lastError = message
       this.emitStatus()
       return { ok: false, authPending: false, message }
@@ -323,7 +601,7 @@ export class LastFmService {
       }
     }
 
-    const tokenResponse = await this.callSignedMethod('auth.getToken')
+    const tokenResponse = await this.callSignedMethod('auth.getToken', {}, undefined, profile)
     if (!tokenResponse.ok) {
       this.lastError = tokenResponse.message
       this.emitStatus()
@@ -349,6 +627,7 @@ export class LastFmService {
     }
 
     this.pendingAuthToken = token
+    this.pendingAuthProfileId = profile.id
     this.lastError = null
     this.emitStatus()
 
@@ -361,24 +640,26 @@ export class LastFmService {
   }
 
   async finishAuth(): Promise<LastFmAuthFinishResult> {
+    const activeProfile = this.getActiveProfile()
     if (!this.hasApiCredentials) {
       const message = 'Last.fm credentials are not configured for this build.'
       this.lastError = message
       this.emitStatus()
-      return { ok: false, connected: this.isConnected(), username: this.config.username, message }
+      return { ok: false, connected: this.isConnected(), username: activeProfile.username, message }
     }
 
-    if (!this.pendingAuthToken) {
+    const authProfile = this.pendingAuthProfileId ? this.findProfile(this.pendingAuthProfileId) : null
+    if (!this.pendingAuthToken || !authProfile) {
       return {
         ok: false,
         connected: this.isConnected(),
-        username: this.config.username,
+        username: activeProfile.username,
         message: 'No pending authorization. Click Connect first.'
       }
     }
 
     const token = this.pendingAuthToken
-    const sessionResponse = await this.callSignedMethod('auth.getSession', { token })
+    const sessionResponse = await this.callSignedMethod('auth.getSession', { token }, undefined, authProfile)
     if (!sessionResponse.ok) {
       const code = sessionResponse.code
       if (code === LASTFM_AUTH_NOT_COMPLETED_CODE) {
@@ -387,7 +668,7 @@ export class LastFmService {
         return {
           ok: false,
           connected: this.isConnected(),
-          username: this.config.username,
+          username: activeProfile.username,
           message: 'Authorization still pending. Approve Astra in your browser.'
         }
       }
@@ -398,18 +679,19 @@ export class LastFmService {
         return {
           ok: false,
           connected: this.isConnected(),
-          username: this.config.username,
+          username: activeProfile.username,
           message: sessionResponse.message
         }
       }
 
       this.pendingAuthToken = null
+      this.pendingAuthProfileId = null
       this.lastError = sessionResponse.message
       this.emitStatus()
       return {
         ok: false,
         connected: this.isConnected(),
-        username: this.config.username,
+        username: activeProfile.username,
         message: sessionResponse.message
       }
     }
@@ -419,7 +701,7 @@ export class LastFmService {
       const message = 'Last.fm returned an invalid session payload.'
       this.lastError = message
       this.emitStatus()
-      return { ok: false, connected: this.isConnected(), username: this.config.username, message }
+      return { ok: false, connected: this.isConnected(), username: activeProfile.username, message }
     }
 
     const session = sessionValue as Record<string, unknown>
@@ -429,12 +711,14 @@ export class LastFmService {
       const message = 'Last.fm returned an incomplete session payload.'
       this.lastError = message
       this.emitStatus()
-      return { ok: false, connected: this.isConnected(), username: this.config.username, message }
+      return { ok: false, connected: this.isConnected(), username: activeProfile.username, message }
     }
 
     this.pendingAuthToken = null
-    this.config.sessionKey = sessionKey
-    this.config.username = username
+    this.pendingAuthProfileId = null
+    authProfile.sessionKey = sessionKey
+    authProfile.username = username
+    this.config.activeProfileId = authProfile.id
     this.config.enabled = true
     this.lastError = null
     await this.persistAndEmitStatus()
@@ -449,24 +733,38 @@ export class LastFmService {
   }
 
   async disconnect(): Promise<LastFmStatus> {
+    const activeProfile = this.getActiveProfile()
     this.pendingAuthToken = null
+    this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.clearFlushTimer()
     this.config.enabled = false
-    this.config.sessionKey = null
-    this.config.username = null
-    this.config.pendingScrobbles = []
+    activeProfile.sessionKey = null
+    activeProfile.username = null
+    activeProfile.pendingScrobbles = []
     this.lastError = null
     await this.persistAndEmitStatus()
     return this.getStatus()
   }
 
   async resetToDefaults(): Promise<LastFmStatus> {
-    return this.disconnect()
+    this.pendingAuthToken = null
+    this.pendingAuthProfileId = null
+    this.currentPlayback = null
+    this.clearFlushTimer()
+    this.config = normalizeConfig({
+      enabled: false,
+      activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
+      profiles: [createOfficialProfile()]
+    }, this.hasApiCredentials)
+    this.lastError = null
+    await this.persistAndEmitStatus()
+    return this.getStatus()
   }
 
   stop(): void {
     this.pendingAuthToken = null
+    this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.flushInFlight = false
     this.clearFlushTimer()
@@ -528,7 +826,74 @@ export class LastFmService {
   }
 
   private isConnected(): boolean {
-    return Boolean(this.config.sessionKey && this.config.username)
+    return isConnectedProfile(this.getActiveProfile())
+  }
+
+  private findProfile(profileId: string): LastFmProfileConfig | null {
+    return this.config.profiles.find((profile) => profile.id === profileId) ?? null
+  }
+
+  private getActiveProfile(): LastFmProfileConfig {
+    const activeProfile = this.findProfile(this.config.activeProfileId)
+    if (activeProfile) return activeProfile
+
+    const officialProfile = this.findProfile(LASTFM_OFFICIAL_PROFILE_ID)
+    if (officialProfile) {
+      this.config.activeProfileId = officialProfile.id
+      return officialProfile
+    }
+
+    const official = createOfficialProfile()
+    this.config.profiles.unshift(official)
+    this.config.activeProfileId = official.id
+    return official
+  }
+
+  private toProfileStatus(profile: LastFmProfileConfig): LastFmProfileStatus {
+    return {
+      id: profile.id,
+      kind: profile.kind,
+      name: profile.name,
+      apiBaseUrl: profile.apiBaseUrl,
+      username: profile.username,
+      connected: isConnectedProfile(profile),
+      active: profile.id === this.config.activeProfileId,
+      pendingScrobbles: profile.pendingScrobbles.length,
+      canDelete: profile.kind === 'custom'
+    }
+  }
+
+  private normalizeCustomProfileInput(
+    input: LastFmCustomProfileInput,
+    existingProfile: LastFmProfileConfig | null
+  ):
+    | { ok: true; name: string; apiBaseUrl: string; username: string | null; sessionKey: string | null }
+    | { ok: false; message: string } {
+    const name = normalizeProfileName(input.name, existingProfile?.name ?? 'Custom endpoint')
+    const apiBaseUrl = parseLastFmApiBaseUrl(input.apiBaseUrl)
+    if (!apiBaseUrl) {
+      return { ok: false, message: 'Enter a valid http or https Last.fm-compatible API URL.' }
+    }
+    if (apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) {
+      return { ok: false, message: 'Custom profiles must use a non-official Last.fm-compatible API URL.' }
+    }
+
+    const username = normalizeText(input.username) ?? existingProfile?.username ?? null
+    const sessionKey = normalizeText(input.sessionKey)
+    if (sessionKey && !username) {
+      return { ok: false, message: 'Username and session key/token are both required for custom profiles.' }
+    }
+    if (!existingProfile && !sessionKey && username) {
+      return { ok: false, message: 'Username and session key/token are both required for custom profiles.' }
+    }
+
+    return { ok: true, name, apiBaseUrl, username, sessionKey }
+  }
+
+  private failWithStatus(message: string): LastFmStatus {
+    this.lastError = message
+    this.emitStatus()
+    return this.getStatus()
   }
 
   private shouldProcessPlayback(): boolean {
@@ -543,9 +908,11 @@ export class LastFmService {
     if (!this.onConfigChange) return
     await this.onConfigChange({
       enabled: this.config.enabled,
-      sessionKey: this.config.sessionKey,
-      username: this.config.username,
-      pendingScrobbles: this.config.pendingScrobbles.map((item) => ({ ...item }))
+      activeProfileId: this.config.activeProfileId,
+      profiles: this.config.profiles.map((profile) => ({
+        ...profile,
+        pendingScrobbles: profile.pendingScrobbles.map((item) => ({ ...item }))
+      }))
     })
   }
 
@@ -583,6 +950,7 @@ export class LastFmService {
 
   private maybeQueueScrobble(nowMs: number): void {
     if (!this.currentPlayback || this.currentPlayback.scrobbleQueued) return
+    const activeProfile = this.getActiveProfile()
 
     const durationSeconds = this.currentPlayback.durationSeconds
     if (durationSeconds != null && durationSeconds < LASTFM_SCROBBLE_MIN_DURATION_SECONDS) {
@@ -600,13 +968,13 @@ export class LastFmService {
       this.currentPlayback.startedAtUnix
     )
 
-    const exists = this.config.pendingScrobbles.some((item) => item.id === scrobbleId)
+    const exists = activeProfile.pendingScrobbles.some((item) => item.id === scrobbleId)
     if (exists) {
       this.currentPlayback.scrobbleQueued = true
       return
     }
 
-    this.config.pendingScrobbles.push({
+    activeProfile.pendingScrobbles.push({
       id: scrobbleId,
       trackPath: this.currentPlayback.trackPath,
       track: this.currentPlayback.track,
@@ -620,9 +988,9 @@ export class LastFmService {
       nextRetryAt: nowMs
     })
 
-    if (this.config.pendingScrobbles.length > LASTFM_MAX_PENDING_SCROBBLES) {
-      const extra = this.config.pendingScrobbles.length - LASTFM_MAX_PENDING_SCROBBLES
-      this.config.pendingScrobbles.splice(0, extra)
+    if (activeProfile.pendingScrobbles.length > LASTFM_MAX_PENDING_SCROBBLES) {
+      const extra = activeProfile.pendingScrobbles.length - LASTFM_MAX_PENDING_SCROBBLES
+      activeProfile.pendingScrobbles.splice(0, extra)
     }
 
     this.currentPlayback.scrobbleQueued = true
@@ -635,7 +1003,8 @@ export class LastFmService {
     const playback = this.currentPlayback
     if (!playback || playback.nowPlayingSent) return
     if (nowMs < playback.nextNowPlayingAttemptAt) return
-    if (!this.config.sessionKey) return
+    const activeProfile = this.getActiveProfile()
+    if (!activeProfile.sessionKey) return
 
     const params: Record<string, string | number> = {
       track: playback.track,
@@ -645,7 +1014,7 @@ export class LastFmService {
     if (playback.albumArtist) params.albumArtist = playback.albumArtist
     if (playback.durationSeconds) params.duration = playback.durationSeconds
 
-    const response = await this.callSignedMethod('track.updateNowPlaying', params, this.config.sessionKey)
+    const response = await this.callSignedMethod('track.updateNowPlaying', params, activeProfile.sessionKey, activeProfile)
     if (response.ok) {
       playback.nowPlayingSent = true
       playback.nowPlayingRetryCount = 0
@@ -656,7 +1025,7 @@ export class LastFmService {
     }
 
     if (response.kind === 'session-invalid') {
-      await this.handleSessionInvalid(response.message)
+      await this.handleSessionInvalid(response.message, activeProfile)
       return
     }
 
@@ -680,10 +1049,11 @@ export class LastFmService {
     this.clearFlushTimer()
     if (!this.shouldProcessPlayback()) return
     if (this.flushInFlight) return
-    if (this.config.pendingScrobbles.length === 0) return
+    const activeProfile = this.getActiveProfile()
+    if (activeProfile.pendingScrobbles.length === 0) return
 
     const nowMs = Date.now()
-    const first = this.config.pendingScrobbles[0]
+    const first = activeProfile.pendingScrobbles[0]
     const dueAt = Math.max(nowMs + Math.max(0, delayMs), first.nextRetryAt)
     const timeoutMs = Math.max(0, dueAt - nowMs)
 
@@ -702,39 +1072,40 @@ export class LastFmService {
   private async flushQueue(): Promise<void> {
     if (this.flushInFlight) return
     if (!this.shouldProcessPlayback()) return
-    if (this.config.pendingScrobbles.length === 0) return
+    if (this.getActiveProfile().pendingScrobbles.length === 0) return
 
     this.flushInFlight = true
     try {
-      while (this.shouldProcessPlayback() && this.config.pendingScrobbles.length > 0) {
+      while (this.shouldProcessPlayback() && this.getActiveProfile().pendingScrobbles.length > 0) {
+        const activeProfile = this.getActiveProfile()
         const nowMs = Date.now()
-        const first = this.config.pendingScrobbles[0]
+        const first = activeProfile.pendingScrobbles[0]
         if (!first || first.nextRetryAt > nowMs) break
 
         const batch: LastFmPendingScrobble[] = []
-        for (const item of this.config.pendingScrobbles) {
+        for (const item of activeProfile.pendingScrobbles) {
           if (batch.length >= LASTFM_MAX_SCROBBLES_PER_BATCH) break
           if (item.nextRetryAt > nowMs) break
           batch.push(item)
         }
 
         if (batch.length === 0) break
-        const submitResult = await this.submitScrobbleBatch(batch)
+        const submitResult = await this.submitScrobbleBatch(batch, activeProfile)
 
         if (submitResult.ok) {
-          this.config.pendingScrobbles.splice(0, batch.length)
+          activeProfile.pendingScrobbles.splice(0, batch.length)
           this.lastError = null
           await this.persistAndEmitStatus()
           continue
         }
 
         if (submitResult.kind === 'session-invalid') {
-          await this.handleSessionInvalid(submitResult.message)
+          await this.handleSessionInvalid(submitResult.message, activeProfile)
           break
         }
 
         if (submitResult.kind === 'permanent') {
-          this.config.pendingScrobbles.splice(0, batch.length)
+          activeProfile.pendingScrobbles.splice(0, batch.length)
           this.lastError = submitResult.message
           await this.persistAndEmitStatus()
           continue
@@ -742,7 +1113,7 @@ export class LastFmService {
 
         const retryAt = nowMs + computeRetryDelayMs((batch[0]?.retryCount ?? 0) + 1, LASTFM_BASE_RETRY_MS)
         for (let index = 0; index < batch.length; index += 1) {
-          const queued = this.config.pendingScrobbles[index]
+          const queued = activeProfile.pendingScrobbles[index]
           if (!queued) break
           queued.retryCount += 1
           queued.nextRetryAt = retryAt
@@ -757,8 +1128,11 @@ export class LastFmService {
     }
   }
 
-  private async submitScrobbleBatch(batch: LastFmPendingScrobble[]): Promise<LastFmApiResult> {
-    if (!this.config.sessionKey) {
+  private async submitScrobbleBatch(
+    batch: LastFmPendingScrobble[],
+    profile: LastFmProfileConfig
+  ): Promise<LastFmApiResult> {
+    if (!profile.sessionKey) {
       return {
         ok: false,
         kind: 'session-invalid',
@@ -777,16 +1151,19 @@ export class LastFmService {
       if (item.durationSeconds) params[`duration[${index}]`] = item.durationSeconds
     }
 
-    return this.callSignedMethod('track.scrobble', params, this.config.sessionKey)
+    return this.callSignedMethod('track.scrobble', params, profile.sessionKey, profile)
   }
 
-  private async handleSessionInvalid(message: string): Promise<void> {
+  private async handleSessionInvalid(message: string, profile: LastFmProfileConfig = this.getActiveProfile()): Promise<void> {
     this.pendingAuthToken = null
+    this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.clearFlushTimer()
-    this.config.enabled = false
-    this.config.sessionKey = null
-    this.config.username = null
+    if (this.config.activeProfileId === profile.id) {
+      this.config.enabled = false
+    }
+    profile.sessionKey = null
+    profile.username = null
     this.lastError = message
     await this.persistAndEmitStatus()
   }
@@ -794,7 +1171,8 @@ export class LastFmService {
   private async callSignedMethod(
     method: string,
     inputParams: Record<string, string | number> = {},
-    sessionKey?: string
+    sessionKey?: string,
+    profile: LastFmProfileConfig = this.getActiveProfile()
   ): Promise<LastFmApiResult> {
     if (!this.hasApiCredentials) {
       return {
@@ -839,7 +1217,7 @@ export class LastFmService {
     const timeout = setTimeout(() => controller.abort(), LASTFM_REQUEST_TIMEOUT_MS)
 
     try {
-      const response = await fetch(LASTFM_API_URL, {
+      const response = await fetch(profile.apiBaseUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',

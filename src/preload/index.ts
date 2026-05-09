@@ -30,6 +30,7 @@ import type {
 import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
+  LastFmCustomProfileInput,
   LastFmStatus
 } from '../types/lastFm'
 import type {
@@ -747,6 +748,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   lastFm: {
     getStatus: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:getStatus'),
     setEnabled: (enabled: boolean): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:setEnabled', enabled),
+    createCustomProfile: (input: LastFmCustomProfileInput): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:createCustomProfile', input),
+    updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:updateCustomProfile', profileId, input),
+    deleteCustomProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:deleteCustomProfile', profileId),
+    setActiveProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:setActiveProfile', profileId),
     beginAuth: (): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth'),
     finishAuth: (): Promise<LastFmAuthFinishResult> => ipcRenderer.invoke('lastfm:finishAuth'),
     disconnect: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:disconnect'),
@@ -1159,6 +1168,10 @@ declare global {
       lastFm: {
         getStatus: () => Promise<LastFmStatus>
         setEnabled: (enabled: boolean) => Promise<LastFmStatus>
+        createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+        updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+        deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
+        setActiveProfile: (profileId: string) => Promise<LastFmStatus>
         beginAuth: () => Promise<LastFmAuthStartResult>
         finishAuth: () => Promise<LastFmAuthFinishResult>
         disconnect: () => Promise<LastFmStatus>

@@ -30,6 +30,7 @@ import type {
 import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
+    LastFmCustomProfileInput,
     LastFmStatus
 } from '../types/lastFm'
 import type {
@@ -303,6 +304,10 @@ declare global {
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>
                 setEnabled: (enabled: boolean) => Promise<LastFmStatus>
+                createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+                updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+                deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
+                setActiveProfile: (profileId: string) => Promise<LastFmStatus>
                 beginAuth: () => Promise<LastFmAuthStartResult>
                 finishAuth: () => Promise<LastFmAuthFinishResult>
                 disconnect: () => Promise<LastFmStatus>

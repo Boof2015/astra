@@ -14444,6 +14444,91 @@ body::after {
   gap: 8px;
 }
 
+.settings-lastfm-profiles-field {
+  gap: 10px;
+}
+
+.settings-lastfm-profiles-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-lastfm-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-lastfm-profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.settings-lastfm-profile-row.active {
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.settings-lastfm-profile-main {
+  min-width: 0;
+}
+
+.settings-lastfm-profile-title-row,
+.settings-lastfm-profile-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-lastfm-profile-name {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.settings-lastfm-profile-meta {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.settings-lastfm-profile-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 420px;
+}
+
+.settings-lastfm-active-chip {
+  border-color: rgba(var(--accent-rgb), 0.36);
+  color: var(--accent);
+}
+
+.settings-lastfm-profile-modal {
+  max-width: 520px;
+}
+
+.settings-lastfm-profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+
 .settings-shell .settings-scale-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -15860,6 +15945,22 @@ body::after {
   .settings-field-inline .settings-toggle,
   .settings-field-inline .settings-color,
   .settings-field-inline .settings-btn {
+    width: 100%;
+  }
+
+  .settings-lastfm-profiles-head,
+  .settings-lastfm-profile-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settings-lastfm-profiles-head,
+  .settings-lastfm-profile-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-lastfm-profile-actions .settings-btn {
     width: 100%;
   }
 

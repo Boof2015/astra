@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
+  LastFmCustomProfileInput,
   LastFmStatus
 } from '../../types/lastFm'
 
@@ -18,6 +19,10 @@ interface LastFmSettingsStore {
   init: () => Promise<void>
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<LastFmStatus | null>
+  createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus | null>
+  updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus | null>
+  deleteCustomProfile: (profileId: string) => Promise<LastFmStatus | null>
+  setActiveProfile: (profileId: string) => Promise<LastFmStatus | null>
   beginAuth: () => Promise<LastFmAuthStartResult | null>
   finishAuth: () => Promise<LastFmAuthFinishResult | null>
   disconnect: () => Promise<LastFmStatus | null>
@@ -191,6 +196,46 @@ export const useLastFmSettingsStore = create<LastFmSettingsStore>((set, get) => 
     setEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.lastFm.setEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    createCustomProfile: async (input: LastFmCustomProfileInput) => {
+      try {
+        const status = await window.electronAPI.lastFm.createCustomProfile(input)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    updateCustomProfile: async (profileId: string, input: LastFmCustomProfileInput) => {
+      try {
+        const status = await window.electronAPI.lastFm.updateCustomProfile(profileId, input)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    deleteCustomProfile: async (profileId: string) => {
+      try {
+        const status = await window.electronAPI.lastFm.deleteCustomProfile(profileId)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setActiveProfile: async (profileId: string) => {
+      try {
+        const status = await window.electronAPI.lastFm.setActiveProfile(profileId)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

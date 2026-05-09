@@ -70,6 +70,7 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
+import type { LastFmProfileStatus } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 
 type ResetActionId =
@@ -310,6 +311,10 @@ export default function SettingsView() {
     errorMessage: lastFmErrorMessage,
     authHint: lastFmAuthHint,
     setEnabled: setLastFmEnabled,
+    createCustomProfile: createLastFmCustomProfile,
+    updateCustomProfile: updateLastFmCustomProfile,
+    deleteCustomProfile: deleteLastFmCustomProfile,
+    setActiveProfile: setLastFmActiveProfile,
     beginAuth: beginLastFmAuth,
     disconnect: disconnectLastFm,
   } = useLastFmSettingsStore()
@@ -346,8 +351,15 @@ export default function SettingsView() {
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
+  const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
+  const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
+  const [lastFmProfileNameInput, setLastFmProfileNameInput] = useState('')
+  const [lastFmProfileUrlInput, setLastFmProfileUrlInput] = useState('')
+  const [lastFmProfileUsernameInput, setLastFmProfileUsernameInput] = useState('')
+  const [lastFmProfileSessionKeyInput, setLastFmProfileSessionKeyInput] = useState('')
   const [localApiFeedback, setLocalApiFeedback] = useState('')
   const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
+  const [lastFmProfileFeedback, setLastFmProfileFeedback] = useState('')
   const [infoFeedback, setInfoFeedback] = useState('')
   const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
   const [sleepTimerCustomMinutesInput, setSleepTimerCustomMinutesInput] = useState(
@@ -492,6 +504,14 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [phoneRemoteFeedback])
+
+  useEffect(() => {
+    if (!lastFmProfileFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setLastFmProfileFeedback('')
+    }, 3200)
+    return () => window.clearTimeout(timeoutId)
+  }, [lastFmProfileFeedback])
 
   useEffect(() => {
     if (!sleepTimerFeedback) return
@@ -748,12 +768,22 @@ export default function SettingsView() {
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
   const lastFmHasApiCredentials = lastFmStatus?.hasApiCredentials ?? true
-  const lastFmUsername = lastFmStatus?.username
+  const lastFmProfiles = lastFmStatus?.profiles ?? []
+  const lastFmActiveProfile = lastFmStatus?.activeProfile ?? null
   const lastFmPendingScrobbles = lastFmStatus?.pendingScrobbles ?? 0
   const lastFmStatusLabel = lastFmStatus?.statusMessage ?? 'Loading Last.fm status...'
   const lastFmQueueLabel = `Pending scrobbles: ${lastFmPendingScrobbles}.`
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
-  const lastFmCanConnect = lastFmHasApiCredentials && !lastFmConnected && !lastFmIsAuthorizing
+  const lastFmCanConnect = lastFmHasApiCredentials &&
+    lastFmActiveProfile?.kind === 'official' &&
+    !lastFmConnected &&
+    !lastFmIsAuthorizing
+  const lastFmProfileModalOpen = lastFmProfileModalMode != null
+  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Custom Profile' : 'Add Custom Profile'
+  const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
+    !lastFmProfileUrlInput.trim() ||
+    !lastFmProfileUsernameInput.trim() ||
+    (lastFmProfileModalMode === 'create' && !lastFmProfileSessionKeyInput.trim())
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
@@ -968,6 +998,67 @@ export default function SettingsView() {
     void setPhoneRemotePort(parsedPort).then((status) => {
       if (!status) return
       setPhoneRemoteFeedback(`Phone remote port set to ${status.port}.`)
+    })
+  }
+
+  const openLastFmCreateProfileModal = () => {
+    setLastFmProfileModalMode('create')
+    setLastFmEditingProfileId(null)
+    setLastFmProfileNameInput('Custom endpoint')
+    setLastFmProfileUrlInput('')
+    setLastFmProfileUsernameInput('')
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const openLastFmEditProfileModal = (profile: LastFmProfileStatus) => {
+    if (profile.kind !== 'custom') return
+    setLastFmProfileModalMode('edit')
+    setLastFmEditingProfileId(profile.id)
+    setLastFmProfileNameInput(profile.name)
+    setLastFmProfileUrlInput(profile.apiBaseUrl)
+    setLastFmProfileUsernameInput(profile.username ?? '')
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const closeLastFmProfileModal = () => {
+    setLastFmProfileModalMode(null)
+    setLastFmEditingProfileId(null)
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const handleSaveLastFmProfile = () => {
+    const input = {
+      name: lastFmProfileNameInput,
+      apiBaseUrl: lastFmProfileUrlInput,
+      username: lastFmProfileUsernameInput,
+      sessionKey: lastFmProfileSessionKeyInput.trim() ? lastFmProfileSessionKeyInput : null
+    }
+
+    const savePromise = lastFmProfileModalMode === 'edit' && lastFmEditingProfileId
+      ? updateLastFmCustomProfile(lastFmEditingProfileId, input)
+      : createLastFmCustomProfile(input)
+
+    void savePromise.then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback(lastFmProfileModalMode === 'edit' ? 'Custom profile updated.' : 'Custom profile added.')
+      closeLastFmProfileModal()
+    })
+  }
+
+  const handleDeleteLastFmProfile = (profile: LastFmProfileStatus) => {
+    if (profile.kind !== 'custom') return
+    if (!window.confirm(`Delete ${profile.name}?`)) return
+    void deleteLastFmCustomProfile(profile.id).then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback('Custom profile deleted.')
+    })
+  }
+
+  const handleActivateLastFmProfile = (profile: LastFmProfileStatus) => {
+    if (profile.active) return
+    void setLastFmActiveProfile(profile.id).then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback(`${profile.name} selected.`)
     })
   }
 
@@ -1760,33 +1851,102 @@ export default function SettingsView() {
                     </button>
                   </div>
 
-                  <div className="settings-field">
-                    <span className="settings-field-label">Last.fm Account</span>
-                    <div className="settings-inline-row">
-                      <span className="settings-chip settings-chip-mono settings-chip-grow">
-                        {lastFmConnected
-                          ? `Connected as ${lastFmUsername ?? 'Unknown User'}`
-                          : 'Not connected'}
-                      </span>
+                  <div className="settings-field settings-lastfm-profiles-field">
+                    <div className="settings-lastfm-profiles-head">
+                      <span className="settings-field-label">Scrobble Profiles</span>
                       <button
+                        type="button"
                         className="settings-btn settings-btn-primary"
-                        onClick={() => void beginLastFmAuth()}
-                        disabled={!lastFmCanConnect}
+                        onClick={openLastFmCreateProfileModal}
                       >
-                        {lastFmIsAuthorizing ? 'Waiting...' : lastFmAuthPending ? 'Check Again' : 'Connect'}
+                        Add Custom Profile
                       </button>
-                      <button
-                        className="settings-btn"
-                        onClick={() => void disconnectLastFm()}
-                        disabled={!lastFmConnected && !lastFmAuthPending}
-                      >
-                        Disconnect
-                      </button>
+                    </div>
+                    <div className="settings-lastfm-profile-list">
+                      {lastFmProfiles.map((profile) => (
+                        <div
+                          key={profile.id}
+                          className={`settings-lastfm-profile-row${profile.active ? ' active' : ''}`}
+                        >
+                          <div className="settings-lastfm-profile-main">
+                            <div className="settings-lastfm-profile-title-row">
+                              <span className="settings-lastfm-profile-name">{profile.name}</span>
+                              <span className="settings-chip settings-chip-mono">
+                                {profile.kind === 'official' ? 'Official' : 'Custom'}
+                              </span>
+                              {profile.active && (
+                                <span className="settings-chip settings-chip-mono settings-lastfm-active-chip">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <div className="settings-lastfm-profile-meta">
+                              <span>{profile.apiBaseUrl}</span>
+                              <span>
+                                {profile.connected
+                                  ? `Connected as ${profile.username ?? 'Unknown User'}`
+                                  : 'Not connected'}
+                              </span>
+                              <span>{profile.pendingScrobbles} pending</span>
+                            </div>
+                          </div>
+                          <div className="settings-lastfm-profile-actions">
+                            {!profile.active && (
+                              <button
+                                type="button"
+                                className="settings-btn"
+                                onClick={() => handleActivateLastFmProfile(profile)}
+                              >
+                                Activate
+                              </button>
+                            )}
+                            {profile.active && profile.kind === 'official' && (!profile.connected || lastFmAuthPending) && (
+                              <button
+                                type="button"
+                                className="settings-btn settings-btn-primary"
+                                onClick={() => void beginLastFmAuth()}
+                                disabled={!lastFmCanConnect}
+                              >
+                                {lastFmIsAuthorizing ? 'Waiting...' : lastFmAuthPending ? 'Check Again' : 'Connect'}
+                              </button>
+                            )}
+                            {profile.kind === 'custom' && (
+                              <button
+                                type="button"
+                                className="settings-btn"
+                                onClick={() => openLastFmEditProfileModal(profile)}
+                              >
+                                Edit
+                              </button>
+                            )}
+                            {profile.active && (
+                              <button
+                                type="button"
+                                className="settings-btn"
+                                onClick={() => void disconnectLastFm()}
+                                disabled={!profile.connected && !lastFmAuthPending}
+                              >
+                                Disconnect
+                              </button>
+                            )}
+                            {profile.canDelete && (
+                              <button
+                                type="button"
+                                className="settings-btn settings-btn-danger"
+                                onClick={() => handleDeleteLastFmProfile(profile)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>
                 <p className="settings-note">{lastFmStatusLabel}</p>
                 <p className="settings-note">{lastFmQueueLabel}</p>
+                {lastFmProfileFeedback && <p className="settings-note settings-note-success">{lastFmProfileFeedback}</p>}
                 {lastFmAuthHint && <p className="settings-note settings-note-success">{lastFmAuthHint}</p>}
                 {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
                 {!lastFmHasApiCredentials && (
@@ -2523,6 +2683,78 @@ export default function SettingsView() {
         onCancel={() => setShowBitPerfectWarning(false)}
         onConfirm={handleConfirmBitPerfectWarning}
       />
+      {lastFmProfileModalOpen && (
+        <div className="modal-overlay" onClick={closeLastFmProfileModal}>
+          <div
+            className="modal-content settings-lastfm-profile-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>{lastFmProfileModalTitle}</h2>
+              <button className="modal-close" onClick={closeLastFmProfileModal} aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body settings-lastfm-profile-form">
+              <label className="settings-field">
+                <span className="settings-field-label">Profile Name</span>
+                <input
+                  className="settings-select"
+                  type="text"
+                  value={lastFmProfileNameInput}
+                  autoFocus
+                  onChange={(event) => setLastFmProfileNameInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">API Base URL</span>
+                <input
+                  className="settings-select"
+                  type="url"
+                  value={lastFmProfileUrlInput}
+                  placeholder="http://localhost:9078/2.0/"
+                  onChange={(event) => setLastFmProfileUrlInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">Username Label</span>
+                <input
+                  className="settings-select"
+                  type="text"
+                  value={lastFmProfileUsernameInput}
+                  autoComplete="off"
+                  onChange={(event) => setLastFmProfileUsernameInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">Session Key or Token</span>
+                <input
+                  className="settings-select"
+                  type="password"
+                  value={lastFmProfileSessionKeyInput}
+                  placeholder={lastFmProfileModalMode === 'edit' ? 'Leave blank to keep current token' : ''}
+                  autoComplete="off"
+                  onChange={(event) => setLastFmProfileSessionKeyInput(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="settings-btn" onClick={closeLastFmProfileModal}>
+                Cancel
+              </button>
+              <button
+                className="settings-btn settings-btn-primary"
+                onClick={handleSaveLastFmProfile}
+                disabled={lastFmProfileSaveDisabled}
+              >
+                {lastFmProfileModalMode === 'edit' ? 'Save Profile' : 'Add Profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {localApiPairingModalOpen && (
         <LocalApiPairingModal
           ticket={phoneRemoteActivePairingTicket}

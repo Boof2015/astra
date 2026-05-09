@@ -117,7 +117,16 @@ import {
   PHONE_REMOTE_MIN_PORT,
   type PhoneRemoteServiceConfig
 } from '../types/phoneRemote'
-import type { LastFmServiceConfig } from '../types/lastFm'
+import {
+  LASTFM_OFFICIAL_API_BASE_URL,
+  LASTFM_OFFICIAL_PROFILE_ID,
+  isLastFmCustomEndpoint,
+  normalizeLastFmApiBaseUrl,
+  parseLastFmApiBaseUrl,
+  type LastFmCustomProfileInput,
+  type LastFmProfileConfig,
+  type LastFmServiceConfig
+} from '../types/lastFm'
 import type { LyricsTrackQuery } from '../types/lyrics'
 import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
@@ -380,9 +389,12 @@ const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
+const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
 const LASTFM_SESSION_USERNAME_META_KEY = 'lastfm_session_username_v1'
 const LASTFM_PENDING_SCROBBLES_META_KEY = 'lastfm_pending_scrobbles_v1'
+const LASTFM_ACTIVE_PROFILE_ID_META_KEY = 'lastfm_active_profile_id_v1'
+const LASTFM_PROFILES_META_KEY = 'lastfm_profiles_v1'
 const LYRICS_ONLINE_ENABLED_META_KEY = 'lyrics_online_enabled_v1'
 const TRACKLIST_THUMB_MAX_EDGE_PX = 96
 const CARD_ARTWORK_MAX_EDGE_PX = 320
@@ -445,9 +457,16 @@ type PersistedPhoneRemotePairedDevice = {
 let phoneRemotePairedDevices: PersistedPhoneRemotePairedDevice[] = []
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
-  sessionKey: null,
-  username: null,
-  pendingScrobbles: []
+  activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
+  profiles: [{
+    id: LASTFM_OFFICIAL_PROFILE_ID,
+    kind: 'official',
+    name: 'Official Last.fm',
+    apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    sessionKey: null,
+    username: null,
+    pendingScrobbles: []
+  }]
 }
 let lyricsOnlineEnabled = false
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
@@ -747,7 +766,10 @@ const lastFmService = new LastFmService({
   onConfigChange: async (config) => {
     lastFmConfig = {
       ...config,
-      pendingScrobbles: [...config.pendingScrobbles]
+      profiles: config.profiles.map((profile) => ({
+        ...profile,
+        pendingScrobbles: [...profile.pendingScrobbles]
+      }))
     }
     await persistLastFmConfig(lastFmConfig)
   },
@@ -757,6 +779,9 @@ const lastFmService = new LastFmService({
     logMemoryDiagnosticsMainEvent('lastfm_status_changed', {
       enabled: status.enabled,
       connected: status.connected,
+      usingCustomEndpoint: status.usingCustomEndpoint,
+      apiBaseUrl: status.apiBaseUrl,
+      activeProfileId: status.activeProfileId,
       authPending: status.authPending,
       pendingScrobbles: status.pendingScrobbles,
       username: status.username,
@@ -1294,45 +1319,157 @@ function normalizeOptionalMetaText(value: string | null): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
+function createOfficialLastFmProfile(
+  sessionKey: string | null = null,
+  username: string | null = null,
+  pendingScrobbles = sanitizePendingScrobbles([])
+): LastFmProfileConfig {
+  return {
+    id: LASTFM_OFFICIAL_PROFILE_ID,
+    kind: 'official',
+    name: 'Official Last.fm',
+    apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    sessionKey,
+    username,
+    pendingScrobbles
+  }
+}
+
+function normalizeLastFmProfileName(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length > 0 ? normalized.slice(0, 80) : fallback
+}
+
+function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | null {
+  if (!Array.isArray(raw)) return null
+
+  const customProfiles: LastFmProfileConfig[] = []
+  let officialProfile = createOfficialLastFmProfile()
+  const usedIds = new Set<string>([LASTFM_OFFICIAL_PROFILE_ID])
+
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    const sessionKey = normalizeOptionalMetaText(typeof record.sessionKey === 'string' ? record.sessionKey : null)
+    const username = normalizeOptionalMetaText(typeof record.username === 'string' ? record.username : null)
+    const pendingScrobbles = sanitizePendingScrobbles(record.pendingScrobbles)
+
+    if (record.kind === 'official' || record.id === LASTFM_OFFICIAL_PROFILE_ID) {
+      officialProfile = createOfficialLastFmProfile(sessionKey, username, pendingScrobbles)
+      continue
+    }
+
+    if (record.kind !== 'custom') continue
+    const apiBaseUrl = parseLastFmApiBaseUrl(record.apiBaseUrl)
+    if (!apiBaseUrl || apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) continue
+
+    const rawId = normalizeOptionalMetaText(typeof record.id === 'string' ? record.id : null)
+    const id = rawId && rawId !== LASTFM_OFFICIAL_PROFILE_ID && !usedIds.has(rawId)
+      ? rawId
+      : `custom-profile-${customProfiles.length + 1}`
+    usedIds.add(id)
+
+    customProfiles.push({
+      id,
+      kind: 'custom',
+      name: normalizeLastFmProfileName(record.name, 'Custom endpoint'),
+      apiBaseUrl,
+      sessionKey,
+      username,
+      pendingScrobbles
+    })
+  }
+
+  return [officialProfile, ...customProfiles]
+}
+
+function getConnectedLastFmProfile(config: LastFmServiceConfig): LastFmProfileConfig {
+  return config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0]
+}
+
 async function persistLastFmConfig(config: LastFmServiceConfig): Promise<void> {
+  const activeProfile = getConnectedLastFmProfile(config)
   await library.setAppMeta(LASTFM_ENABLED_META_KEY, config.enabled ? '1' : '0')
-  await library.setAppMeta(LASTFM_SESSION_KEY_META_KEY, config.sessionKey ?? '')
-  await library.setAppMeta(LASTFM_SESSION_USERNAME_META_KEY, config.username ?? '')
+  await library.setAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY, config.activeProfileId)
+  await library.setAppMeta(LASTFM_PROFILES_META_KEY, JSON.stringify(config.profiles))
+  await library.setAppMeta(LASTFM_API_BASE_URL_META_KEY, normalizeLastFmApiBaseUrl(activeProfile.apiBaseUrl))
+  await library.setAppMeta(LASTFM_SESSION_KEY_META_KEY, activeProfile.sessionKey ?? '')
+  await library.setAppMeta(LASTFM_SESSION_USERNAME_META_KEY, activeProfile.username ?? '')
   await library.setAppMeta(
     LASTFM_PENDING_SCROBBLES_META_KEY,
-    JSON.stringify(config.pendingScrobbles)
+    JSON.stringify(activeProfile.pendingScrobbles)
   )
 }
 
 async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
-  const sessionKey = normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_KEY_META_KEY))
-  const username = normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_USERNAME_META_KEY))
-  const connected = Boolean(sessionKey && username)
-  const enabledStored = parseMetaBoolean(library.getAppMeta(LASTFM_ENABLED_META_KEY), false)
-  const enabled = connected && enabledStored
-
-  let pendingScrobbles = sanitizePendingScrobbles([])
-  const rawPendingScrobbles = library.getAppMeta(LASTFM_PENDING_SCROBBLES_META_KEY)
-  if (rawPendingScrobbles) {
+  let profiles: LastFmProfileConfig[] | null = null
+  const rawProfiles = library.getAppMeta(LASTFM_PROFILES_META_KEY)
+  if (rawProfiles) {
     try {
-      pendingScrobbles = sanitizePendingScrobbles(JSON.parse(rawPendingScrobbles))
+      profiles = normalizeLastFmProfilesFromMeta(JSON.parse(rawProfiles))
     } catch {
-      pendingScrobbles = sanitizePendingScrobbles([])
+      profiles = null
     }
   }
 
+  let activeProfileId = normalizeOptionalMetaText(library.getAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY)) ?? LASTFM_OFFICIAL_PROFILE_ID
+  if (!profiles) {
+    const rawApiBaseUrl = library.getAppMeta(LASTFM_API_BASE_URL_META_KEY)
+    const hasStoredApiBaseUrl = rawApiBaseUrl != null && rawApiBaseUrl.trim().length > 0
+    const parsedStoredApiBaseUrl = hasStoredApiBaseUrl ? parseLastFmApiBaseUrl(rawApiBaseUrl) : null
+    const apiBaseUrl = parsedStoredApiBaseUrl ?? LASTFM_OFFICIAL_API_BASE_URL
+    const invalidStoredApiBaseUrl = hasStoredApiBaseUrl && parsedStoredApiBaseUrl == null
+    const sessionKey = invalidStoredApiBaseUrl ? null : normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_KEY_META_KEY))
+    const username = invalidStoredApiBaseUrl ? null : normalizeOptionalMetaText(library.getAppMeta(LASTFM_SESSION_USERNAME_META_KEY))
+
+    let pendingScrobbles = sanitizePendingScrobbles([])
+    const rawPendingScrobbles = library.getAppMeta(LASTFM_PENDING_SCROBBLES_META_KEY)
+    if (rawPendingScrobbles) {
+      try {
+        pendingScrobbles = sanitizePendingScrobbles(JSON.parse(rawPendingScrobbles))
+      } catch {
+        pendingScrobbles = sanitizePendingScrobbles([])
+      }
+    }
+
+    if (isLastFmCustomEndpoint(apiBaseUrl)) {
+      activeProfileId = 'custom-lastfm-endpoint'
+      profiles = [
+        createOfficialLastFmProfile(),
+        {
+          id: activeProfileId,
+          kind: 'custom',
+          name: 'Custom Last.fm endpoint',
+          apiBaseUrl,
+          sessionKey,
+          username,
+          pendingScrobbles
+        }
+      ]
+    } else {
+      activeProfileId = LASTFM_OFFICIAL_PROFILE_ID
+      profiles = [createOfficialLastFmProfile(sessionKey, username, pendingScrobbles)]
+    }
+  }
+
+  if (!profiles.some((profile) => profile.id === activeProfileId)) {
+    activeProfileId = LASTFM_OFFICIAL_PROFILE_ID
+  }
+
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0]
+  const connected = Boolean(activeProfile.sessionKey && activeProfile.username)
+  const enabledStored = parseMetaBoolean(library.getAppMeta(LASTFM_ENABLED_META_KEY), false)
   const normalized: LastFmServiceConfig = {
-    enabled,
-    sessionKey: connected ? sessionKey : null,
-    username: connected ? username : null,
-    pendingScrobbles
+    enabled: connected && enabledStored,
+    activeProfileId,
+    profiles
   }
 
   const needsPersistence =
     library.getAppMeta(LASTFM_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
-    library.getAppMeta(LASTFM_SESSION_KEY_META_KEY) !== (normalized.sessionKey ?? '') ||
-    library.getAppMeta(LASTFM_SESSION_USERNAME_META_KEY) !== (normalized.username ?? '') ||
-    library.getAppMeta(LASTFM_PENDING_SCROBBLES_META_KEY) !== JSON.stringify(normalized.pendingScrobbles)
+    library.getAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY) !== normalized.activeProfileId ||
+    library.getAppMeta(LASTFM_PROFILES_META_KEY) !== JSON.stringify(normalized.profiles)
 
   if (needsPersistence) {
     try {
@@ -1347,8 +1484,13 @@ async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
 
 async function applyLastFmConfig(config: LastFmServiceConfig): Promise<ReturnType<typeof lastFmService.getStatus>> {
   const normalized: LastFmServiceConfig = {
-    ...config,
-    pendingScrobbles: [...config.pendingScrobbles]
+    enabled: config.enabled,
+    activeProfileId: config.activeProfileId,
+    profiles: config.profiles.map((profile) => ({
+      ...profile,
+      apiBaseUrl: normalizeLastFmApiBaseUrl(profile.apiBaseUrl),
+      pendingScrobbles: [...profile.pendingScrobbles]
+    }))
   }
   lastFmConfig = normalized
   await persistLastFmConfig(lastFmConfig)
@@ -3760,12 +3902,44 @@ ipcMain.handle('lastfm:getStatus', () => {
 })
 
 ipcMain.handle('lastfm:setEnabled', async (_event, enabled: unknown) => {
-  const nextEnabled = Boolean(enabled) && Boolean(lastFmConfig.sessionKey && lastFmConfig.username)
+  const activeProfile = getConnectedLastFmProfile(lastFmConfig)
+  const nextEnabled = Boolean(enabled) && Boolean(activeProfile.sessionKey && activeProfile.username)
   const nextConfig: LastFmServiceConfig = {
     ...lastFmConfig,
     enabled: nextEnabled
   }
   return applyLastFmConfig(nextConfig)
+})
+
+function normalizeLastFmCustomProfileInput(input: unknown): LastFmCustomProfileInput {
+  const record = input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {}
+  return {
+    name: typeof record.name === 'string' ? record.name : '',
+    apiBaseUrl: typeof record.apiBaseUrl === 'string' ? record.apiBaseUrl : '',
+    username: typeof record.username === 'string' ? record.username : null,
+    sessionKey: typeof record.sessionKey === 'string' ? record.sessionKey : null
+  }
+}
+
+ipcMain.handle('lastfm:createCustomProfile', async (_event, input: unknown) => {
+  return lastFmService.createCustomProfile(normalizeLastFmCustomProfileInput(input))
+})
+
+ipcMain.handle('lastfm:updateCustomProfile', async (_event, profileId: unknown, input: unknown) => {
+  return lastFmService.updateCustomProfile(
+    typeof profileId === 'string' ? profileId : '',
+    normalizeLastFmCustomProfileInput(input)
+  )
+})
+
+ipcMain.handle('lastfm:deleteCustomProfile', async (_event, profileId: unknown) => {
+  return lastFmService.deleteCustomProfile(typeof profileId === 'string' ? profileId : '')
+})
+
+ipcMain.handle('lastfm:setActiveProfile', async (_event, profileId: unknown) => {
+  return lastFmService.setActiveProfile(typeof profileId === 'string' ? profileId : '')
 })
 
 ipcMain.handle('lastfm:beginAuth', async () => {
