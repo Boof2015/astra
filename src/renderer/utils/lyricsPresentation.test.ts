@@ -41,12 +41,12 @@ test('findActiveSyncedLineIndex holds through short gaps', () => {
 test('findActiveSyncedLineIndex goes neutral during long gaps after the hold window', () => {
   const gapLines = [
     { timestampMs: 1_000, text: 'line 1' },
-    { timestampMs: 8_000, text: 'line 2' },
+    { timestampMs: 12_000, text: 'line 2' },
   ]
 
-  assert.equal(findActiveSyncedLineIndex(gapLines, 3.4), 0)
-  assert.equal(findActiveSyncedLineIndex(gapLines, 3.6), -1)
-  assert.equal(findActiveSyncedLineIndex(gapLines, 8), 2)
+  assert.equal(findActiveSyncedLineIndex(gapLines, 4.9), 0)
+  assert.equal(findActiveSyncedLineIndex(gapLines, 5.1), -1)
+  assert.equal(findActiveSyncedLineIndex(gapLines, 12), 2)
 })
 
 test('findActiveSyncedLineIndex respects explicit silence cues', () => {
@@ -67,17 +67,17 @@ test('findActiveSyncedLineIndex goes neutral during a long final outro when dura
     { timestampMs: 10_000, text: 'last line' },
   ]
 
-  assert.equal(findActiveSyncedLineIndex(outroLines, 12.4, { durationSeconds: 20 }), 2)
-  assert.equal(findActiveSyncedLineIndex(outroLines, 12.6, { durationSeconds: 20 }), -1)
+  assert.equal(findActiveSyncedLineIndex(outroLines, 13.9, { durationSeconds: 21 }), 1)
+  assert.equal(findActiveSyncedLineIndex(outroLines, 14.1, { durationSeconds: 21 }), -1)
 })
 
 test('resolveSyncedLyricsTiming keeps a focus line during neutral gaps', () => {
   const gapLines = [
     { timestampMs: 1_000, text: 'line 1' },
-    { timestampMs: 8_000, text: 'line 2' },
+    { timestampMs: 12_000, text: 'line 2' },
   ]
 
-  assert.deepEqual(resolveSyncedLyricsTiming(gapLines, 3.6), {
+  assert.deepEqual(resolveSyncedLyricsTiming(gapLines, 5.1), {
     activeCueIndex: 0,
     activeLineIndex: -1,
     focusLineIndex: 1,
@@ -114,9 +114,9 @@ test('getRenderableSyncedLines excludes silence cues while preserving cue indice
 test('getSyncedLyricsDisplayLines inserts gap rows for silence and inferred long gaps', () => {
   assert.deepEqual(getSyncedLyricsDisplayLines([
     { timestampMs: 1_000, text: 'line 1' },
-    { timestampMs: 8_000, text: 'line 2' },
-    { timestampMs: 10_000, text: '', kind: 'silence' },
-    { timestampMs: 12_000, text: 'line 3' },
+    { timestampMs: 12_000, text: 'line 2' },
+    { timestampMs: 14_000, text: '', kind: 'silence' },
+    { timestampMs: 16_000, text: 'line 3' },
   ]), [
     {
       kind: 'lyric',
@@ -134,19 +134,19 @@ test('getSyncedLyricsDisplayLines inserts gap rows for silence and inferred long
       afterCueIndex: 0,
       displayIndex: 1,
       key: 'gap-after:1000:0',
-      timestampMs: 3_500,
+      timestampMs: 5_000,
       text: '',
       progressStartMs: 1_000,
-      progressEndMs: 8_000
+      progressEndMs: 12_000
     },
     {
       kind: 'lyric',
-      line: { timestampMs: 8_000, text: 'line 2' },
+      line: { timestampMs: 12_000, text: 'line 2' },
       cueIndex: 1,
       afterCueIndex: null,
       displayIndex: 2,
-      key: 'lyric:8000:1',
-      timestampMs: 8_000,
+      key: 'lyric:12000:1',
+      timestampMs: 12_000,
       text: 'line 2'
     },
     {
@@ -154,20 +154,20 @@ test('getSyncedLyricsDisplayLines inserts gap rows for silence and inferred long
       cueIndex: 2,
       afterCueIndex: null,
       displayIndex: 3,
-      key: 'gap-cue:10000:2',
-      timestampMs: 10_000,
+      key: 'gap-cue:14000:2',
+      timestampMs: 14_000,
       text: '',
-      progressStartMs: 10_000,
-      progressEndMs: 12_000
+      progressStartMs: 14_000,
+      progressEndMs: 16_000
     },
     {
       kind: 'lyric',
-      line: { timestampMs: 12_000, text: 'line 3' },
+      line: { timestampMs: 16_000, text: 'line 3' },
       cueIndex: 3,
       afterCueIndex: null,
       displayIndex: 4,
-      key: 'lyric:12000:3',
-      timestampMs: 12_000,
+      key: 'lyric:16000:3',
+      timestampMs: 16_000,
       text: 'line 3'
     },
   ])
@@ -176,13 +176,13 @@ test('getSyncedLyricsDisplayLines inserts gap rows for silence and inferred long
 test('getSyncedLyricsGapProgress resolves calm progress through a gap row', () => {
   const displayLines = getSyncedLyricsDisplayLines([
     { timestampMs: 1_000, text: 'line 1' },
-    { timestampMs: 8_000, text: 'line 2' },
+    { timestampMs: 12_000, text: 'line 2' },
   ])
   const gapLine = displayLines[1]
 
   assert.equal(getSyncedLyricsGapProgress(gapLine, 1), 0)
-  assert.equal(getSyncedLyricsGapProgress(gapLine, 4.5), 0.5)
-  assert.equal(getSyncedLyricsGapProgress(gapLine, 8), 1)
+  assert.equal(getSyncedLyricsGapProgress(gapLine, 6.5), 0.5)
+  assert.equal(getSyncedLyricsGapProgress(gapLine, 12), 1)
 })
 
 test('getLyricsSourceLabel labels local LRC files', () => {

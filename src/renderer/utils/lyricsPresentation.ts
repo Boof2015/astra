@@ -77,8 +77,8 @@ export function getActiveLyricsResult(
   return lyricsResult
 }
 
-export const LYRICS_NEUTRAL_GAP_THRESHOLD_MS = 6_000
-export const LYRICS_POST_LINE_HOLD_MS = 2_500
+export const LYRICS_INFERRED_GAP_THRESHOLD_MS = 10_000
+export const LYRICS_POST_LINE_HOLD_MS = 4_000
 
 export interface RenderableSyncedLine {
   line: LyricsLine
@@ -181,7 +181,7 @@ export function getSyncedLyricsDisplayLines(
 ): SyncedLyricsDisplayLine[] {
   const displayLines: SyncedLyricsDisplayLine[] = []
   const postLineHoldMs = options.postLineHoldMs ?? LYRICS_POST_LINE_HOLD_MS
-  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_NEUTRAL_GAP_THRESHOLD_MS
+  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_INFERRED_GAP_THRESHOLD_MS
   const durationMs = toDurationMs(options.durationSeconds)
 
   lines.forEach((line, cueIndex) => {
@@ -354,7 +354,7 @@ export function resolveSyncedLyricsTiming(
 
   const displayIndex = findDisplayIndexForCueIndex(displayLines, latestCueIndex)
   const postLineHoldMs = options.postLineHoldMs ?? LYRICS_POST_LINE_HOLD_MS
-  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_NEUTRAL_GAP_THRESHOLD_MS
+  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_INFERRED_GAP_THRESHOLD_MS
   const nextCue = lines[latestCueIndex + 1] ?? null
   const nextCueGapMs = nextCue ? nextCue.timestampMs - latestCue.timestampMs : null
   const shouldNeutralizeForNextCue = nextCueGapMs !== null
