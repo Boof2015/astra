@@ -601,6 +601,8 @@ button, .titlebar {
    ============================================ */
 .analyzer-deck {
   height: var(--analyzer-height);
+  width: 100%;
+  min-width: 0;
   flex-shrink: 0;
   position: relative;
   overflow: hidden;
@@ -7848,6 +7850,7 @@ body.folder-settings-open .app {
 }
 
 .visualizer-grid {
+  width: 100%;
   flex: 1;
   display: flex;
   gap: 1px;
@@ -9160,6 +9163,8 @@ body::after {
 
 .analyzer-deck {
   height: var(--analyzer-height);
+  width: 100%;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -9168,6 +9173,9 @@ body::after {
 
 .analyzer-rack-shell {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
   flex-shrink: 0;
   overflow: visible;
 }
@@ -9628,6 +9636,7 @@ body::after {
 }
 
 .visualizer-grid {
+  width: 100%;
   flex: 1;
   min-height: 0;
   display: grid;
