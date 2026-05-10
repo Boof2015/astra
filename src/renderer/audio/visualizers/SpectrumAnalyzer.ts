@@ -2,6 +2,7 @@ import { audioEngine } from '../AudioEngine'
 import { spectrum as nativeSpectrum, isNativeAvailable, warnNativeUnavailableOnce } from '../native/index'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import {
   DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
@@ -15,6 +16,7 @@ export interface SpectrumAnalyzerDataSource {
   getPendingSpectrumSamples: () => Float32Array[]
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface SpectrumAnalyzerOptions {
@@ -106,6 +108,7 @@ const defaultSpectrumDataSource: SpectrumAnalyzerDataSource = {
   getPendingSpectrumSamples: () => audioEngine.flushPendingSpectrumSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 export class SpectrumAnalyzer {
@@ -141,7 +144,7 @@ export class SpectrumAnalyzer {
     this.dataSource = dataSource ?? defaultSpectrumDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.nativeInitialized && this.dataSource.isPlaying(),
+      shouldRun: () => this.nativeInitialized && this.isActive(),
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
@@ -179,6 +182,10 @@ export class SpectrumAnalyzer {
       nativeSpectrum.setSampleRate(currentRate)
       console.log(`SpectrumAnalyzer: Sample rate updated to ${currentRate}Hz`)
     }
+  }
+
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
   }
 
   private getNativeSmoothing(): number {
@@ -414,7 +421,10 @@ export class SpectrumAnalyzer {
     const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
     const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
 
-    if (!this.dataSource.isPlaying()) {
+    const isActive = this.isActive()
+    const isPlaying = this.dataSource.isPlaying()
+
+    if (!isActive) {
       this.dataSource.getPendingSpectrumSamples()
       nativeSpectrum.reset()
       this.renderStaticLayer(minFrequency, maxFrequency)
@@ -422,7 +432,9 @@ export class SpectrumAnalyzer {
     }
 
     const pendingSpectrum = this.dataSource.getPendingSpectrumSamples()
-    const monoData = this.mergePendingSpectrumChunks(pendingSpectrum)
+    const monoData = isPlaying
+      ? this.mergePendingSpectrumChunks(pendingSpectrum)
+      : createMonoSilenceChunk(this.sampleRate, this.options.fftSize)
     if (!monoData) {
       return
     }

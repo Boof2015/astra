@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { createMultichannelSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { getSourceChannelId } from '../../utils/sourceChannelLayout'
 import { resolveColorToRgb } from '../../utils/color'
 import { FrameScheduler } from './frameScheduler'
@@ -14,6 +15,7 @@ export interface VUMeterDataSource {
   getPendingVUMeterSamples: () => MultichannelAudioChunk[]
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface VUMeterOptions {
@@ -36,6 +38,7 @@ const defaultVUMeterDataSource: VUMeterDataSource = {
   getPendingVUMeterSamples: () => audioEngine.flushPendingVUMeterSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 const METER_MIN_DB = -60
@@ -128,7 +131,7 @@ export class VUMeter {
     this.dataSource = dataSource ?? defaultVUMeterDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.dataSource.isPlaying(),
+      shouldRun: () => this.isActive(),
       onFrame: this.drawFrame,
     })
 
@@ -192,10 +195,21 @@ export class VUMeter {
     this.invalidate()
   }
 
-  private processAudio(): void {
-    const chunks = this.dataSource.getPendingVUMeterSamples()
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
+  }
 
-    if (!this.dataSource.isPlaying() || chunks.length === 0) {
+  private processAudio(): void {
+    const pendingChunks = this.dataSource.getPendingVUMeterSamples()
+    const isActive = this.isActive()
+    const isPlaying = this.dataSource.isPlaying()
+    const chunks = isPlaying
+      ? pendingChunks
+      : isActive
+        ? [createMultichannelSilenceChunk(this.dataSource.getSampleRate(), this.activeChannelCount || 2)]
+        : pendingChunks
+
+    if (!isActive || chunks.length === 0) {
       this.decayMeters()
       return
     }

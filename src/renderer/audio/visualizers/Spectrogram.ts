@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { AnalyzerSilenceClock, createMonoSilenceChunkWithSampleCount, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
@@ -17,6 +18,7 @@ export interface SpectrogramDataSource {
   getPendingSpectrogramSamples: () => Float32Array[]
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface SpectrogramOptions {
@@ -59,6 +61,7 @@ const defaultSpectrogramDataSource: SpectrogramDataSource = {
   getPendingSpectrogramSamples: () => audioEngine.flushPendingSpectrogramSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 function getClarityProfile(mode: SpectrogramClarityMode): SpectrogramClarityProfile {
@@ -289,6 +292,7 @@ export class Spectrogram {
   private lastMinFrequency = 0
   private lastMaxFrequency = 0
   private lastScaleMode: SpectrogramScaleMode | null = null
+  private pausedSilenceClock = new AnalyzerSilenceClock()
 
   private unsubscribeTrackChange: (() => void) | null = null
   private unsubscribePlaybackState: (() => void) | null = null
@@ -304,7 +308,7 @@ export class Spectrogram {
     this.dataSource = dataSource ?? defaultSpectrogramDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.dataSource.isPlaying(),
+      shouldRun: () => this.isActive(),
       onFrame: this.drawFrame,
     })
 
@@ -379,6 +383,10 @@ export class Spectrogram {
     this.lastWidth = 0
     this.lastHeight = 0
     this.invalidate()
+  }
+
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
   }
 
   private ensureColumnBuffers(height: number): void {
@@ -653,15 +661,28 @@ export class Spectrogram {
 
     this.ensureBandMapping()
 
-    if (!this.dataSource.isPlaying()) {
+    const isActive = this.isActive()
+    const isPlaying = this.dataSource.isPlaying()
+
+    if (!isActive) {
       this.dataSource.getPendingSpectrogramSamples()
+      this.pausedSilenceClock.reset()
       // Freeze waterfall in place instead of blanking
       this.ctx.clearRect(0, 0, width, height)
       this.ctx.drawImage(this.waterfallCanvas, 0, 0)
       return
     }
 
-    const pendingSamples = this.dataSource.getPendingSpectrogramSamples()
+    if (isPlaying) {
+      this.pausedSilenceClock.reset()
+    }
+
+    const pendingSamples = isPlaying
+      ? this.dataSource.getPendingSpectrogramSamples()
+      : (() => {
+          this.dataSource.getPendingSpectrogramSamples()
+          return [createMonoSilenceChunkWithSampleCount(this.pausedSilenceClock.nextSampleCount(this.dataSource.getSampleRate()))]
+        })()
     const fftSize = this.options.fftSize
 
     // Scroll speed solely controls temporal resolution (hop divisor)

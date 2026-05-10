@@ -1,6 +1,15 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
 import { isNativeAvailable } from '../audio/native/index'
+import { getNormalizedOscilloscopeDisplaySamples } from '../audio/native/oscilloscopeDisplaySamples'
+import {
+  AnalyzerSilenceClock,
+  createMonoSilenceChunk,
+  createMonoSilenceChunkWithSampleCount,
+  createMultichannelSilenceChunk,
+  createStereoSilenceChunk,
+  isPlaybackAnalyzerActive,
+} from '../audio/visualizerSilence'
 import { usePlayerStore } from '../stores/playerStore'
 import { useScopePopoutStore } from '../stores/scopePopoutStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
@@ -75,6 +84,16 @@ export function useScopePopoutBridge(): void {
 
   const streamTimerRef = useRef<number | null>(null)
   const resetSentRef = useRef<ResetState>({ ...EMPTY_RESET_STATE })
+  const silenceClockRef = useRef<Partial<Record<ScopeKind, AnalyzerSilenceClock>>>({})
+
+  const getSilenceClock = (scope: ScopeKind): AnalyzerSilenceClock => {
+    let clock = silenceClockRef.current[scope]
+    if (!clock) {
+      clock = new AnalyzerSilenceClock()
+      silenceClockRef.current[scope] = clock
+    }
+    return clock
+  }
 
   useEffect(() => {
     let isMounted = true
@@ -119,6 +138,7 @@ export function useScopePopoutBridge(): void {
     for (const scope of SCOPE_KINDS) {
       if (!scopePopoutState[scope]) {
         resetSentRef.current[scope] = false
+        silenceClockRef.current[scope]?.reset()
       }
     }
 
@@ -222,16 +242,134 @@ export function useScopePopoutBridge(): void {
       resetSentRef.current[scope] = true
     }
 
+    const emitSilence = (scope: ScopeKind) => {
+      flushScopeQueue(scope)
+
+      if ((scope === 'spectrum' || scope === 'oscilloscope') && !nativeVisualizersAvailable) {
+        if (!resetSentRef.current[scope]) {
+          emitReset(scope)
+        }
+        return
+      }
+
+      const sampleRate = audioEngine.getSampleRate()
+
+      switch (scope) {
+        case 'spectrum':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'spectrum',
+            capturedAt: Date.now(),
+            sampleRate,
+            monoChunks: [createMonoSilenceChunk(sampleRate, fftSize)],
+            fftSize,
+            spectrumDisplayMode,
+            spectrumTiltDbPerOctave,
+            spectrumHeatmap,
+            spectrumHeatmapTiltDbPerOctave,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'oscilloscope':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'oscilloscope',
+            capturedAt: Date.now(),
+            sampleRate,
+            leftChunks: [createMonoSilenceChunk(sampleRate, getNormalizedOscilloscopeDisplaySamples(sampleRate))],
+            pitchLock,
+            oscilloscopeUnderfillEnabled,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'vectorscope':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'vectorscope',
+            capturedAt: Date.now(),
+            sampleRate,
+            stereoChunks: [createStereoSilenceChunk(sampleRate)],
+            vectorscopeMode,
+            vectorscopeMultiband,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'spectrogram':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'spectrogram',
+            capturedAt: Date.now(),
+            sampleRate,
+            monoChunks: [createMonoSilenceChunkWithSampleCount(getSilenceClock(scope).nextSampleCount(sampleRate))],
+            fftSize: spectrogramFftSize,
+            spectrogramScrollSpeed,
+            spectrogramClarityMode,
+            spectrogramScaleMode,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'vumeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'vumeter',
+            capturedAt: Date.now(),
+            sampleRate,
+            channelChunks: [createMultichannelSilenceChunk(sampleRate, audioEngine.getCurrentTrackChannelCount() ?? 2)],
+            vuMeterMode,
+            vuMeterOrientation,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'lufsmeter':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'lufsmeter',
+            capturedAt: Date.now(),
+            sampleRate,
+            stereoChunks: [createStereoSilenceChunk(sampleRate)],
+            lufsMeterMode,
+            lineColor,
+            reset: false,
+          })
+          break
+        case 'waveform':
+          window.electronAPI.scopePopout.publishChunk({
+            scope: 'waveform',
+            capturedAt: Date.now(),
+            sampleRate,
+            monoChunks: [createMonoSilenceChunkWithSampleCount(getSilenceClock(scope).nextSampleCount(sampleRate))],
+            waveformScrollSpeed,
+            waveformGainDb,
+            waveformMultiband,
+            lineColor,
+            reset: false,
+          })
+          break
+      }
+
+      resetSentRef.current[scope] = false
+    }
+
     streamTimerRef.current = window.setInterval(() => {
-      const shouldStream = playbackState === 'playing' && isVisualizerRunning
+      const shouldStream = isPlaybackAnalyzerActive(playbackState) && isVisualizerRunning
+      const shouldPublishSilence = playbackState === 'paused'
 
       for (const scope of poppedScopes) {
         if (!shouldStream) {
           flushScopeQueue(scope)
+          silenceClockRef.current[scope]?.reset()
           if (!resetSentRef.current[scope]) {
             emitReset(scope)
           }
           continue
+        }
+
+        if (shouldPublishSilence) {
+          emitSilence(scope)
+          continue
+        }
+
+        if (playbackState === 'playing') {
+          silenceClockRef.current[scope]?.reset()
         }
 
         switch (scope) {
