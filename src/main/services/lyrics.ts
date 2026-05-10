@@ -114,7 +114,8 @@ function applySyncOffsetToLines(lines: LyricsLine[], offsetMs: number): LyricsLi
 
   const shifted = lines.map((line) => ({
     timestampMs: Math.max(0, line.timestampMs + offsetMs),
-    text: line.text
+    text: line.text,
+    ...(line.kind === 'silence' ? { kind: 'silence' as const } : {})
   }))
   shifted.sort((left, right) => left.timestampMs - right.timestampMs)
   return shifted

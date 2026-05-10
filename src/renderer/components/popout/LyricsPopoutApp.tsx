@@ -3,8 +3,11 @@ import type { LyricsPopoutSnapshot } from '../../../types/lyricsPopout'
 import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
 import {
   DEFAULT_LYRICS_BODY_COPY,
-  findActiveSyncedLineIndex,
+  getCompensatedLyricsTime,
   getLyricsMetaChipText,
+  getSyncedLyricsGapProgress,
+  getSyncedLyricsDisplayLines,
+  resolveSyncedLyricsTiming,
   resolveLyricsBodyState
 } from '../../utils/lyricsPresentation'
 import '../../styles/lyrics-popout.css'
@@ -15,6 +18,7 @@ const EMPTY_SNAPSHOT: LyricsPopoutSnapshot = {
   playbackState: 'stopped',
   currentTime: 0,
   duration: 0,
+  effectiveDelayMs: 0,
   currentTrack: null,
   lyricsQuery: null,
   lyricsResult: null,
@@ -29,11 +33,13 @@ function clampTime(value: number, duration: number): number {
 }
 
 function useLyricsPopoutClock(snapshot: LyricsPopoutSnapshot): number {
-  const [currentTime, setCurrentTime] = useState(snapshot.currentTime)
+  const [currentTime, setCurrentTime] = useState(() => (
+    getCompensatedLyricsTime(snapshot.currentTime, snapshot.duration, snapshot.effectiveDelayMs)
+  ))
 
   useEffect(() => {
     if (snapshot.playbackState !== 'playing') {
-      setCurrentTime(snapshot.currentTime)
+      setCurrentTime(getCompensatedLyricsTime(snapshot.currentTime, snapshot.duration, snapshot.effectiveDelayMs))
       return
     }
 
@@ -41,7 +47,8 @@ function useLyricsPopoutClock(snapshot: LyricsPopoutSnapshot): number {
 
     const tick = () => {
       const elapsedSeconds = Math.max(0, (Date.now() - snapshot.capturedAt) / 1000)
-      setCurrentTime(clampTime(snapshot.currentTime + elapsedSeconds, snapshot.duration))
+      const projectedTime = clampTime(snapshot.currentTime + elapsedSeconds, snapshot.duration)
+      setCurrentTime(getCompensatedLyricsTime(projectedTime, snapshot.duration, snapshot.effectiveDelayMs))
       frameId = window.requestAnimationFrame(tick)
     }
 
@@ -51,7 +58,13 @@ function useLyricsPopoutClock(snapshot: LyricsPopoutSnapshot): number {
         window.cancelAnimationFrame(frameId)
       }
     }
-  }, [snapshot.capturedAt, snapshot.currentTime, snapshot.duration, snapshot.playbackState])
+  }, [
+    snapshot.capturedAt,
+    snapshot.currentTime,
+    snapshot.duration,
+    snapshot.effectiveDelayMs,
+    snapshot.playbackState
+  ])
 
   return currentTime
 }
@@ -107,11 +120,16 @@ export default function LyricsPopoutApp() {
     copy: DEFAULT_LYRICS_BODY_COPY
   }), [snapshot.currentTrack, snapshot.errorMessage, snapshot.isLoading, snapshot.lyricsResult])
   const syncedLines = bodyState.kind === 'hit_synced' ? bodyState.syncedLines : []
-  const hasSyncedLyrics = syncedLines.length > 0
-  const activeSyncedLineIndex = useMemo(
-    () => findActiveSyncedLineIndex(syncedLines, currentTime),
-    [currentTime, syncedLines]
+  const displayedSyncedLines = useMemo(
+    () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: snapshot.duration }),
+    [snapshot.duration, syncedLines]
   )
+  const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
+  const syncedLyricsTiming = useMemo(
+    () => resolveSyncedLyricsTiming(syncedLines, currentTime, { durationSeconds: snapshot.duration }),
+    [currentTime, snapshot.duration, syncedLines]
+  )
+  const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
   const metaChipText = useMemo(() => (
     getLyricsMetaChipText({
       currentTrack: snapshot.currentTrack,
@@ -135,8 +153,22 @@ export default function LyricsPopoutApp() {
     isExpanded,
     hasSyncedLyrics,
     activeSyncedLineIndex,
+    focusedSyncedLineIndex: syncedLyricsTiming.focusLineIndex,
     contentKey: snapshot.currentTrack?.path ?? null
   })
+
+  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
+    const progress = getSyncedLyricsGapProgress(displayLine, currentTime)
+    if (progress === null) return displayLine.text
+    return (
+      <span className="lyrics-gap-progress">
+        <span
+          className="lyrics-gap-progress-fill"
+          style={{ transform: `scaleX(${progress})` }}
+        />
+      </span>
+    )
+  }
 
   const renderCompactSyncedWindow = () => (
     <div key="lyrics-popout-collapsed-window" className="transport-lyrics-focus-window" aria-live="polite">
@@ -144,21 +176,23 @@ export default function LyricsPopoutApp() {
         className="transport-lyrics-focus-track"
         style={collapsedTrackStyle}
       >
-        {syncedLines.map((line, index) => {
-          const distance = index - effectiveSyncedLineIndex
+        {displayedSyncedLines.map((displayLine) => {
+          const { displayIndex } = displayLine
+          const distance = displayIndex - effectiveSyncedLineIndex
           const className = [
             'transport-lyrics-focus-line',
-            distance === 0
+            displayLine.kind === 'gap' ? 'is-gap' : '',
+            displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex
               ? 'is-active'
-              : Math.abs(distance) === 1
+              : Math.abs(distance) <= 1
                 ? 'is-near'
                 : Math.abs(distance) === 2
                   ? 'is-far'
                   : 'is-distant'
           ].join(' ')
           return (
-            <p key={`${line.timestampMs}:${index}`} className={className}>
-              {line.text}
+            <p key={displayLine.key} className={className} aria-hidden={displayLine.kind === 'gap'}>
+              {renderGapProgress(displayLine)}
             </p>
           )
         })}
@@ -197,13 +231,18 @@ export default function LyricsPopoutApp() {
           onTouchStart={pauseFollowFromManualScroll}
           aria-live="polite"
         >
-          {bodyState.syncedLines.map((line, index) => (
+          {displayedSyncedLines.map((displayLine) => (
             <p
-              key={`${line.timestampMs}:${index}`}
-              ref={setSyncedLineRef(index)}
-              className={`transport-lyrics-expanded-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
+              key={displayLine.key}
+              ref={setSyncedLineRef(displayLine.displayIndex)}
+              className={[
+                'transport-lyrics-expanded-line',
+                displayLine.kind === 'gap' ? 'is-gap' : '',
+                displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex ? 'active' : ''
+              ].join(' ').trim()}
+              aria-hidden={displayLine.kind === 'gap'}
             >
-              {line.text}
+              {renderGapProgress(displayLine)}
             </p>
           ))}
         </div>

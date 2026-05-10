@@ -3183,16 +3183,25 @@ function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
   const lines: LyricsLine[] = []
   for (const entry of rawValue) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-    const line = entry as { timestampMs?: unknown; text?: unknown }
+    const line = entry as { timestampMs?: unknown; text?: unknown; kind?: unknown }
     if (typeof line.text !== 'string') continue
 
     const text = line.text.trim()
-    if (!text) continue
-
     const timestamp = typeof line.timestampMs === 'number' && Number.isFinite(line.timestampMs)
       ? Math.max(0, Math.floor(line.timestampMs))
       : null
     if (timestamp === null) continue
+
+    if (line.kind === 'silence') {
+      lines.push({
+        timestampMs: timestamp,
+        text: '',
+        kind: 'silence'
+      })
+      continue
+    }
+
+    if (!text) continue
 
     lines.push({
       timestampMs: timestamp,

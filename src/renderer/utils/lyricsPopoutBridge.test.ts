@@ -58,6 +58,7 @@ function createSnapshot(
     playbackState: 'playing',
     currentTime: 42,
     duration: 180,
+    effectiveDelayMs: 0,
     currentTrack: createTrackSnapshot(),
     lyricsQuery: createLyricsQuery(),
     lyricsResult: createLyricsResult(),
@@ -103,6 +104,25 @@ test('getLyricsPopoutPublishReason forces a publish when semantic snapshot data 
   const lastPublishedSnapshot = createSnapshot()
   const nextSnapshot = createSnapshot({
     preferredExpanded: false
+  })
+
+  const reason = getLyricsPopoutPublishReason({
+    trigger: 'state-change',
+    isWindowOpen: true,
+    wasWindowOpen: true,
+    nextSnapshot,
+    lastPublishedSnapshot
+  })
+
+  assert.equal(reason, 'semantic-change')
+})
+
+test('getLyricsPopoutPublishReason forces a publish when lyric delay compensation changes', () => {
+  const lastPublishedSnapshot = createSnapshot({
+    effectiveDelayMs: 0
+  })
+  const nextSnapshot = createSnapshot({
+    effectiveDelayMs: 240
   })
 
   const reason = getLyricsPopoutPublishReason({

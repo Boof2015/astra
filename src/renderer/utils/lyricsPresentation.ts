@@ -77,11 +77,190 @@ export function getActiveLyricsResult(
   return lyricsResult
 }
 
-export function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
+export const LYRICS_NEUTRAL_GAP_THRESHOLD_MS = 6_000
+export const LYRICS_POST_LINE_HOLD_MS = 2_500
+
+export interface RenderableSyncedLine {
+  line: LyricsLine
+  cueIndex: number
+  displayIndex: number
+}
+
+export type SyncedLyricsDisplayLine =
+  | {
+      kind: 'lyric'
+      line: LyricsLine
+      cueIndex: number
+      afterCueIndex: null
+      displayIndex: number
+      key: string
+      timestampMs: number
+      text: string
+    }
+  | {
+      kind: 'gap'
+      cueIndex: number | null
+      afterCueIndex: number | null
+      displayIndex: number
+      key: string
+      timestampMs: number
+      text: ''
+      progressStartMs: number
+      progressEndMs: number | null
+    }
+
+export interface SyncedLyricsTimingOptions {
+  durationSeconds?: number | null
+  neutralGapThresholdMs?: number
+  postLineHoldMs?: number
+}
+
+export interface SyncedLyricsTimingState {
+  activeCueIndex: number
+  activeLineIndex: number
+  focusLineIndex: number
+  isNeutral: boolean
+}
+
+function toPlaybackTimeMs(currentTimeSeconds: number): number {
+  return Number.isFinite(currentTimeSeconds)
     ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
     : 0
+}
+
+function toDurationMs(durationSeconds: number | null | undefined): number | null {
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return null
+  }
+  return Math.floor(durationSeconds * 1000)
+}
+
+export function getCompensatedLyricsTime(
+  currentTimeSeconds: number,
+  durationSeconds: number | null | undefined,
+  effectiveDelayMs: number
+): number {
+  const normalizedTime = Number.isFinite(currentTimeSeconds) ? Math.max(0, currentTimeSeconds) : 0
+  const normalizedDelaySeconds = Number.isFinite(effectiveDelayMs)
+    ? Math.max(0, effectiveDelayMs) / 1000
+    : 0
+  const compensatedTime = Math.max(0, normalizedTime - normalizedDelaySeconds)
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return compensatedTime
+  }
+  return Math.min(durationSeconds, compensatedTime)
+}
+
+export function isRenderableSyncedLine(line: LyricsLine): boolean {
+  return line.kind !== 'silence' && line.text.trim().length > 0
+}
+
+export function getRenderableSyncedLines(lines: LyricsLine[]): RenderableSyncedLine[] {
+  const renderableLines: RenderableSyncedLine[] = []
+  lines.forEach((line, cueIndex) => {
+    if (!isRenderableSyncedLine(line)) return
+    renderableLines.push({
+      line,
+      cueIndex,
+      displayIndex: renderableLines.length
+    })
+  })
+  return renderableLines
+}
+
+function findNextRenderableLineTimestamp(lines: LyricsLine[], startIndex: number): number | null {
+  for (let index = startIndex; index < lines.length; index += 1) {
+    if (isRenderableSyncedLine(lines[index])) return lines[index].timestampMs
+  }
+  return null
+}
+
+export function getSyncedLyricsDisplayLines(
+  lines: LyricsLine[],
+  options: SyncedLyricsTimingOptions = {}
+): SyncedLyricsDisplayLine[] {
+  const displayLines: SyncedLyricsDisplayLine[] = []
+  const postLineHoldMs = options.postLineHoldMs ?? LYRICS_POST_LINE_HOLD_MS
+  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_NEUTRAL_GAP_THRESHOLD_MS
+  const durationMs = toDurationMs(options.durationSeconds)
+
+  lines.forEach((line, cueIndex) => {
+    const displayIndex = displayLines.length
+    if (isRenderableSyncedLine(line)) {
+      displayLines.push({
+        kind: 'lyric',
+        line,
+        cueIndex,
+        afterCueIndex: null,
+        displayIndex,
+        key: `lyric:${line.timestampMs}:${cueIndex}`,
+        timestampMs: line.timestampMs,
+        text: line.text
+      })
+
+      const nextCue = lines[cueIndex + 1] ?? null
+      const nextCueGapMs = nextCue ? nextCue.timestampMs - line.timestampMs : null
+      const outroGapMs = durationMs === null ? null : durationMs - line.timestampMs
+      const shouldInsertGap = (
+        nextCueGapMs !== null && nextCueGapMs >= neutralGapThresholdMs
+      ) || (
+        !nextCue && outroGapMs !== null && outroGapMs >= neutralGapThresholdMs
+      )
+
+      if (shouldInsertGap) {
+        const gapTimestampMs = line.timestampMs + postLineHoldMs
+        const progressEndMs = findNextRenderableLineTimestamp(lines, cueIndex + 1) ?? durationMs
+        displayLines.push({
+          kind: 'gap',
+          cueIndex: null,
+          afterCueIndex: cueIndex,
+          displayIndex: displayLines.length,
+          key: `gap-after:${line.timestampMs}:${cueIndex}`,
+          timestampMs: gapTimestampMs,
+          text: '',
+          progressStartMs: line.timestampMs,
+          progressEndMs
+        })
+      }
+      return
+    }
+
+    if (line.kind !== 'silence') return
+    const progressEndMs = findNextRenderableLineTimestamp(lines, cueIndex + 1) ?? durationMs
+    displayLines.push({
+      kind: 'gap',
+      cueIndex,
+      afterCueIndex: null,
+      displayIndex,
+      key: `gap-cue:${line.timestampMs}:${cueIndex}`,
+      timestampMs: line.timestampMs,
+      text: '',
+      progressStartMs: line.timestampMs,
+      progressEndMs
+    })
+  })
+
+  return displayLines
+}
+
+export function getSyncedLyricsGapProgress(
+  line: SyncedLyricsDisplayLine,
+  currentTimeSeconds: number
+): number | null {
+  if (line.kind !== 'gap') return null
+  if (line.progressEndMs === null || line.progressEndMs <= line.progressStartMs) return null
+
+  const currentTimeMs = toPlaybackTimeMs(currentTimeSeconds)
+  const progress = (currentTimeMs - line.progressStartMs) / (line.progressEndMs - line.progressStartMs)
+  return Math.max(0, Math.min(1, progress))
+}
+
+export function hasRenderableSyncedLines(lines: LyricsLine[]): boolean {
+  return lines.some(isRenderableSyncedLine)
+}
+
+function findCueIndexAtOrBefore(lines: LyricsLine[], currentTimeMs: number): number {
+  if (lines.length === 0) return -1
 
   let low = 0
   let high = lines.length - 1
@@ -98,6 +277,121 @@ export function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSecond
   }
 
   return best
+}
+
+function findDisplayIndexForCueIndex(displayLines: SyncedLyricsDisplayLine[], cueIndex: number): number {
+  const match = displayLines.find((line) => line.cueIndex === cueIndex)
+  return match?.displayIndex ?? -1
+}
+
+function findGapDisplayIndexAfterCue(displayLines: SyncedLyricsDisplayLine[], cueIndex: number): number {
+  const match = displayLines.find((line) => line.kind === 'gap' && line.afterCueIndex === cueIndex)
+  return match?.displayIndex ?? -1
+}
+
+function findPreviousDisplayIndex(displayLines: SyncedLyricsDisplayLine[], cueIndex: number): number {
+  for (let index = displayLines.length - 1; index >= 0; index -= 1) {
+    const displayLineCueIndex = displayLines[index].cueIndex ?? displayLines[index].afterCueIndex
+    if (displayLineCueIndex !== null && displayLineCueIndex <= cueIndex) return displayLines[index].displayIndex
+  }
+  return -1
+}
+
+function findNextDisplayIndex(displayLines: SyncedLyricsDisplayLine[], cueIndex: number): number {
+  for (const line of displayLines) {
+    const displayLineCueIndex = line.cueIndex ?? line.afterCueIndex
+    if (displayLineCueIndex !== null && displayLineCueIndex > cueIndex) return line.displayIndex
+  }
+  return -1
+}
+
+function resolveNeutralFocusLineIndex(displayLines: SyncedLyricsDisplayLine[], cueIndex: number): number {
+  const currentLineIndex = findDisplayIndexForCueIndex(displayLines, cueIndex)
+  if (currentLineIndex >= 0) return currentLineIndex
+  const previousLineIndex = findPreviousDisplayIndex(displayLines, cueIndex)
+  if (previousLineIndex >= 0) return previousLineIndex
+  const nextLineIndex = findNextDisplayIndex(displayLines, cueIndex)
+  if (nextLineIndex >= 0) return nextLineIndex
+  return -1
+}
+
+export function resolveSyncedLyricsTiming(
+  lines: LyricsLine[],
+  currentTimeSeconds: number,
+  options: SyncedLyricsTimingOptions = {}
+): SyncedLyricsTimingState {
+  const renderableLines = getRenderableSyncedLines(lines)
+  const displayLines = getSyncedLyricsDisplayLines(lines, options)
+  if (renderableLines.length === 0) {
+    return {
+      activeCueIndex: -1,
+      activeLineIndex: -1,
+      focusLineIndex: -1,
+      isNeutral: true
+    }
+  }
+
+  const currentTimeMs = toPlaybackTimeMs(currentTimeSeconds)
+  const latestCueIndex = findCueIndexAtOrBefore(lines, currentTimeMs)
+  if (latestCueIndex < 0) {
+    return {
+      activeCueIndex: -1,
+      activeLineIndex: -1,
+      focusLineIndex: 0,
+      isNeutral: true
+    }
+  }
+
+  const latestCue = lines[latestCueIndex]
+  if (!isRenderableSyncedLine(latestCue)) {
+    return {
+      activeCueIndex: latestCueIndex,
+      activeLineIndex: -1,
+      focusLineIndex: resolveNeutralFocusLineIndex(displayLines, latestCueIndex),
+      isNeutral: true
+    }
+  }
+
+  const displayIndex = findDisplayIndexForCueIndex(displayLines, latestCueIndex)
+  const postLineHoldMs = options.postLineHoldMs ?? LYRICS_POST_LINE_HOLD_MS
+  const neutralGapThresholdMs = options.neutralGapThresholdMs ?? LYRICS_NEUTRAL_GAP_THRESHOLD_MS
+  const nextCue = lines[latestCueIndex + 1] ?? null
+  const nextCueGapMs = nextCue ? nextCue.timestampMs - latestCue.timestampMs : null
+  const shouldNeutralizeForNextCue = nextCueGapMs !== null
+    && nextCueGapMs >= neutralGapThresholdMs
+    && currentTimeMs >= latestCue.timestampMs + postLineHoldMs
+
+  const durationMs = toDurationMs(options.durationSeconds)
+  const outroGapMs = durationMs === null ? null : durationMs - latestCue.timestampMs
+  const shouldNeutralizeForOutro = !nextCue
+    && outroGapMs !== null
+    && outroGapMs >= neutralGapThresholdMs
+    && currentTimeMs >= latestCue.timestampMs + postLineHoldMs
+
+  if (shouldNeutralizeForNextCue || shouldNeutralizeForOutro) {
+    const gapDisplayIndex = findGapDisplayIndexAfterCue(displayLines, latestCueIndex)
+    return {
+      activeCueIndex: latestCueIndex,
+      activeLineIndex: -1,
+      focusLineIndex: gapDisplayIndex >= 0 ? gapDisplayIndex : displayIndex,
+      isNeutral: true
+    }
+  }
+
+  return {
+    activeCueIndex: latestCueIndex,
+    activeLineIndex: displayIndex,
+    focusLineIndex: displayIndex,
+    isNeutral: false
+  }
+}
+
+export function findActiveSyncedLineIndex(
+  lines: LyricsLine[],
+  currentTimeSeconds: number,
+  options: SyncedLyricsTimingOptions = {}
+): number {
+  return resolveSyncedLyricsTiming(lines, currentTimeSeconds, options).activeLineIndex
 }
 
 export function getLyricsMetaChipText(options: {
@@ -166,7 +460,7 @@ export function resolveLyricsBodyState(options: ResolveLyricsBodyStateOptions): 
     const sourceLabel = getLyricsSourceLabel(activeLyricsResult.lyrics.source)
     const cached = activeLyricsResult.cached
     const syncedLines = activeLyricsResult.lyrics.syncedLines
-    if (syncedLines.length > 0) {
+    if (hasRenderableSyncedLines(syncedLines)) {
       return {
         kind: 'hit_synced',
         sourceLabel,

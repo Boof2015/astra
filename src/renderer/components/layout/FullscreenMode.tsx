@@ -10,7 +10,14 @@ import VolumeControl from '../player/VolumeControl'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { getFullscreenBackdropArtworkCandidates } from '../../utils/fullscreenBackdropArtwork'
-import type { LyricsLine, LyricsSource, LyricsTrackQuery } from '../../../types/lyrics'
+import {
+  getCompensatedLyricsTime,
+  getLyricsSourceLabel,
+  getSyncedLyricsGapProgress,
+  getSyncedLyricsDisplayLines,
+  resolveSyncedLyricsTiming
+} from '../../utils/lyricsPresentation'
+import type { LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
@@ -24,13 +31,6 @@ interface LyricsDockLayout {
   activeAnchorIndex: number
   renderPadding: number
   openHeightPx: number
-}
-
-function getLyricsSourceLabel(source: LyricsSource): string {
-  if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
-  if (source === 'lrc') return 'LRC File'
-  return 'LRCLIB'
 }
 
 function formatTime(seconds: number): string {
@@ -166,29 +166,6 @@ function buildLyricsQuery(
   }
 }
 
-function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
-    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
-    : 0
-
-  let low = 0
-  let high = lines.length - 1
-  let best = -1
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    if (lines[mid].timestampMs <= currentTimeMs) {
-      best = mid
-      low = mid + 1
-      continue
-    }
-    high = mid - 1
-  }
-
-  return best
-}
-
 function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
@@ -267,10 +244,7 @@ function FullscreenLyricsDockPanel({
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
   const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
 
-  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
-  const compensatedTime = duration > 0
-    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
-    : 0
+  const compensatedTime = getCompensatedLyricsTime(currentTime, duration, effectiveDelayMs)
   const lyricsQuery = useMemo(
     () => buildLyricsQuery(currentTrack),
     [
@@ -290,13 +264,20 @@ function FullscreenLyricsDockPanel({
     if (activeLyricsResult?.status !== 'hit') return []
     return activeLyricsResult.lyrics.syncedLines
   }, [activeLyricsResult])
-  const activeSyncedLineIndex = useMemo(
-    () => findActiveSyncedLineIndex(syncedLines, compensatedTime),
-    [compensatedTime, syncedLines]
+  const displayedSyncedLines = useMemo(
+    () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
+    [duration, syncedLines]
   )
-  const hasSyncedLyrics = syncedLines.length > 0
-  const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
-  const activeSyncedLineText = syncedLines[effectiveSyncedLineIndex]?.text ?? ''
+  const syncedLyricsTiming = useMemo(
+    () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
+    [compensatedTime, duration, syncedLines]
+  )
+  const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
+  const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
+  const effectiveSyncedLineIndex = syncedLyricsTiming.focusLineIndex >= 0 ? syncedLyricsTiming.focusLineIndex : 0
+  const activeSyncedLineText = activeSyncedLineIndex >= 0
+    ? displayedSyncedLines[activeSyncedLineIndex]?.text ?? ''
+    : ''
   const syncedLyricsTrackOffsetY = (
     lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndex
   ) * lyricsDockLayout.lineHeightPx
@@ -404,6 +385,19 @@ function FullscreenLyricsDockPanel({
     showLyricsDock
   ])
 
+  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
+    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
+    if (progress === null) return displayLine.text
+    return (
+      <span className="lyrics-gap-progress">
+        <span
+          className="lyrics-gap-progress-fill"
+          style={{ transform: `scaleX(${progress})` }}
+        />
+      </span>
+    )
+  }
+
   return (
     <section
       className={`fullscreen-lyrics-dock ${showLyricsDock ? 'is-open' : ''}`}
@@ -432,14 +426,16 @@ function FullscreenLyricsDockPanel({
               className="fullscreen-lyrics-dock-track"
               style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
             >
-              {syncedLines.map((line, index) => {
-                const distance = index - effectiveSyncedLineIndex
-                const isActiveLine = distance === 0
+              {displayedSyncedLines.map((displayLine) => {
+                const { displayIndex } = displayLine
+                const distance = displayIndex - effectiveSyncedLineIndex
+                const isActiveLine = displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex
                 const lineClassName = [
                   'fullscreen-lyrics-dock-line',
+                  displayLine.kind === 'gap' ? 'is-gap' : '',
                   isActiveLine
                     ? 'is-active'
-                    : Math.abs(distance) === 1
+                    : Math.abs(distance) <= 1
                       ? 'is-near'
                       : Math.abs(distance) === 2
                         ? 'is-far'
@@ -448,14 +444,15 @@ function FullscreenLyricsDockPanel({
 
                 return (
                   <p
-                    key={`${line.timestampMs}:${index}`}
+                    key={displayLine.key}
                     ref={isActiveLine ? setActiveLyricLineNode : undefined}
                     className={lineClassName}
                     style={isActiveLine && activeLyricFontSizePx != null
                       ? { fontSize: `${activeLyricFontSizePx}px` }
                       : undefined}
+                    aria-hidden={displayLine.kind === 'gap'}
                   >
-                    <span className="fullscreen-lyrics-dock-line-text">{line.text}</span>
+                    <span className="fullscreen-lyrics-dock-line-text">{renderGapProgress(displayLine)}</span>
                   </p>
                 )
               })}

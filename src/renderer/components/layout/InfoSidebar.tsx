@@ -7,11 +7,15 @@ import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import {
   buildLyricsQuery,
-  findActiveSyncedLineIndex,
+  getCompensatedLyricsTime,
   getActiveLyricsResult,
+  getSyncedLyricsGapProgress,
+  getSyncedLyricsDisplayLines,
   INFO_SIDEBAR_LYRICS_BODY_COPY,
+  resolveSyncedLyricsTiming,
   resolveLyricsBodyState
 } from '../../utils/lyricsPresentation'
 
@@ -20,7 +24,9 @@ type InfoSidebarTab = 'info' | 'lyrics'
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlaybackClock()
+  const duration = usePlayerStore((s) => s.duration)
   const playbackState = usePlayerStore((s) => s.playbackState)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
@@ -46,10 +52,19 @@ export default function InfoSidebar() {
     copy: INFO_SIDEBAR_LYRICS_BODY_COPY
   }), [activeLyricsResult, currentTrack, lyricsIsLoading, lyricsStoreError])
   const syncedLines = bodyState.kind === 'hit_synced' ? bodyState.syncedLines : []
-  const activeSyncedLineIndex = useMemo(
-    () => findActiveSyncedLineIndex(syncedLines, currentTime),
-    [currentTime, syncedLines]
+  const displayedSyncedLines = useMemo(
+    () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
+    [duration, syncedLines]
   )
+  const compensatedTime = useMemo(
+    () => getCompensatedLyricsTime(currentTime, duration, effectiveDelayMs),
+    [currentTime, duration, effectiveDelayMs]
+  )
+  const syncedLyricsTiming = useMemo(
+    () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
+    [compensatedTime, duration, syncedLines]
+  )
+  const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
 
   useEffect(() => {
     if (activeTab !== 'lyrics') return
@@ -59,14 +74,15 @@ export default function InfoSidebar() {
   useEffect(() => {
     if (activeTab !== 'lyrics') return
     if (playbackState !== 'playing') return
-    if (activeSyncedLineIndex < 0) return
-    const node = syncedLineRefs.current.get(activeSyncedLineIndex)
+    const targetLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : syncedLyricsTiming.focusLineIndex
+    if (targetLineIndex < 0) return
+    const node = syncedLineRefs.current.get(targetLineIndex)
     if (!node) return
     node.scrollIntoView({
       block: 'center',
       behavior: 'smooth'
     })
-  }, [activeSyncedLineIndex, activeTab, playbackState])
+  }, [activeSyncedLineIndex, activeTab, playbackState, syncedLyricsTiming.focusLineIndex])
 
   const setSyncedLineRef = (index: number) => (node: HTMLParagraphElement | null) => {
     if (node) {
@@ -86,6 +102,19 @@ export default function InfoSidebar() {
     void refreshLyricsForTrack(lyricsQuery)
   }
 
+  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
+    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
+    if (progress === null) return displayLine.text
+    return (
+      <span className="lyrics-gap-progress">
+        <span
+          className="lyrics-gap-progress-fill"
+          style={{ transform: `scaleX(${progress})` }}
+        />
+      </span>
+    )
+  }
+
   const renderLyricsContent = () => {
     if (bodyState.kind === 'hit_synced') {
       return (
@@ -97,13 +126,18 @@ export default function InfoSidebar() {
           </p>
 
           <div className="info-lyrics-lines">
-            {bodyState.syncedLines.map((line, index) => (
+            {displayedSyncedLines.map((displayLine) => (
               <p
-                key={`${line.timestampMs}:${index}`}
-                ref={setSyncedLineRef(index)}
-                className={`info-lyrics-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
+                key={displayLine.key}
+                ref={setSyncedLineRef(displayLine.displayIndex)}
+                className={[
+                  'info-lyrics-line',
+                  displayLine.kind === 'gap' ? 'is-gap' : '',
+                  displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex ? 'active' : ''
+                ].join(' ').trim()}
+                aria-hidden={displayLine.kind === 'gap'}
               >
-                {line.text}
+                {renderGapProgress(displayLine)}
               </p>
             ))}
           </div>

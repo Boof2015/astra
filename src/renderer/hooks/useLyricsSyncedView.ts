@@ -16,6 +16,7 @@ interface UseLyricsSyncedViewOptions {
   isExpanded: boolean
   hasSyncedLyrics: boolean
   activeSyncedLineIndex: number
+  focusedSyncedLineIndex?: number
   contentKey?: string | null
   collapsedLineHeightPx?: number
   collapsedActiveAnchorIndex?: number
@@ -38,6 +39,7 @@ export function useLyricsSyncedView({
   isExpanded,
   hasSyncedLyrics,
   activeSyncedLineIndex,
+  focusedSyncedLineIndex,
   contentKey = null,
   collapsedLineHeightPx = 34,
   collapsedActiveAnchorIndex = 1,
@@ -51,7 +53,11 @@ export function useLyricsSyncedView({
   const openRecenterTimerRef = useRef<number | null>(null)
   const hasCompletedExpandedOpenRef = useRef(false)
 
-  const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
+  const effectiveSyncedLineIndex = focusedSyncedLineIndex != null && focusedSyncedLineIndex >= 0
+    ? focusedSyncedLineIndex
+    : activeSyncedLineIndex >= 0
+      ? activeSyncedLineIndex
+      : 0
   const collapsedTrackOffsetY = (
     collapsedActiveAnchorIndex - effectiveSyncedLineIndex
   ) * collapsedLineHeightPx
@@ -77,9 +83,10 @@ export function useLyricsSyncedView({
   }, [])
 
   const scrollActiveExpandedLineIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    if (activeSyncedLineIndex < 0) return
+    const targetLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : effectiveSyncedLineIndex
+    if (targetLineIndex < 0) return
     const container = expandedListRef.current
-    const lineNode = syncedLineRefs.current.get(activeSyncedLineIndex)
+    const lineNode = syncedLineRefs.current.get(targetLineIndex)
     if (!container || !lineNode) return
 
     const containerRect = container.getBoundingClientRect()
@@ -102,7 +109,7 @@ export function useLyricsSyncedView({
       top: targetTop,
       behavior
     })
-  }, [activeSyncedLineIndex, markProgrammaticScroll])
+  }, [activeSyncedLineIndex, effectiveSyncedLineIndex, markProgrammaticScroll])
 
   const pauseFollowFromManualScroll = useCallback(() => {
     if (!isExpanded) return

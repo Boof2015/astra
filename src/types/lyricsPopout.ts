@@ -15,6 +15,7 @@ export interface LyricsPopoutSnapshot {
   playbackState: LyricsPopoutPlaybackState
   currentTime: number
   duration: number
+  effectiveDelayMs: number
   currentTrack: LyricsPopoutTrackSnapshot | null
   lyricsQuery: LyricsTrackQuery | null
   lyricsResult: LyricsLookupResult | null

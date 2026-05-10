@@ -5,6 +5,7 @@ export type LyricsLookupStatus = 'hit' | 'not_found' | 'transient_error'
 export interface LyricsLine {
   timestampMs: number
   text: string
+  kind?: 'silence'
 }
 
 export interface LyricsTrackQuery {

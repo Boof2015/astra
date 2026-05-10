@@ -15,14 +15,16 @@ export function sanitizeSyncLines(raw: unknown): LyricsLine[] {
     const record = entry as { text?: unknown; timestamp?: unknown }
     if (typeof record.text !== 'string') continue
     const text = record.text.trim()
-    if (!text) continue
 
     const timestampMs = typeof record.timestamp === 'number' && Number.isFinite(record.timestamp)
       ? Math.max(0, Math.floor(record.timestamp))
       : null
     if (timestampMs === null) continue
 
-    lines.push({ timestampMs, text })
+    lines.push(text
+      ? { timestampMs, text }
+      : { timestampMs, text: '', kind: 'silence' }
+    )
   }
 
   lines.sort((left, right) => left.timestampMs - right.timestampMs)
@@ -54,13 +56,19 @@ export function parseLrcSyncedLines(lyricsText: string): LyricsLine[] {
 
     if (timestamps.length === 0) continue
     const text = row.replace(/\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?]/g, '').trim()
-    if (!text) continue
 
     for (const timestampMs of timestamps) {
-      out.push({
-        timestampMs: Math.max(0, Math.floor(timestampMs)),
-        text
-      })
+      out.push(text
+        ? {
+            timestampMs: Math.max(0, Math.floor(timestampMs)),
+            text
+          }
+        : {
+            timestampMs: Math.max(0, Math.floor(timestampMs)),
+            text: '',
+            kind: 'silence'
+          }
+      )
     }
   }
 
@@ -69,8 +77,11 @@ export function parseLrcSyncedLines(lyricsText: string): LyricsLine[] {
 }
 
 export function toPlainLyricsFromLines(lines: LyricsLine[]): string | null {
-  if (lines.length === 0) return null
-  return lines.map((line) => line.text).join('\n')
+  const textLines = lines
+    .filter((line) => line.kind !== 'silence' && line.text.trim().length > 0)
+    .map((line) => line.text)
+  if (textLines.length === 0) return null
+  return textLines.join('\n')
 }
 
 export function createLyricsPayload(
@@ -82,12 +93,19 @@ export function createLyricsPayload(
 ): LyricsPayload | null {
   const normalizedPlain = normalizeLyricsText(plainLyrics)
   const normalizedSynced = normalizeLyricsText(syncedLyrics)
-  const normalizedLines = syncedLines
-    .map((line) => ({
-      timestampMs: Math.max(0, Math.floor(line.timestampMs)),
-      text: line.text.trim()
-    }))
-    .filter((line) => line.text.length > 0)
+  const parsedSyncedLines = normalizedSynced ? parseLrcSyncedLines(normalizedSynced) : []
+  const sourceLines = parsedSyncedLines.length > 0 ? parsedSyncedLines : syncedLines
+  const normalizedLines = sourceLines
+    .map((line): LyricsLine | null => {
+      const timestampMs = Math.max(0, Math.floor(line.timestampMs))
+      const text = line.text.trim()
+      if (line.kind === 'silence') {
+        return { timestampMs, text: '', kind: 'silence' }
+      }
+      if (text.length === 0) return null
+      return { timestampMs, text }
+    })
+    .filter((line): line is LyricsLine => line !== null)
     .sort((left, right) => left.timestampMs - right.timestampMs)
 
   if (!normalizedPlain && !normalizedSynced && normalizedLines.length === 0) {

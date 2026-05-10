@@ -62,6 +62,7 @@ function hasSemanticSnapshotChange(
 ): boolean {
   return previous.playbackState !== next.playbackState ||
     previous.duration !== next.duration ||
+    previous.effectiveDelayMs !== next.effectiveDelayMs ||
     previous.preferredExpanded !== next.preferredExpanded ||
     previous.isLoading !== next.isLoading ||
     previous.errorMessage !== next.errorMessage ||

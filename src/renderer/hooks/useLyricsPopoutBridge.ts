@@ -3,6 +3,7 @@ import { usePlayerStore } from '../stores/playerStore'
 import { useLyricsStore } from '../stores/lyricsStore'
 import { useLyricsPopoutStore } from '../stores/lyricsPopoutStore'
 import { useUIStore } from '../stores/uiStore'
+import { useAudioSettingsStore } from '../stores/audioSettingsStore'
 import type { LyricsPopoutSnapshot } from '../../types/lyricsPopout'
 import {
   buildLyricsQuery,
@@ -22,6 +23,7 @@ interface LyricsPopoutBridgeState {
   playbackState: LyricsPopoutSnapshot['playbackState']
   currentTime: number
   duration: number
+  effectiveDelayMs: number
   currentTrack: LyricsPopoutSnapshot['currentTrack']
   lyricsQuery: LyricsPopoutSnapshot['lyricsQuery']
   lyricsResult: LyricsPopoutSnapshot['lyricsResult']
@@ -39,6 +41,7 @@ function buildLyricsPopoutSnapshot(
     playbackState: state.playbackState,
     currentTime: state.currentTime,
     duration: state.duration,
+    effectiveDelayMs: state.effectiveDelayMs,
     currentTrack: state.currentTrack,
     lyricsQuery: state.lyricsQuery,
     lyricsResult: state.lyricsResult,
@@ -54,6 +57,7 @@ export function useLyricsPopoutBridge(): void {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const currentTime = usePlayerStore((s) => lyricsPopoutIsOpen ? s.currentTime : 0)
   const duration = usePlayerStore((s) => s.duration)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
@@ -83,6 +87,7 @@ export function useLyricsPopoutBridge(): void {
     playbackState,
     currentTime: toSafeTime(currentTime),
     duration: toSafeTime(duration),
+    effectiveDelayMs: toSafeTime(effectiveDelayMs),
     currentTrack: currentTrack
       ? {
           path: currentTrack.path,
@@ -100,6 +105,7 @@ export function useLyricsPopoutBridge(): void {
     currentTime,
     currentTrack,
     duration,
+    effectiveDelayMs,
     lyricsIsLoading,
     lyricsQuery,
     lyricsShelfExpanded,
