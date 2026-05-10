@@ -46,6 +46,7 @@ interface LibraryIntegrityStore {
   errorMessage: string
   singleTrackResult: IntegrityScanResult | null
   singleTrackBusyPath: string | null
+  singleTrackBusyPaths: string[]
   singleTrackError: string
   setEnabled: (enabled: boolean) => void
   openPanel: () => void
@@ -57,6 +58,7 @@ interface LibraryIntegrityStore {
   startScan: () => Promise<void>
   cancelScan: () => Promise<boolean>
   checkTrack: (trackPath: string) => Promise<void>
+  checkTracks: (trackPaths: string[]) => Promise<void>
   closeSingleTrackResult: () => void
 }
 
@@ -110,6 +112,7 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
   errorMessage: '',
   singleTrackResult: null,
   singleTrackBusyPath: null,
+  singleTrackBusyPaths: [],
   singleTrackError: '',
 
   setEnabled: (enabled) => {
@@ -189,20 +192,34 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
   },
 
   checkTrack: async (trackPath) => {
+    await get().checkTracks([trackPath])
+  },
+
+  checkTracks: async (trackPaths) => {
+    const normalizedTrackPaths = Array.from(new Set(
+      trackPaths
+        .map((trackPath) => (typeof trackPath === 'string' ? trackPath.trim() : ''))
+        .filter((trackPath) => trackPath.length > 0)
+    ))
     set({
-      singleTrackBusyPath: trackPath,
+      singleTrackBusyPath: normalizedTrackPaths[0] ?? null,
+      singleTrackBusyPaths: normalizedTrackPaths,
       singleTrackResult: null,
       singleTrackError: ''
     })
     try {
-      const result = await window.electronAPI.library.checkTrackIntegrity(trackPath)
+      const result = normalizedTrackPaths.length === 1
+        ? await window.electronAPI.library.checkTrackIntegrity(normalizedTrackPaths[0])
+        : await window.electronAPI.library.checkTracksIntegrity(normalizedTrackPaths)
       set({
         singleTrackResult: result,
-        singleTrackBusyPath: null
+        singleTrackBusyPath: null,
+        singleTrackBusyPaths: []
       })
     } catch (error) {
       set({
         singleTrackBusyPath: null,
+        singleTrackBusyPaths: [],
         singleTrackError: error instanceof Error ? error.message : 'Track integrity check failed.'
       })
     }
@@ -210,6 +227,7 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
 
   closeSingleTrackResult: () => set({
     singleTrackResult: null,
+    singleTrackBusyPaths: [],
     singleTrackError: ''
   })
 }))

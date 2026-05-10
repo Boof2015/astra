@@ -467,6 +467,9 @@ export default function QueuePanel() {
   const queueInsertTrackCount = trackDrag?.tracks.length ?? 0
   const isQueueDropActive = Boolean(trackDrag)
   const isQueueDropHover = trackDrag?.dropTarget?.surface === 'queue'
+  const queueDropLabel = queueInsertTrackCount > 1
+    ? `${isQueueDropHover ? 'Drop' : 'Drag'} ${queueInsertTrackCount} tracks to Queue`
+    : `${isQueueDropHover ? 'Drop' : 'Drag'} track to Queue`
 
   const rows = useMemo<QueueVirtualRow[]>(() => {
     const nextRows: QueueVirtualRow[] = []
@@ -669,6 +672,11 @@ export default function QueuePanel() {
         <div className="queue-header">
           <h3>Queue</h3>
         </div>
+        {isQueueDropActive && (
+          <div className={`queue-drop-mode-label ${isQueueDropHover ? 'is-hover' : ''}`}>
+            {queueDropLabel}
+          </div>
+        )}
         <div className="queue-empty-drop-zone-wrap" ref={queueContentRef}>
           <div className={`queue-empty-drop-zone ${trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
             <p>No tracks in queue</p>
@@ -691,6 +699,11 @@ export default function QueuePanel() {
           Clear
         </button>
       </div>
+      {isQueueDropActive && (
+        <div className={`queue-drop-mode-label ${isQueueDropHover ? 'is-hover' : ''}`}>
+          {queueDropLabel}
+        </div>
+      )}
 
       <div className="queue-content" ref={queueContentRef}>
         <div className={`queue-scroll-glow queue-scroll-glow-top ${queueScrollGlowEdge === 'top' ? 'active' : ''}`} />

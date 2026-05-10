@@ -4,6 +4,7 @@ export type IntegrityScanScope =
   | { type: 'all' }
   | { type: 'folder'; folderPath: string }
   | { type: 'track'; trackPath: string }
+  | { type: 'tracks'; trackPaths: string[] }
 
 export type IntegrityFindingSeverity = 'error' | 'warning' | 'info'
 export type IntegrityFindingConfidence = 'low' | 'medium' | 'high'

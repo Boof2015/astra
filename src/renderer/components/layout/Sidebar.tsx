@@ -461,6 +461,9 @@ export default function Sidebar() {
                   />
                 )}
                 <span className="nav-tooltip">{playlist.name}</span>
+                {!playlist.isSystemFavorites && (
+                  <span className="sidebar-drop-label">Add to Playlist</span>
+                )}
               </button>
             ))}
 
@@ -505,6 +508,7 @@ export default function Sidebar() {
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
           <span className="nav-tooltip">Create playlist</span>
+          <span className="sidebar-drop-label">Create Playlist</span>
         </button>
       </div>
 
@@ -563,6 +567,7 @@ export default function Sidebar() {
                       {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
                     </span>
                   </span>
+                  <span className="sidebar-drop-label">Add to Playlist</span>
                 </button>
               ))}
             </div>

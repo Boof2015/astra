@@ -938,6 +938,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cancelIntegrityScan: () => ipcRenderer.invoke('library:cancelIntegrityScan') as Promise<{ canceled: boolean }>,
     checkTrackIntegrity: (trackPath: string) =>
       ipcRenderer.invoke('library:checkTrackIntegrity', trackPath) as Promise<IntegrityScanResult>,
+    checkTracksIntegrity: (trackPaths: string[]) =>
+      ipcRenderer.invoke('library:checkTracksIntegrity', trackPaths) as Promise<IntegrityScanResult>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
@@ -1028,6 +1030,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
     clearPlaylistCustomCover: (playlistId: number) => ipcRenderer.invoke('library:clearPlaylistCustomCover', playlistId),
     getPlaylistsContainingTrack: (trackPath: string) => ipcRenderer.invoke('library:getPlaylistsContainingTrack', trackPath),
+    getPlaylistsContainingTracks: (trackPaths: string[]) => ipcRenderer.invoke('library:getPlaylistsContainingTracks', trackPaths) as Promise<Array<{ playlistId: number; matchedTrackCount: number }>>,
     importPlaylistFromFile: (filePath: string) => ipcRenderer.invoke('library:importPlaylistFromFile', filePath),
   }
 })
@@ -1303,6 +1306,7 @@ declare global {
         startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) => Promise<IntegrityScanResult>
         cancelIntegrityScan: () => Promise<{ canceled: boolean }>
         checkTrackIntegrity: (trackPath: string) => Promise<IntegrityScanResult>
+        checkTracksIntegrity: (trackPaths: string[]) => Promise<IntegrityScanResult>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
@@ -1361,6 +1365,7 @@ declare global {
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
         clearPlaylistCustomCover: (playlistId: number) => Promise<void>
         getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+        getPlaylistsContainingTracks: (trackPaths: string[]) => Promise<Array<{ playlistId: number; matchedTrackCount: number }>>
         importPlaylistFromFile: (filePath: string) => Promise<PlaylistImportResult>
       }
     }

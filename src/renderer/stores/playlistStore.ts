@@ -36,6 +36,11 @@ export interface CreatePlaylistOptions {
   trackPaths?: string[]
 }
 
+export interface PlaylistTrackMembershipSummary {
+  playlistId: number
+  matchedTrackCount: number
+}
+
 interface DbTrack {
   id: number
   path: string
@@ -91,6 +96,7 @@ interface PlaylistStore {
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
   getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+  getPlaylistsContainingTracks: (trackPaths: string[]) => Promise<PlaylistTrackMembershipSummary[]>
   getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
 }
@@ -210,6 +216,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     getPlaylistsContainingTrack: async (trackPath: string) => {
       if (!trackPath) return []
       return window.electronAPI.library.getPlaylistsContainingTrack(trackPath)
+    },
+
+    getPlaylistsContainingTracks: async (trackPaths: string[]) => {
+      if (!Array.isArray(trackPaths) || trackPaths.length === 0) return []
+      return window.electronAPI.library.getPlaylistsContainingTracks(trackPaths)
     },
 
     getPlaylistTrackPaths: async (playlistId: number) => {

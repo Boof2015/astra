@@ -197,6 +197,13 @@ test('filterIntegrityTargetsByScope resolves all, folder, and track scopes', () 
     filterIntegrityTargetsByScope(targets, { type: 'track', trackPath: '/music/B/three.flac' }).map((track) => track.path),
     ['/music/B/three.flac']
   )
+  assert.deepEqual(
+    filterIntegrityTargetsByScope(targets, {
+      type: 'tracks',
+      trackPaths: ['/music/B/three.flac', '/music/A/one.flac', '/music/B/three.flac']
+    }).map((track) => track.path),
+    ['/music/B/three.flac', '/music/A/one.flac']
+  )
 })
 
 test('resolveIntegrityWorkerCount keeps deep scans capped and battery-safe', () => {

@@ -4854,14 +4854,28 @@ function normalizeIntegrityScanMode(value: unknown): IntegrityScanMode {
   return value === 'deep' ? 'deep' : 'quick'
 }
 
+function normalizeIntegrityTrackPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const normalized = value
+    .map((trackPath) => (typeof trackPath === 'string' ? trackPath.trim() : ''))
+    .filter((trackPath) => trackPath.length > 0)
+  return Array.from(new Set(normalized))
+}
+
 function normalizeIntegrityScanScope(value: unknown): IntegrityScanScope {
   if (!value || typeof value !== 'object') return { type: 'all' }
-  const scope = value as Partial<IntegrityScanScope> & { folderPath?: unknown; trackPath?: unknown }
+  const scope = value as Partial<IntegrityScanScope> & { folderPath?: unknown; trackPath?: unknown; trackPaths?: unknown }
   if (scope.type === 'folder' && typeof scope.folderPath === 'string' && scope.folderPath.trim()) {
     return { type: 'folder', folderPath: scope.folderPath }
   }
   if (scope.type === 'track' && typeof scope.trackPath === 'string' && scope.trackPath.trim()) {
     return { type: 'track', trackPath: scope.trackPath }
+  }
+  if (scope.type === 'tracks' && Array.isArray(scope.trackPaths)) {
+    const trackPaths = normalizeIntegrityTrackPaths(scope.trackPaths)
+    if (trackPaths.length > 0) {
+      return { type: 'tracks', trackPaths }
+    }
   }
   return { type: 'all' }
 }
@@ -4869,6 +4883,7 @@ function normalizeIntegrityScanScope(value: unknown): IntegrityScanScope {
 function getIntegrityScopePath(scope: IntegrityScanScope): string {
   if (scope.type === 'folder') return scope.folderPath
   if (scope.type === 'track') return scope.trackPath
+  if (scope.type === 'tracks') return `${scope.trackPaths.length} selected tracks`
   return ''
 }
 
@@ -5132,35 +5147,66 @@ ipcMain.handle('library:cancelIntegrityScan', () => {
   return { canceled: true }
 })
 
-ipcMain.handle('library:checkTrackIntegrity', async (_event, trackPath: string) => {
-  const scope: IntegrityScanScope = { type: 'track', trackPath }
+function buildTrackIntegrityScope(trackPaths: string[]): IntegrityScanScope {
+  if (trackPaths.length === 1) {
+    return { type: 'track', trackPath: trackPaths[0] }
+  }
+  return { type: 'tracks', trackPaths }
+}
+
+async function runTrackIntegrityCheck(trackPaths: string[]): Promise<IntegrityScanResult> {
+  const normalizedTrackPaths = normalizeIntegrityTrackPaths(trackPaths)
+  const scope = buildTrackIntegrityScope(normalizedTrackPaths)
   const startedAt = Date.now()
   const runId = `track-integrity:${startedAt}`
   const recorder = createIntegrityFindingRecorder(runId, false)
-  const targets = library.getIntegrityScanTrackTargets(scope)
-  const target = targets[0]
   let scanned = 0
   let skipped = 0
-  let mode: IntegrityScanMode = 'quick'
 
-  if (!target) {
+  if (normalizedTrackPaths.length === 0) {
+    recorder.record({
+      severity: 'error',
+      code: 'no_tracks_selected',
+      path: '',
+      message: 'No tracks were selected for integrity checking.'
+    })
+    return buildIntegrityResult('quick', scope, recorder.findings, scanned, skipped, false, startedAt)
+  }
+
+  const targetByPath = new Map(
+    library.getIntegrityScanTrackTargets(scope).map((target) => [target.path, target])
+  )
+  const orderedTargets: IntegrityScanTrackTarget[] = []
+  for (const trackPath of normalizedTrackPaths) {
+    const target = targetByPath.get(trackPath)
+    if (target) {
+      orderedTargets.push(target)
+      continue
+    }
+    skipped += 1
     recorder.record({
       severity: 'error',
       code: 'track_not_found',
       path: trackPath,
       message: 'Track is not a local indexed library file.'
     })
-  } else if (isFlacTarget(target)) {
-    mode = 'deep'
-    const ffmpegPath = await resolveBinary('ffmpeg')
-    const findings = await scanIntegrityTarget(target, mode, ffmpegPath)
+  }
+
+  const mode: IntegrityScanMode = orderedTargets.some(isFlacTarget) ? 'deep' : 'quick'
+  const ffmpegPath = mode === 'deep' ? await resolveBinary('ffmpeg') : null
+
+  for (const target of orderedTargets) {
+    if (isFlacTarget(target)) {
+      const findings = await scanIntegrityTarget(target, 'deep', ffmpegPath)
+      findings.forEach(recorder.record)
+      scanned += 1
+      continue
+    }
+
+    const findings = await scanIntegrityTarget(target, 'quick', null)
     findings.forEach(recorder.record)
-    scanned = 1
-  } else {
-    const findings = await scanIntegrityTarget(target, mode, null)
-    findings.forEach(recorder.record)
-    scanned = 1
-    skipped = 1
+    scanned += 1
+    skipped += 1
     recorder.record({
       severity: 'info',
       code: 'deep_scan_flac_only',
@@ -5173,6 +5219,14 @@ ipcMain.handle('library:checkTrackIntegrity', async (_event, trackPath: string) 
   }
 
   return buildIntegrityResult(mode, scope, recorder.findings, scanned, skipped, false, startedAt)
+}
+
+ipcMain.handle('library:checkTrackIntegrity', async (_event, trackPath: string) => {
+  return runTrackIntegrityCheck([trackPath])
+})
+
+ipcMain.handle('library:checkTracksIntegrity', async (_event, trackPaths: string[]) => {
+  return runTrackIntegrityCheck(trackPaths)
 })
 
 ipcMain.handle('library:backfillReplayGainMetadata', async () => {
@@ -5771,6 +5825,10 @@ ipcMain.handle('library:clearPlaylistCustomCover', async (_event, playlistId: nu
 
 ipcMain.handle('library:getPlaylistsContainingTrack', (_event, trackPath: string) => {
   return library.getPlaylistsContainingTrack(trackPath)
+})
+
+ipcMain.handle('library:getPlaylistsContainingTracks', (_event, trackPaths: string[]) => {
+  return library.getPlaylistsContainingTracks(trackPaths)
 })
 
 ipcMain.handle('library:importPlaylistFromFile', async (_event, filePath: string) => {

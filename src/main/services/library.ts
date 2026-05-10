@@ -6943,6 +6943,52 @@ export function getPlaylistsContainingTrack(trackPath: string): number[] {
   return ids
 }
 
+export interface PlaylistTrackMembershipSummary {
+  playlistId: number
+  matchedTrackCount: number
+}
+
+export function getPlaylistsContainingTracks(trackPaths: string[]): PlaylistTrackMembershipSummary[] {
+  if (!db || !Array.isArray(trackPaths) || trackPaths.length === 0) return []
+
+  const uniqueTrackPaths: string[] = []
+  const seen = new Set<string>()
+  for (const trackPath of trackPaths) {
+    if (typeof trackPath !== 'string') continue
+    const normalizedPath = trackPath.trim()
+    if (!normalizedPath || seen.has(normalizedPath)) continue
+    seen.add(normalizedPath)
+    uniqueTrackPaths.push(normalizedPath)
+  }
+  if (uniqueTrackPaths.length === 0) return []
+
+  const summaryByPlaylistId = new Map<number, number>()
+  for (let offset = 0; offset < uniqueTrackPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = uniqueTrackPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(',')
+    const rows = db.all<{ playlist_id?: unknown; matched_track_count?: unknown }>(`
+      SELECT playlist_id, COUNT(DISTINCT track_path) AS matched_track_count
+      FROM playlist_tracks
+      WHERE track_path IN (${placeholders})
+      GROUP BY playlist_id
+      ORDER BY playlist_id
+    `, chunk)
+
+    for (const row of rows) {
+      const playlistId = Number(row.playlist_id)
+      const matchedTrackCount = Number(row.matched_track_count)
+      if (!Number.isInteger(playlistId) || playlistId <= 0 || !Number.isFinite(matchedTrackCount) || matchedTrackCount <= 0) {
+        continue
+      }
+      summaryByPlaylistId.set(playlistId, (summaryByPlaylistId.get(playlistId) ?? 0) + matchedTrackCount)
+    }
+  }
+
+  return Array.from(summaryByPlaylistId.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([playlistId, matchedTrackCount]) => ({ playlistId, matchedTrackCount }))
+}
+
 interface PlaylistImportLookupIndex {
   exactPath: Map<string, string>
   caseInsensitivePath: Map<string, string | null>

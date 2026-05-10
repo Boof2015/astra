@@ -89,6 +89,21 @@ function normalizePathForPrefix(pathValue: string): string {
   return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 
+function normalizeIntegrityTrackPathList(trackPaths: readonly string[]): string[] {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+
+  for (const trackPath of trackPaths) {
+    if (typeof trackPath !== 'string') continue
+    const trimmed = trackPath.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    normalized.push(trimmed)
+  }
+
+  return normalized
+}
+
 export function filterIntegrityTargetsByScope(
   targets: readonly IntegrityScanTrackTarget[],
   scope: IntegrityScanScope
@@ -99,6 +114,15 @@ export function filterIntegrityTargetsByScope(
 
   if (scope.type === 'track') {
     return targets.filter((track) => track.path === scope.trackPath)
+  }
+
+  if (scope.type === 'tracks') {
+    const selectedPaths = normalizeIntegrityTrackPathList(scope.trackPaths)
+    if (selectedPaths.length === 0) return []
+    const targetByPath = new Map(targets.map((track) => [track.path, track]))
+    return selectedPaths
+      .map((trackPath) => targetByPath.get(trackPath))
+      .filter((track): track is IntegrityScanTrackTarget => Boolean(track))
   }
 
   const folderPrefix = normalizePathForPrefix(scope.folderPath)
@@ -809,5 +833,6 @@ export async function deepScanFlacIntegrityTrack(
 export function formatIntegrityScopeLabel(scope: IntegrityScanScope): string {
   if (scope.type === 'all') return 'All Library'
   if (scope.type === 'track') return basename(scope.trackPath)
+  if (scope.type === 'tracks') return `${scope.trackPaths.length} Selected Tracks`
   return basename(scope.folderPath) || scope.folderPath
 }

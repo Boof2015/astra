@@ -110,6 +110,7 @@ function scopeMatchesFolder(scope: IntegrityScanScope, folderPath: string): bool
 function formatScopeLabel(scope: IntegrityScanScope): string {
   if (scope.type === 'all') return 'All Library'
   if (scope.type === 'track') return getFolderName(scope.trackPath)
+  if (scope.type === 'tracks') return `${scope.trackPaths.length} Selected Tracks`
   return getFolderName(scope.folderPath) || scope.folderPath
 }
 
