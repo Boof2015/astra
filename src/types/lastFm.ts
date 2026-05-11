@@ -2,6 +2,7 @@ export const LASTFM_OFFICIAL_API_BASE_URL = 'https://ws.audioscrobbler.com/2.0/'
 export const LASTFM_OFFICIAL_PROFILE_ID = 'official-lastfm'
 
 export type LastFmProfileKind = 'official' | 'custom'
+export type LastFmScrobbleProtocol = 'lastfm2' | 'audioscrobbler' | 'listenbrainz'
 
 export interface LastFmPendingScrobble {
   id: string
@@ -20,6 +21,7 @@ export interface LastFmPendingScrobble {
 export interface LastFmProfileConfig {
   id: string
   kind: LastFmProfileKind
+  protocol: LastFmScrobbleProtocol
   name: string
   apiBaseUrl: string
   sessionKey: string | null
@@ -30,6 +32,8 @@ export interface LastFmProfileConfig {
 export interface LastFmProfileStatus {
   id: string
   kind: LastFmProfileKind
+  protocol: LastFmScrobbleProtocol
+  protocolLabel: string
   name: string
   apiBaseUrl: string
   username: string | null
@@ -37,6 +41,7 @@ export interface LastFmProfileStatus {
   active: boolean
   pendingScrobbles: number
   canDelete: boolean
+  requiresApiCredentials: boolean
 }
 
 export interface LastFmServiceConfig {
@@ -58,6 +63,7 @@ export interface LastFmStatus {
   authPendingProfileId: string | null
   pendingScrobbles: number
   hasApiCredentials: boolean
+  activeProfileRequiresApiCredentials: boolean
   statusMessage: string
   lastError: string | null
 }
@@ -77,13 +83,14 @@ export interface LastFmAuthFinishResult {
 }
 
 export interface LastFmCustomProfileInput {
+  protocol?: LastFmScrobbleProtocol
   name: string
   apiBaseUrl: string
   username?: string | null
   sessionKey?: string | null
 }
 
-export function parseLastFmApiBaseUrl(value: unknown): string | null {
+function parseHttpUrl(value: unknown): URL | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   if (!trimmed) return null
@@ -91,18 +98,38 @@ export function parseLastFmApiBaseUrl(value: unknown): string | null {
   try {
     const parsed = new URL(trimmed)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
-
     parsed.search = ''
     parsed.hash = ''
-
-    const normalized = parsed.toString()
-    if (normalized === 'https://ws.audioscrobbler.com/2.0') {
-      return LASTFM_OFFICIAL_API_BASE_URL
-    }
-    return normalized
+    return parsed
   } catch {
     return null
   }
+}
+
+export function normalizeLastFmScrobbleProtocol(value: unknown): LastFmScrobbleProtocol {
+  return value === 'audioscrobbler' || value === 'listenbrainz' ? value : 'lastfm2'
+}
+
+export function getLastFmProtocolLabel(protocol: LastFmScrobbleProtocol, kind: LastFmProfileKind): string {
+  if (kind === 'official') return 'Official Last.fm'
+  if (protocol === 'audioscrobbler') return 'AudioScrobbler'
+  if (protocol === 'listenbrainz') return 'ListenBrainz'
+  return 'Last.fm 2.0'
+}
+
+export function lastFmProfileRequiresApiCredentials(protocol: LastFmScrobbleProtocol): boolean {
+  return protocol === 'lastfm2'
+}
+
+export function parseLastFmApiBaseUrl(value: unknown): string | null {
+  const parsed = parseHttpUrl(value)
+  if (!parsed) return null
+
+  const normalized = parsed.toString()
+  if (normalized === 'https://ws.audioscrobbler.com/2.0') {
+    return LASTFM_OFFICIAL_API_BASE_URL
+  }
+  return normalized
 }
 
 export function normalizeLastFmApiBaseUrl(value: unknown): string {
@@ -111,4 +138,22 @@ export function normalizeLastFmApiBaseUrl(value: unknown): string {
 
 export function isLastFmCustomEndpoint(apiBaseUrl: string): boolean {
   return normalizeLastFmApiBaseUrl(apiBaseUrl) !== LASTFM_OFFICIAL_API_BASE_URL
+}
+
+export function parseListenBrainzApiBaseUrl(value: unknown): string | null {
+  const parsed = parseHttpUrl(value)
+  if (!parsed) return null
+
+  const submitSuffix = '/1/submit-listens'
+  const normalizedPath = parsed.pathname.replace(/\/+$/, '')
+  if (normalizedPath.endsWith(submitSuffix)) {
+    const basePath = normalizedPath.slice(0, -submitSuffix.length)
+    parsed.pathname = basePath.length > 0 ? basePath : '/'
+  }
+
+  return parsed.toString()
+}
+
+export function normalizeListenBrainzApiBaseUrl(value: unknown): string | null {
+  return parseListenBrainzApiBaseUrl(value)
 }

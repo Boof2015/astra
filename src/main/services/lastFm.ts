@@ -3,8 +3,12 @@ import type { MiniPlayerSnapshot } from '../../types/miniPlayer'
 import {
   LASTFM_OFFICIAL_API_BASE_URL,
   LASTFM_OFFICIAL_PROFILE_ID,
+  getLastFmProtocolLabel,
   isLastFmCustomEndpoint,
+  lastFmProfileRequiresApiCredentials,
+  normalizeLastFmScrobbleProtocol,
   normalizeLastFmApiBaseUrl,
+  parseListenBrainzApiBaseUrl,
   parseLastFmApiBaseUrl,
   type LastFmAuthFinishResult,
   type LastFmAuthStartResult,
@@ -30,6 +34,10 @@ const LASTFM_MAX_RETRY_MS = 10 * 60 * 1000
 const LASTFM_TRANSIENT_ERROR_CODES = new Set([8, 11, 16, 29])
 const LASTFM_SESSION_INVALID_CODES = new Set([9])
 const LASTFM_AUTH_NOT_COMPLETED_CODE = 14
+const AUDIOSCROBBLER_PROTOCOL_VERSION = '1.2.1'
+const AUDIOSCROBBLER_CLIENT_ID = 'ast'
+const AUDIOSCROBBLER_CLIENT_VERSION = '0.6.0'
+const LISTENBRAINZ_SUBMIT_PATH = '/1/submit-listens'
 
 interface LastFmServiceOptions {
   config: LastFmServiceConfig
@@ -53,6 +61,16 @@ interface LastFmApiFailure {
 }
 
 type LastFmApiResult = LastFmApiSuccess | LastFmApiFailure
+
+interface AudioScrobblerSession {
+  sessionId: string
+  nowPlayingUrl: string
+  submissionUrl: string
+}
+
+type AudioScrobblerSessionResult =
+  | { ok: true; session: AudioScrobblerSession }
+  | LastFmApiFailure
 
 interface PlaybackSession {
   trackKey: string
@@ -180,12 +198,55 @@ function createApiSignature(params: Record<string, string>, sharedSecret: string
   return hash.digest('hex')
 }
 
+function createMd5Hex(value: string): string {
+  const hash = createHash('md5')
+  hash.update(value, 'utf8')
+  return hash.digest('hex')
+}
+
 function normalizeProfileName(value: unknown, fallback: string): string {
   return (normalizeText(value) ?? fallback).slice(0, 80)
 }
 
 function isConnectedProfile(profile: LastFmProfileConfig): boolean {
+  if (profile.protocol === 'listenbrainz') {
+    return Boolean(profile.sessionKey)
+  }
   return Boolean(profile.sessionKey && profile.username)
+}
+
+function isProfileSubmittable(profile: LastFmProfileConfig, hasApiCredentials: boolean): boolean {
+  return isConnectedProfile(profile) && (!lastFmProfileRequiresApiCredentials(profile.protocol) || hasApiCredentials)
+}
+
+function getSecretLabelForProtocol(protocol: LastFmProfileConfig['protocol']): string {
+  if (protocol === 'audioscrobbler') return 'password/API key'
+  if (protocol === 'listenbrainz') return 'auth token'
+  return 'session key/token'
+}
+
+function getProfileSecretLabel(profile: LastFmProfileConfig): string {
+  return getSecretLabelForProtocol(profile.protocol)
+}
+
+function formatConnectedPrefix(profile: LastFmProfileConfig): string {
+  return profile.username ? `Connected as ${profile.username}.` : 'Connected.'
+}
+
+function parseProfileApiBaseUrl(protocol: LastFmProfileConfig['protocol'], value: unknown): string | null {
+  if (protocol === 'listenbrainz') {
+    return parseListenBrainzApiBaseUrl(value)
+  }
+  return parseLastFmApiBaseUrl(value)
+}
+
+function buildListenBrainzSubmitUrl(apiBaseUrl: string): string {
+  const parsed = new URL(apiBaseUrl)
+  const basePath = parsed.pathname.replace(/\/+$/, '')
+  parsed.pathname = `${basePath}${LISTENBRAINZ_SUBMIT_PATH}`
+  parsed.search = ''
+  parsed.hash = ''
+  return parsed.toString()
 }
 
 function buildCustomProfileId(name: string, existingIds: Set<string>): string {
@@ -212,6 +273,7 @@ function createOfficialProfile(raw?: unknown): LastFmProfileConfig {
   return {
     id: LASTFM_OFFICIAL_PROFILE_ID,
     kind: 'official',
+    protocol: 'lastfm2',
     name: 'Official Last.fm',
     apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
     sessionKey: normalizeText(record.sessionKey),
@@ -223,8 +285,10 @@ function createOfficialProfile(raw?: unknown): LastFmProfileConfig {
 function normalizeCustomProfile(raw: unknown, existingIds: Set<string>): LastFmProfileConfig | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const record = raw as Record<string, unknown>
-  const apiBaseUrl = parseLastFmApiBaseUrl(record.apiBaseUrl)
-  if (!apiBaseUrl || apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) return null
+  const protocol = normalizeLastFmScrobbleProtocol(record.protocol)
+  const apiBaseUrl = parseProfileApiBaseUrl(protocol, record.apiBaseUrl)
+  if (!apiBaseUrl) return null
+  if (protocol === 'lastfm2' && apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) return null
 
   const name = normalizeProfileName(record.name, 'Custom endpoint')
   const rawId = normalizeText(record.id)
@@ -236,6 +300,7 @@ function normalizeCustomProfile(raw: unknown, existingIds: Set<string>): LastFmP
   return {
     id,
     kind: 'custom',
+    protocol,
     name,
     apiBaseUrl,
     sessionKey: normalizeText(record.sessionKey),
@@ -256,6 +321,7 @@ function createLegacyConfig(record: Record<string, unknown>, hasApiCredentials: 
     const customProfile: LastFmProfileConfig = {
       id: 'custom-lastfm-endpoint',
       kind: 'custom',
+      protocol: 'lastfm2',
       name: 'Custom Last.fm endpoint',
       apiBaseUrl,
       sessionKey,
@@ -311,10 +377,10 @@ function normalizeConfig(config: LastFmServiceConfig, hasApiCredentials: boolean
 
   const requestedActiveProfileId = normalizeText(record.activeProfileId)
   const activeProfile = profiles.find((profile) => profile.id === requestedActiveProfileId) ?? profiles[0]
-  const activeConnected = isConnectedProfile(activeProfile)
+  const activeSubmittable = isProfileSubmittable(activeProfile, hasApiCredentials)
 
   return {
-    enabled: Boolean(record.enabled) && activeConnected && hasApiCredentials,
+    enabled: Boolean(record.enabled) && activeSubmittable,
     activeProfileId: activeProfile.id,
     profiles
   }
@@ -387,6 +453,7 @@ export class LastFmService {
 
   private pendingAuthToken: string | null = null
   private pendingAuthProfileId: string | null = null
+  private audioScrobblerSessions = new Map<string, AudioScrobblerSession>()
   private currentPlayback: PlaybackSession | null = null
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private flushInFlight = false
@@ -408,23 +475,28 @@ export class LastFmService {
     const pendingCount = activeProfile.pendingScrobbles.length
     const apiBaseUrl = activeProfile.apiBaseUrl
     const usingCustomEndpoint = activeProfile.kind === 'custom'
+    const activeRequiresApiCredentials = lastFmProfileRequiresApiCredentials(activeProfile.protocol)
+    const hasRequiredApiCredentials = !activeRequiresApiCredentials || this.hasApiCredentials
     const serviceLabel = usingCustomEndpoint ? activeProfile.name : 'Last.fm'
+    const credentialInstruction = activeProfile.protocol === 'listenbrainz'
+      ? `Enter an ${getProfileSecretLabel(activeProfile)}.`
+      : `Enter a username and ${getProfileSecretLabel(activeProfile)}.`
     const profileStatuses = this.config.profiles.map((profile) => this.toProfileStatus(profile))
     const activeProfileStatus = profileStatuses.find((profile) => profile.id === activeProfile.id) ?? profileStatuses[0]
 
     let statusMessage = `${serviceLabel} account not connected.`
-    if (!this.hasApiCredentials) {
+    if (activeRequiresApiCredentials && !this.hasApiCredentials) {
       statusMessage = `${serviceLabel} integration is unavailable: API credentials are not configured.`
     } else if (this.pendingAuthToken) {
       statusMessage = 'Last.fm authorization pending. Approve Astra in your browser; Astra will complete connection automatically.'
     } else if (usingCustomEndpoint && !connected) {
-      statusMessage = 'Last.fm-compatible endpoint not connected. Enter a username and session key/token.'
+      statusMessage = `${serviceLabel} not connected. ${credentialInstruction}`
     } else if (connected && !this.config.enabled) {
-      statusMessage = `Connected as ${activeProfile.username}. ${serviceLabel} scrobbling is disabled.`
-    } else if (connected && this.config.enabled && pendingCount > 0) {
-      statusMessage = `Connected as ${activeProfile.username}. ${pendingCount} scrobble${pendingCount === 1 ? '' : 's'} pending retry.`
-    } else if (connected && this.config.enabled) {
-      statusMessage = `Connected as ${activeProfile.username}. ${serviceLabel} scrobbling is active.`
+      statusMessage = `${formatConnectedPrefix(activeProfile)} ${serviceLabel} scrobbling is disabled.`
+    } else if (connected && hasRequiredApiCredentials && this.config.enabled && pendingCount > 0) {
+      statusMessage = `${formatConnectedPrefix(activeProfile)} ${pendingCount} scrobble${pendingCount === 1 ? '' : 's'} pending retry.`
+    } else if (connected && hasRequiredApiCredentials && this.config.enabled) {
+      statusMessage = `${formatConnectedPrefix(activeProfile)} ${serviceLabel} scrobbling is active.`
     }
 
     return {
@@ -440,6 +512,7 @@ export class LastFmService {
       profiles: profileStatuses,
       pendingScrobbles: pendingCount,
       hasApiCredentials: this.hasApiCredentials,
+      activeProfileRequiresApiCredentials: activeRequiresApiCredentials,
       statusMessage,
       lastError: this.lastError
     }
@@ -447,6 +520,7 @@ export class LastFmService {
 
   async applyConfig(config: LastFmServiceConfig): Promise<LastFmStatus> {
     this.config = normalizeConfig(config, this.hasApiCredentials)
+    this.audioScrobblerSessions.clear()
     if (!this.config.enabled) {
       this.currentPlayback = null
       this.clearFlushTimer()
@@ -464,6 +538,7 @@ export class LastFmService {
     const profile: LastFmProfileConfig = {
       id: buildCustomProfileId(normalized.name, existingIds),
       kind: 'custom',
+      protocol: normalized.protocol,
       name: normalized.name,
       apiBaseUrl: normalized.apiBaseUrl,
       sessionKey: normalized.sessionKey,
@@ -473,7 +548,7 @@ export class LastFmService {
 
     this.config.profiles.push(profile)
     this.config.activeProfileId = profile.id
-    this.config.enabled = isConnectedProfile(profile) && this.hasApiCredentials
+    this.config.enabled = isProfileSubmittable(profile, this.hasApiCredentials)
     this.pendingAuthToken = null
     this.pendingAuthProfileId = null
     this.currentPlayback = null
@@ -493,23 +568,26 @@ export class LastFmService {
     const normalized = this.normalizeCustomProfileInput(input, profile)
     if (!normalized.ok) return this.failWithStatus(normalized.message)
 
+    const protocolChanged = profile.protocol !== normalized.protocol
     const endpointChanged = profile.apiBaseUrl !== normalized.apiBaseUrl
     const sessionChanged = normalized.sessionKey !== null && normalized.sessionKey !== profile.sessionKey
 
+    profile.protocol = normalized.protocol
     profile.name = normalized.name
     profile.apiBaseUrl = normalized.apiBaseUrl
 
     if (normalized.sessionKey) {
       profile.sessionKey = normalized.sessionKey
       profile.username = normalized.username
-    } else if (endpointChanged) {
+    } else if (protocolChanged || endpointChanged) {
       profile.sessionKey = null
       profile.username = null
     } else {
       profile.username = normalized.username ?? profile.username
     }
 
-    if (endpointChanged || sessionChanged) {
+    if (protocolChanged || endpointChanged || sessionChanged) {
+      this.audioScrobblerSessions.delete(profile.id)
       profile.pendingScrobbles = []
       if (this.config.activeProfileId === profile.id) {
         this.pendingAuthToken = null
@@ -519,7 +597,7 @@ export class LastFmService {
       }
     }
 
-    if (this.config.activeProfileId === profile.id && (!isConnectedProfile(profile) || !this.hasApiCredentials)) {
+    if (this.config.activeProfileId === profile.id && !isProfileSubmittable(profile, this.hasApiCredentials)) {
       this.config.enabled = false
     }
 
@@ -536,6 +614,7 @@ export class LastFmService {
     }
 
     this.config.profiles = this.config.profiles.filter((item) => item.id !== profile.id)
+    this.audioScrobblerSessions.delete(profile.id)
     if (this.pendingAuthProfileId === profile.id) {
       this.pendingAuthToken = null
       this.pendingAuthProfileId = null
@@ -562,12 +641,13 @@ export class LastFmService {
     if (profile.id !== this.config.activeProfileId) {
       this.pendingAuthToken = null
       this.pendingAuthProfileId = null
+      this.audioScrobblerSessions.delete(this.config.activeProfileId)
       this.currentPlayback = null
       this.clearFlushTimer()
     }
 
     this.config.activeProfileId = profile.id
-    if (!isConnectedProfile(profile) || !this.hasApiCredentials) {
+    if (!isProfileSubmittable(profile, this.hasApiCredentials)) {
       this.config.enabled = false
     }
 
@@ -738,6 +818,7 @@ export class LastFmService {
     this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.clearFlushTimer()
+    this.audioScrobblerSessions.delete(activeProfile.id)
     this.config.enabled = false
     activeProfile.sessionKey = null
     activeProfile.username = null
@@ -752,6 +833,7 @@ export class LastFmService {
     this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.clearFlushTimer()
+    this.audioScrobblerSessions.clear()
     this.config = normalizeConfig({
       enabled: false,
       activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -767,6 +849,7 @@ export class LastFmService {
     this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.flushInFlight = false
+    this.audioScrobblerSessions.clear()
     this.clearFlushTimer()
   }
 
@@ -853,13 +936,16 @@ export class LastFmService {
     return {
       id: profile.id,
       kind: profile.kind,
+      protocol: profile.protocol,
+      protocolLabel: getLastFmProtocolLabel(profile.protocol, profile.kind),
       name: profile.name,
       apiBaseUrl: profile.apiBaseUrl,
       username: profile.username,
       connected: isConnectedProfile(profile),
       active: profile.id === this.config.activeProfileId,
       pendingScrobbles: profile.pendingScrobbles.length,
-      canDelete: profile.kind === 'custom'
+      canDelete: profile.kind === 'custom',
+      requiresApiCredentials: lastFmProfileRequiresApiCredentials(profile.protocol)
     }
   }
 
@@ -867,27 +953,38 @@ export class LastFmService {
     input: LastFmCustomProfileInput,
     existingProfile: LastFmProfileConfig | null
   ):
-    | { ok: true; name: string; apiBaseUrl: string; username: string | null; sessionKey: string | null }
+    | {
+        ok: true
+        protocol: LastFmProfileConfig['protocol']
+        name: string
+        apiBaseUrl: string
+        username: string | null
+        sessionKey: string | null
+      }
     | { ok: false; message: string } {
+    const protocol = normalizeLastFmScrobbleProtocol(input.protocol ?? existingProfile?.protocol)
     const name = normalizeProfileName(input.name, existingProfile?.name ?? 'Custom endpoint')
-    const apiBaseUrl = parseLastFmApiBaseUrl(input.apiBaseUrl)
+    const apiBaseUrl = parseProfileApiBaseUrl(protocol, input.apiBaseUrl)
     if (!apiBaseUrl) {
-      return { ok: false, message: 'Enter a valid http or https Last.fm-compatible API URL.' }
+      return { ok: false, message: 'Enter a valid http or https scrobble API URL.' }
     }
-    if (apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) {
+    if (protocol === 'lastfm2' && apiBaseUrl === LASTFM_OFFICIAL_API_BASE_URL) {
       return { ok: false, message: 'Custom profiles must use a non-official Last.fm-compatible API URL.' }
     }
 
     const username = normalizeText(input.username) ?? existingProfile?.username ?? null
     const sessionKey = normalizeText(input.sessionKey)
-    if (sessionKey && !username) {
-      return { ok: false, message: 'Username and session key/token are both required for custom profiles.' }
+    if (protocol !== 'listenbrainz' && sessionKey && !username) {
+      return { ok: false, message: `Username and ${getSecretLabelForProtocol(protocol)} are both required for custom profiles.` }
     }
-    if (!existingProfile && !sessionKey && username) {
-      return { ok: false, message: 'Username and session key/token are both required for custom profiles.' }
+    if (protocol !== 'listenbrainz' && !existingProfile && !sessionKey && username) {
+      return { ok: false, message: `Username and ${getSecretLabelForProtocol(protocol)} are both required for custom profiles.` }
+    }
+    if (!existingProfile && protocol === 'listenbrainz' && !sessionKey) {
+      return { ok: false, message: 'ListenBrainz profiles require an auth token.' }
     }
 
-    return { ok: true, name, apiBaseUrl, username, sessionKey }
+    return { ok: true, protocol, name, apiBaseUrl, username, sessionKey }
   }
 
   private failWithStatus(message: string): LastFmStatus {
@@ -897,7 +994,7 @@ export class LastFmService {
   }
 
   private shouldProcessPlayback(): boolean {
-    return this.hasApiCredentials && this.config.enabled && this.isConnected()
+    return this.config.enabled && isProfileSubmittable(this.getActiveProfile(), this.hasApiCredentials)
   }
 
   private emitStatus(): void {
@@ -1006,15 +1103,7 @@ export class LastFmService {
     const activeProfile = this.getActiveProfile()
     if (!activeProfile.sessionKey) return
 
-    const params: Record<string, string | number> = {
-      track: playback.track,
-      artist: playback.artist
-    }
-    if (playback.album) params.album = playback.album
-    if (playback.albumArtist) params.albumArtist = playback.albumArtist
-    if (playback.durationSeconds) params.duration = playback.durationSeconds
-
-    const response = await this.callSignedMethod('track.updateNowPlaying', params, activeProfile.sessionKey, activeProfile)
+    const response = await this.submitNowPlaying(playback, activeProfile)
     if (response.ok) {
       playback.nowPlayingSent = true
       playback.nowPlayingRetryCount = 0
@@ -1043,6 +1132,36 @@ export class LastFmService {
     playback.nowPlayingSent = true
     this.lastError = response.message
     this.emitStatus()
+  }
+
+  private async submitNowPlaying(
+    playback: PlaybackSession,
+    profile: LastFmProfileConfig
+  ): Promise<LastFmApiResult> {
+    if (!profile.sessionKey) {
+      return {
+        ok: false,
+        kind: 'session-invalid',
+        message: `${getLastFmProtocolLabel(profile.protocol, profile.kind)} credentials are not available.`
+      }
+    }
+
+    if (profile.protocol === 'audioscrobbler') {
+      return this.submitAudioScrobblerNowPlaying(playback, profile)
+    }
+    if (profile.protocol === 'listenbrainz') {
+      return this.submitListenBrainz('playing_now', [playback], profile)
+    }
+
+    const params: Record<string, string | number> = {
+      track: playback.track,
+      artist: playback.artist
+    }
+    if (playback.album) params.album = playback.album
+    if (playback.albumArtist) params.albumArtist = playback.albumArtist
+    if (playback.durationSeconds) params.duration = playback.durationSeconds
+
+    return this.callSignedMethod('track.updateNowPlaying', params, profile.sessionKey, profile)
   }
 
   private scheduleFlush(delayMs: number): void {
@@ -1136,8 +1255,15 @@ export class LastFmService {
       return {
         ok: false,
         kind: 'session-invalid',
-        message: 'Last.fm session is not available.'
+        message: `${getLastFmProtocolLabel(profile.protocol, profile.kind)} credentials are not available.`
       }
+    }
+
+    if (profile.protocol === 'audioscrobbler') {
+      return this.submitAudioScrobblerBatch(batch, profile)
+    }
+    if (profile.protocol === 'listenbrainz') {
+      return this.submitListenBrainz('single', batch, profile)
     }
 
     const params: Record<string, string | number> = {}
@@ -1154,11 +1280,366 @@ export class LastFmService {
     return this.callSignedMethod('track.scrobble', params, profile.sessionKey, profile)
   }
 
+  private async submitAudioScrobblerNowPlaying(
+    playback: PlaybackSession,
+    profile: LastFmProfileConfig
+  ): Promise<LastFmApiResult> {
+    const sessionResult = await this.getAudioScrobblerSession(profile)
+    if (!sessionResult.ok) return sessionResult
+
+    const body = new URLSearchParams({
+      s: sessionResult.session.sessionId,
+      a: playback.artist,
+      t: playback.track,
+      b: playback.album ?? '',
+      l: playback.durationSeconds ? String(playback.durationSeconds) : '',
+      n: '',
+      m: ''
+    })
+
+    return this.callAudioScrobblerEndpoint(profile, sessionResult.session.nowPlayingUrl, body)
+  }
+
+  private async submitAudioScrobblerBatch(
+    batch: LastFmPendingScrobble[],
+    profile: LastFmProfileConfig
+  ): Promise<LastFmApiResult> {
+    const sessionResult = await this.getAudioScrobblerSession(profile)
+    if (!sessionResult.ok) return sessionResult
+
+    const body = new URLSearchParams({
+      s: sessionResult.session.sessionId
+    })
+    for (let index = 0; index < batch.length; index += 1) {
+      const item = batch[index]
+      body.set(`a[${index}]`, item.artist)
+      body.set(`t[${index}]`, item.track)
+      body.set(`i[${index}]`, String(item.timestamp))
+      body.set(`o[${index}]`, 'P')
+      body.set(`r[${index}]`, '')
+      body.set(`l[${index}]`, item.durationSeconds ? String(item.durationSeconds) : '')
+      body.set(`b[${index}]`, item.album ?? '')
+      body.set(`n[${index}]`, '')
+      body.set(`m[${index}]`, '')
+    }
+
+    return this.callAudioScrobblerEndpoint(profile, sessionResult.session.submissionUrl, body)
+  }
+
+  private async getAudioScrobblerSession(profile: LastFmProfileConfig): Promise<AudioScrobblerSessionResult> {
+    const cached = this.audioScrobblerSessions.get(profile.id)
+    if (cached) return { ok: true, session: cached }
+
+    if (!profile.username || !profile.sessionKey) {
+      return {
+        ok: false,
+        kind: 'session-invalid',
+        message: 'AudioScrobbler credentials are not available.'
+      }
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000)
+    const authToken = createMd5Hex(`${createMd5Hex(profile.sessionKey)}${timestamp}`)
+    const handshakeUrl = new URL(profile.apiBaseUrl)
+    handshakeUrl.searchParams.set('hs', 'true')
+    handshakeUrl.searchParams.set('p', AUDIOSCROBBLER_PROTOCOL_VERSION)
+    handshakeUrl.searchParams.set('c', AUDIOSCROBBLER_CLIENT_ID)
+    handshakeUrl.searchParams.set('v', AUDIOSCROBBLER_CLIENT_VERSION)
+    handshakeUrl.searchParams.set('u', profile.username)
+    handshakeUrl.searchParams.set('t', String(timestamp))
+    handshakeUrl.searchParams.set('a', authToken)
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), LASTFM_REQUEST_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(handshakeUrl.toString(), {
+        method: 'GET',
+        headers: {
+          Accept: 'text/plain',
+          'User-Agent': LASTFM_USER_AGENT
+        },
+        signal: controller.signal
+      })
+
+      if (response.status === 401 || response.status === 403) {
+        return {
+          ok: false,
+          kind: 'session-invalid',
+          message: `AudioScrobbler handshake failed with HTTP ${response.status}.`
+        }
+      }
+      if (response.status === 429 || response.status === 408 || response.status >= 500) {
+        return {
+          ok: false,
+          kind: 'transient',
+          message: `AudioScrobbler handshake failed with HTTP ${response.status}.`
+        }
+      }
+
+      const text = await response.text().catch(() => '')
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      const firstLine = lines[0] ?? ''
+      if (firstLine === 'OK') {
+        const sessionId = normalizeText(lines[1])
+        const nowPlayingUrl = parseLastFmApiBaseUrl(lines[2])
+        const submissionUrl = parseLastFmApiBaseUrl(lines[3])
+        if (!sessionId || !nowPlayingUrl || !submissionUrl) {
+          return {
+            ok: false,
+            kind: 'transient',
+            message: 'AudioScrobbler handshake returned incomplete endpoint data.'
+          }
+        }
+
+        const session = { sessionId, nowPlayingUrl, submissionUrl }
+        this.audioScrobblerSessions.set(profile.id, session)
+        return { ok: true, session }
+      }
+
+      if (firstLine === 'BADAUTH') {
+        return {
+          ok: false,
+          kind: 'session-invalid',
+          message: 'AudioScrobbler username or password/API key was rejected.'
+        }
+      }
+
+      const message = firstLine.startsWith('FAILED')
+        ? firstLine.replace(/^FAILED\s*/i, '').trim() || 'AudioScrobbler handshake failed.'
+        : firstLine || `AudioScrobbler handshake failed with HTTP ${response.status}.`
+
+      return {
+        ok: false,
+        kind: 'transient',
+        message
+      }
+    } catch (error) {
+      const isAbort = error instanceof Error && error.name === 'AbortError'
+      return {
+        ok: false,
+        kind: 'transient',
+        message: isAbort
+          ? 'AudioScrobbler handshake timed out.'
+          : 'AudioScrobbler handshake failed due to a network error.'
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private async callAudioScrobblerEndpoint(
+    profile: LastFmProfileConfig,
+    endpointUrl: string,
+    body: URLSearchParams
+  ): Promise<LastFmApiResult> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), LASTFM_REQUEST_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(endpointUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Accept: 'text/plain',
+          'User-Agent': LASTFM_USER_AGENT
+        },
+        body: body.toString(),
+        signal: controller.signal
+      })
+
+      if (response.status === 401 || response.status === 403) {
+        this.audioScrobblerSessions.delete(profile.id)
+        return {
+          ok: false,
+          kind: 'session-invalid',
+          message: `AudioScrobbler request failed with HTTP ${response.status}.`
+        }
+      }
+      if (response.status === 429 || response.status === 408 || response.status >= 500) {
+        return {
+          ok: false,
+          kind: 'transient',
+          message: `AudioScrobbler request failed with HTTP ${response.status}.`
+        }
+      }
+
+      const text = await response.text().catch(() => '')
+      const firstLine = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ''
+      if (firstLine === 'OK') {
+        return { ok: true, payload: {} }
+      }
+
+      if (firstLine === 'BADSESSION') {
+        this.audioScrobblerSessions.delete(profile.id)
+        return {
+          ok: false,
+          kind: 'transient',
+          message: 'AudioScrobbler session expired; retrying after a new handshake.'
+        }
+      }
+
+      if (firstLine.startsWith('FAILED')) {
+        return {
+          ok: false,
+          kind: 'transient',
+          message: firstLine.replace(/^FAILED\s*/i, '').trim() || 'AudioScrobbler request failed.'
+        }
+      }
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          kind: 'transient',
+          message: `AudioScrobbler request failed with HTTP ${response.status}.`
+        }
+      }
+
+      return {
+        ok: false,
+        kind: 'transient',
+        message: firstLine || 'AudioScrobbler returned an invalid response.'
+      }
+    } catch (error) {
+      const isAbort = error instanceof Error && error.name === 'AbortError'
+      return {
+        ok: false,
+        kind: 'transient',
+        message: isAbort
+          ? 'AudioScrobbler request timed out.'
+          : 'AudioScrobbler request failed due to a network error.'
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private async submitListenBrainz(
+    listenType: 'playing_now' | 'single',
+    items: Array<PlaybackSession | LastFmPendingScrobble>,
+    profile: LastFmProfileConfig
+  ): Promise<LastFmApiResult> {
+    if (!profile.sessionKey) {
+      return {
+        ok: false,
+        kind: 'session-invalid',
+        message: 'ListenBrainz auth token is not available.'
+      }
+    }
+
+    const payload = items.map((item) => {
+      const additionalInfo: Record<string, string | number> = {
+        media_player: 'Astra',
+        submission_client: 'Astra'
+      }
+      if (item.durationSeconds) {
+        additionalInfo.duration = item.durationSeconds
+      }
+      if ('playedSeconds' in item) {
+        additionalInfo.duration_played = Math.trunc(item.playedSeconds)
+      }
+
+      const trackMetadata: Record<string, unknown> = {
+        artist_name: item.artist,
+        track_name: item.track,
+        additional_info: additionalInfo
+      }
+      if (item.album) {
+        trackMetadata.release_name = item.album
+      }
+
+      if ('timestamp' in item) {
+        return {
+          listened_at: item.timestamp,
+          track_metadata: trackMetadata
+        }
+      }
+
+      return {
+        track_metadata: trackMetadata
+      }
+    })
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), LASTFM_REQUEST_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(buildListenBrainzSubmitUrl(profile.apiBaseUrl), {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${profile.sessionKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': LASTFM_USER_AGENT
+        },
+        body: JSON.stringify({
+          listen_type: listenType,
+          payload
+        }),
+        signal: controller.signal
+      })
+
+      if (response.ok) {
+        return { ok: true, payload: {} }
+      }
+
+      const message = await this.readJsonErrorMessage(response, 'ListenBrainz request failed.')
+      if (response.status === 401 || response.status === 403) {
+        return {
+          ok: false,
+          kind: 'session-invalid',
+          message
+        }
+      }
+      if (response.status === 429 || response.status === 408 || response.status >= 500) {
+        return {
+          ok: false,
+          kind: 'transient',
+          message
+        }
+      }
+      return {
+        ok: false,
+        kind: 'permanent',
+        message
+      }
+    } catch (error) {
+      const isAbort = error instanceof Error && error.name === 'AbortError'
+      return {
+        ok: false,
+        kind: 'transient',
+        message: isAbort
+          ? 'ListenBrainz request timed out.'
+          : 'ListenBrainz request failed due to a network error.'
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private async readJsonErrorMessage(response: Response, fallback: string): Promise<string> {
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const record = payload as Record<string, unknown>
+      const message = normalizeText(record.error) ?? normalizeText(record.message) ?? normalizeText(record.detail)
+      if (message) return message
+    }
+
+    return `${fallback} HTTP ${response.status}.`
+  }
+
   private async handleSessionInvalid(message: string, profile: LastFmProfileConfig = this.getActiveProfile()): Promise<void> {
     this.pendingAuthToken = null
     this.pendingAuthProfileId = null
     this.currentPlayback = null
     this.clearFlushTimer()
+    this.audioScrobblerSessions.delete(profile.id)
     if (this.config.activeProfileId === profile.id) {
       this.config.enabled = false
     }

@@ -70,7 +70,7 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
-import type { LastFmProfileStatus } from '../../../types/lastFm'
+import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 
 type ResetActionId =
@@ -88,6 +88,41 @@ type NormalizationDisableStep = 'warning' | 'final' | null
 type ReplayGainSelectorValue = ReplayGainMode | 'disabled'
 const NORMALIZATION_TARGET_MIN_LUFS = -30
 const NORMALIZATION_TARGET_MAX_LUFS = 0
+
+const CUSTOM_SCROBBLE_PROTOCOLS: LastFmScrobbleProtocol[] = ['lastfm2', 'audioscrobbler', 'listenbrainz']
+
+function getScrobbleProtocolLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'AudioScrobbler'
+  if (protocol === 'listenbrainz') return 'ListenBrainz'
+  return 'Last.fm 2.0'
+}
+
+function getDefaultScrobbleProfileName(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'AudioScrobbler endpoint'
+  if (protocol === 'listenbrainz') return 'ListenBrainz endpoint'
+  return 'Custom endpoint'
+}
+
+function getScrobbleUrlPlaceholder(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'http://localhost:42010/apis/audioscrobbler_legacy'
+  if (protocol === 'listenbrainz') return 'http://localhost:42010/apis/listenbrainz'
+  return 'http://localhost:9078/2.0/'
+}
+
+function getScrobbleUsernameLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'listenbrainz') return 'Username Label (optional)'
+  return 'Username Label'
+}
+
+function getScrobbleSecretLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'Password or API Key'
+  if (protocol === 'listenbrainz') return 'Auth Token'
+  return 'Session Key or Token'
+}
+
+function isScrobbleUsernameRequired(protocol: LastFmScrobbleProtocol): boolean {
+  return protocol !== 'listenbrainz'
+}
 
 interface ResetActionStatus {
   state: ResetActionState
@@ -353,6 +388,7 @@ export default function SettingsView() {
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
   const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
   const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
+  const [lastFmProfileProtocolInput, setLastFmProfileProtocolInput] = useState<LastFmScrobbleProtocol>('lastfm2')
   const [lastFmProfileNameInput, setLastFmProfileNameInput] = useState('')
   const [lastFmProfileUrlInput, setLastFmProfileUrlInput] = useState('')
   const [lastFmProfileUsernameInput, setLastFmProfileUsernameInput] = useState('')
@@ -768,6 +804,7 @@ export default function SettingsView() {
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
   const lastFmHasApiCredentials = lastFmStatus?.hasApiCredentials ?? true
+  const lastFmActiveRequiresApiCredentials = lastFmStatus?.activeProfileRequiresApiCredentials ?? true
   const lastFmProfiles = lastFmStatus?.profiles ?? []
   const lastFmActiveProfile = lastFmStatus?.activeProfile ?? null
   const lastFmPendingScrobbles = lastFmStatus?.pendingScrobbles ?? 0
@@ -776,13 +813,14 @@ export default function SettingsView() {
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
   const lastFmCanConnect = lastFmHasApiCredentials &&
     lastFmActiveProfile?.kind === 'official' &&
+    lastFmActiveProfile.protocol === 'lastfm2' &&
     !lastFmConnected &&
     !lastFmIsAuthorizing
   const lastFmProfileModalOpen = lastFmProfileModalMode != null
-  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Custom Profile' : 'Add Custom Profile'
+  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Scrobble Profile' : 'Add Scrobble Profile'
   const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
     !lastFmProfileUrlInput.trim() ||
-    !lastFmProfileUsernameInput.trim() ||
+    (isScrobbleUsernameRequired(lastFmProfileProtocolInput) && !lastFmProfileUsernameInput.trim()) ||
     (lastFmProfileModalMode === 'create' && !lastFmProfileSessionKeyInput.trim())
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
@@ -1002,9 +1040,11 @@ export default function SettingsView() {
   }
 
   const openLastFmCreateProfileModal = () => {
+    const protocol: LastFmScrobbleProtocol = 'lastfm2'
     setLastFmProfileModalMode('create')
     setLastFmEditingProfileId(null)
-    setLastFmProfileNameInput('Custom endpoint')
+    setLastFmProfileProtocolInput(protocol)
+    setLastFmProfileNameInput(getDefaultScrobbleProfileName(protocol))
     setLastFmProfileUrlInput('')
     setLastFmProfileUsernameInput('')
     setLastFmProfileSessionKeyInput('')
@@ -1014,6 +1054,7 @@ export default function SettingsView() {
     if (profile.kind !== 'custom') return
     setLastFmProfileModalMode('edit')
     setLastFmEditingProfileId(profile.id)
+    setLastFmProfileProtocolInput(profile.protocol)
     setLastFmProfileNameInput(profile.name)
     setLastFmProfileUrlInput(profile.apiBaseUrl)
     setLastFmProfileUsernameInput(profile.username ?? '')
@@ -1026,8 +1067,20 @@ export default function SettingsView() {
     setLastFmProfileSessionKeyInput('')
   }
 
+  const handleLastFmProfileProtocolChange = (protocol: LastFmScrobbleProtocol) => {
+    const previousProtocol = lastFmProfileProtocolInput
+    setLastFmProfileProtocolInput(protocol)
+    if (
+      lastFmProfileModalMode === 'create' &&
+      lastFmProfileNameInput === getDefaultScrobbleProfileName(previousProtocol)
+    ) {
+      setLastFmProfileNameInput(getDefaultScrobbleProfileName(protocol))
+    }
+  }
+
   const handleSaveLastFmProfile = () => {
     const input = {
+      protocol: lastFmProfileProtocolInput,
       name: lastFmProfileNameInput,
       apiBaseUrl: lastFmProfileUrlInput,
       username: lastFmProfileUsernameInput,
@@ -1845,7 +1898,7 @@ export default function SettingsView() {
                     <button
                       className={`settings-toggle ${lastFmEnabled ? 'active' : ''}`}
                       onClick={() => void setLastFmEnabled(!lastFmEnabled)}
-                      disabled={!lastFmConnected || !lastFmHasApiCredentials}
+                      disabled={!lastFmConnected || (lastFmActiveRequiresApiCredentials && !lastFmHasApiCredentials)}
                     >
                       {lastFmEnabled ? 'Enabled' : 'Disabled'}
                     </button>
@@ -1859,7 +1912,7 @@ export default function SettingsView() {
                         className="settings-btn settings-btn-primary"
                         onClick={openLastFmCreateProfileModal}
                       >
-                        Add Custom Profile
+                        Add Profile
                       </button>
                     </div>
                     <div className="settings-lastfm-profile-list">
@@ -1872,7 +1925,7 @@ export default function SettingsView() {
                             <div className="settings-lastfm-profile-title-row">
                               <span className="settings-lastfm-profile-name">{profile.name}</span>
                               <span className="settings-chip settings-chip-mono">
-                                {profile.kind === 'official' ? 'Official' : 'Custom'}
+                                {profile.protocolLabel}
                               </span>
                               {profile.active && (
                                 <span className="settings-chip settings-chip-mono settings-lastfm-active-chip">
@@ -1884,7 +1937,9 @@ export default function SettingsView() {
                               <span>{profile.apiBaseUrl}</span>
                               <span>
                                 {profile.connected
-                                  ? `Connected as ${profile.username ?? 'Unknown User'}`
+                                  ? profile.username
+                                    ? `Connected as ${profile.username}`
+                                    : 'Token configured'
                                   : 'Not connected'}
                               </span>
                               <span>{profile.pendingScrobbles} pending</span>
@@ -1900,7 +1955,7 @@ export default function SettingsView() {
                                 Activate
                               </button>
                             )}
-                            {profile.active && profile.kind === 'official' && (!profile.connected || lastFmAuthPending) && (
+                            {profile.active && profile.kind === 'official' && profile.protocol === 'lastfm2' && (!profile.connected || lastFmAuthPending) && (
                               <button
                                 type="button"
                                 className="settings-btn settings-btn-primary"
@@ -1949,7 +2004,7 @@ export default function SettingsView() {
                 {lastFmProfileFeedback && <p className="settings-note settings-note-success">{lastFmProfileFeedback}</p>}
                 {lastFmAuthHint && <p className="settings-note settings-note-success">{lastFmAuthHint}</p>}
                 {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
-                {!lastFmHasApiCredentials && (
+                {lastFmActiveRequiresApiCredentials && !lastFmHasApiCredentials && (
                   <p className="settings-note settings-note-error">
                     Last.fm API credentials are missing in this build.
                   </p>
@@ -2709,17 +2764,31 @@ export default function SettingsView() {
                 />
               </label>
               <label className="settings-field">
+                <span className="settings-field-label">Protocol</span>
+                <select
+                  className="settings-select"
+                  value={lastFmProfileProtocolInput}
+                  onChange={(event) => handleLastFmProfileProtocolChange(event.target.value as LastFmScrobbleProtocol)}
+                >
+                  {CUSTOM_SCROBBLE_PROTOCOLS.map((protocol) => (
+                    <option key={protocol} value={protocol}>
+                      {getScrobbleProtocolLabel(protocol)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-field">
                 <span className="settings-field-label">API Base URL</span>
                 <input
                   className="settings-select"
                   type="url"
                   value={lastFmProfileUrlInput}
-                  placeholder="http://localhost:9078/2.0/"
+                  placeholder={getScrobbleUrlPlaceholder(lastFmProfileProtocolInput)}
                   onChange={(event) => setLastFmProfileUrlInput(event.target.value)}
                 />
               </label>
               <label className="settings-field">
-                <span className="settings-field-label">Username Label</span>
+                <span className="settings-field-label">{getScrobbleUsernameLabel(lastFmProfileProtocolInput)}</span>
                 <input
                   className="settings-select"
                   type="text"
@@ -2729,12 +2798,12 @@ export default function SettingsView() {
                 />
               </label>
               <label className="settings-field">
-                <span className="settings-field-label">Session Key or Token</span>
+                <span className="settings-field-label">{getScrobbleSecretLabel(lastFmProfileProtocolInput)}</span>
                 <input
                   className="settings-select"
                   type="password"
                   value={lastFmProfileSessionKeyInput}
-                  placeholder={lastFmProfileModalMode === 'edit' ? 'Leave blank to keep current token' : ''}
+                  placeholder={lastFmProfileModalMode === 'edit' ? `Leave blank to keep current ${getScrobbleSecretLabel(lastFmProfileProtocolInput).toLowerCase()}` : ''}
                   autoComplete="off"
                   onChange={(event) => setLastFmProfileSessionKeyInput(event.target.value)}
                 />
