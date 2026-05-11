@@ -756,9 +756,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('lastfm:deleteCustomProfile', profileId),
     setActiveProfile: (profileId: string): Promise<LastFmStatus> =>
       ipcRenderer.invoke('lastfm:setActiveProfile', profileId),
-    beginAuth: (): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth'),
+    setProfileEnabled: (profileId: string, enabled: boolean): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:setProfileEnabled', profileId, enabled),
+    beginAuth: (profileId?: string): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth', profileId),
     finishAuth: (): Promise<LastFmAuthFinishResult> => ipcRenderer.invoke('lastfm:finishAuth'),
     disconnect: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:disconnect'),
+    disconnectProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:disconnectProfile', profileId),
     resetToDefaults: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:resetToDefaults'),
     onStatus: (callback: (status: LastFmStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: LastFmStatus) => callback(status)
@@ -1175,9 +1179,11 @@ declare global {
         updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
         deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
         setActiveProfile: (profileId: string) => Promise<LastFmStatus>
-        beginAuth: () => Promise<LastFmAuthStartResult>
+        setProfileEnabled: (profileId: string, enabled: boolean) => Promise<LastFmStatus>
+        beginAuth: (profileId?: string) => Promise<LastFmAuthStartResult>
         finishAuth: () => Promise<LastFmAuthFinishResult>
         disconnect: () => Promise<LastFmStatus>
+        disconnectProfile: (profileId: string) => Promise<LastFmStatus>
         resetToDefaults: () => Promise<LastFmStatus>
         onStatus: (callback: (status: LastFmStatus) => void) => () => void
       }

@@ -308,9 +308,11 @@ declare global {
                 updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
                 deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
                 setActiveProfile: (profileId: string) => Promise<LastFmStatus>
-                beginAuth: () => Promise<LastFmAuthStartResult>
+                setProfileEnabled: (profileId: string, enabled: boolean) => Promise<LastFmStatus>
+                beginAuth: (profileId?: string) => Promise<LastFmAuthStartResult>
                 finishAuth: () => Promise<LastFmAuthFinishResult>
                 disconnect: () => Promise<LastFmStatus>
+                disconnectProfile: (profileId: string) => Promise<LastFmStatus>
                 resetToDefaults: () => Promise<LastFmStatus>
                 onStatus: (callback: (status: LastFmStatus) => void) => () => void
             }

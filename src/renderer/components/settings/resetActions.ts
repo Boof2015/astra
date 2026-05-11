@@ -86,7 +86,7 @@ export async function resetIntegrationSettings(): Promise<string> {
   await useDiscordSettingsStore.getState().resetToDefaults()
   const lastFmStatus = await useLastFmSettingsStore.getState().resetToDefaults()
   if (!lastFmStatus) {
-    throw new Error('Failed to reset Last.fm settings.')
+    throw new Error('Failed to reset scrobbling settings.')
   }
   const lyricsStatus = await useLyricsStore.getState().resetToDefaults()
   if (!lyricsStatus) {
@@ -100,7 +100,7 @@ export async function resetIntegrationSettings(): Promise<string> {
   if (!phoneRemoteStatus) {
     throw new Error('Failed to reset phone remote settings.')
   }
-  return 'Integrations reset (Discord, Last.fm, Lyrics, Local API, and Phone Remote).'
+  return 'Integrations reset (Discord, Scrobbling, Lyrics, Local API, and Phone Remote).'
 }
 
 export async function resetDiscordCoverArtCache(): Promise<string> {

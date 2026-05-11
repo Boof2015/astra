@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { MiniPlayerSnapshot } from '../../types/miniPlayer.ts'
 import {
   LASTFM_OFFICIAL_API_BASE_URL,
   LASTFM_OFFICIAL_PROFILE_ID,
@@ -25,6 +26,14 @@ type ProtocolCaller = {
     playback: Record<string, unknown>,
     profile: LastFmProfileConfig
   ) => Promise<{ ok: boolean; kind?: string; message?: string }>
+  submitScrobbleBatch: (
+    batch: LastFmPendingScrobble[],
+    profile: LastFmProfileConfig
+  ) => Promise<{ ok: boolean; kind?: string; message?: string }>
+}
+
+type QueueFlushHarness = {
+  flushQueue: () => Promise<void>
   submitScrobbleBatch: (
     batch: LastFmPendingScrobble[],
     profile: LastFmProfileConfig
@@ -76,6 +85,26 @@ function createPlaybackSession(overrides: Record<string, unknown> = {}): Record<
   }
 }
 
+function createMiniPlayerSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayerSnapshot {
+  return {
+    playbackState: 'playing',
+    currentTime: 0,
+    duration: 180,
+    queueLength: 1,
+    outputDeviceLabel: null,
+    visualizerLineColor: '#ffffff',
+    currentTrack: {
+      id: 'track-1',
+      path: '/music/track.flac',
+      title: 'Queued Track',
+      artist: 'Queued Artist',
+      album: 'Queued Album',
+      isFavorite: false
+    },
+    ...overrides
+  }
+}
+
 function createOfficialProfile(overrides: Partial<LastFmProfileConfig> = {}): LastFmProfileConfig {
   return {
     id: LASTFM_OFFICIAL_PROFILE_ID,
@@ -83,6 +112,7 @@ function createOfficialProfile(overrides: Partial<LastFmProfileConfig> = {}): La
     protocol: 'lastfm2',
     name: 'Official Last.fm',
     apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    enabled: Boolean(overrides.sessionKey),
     sessionKey: null,
     username: null,
     pendingScrobbles: [],
@@ -97,6 +127,7 @@ function createCustomProfile(overrides: Partial<LastFmProfileConfig> = {}): Last
     protocol: 'lastfm2',
     name: 'Custom endpoint',
     apiBaseUrl: 'http://localhost:9078/2.0/',
+    enabled: Boolean(overrides.sessionKey),
     sessionKey: null,
     username: null,
     pendingScrobbles: [],
@@ -222,9 +253,10 @@ test('Last.fm service migrates legacy configs into the official profile', () => 
   assert.equal(status.profiles.length, 1)
   assert.equal(status.profiles[0].protocol, 'lastfm2')
   assert.equal(status.profiles[0].connected, true)
+  assert.equal(status.profiles[0].enabled, true)
 })
 
-test('creating a custom profile selects it without leaking official pending scrobbles', async (t) => {
+test('creating a custom profile enables it without leaking official pending scrobbles', async (t) => {
   const officialPending = createPendingScrobble()
   const { service, persisted } = createService({
     enabled: true,
@@ -250,18 +282,20 @@ test('creating a custom profile selects it without leaking official pending scro
   assert.equal(status.connected, true)
   assert.equal(status.enabled, true)
   assert.equal(status.username, 'custom-user')
-  assert.equal(status.pendingScrobbles, 0)
+  assert.equal(status.pendingScrobbles, 1)
 
   const persistedConfig = persisted.at(-1)
   assert.ok(persistedConfig)
   assert.equal(persistedConfig.profiles.length, 2)
   assert.equal(persistedConfig.profiles[0].pendingScrobbles.length, 1)
+  assert.equal(persistedConfig.profiles[1].enabled, true)
   assert.equal(persistedConfig.profiles[1].sessionKey, 'custom-session')
   assert.deepEqual(persistedConfig.profiles[1].pendingScrobbles, [])
 })
 
-test('switching active profiles preserves each profile queue', async (t) => {
+test('enabling profiles preserves each profile queue', async (t) => {
   const customProfile = createCustomProfile({
+    enabled: false,
     sessionKey: 'custom-session',
     username: 'custom-user',
     pendingScrobbles: [createPendingScrobble({ id: 'custom-pending' })]
@@ -280,11 +314,206 @@ test('switching active profiles preserves each profile queue', async (t) => {
   })
   t.after(() => service.stop())
 
-  const status = await service.setActiveProfile(customProfile.id)
+  const status = await service.setProfileEnabled(customProfile.id, true)
   assert.equal(status.activeProfileId, customProfile.id)
-  assert.equal(status.pendingScrobbles, 1)
+  assert.equal(status.pendingScrobbles, 2)
   assert.equal(status.profiles.find((profile) => profile.id === LASTFM_OFFICIAL_PROFILE_ID)?.pendingScrobbles, 1)
   assert.equal(status.profiles.find((profile) => profile.id === customProfile.id)?.pendingScrobbles, 1)
+  assert.equal(status.profiles.find((profile) => profile.id === customProfile.id)?.enabled, true)
+})
+
+test('playback sends now-playing updates to every enabled profile', async (t) => {
+  const originalFetch = globalThis.fetch
+  const requests: CapturedRequest[] = []
+  const customProfile = createCustomProfile({
+    sessionKey: 'custom-session',
+    username: 'custom-user'
+  })
+  const { service } = createService({
+    enabled: true,
+    profiles: [
+      createOfficialProfile({
+        sessionKey: 'official-session',
+        username: 'official-user'
+      }),
+      customProfile
+    ]
+  })
+  t.after(() => {
+    service.stop()
+    globalThis.fetch = originalFetch
+  })
+
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>): Promise<Response> => {
+    const [input, init] = args
+    requests.push({
+      url: String(input),
+      method: init?.method,
+      headers: init?.headers,
+      body: typeof init?.body === 'string' ? init.body : String(init?.body ?? '')
+    })
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  }) as typeof fetch
+
+  service.publishSnapshot(createMiniPlayerSnapshot({ currentTime: 1 }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(requests.length, 2)
+  assert.deepEqual(
+    requests.map((request) => request.url).sort(),
+    [LASTFM_OFFICIAL_API_BASE_URL, customProfile.apiBaseUrl].sort()
+  )
+  assert.ok(requests.every((request) => new URLSearchParams(request.body).get('method') === 'track.updatenowplaying'))
+})
+
+test('playback queues scrobbles for every enabled profile', async (t) => {
+  const originalNow = Date.now
+  const originalFetch = globalThis.fetch
+  let nowMs = 1_700_000_000_000
+  Date.now = () => nowMs
+  globalThis.fetch = (async (): Promise<Response> => new Response(JSON.stringify({}), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch
+
+  const customProfile = createCustomProfile({
+    sessionKey: 'custom-session',
+    username: 'custom-user'
+  })
+  const { service, persisted } = createService({
+    enabled: true,
+    profiles: [
+      createOfficialProfile({
+        sessionKey: 'official-session',
+        username: 'official-user'
+      }),
+      customProfile
+    ]
+  })
+  t.after(() => {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+    service.stop()
+  })
+
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  service.stop()
+
+  const persistedConfig = persisted.at(-1)
+  assert.ok(persistedConfig)
+  assert.equal(persistedConfig.profiles.find((profile) => profile.id === LASTFM_OFFICIAL_PROFILE_ID)?.pendingScrobbles.length, 1)
+  assert.equal(persistedConfig.profiles.find((profile) => profile.id === customProfile.id)?.pendingScrobbles.length, 1)
+})
+
+test('disabled profiles and global disabled state skip playback scrobble queues', async (t) => {
+  const originalNow = Date.now
+  const originalFetch = globalThis.fetch
+  let nowMs = 1_700_000_000_000
+  Date.now = () => nowMs
+  globalThis.fetch = (async (): Promise<Response> => new Response(JSON.stringify({}), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch
+
+  const disabledProfile = createCustomProfile({
+    enabled: false,
+    sessionKey: 'custom-session',
+    username: 'custom-user'
+  })
+  const { service, persisted } = createService({
+    enabled: true,
+    profiles: [
+      createOfficialProfile({
+        sessionKey: 'official-session',
+        username: 'official-user'
+      }),
+      disabledProfile
+    ]
+  })
+  t.after(() => {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+    service.stop()
+  })
+
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  service.stop()
+
+  const persistedConfig = persisted.at(-1)
+  assert.ok(persistedConfig)
+  assert.equal(persistedConfig.profiles.find((profile) => profile.id === LASTFM_OFFICIAL_PROFILE_ID)?.pendingScrobbles.length, 1)
+  assert.equal(persistedConfig.profiles.find((profile) => profile.id === disabledProfile.id)?.pendingScrobbles.length, 0)
+
+  const disabledMaster = createService({
+    enabled: false,
+    profiles: [
+      createOfficialProfile({
+        sessionKey: 'official-session',
+        username: 'official-user'
+      })
+    ]
+  })
+  disabledMaster.service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  disabledMaster.service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  nowMs += 60_000
+  disabledMaster.service.publishSnapshot(createMiniPlayerSnapshot({ duration: 60 }))
+  disabledMaster.service.stop()
+  assert.equal(disabledMaster.persisted.length, 0)
+})
+
+test('queue flushing isolates success and retry state per profile', async (t) => {
+  const officialPending = createPendingScrobble({ id: 'official-pending' })
+  const customPending = createPendingScrobble({ id: 'custom-pending' })
+  const customProfile = createCustomProfile({
+    sessionKey: 'custom-session',
+    username: 'custom-user',
+    pendingScrobbles: [customPending]
+  })
+  const { service, persisted } = createService({
+    enabled: true,
+    profiles: [
+      createOfficialProfile({
+        sessionKey: 'official-session',
+        username: 'official-user',
+        pendingScrobbles: [officialPending]
+      }),
+      customProfile
+    ]
+  })
+  t.after(() => service.stop())
+
+  const harness = service as unknown as QueueFlushHarness
+  harness.submitScrobbleBatch = async (_batch, profile) => {
+    if (profile.id === customProfile.id) {
+      return { ok: false, kind: 'transient', message: 'Custom endpoint busy.' }
+    }
+    return { ok: true }
+  }
+
+  await harness.flushQueue()
+
+  const persistedConfig = persisted.at(-1)
+  assert.ok(persistedConfig)
+  const officialProfile = persistedConfig.profiles.find((profile) => profile.id === LASTFM_OFFICIAL_PROFILE_ID)
+  const retriedProfile = persistedConfig.profiles.find((profile) => profile.id === customProfile.id)
+  assert.equal(officialProfile?.pendingScrobbles.length, 0)
+  assert.equal(retriedProfile?.pendingScrobbles.length, 1)
+  assert.equal(retriedProfile?.pendingScrobbles[0]?.retryCount, 1)
+
+  const status = service.getStatus()
+  assert.equal(status.profiles.find((profile) => profile.id === customProfile.id)?.lastError, 'Custom endpoint busy.')
 })
 
 test('signed requests use the active profile endpoint without changing the Last.fm form payload', async () => {
@@ -643,12 +872,14 @@ test('missing Last.fm app credentials only block Last.fm 2.0 profiles', () => {
   try {
     const officialStatus = officialService.getStatus()
     assert.equal(officialStatus.connected, true)
-    assert.equal(officialStatus.enabled, false)
+    assert.equal(officialStatus.enabled, true)
+    assert.equal(officialStatus.profiles[0].enabled, false)
     assert.equal(officialStatus.activeProfileRequiresApiCredentials, true)
 
     const audioStatus = audioService.getStatus()
     assert.equal(audioStatus.connected, true)
     assert.equal(audioStatus.enabled, true)
+    assert.equal(audioStatus.profiles.find((profile) => profile.id === audioProfile.id)?.enabled, true)
     assert.equal(audioStatus.activeProfileRequiresApiCredentials, false)
   } finally {
     officialService.stop()

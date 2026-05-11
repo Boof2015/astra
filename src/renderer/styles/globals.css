@@ -14631,10 +14631,11 @@ body::after {
 
 .settings-lastfm-profile-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
   align-items: center;
-  padding: 10px;
+  min-height: 66px;
+  padding: 9px 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.18);
@@ -14643,6 +14644,69 @@ body::after {
 .settings-lastfm-profile-row.active {
   border-color: rgba(var(--accent-rgb), 0.34);
   background: rgba(var(--accent-rgb), 0.07);
+}
+
+.settings-lastfm-profile-row.inactive {
+  opacity: 0.68;
+}
+
+.settings-lastfm-profile-row.blocked {
+  opacity: 0.52;
+}
+
+.settings-lastfm-profile-check {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.settings-lastfm-profile-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-lastfm-profile-check span {
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.settings-lastfm-profile-check input:checked + span {
+  border-color: rgba(var(--accent-rgb), 0.72);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.14);
+}
+
+.settings-lastfm-profile-check input:checked + span::after {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 4px;
+  margin: 4px 0 0 3px;
+  border-left: 2px solid #031014;
+  border-bottom: 2px solid #031014;
+  transform: rotate(-45deg);
+}
+
+.settings-lastfm-profile-check input:focus-visible + span {
+  outline: 2px solid rgba(var(--accent-rgb), 0.7);
+  outline-offset: 2px;
+}
+
+.settings-lastfm-profile-check input:disabled + span {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: none;
+}
+
+.settings-lastfm-profile-check:has(input:disabled) {
+  cursor: not-allowed;
 }
 
 .settings-lastfm-profile-main {
@@ -14662,8 +14726,13 @@ body::after {
   color: rgba(255, 255, 255, 0.88);
 }
 
+.settings-lastfm-profile-row.inactive .settings-lastfm-profile-name,
+.settings-lastfm-profile-row.blocked .settings-lastfm-profile-name {
+  color: rgba(255, 255, 255, 0.62);
+}
+
 .settings-lastfm-profile-meta {
-  margin-top: 6px;
+  margin-top: 5px;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -14681,9 +14750,51 @@ body::after {
   max-width: 420px;
 }
 
-.settings-lastfm-active-chip {
-  border-color: rgba(var(--accent-rgb), 0.36);
-  color: var(--accent);
+.settings-lastfm-profile-error {
+  color: rgba(255, 130, 130, 0.78);
+}
+
+.settings-lastfm-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-lastfm-icon-btn:hover,
+.settings-lastfm-icon-btn:focus-visible {
+  border-color: rgba(var(--accent-rgb), 0.38);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.settings-lastfm-icon-btn.danger {
+  color: rgba(255, 180, 180, 0.88);
+}
+
+.settings-lastfm-icon-btn.danger:hover,
+.settings-lastfm-icon-btn.danger:focus-visible {
+  border-color: rgba(255, 118, 118, 0.45);
+  background: rgba(255, 75, 75, 0.12);
+  color: rgba(255, 218, 218, 0.96);
+}
+
+.settings-lastfm-icon-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.settings-lastfm-icon-btn:disabled:hover {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .settings-lastfm-profile-modal {
@@ -16118,8 +16229,11 @@ body::after {
 
   .settings-lastfm-profiles-head,
   .settings-lastfm-profile-row {
-    grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .settings-lastfm-profile-row {
+    grid-template-columns: 22px minmax(0, 1fr);
   }
 
   .settings-lastfm-profiles-head,
@@ -16128,8 +16242,10 @@ body::after {
     align-items: stretch;
   }
 
-  .settings-lastfm-profile-actions .settings-btn {
-    width: 100%;
+  .settings-lastfm-profile-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: flex-end;
   }
 
   .settings-sleep-custom-row {

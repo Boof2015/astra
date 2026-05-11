@@ -22,10 +22,10 @@ interface LastFmSettingsStore {
   createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus | null>
   updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus | null>
   deleteCustomProfile: (profileId: string) => Promise<LastFmStatus | null>
-  setActiveProfile: (profileId: string) => Promise<LastFmStatus | null>
-  beginAuth: () => Promise<LastFmAuthStartResult | null>
+  setProfileEnabled: (profileId: string, enabled: boolean) => Promise<LastFmStatus | null>
+  beginAuth: (profileId: string) => Promise<LastFmAuthStartResult | null>
   finishAuth: () => Promise<LastFmAuthFinishResult | null>
-  disconnect: () => Promise<LastFmStatus | null>
+  disconnectProfile: (profileId: string) => Promise<LastFmStatus | null>
   resetToDefaults: () => Promise<LastFmStatus | null>
 }
 
@@ -233,9 +233,9 @@ export const useLastFmSettingsStore = create<LastFmSettingsStore>((set, get) => 
       }
     },
 
-    setActiveProfile: async (profileId: string) => {
+    setProfileEnabled: async (profileId: string, enabled: boolean) => {
       try {
-        const status = await window.electronAPI.lastFm.setActiveProfile(profileId)
+        const status = await window.electronAPI.lastFm.setProfileEnabled(profileId, enabled)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
@@ -243,9 +243,9 @@ export const useLastFmSettingsStore = create<LastFmSettingsStore>((set, get) => 
       }
     },
 
-    beginAuth: async () => {
+    beginAuth: async (profileId: string) => {
       try {
-        const result = await window.electronAPI.lastFm.beginAuth()
+        const result = await window.electronAPI.lastFm.beginAuth(profileId)
         const status = await fetchStatus().catch(() => null)
         if (result.ok && (status?.authPending ?? result.authPending)) {
           startAuthPolling()
@@ -294,10 +294,10 @@ export const useLastFmSettingsStore = create<LastFmSettingsStore>((set, get) => 
       }
     },
 
-    disconnect: async () => {
+    disconnectProfile: async (profileId: string) => {
       try {
         stopAuthPolling()
-        const status = await window.electronAPI.lastFm.disconnect()
+        const status = await window.electronAPI.lastFm.disconnectProfile(profileId)
         set({ authHint: '' })
         return applyStatus(status)
       } catch (error) {

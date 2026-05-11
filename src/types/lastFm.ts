@@ -24,6 +24,7 @@ export interface LastFmProfileConfig {
   protocol: LastFmScrobbleProtocol
   name: string
   apiBaseUrl: string
+  enabled: boolean
   sessionKey: string | null
   username: string | null
   pendingScrobbles: LastFmPendingScrobble[]
@@ -36,12 +37,14 @@ export interface LastFmProfileStatus {
   protocolLabel: string
   name: string
   apiBaseUrl: string
+  enabled: boolean
   username: string | null
   connected: boolean
   active: boolean
   pendingScrobbles: number
   canDelete: boolean
   requiresApiCredentials: boolean
+  lastError: string | null
 }
 
 export interface LastFmServiceConfig {

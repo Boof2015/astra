@@ -467,6 +467,7 @@ let lastFmConfig: LastFmServiceConfig = {
     protocol: 'lastfm2',
     name: 'Official Last.fm',
     apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    enabled: false,
     sessionKey: null,
     username: null,
     pendingScrobbles: []
@@ -1326,7 +1327,8 @@ function normalizeOptionalMetaText(value: string | null): string | null {
 function createOfficialLastFmProfile(
   sessionKey: string | null = null,
   username: string | null = null,
-  pendingScrobbles = sanitizePendingScrobbles([])
+  pendingScrobbles = sanitizePendingScrobbles([]),
+  enabled = false
 ): LastFmProfileConfig {
   return {
     id: LASTFM_OFFICIAL_PROFILE_ID,
@@ -1334,6 +1336,7 @@ function createOfficialLastFmProfile(
     protocol: 'lastfm2',
     name: 'Official Last.fm',
     apiBaseUrl: LASTFM_OFFICIAL_API_BASE_URL,
+    enabled,
     sessionKey,
     username,
     pendingScrobbles
@@ -1346,11 +1349,15 @@ function normalizeLastFmProfileName(value: unknown, fallback: string): string {
   return normalized.length > 0 ? normalized.slice(0, 80) : fallback
 }
 
-function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | null {
+function normalizeLastFmProfileEnabled(record: Record<string, unknown>, defaultEnabled: boolean): boolean {
+  return typeof record.enabled === 'boolean' ? record.enabled : defaultEnabled
+}
+
+function normalizeLastFmProfilesFromMeta(raw: unknown, legacyActiveProfileId: string): LastFmProfileConfig[] | null {
   if (!Array.isArray(raw)) return null
 
   const customProfiles: LastFmProfileConfig[] = []
-  let officialProfile = createOfficialLastFmProfile()
+  let officialProfile = createOfficialLastFmProfile(null, null, sanitizePendingScrobbles([]), legacyActiveProfileId === LASTFM_OFFICIAL_PROFILE_ID)
   const usedIds = new Set<string>([LASTFM_OFFICIAL_PROFILE_ID])
 
   for (const item of raw) {
@@ -1361,7 +1368,12 @@ function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | 
     const pendingScrobbles = sanitizePendingScrobbles(record.pendingScrobbles)
 
     if (record.kind === 'official' || record.id === LASTFM_OFFICIAL_PROFILE_ID) {
-      officialProfile = createOfficialLastFmProfile(sessionKey, username, pendingScrobbles)
+      officialProfile = createOfficialLastFmProfile(
+        sessionKey,
+        username,
+        pendingScrobbles,
+        normalizeLastFmProfileEnabled(record, legacyActiveProfileId === LASTFM_OFFICIAL_PROFILE_ID)
+      )
       continue
     }
 
@@ -1378,6 +1390,7 @@ function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | 
       ? rawId
       : `custom-profile-${customProfiles.length + 1}`
     usedIds.add(id)
+    const defaultEnabled = id === legacyActiveProfileId || rawId === legacyActiveProfileId
 
     customProfiles.push({
       id,
@@ -1385,6 +1398,7 @@ function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | 
       protocol,
       name: normalizeLastFmProfileName(record.name, 'Custom endpoint'),
       apiBaseUrl,
+      enabled: normalizeLastFmProfileEnabled(record, defaultEnabled),
       sessionKey,
       username,
       pendingScrobbles
@@ -1394,12 +1408,14 @@ function normalizeLastFmProfilesFromMeta(raw: unknown): LastFmProfileConfig[] | 
   return [officialProfile, ...customProfiles]
 }
 
-function getConnectedLastFmProfile(config: LastFmServiceConfig): LastFmProfileConfig {
-  return config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0]
+function getLegacyLastFmProfile(config: LastFmServiceConfig): LastFmProfileConfig {
+  return config.profiles.find((profile) => profile.enabled) ??
+    config.profiles.find((profile) => profile.id === config.activeProfileId) ??
+    config.profiles[0]
 }
 
 async function persistLastFmConfig(config: LastFmServiceConfig): Promise<void> {
-  const activeProfile = getConnectedLastFmProfile(config)
+  const activeProfile = getLegacyLastFmProfile(config)
   await library.setAppMeta(LASTFM_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY, config.activeProfileId)
   await library.setAppMeta(LASTFM_PROFILES_META_KEY, JSON.stringify(config.profiles))
@@ -1419,16 +1435,16 @@ async function persistLastFmConfig(config: LastFmServiceConfig): Promise<void> {
 
 async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
   let profiles: LastFmProfileConfig[] | null = null
+  let activeProfileId = normalizeOptionalMetaText(library.getAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY)) ?? LASTFM_OFFICIAL_PROFILE_ID
   const rawProfiles = library.getAppMeta(LASTFM_PROFILES_META_KEY)
   if (rawProfiles) {
     try {
-      profiles = normalizeLastFmProfilesFromMeta(JSON.parse(rawProfiles))
+      profiles = normalizeLastFmProfilesFromMeta(JSON.parse(rawProfiles), activeProfileId)
     } catch {
       profiles = null
     }
   }
 
-  let activeProfileId = normalizeOptionalMetaText(library.getAppMeta(LASTFM_ACTIVE_PROFILE_ID_META_KEY)) ?? LASTFM_OFFICIAL_PROFILE_ID
   if (!profiles) {
     const rawApiBaseUrl = library.getAppMeta(LASTFM_API_BASE_URL_META_KEY)
     const hasStoredApiBaseUrl = rawApiBaseUrl != null && rawApiBaseUrl.trim().length > 0
@@ -1458,6 +1474,7 @@ async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
           protocol: 'lastfm2',
           name: 'Custom Last.fm endpoint',
           apiBaseUrl,
+          enabled: Boolean(sessionKey && username) && LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0,
           sessionKey,
           username,
           pendingScrobbles
@@ -1465,7 +1482,12 @@ async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
       ]
     } else {
       activeProfileId = LASTFM_OFFICIAL_PROFILE_ID
-      profiles = [createOfficialLastFmProfile(sessionKey, username, pendingScrobbles)]
+      profiles = [createOfficialLastFmProfile(
+        sessionKey,
+        username,
+        pendingScrobbles,
+        Boolean(sessionKey && username) && LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0
+      )]
     }
   }
 
@@ -1473,15 +1495,21 @@ async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
     activeProfileId = LASTFM_OFFICIAL_PROFILE_ID
   }
 
-  const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0]
-  const connected = activeProfile.protocol === 'listenbrainz'
-    ? Boolean(activeProfile.sessionKey)
-    : Boolean(activeProfile.sessionKey && activeProfile.username)
-  const hasRequiredApiCredentials = !lastFmProfileRequiresApiCredentials(activeProfile.protocol) ||
-    (LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0)
+  profiles = profiles.map((profile) => {
+    const connected = profile.protocol === 'listenbrainz'
+      ? Boolean(profile.sessionKey)
+      : Boolean(profile.sessionKey && profile.username)
+    const hasRequiredApiCredentials = !lastFmProfileRequiresApiCredentials(profile.protocol) ||
+      (LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0)
+
+    return {
+      ...profile,
+      enabled: profile.enabled && connected && hasRequiredApiCredentials
+    }
+  })
   const enabledStored = parseMetaBoolean(library.getAppMeta(LASTFM_ENABLED_META_KEY), false)
   const normalized: LastFmServiceConfig = {
-    enabled: connected && hasRequiredApiCredentials && enabledStored,
+    enabled: enabledStored,
     activeProfileId,
     profiles
   }
@@ -1512,6 +1540,7 @@ async function applyLastFmConfig(config: LastFmServiceConfig): Promise<ReturnTyp
       apiBaseUrl: profile.protocol === 'listenbrainz'
         ? (parseListenBrainzApiBaseUrl(profile.apiBaseUrl) ?? profile.apiBaseUrl)
         : normalizeLastFmApiBaseUrl(profile.apiBaseUrl),
+      enabled: Boolean(profile.enabled),
       pendingScrobbles: [...profile.pendingScrobbles]
     }))
   }
@@ -3925,16 +3954,9 @@ ipcMain.handle('lastfm:getStatus', () => {
 })
 
 ipcMain.handle('lastfm:setEnabled', async (_event, enabled: unknown) => {
-  const activeProfile = getConnectedLastFmProfile(lastFmConfig)
-  const connected = activeProfile.protocol === 'listenbrainz'
-    ? Boolean(activeProfile.sessionKey)
-    : Boolean(activeProfile.sessionKey && activeProfile.username)
-  const hasRequiredApiCredentials = !lastFmProfileRequiresApiCredentials(activeProfile.protocol) ||
-    (LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0)
-  const nextEnabled = Boolean(enabled) && connected && hasRequiredApiCredentials
   const nextConfig: LastFmServiceConfig = {
     ...lastFmConfig,
-    enabled: nextEnabled
+    enabled: Boolean(enabled)
   }
   return applyLastFmConfig(nextConfig)
 })
@@ -3971,8 +3993,12 @@ ipcMain.handle('lastfm:setActiveProfile', async (_event, profileId: unknown) => 
   return lastFmService.setActiveProfile(typeof profileId === 'string' ? profileId : '')
 })
 
-ipcMain.handle('lastfm:beginAuth', async () => {
-  return lastFmService.beginAuth()
+ipcMain.handle('lastfm:setProfileEnabled', async (_event, profileId: unknown, enabled: unknown) => {
+  return lastFmService.setProfileEnabled(typeof profileId === 'string' ? profileId : '', Boolean(enabled))
+})
+
+ipcMain.handle('lastfm:beginAuth', async (_event, profileId: unknown) => {
+  return lastFmService.beginAuth(typeof profileId === 'string' ? profileId : undefined)
 })
 
 ipcMain.handle('lastfm:finishAuth', async () => {
@@ -3981,6 +4007,10 @@ ipcMain.handle('lastfm:finishAuth', async () => {
 
 ipcMain.handle('lastfm:disconnect', async () => {
   return lastFmService.disconnect()
+})
+
+ipcMain.handle('lastfm:disconnectProfile', async (_event, profileId: unknown) => {
+  return lastFmService.disconnectProfile(typeof profileId === 'string' ? profileId : '')
 })
 
 ipcMain.handle('lastfm:resetToDefaults', async () => {
