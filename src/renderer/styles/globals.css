@@ -3754,6 +3754,10 @@ button, .titlebar {
   background: transparent;
 }
 
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 ::-webkit-scrollbar-thumb {
   background: var(--glass-border);
   border-radius: 4px;
@@ -4032,6 +4036,7 @@ button, .titlebar {
 
 .track-list-virtualized {
   width: 100%;
+  overflow-x: hidden !important;
 }
 
 .track-list-item {
