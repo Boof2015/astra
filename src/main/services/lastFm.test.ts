@@ -784,8 +784,16 @@ test('ListenBrainz native submissions use token auth and omit timestamps for pla
   }) as typeof fetch
 
   const caller = service as unknown as ProtocolCaller
-  const nowPlayingResult = await caller.submitNowPlaying(createPlaybackSession(), profile)
-  const scrobbleResult = await caller.submitScrobbleBatch([createPendingScrobble()], profile)
+  const nowPlayingResult = await caller.submitNowPlaying(createPlaybackSession({
+    artist: 'Jamule & Chilla',
+    artistNames: ['Jamule', 'Chilla']
+  }), profile)
+  const scrobbleResult = await caller.submitScrobbleBatch([
+    createPendingScrobble({
+      artist: 'Jamule & Chilla',
+      artistNames: ['Jamule', 'Chilla']
+    })
+  ], profile)
 
   assert.equal(nowPlayingResult.ok, true)
   assert.equal(scrobbleResult.ok, true)
@@ -804,11 +812,12 @@ test('ListenBrainz native submissions use token auth and omit timestamps for pla
   const nowPlayingPayload = nowPlayingBody.payload as Array<Record<string, unknown>>
   assert.equal('listened_at' in nowPlayingPayload[0], false)
   assert.deepEqual(nowPlayingPayload[0].track_metadata, {
-    artist_name: 'Now Artist',
+    artist_name: 'Jamule & Chilla',
     track_name: 'Now Track',
     additional_info: {
       media_player: 'Astra',
       submission_client: 'Astra',
+      artist_names: ['Jamule', 'Chilla'],
       duration: 180,
       duration_played: 12
     },
@@ -819,6 +828,12 @@ test('ListenBrainz native submissions use token auth and omit timestamps for pla
   assert.equal(scrobbleBody.listen_type, 'single')
   const scrobblePayload = scrobbleBody.payload as Array<Record<string, unknown>>
   assert.equal(scrobblePayload[0].listened_at, 1_700_000_000)
+  assert.deepEqual((scrobblePayload[0].track_metadata as Record<string, unknown>).additional_info, {
+    media_player: 'Astra',
+    submission_client: 'Astra',
+    artist_names: ['Jamule', 'Chilla'],
+    duration: 180
+  })
 })
 
 test('ListenBrainz profile creation normalizes full submit-listens endpoint URLs', async (t) => {

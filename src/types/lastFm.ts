@@ -9,6 +9,7 @@ export interface LastFmPendingScrobble {
   trackPath: string | null
   track: string
   artist: string
+  artistNames?: string[]
   album: string | null
   albumArtist: string | null
   durationSeconds: number | null

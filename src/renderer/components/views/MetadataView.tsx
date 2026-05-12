@@ -50,8 +50,10 @@ type TrackRecord = {
   path: string
   title: string
   artist: string
+  artist_names?: string[]
   album: string
   album_artist: string | null
+  album_artist_names?: string[]
   genre: string | null
   year: number | null
   track_number: number | null
@@ -924,8 +926,10 @@ export default function MetadataView() {
           ...state.currentTrack,
           title: refreshed.title,
           artist: refreshed.artist,
+          artistNames: refreshed.artist_names,
           album: refreshed.album,
           albumArtist: refreshed.album_artist ?? undefined,
+          albumArtistNames: refreshed.album_artist_names,
           genre: refreshed.genre ?? undefined,
           year: refreshed.year ?? undefined,
           trackNumber: refreshed.track_number ?? undefined,

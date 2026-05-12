@@ -357,8 +357,10 @@ declare global {
                 metadata?: {
                     title?: string
                     artist?: string
+                    artistNames?: string[]
                     album?: string
                     albumArtist?: string
+                    albumArtistNames?: string[]
                     year?: number
                     trackNumber?: number
                     duration?: number
@@ -384,8 +386,10 @@ declare global {
                 metadata?: {
                     title?: string
                     artist?: string
+                    artistNames?: string[]
                     album?: string
                     albumArtist?: string
+                    albumArtistNames?: string[]
                     year?: number
                     trackNumber?: number
                     duration?: number
@@ -403,8 +407,10 @@ declare global {
             getAudioMetadata: (filePath: string) => Promise<{
                 title?: string
                 artist?: string
+                artistNames?: string[]
                 album?: string
                 albumArtist?: string
+                albumArtistNames?: string[]
                 year?: number
                 trackNumber?: number
                 duration?: number

@@ -105,8 +105,10 @@ type RuntimeIconImageSetPayload = {
 export interface AudioFileMetadata {
   title?: string
   artist?: string
+  artistNames?: string[]
   album?: string
   albumArtist?: string
+  albumArtistNames?: string[]
   year?: number
   trackNumber?: number
   duration?: number

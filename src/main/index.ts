@@ -90,6 +90,10 @@ import {
   type MiniPlayerWindowState,
 } from '../types/miniPlayer'
 import {
+  formatArtistNames,
+  normalizeArtistNames
+} from '../shared/library/artistCredits'
+import {
   LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
   LYRICS_POPOUT_WINDOW_MIN_WIDTH,
   type LyricsPopoutCommand,
@@ -5901,8 +5905,10 @@ ipcMain.handle('library:importPlaylistFromFile', async (_event, filePath: string
 interface LoadedAudioMetadata {
   title: string
   artist: string
+  artistNames?: string[]
   album: string
   albumArtist?: string
+  albumArtistNames?: string[]
   duration?: number
   format: string
   artwork?: string
@@ -7256,8 +7262,10 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
           ...parsed,
           title: parsed.title ?? payload.track?.title ?? dbTrack?.title,
           artist: parsed.artist ?? payload.track?.artist ?? dbTrack?.artist,
+          artistNames: parsed.artistNames && parsed.artistNames.length > 0 ? parsed.artistNames : dbTrack?.artist_names,
           album: parsed.album ?? payload.track?.album ?? dbTrack?.album,
           albumArtist: parsed.albumArtist ?? payload.track?.album_artist ?? dbTrack?.album_artist ?? undefined,
+          albumArtistNames: parsed.albumArtistNames && parsed.albumArtistNames.length > 0 ? parsed.albumArtistNames : dbTrack?.album_artist_names,
           duration: parsed.duration ?? payload.track?.duration ?? dbTrack?.duration,
           format: payload.track?.format ?? dbTrack?.format ?? parsed.format
         }
@@ -7274,8 +7282,10 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
     return {
       title: dbTrack.title,
       artist: dbTrack.artist,
+      artistNames: dbTrack.artist_names,
       album: dbTrack.album,
       albumArtist: dbTrack.album_artist ?? undefined,
+      albumArtistNames: dbTrack.album_artist_names,
       duration: dbTrack.duration,
       format: dbTrack.format,
       channels: dbTrack.channels ?? undefined,
@@ -7307,6 +7317,16 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
     const mm_metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
     const common = mm_metadata.common
     const replayGain = extractReplayGainDb(mm_metadata)
+    const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
+    const parsedAlbumArtistNames = normalizeArtistNames(common.albumartists ?? [])
+    const artistDisplay = parsedArtistNames.length > 1
+      ? formatArtistNames(parsedArtistNames)
+      : common.artist || formatArtistNames(parsedArtistNames) || 'Unknown Artist'
+    const albumArtistDisplay = parsedAlbumArtistNames.length > 1
+      ? formatArtistNames(parsedAlbumArtistNames)
+      : typeof common.albumartist === 'string'
+        ? common.albumartist
+        : formatArtistNames(parsedAlbumArtistNames) || undefined
 
     // Convert artwork to base64 data URL
     let artworkDataUrl: string | undefined
@@ -7318,9 +7338,11 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
 
     metadata = {
       title: common.title || fallbackTitle,
-      artist: common.artist || 'Unknown Artist',
+      artist: artistDisplay,
+      artistNames: parsedArtistNames,
       album: common.album || 'Unknown Album',
-      albumArtist: typeof common.albumartist === 'string' ? common.albumartist : undefined,
+      albumArtist: albumArtistDisplay,
+      albumArtistNames: parsedAlbumArtistNames,
       duration: mm_metadata.format.duration,
       format,
       artwork: artworkDataUrl,

@@ -516,8 +516,10 @@ interface RecentPlaySession {
 interface AssociatedAudioMetadata {
   title?: string
   artist?: string
+  artistNames?: string[]
   album?: string
   albumArtist?: string
+  albumArtistNames?: string[]
   duration?: number
   format?: string
   channels?: number
@@ -534,8 +536,10 @@ function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedAudioMet
     ...track,
     title: metadata.title?.trim() || track.title,
     artist: metadata.artist?.trim() || track.artist,
+    artistNames: metadata.artistNames ?? track.artistNames,
     album: metadata.album?.trim() || track.album,
     albumArtist: metadata.albumArtist ?? track.albumArtist,
+    albumArtistNames: metadata.albumArtistNames ?? track.albumArtistNames,
     duration: typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration > 0
       ? metadata.duration
       : track.duration,

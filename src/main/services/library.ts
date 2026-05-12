@@ -905,10 +905,16 @@ function attachAlbumIdentityKeys(
       album_artist_names_json,
       ...rest
     } = track
+    const artistNames = deserializeArtistNames(artist_names_json)
+    const albumArtistNames = deserializeArtistNames(album_artist_names_json)
     return {
       ...rest,
-      artist_names: deserializeArtistNames(artist_names_json),
-      album_artist_names: deserializeArtistNames(album_artist_names_json),
+      artist: artistNames.length > 1 ? formatArtistNames(artistNames) : rest.artist,
+      artist_names: artistNames,
+      album_artist: albumArtistNames.length > 1
+        ? formatArtistNames(albumArtistNames)
+        : rest.album_artist ?? (albumArtistNames[0] ?? null),
+      album_artist_names: albumArtistNames,
       album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track),
       is_new: isTrackNewForLatestSync(sync_session_key, latestSyncSummary, latest_sync_dismissed_at)
     }
@@ -5745,8 +5751,12 @@ async function extractMetadata(filePath: string): Promise<{
   const fileName = basename(filePath, extname(filePath))
   const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
   const parsedAlbumArtistNames = normalizeArtistNames(common.albumartists ?? [])
-  const artistDisplay = toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
-  const albumArtistDisplay = toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
+  const artistDisplay = parsedArtistNames.length > 1
+    ? formatArtistNames(parsedArtistNames)
+    : toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
+  const albumArtistDisplay = parsedAlbumArtistNames.length > 1
+    ? formatArtistNames(parsedAlbumArtistNames)
+    : toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
 
   return {
     title: common.title || fileName,

@@ -6,7 +6,10 @@ export interface MiniPlayerTrackSnapshot {
   path: string
   title: string
   artist: string
+  artistNames?: string[]
   album: string
+  albumArtist?: string | null
+  albumArtistNames?: string[]
   artworkHash?: string | null
   artworkData?: string | null
   isFavorite: boolean

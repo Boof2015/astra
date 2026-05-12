@@ -11,7 +11,9 @@ export interface LocalApiTrackSnapshot {
   id: string
   title: string
   artist: string
+  artists: string[]
   album: string
+  albumArtists: string[]
   isFavorite: boolean
   artworkUrl: string | null
   artworkDataUrl: string | null

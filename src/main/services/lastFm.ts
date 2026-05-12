@@ -19,6 +19,10 @@ import {
   type LastFmServiceConfig,
   type LastFmStatus
 } from '../../types/lastFm'
+import {
+  formatArtistNames,
+  normalizeArtistNames
+} from '../../shared/library/artistCredits'
 
 const LASTFM_AUTH_URL = 'https://www.last.fm/api/auth/'
 const LASTFM_USER_AGENT = 'Astra-LastFM/0.1.0 (https://github.com/Boof2015/astra)'
@@ -83,6 +87,7 @@ interface PlaybackSession {
   trackPath: string | null
   track: string
   artist: string
+  artistNames?: string[]
   album: string | null
   albumArtist: string | null
   durationSeconds: number | null
@@ -104,6 +109,11 @@ function normalizeText(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
+function normalizeOptionalArtistNames(value: unknown): string[] | undefined {
+  const names = Array.isArray(value) ? normalizeArtistNames(value) : []
+  return names.length > 0 ? names : undefined
+}
+
 function normalizeNonNegativeInteger(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   if (value < 0) return 0
@@ -121,36 +131,6 @@ function buildScrobbleId(trackPath: string | null, track: string, artist: string
   const hash = createHash('md5')
   hash.update(`${artist}\u0000${track}\u0000${timestamp}`)
   return hash.digest('hex')
-}
-
-function splitCollaborators(rawArtist: string): string[] {
-  const normalized = normalizeDisplay(rawArtist)
-  if (!normalized) return []
-
-  const unified = normalized
-    .replace(/\s*;\s*/g, ',')
-    .replace(/\s+&\s+/g, ',')
-    .replace(/\s+[x×]\s+/gi, ',')
-    .replace(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/gi, ',')
-
-  const unique = new Set<string>()
-  const contributors: string[] = []
-
-  for (const part of unified.split(',')) {
-    const display = normalizeDisplay(part)
-    if (!display) continue
-    const key = display.toLocaleLowerCase()
-    if (!key || unique.has(key)) continue
-    unique.add(key)
-    contributors.push(display)
-  }
-
-  return contributors
-}
-
-function getPrimaryArtist(rawArtist: string): string {
-  const contributors = splitCollaborators(rawArtist)
-  return contributors[0] ?? rawArtist
 }
 
 function computeRetryDelayMs(retryCount: number, baseMs: number): number {
@@ -417,12 +397,14 @@ export function sanitizePendingScrobbles(raw: unknown): LastFmPendingScrobble[] 
     const retryCount = normalizeNonNegativeInteger(record.retryCount) ?? 0
     const nextRetryAt = normalizeNullablePositiveInteger(record.nextRetryAt) ?? nowMs
     const durationSeconds = normalizeNullablePositiveInteger(record.durationSeconds)
+    const artistNames = normalizeOptionalArtistNames(record.artistNames)
 
     normalized.push({
       id,
       trackPath,
       track,
       artist,
+      artistNames,
       album: normalizeText(record.album),
       albumArtist: normalizeText(record.albumArtist),
       durationSeconds,
@@ -914,7 +896,10 @@ export class LastFmService {
 
     if (!this.currentPlayback || this.currentPlayback.trackKey !== trackKey) {
       const normalizedTrack = normalizeDisplay(currentTrack.title)
-      const normalizedArtist = normalizeDisplay(getPrimaryArtist(currentTrack.artist))
+      const normalizedArtistNames = normalizeArtistNames(currentTrack.artistNames)
+      const normalizedArtist = normalizedArtistNames.length > 1
+        ? formatArtistNames(normalizedArtistNames)
+        : normalizeDisplay(currentTrack.artist)
       const normalizedAlbum = normalizeText(currentTrack.album)
 
       this.currentPlayback = {
@@ -922,6 +907,7 @@ export class LastFmService {
         trackPath: normalizeText(currentTrack.path),
         track: normalizedTrack || currentTrack.title,
         artist: normalizedArtist || currentTrack.artist,
+        artistNames: normalizedArtistNames.length > 0 ? normalizedArtistNames : undefined,
         album: normalizedAlbum,
         albumArtist: null,
         durationSeconds: normalizeNullablePositiveInteger(snapshot.duration),
@@ -1132,6 +1118,7 @@ export class LastFmService {
         trackPath: this.currentPlayback.trackPath,
         track: this.currentPlayback.track,
         artist: this.currentPlayback.artist,
+        artistNames: this.currentPlayback.artistNames,
         album: this.currentPlayback.album,
         albumArtist: this.currentPlayback.albumArtist,
         durationSeconds: this.currentPlayback.durationSeconds,
@@ -1611,9 +1598,13 @@ export class LastFmService {
     }
 
     const payload = items.map((item) => {
-      const additionalInfo: Record<string, string | number> = {
+      const additionalInfo: Record<string, string | number | string[]> = {
         media_player: 'Astra',
         submission_client: 'Astra'
+      }
+      const artistNames = normalizeArtistNames(item.artistNames)
+      if (artistNames.length > 0) {
+        additionalInfo.artist_names = artistNames
       }
       if (item.durationSeconds) {
         additionalInfo.duration = item.durationSeconds

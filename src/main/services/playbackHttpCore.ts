@@ -5,6 +5,10 @@ import {
   type LocalApiControlCommand,
   type LocalApiNowPlayingSnapshot
 } from '../../types/localApi'
+import {
+  formatArtistNames,
+  normalizeArtistNames
+} from '../../shared/library/artistCredits'
 
 const AUTH_PREFIX = 'Bearer '
 const MAX_SSE_CLIENTS = 8
@@ -61,6 +65,22 @@ export function toSafeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
+function resolveArtistNames(names: unknown, fallback: unknown): string[] {
+  const normalized = Array.isArray(names) ? normalizeArtistNames(names) : []
+  if (normalized.length > 0) return normalized
+
+  const fallbackText = toSafeOptionalString(fallback)
+  return fallbackText ? [fallbackText] : []
+}
+
+function resolveDisplayArtist(fallback: unknown, names: unknown): string {
+  const normalized = Array.isArray(names) ? normalizeArtistNames(names) : []
+  if (normalized.length > 1) return formatArtistNames(normalized)
+
+  const fallbackText = toSafeOptionalString(fallback)
+  return fallbackText ?? normalized[0] ?? ''
+}
+
 function parseArtworkDataUrl(artworkData: string | null | undefined): ParsedArtworkData | null {
   if (typeof artworkData !== 'string') return null
   const normalized = artworkData.trim()
@@ -113,8 +133,10 @@ function sanitizeSnapshot(
       ? {
           id: String(snapshot.currentTrack.id),
           title: String(snapshot.currentTrack.title),
-          artist: String(snapshot.currentTrack.artist),
+          artist: resolveDisplayArtist(snapshot.currentTrack.artist, snapshot.currentTrack.artistNames),
+          artists: resolveArtistNames(snapshot.currentTrack.artistNames, snapshot.currentTrack.artist),
           album: String(snapshot.currentTrack.album),
+          albumArtists: resolveArtistNames(snapshot.currentTrack.albumArtistNames, snapshot.currentTrack.albumArtist),
           isFavorite: Boolean(snapshot.currentTrack.isFavorite),
           artworkUrl,
           artworkDataUrl

@@ -142,6 +142,39 @@ test('local API routes reject unauthorized requests', async (t) => {
   assert.equal(control.status, 401)
 })
 
+test('now-playing exposes joined artist display and parsed artist arrays', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  harness.publishSnapshot(createSnapshot({
+    currentTrack: {
+      id: 'jamule-chilla-13',
+      path: '/music/Jamule & Chilla - 13.mp3',
+      title: '13',
+      artist: 'Jamule',
+      artistNames: ['Jamule', 'Chilla'],
+      album: '13',
+      albumArtist: 'Jamule',
+      albumArtistNames: ['Jamule', 'Chilla'],
+      artworkData: null,
+      isFavorite: false
+    }
+  }))
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(response.status, 200)
+
+  const body = await response.json() as Record<string, unknown>
+  const currentTrack = body.currentTrack as Record<string, unknown>
+  assert.equal(currentTrack.artist, 'Jamule & Chilla')
+  assert.deepEqual(currentTrack.artists, ['Jamule', 'Chilla'])
+  assert.deepEqual(currentTrack.albumArtists, ['Jamule', 'Chilla'])
+})
+
 test('seek control clamps to the track duration and rejects missing tracks', async (t) => {
   const harness = await createHarness()
   t.after(async () => {

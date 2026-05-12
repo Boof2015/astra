@@ -138,6 +138,8 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   const dbTrack = makeDbTrack('/music/a.flac', {
     title: 'Cached Title',
     artist: 'Cached Artist',
+    artist_names: ['Cached Artist', 'Featured Artist'],
+    album_artist_names: ['Cached Artist', 'Featured Artist'],
     artwork_hash: 'art-hash'
   })
   useLibraryStore.setState({
@@ -148,12 +150,16 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   assert.ok(entry)
   assert.equal(entry.snapshot.title, 'Cached Title')
   assert.equal(entry.snapshot.artist, 'Cached Artist')
+  assert.deepEqual(entry.snapshot.artistNames, ['Cached Artist', 'Featured Artist'])
+  assert.deepEqual(entry.snapshot.albumArtistNames, ['Cached Artist', 'Featured Artist'])
   assert.equal(entry.snapshot.artworkHash, 'art-hash')
   assert.equal(hasArtworkData(entry), false)
 
   usePlayerStore.setState({ userQueue: [entry] })
   const [resolved] = usePlayerStore.getState().getResolvedUserQueueEntries()
   assert.equal(resolved?.track.title, 'Cached Title')
+  assert.deepEqual(resolved?.track.artistNames, ['Cached Artist', 'Featured Artist'])
+  assert.deepEqual(resolved?.track.albumArtistNames, ['Cached Artist', 'Featured Artist'])
   assert.equal(resolved?.track.artworkHash, 'art-hash')
 })
 
