@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
@@ -1064,10 +1064,9 @@ export default function HomeView() {
       if (seenTrackPaths.has(track.path)) continue
       seenTrackPaths.add(track.path)
       uniqueTracks.push(track)
-      if (uniqueTracks.length >= recentLimits.track) break
     }
     return uniqueTracks
-  }, [recentlyPlayed, recentLimits])
+  }, [recentlyPlayed])
 
   const recentArtists = useMemo(() => {
     const seenArtistKeys = new Set<string>()
@@ -1140,6 +1139,28 @@ export default function HomeView() {
       contextLabel: 'Recently Played'
     })
   }
+
+  const handleRecentRowWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const element = event.currentTarget
+    const maxScrollLeft = element.scrollWidth - element.clientWidth
+
+    if (maxScrollLeft <= 0) return
+    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+
+    const isAtStart = element.scrollLeft <= 0
+    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
+
+    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
+
+    const deltaY = event.deltaMode === 1
+      ? event.deltaY * 16
+      : event.deltaMode === 2
+        ? event.deltaY * element.clientWidth
+        : event.deltaY
+
+    event.preventDefault()
+    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
+  }, [])
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
@@ -1252,7 +1273,7 @@ export default function HomeView() {
             <h2>RECENTLY PLAYED</h2>
           </div>
           {recentTracks.length > 0 ? (
-            <div className="home-recent-row">
+            <div className="home-recent-row" onWheel={handleRecentRowWheel}>
               {recentTracks.map((track, index) => (
                 <article
                   key={track.path}

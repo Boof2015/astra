@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -453,6 +453,28 @@ export default function LibraryView() {
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
     setIncludeSinglesInAlbums((current) => !current)
+  }, [])
+
+  const handleArtistAlbumRailWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const element = event.currentTarget
+    const maxScrollLeft = element.scrollWidth - element.clientWidth
+
+    if (maxScrollLeft <= 0) return
+    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+
+    const isAtStart = element.scrollLeft <= 0
+    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
+
+    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
+
+    const deltaY = event.deltaMode === 1
+      ? event.deltaY * 16
+      : event.deltaMode === 2
+        ? event.deltaY * element.clientWidth
+        : event.deltaY
+
+    event.preventDefault()
+    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
   }, [])
 
   const handleResetSourceFilters = useCallback(() => {
@@ -1043,7 +1065,7 @@ export default function LibraryView() {
             </div>
 
             {visibleArtistAlbums.length > 0 ? (
-              <div className="library-artist-rail-row">
+              <div className="library-artist-rail-row" onWheel={handleArtistAlbumRailWheel}>
                 {visibleArtistAlbums.map((album) => (
                   <button
                     key={album.identity_key}
