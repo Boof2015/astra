@@ -92,6 +92,7 @@ function createMiniPlayerSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): 
     duration: 180,
     queueLength: 1,
     outputDeviceLabel: null,
+    timeDisplayMode: 'remaining',
     visualizerLineColor: '#ffffff',
     currentTrack: {
       id: 'track-1',

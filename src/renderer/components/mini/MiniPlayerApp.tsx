@@ -4,7 +4,11 @@ import type {
   MiniPlayerVisualizerMode,
   MiniPlayerWindowState
 } from '../../../types/miniPlayer'
-import { mergeMiniPlayerSnapshots } from '../../../types/miniPlayer'
+import {
+  DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  mergeMiniPlayerSnapshots,
+  normalizeMiniPlayerTimeDisplayMode
+} from '../../../types/miniPlayer'
 import MiniPlayerBackdropVisualizer from './MiniPlayerBackdropVisualizer'
 import '../../styles/mini-player.css'
 
@@ -15,6 +19,7 @@ const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   queueLength: 0,
   outputDeviceLabel: null,
   currentTrack: null,
+  timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
   visualizerLineColor: '#38bdf8'
 }
 
@@ -159,6 +164,10 @@ export default function MiniPlayerApp() {
   const currentDisplayTime = isScrubbing ? scrubTime : snapshot.currentTime
   const clampedDisplayTime = clampTime(currentDisplayTime, safeDuration)
   const remainingTime = Math.max(0, safeDuration - clampedDisplayTime)
+  const timeDisplayMode = normalizeMiniPlayerTimeDisplayMode(snapshot.timeDisplayMode)
+  const showingRemainingTime = timeDisplayMode === 'remaining'
+  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remainingTime)}` : formatTime(safeDuration)
+  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
   const seekProgress = safeDuration > 0 ? (clampedDisplayTime / safeDuration) * 100 : 0
   const seekStyle = { '--seek-progress': `${Math.max(0, Math.min(100, seekProgress))}%` } as CSSProperties
   const showSeek = layoutMode === 'wide' || layoutMode === 'hero'
@@ -397,7 +406,15 @@ export default function MiniPlayerApp() {
               <div className="mini-player-seek-wrap">
                 <div className="mini-player-time-row">
                   <span>{formatTime(clampedDisplayTime)}</span>
-                  <span>-{formatTime(remainingTime)}</span>
+                  <button
+                    type="button"
+                    className="mini-player-time-toggle"
+                    onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'toggleTimeDisplayMode' })}
+                    aria-label={rightTimeToggleLabel}
+                    title={rightTimeToggleLabel}
+                  >
+                    {rightTimeLabel}
+                  </button>
                 </div>
                 <input
                   className="mini-player-seek"

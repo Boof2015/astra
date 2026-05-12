@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
+import { useUIStore } from '../stores/uiStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
 import { isNativeAvailable } from '../audio/native/index'
@@ -41,6 +42,7 @@ export function useMiniPlayerBridge(): void {
   const currentTime = usePlayerStore((s) => s.currentTime)
   const duration = usePlayerStore((s) => s.duration)
   const queueLength = usePlayerStore((s) => s.getResolvedQueueLength())
+  const timeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
 
   const favorites = useLibraryStore((s) => s.favorites)
   const getArtwork = useLibraryStore((s) => s.getArtwork)
@@ -61,6 +63,7 @@ export function useMiniPlayerBridge(): void {
   const latestPendingRef = useRef<MiniPlayerSnapshot | null>(null)
   const previousTrackIdRef = useRef<string | null>(null)
   const previousPlaybackStateRef = useRef(playbackState)
+  const previousTimeDisplayModeRef = useRef(timeDisplayMode)
   const previousArtworkRef = useRef<string | null>(null)
   const visualizerStreamTimerRef = useRef<number | null>(null)
   const visualizerResetSentRef = useRef(false)
@@ -146,6 +149,9 @@ export function useMiniPlayerBridge(): void {
           break
         case 'playPrevious':
           void player.playPrevious()
+          break
+        case 'toggleTimeDisplayMode':
+          useUIStore.getState().toggleWaveformTimeDisplayMode()
           break
         case 'toggleFavoriteCurrent': {
           const currentTrackPath = player.currentTrack?.path
@@ -292,7 +298,8 @@ export function useMiniPlayerBridge(): void {
     const shouldIncludeArtwork = previousTrackIdRef.current !== currentTrackId ||
       previousArtworkRef.current !== effectiveArtworkData
     const shouldForce = shouldIncludeArtwork ||
-      previousPlaybackStateRef.current !== playbackState
+      previousPlaybackStateRef.current !== playbackState ||
+      previousTimeDisplayModeRef.current !== timeDisplayMode
 
     const snapshot: MiniPlayerSnapshot = {
       playbackState,
@@ -300,6 +307,7 @@ export function useMiniPlayerBridge(): void {
       duration: toSafeTime(duration),
       queueLength,
       outputDeviceLabel,
+      timeDisplayMode,
       visualizerLineColor: lineColor,
       currentTrack: currentTrack
         ? {
@@ -320,6 +328,7 @@ export function useMiniPlayerBridge(): void {
 
     previousTrackIdRef.current = currentTrackId
     previousPlaybackStateRef.current = playbackState
+    previousTimeDisplayModeRef.current = timeDisplayMode
     previousArtworkRef.current = effectiveArtworkData
 
     latestPendingRef.current = snapshot
@@ -361,6 +370,7 @@ export function useMiniPlayerBridge(): void {
     currentTime,
     duration,
     queueLength,
+    timeDisplayMode,
     selectedDeviceId,
     availableDevices,
     favorites,

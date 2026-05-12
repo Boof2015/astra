@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  getNextMiniPlayerTimeDisplayMode,
   mergeMiniPlayerSnapshots,
+  normalizeMiniPlayerTimeDisplayMode,
   selectMiniPlayerTrackArtworkData,
   type MiniPlayerResolvedArtwork,
   type MiniPlayerSnapshot,
@@ -33,11 +36,25 @@ function createSnapshot(
     duration: 185,
     queueLength: 3,
     outputDeviceLabel: 'Test Output',
+    timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
     visualizerLineColor: '#38bdf8',
     currentTrack: createTrackSnapshot(),
     ...overrides
   }
 }
+
+test('normalizeMiniPlayerTimeDisplayMode defaults to remaining for unknown values', () => {
+  assert.equal(normalizeMiniPlayerTimeDisplayMode('duration'), 'duration')
+  assert.equal(normalizeMiniPlayerTimeDisplayMode('remaining'), 'remaining')
+  assert.equal(normalizeMiniPlayerTimeDisplayMode('elapsed'), DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE)
+  assert.equal(normalizeMiniPlayerTimeDisplayMode(null), DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE)
+})
+
+test('getNextMiniPlayerTimeDisplayMode toggles between remaining and duration', () => {
+  assert.equal(getNextMiniPlayerTimeDisplayMode('remaining'), 'duration')
+  assert.equal(getNextMiniPlayerTimeDisplayMode('duration'), 'remaining')
+  assert.equal(getNextMiniPlayerTimeDisplayMode('elapsed'), 'duration')
+})
 
 test('mergeMiniPlayerSnapshots preserves artwork for the same track when the next snapshot omits it', () => {
   const previous = createSnapshot({

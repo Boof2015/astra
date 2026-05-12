@@ -1,5 +1,19 @@
 export type MiniPlayerPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+export type MiniPlayerTimeDisplayMode = 'remaining' | 'duration'
 export type MiniPlayerVisualizerMode = 'off' | 'oscilloscope' | 'spectrum'
+
+export const DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE: MiniPlayerTimeDisplayMode = 'remaining'
+
+export function normalizeMiniPlayerTimeDisplayMode(value: unknown): MiniPlayerTimeDisplayMode {
+  return value === 'duration' || value === 'remaining'
+    ? value
+    : DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE
+}
+
+export function getNextMiniPlayerTimeDisplayMode(value: unknown): MiniPlayerTimeDisplayMode {
+  const current = normalizeMiniPlayerTimeDisplayMode(value)
+  return current === 'remaining' ? 'duration' : 'remaining'
+}
 
 export interface MiniPlayerTrackSnapshot {
   id: string
@@ -22,6 +36,7 @@ export interface MiniPlayerSnapshot {
   queueLength: number
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
+  timeDisplayMode: MiniPlayerTimeDisplayMode
   visualizerLineColor: string
 }
 
@@ -89,6 +104,7 @@ export type MiniPlayerCommand =
   | { type: 'togglePlay' }
   | { type: 'playNext' }
   | { type: 'playPrevious' }
+  | { type: 'toggleTimeDisplayMode' }
   | { type: 'toggleFavoriteCurrent' }
   | { type: 'seek'; time: number }
   | { type: 'toggleFavorite'; trackPath: string }

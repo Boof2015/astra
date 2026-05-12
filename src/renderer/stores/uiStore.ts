@@ -1,10 +1,16 @@
 import { create } from 'zustand'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
+import {
+  DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  getNextMiniPlayerTimeDisplayMode,
+  normalizeMiniPlayerTimeDisplayMode,
+  type MiniPlayerTimeDisplayMode
+} from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
-export type WaveformTimeDisplayMode = 'remaining' | 'duration'
+export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
@@ -129,9 +135,9 @@ export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextM
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
-    return saved === 'duration' ? 'duration' : 'remaining'
+    return normalizeMiniPlayerTimeDisplayMode(saved)
   } catch {
-    return 'remaining'
+    return DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE
   }
 }
 
@@ -408,7 +414,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set({ activityIndicatorExperimentEnabled: normalized })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
-    const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'
+    const nextMode = getNextMiniPlayerTimeDisplayMode(s.waveformTimeDisplayMode)
     persistWaveformTimeDisplayModePreference(nextMode)
     return { waveformTimeDisplayMode: nextMode }
   }),

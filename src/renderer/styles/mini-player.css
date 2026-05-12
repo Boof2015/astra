@@ -339,6 +339,33 @@ html[data-window-mode='mini'] body::after {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.34);
 }
 
+.mini-player-time-toggle {
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  margin: -1px -2px;
+  min-width: 6ch;
+  padding: 1px 2px;
+  display: inline-flex;
+  justify-content: flex-end;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  text-align: right;
+  text-shadow: inherit;
+  cursor: pointer;
+}
+
+.mini-player-time-toggle:hover {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.mini-player-time-toggle:focus-visible {
+  outline: 1px solid rgba(var(--accent-rgb), 0.72);
+  outline-offset: 2px;
+}
+
 .mini-player-seek {
   --seek-progress: 0%;
   appearance: none;

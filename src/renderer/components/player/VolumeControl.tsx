@@ -1,9 +1,11 @@
-import type { PointerEvent, ReactElement } from 'react'
+import type { PointerEvent, ReactElement, WheelEvent } from 'react'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
   useAudioSettingsStore
 } from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
+
+const WHEEL_VOLUME_STEP = 0.01
 
 interface VolumeControlProps {
   className: string
@@ -15,6 +17,10 @@ function getPercentFromClientX(clientX: number, element: HTMLDivElement): number
   if (rect.width <= 0) return 0
   const percent = (clientX - rect.left) / rect.width
   return Math.max(0, Math.min(1, percent))
+}
+
+function clampVolumePercent(volume: number): number {
+  return Math.max(0, Math.min(1, volume))
 }
 
 function VolumeIcon({
@@ -83,6 +89,15 @@ export default function VolumeControl({
     }
   }
 
+  const handleVolumeWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (volumeControlDisabled) return
+    if (event.deltaY === 0) return
+
+    event.preventDefault()
+    const direction = event.deltaY < 0 ? 1 : -1
+    setVolume(clampVolumePercent(volume + (direction * WHEEL_VOLUME_STEP)))
+  }
+
   return (
     <div className={className}>
       <button
@@ -101,6 +116,7 @@ export default function VolumeControl({
         onPointerMove={handleVolumePointerMove}
         onPointerUp={releaseVolumePointer}
         onPointerCancel={releaseVolumePointer}
+        onWheel={handleVolumeWheel}
         role="slider"
         aria-label="Playback volume"
         aria-valuenow={visiblePercent}
