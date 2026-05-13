@@ -5,6 +5,7 @@ import {
   pruneCachedTracks,
   resolveCachedTrackPaths,
   updateFullTrackConsumers,
+  useLibraryStore,
   type DbTrack
 } from './libraryStore.ts'
 
@@ -32,6 +33,9 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     bit_depth: overrides.bit_depth ?? 16,
     bitrate: overrides.bitrate ?? null,
     channels: overrides.channels ?? 2,
+    codec: overrides.codec ?? null,
+    codec_profile: overrides.codec_profile ?? null,
+    is_atmos_joc: overrides.is_atmos_joc ?? 0,
     bpm: overrides.bpm ?? null,
     musical_key: overrides.musical_key ?? null,
     source_type: overrides.source_type ?? 'local',
@@ -46,6 +50,19 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     added_at: overrides.added_at ?? 1,
     modified_at: overrides.modified_at ?? 1
   }
+}
+
+function installMockTrackFetch(handler: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]): void {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        library: {
+          getTracksByPaths: async (trackPaths: string[]) => handler(trackPaths)
+        }
+      }
+    }
+  })
 }
 
 test('getUniqueTrackPaths de-duplicates while preserving first-seen order', () => {
@@ -96,4 +113,34 @@ test('updateFullTrackConsumers releases full tracks only after the last consumer
   const released = updateFullTrackConsumers(retained.consumers, 'library', 'release')
   assert.deepEqual([...released.consumers], [])
   assert.equal(released.shouldReleaseFullTracks, true)
+})
+
+test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {
+  const cachedTrack = makeTrack('/music/cached.flac', { title: 'Cached' })
+  const fetchedTrack = makeTrack('/music/fetched.flac', { title: 'Fetched' })
+  let requestedPaths: string[] = []
+  installMockTrackFetch((trackPaths) => {
+    requestedPaths = trackPaths
+    return [fetchedTrack]
+  })
+  useLibraryStore.setState({
+    trackByPath: new Map([[cachedTrack.path, cachedTrack]]),
+    trackCacheVersion: 0
+  })
+
+  const tracks = await useLibraryStore.getState().resolveTrackPathsWithFetch([
+    cachedTrack.path,
+    fetchedTrack.path,
+    '/music/missing.flac',
+    fetchedTrack.path
+  ])
+
+  assert.deepEqual(requestedPaths, [fetchedTrack.path, '/music/missing.flac'])
+  assert.deepEqual(tracks.map((track) => track.path), [
+    cachedTrack.path,
+    fetchedTrack.path,
+    fetchedTrack.path
+  ])
+  assert.equal(useLibraryStore.getState().trackByPath.get(cachedTrack.path), cachedTrack)
+  assert.equal(useLibraryStore.getState().trackByPath.get(fetchedTrack.path), fetchedTrack)
 })

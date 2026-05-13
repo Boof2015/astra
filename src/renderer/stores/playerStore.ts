@@ -123,7 +123,7 @@ interface PlayerStore {
   ) => Promise<void>
   enqueueUserTrack: (track: Track, position?: number | 'next' | 'end') => void
   enqueueUserTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
-  enqueueUserTrackPaths: (paths: string[], position?: number | 'next' | 'end') => void
+  enqueueUserTrackPaths: (paths: string[], position?: number | 'next' | 'end') => Promise<void>
   moveUserQueue: (fromIndex: number, toIndex: number) => void
   removeUserTrack: (index: number) => void
   clearUserQueue: () => void
@@ -265,6 +265,26 @@ function getFormatFromPath(trackPath: string): string {
   return extensionIndex > 0 ? fileName.slice(extensionIndex + 1).toLowerCase() : 'unknown'
 }
 
+export function resolvePositiveDuration(primary: unknown, fallback: unknown = 0): number {
+  const primaryDuration = Number(primary)
+  if (Number.isFinite(primaryDuration) && primaryDuration > 0) return primaryDuration
+
+  const fallbackDuration = Number(fallback)
+  if (Number.isFinite(fallbackDuration) && fallbackDuration > 0) return fallbackDuration
+
+  return 0
+}
+
+export function shouldApplyDurationChange(
+  duration: unknown,
+  currentTrack: Pick<Track, 'duration'> | null,
+  playbackState: PlaybackState
+): boolean {
+  if (resolvePositiveDuration(duration) > 0) return true
+  if (!currentTrack || playbackState === 'stopped') return true
+  return resolvePositiveDuration(currentTrack.duration) <= 0
+}
+
 export function stripTrackArtworkData(track: Track): QueueTrackSnapshot {
   const { artworkData: _artworkData, ...snapshot } = track
   return snapshot
@@ -344,17 +364,32 @@ function createQueueEntriesFromTracks(tracks: readonly Track[]): QueueTrackEntry
     .map(createQueueEntryFromTrack)
 }
 
-export function createQueueEntriesFromPaths(trackPaths: readonly string[]): QueueTrackEntry[] {
-  const paths = trackPaths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
-  if (paths.length === 0) return []
-
-  const resolvedTracks = useLibraryStore.getState().resolveTrackPaths(paths)
+function createQueueEntriesFromResolvedTracks(
+  paths: readonly string[],
+  resolvedTracks: readonly DbTrack[]
+): QueueTrackEntry[] {
   const resolvedByPath = new Map(resolvedTracks.map((track) => [track.path, track]))
 
   return paths.map((trackPath) => {
     const dbTrack = resolvedByPath.get(trackPath)
     return dbTrack ? createQueueEntryFromTrack(dbTrackToTrack(dbTrack)) : createQueueEntryFromPath(trackPath)
   })
+}
+
+export function createQueueEntriesFromPaths(trackPaths: readonly string[]): QueueTrackEntry[] {
+  const paths = trackPaths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
+  if (paths.length === 0) return []
+
+  const resolvedTracks = useLibraryStore.getState().resolveTrackPaths(paths)
+  return createQueueEntriesFromResolvedTracks(paths, resolvedTracks)
+}
+
+export async function createQueueEntriesFromPathsWithFetch(trackPaths: readonly string[]): Promise<QueueTrackEntry[]> {
+  const paths = trackPaths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
+  if (paths.length === 0) return []
+
+  const resolvedTracks = await useLibraryStore.getState().resolveTrackPathsWithFetch(paths)
+  return createQueueEntriesFromResolvedTracks(paths, resolvedTracks)
 }
 
 function resolveQueueEntryTrack(entry: QueueTrackEntry | null | undefined): Track | null {
@@ -1349,12 +1384,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
+        const resolvedDuration = resolvePositiveDuration(audioEngine.duration, track.duration)
         const resolvedTrack: Track = {
           ...track,
+          duration: resolvedDuration,
           channels: detectedChannels ?? track.channels
         }
         set({
-          duration: audioEngine.duration,
+          duration: resolvedDuration,
           currentTrack: resolvedTrack,
           currentTrackSource: 'manual',
           remoteLoadProgress: null,
@@ -1501,7 +1538,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     startPlaybackContextByPaths: async (paths: string[], startIndex = 0, options) => {
-      await startPlaybackContextEntries(createQueueEntriesFromPaths(paths), startIndex, options)
+      await startPlaybackContextEntries(await createQueueEntriesFromPathsWithFetch(paths), startIndex, options)
     },
 
     enqueueUserTrack: (track: Track, position = 'end') => {
@@ -1512,8 +1549,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       enqueueUserEntries(createQueueEntriesFromTracks(tracks), position)
     },
 
-    enqueueUserTrackPaths: (paths: string[], position = 'end') => {
-      enqueueUserEntries(createQueueEntriesFromPaths(paths), position)
+    enqueueUserTrackPaths: async (paths: string[], position = 'end') => {
+      enqueueUserEntries(await createQueueEntriesFromPathsWithFetch(paths), position)
     },
 
     moveUserQueue: (fromIndex: number, toIndex: number) => {
@@ -2022,7 +2059,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
-        const resolvedTrack: Track = {
+        const metadataResolvedTrack: Track = {
           ...track,
           title: result.metadata?.title ?? track.title,
           artist: result.metadata?.artist ?? track.artist,
@@ -2036,8 +2073,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
           replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }
+        const resolvedDuration = resolvePositiveDuration(audioEngine.duration, metadataResolvedTrack.duration)
+        const resolvedTrack: Track = {
+          ...metadataResolvedTrack,
+          duration: resolvedDuration
+        }
         set({
-          duration: audioEngine.duration,
+          duration: resolvedDuration,
           currentTrack: resolvedTrack,
           remoteLoadProgress: null,
           remoteBufferedSeconds: 0,
@@ -2323,7 +2365,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       audioEngine.on('durationChange', (duration) => {
-        set({ duration: duration as number })
+        const state = get()
+        if (!shouldApplyDurationChange(duration, state.currentTrack, state.playbackState)) return
+        set({ duration: resolvePositiveDuration(duration) })
         schedulePreBufferNextTrack()
       })
 

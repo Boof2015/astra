@@ -953,14 +953,14 @@ export default function TrackList({
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
     const trackPaths = resolveActionTrackPaths(dbTrack)
-    enqueueUserTrackPaths(trackPaths, 'next')
+    void enqueueUserTrackPaths(trackPaths, 'next')
     setQueueActionFeedbackForPaths('next', trackPaths)
   }, [enqueueUserTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
 
   const handleAddToQueue = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
     const trackPaths = resolveActionTrackPaths(dbTrack)
-    enqueueUserTrackPaths(trackPaths, 'end')
+    void enqueueUserTrackPaths(trackPaths, 'end')
     setQueueActionFeedbackForPaths('queue', trackPaths)
   }, [enqueueUserTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
 
@@ -1099,7 +1099,7 @@ export default function TrackList({
       }
       if (dragState?.dropTarget && dragState.tracks.length > 0) {
         if (dragState.dropTarget.surface === 'queue') {
-          enqueueUserTrackPaths(
+          void enqueueUserTrackPaths(
             dragState.tracks.map((track) => track.path),
             dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
           )
@@ -1273,7 +1273,7 @@ export default function TrackList({
   const handleContextPlayNext = useCallback(() => {
     if (!trackContextMenu) return
     const trackPaths = trackContextMenu.tracks.map((track) => track.path)
-    enqueueUserTrackPaths(trackPaths, 'next')
+    void enqueueUserTrackPaths(trackPaths, 'next')
     setQueueActionFeedbackForPaths('next', trackPaths)
     setTrackContextMenu(null)
   }, [enqueueUserTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])
@@ -1281,7 +1281,7 @@ export default function TrackList({
   const handleContextAddToQueue = useCallback(() => {
     if (!trackContextMenu) return
     const trackPaths = trackContextMenu.tracks.map((track) => track.path)
-    enqueueUserTrackPaths(trackPaths, 'end')
+    void enqueueUserTrackPaths(trackPaths, 'end')
     setQueueActionFeedbackForPaths('queue', trackPaths)
     setTrackContextMenu(null)
   }, [enqueueUserTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])

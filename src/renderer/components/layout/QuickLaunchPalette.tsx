@@ -598,7 +598,7 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        enqueueUserTrackPaths([result.track.path], 'next')
+        void enqueueUserTrackPaths([result.track.path], 'next')
         closeQuickLaunch()
         return
       }

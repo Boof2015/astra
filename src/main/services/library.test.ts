@@ -217,6 +217,37 @@ test('library track pages preserve ordering and album identities across page bou
   assert.equal(secondPage.tracks[0].album_identity_key, splitAlbum.identity_key)
 })
 
+test('getTracksByPaths preserves request order, duplicates, and public metadata shape', async (t) => {
+  await setupSeededLibrary(t)
+
+  const tracks = library.getTracksByPaths([
+    'subsonic://1/teen-2',
+    'missing://track',
+    'subsonic://1/split-a',
+    'subsonic://1/teen-2'
+  ])
+
+  assert.deepEqual(tracks.map((track) => track.path), [
+    'subsonic://1/teen-2',
+    'subsonic://1/split-a',
+    'subsonic://1/teen-2'
+  ])
+  assert.deepEqual(tracks.map((track) => track.title), [
+    'Teen Feature',
+    'Split A',
+    'Teen Feature'
+  ])
+
+  const splitTrack = tracks[1]
+  assert.equal(splitTrack.artist, 'Artist A')
+  assert.deepEqual(splitTrack.artist_names, [])
+  assert.equal(splitTrack.codec, 'flac')
+  assert.equal(splitTrack.channels, 2)
+  assert.equal(splitTrack.source_type, 'subsonic')
+  assert.ok(splitTrack.album_identity_key)
+  assert.equal(splitTrack.is_new, false)
+})
+
 test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)

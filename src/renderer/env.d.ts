@@ -515,6 +515,7 @@ declare global {
             library: {
                 getTracks: () => Promise<DbTrack[]>
                 getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
+                getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
                 [key: string]: any
             }
         }

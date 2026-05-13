@@ -890,6 +890,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTracks: () => getAllLibraryTracksPaged(),
     getTracksPage: (request?: LibraryTrackPageRequest) =>
       ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
+    getTracksByPaths: (trackPaths: string[]) =>
+      ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
@@ -1265,6 +1267,7 @@ declare global {
       library: {
         getTracks: () => Promise<DbTrack[]>
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
+        getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>

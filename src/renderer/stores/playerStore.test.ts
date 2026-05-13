@@ -6,6 +6,8 @@ import {
   GAPLESS_PREBUFFER_LEAD_SECONDS,
   getGaplessPrebufferDelayMs,
   MAX_PLAYBACK_HISTORY,
+  resolvePositiveDuration,
+  shouldApplyDurationChange,
   usePlayerStore,
   type QueueTrackEntry
 } from './playerStore.ts'
@@ -74,6 +76,9 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     bit_depth: overrides.bit_depth ?? 16,
     bitrate: overrides.bitrate ?? null,
     channels: overrides.channels ?? 2,
+    codec: overrides.codec ?? null,
+    codec_profile: overrides.codec_profile ?? null,
+    is_atmos_joc: overrides.is_atmos_joc ?? 0,
     bpm: overrides.bpm ?? null,
     musical_key: overrides.musical_key ?? null,
     source_type: overrides.source_type ?? 'local',
@@ -92,6 +97,19 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
 
 function hasArtworkData(entry: QueueTrackEntry): boolean {
   return Object.hasOwn(entry.snapshot as Record<string, unknown>, 'artworkData')
+}
+
+function installMockTrackFetch(handler: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]): void {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        library: {
+          getTracksByPaths: async (trackPaths: string[]) => handler(trackPaths)
+        }
+      }
+    }
+  })
 }
 
 function resetStores(): void {
@@ -163,6 +181,62 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   assert.equal(resolved?.track.artworkHash, 'art-hash')
 })
 
+test('path queue actions fetch missing library metadata before queueing', async () => {
+  resetStores()
+
+  const dbTrack = makeDbTrack('/music/fetched.mp3', {
+    title: 'Fetched Title',
+    artist: 'Fetched Artist',
+    album: 'Fetched Album',
+    duration: 245,
+    artwork_hash: 'fetched-art',
+    codec: 'mp3',
+    codec_profile: 'mpeg layer iii',
+    is_atmos_joc: 1
+  })
+  let requestedPaths: string[] = []
+  installMockTrackFetch((trackPaths) => {
+    requestedPaths = trackPaths
+    return [dbTrack]
+  })
+
+  await usePlayerStore.getState().enqueueUserTrackPaths([dbTrack.path], 'end')
+
+  assert.deepEqual(requestedPaths, [dbTrack.path])
+  assert.equal(useLibraryStore.getState().trackByPath.get(dbTrack.path), dbTrack)
+
+  const [entry] = usePlayerStore.getState().userQueue
+  assert.ok(entry)
+  assert.equal(entry.snapshot.title, 'Fetched Title')
+  assert.equal(entry.snapshot.artist, 'Fetched Artist')
+  assert.equal(entry.snapshot.album, 'Fetched Album')
+  assert.equal(entry.snapshot.duration, 245)
+  assert.equal(entry.snapshot.artworkHash, 'fetched-art')
+  assert.equal(entry.snapshot.codec, 'mp3')
+  assert.equal(entry.snapshot.codecProfile, 'mpeg layer iii')
+  assert.equal(entry.snapshot.isAtmosJoc, true)
+  assert.equal(hasArtworkData(entry), false)
+
+  const [resolved] = usePlayerStore.getState().getResolvedUserQueueEntries()
+  assert.equal(resolved?.track.title, 'Fetched Title')
+  assert.equal(resolved?.track.duration, 245)
+})
+
+test('path queue actions keep filename fallback for tracks missing from the library', async () => {
+  resetStores()
+  installMockTrackFetch(() => [])
+
+  await usePlayerStore.getState().enqueueUserTrackPaths(['/missing/No Metadata.mp3'], 'end')
+
+  const [entry] = usePlayerStore.getState().userQueue
+  assert.ok(entry)
+  assert.equal(entry.snapshot.title, 'No Metadata')
+  assert.equal(entry.snapshot.artist, 'Unknown Artist')
+  assert.equal(entry.snapshot.album, 'Unknown Album')
+  assert.equal(entry.snapshot.duration, 0)
+  assert.equal(entry.snapshot.format, 'mp3')
+})
+
 test('associated external queue entries use sanitized snapshots instead of library hydration', () => {
   resetStores()
 
@@ -191,6 +265,18 @@ test('gapless prebuffer delay waits until the late handoff window', () => {
   assert.equal(getGaplessPrebufferDelayMs(165, 180), 0)
   assert.equal(getGaplessPrebufferDelayMs(0, GAPLESS_PREBUFFER_LEAD_SECONDS), 0)
   assert.equal(getGaplessPrebufferDelayMs(0, 0), 0)
+})
+
+test('duration helpers preserve positive track durations through zero engine values', () => {
+  assert.equal(resolvePositiveDuration(0, 185), 185)
+  assert.equal(resolvePositiveDuration(192, 185), 192)
+  assert.equal(resolvePositiveDuration(Number.NaN, 0), 0)
+
+  assert.equal(shouldApplyDurationChange(0, makeTrack('/music/a.flac', { duration: 185 }), 'playing'), false)
+  assert.equal(shouldApplyDurationChange(0, null, 'playing'), true)
+  assert.equal(shouldApplyDurationChange(0, makeTrack('/music/a.flac', { duration: 185 }), 'stopped'), true)
+  assert.equal(shouldApplyDurationChange(0, makeTrack('/music/a.flac', { duration: 0 }), 'playing'), true)
+  assert.equal(shouldApplyDurationChange(190, makeTrack('/music/a.flac', { duration: 185 }), 'playing'), true)
 })
 
 test('playback history is capped and stores sanitized queue entries', async () => {

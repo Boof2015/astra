@@ -25,6 +25,9 @@ export interface DbTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
   bpm: number | null
   musical_key: string | null
   source_type: TrackSourceType
@@ -205,6 +208,7 @@ interface LibraryStore {
   search: (query: string) => Promise<void>
   clearSearch: () => void
   resolveTrackPaths: (trackPaths: readonly string[]) => DbTrack[]
+  resolveTrackPathsWithFetch: (trackPaths: readonly string[]) => Promise<DbTrack[]>
   getArtwork: (hash: string | null, options?: ArtworkRequestOptions) => Promise<string | null>
   loadFavorites: () => Promise<void>
   toggleFavorite: (trackPath: string) => Promise<void>
@@ -1485,6 +1489,36 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   resolveTrackPaths: (trackPaths: readonly string[]) => {
+    return resolveCachedTrackPaths(trackPaths, get().trackByPath).tracks
+  },
+
+  resolveTrackPathsWithFetch: async (trackPaths: readonly string[]) => {
+    const cached = resolveCachedTrackPaths(trackPaths, get().trackByPath)
+    if (cached.complete) return cached.tracks
+
+    const missingPaths: string[] = []
+    const seenMissingPaths = new Set<string>()
+    const trackByPath = get().trackByPath
+    for (const trackPath of trackPaths) {
+      if (typeof trackPath !== 'string' || trackPath.length === 0) continue
+      if (trackByPath.has(trackPath) || seenMissingPaths.has(trackPath)) continue
+      seenMissingPaths.add(trackPath)
+      missingPaths.push(trackPath)
+    }
+
+    if (missingPaths.length === 0) {
+      return cached.tracks
+    }
+
+    try {
+      const fetchedTracks = await window.electronAPI.library.getTracksByPaths(missingPaths)
+      if (fetchedTracks.length > 0) {
+        set((state) => ingestTracksForPatch(state, fetchedTracks, {}, { prune: false }))
+      }
+    } catch (error) {
+      console.error('Failed to hydrate library tracks by path:', error)
+    }
+
     return resolveCachedTrackPaths(trackPaths, get().trackByPath).tracks
   },
 

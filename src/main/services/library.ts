@@ -3609,6 +3609,37 @@ export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryT
   })
 }
 
+export function getTracksByPaths(trackPaths: readonly string[] | null | undefined): DbTrack[] {
+  return measureLibraryQuery('getTracksByPaths', () => {
+    if (!db || !Array.isArray(trackPaths) || trackPaths.length === 0) return []
+
+    const requestedPaths = trackPaths.filter((trackPath): trackPath is string => (
+      typeof trackPath === 'string' && trackPath.length > 0
+    ))
+    if (requestedPaths.length === 0) return []
+
+    const uniquePaths = Array.from(new Set(requestedPaths))
+    const rows: DbTrackRow[] = []
+    for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+      const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+      const placeholders = chunk.map(() => '?').join(', ')
+      rows.push(...readEffectiveTrackRows(`
+        SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+        ${EFFECTIVE_TRACK_FROM_CLAUSE}
+        WHERE t.path IN (${placeholders})
+      `, chunk))
+    }
+
+    const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
+    const tracks: DbTrack[] = []
+    for (const trackPath of requestedPaths) {
+      const track = tracksByPath.get(trackPath)
+      if (track) tracks.push(track)
+    }
+    return tracks
+  })
+}
+
 export function getIntegrityScanTrackTargets(scope: IntegrityScanScope): IntegrityScanTrackTarget[] {
   if (!db) return []
   const tracks = readEffectiveTrackRows(`
