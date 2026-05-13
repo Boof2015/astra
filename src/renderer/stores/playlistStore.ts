@@ -11,6 +11,7 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count: number
 }
 
 export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
@@ -22,6 +23,7 @@ export interface PlaylistImportResult {
   playlistName: string | null
   entriesTotal: number
   importedCount: number
+  missingEntryCount: number
   matchedByPathCount: number
   matchedByMetadataCount: number
   unmatchedCount: number
@@ -78,9 +80,22 @@ interface DbTrack {
   modified_at: number
 }
 
+export interface PlaylistTrackEntry {
+  id: number
+  track_path: string
+  position: number
+  added_at: number
+  missing: boolean
+  title: string | null
+  artist: string | null
+  album: string | null
+  track: DbTrack | null
+}
+
 interface PlaylistStore {
   playlists: Playlist[]
   selectedPlaylistId: number | null
+  selectedPlaylistEntries: PlaylistTrackEntry[]
   selectedPlaylistTracks: DbTrack[]
 
   loadPlaylists: () => Promise<void>
@@ -89,6 +104,7 @@ interface PlaylistStore {
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
   selectPlaylist: (id: number) => Promise<void>
+  refreshSelectedPlaylist: () => Promise<void>
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
@@ -101,16 +117,35 @@ interface PlaylistStore {
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
 }
 
+function getPlayableTracksFromEntries(entries: PlaylistTrackEntry[]): DbTrack[] {
+  return entries
+    .map((entry) => entry.track)
+    .filter((track): track is DbTrack => track !== null)
+}
+
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
-  const refreshSelectedPlaylistTracks = async (playlistId: number) => {
+  const loadPlaylistSelection = async (playlistId: number): Promise<Pick<PlaylistStore, 'selectedPlaylistEntries' | 'selectedPlaylistTracks'>> => {
+    if (playlistId === FAVORITES_PLAYLIST_ID) {
+      const tracks = await window.electronAPI.library.getFavorites()
+      return { selectedPlaylistEntries: [], selectedPlaylistTracks: tracks }
+    }
+
+    const entries = await window.electronAPI.library.getPlaylistTrackEntries(playlistId)
+    return {
+      selectedPlaylistEntries: entries,
+      selectedPlaylistTracks: getPlayableTracksFromEntries(entries)
+    }
+  }
+
+  const refreshSelectedPlaylist = async (playlistId: number) => {
     if (get().selectedPlaylistId !== playlistId) return
-    const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-    set({ selectedPlaylistTracks: tracks })
+    set(await loadPlaylistSelection(playlistId))
   }
 
   return {
     playlists: [],
     selectedPlaylistId: null,
+    selectedPlaylistEntries: [],
     selectedPlaylistTracks: [],
 
     loadPlaylists: async () => {
@@ -163,32 +198,35 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (isSystemFavoritesPlaylistId(id)) return
       await window.electronAPI.library.deletePlaylist(id)
       if (get().selectedPlaylistId === id) {
-        set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
+        set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [] })
       }
       await get().loadPlaylists()
     },
 
     selectPlaylist: async (id: number) => {
-      const tracks = id === FAVORITES_PLAYLIST_ID
-        ? await window.electronAPI.library.getFavorites()
-        : await window.electronAPI.library.getPlaylistTracks(id)
-      set({ selectedPlaylistId: id, selectedPlaylistTracks: tracks })
+      set({ selectedPlaylistId: id, ...(await loadPlaylistSelection(id)) })
+    },
+
+    refreshSelectedPlaylist: async () => {
+      const playlistId = get().selectedPlaylistId
+      if (playlistId === null) return
+      await refreshSelectedPlaylist(playlistId)
     },
 
     clearSelection: () => {
-      set({ selectedPlaylistId: null, selectedPlaylistTracks: [] })
+      set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [] })
     },
 
     addToPlaylist: async (playlistId: number, trackPaths: string[]) => {
       await window.electronAPI.library.addToPlaylist(playlistId, trackPaths)
       await get().loadPlaylists()
-      await refreshSelectedPlaylistTracks(playlistId)
+      await refreshSelectedPlaylist(playlistId)
     },
 
     removeFromPlaylist: async (playlistId: number, trackPath: string) => {
       await window.electronAPI.library.removeFromPlaylist(playlistId, trackPath)
       await get().loadPlaylists()
-      await refreshSelectedPlaylistTracks(playlistId)
+      await refreshSelectedPlaylist(playlistId)
     },
 
     reorderPlaylistTracks: async (playlistId: number, orderedTrackPaths: string[]) => {
@@ -198,7 +236,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
       await window.electronAPI.library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
       await get().loadPlaylists()
-      await refreshSelectedPlaylistTracks(playlistId)
+      await refreshSelectedPlaylist(playlistId)
     },
 
     setPlaylistCustomCoverFromFile: async (playlistId: number, imagePath: string) => {
@@ -225,8 +263,8 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
     getPlaylistTrackPaths: async (playlistId: number) => {
       if (!Number.isInteger(playlistId) || playlistId <= 0) return []
-      const tracks = await window.electronAPI.library.getPlaylistTracks(playlistId)
-      return tracks.map((track) => track.path)
+      const entries = await window.electronAPI.library.getPlaylistTrackEntries(playlistId)
+      return entries.map((entry) => entry.track_path)
     },
 
     importPlaylistFromFile: async () => {

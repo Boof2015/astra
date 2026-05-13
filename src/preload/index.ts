@@ -274,6 +274,19 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count: number
+}
+
+export interface PlaylistTrackEntry {
+  id: number
+  track_path: string
+  position: number
+  added_at: number
+  missing: boolean
+  title: string | null
+  artist: string | null
+  album: string | null
+  track: DbTrack | null
 }
 
 export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
@@ -285,6 +298,7 @@ export interface PlaylistImportResult {
   playlistName: string | null
   entriesTotal: number
   importedCount: number
+  missingEntryCount: number
   matchedByPathCount: number
   matchedByMetadataCount: number
   unmatchedCount: number
@@ -1029,6 +1043,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
+    getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
     reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => ipcRenderer.invoke('library:reorderPlaylistTracks', playlistId, orderedTrackPaths),
@@ -1366,6 +1381,7 @@ declare global {
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
+        getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
         reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>

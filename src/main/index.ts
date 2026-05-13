@@ -5862,6 +5862,10 @@ ipcMain.handle('library:getPlaylistTracks', (_event, playlistId: number) => {
   return library.getPlaylistTracks(playlistId)
 })
 
+ipcMain.handle('library:getPlaylistTrackEntries', (_event, playlistId: number) => {
+  return library.getPlaylistTrackEntries(playlistId)
+})
+
 ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, trackPaths: string[]) => {
   await library.addToPlaylist(playlistId, trackPaths)
 })

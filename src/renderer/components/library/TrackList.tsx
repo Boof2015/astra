@@ -257,6 +257,19 @@ function isUnavailableRemoteTrack(track: Pick<DbTrack, 'source_type' | 'is_avail
   return track.source_type !== 'local' && track.is_available !== 1
 }
 
+function isMissingPlaylistEntryTrack(track: Pick<DbTrack, 'availability_reason'>): boolean {
+  return track.availability_reason === 'missing_playlist_entry'
+}
+
+function MissingPlaylistEntryIcon() {
+  return (
+    <svg className="track-missing-playlist-icon" width="14" height="14" viewBox="0 0 576 512" fill="currentColor" aria-hidden="true">
+      {/* Font Awesome Free file-circle-exclamation: https://fontawesome.com/icons/classic/solid/file-circle-exclamation */}
+      <path d="M0 64C0 28.7 28.7 0 64 0h160v128c0 17.7 14.3 32 32 32h128v38.6C310.1 219.5 256 287.4 256 368c0 59.1 29.1 111.3 73.7 143.3-3.2.5-6.4.7-9.7.7H64c-35.3 0-64-28.7-64-64V64zm384 64H256V0l128 128zm48 96a144 144 0 1 1 0 288 144 144 0 1 1 0-288zm0 240a24 24 0 1 0 0-48 24 24 0 1 0 0 48zm0-192c-8.8 0-16 7.2-16 16v80c0 8.8 7.2 16 16 16s16-7.2 16-16v-80c0-8.8-7.2-16-16-16z" />
+    </svg>
+  )
+}
+
 function isTrackSelectionModifierActive(event: Pick<MouseEvent | PointerEvent | React.MouseEvent | React.PointerEvent, 'ctrlKey' | 'metaKey'>): boolean {
   return event.ctrlKey || event.metaKey
 }
@@ -375,7 +388,8 @@ function TrackListRowRenderer({
       ? 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
       : `${resolvedChannelCount ?? 0} channels`
 
-  const isUnavailable = isUnavailableRemoteTrack(track)
+  const isMissingPlaylistEntry = isMissingPlaylistEntryTrack(track)
+  const isUnavailable = isUnavailableRemoteTrack(track) || isMissingPlaylistEntry
   const sourceLabel = track.source_type === 'jellyfin'
     ? 'Jellyfin'
     : track.source_type === 'subsonic'
@@ -392,14 +406,16 @@ function TrackListRowRenderer({
       <div
         className={`track-row ${isCurrent ? 'track-row-active' : ''} ${isCurrentLoading ? 'track-row-loading' : ''} ${
           isUnavailable ? 'track-row-unavailable' : ''
-        } ${showQueueInsertAffordance ? 'track-row-queue-droppable' : ''} ${
+        } ${isMissingPlaylistEntry ? 'track-row-missing-playlist-entry' : ''} ${
+          showQueueInsertAffordance && !isMissingPlaylistEntry ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
         data-track-index={index}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
-        onPointerDown={(event) => onQueueInsertPointerDown(event, track, index)}
-        onContextMenu={(event) => onTrackContextMenu(event, track)}
+        onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, index)}
+        onContextMenu={isMissingPlaylistEntry ? undefined : (event) => onTrackContextMenu(event, track)}
         onClick={(event) => {
+          if (isMissingPlaylistEntry) return
           void onTrackClick(event, track, index)
         }}
       >
@@ -420,7 +436,11 @@ function TrackListRowRenderer({
         <div className="track-col track-col-title">
           <div className="track-title-cell">
             <div className="track-artwork-thumb">
-              <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
+              {isMissingPlaylistEntry ? (
+                <MissingPlaylistEntryIcon />
+              ) : (
+                <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
+              )}
             </div>
             {sourceLabel && (
               <span className="track-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
@@ -440,6 +460,9 @@ function TrackListRowRenderer({
               </span>
             )}
             <span className="track-title">{track.title}</span>
+            {isMissingPlaylistEntry && (
+              <span className="track-missing-playlist-label">Missing</span>
+            )}
             {isCurrentLoading && (
               <span className="track-loading-status">
                 {loadingPercentLabel
@@ -466,21 +489,27 @@ function TrackListRowRenderer({
         </div>
         {showArtist && (
           <div className="track-col track-col-artist">
-            <ArtistNameLinks
-              artistText={track.artist}
-              artistNames={track.artist_names}
-              browseArtistText={track.album_artist}
-              browseArtistNames={track.album_artist_names}
-              onArtistClick={openArtistInLibrary}
-              className="track-artist"
-              linkClassName="artist-name-link-inline"
-              stopPropagation
-            />
+            {isMissingPlaylistEntry ? (
+              <span className="track-artist">{track.artist}</span>
+            ) : (
+              <ArtistNameLinks
+                artistText={track.artist}
+                artistNames={track.artist_names}
+                browseArtistText={track.album_artist}
+                browseArtistNames={track.album_artist_names}
+                onArtistClick={openArtistInLibrary}
+                className="track-artist"
+                linkClassName="artist-name-link-inline"
+                stopPropagation
+              />
+            )}
           </div>
         )}
         {showAlbum && (
           <div className="track-col track-col-album">
-            {track.album.trim().length > 0 ? (
+            {isMissingPlaylistEntry && track.album.trim().length > 0 ? (
+              <span className="track-album">{track.album}</span>
+            ) : track.album.trim().length > 0 ? (
               <button
                 type="button"
                 className="track-album track-album-link"
@@ -508,7 +537,7 @@ function TrackListRowRenderer({
           </div>
         )}
         <div className="track-col track-col-codec">
-          <span className="track-codec">{track.format ? track.format.toUpperCase() : '\u2014'}</span>
+          <span className="track-codec">{isMissingPlaylistEntry ? 'MISSING' : track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
         {showAddedDate && (
           <div className="track-col track-col-added">
@@ -518,10 +547,10 @@ function TrackListRowRenderer({
           </div>
         )}
         <div className="track-col track-col-duration">
-          <span className="track-duration">{formatDuration(track.duration)}</span>
+          <span className="track-duration">{isMissingPlaylistEntry ? '--:--' : formatDuration(track.duration)}</span>
         </div>
         <div className="track-col track-col-actions">
-          <div className="track-actions">
+          {!isMissingPlaylistEntry && <div className="track-actions">
             <button
               className={`track-action-btn ${favorites.has(track.path) ? 'active' : ''}`}
               onClick={(event) => onToggleFavorite(event, track.path)}
@@ -578,7 +607,7 @@ function TrackListRowRenderer({
                 </svg>
               )}
             </button>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

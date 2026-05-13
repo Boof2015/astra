@@ -329,6 +329,19 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count: number
+}
+
+export interface PlaylistTrackEntry {
+  id: number
+  track_path: string
+  position: number
+  added_at: number
+  missing: boolean
+  title: string | null
+  artist: string | null
+  album: string | null
+  track: DbTrack | null
 }
 
 export interface ArtistRecord {
@@ -345,6 +358,7 @@ export interface PlaylistImportResult {
   playlistName: string | null
   entriesTotal: number
   importedCount: number
+  missingEntryCount: number
   matchedByPathCount: number
   matchedByMetadataCount: number
   unmatchedCount: number
@@ -1889,9 +1903,27 @@ export async function initDatabase(): Promise<void> {
       track_path TEXT NOT NULL,
       position INTEGER NOT NULL,
       added_at INTEGER NOT NULL,
+      fallback_title TEXT,
+      fallback_artist TEXT,
+      fallback_album TEXT,
       FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
     )
   `)
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_title TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_artist TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_album TEXT')
+  } catch {
+    // Column already exists.
+  }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   normalizePlaylistTrackMemberships()
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
@@ -4968,6 +5000,7 @@ export async function scanFolder(
   }, { signal })
 
   throwIfScanCancelled(signal)
+  reconcileMissingPlaylistEntriesByMetadata()
   if (persist) {
     await saveDatabase()
   }
@@ -6706,7 +6739,7 @@ export function getPlaylists(): Playlist[] {
       (
         SELECT t.artwork_hash
         FROM playlist_tracks ptc
-        LEFT JOIN tracks t ON t.path = ptc.track_path
+        INNER JOIN tracks t ON t.path = ptc.track_path
         WHERE ptc.playlist_id = p.id
         ORDER BY ptc.position ASC
         LIMIT 1
@@ -6716,7 +6749,14 @@ export function getPlaylists(): Playlist[] {
         FROM playlist_tracks pt
         INNER JOIN tracks t ON t.path = pt.track_path
         WHERE pt.playlist_id = p.id
-      ) as track_count
+      ) as track_count,
+      (
+        SELECT COUNT(*)
+        FROM playlist_tracks ptm
+        LEFT JOIN tracks t ON t.path = ptm.track_path
+        WHERE ptm.playlist_id = p.id
+          AND t.path IS NULL
+      ) as missing_track_count
     FROM playlists p
     ORDER BY
       CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
@@ -6745,7 +6785,8 @@ export async function createPlaylist(name: string): Promise<Playlist> {
     last_played_at: null,
     custom_cover_hash: null,
     auto_cover_hash: null,
-    track_count: 0
+    track_count: 0,
+    missing_track_count: 0
   }
 }
 
@@ -6779,17 +6820,93 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
   `)
 }
 
-export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
-  if (!db || trackPaths.length === 0) return
+type PlaylistTrackEntryRow = Partial<DbTrackRow> & {
+  playlist_track_id?: unknown
+  playlist_track_path?: unknown
+  playlist_position?: unknown
+  playlist_added_at?: unknown
+  fallback_title?: unknown
+  fallback_artist?: unknown
+  fallback_album?: unknown
+}
 
-  const uniqueTrackPaths: string[] = []
-  const seenTrackPaths = new Set<string>()
-  for (const trackPath of trackPaths) {
-    if (typeof trackPath !== 'string' || trackPath.length === 0 || seenTrackPaths.has(trackPath)) continue
-    seenTrackPaths.add(trackPath)
-    uniqueTrackPaths.push(trackPath)
+export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[] {
+  if (!db) return []
+  if (!Number.isInteger(playlistId) || playlistId <= 0) return []
+
+  const rows = db.all<PlaylistTrackEntryRow>(`
+    SELECT
+      pt.id AS playlist_track_id,
+      pt.track_path AS playlist_track_path,
+      pt.position AS playlist_position,
+      pt.added_at AS playlist_added_at,
+      pt.fallback_title AS fallback_title,
+      pt.fallback_artist AS fallback_artist,
+      pt.fallback_album AS fallback_album,
+      ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    FROM playlist_tracks pt
+    LEFT JOIN tracks t ON t.path = pt.track_path
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE pt.playlist_id = ?
+    ORDER BY pt.position ASC, pt.id ASC
+  `, [playlistId])
+
+  const availableRows: DbTrackRow[] = []
+  for (const row of rows) {
+    if (typeof row.path === 'string' && Number(row.id) > 0) {
+      availableRows.push(row as DbTrackRow)
+    }
   }
-  if (uniqueTrackPaths.length === 0) return
+  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows).map((track) => [track.path, track]))
+
+  return rows.map((row, index) => {
+    const entryId = Number(row.playlist_track_id)
+    const position = Number(row.playlist_position)
+    const addedAt = Number(row.playlist_added_at)
+    const trackPath = typeof row.playlist_track_path === 'string' ? row.playlist_track_path : ''
+    if (!Number.isInteger(entryId) || entryId <= 0 || !trackPath) {
+      throw new Error('Invalid playlist track rows for playlist entry lookup.')
+    }
+
+    const track = tracksByPath.get(trackPath) ?? null
+    return {
+      id: entryId,
+      track_path: trackPath,
+      position: Number.isFinite(position) ? position : index,
+      added_at: Number.isFinite(addedAt) ? addedAt : 0,
+      missing: track === null,
+      title: typeof row.fallback_title === 'string' && row.fallback_title.trim().length > 0 ? row.fallback_title : null,
+      artist: typeof row.fallback_artist === 'string' && row.fallback_artist.trim().length > 0 ? row.fallback_artist : null,
+      album: typeof row.fallback_album === 'string' && row.fallback_album.trim().length > 0 ? row.fallback_album : null,
+      track
+    }
+  })
+}
+
+interface PlaylistEntryInsertInput {
+  trackPath: string
+  fallbackTitle?: string | null
+  fallbackArtist?: string | null
+  fallbackAlbum?: string | null
+}
+
+async function addPlaylistEntries(playlistId: number, entries: PlaylistEntryInsertInput[]): Promise<void> {
+  if (!db || entries.length === 0) return
+
+  const uniqueEntries: PlaylistEntryInsertInput[] = []
+  const seenTrackPaths = new Set<string>()
+  for (const entry of entries) {
+    const trackPath = typeof entry.trackPath === 'string' ? entry.trackPath.trim() : ''
+    if (!trackPath || seenTrackPaths.has(trackPath)) continue
+    seenTrackPaths.add(trackPath)
+    uniqueEntries.push({
+      trackPath,
+      fallbackTitle: normalizeOptionalTextField(entry.fallbackTitle ?? null),
+      fallbackArtist: normalizeOptionalTextField(entry.fallbackArtist ?? null),
+      fallbackAlbum: normalizeOptionalTextField(entry.fallbackAlbum ?? null)
+    })
+  }
+  if (uniqueEntries.length === 0) return
 
   const existingTrackPaths = new Set<string>()
   for (const row of db.iterate<{ track_path?: unknown }>('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?', [playlistId])) {
@@ -6798,22 +6915,25 @@ export async function addToPlaylist(playlistId: number, trackPaths: string[]): P
     }
   }
 
-  const pendingTrackPaths = uniqueTrackPaths.filter((trackPath) => !existingTrackPaths.has(trackPath))
-  if (pendingTrackPaths.length === 0) return
+  const pendingEntries = uniqueEntries.filter((entry) => !existingTrackPaths.has(entry.trackPath))
+  if (pendingEntries.length === 0) return
 
-  // Get current max position
   const maxPosRow = db.get<{ max_pos?: unknown }>('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
   const maxPos = typeof maxPosRow?.max_pos === 'number' ? maxPosRow.max_pos : -1
   let position = maxPos + 1
   const now = Date.now()
-  for (const trackPath of pendingTrackPaths) {
+  for (const entry of pendingEntries) {
     db.run(
-      'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at) VALUES (?, ?, ?, ?)',
-      [playlistId, trackPath, position++, now]
+      'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [playlistId, entry.trackPath, position++, now, entry.fallbackTitle ?? null, entry.fallbackArtist ?? null, entry.fallbackAlbum ?? null]
     )
   }
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
   await saveDatabase()
+}
+
+export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
+  await addPlaylistEntries(playlistId, trackPaths.map((trackPath) => ({ trackPath })))
 }
 
 export async function removeFromPlaylist(playlistId: number, trackPath: string): Promise<void> {
@@ -7206,6 +7326,71 @@ function deriveImportedPlaylistName(filePath: string): string {
   return rawName.length > 0 ? rawName : 'Imported Playlist'
 }
 
+function normalizePreservedPlaylistImportEntryPath(rawPath: string): string | null {
+  const normalized = stripOuterQuotes(rawPath.trim())
+  return normalized.length > 0 ? normalized : null
+}
+
+function reconcileMissingPlaylistEntriesByMetadata(): number {
+  if (!db) return 0
+
+  const rows = db.all<{
+    id?: unknown
+    playlist_id?: unknown
+    fallback_title?: unknown
+    fallback_artist?: unknown
+    fallback_album?: unknown
+  }>(`
+    SELECT
+      pt.id,
+      pt.playlist_id,
+      pt.fallback_title,
+      pt.fallback_artist,
+      pt.fallback_album
+    FROM playlist_tracks pt
+    LEFT JOIN tracks t ON t.path = pt.track_path
+    WHERE t.path IS NULL
+      AND pt.fallback_title IS NOT NULL
+      AND TRIM(pt.fallback_title) <> ''
+    ORDER BY pt.playlist_id ASC, pt.position ASC, pt.id ASC
+  `)
+  if (rows.length === 0) return 0
+
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
+  let reconciled = 0
+
+  for (const row of rows) {
+    const rowId = Number(row.id)
+    const playlistId = Number(row.playlist_id)
+    if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0) {
+      continue
+    }
+
+    const metadataMatch = matchPlaylistEntryByMetadata({
+      title: typeof row.fallback_title === 'string' ? row.fallback_title : undefined,
+      artist: typeof row.fallback_artist === 'string' ? row.fallback_artist : undefined,
+      album: typeof row.fallback_album === 'string' ? row.fallback_album : undefined
+    }, lookup)
+    if (metadataMatch.kind !== 'matched') continue
+
+    const duplicateRow = db.get<{ id?: unknown }>(
+      'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? LIMIT 1',
+      [playlistId, metadataMatch.trackPath]
+    )
+    if (duplicateRow) continue
+
+    const result = db.run(
+      'UPDATE playlist_tracks SET track_path = ? WHERE id = ?',
+      [metadataMatch.trackPath, rowId]
+    )
+    if (result.changes > 0) {
+      reconciled += result.changes
+    }
+  }
+
+  return reconciled
+}
+
 export async function importPlaylistFromFile(filePath: string): Promise<PlaylistImportResult> {
   if (!db) throw new Error('Database not initialized')
 
@@ -7218,40 +7403,45 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
   const parsed = parsePlaylistDocument(sourceFilePath, content)
   const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
   const matchedTrackPaths: string[] = []
+  const playlistEntries: PlaylistEntryInsertInput[] = []
   const warnings = [...parsed.warnings]
 
   let matchedByPathCount = 0
   let matchedByMetadataCount = 0
+  let missingEntryCount = 0
   let unmatchedCount = 0
   let ambiguousMetadataCount = 0
   let unsupportedEntryCount = 0
 
   for (const entry of parsed.entries) {
     let matchedTrackPath: string | null = null
+    let missingTrackPath: string | null = null
+    let hasUnsupportedPath = false
 
     if (entry.path) {
       const resolvedPaths = resolveImportedPlaylistEntryPaths(entry.path, sourceFilePath)
       if (!resolvedPaths) {
-        unsupportedEntryCount += 1
-        continue
-      }
+        hasUnsupportedPath = true
+        missingTrackPath = normalizePreservedPlaylistImportEntryPath(entry.path)
+      } else {
+        missingTrackPath = resolvedPaths[0]?.normalizedPath ?? null
+        for (const resolvedPath of resolvedPaths) {
+          matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
+            ?? null
 
-      for (const resolvedPath of resolvedPaths) {
-        matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
-          ?? null
-
-        if (!matchedTrackPath) {
-          const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
-          if (typeof caseInsensitiveMatch === 'string') {
-            matchedTrackPath = caseInsensitiveMatch
+          if (!matchedTrackPath) {
+            const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
+            if (typeof caseInsensitiveMatch === 'string') {
+              matchedTrackPath = caseInsensitiveMatch
+            }
           }
+
+          if (matchedTrackPath) break
         }
 
-        if (matchedTrackPath) break
-      }
-
-      if (matchedTrackPath) {
-        matchedByPathCount += 1
+        if (matchedTrackPath) {
+          matchedByPathCount += 1
+        }
       }
     }
 
@@ -7261,28 +7451,57 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
         matchedTrackPath = metadataMatch.trackPath
         matchedByMetadataCount += 1
       } else if (metadataMatch.kind === 'ambiguous') {
+        if (missingTrackPath) {
+          playlistEntries.push({
+            trackPath: missingTrackPath,
+            fallbackTitle: entry.title ?? null,
+            fallbackArtist: entry.artist ?? null,
+            fallbackAlbum: entry.album ?? null
+          })
+          missingEntryCount += 1
+          unmatchedCount += 1
+          continue
+        }
         ambiguousMetadataCount += 1
+        if (hasUnsupportedPath) {
+          unsupportedEntryCount += 1
+        }
         unmatchedCount += 1
         continue
       }
     }
 
     if (!matchedTrackPath) {
+      if (missingTrackPath) {
+        playlistEntries.push({
+          trackPath: missingTrackPath,
+          fallbackTitle: entry.title ?? null,
+          fallbackArtist: entry.artist ?? null,
+          fallbackAlbum: entry.album ?? null
+        })
+        missingEntryCount += 1
+        unmatchedCount += 1
+        continue
+      }
+      if (hasUnsupportedPath) {
+        unsupportedEntryCount += 1
+      }
       unmatchedCount += 1
       continue
     }
 
     matchedTrackPaths.push(matchedTrackPath)
+    playlistEntries.push({ trackPath: matchedTrackPath })
   }
 
   const importedCount = matchedTrackPaths.length
   let playlistId: number | null = null
   let playlistName: string | null = null
 
-  if (importedCount > 0) {
+  if (playlistEntries.length > 0) {
     playlistName = deriveImportedPlaylistName(sourceFilePath)
     const playlist = await createPlaylist(playlistName)
-    await addToPlaylist(playlist.id, matchedTrackPaths)
+    await addPlaylistEntries(playlist.id, playlistEntries)
     playlistId = playlist.id
   }
 
@@ -7292,7 +7511,10 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
   if (ambiguousMetadataCount > 0) {
     warnings.push(`${ambiguousMetadataCount} entries were skipped due to ambiguous metadata matches.`)
   }
-  const unmatchedNonAmbiguous = unmatchedCount - ambiguousMetadataCount
+  if (missingEntryCount > 0) {
+    warnings.push(`${missingEntryCount} unmatched entries were preserved as missing playlist tracks.`)
+  }
+  const unmatchedNonAmbiguous = unmatchedCount - ambiguousMetadataCount - missingEntryCount
   if (unmatchedNonAmbiguous > 0) {
     warnings.push(`${unmatchedNonAmbiguous} entries could not be matched to library tracks.`)
   }
@@ -7304,6 +7526,7 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
     playlistName,
     entriesTotal: parsed.entries.length,
     importedCount,
+    missingEntryCount,
     matchedByPathCount,
     matchedByMetadataCount,
     unmatchedCount,

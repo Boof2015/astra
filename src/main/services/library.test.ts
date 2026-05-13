@@ -279,6 +279,7 @@ test('playlist import matches percent-encoded local M3U paths', async (t) => {
   assert.equal(encodedResult.detectedFormat, 'm3u')
   assert.equal(encodedResult.entriesTotal, 1)
   assert.equal(encodedResult.importedCount, 1)
+  assert.equal(encodedResult.missingEntryCount, 0)
   assert.equal(encodedResult.matchedByPathCount, 1)
   assert.equal(encodedResult.unmatchedCount, 0)
   assert.equal(encodedResult.unsupportedEntryCount, 0)
@@ -290,7 +291,184 @@ test('playlist import matches percent-encoded local M3U paths', async (t) => {
 
   const literalPercentResult = await library.importPlaylistFromFile(literalPercentPlaylistPath)
   assert.equal(literalPercentResult.importedCount, 1)
+  assert.equal(literalPercentResult.missingEntryCount, 0)
   assert.equal(literalPercentResult.matchedByPathCount, 1)
   assert.ok(literalPercentResult.playlistId)
   assert.deepEqual(library.getPlaylistTracks(literalPercentResult.playlistId).map((track) => track.path), [literalPercentTrackPath])
+})
+
+test('playlist import falls back to metadata for unsupported M3U URIs', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const matchedTrackPath = join(musicDir, 'unsupported-uri-match.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(matchedTrackPath, 'Unsupported URI Match', 'Import Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const matchedPlaylistPath = join(dir, 'unsupported-uri-match.m3u')
+  await writeFile(
+    matchedPlaylistPath,
+    '#EXTM3U\n#EXTINF:123,Import Artist - Unsupported URI Match\nspotify:track:matched\n',
+    'utf-8'
+  )
+
+  const matchedResult = await library.importPlaylistFromFile(matchedPlaylistPath)
+  assert.equal(matchedResult.detectedFormat, 'm3u')
+  assert.equal(matchedResult.entriesTotal, 1)
+  assert.equal(matchedResult.importedCount, 1)
+  assert.equal(matchedResult.missingEntryCount, 0)
+  assert.equal(matchedResult.matchedByPathCount, 0)
+  assert.equal(matchedResult.matchedByMetadataCount, 1)
+  assert.equal(matchedResult.unmatchedCount, 0)
+  assert.equal(matchedResult.unsupportedEntryCount, 0)
+  assert.ok(matchedResult.playlistId)
+  assert.deepEqual(library.getPlaylistTracks(matchedResult.playlistId).map((track) => track.path), [matchedTrackPath])
+
+  const unmatchedPlaylistPath = join(dir, 'unsupported-uri-unmatched.m3u')
+  await writeFile(
+    unmatchedPlaylistPath,
+    '#EXTM3U\n#EXTINF:123,Import Artist - Missing Unsupported URI\nspotify:track:missing\n',
+    'utf-8'
+  )
+
+  const unmatchedResult = await library.importPlaylistFromFile(unmatchedPlaylistPath)
+  assert.equal(unmatchedResult.entriesTotal, 1)
+  assert.equal(unmatchedResult.importedCount, 0)
+  assert.equal(unmatchedResult.missingEntryCount, 1)
+  assert.equal(unmatchedResult.matchedByMetadataCount, 0)
+  assert.equal(unmatchedResult.unmatchedCount, 1)
+  assert.equal(unmatchedResult.unsupportedEntryCount, 0)
+  assert.ok(unmatchedResult.playlistId)
+  assert.deepEqual(library.getPlaylistTracks(unmatchedResult.playlistId).map((track) => track.path), [])
+  assert.deepEqual(library.getPlaylistTrackEntries(unmatchedResult.playlistId).map((entry) => ({
+    path: entry.track_path,
+    title: entry.title,
+    artist: entry.artist,
+    missing: entry.missing
+  })), [{ path: 'spotify:track:missing', title: 'Missing Unsupported URI', artist: 'Import Artist', missing: true }])
+
+  const recoveredTrackPath = join(musicDir, 'recovered-unsupported-uri.wav')
+  await writeTaggedWavFixture(recoveredTrackPath, 'Missing Unsupported URI', 'Import Artist')
+  const recoveryScan = await library.scanFolder(musicDir)
+  assert.equal(recoveryScan.added, 1)
+  assert.equal(recoveryScan.errors, 0)
+
+  const recoveredEntries = library.getPlaylistTrackEntries(unmatchedResult.playlistId)
+  assert.deepEqual(recoveredEntries.map((entry) => ({
+    path: entry.track_path,
+    missing: entry.missing,
+    title: entry.track?.title ?? entry.title
+  })), [{ path: recoveredTrackPath, missing: false, title: 'Missing Unsupported URI' }])
+})
+
+test('playlist import preserves unmatched local paths as missing playlist entries', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const availableTrackPath = join(musicDir, 'available-import.wav')
+  const missingTrackPath = join(musicDir, 'missing-import.wav')
+  const secondMissingTrackPath = join(musicDir, 'missing-import-two.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(availableTrackPath, 'Available Import', 'Import Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const playlistPath = join(dir, 'mixed-existing-and-missing.m3u')
+  await writeFile(
+    playlistPath,
+    [
+      '#EXTM3U',
+      relative(dir, availableTrackPath),
+      relative(dir, missingTrackPath),
+      '#EXTINF:123,Missing Artist - Missing Import Two',
+      relative(dir, secondMissingTrackPath),
+      ''
+    ].join('\n'),
+    'utf-8'
+  )
+
+  const result = await library.importPlaylistFromFile(playlistPath)
+  assert.equal(result.detectedFormat, 'm3u')
+  assert.equal(result.entriesTotal, 3)
+  assert.equal(result.importedCount, 1)
+  assert.equal(result.missingEntryCount, 2)
+  assert.equal(result.matchedByPathCount, 1)
+  assert.equal(result.unmatchedCount, 2)
+  assert.equal(result.unsupportedEntryCount, 0)
+  assert.ok(result.playlistId)
+
+  assert.deepEqual(library.getPlaylistTracks(result.playlistId).map((track) => track.path), [availableTrackPath])
+
+  const entries = library.getPlaylistTrackEntries(result.playlistId)
+  assert.deepEqual(entries.map((entry) => entry.track_path), [
+    availableTrackPath,
+    missingTrackPath,
+    secondMissingTrackPath
+  ])
+  assert.deepEqual(entries.map((entry) => entry.missing), [false, true, true])
+
+  const playlistSummary = library.getPlaylists().find((entry) => entry.id === result.playlistId)
+  assert.ok(playlistSummary)
+  assert.equal(playlistSummary.track_count, 1)
+  assert.equal(playlistSummary.missing_track_count, 2)
+})
+
+test('playlist reorder preserves missing track entries after cleanup', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const missingTrackPath = join(musicDir, 'missing.wav')
+  const availableTrackPath = join(musicDir, 'available.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(missingTrackPath, 'Missing Track', 'Playlist Artist')
+  await writeTaggedWavFixture(availableTrackPath, 'Available Track', 'Playlist Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 2)
+  assert.equal(scan.errors, 0)
+
+  const playlist = await library.createPlaylist('Preserved Missing Entries')
+  await library.addToPlaylist(playlist.id, [missingTrackPath, availableTrackPath])
+
+  await rm(missingTrackPath)
+  const removed = await library.cleanupMissingTracks()
+  assert.equal(removed, 1)
+
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [availableTrackPath])
+
+  const entries = library.getPlaylistTrackEntries(playlist.id)
+  assert.equal(entries.length, 2)
+  assert.deepEqual(entries.map((entry) => entry.track_path), [missingTrackPath, availableTrackPath])
+  assert.deepEqual(entries.map((entry) => entry.missing), [true, false])
+  assert.equal(entries[0].track, null)
+  assert.equal(entries[1].track?.path, availableTrackPath)
+
+  const playlistSummary = library.getPlaylists().find((entry) => entry.id === playlist.id)
+  assert.ok(playlistSummary)
+  assert.equal(playlistSummary.track_count, 1)
+  assert.equal(playlistSummary.missing_track_count, 1)
+  assert.equal(playlistSummary.auto_cover_hash, library.getTrackByPath(availableTrackPath)?.artwork_hash ?? null)
+
+  await library.reorderPlaylistTracks(playlist.id, [availableTrackPath, missingTrackPath])
+  const reorderedEntries = library.getPlaylistTrackEntries(playlist.id)
+  assert.deepEqual(reorderedEntries.map((entry) => entry.track_path), [availableTrackPath, missingTrackPath])
+  assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
 })

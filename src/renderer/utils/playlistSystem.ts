@@ -10,6 +10,7 @@ export interface PlaylistLike {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count?: number
 }
 
 export interface DisplayPlaylist extends PlaylistLike {
@@ -61,6 +62,7 @@ function createFavoritesPlaylist(options: FavoritesDisplayOptions): DisplayPlayl
     custom_cover_hash: null,
     auto_cover_hash: options.topArtworkHash,
     track_count: options.trackCount,
+    missing_track_count: 0,
     isSystemFavorites: true,
     cover_hash: options.topArtworkHash
   }

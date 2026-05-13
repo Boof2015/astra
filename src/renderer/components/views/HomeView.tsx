@@ -1,10 +1,11 @@
 import { type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -112,13 +113,6 @@ interface WeightedGreetingPool {
   weight: number
 }
 
-type PlaylistImportStatusTone = 'success' | 'warning' | 'error'
-
-interface PlaylistImportStatus {
-  tone: PlaylistImportStatusTone
-  message: string
-}
-
 interface HomeRecentLimits {
   track: number
   artist: number
@@ -140,40 +134,6 @@ const GREETING_WEIGHT_TIME_AWARE = 0.4
 const GREETING_WEIGHT_DAY_AWARE = 0.28
 const GREETING_WEIGHT_PLAYFUL = 0.32
 const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
-
-function formatPlaylistImportStatus(result: PlaylistImportResult): PlaylistImportStatus {
-  const detailSegments: string[] = []
-  if (result.matchedByMetadataCount > 0) {
-    detailSegments.push(`${result.matchedByMetadataCount} matched by metadata`)
-  }
-  if (result.ambiguousMetadataCount > 0) {
-    detailSegments.push(`${result.ambiguousMetadataCount} ambiguous`)
-  }
-  if (result.unsupportedEntryCount > 0) {
-    detailSegments.push(`${result.unsupportedEntryCount} unsupported`)
-  }
-  const details = detailSegments.length > 0 ? ` (${detailSegments.join(' · ')})` : ''
-
-  if (result.importedCount <= 0 || result.playlistId === null || !result.playlistName) {
-    return {
-      tone: 'error',
-      message: `No tracks were imported from ${result.entriesTotal} entries.${details}`
-    }
-  }
-
-  const skippedCount = result.entriesTotal - result.importedCount
-  if (skippedCount > 0) {
-    return {
-      tone: 'warning',
-      message: `Imported ${result.importedCount}/${result.entriesTotal} tracks to "${result.playlistName}".${details}`
-    }
-  }
-
-  return {
-    tone: 'success',
-    message: `Imported ${result.importedCount} tracks to "${result.playlistName}".`
-  }
-}
 
 const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
   { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
@@ -1180,7 +1140,7 @@ export default function HomeView() {
 
       setPlaylistImportStatus(formatPlaylistImportStatus(result))
 
-      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount > 0) {
+      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount + result.missingEntryCount > 0) {
         await selectPlaylist(result.playlistId)
         setActiveView('playlist')
       }

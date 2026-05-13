@@ -4,6 +4,7 @@ import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore, type AppView, type TrackDragDropTarget } from '../../stores/uiStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
+import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
@@ -105,6 +106,7 @@ export default function Sidebar() {
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
   const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
+  const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const clearPlaylistSelection = usePlaylistStore((s) => s.clearSelection)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
@@ -118,6 +120,7 @@ export default function Sidebar() {
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [createPlaylistTrackPaths, setCreatePlaylistTrackPaths] = useState<string[] | null>(null)
+  const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
   const [isOverflowDragHover, setIsOverflowDragHover] = useState(false)
   const [sidebarDropSettledKey, setSidebarDropSettledKey] = useState<string | null>(null)
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -383,6 +386,34 @@ export default function Sidebar() {
     clearSidebarPlaylistCreateRequest()
   }, [clearSidebarPlaylistCreateRequest])
 
+  const handleImportPlaylist = useCallback(async (): Promise<boolean> => {
+    if (isImportingPlaylist) return false
+
+    setIsImportingPlaylist(true)
+    try {
+      const result = await importPlaylistFromFile()
+      if (!result) return false
+
+      const status = formatPlaylistImportStatus(result)
+      if (status.tone === 'error') {
+        throw new Error(status.message)
+      }
+
+      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount + result.missingEntryCount > 0) {
+        await selectPlaylist(result.playlistId)
+        setActiveView('playlist')
+        setIsOverflowOpen(false)
+      }
+
+      return true
+    } catch (error) {
+      console.error('Failed to import playlist:', error)
+      throw error
+    } finally {
+      setIsImportingPlaylist(false)
+    }
+  }, [importPlaylistFromFile, isImportingPlaylist, selectPlaylist, setActiveView])
+
   const handleNavClick = useCallback((view: AppView) => {
     if (view === 'playlist') {
       clearPlaylistSelection()
@@ -578,6 +609,8 @@ export default function Sidebar() {
         isOpen={isCreatePlaylistModalOpen}
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylist}
+        onImport={createPlaylistTrackPaths ? undefined : handleImportPlaylist}
+        isImporting={isImportingPlaylist}
         title={createPlaylistTrackPaths ? 'Create Playlist from Tracks' : 'Create Playlist'}
         pendingTrackCount={createPlaylistTrackPaths?.length}
       />
