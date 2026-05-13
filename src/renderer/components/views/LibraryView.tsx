@@ -8,6 +8,7 @@ import { useGraphStore } from '../../stores/graphStore'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList from '../library/ArtistList'
@@ -892,6 +893,9 @@ export default function LibraryView() {
     itemCount = sourceFilteredTracks.length
     itemLabel = sourceFilteredTracks.length === 1 ? 'track' : 'tracks'
   }
+  const selectedAlbumDurationLabel = selectedAlbum
+    ? formatCompactTotalTrackDuration(displayTracks)
+    : null
 
   // Scan progress overlay
   const renderScanProgress = () => {
@@ -1237,6 +1241,7 @@ export default function LibraryView() {
           )}
           <span className="track-count">
             {itemCount} {itemLabel}
+            {selectedAlbumDurationLabel ? ` \u00b7 ${selectedAlbumDurationLabel}` : ''}
           </span>
           {shouldShowSourceFilters && (
             <div className="library-source-filters" role="group" aria-label="Source filters">

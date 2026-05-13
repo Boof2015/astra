@@ -8,6 +8,7 @@ import {
   FAVORITES_PLAYLIST_NAME,
   isSystemFavoritesPlaylistId
 } from '../../utils/playlistSystem'
+import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
@@ -336,6 +337,7 @@ export default function PlaylistView() {
     0
   )
   const playlistEntryCount = isFavoritesPlaylist ? selectedPlaylistTracks.length : selectedPlaylistEntries.length
+  const playlistDurationLabel = formatCompactTotalTrackDuration(selectedPlaylistTracks)
 
   useEffect(() => {
     if (selectedPlaylistId === null || isFavoritesPlaylist || isReorderMode || isSavingReorder) return
@@ -729,6 +731,7 @@ export default function PlaylistView() {
             )}
             <span className="track-count">
               {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? 'track' : 'tracks'}
+              {playlistDurationLabel ? ` \u00b7 ${playlistDurationLabel}` : ''}
               {playlistMissingCount > 0 && (
                 <span className="playlist-missing-count"> / {playlistMissingCount} missing</span>
               )}
