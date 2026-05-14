@@ -155,17 +155,20 @@ std::string PlaybackEngine::getSelectedDeviceId() const {
 }
 
 void PlaybackEngine::setSelectedDeviceId(const std::string& deviceId) {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::string error;
+    bool hasTrack = false;
     bool shouldRestart = false;
     bool wasPaused = false;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         selectedDeviceId_ = deviceId;
+        hasTrack = hasCurrentTrack_;
         shouldRestart = hasCurrentTrack_ && state_ == State::Playing;
         wasPaused = hasCurrentTrack_ && state_ == State::Paused;
     }
 
-    if (!hasCurrentTrack_) {
+    if (!hasTrack) {
         return;
     }
 
@@ -200,11 +203,21 @@ std::string PlaybackEngine::backendKind() const {
     return sink_->backendKind();
 }
 
+int PlaybackEngine::getActiveDeviceSampleRate() const {
+    return sink_->activeDeviceSampleRate();
+}
+
 void PlaybackEngine::loadTrack(TrackBuffer track) {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     bool hadTrack = false;
+    TrackFormat previousFormat {};
+    const TrackFormat nextFormat = track.format;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         hadTrack = hasCurrentTrack_;
+        if (hadTrack) {
+            previousFormat = currentTrack_.format;
+        }
         currentTrack_ = std::move(track);
         hasCurrentTrack_ = true;
         nextTrack_ = TrackBuffer{};
@@ -219,18 +232,26 @@ void PlaybackEngine::loadTrack(TrackBuffer track) {
     clearPendingEvents();
 
     if (hadTrack) {
-        sink_->close();
+        if (sink_->shouldCloseOnTrackChange(previousFormat, nextFormat)) {
+            sink_->close();
+        } else {
+            sink_->stop();
+        }
     }
 }
 
 void PlaybackEngine::preloadNextTrack(TrackBuffer track) {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::lock_guard<std::mutex> lock(stateMutex_);
     nextTrack_ = std::move(track);
     hasNextTrack_ = true;
 }
 
 bool PlaybackEngine::promoteNextTrack() {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     bool hadTrack = false;
+    TrackFormat previousFormat {};
+    TrackFormat nextFormat {};
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!hasNextTrack_) {
@@ -238,6 +259,10 @@ bool PlaybackEngine::promoteNextTrack() {
         }
 
         hadTrack = hasCurrentTrack_;
+        if (hadTrack) {
+            previousFormat = currentTrack_.format;
+        }
+        nextFormat = nextTrack_.format;
         currentTrack_ = std::move(nextTrack_);
         hasCurrentTrack_ = true;
         nextTrack_ = TrackBuffer{};
@@ -252,22 +277,29 @@ bool PlaybackEngine::promoteNextTrack() {
     clearPendingEvents();
 
     if (hadTrack) {
-        sink_->close();
+        if (sink_->shouldCloseOnTrackChange(previousFormat, nextFormat)) {
+            sink_->close();
+        } else {
+            sink_->stop();
+        }
     }
 
     return true;
 }
 
 void PlaybackEngine::clearNextTrack() {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::lock_guard<std::mutex> lock(stateMutex_);
     nextTrack_ = TrackBuffer{};
     hasNextTrack_ = false;
 }
 
 PlaybackSnapshot PlaybackEngine::play() {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::string error;
     bool alreadyPlaying = false;
     State previousState = State::Stopped;
+    bool shouldReset = false;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!hasCurrentTrack_) {
@@ -276,6 +308,7 @@ PlaybackSnapshot PlaybackEngine::play() {
             alreadyPlaying = true;
         } else {
             previousState = state_;
+            shouldReset = previousState != State::Paused;
         }
     }
     if (alreadyPlaying) {
@@ -286,12 +319,14 @@ PlaybackSnapshot PlaybackEngine::play() {
         throw std::runtime_error(error.empty() ? "Failed to open native output." : error);
     }
 
+    if (shouldReset) {
+        sink_->reset();
+    }
+
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        const State previousState = state_;
         state_ = State::Playing;
-        if (previousState != State::Paused) {
-            sink_->reset();
+        if (shouldReset) {
             fadeInRemaining_ = kFadeInFrames;
         }
         pushEvent({
@@ -326,6 +361,7 @@ PlaybackSnapshot PlaybackEngine::play() {
 }
 
 PlaybackSnapshot PlaybackEngine::pause() {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     bool shouldPause = false;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
@@ -356,6 +392,7 @@ PlaybackSnapshot PlaybackEngine::pause() {
 }
 
 PlaybackSnapshot PlaybackEngine::stop() {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     double duration = 0.0;
     int sampleRate = 0;
     std::string sampleFormatId;
@@ -405,10 +442,25 @@ PlaybackSnapshot PlaybackEngine::stop() {
 }
 
 PlaybackSnapshot PlaybackEngine::seek(double seconds) {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
     bool shouldRestart = false;
     bool wasPlaying = false;
     bool hasTrack = true;
     double currentTime = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!hasCurrentTrack_) {
+            hasTrack = false;
+        } else {
+            shouldRestart = state_ == State::Playing || state_ == State::Paused;
+            wasPlaying = state_ == State::Playing;
+        }
+    }
+
+    if (hasTrack && shouldRestart) {
+        sink_->beginSeek(wasPlaying);
+    }
+
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!hasCurrentTrack_) {
@@ -420,11 +472,9 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
             lastTimeUpdateFrame_ = targetFrame;
             fadeInRemaining_ = kFadeInFrames;
             currentTime = static_cast<double>(targetFrame) / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate));
-
-            shouldRestart = state_ == State::Playing || state_ == State::Paused;
-            wasPlaying = state_ == State::Playing;
         }
     }
+
     clearTapBuffers();
     if (hasTrack) {
         pushEvent({
@@ -442,7 +492,7 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
         return getSnapshot();
     }
     if (shouldRestart) {
-        sink_->reset();
+        sink_->resetAfterSeek(wasPlaying);
         if (wasPlaying) {
             std::string error;
             if (!sink_->start(&error)) {
@@ -480,7 +530,7 @@ PlaybackSnapshot PlaybackEngine::getSnapshot() const {
     snapshot.deviceLabel = sink_->activeDeviceLabel();
     snapshot.activeBackend = sink_->backendKind();
     snapshot.activeDeviceExclusive = sink_->isExclusive();
-    snapshot.bitPerfectActive = hasCurrentTrack_ && sink_->supportsBitPerfect();
+    snapshot.bitPerfectActive = hasCurrentTrack_ && sink_->supportsBitPerfect() && sink_->isExclusive();
     return snapshot;
 }
 
@@ -765,17 +815,27 @@ void PlaybackEngine::onFramesConsumed(size_t frames) {
 }
 
 bool PlaybackEngine::ensureSinkOpen(std::string* error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    if (!hasCurrentTrack_) {
-        if (error) *error = "No track loaded for native playback.";
-        return false;
+    std::string selectedDeviceId;
+    TrackFormat currentFormat {};
+    std::string previousDeviceId;
+    int previousSampleRate = 0;
+    std::string previousSampleFormat;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!hasCurrentTrack_) {
+            if (error) *error = "No track loaded for native playback.";
+            return false;
+        }
+
+        selectedDeviceId = selectedDeviceId_;
+        currentFormat = currentTrack_.format;
+        previousDeviceId = sink_->activeDeviceId();
+        previousSampleRate = static_cast<int>(currentFormat.sampleRate);
+        previousSampleFormat = currentFormat.sampleFormatId();
     }
 
-    const std::string previousDeviceId = sink_->activeDeviceId();
-    const int previousSampleRate = currentTrack_.format.sampleRate;
-    const std::string previousSampleFormat = currentTrack_.format.sampleFormatId();
-
-    if (!sink_->open(selectedDeviceId_, currentTrack_.format, this, error)) {
+    if (!sink_->open(selectedDeviceId, currentFormat, this, error)) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
         lastUnavailableReason_ = (error && !error->empty())
             ? *error
             : "Failed to open the selected native output device.";
@@ -783,6 +843,12 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
     }
 
     const std::string activeDeviceId = sink_->activeDeviceId();
+    if (selectedDeviceId.empty() && !activeDeviceId.empty()) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (selectedDeviceId_.empty()) {
+            selectedDeviceId_ = activeDeviceId;
+        }
+    }
     if (activeDeviceId != previousDeviceId) {
         pushEvent({
             "deviceReopened",
@@ -800,8 +866,8 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
         "",
         0.0,
         0.0,
-        static_cast<int>(currentTrack_.format.sampleRate),
-        currentTrack_.format.sampleFormatId(),
+        static_cast<int>(currentFormat.sampleRate),
+        currentFormat.sampleFormatId(),
         activeDeviceId,
         ""
     });
@@ -810,6 +876,10 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
 
 void PlaybackEngine::pushEvent(const PlaybackEvent& event) {
     std::lock_guard<std::mutex> lock(eventMutex_);
+    if (event.type == "timeUpdate" && !pendingEvents_.empty() && pendingEvents_.back().type == "timeUpdate") {
+        pendingEvents_.back() = event;
+        return;
+    }
     pendingEvents_.push_back(event);
 }
 
@@ -819,6 +889,10 @@ bool PlaybackEngine::tryPushEvent(const PlaybackEvent& event) {
         return false;
     }
 
+    if (event.type == "timeUpdate" && !pendingEvents_.empty() && pendingEvents_.back().type == "timeUpdate") {
+        pendingEvents_.back() = event;
+        return true;
+    }
     pendingEvents_.push_back(event);
     return true;
 }

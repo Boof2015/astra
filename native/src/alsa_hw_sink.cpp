@@ -695,6 +695,11 @@ public:
         return renderThread_.joinable() || pcmHandle_ != nullptr;
     }
 
+    int activeDeviceSampleRate() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return hasOpenFormat_ ? static_cast<int>(openFormat_.sampleRate) : 0;
+    }
+
     std::string activeDeviceId() const override {
         std::lock_guard<std::mutex> lock(mutex_);
         return activeDeviceId_;

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
+import type { NativeAudioCapabilities } from '../../types/nativeAudio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
@@ -696,6 +697,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let recentPlaySession: RecentPlaySession | null = null
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
+  let currentSerializedLoad: Promise<void> | null = null
   let prebufferScheduleTimerId: ReturnType<typeof globalThis.setTimeout> | null = null
   let prebufferScheduleDueAtMs: number | null = null
   let prebufferScheduleTrackPath: string | null = null
@@ -752,6 +754,46 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return error instanceof SupersededPlaybackLoadError
       || isSupersededAudioLoadError(error)
       || !isActiveLoadRequest(requestId)
+  }
+
+  // Run _loadAndPlayTrack while serializing rapid presses against any in-flight load.
+  // Bumps activeLoadRequestId so the in-flight load supersedes itself at its next
+  // checkpoint, then awaits its completion before starting the new load. This stops
+  // the native-side controlMutex pile-up that magnifies the freeze during rate changes.
+  const runSerializedTrackLoad = async (
+    track: Track,
+    options?: { manualStart?: boolean }
+  ): Promise<void> => {
+    invalidateLoadRequest()
+    const previous = currentSerializedLoad
+    if (previous) {
+      try {
+        await previous
+      } catch {
+        // Superseded or failed loads are expected here; the next load will handle errors.
+      }
+    }
+
+    const next = (async () => {
+      try {
+        const outcome = await get()._loadAndPlayTrack(track, options ?? {})
+        if (outcome === 'failed' && track.sourceType && track.sourceType !== 'local') {
+          markTrackUnavailableInState(track.path)
+        }
+      } catch (error) {
+        if (!isSupersededAudioLoadError(error) && !(error instanceof SupersededPlaybackLoadError)) {
+          throw error
+        }
+      }
+    })()
+    currentSerializedLoad = next
+    try {
+      await next
+    } finally {
+      if (currentSerializedLoad === next) {
+        currentSerializedLoad = null
+      }
+    }
   }
 
   const beginPrebufferRequest = (): number => {
@@ -1668,10 +1710,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         clearFuture: true
       }))
 
-      const loaded = await get()._loadAndPlayTrack(candidate.track)
-      if (loaded === 'failed' && candidate.track.sourceType && candidate.track.sourceType !== 'local') {
-        markTrackUnavailableInState(candidate.track.path)
-      }
+      await runSerializedTrackLoad(candidate.track)
     },
 
     playPrevious: async () => {
@@ -1696,10 +1735,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         autoQueueIndex: previousEntry.autoQueueIndex
       })
 
-      const loaded = await get()._loadAndPlayTrack(previousTrack, { manualStart: true })
-      if (loaded === 'failed' && previousTrack.sourceType && previousTrack.sourceType !== 'local') {
-        markTrackUnavailableInState(previousTrack.path)
-      }
+      await runSerializedTrackLoad(previousTrack, { manualStart: true })
     },
 
     toggleShuffle: () => {
@@ -2311,6 +2347,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           playbackState: nextPlaybackState,
           currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
+        })
+      })
+
+      audioEngine.on('nativeCapabilitiesChange', (capabilities) => {
+        if (useAudioSettingsStore.getState().playbackOutputMode !== 'bitperfect') {
+          return
+        }
+        useAudioSettingsStore.setState({
+          nativeAudioCapabilities: capabilities as NativeAudioCapabilities,
+          playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
         })
       })
 

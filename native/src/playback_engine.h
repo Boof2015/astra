@@ -119,8 +119,12 @@ public:
     virtual void pause() = 0;
     virtual void stop() = 0;
     virtual void reset() = 0;
+    virtual void beginSeek(bool /*wasPlaying*/) {}
+    virtual void resetAfterSeek(bool /*wasPlaying*/) { reset(); }
+    virtual bool shouldCloseOnTrackChange(const TrackFormat&, const TrackFormat&) const { return true; }
 
     virtual bool isExclusive() const = 0;
+    virtual int activeDeviceSampleRate() const = 0;
     virtual std::string activeDeviceId() const = 0;
     virtual std::string activeDeviceLabel() const = 0;
 };
@@ -137,6 +141,7 @@ public:
 
     bool isBitPerfectAvailable(std::string* reason) const;
     std::string backendKind() const;
+    int getActiveDeviceSampleRate() const;
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);
@@ -181,6 +186,7 @@ private:
     bool formatsMatch(const TrackFormat& a, const TrackFormat& b) const;
     uint64_t clampTargetFrameLocked(double seconds) const;
 
+    mutable std::mutex controlMutex_;
     mutable std::mutex stateMutex_;
     mutable std::mutex eventMutex_;
     mutable std::mutex tapMutex_;

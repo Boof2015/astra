@@ -337,6 +337,8 @@ export class AudioEngine {
   private nativeModeMessage: string | null = null
   private nativeNextTrackBuffered: boolean = false
   private lastNativeVisualizerTapDemand: NativeAudioVisualizerTapDemand | null = null
+  private nativeSeekPromise: Promise<void> | null = null
+  private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
   private remotePlayPromise: Promise<void> | null = null
   private remotePlayResolver: (() => void) | null = null
@@ -948,6 +950,7 @@ export class AudioEngine {
 
   private async refreshNativeCapabilities(): Promise<NativeAudioCapabilities> {
     this.nativeCapabilities = await window.nativeAudioAPI.getCapabilities()
+    this.emit('nativeCapabilitiesChange', this.nativeCapabilities)
     return this.nativeCapabilities
   }
 
@@ -4347,6 +4350,8 @@ export class AudioEngine {
       this.assertCurrentLoadOperation(playLoadGeneration)
       this.nativeSnapshot = await window.nativeAudioAPI.play()
       this.assertCurrentLoadOperation(playLoadGeneration)
+      await this.refreshNativeCapabilities()
+      this.assertCurrentLoadOperation(playLoadGeneration)
       this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
       this.emit('stateChange', this._playbackState)
       this.syncNativeScopePolling()
@@ -4525,11 +4530,7 @@ export class AudioEngine {
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {
-      await this.initNativeAudio()
-      this.nativeSnapshot = await window.nativeAudioAPI.seek(time)
-      this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
-      this.emit('timeUpdate', this.nativeSnapshot.currentTime)
-      this.notifyTrackChange()
+      await this.seekNativeBitPerfect(time)
       return
     }
 
@@ -4579,6 +4580,35 @@ export class AudioEngine {
     }
 
     this.emit('timeUpdate', clampedTime)
+  }
+
+  private async seekNativeBitPerfect(time: number): Promise<void> {
+    this.pendingNativeSeekTime = time
+    if (this.nativeSeekPromise) {
+      await this.nativeSeekPromise
+      return
+    }
+
+    if (this.nativeEventUnsubscribe === null) {
+      await this.initNativeAudio()
+    }
+
+    this.nativeSeekPromise = (async () => {
+      try {
+        while (this.pendingNativeSeekTime !== null) {
+          const nextSeekTime = this.pendingNativeSeekTime
+          this.pendingNativeSeekTime = null
+          this.nativeSnapshot = await window.nativeAudioAPI.seek(nextSeekTime)
+          this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
+          this.emit('timeUpdate', this.nativeSnapshot.currentTime)
+          this.notifyTrackChange()
+        }
+      } finally {
+        this.nativeSeekPromise = null
+      }
+    })()
+
+    await this.nativeSeekPromise
   }
 
   // Set volume (0-1)

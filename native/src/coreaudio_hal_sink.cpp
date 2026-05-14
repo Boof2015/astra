@@ -1,10 +1,17 @@
 #include "playback_engine.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -21,9 +28,127 @@ namespace NativePlayback {
 namespace {
 
 constexpr useconds_t kSampleRateSettleSleepUs = 10 * 1000;
-constexpr size_t kSampleRateSettleMaxAttempts = 150;
+constexpr size_t kSampleRateSettleMaxAttempts = 60;
+constexpr useconds_t kSampleRatePostChangeSettleSleepUs = 50 * 1000;
+constexpr useconds_t kStreamConfigurationSettleSleepUs = 10 * 1000;
+constexpr size_t kStreamConfigurationSettleMaxAttempts = 30;
+constexpr size_t kStreamConfigurationStableThreshold = 2;
 constexpr useconds_t kHogModeSettleSleepUs = 10 * 1000;
+constexpr size_t kHogModeAcquireMaxAttempts = 40;
 constexpr size_t kHogModeSettleMaxAttempts = 150;
+constexpr std::chrono::milliseconds kSampleRateWaiterTimeout { 750 };
+constexpr std::chrono::milliseconds kRenderDrainWaitTimeout { 500 };
+constexpr uint32_t kFallbackMaximumFramesPerSlice = 1024;
+constexpr uint32_t kMaximumRequestedDeviceBufferFrames = 1024;
+
+bool isAudioDebugLoggingEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("ASTRA_AUDIO_DEBUG");
+        const bool on = value != nullptr && value[0] != '\0' && value[0] != '0';
+        if (on) {
+            std::fprintf(stderr,
+                "[astra-audio] ASTRA_AUDIO_DEBUG enabled - "
+                "slow open()/start()/stop()/pause()/reset() and drain timeouts will be logged\n");
+        }
+        return on;
+    }();
+    return enabled;
+}
+
+class ScopedSlowOpTimer {
+public:
+    ScopedSlowOpTimer(const char* label, int thresholdMs)
+        : label_(label), thresholdMs_(thresholdMs), enabled_(isAudioDebugLoggingEnabled()) {
+        if (enabled_) {
+            start_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    ~ScopedSlowOpTimer() {
+        if (!enabled_) return;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_);
+        if (elapsed.count() > thresholdMs_) {
+            std::fprintf(stderr, "[astra-audio] slow %s: %lldms\n",
+                label_,
+                static_cast<long long>(elapsed.count()));
+        }
+    }
+
+private:
+    const char* label_;
+    int thresholdMs_;
+    bool enabled_;
+    std::chrono::steady_clock::time_point start_;
+};
+
+class DevicePropertyWaiter {
+public:
+    DevicePropertyWaiter(AudioDeviceID deviceId, std::vector<AudioObjectPropertyAddress> addresses)
+        : deviceId_(deviceId), addresses_(std::move(addresses)) {}
+
+    ~DevicePropertyWaiter() {
+        stop();
+    }
+
+    bool start() {
+        if (deviceId_ == kAudioObjectUnknown) {
+            return false;
+        }
+
+        for (const AudioObjectPropertyAddress& address : addresses_) {
+            if (AudioObjectAddPropertyListener(deviceId_, &address, &DevicePropertyWaiter::listener, this) == noErr) {
+                registeredAddresses_.push_back(address);
+            }
+        }
+        return !registeredAddresses_.empty();
+    }
+
+    void stop() {
+        if (deviceId_ == kAudioObjectUnknown || registeredAddresses_.empty()) {
+            return;
+        }
+
+        for (const AudioObjectPropertyAddress& address : registeredAddresses_) {
+            AudioObjectRemovePropertyListener(deviceId_, &address, &DevicePropertyWaiter::listener, this);
+        }
+        registeredAddresses_.clear();
+    }
+
+    bool wait(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [this]() {
+            return notified_;
+        });
+    }
+
+private:
+    static OSStatus listener(
+        AudioObjectID,
+        UInt32,
+        const AudioObjectPropertyAddress*,
+        void* clientData
+    ) {
+        auto* waiter = static_cast<DevicePropertyWaiter*>(clientData);
+        if (waiter == nullptr) {
+            return noErr;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(waiter->mutex_);
+            waiter->notified_ = true;
+        }
+        waiter->cv_.notify_all();
+        return noErr;
+    }
+
+    AudioDeviceID deviceId_ = kAudioObjectUnknown;
+    std::vector<AudioObjectPropertyAddress> addresses_;
+    std::vector<AudioObjectPropertyAddress> registeredAddresses_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool notified_ = false;
+};
 
 std::string cfStringToStdString(CFStringRef value) {
     if (value == nullptr) {
@@ -125,6 +250,65 @@ bool getDeviceHogModePid(AudioDeviceID deviceId, pid_t* outPid) {
     }
 
     *outPid = hogPid;
+    return true;
+}
+
+bool getDeviceBufferFrameSize(AudioDeviceID deviceId, uint32_t* outFrameSize) {
+    if (deviceId == kAudioObjectUnknown || outFrameSize == nullptr) {
+        return false;
+    }
+
+    AudioObjectPropertyAddress address {
+        kAudioDevicePropertyBufferFrameSize,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+
+    UInt32 frameSize = 0;
+    UInt32 size = sizeof(frameSize);
+    if (AudioObjectGetPropertyData(deviceId, &address, 0, nullptr, &size, &frameSize) != noErr || frameSize == 0) {
+        return false;
+    }
+
+    *outFrameSize = frameSize;
+    return true;
+}
+
+bool getDeviceBufferFrameSizeRange(AudioDeviceID deviceId, AudioValueRange* outRange) {
+    if (deviceId == kAudioObjectUnknown || outRange == nullptr) {
+        return false;
+    }
+
+    AudioObjectPropertyAddress address {
+        kAudioDevicePropertyBufferFrameSizeRange,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+
+    UInt32 size = sizeof(*outRange);
+    return AudioObjectGetPropertyData(deviceId, &address, 0, nullptr, &size, outRange) == noErr
+        && outRange->mMinimum > 0.0
+        && outRange->mMaximum >= outRange->mMinimum;
+}
+
+bool getDeviceVariableBufferFrameSize(AudioDeviceID deviceId, uint32_t* outLargestFrameSize) {
+    if (deviceId == kAudioObjectUnknown || outLargestFrameSize == nullptr) {
+        return false;
+    }
+
+    AudioObjectPropertyAddress address {
+        kAudioDevicePropertyUsesVariableBufferFrameSizes,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+
+    UInt32 frameSize = 0;
+    UInt32 size = sizeof(frameSize);
+    if (AudioObjectGetPropertyData(deviceId, &address, 0, nullptr, &size, &frameSize) != noErr || frameSize == 0) {
+        return false;
+    }
+
+    *outLargestFrameSize = frameSize;
     return true;
 }
 
@@ -238,7 +422,10 @@ AudioDeviceID resolveDeviceIdFromUid(const std::string& uid) {
     return kAudioObjectUnknown;
 }
 
-bool setDeviceNominalSampleRate(AudioDeviceID deviceId, double sampleRate) {
+bool setDeviceNominalSampleRate(AudioDeviceID deviceId, double sampleRate, bool* changed = nullptr) {
+    if (changed != nullptr) {
+        *changed = false;
+    }
     if (deviceId == kAudioObjectUnknown || sampleRate <= 0) {
         return false;
     }
@@ -258,7 +445,11 @@ bool setDeviceNominalSampleRate(AudioDeviceID deviceId, double sampleRate) {
     }
 
     Float64 requestedSampleRate = sampleRate;
-    return AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(requestedSampleRate), &requestedSampleRate) == noErr;
+    const OSStatus status = AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(requestedSampleRate), &requestedSampleRate);
+    if (status == noErr && changed != nullptr) {
+        *changed = true;
+    }
+    return status == noErr;
 }
 
 bool waitForDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRate, double* outSampleRate = nullptr) {
@@ -282,6 +473,25 @@ bool waitForDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleR
     return false;
 }
 
+bool waitForDeviceOutputConfigurationStable(AudioDeviceID deviceId) {
+    uint32_t previousChannelCount = getOutputChannelCount(deviceId);
+    size_t stableCount = 0;
+    for (size_t attempt = 0; attempt < kStreamConfigurationSettleMaxAttempts; attempt++) {
+        usleep(kStreamConfigurationSettleSleepUs);
+        const uint32_t currentChannelCount = getOutputChannelCount(deviceId);
+        if (currentChannelCount > 0 && currentChannelCount == previousChannelCount) {
+            stableCount += 1;
+            if (stableCount >= kStreamConfigurationStableThreshold) {
+                return true;
+            }
+        } else {
+            stableCount = 0;
+            previousChannelCount = currentChannelCount;
+        }
+    }
+    return getOutputChannelCount(deviceId) > 0;
+}
+
 bool ensureDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRate, std::string* error) {
     if (deviceId == kAudioObjectUnknown || targetSampleRate <= 0.0) {
         if (error != nullptr) {
@@ -292,10 +502,32 @@ bool ensureDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRa
 
     double currentSampleRate = 0.0;
     if (getDeviceNominalSampleRate(deviceId, &currentSampleRate) && std::abs(currentSampleRate - targetSampleRate) < 1.0) {
+        waitForDeviceOutputConfigurationStable(deviceId);
         return true;
     }
 
-    if (!setDeviceNominalSampleRate(deviceId, targetSampleRate)) {
+    DevicePropertyWaiter waiter(deviceId, {
+        {
+            kAudioDevicePropertyNominalSampleRate,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        },
+        {
+            kAudioDevicePropertyActualSampleRate,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        },
+        {
+            kAudioDevicePropertyStreamConfiguration,
+            kAudioDevicePropertyScopeOutput,
+            kAudioObjectPropertyElementMain
+        }
+    });
+    waiter.start();
+
+    bool sampleRateChangeRequested = false;
+    if (!setDeviceNominalSampleRate(deviceId, targetSampleRate, &sampleRateChangeRequested)) {
+        waiter.stop();
         if (error != nullptr) {
             const std::string currentLabel = currentSampleRate > 0.0
                 ? formatSampleRateLabel(currentSampleRate)
@@ -306,11 +538,48 @@ bool ensureDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRa
         return false;
     }
 
+    const auto rateChangeStart = std::chrono::steady_clock::now();
+    std::chrono::milliseconds waiterElapsed { 0 };
+    std::chrono::milliseconds pollElapsed { 0 };
+    std::chrono::milliseconds outputConfigElapsed { 0 };
+
+    if (sampleRateChangeRequested) {
+        const auto waitStart = std::chrono::steady_clock::now();
+        waiter.wait(kSampleRateWaiterTimeout);
+        waiterElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - waitStart);
+    }
+
     double settledSampleRate = currentSampleRate;
-    if (waitForDeviceNominalSampleRate(deviceId, targetSampleRate, &settledSampleRate)) {
+    const auto pollStart = std::chrono::steady_clock::now();
+    const bool pollSettled = waitForDeviceNominalSampleRate(deviceId, targetSampleRate, &settledSampleRate);
+    pollElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - pollStart);
+
+    const auto outputConfigStart = std::chrono::steady_clock::now();
+    const bool outputSettled = pollSettled && waitForDeviceOutputConfigurationStable(deviceId);
+    outputConfigElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - outputConfigStart);
+
+    if (pollSettled && outputSettled) {
+        usleep(kSampleRatePostChangeSettleSleepUs);
+        waiter.stop();
+        const auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - rateChangeStart);
+        if (isAudioDebugLoggingEnabled() && totalElapsed.count() > 500) {
+            std::fprintf(stderr,
+                "[astra-audio] slow sample-rate change to %d Hz: total=%lldms "
+                "(waiter=%lldms poll=%lldms outputCfg=%lldms)\n",
+                static_cast<int>(std::llround(targetSampleRate)),
+                static_cast<long long>(totalElapsed.count()),
+                static_cast<long long>(waiterElapsed.count()),
+                static_cast<long long>(pollElapsed.count()),
+                static_cast<long long>(outputConfigElapsed.count()));
+        }
         return true;
     }
 
+    waiter.stop();
     if (error != nullptr) {
         const std::string settledLabel = settledSampleRate > 0.0
             ? formatSampleRateLabel(settledSampleRate)
@@ -319,6 +588,51 @@ bool ensureDeviceNominalSampleRate(AudioDeviceID deviceId, double targetSampleRa
             + formatSampleRateLabel(targetSampleRate) + " (stayed at " + settledLabel + ").";
     }
     return false;
+}
+
+uint32_t configureDeviceBufferFrameSize(AudioDeviceID deviceId) {
+    uint32_t currentFrameSize = 0;
+    getDeviceBufferFrameSize(deviceId, &currentFrameSize);
+
+    AudioValueRange range {};
+    uint32_t targetFrameSize = currentFrameSize > 0 ? currentFrameSize : kFallbackMaximumFramesPerSlice;
+    if (getDeviceBufferFrameSizeRange(deviceId, &range)) {
+        targetFrameSize = static_cast<uint32_t>(std::llround(range.mMaximum));
+        targetFrameSize = std::max<uint32_t>(1, targetFrameSize);
+        targetFrameSize = std::min<uint32_t>(targetFrameSize, kMaximumRequestedDeviceBufferFrames);
+        targetFrameSize = std::max<uint32_t>(
+            targetFrameSize,
+            static_cast<uint32_t>(std::llround(range.mMinimum))
+        );
+    }
+
+    if (targetFrameSize > 0 && currentFrameSize != targetFrameSize) {
+        AudioObjectPropertyAddress address {
+            kAudioDevicePropertyBufferFrameSize,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
+
+        Boolean isSettable = false;
+        if (AudioObjectIsPropertySettable(deviceId, &address, &isSettable) == noErr && isSettable) {
+            DevicePropertyWaiter waiter(deviceId, { address });
+            waiter.start();
+            UInt32 requestedFrameSize = targetFrameSize;
+            if (AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(requestedFrameSize), &requestedFrameSize) == noErr) {
+                waiter.wait(std::chrono::milliseconds(1000));
+                getDeviceBufferFrameSize(deviceId, &currentFrameSize);
+            }
+        }
+    }
+
+    uint32_t variableFrameSize = 0;
+    if (getDeviceVariableBufferFrameSize(deviceId, &variableFrameSize)) {
+        targetFrameSize = std::max(targetFrameSize, variableFrameSize);
+    }
+    if (currentFrameSize > 0) {
+        targetFrameSize = std::max(targetFrameSize, currentFrameSize);
+    }
+    return std::max<uint32_t>(targetFrameSize, kFallbackMaximumFramesPerSlice);
 }
 
 bool waitForDeviceHogMode(AudioDeviceID deviceId, pid_t expectedPid, pid_t* outObservedPid = nullptr) {
@@ -347,8 +661,9 @@ public:
     CoreAudioHalSink() = default;
 
     ~CoreAudioHalSink() override {
-        releaseHogMode();
-        disposeQueue();
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        disposeUnitLocked();
+        releaseHogModeLocked();
     }
 
     bool supportsBitPerfect() const override {
@@ -378,7 +693,15 @@ public:
         PlaybackEngine* engine,
         std::string* error
     ) override {
-        AudioDeviceID resolvedDeviceId = resolveDeviceIdFromUid(deviceId);
+        const bool logEnabled = isAudioDebugLoggingEnabled();
+        const auto openStart = std::chrono::steady_clock::now();
+        std::chrono::milliseconds hogElapsed { 0 };
+        std::chrono::milliseconds disposeElapsed { 0 };
+        std::chrono::milliseconds rateElapsed { 0 };
+        std::chrono::milliseconds bufferElapsed { 0 };
+        std::chrono::milliseconds initElapsed { 0 };
+
+        const AudioDeviceID resolvedDeviceId = resolveDeviceIdFromUid(deviceId);
         if (resolvedDeviceId == kAudioObjectUnknown) {
             if (error != nullptr) {
                 *error = "Could not resolve the selected CoreAudio output device.";
@@ -391,27 +714,134 @@ public:
         getDeviceStringProperty(resolvedDeviceId, kAudioDevicePropertyDeviceUID, &resolvedUid);
         getDeviceStringProperty(resolvedDeviceId, kAudioObjectPropertyName, &resolvedLabel);
 
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        std::string currentDeviceUid;
+        {
+            std::lock_guard<std::mutex> metadataLock(metadataMutex_);
+            currentDeviceUid = activeDeviceUid_;
+        }
+
         const bool formatChanged = !hasOpenFormat_
             || openFormat_.sampleRate != format.sampleRate
             || openFormat_.channels != format.channels
             || openFormat_.sampleFormat != format.sampleFormat;
-        const bool deviceChanged = resolvedUid != activeDeviceUid_;
+        const bool deviceChanged = unit_ != nullptr && resolvedUid != currentDeviceUid;
 
-        engine_ = engine;
-        if (!formatChanged && !deviceChanged && queue_ != nullptr) {
+        if (!formatChanged && !deviceChanged && unit_ != nullptr) {
+            if (!renderEnabled_.load(std::memory_order_acquire)) {
+                publishRenderStateLocked(engine, format);
+            }
+            if (logEnabled) {
+                const auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - openStart);
+                if (totalElapsed.count() > 100) {
+                    std::fprintf(stderr,
+                        "[astra-audio] slow open()-noop for %d Hz: total=%lldms (already-open path)\n",
+                        static_cast<int>(format.sampleRate),
+                        static_cast<long long>(totalElapsed.count()));
+                }
+            }
             return true;
         }
 
-        stop();
-        releaseHogMode();
-        disposeQueue();
+        OSStatus status = noErr;
+        if (deviceChanged || unit_ == nullptr) {
+            const auto disposeStart = std::chrono::steady_clock::now();
+            disposeUnitLocked();
+            releaseHogModeLocked();
+            clearActiveDeviceMetadataLocked();
+            disposeElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - disposeStart);
 
-        acquireHogMode(resolvedDeviceId);
-        if (!ensureDeviceNominalSampleRate(resolvedDeviceId, static_cast<double>(format.sampleRate), error)) {
-            releaseHogMode();
-            disposeQueue();
+            const auto hogStart = std::chrono::steady_clock::now();
+            const bool hogAcquired = acquireHogModeLocked(resolvedDeviceId);
+            hogElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - hogStart);
+            if (!hogAcquired) {
+                if (error != nullptr) {
+                    *error = "Could not acquire exclusive (hog) mode for the CoreAudio device. "
+                        "It may be held by another process - close other audio apps or disable bit-perfect mode.";
+                }
+                return false;
+            }
+
+            AudioComponentDescription desc {};
+            desc.componentType = kAudioUnitType_Output;
+            desc.componentSubType = kAudioUnitSubType_HALOutput;
+            desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+            AudioComponent component = AudioComponentFindNext(nullptr, &desc);
+            if (component == nullptr) {
+                if (error != nullptr) {
+                    *error = "AUHAL output component is unavailable on this system.";
+                }
+                releaseHogModeLocked();
+                return false;
+            }
+
+            status = AudioComponentInstanceNew(component, &unit_);
+            if (status != noErr || unit_ == nullptr) {
+                if (error != nullptr) {
+                    *error = "Failed to instantiate the AUHAL output unit.";
+                }
+                unit_ = nullptr;
+                releaseHogModeLocked();
+                return false;
+            }
+
+            UInt32 outputEnabled = 1;
+            status = AudioUnitSetProperty(unit_,
+                kAudioOutputUnitProperty_EnableIO,
+                kAudioUnitScope_Output, 0,
+                &outputEnabled, sizeof(outputEnabled));
+            if (status != noErr) {
+                if (error != nullptr) {
+                    *error = "Failed to enable AUHAL output I/O.";
+                }
+                disposeUnitLocked();
+                releaseHogModeLocked();
+                return false;
+            }
+
+            UInt32 inputEnabled = 0;
+            AudioUnitSetProperty(unit_,
+                kAudioOutputUnitProperty_EnableIO,
+                kAudioUnitScope_Input, 1,
+                &inputEnabled, sizeof(inputEnabled));
+
+            status = AudioUnitSetProperty(unit_,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global, 0,
+                &resolvedDeviceId, sizeof(resolvedDeviceId));
+            if (status != noErr) {
+                if (error != nullptr) {
+                    *error = "Failed to bind AUHAL output unit to the selected CoreAudio device.";
+                }
+                disposeUnitLocked();
+                releaseHogModeLocked();
+                return false;
+            }
+        } else {
+            stopUnitLocked(false);
+            if (unitInitialized_) {
+                AudioUnitUninitialize(unit_);
+                unitInitialized_ = false;
+            }
+            needsReinit_ = false;
+        }
+
+        const auto rateStart = std::chrono::steady_clock::now();
+        const bool rateOk = ensureDeviceNominalSampleRate(resolvedDeviceId, static_cast<double>(format.sampleRate), error);
+        rateElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - rateStart);
+        if (!rateOk) {
+            disposeUnitLocked();
+            releaseHogModeLocked();
             return false;
         }
+        const auto bufferStart = std::chrono::steady_clock::now();
+        const uint32_t maximumFramesPerSlice = configureDeviceBufferFrameSize(resolvedDeviceId);
+        bufferElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - bufferStart);
 
         AudioStreamBasicDescription asbd {};
         asbd.mSampleRate = static_cast<Float64>(format.sampleRate);
@@ -421,254 +851,565 @@ public:
         asbd.mBitsPerChannel = static_cast<UInt32>(format.bytesPerSample() * 8);
         asbd.mBytesPerFrame = format.bytesPerFrame();
         asbd.mBytesPerPacket = format.bytesPerFrame();
-        asbd.mFormatFlags = kAudioFormatFlagIsPacked;
+        asbd.mFormatFlags = kAudioFormatFlagIsPacked | static_cast<AudioFormatFlags>(kAudioFormatFlagsNativeEndian);
         if (format.sampleFormat == SampleFormat::Float32) {
             asbd.mFormatFlags |= kLinearPCMFormatFlagIsFloat;
         } else {
             asbd.mFormatFlags |= kLinearPCMFormatFlagIsSignedInteger;
         }
 
-        OSStatus status = AudioQueueNewOutput(&asbd, &CoreAudioHalSink::handleOutputCallback, this, nullptr, nullptr, 0, &queue_);
-        if (status != noErr || queue_ == nullptr) {
+        status = AudioUnitSetProperty(unit_,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input, 0,
+            &asbd, sizeof(asbd));
+        if (status != noErr) {
             if (error != nullptr) {
-                *error = "AudioQueueNewOutput failed for CoreAudio playback.";
+                *error = "Failed to set the requested stream format on the AUHAL input scope.";
             }
-            releaseHogMode();
-            disposeQueue();
+            disposeUnitLocked();
+            releaseHogModeLocked();
             return false;
         }
 
-        if (!resolvedUid.empty()) {
-            CFStringRef uidString = CFStringCreateWithCString(kCFAllocatorDefault, resolvedUid.c_str(), kCFStringEncodingUTF8);
-            if (uidString != nullptr) {
-                status = AudioQueueSetProperty(queue_, kAudioQueueProperty_CurrentDevice, &uidString, sizeof(uidString));
-                CFRelease(uidString);
-                if (status != noErr) {
-                    if (error != nullptr) {
-                        *error = "Failed to bind AudioQueue to the selected CoreAudio device.";
-                    }
-                    disposeQueue();
-                    releaseHogMode();
-                    return false;
-                }
+        AudioStreamBasicDescription verifyFormat {};
+        UInt32 verifyFormatSize = sizeof(verifyFormat);
+        status = AudioUnitGetProperty(unit_,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input, 0,
+            &verifyFormat, &verifyFormatSize);
+        if (status != noErr
+            || std::abs(verifyFormat.mSampleRate - asbd.mSampleRate) > 1.0
+            || verifyFormat.mChannelsPerFrame != asbd.mChannelsPerFrame
+            || verifyFormat.mBytesPerFrame != asbd.mBytesPerFrame) {
+            if (error != nullptr) {
+                *error = "AUHAL did not accept the requested stream format ("
+                    + std::to_string(static_cast<int>(asbd.mSampleRate)) + " Hz, "
+                    + std::to_string(asbd.mChannelsPerFrame) + " ch, "
+                    + std::to_string(asbd.mBytesPerFrame) + " B/frame).";
             }
+            disposeUnitLocked();
+            releaseHogModeLocked();
+            return false;
         }
 
-        for (BufferState& bufferState : buffers_) {
-            status = AudioQueueAllocateBuffer(queue_, static_cast<UInt32>(kFramesPerBuffer * format.bytesPerFrame()), &bufferState.buffer);
-            bufferState.lastFrames = 0;
-            if (status != noErr || bufferState.buffer == nullptr) {
-                if (error != nullptr) {
-                    *error = "Failed to allocate CoreAudio output buffers.";
-                }
-                disposeQueue();
-                releaseHogMode();
-                return false;
-            }
+        if (format.channels == 2) {
+            AudioChannelLayout layout {};
+            layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+            AudioUnitSetProperty(unit_,
+                kAudioUnitProperty_AudioChannelLayout,
+                kAudioUnitScope_Input, 0,
+                &layout, sizeof(layout));
         }
 
-        openFormat_ = format;
-        hasOpenFormat_ = true;
-        activeDeviceId_ = resolvedDeviceId;
-        activeDeviceUid_ = resolvedUid;
-        activeDeviceLabel_ = resolvedLabel.empty() ? resolvedUid : resolvedLabel;
+        UInt32 auMaximumFramesPerSlice = maximumFramesPerSlice;
+        status = AudioUnitSetProperty(unit_,
+            kAudioUnitProperty_MaximumFramesPerSlice,
+            kAudioUnitScope_Global, 0,
+            &auMaximumFramesPerSlice, sizeof(auMaximumFramesPerSlice));
+        if (status != noErr) {
+            auMaximumFramesPerSlice = kFallbackMaximumFramesPerSlice;
+        }
+        prepareRenderScratchLocked(auMaximumFramesPerSlice, format);
+
+        AURenderCallbackStruct callback {};
+        callback.inputProc = &CoreAudioHalSink::renderCallback;
+        callback.inputProcRefCon = this;
+        status = AudioUnitSetProperty(unit_,
+            kAudioUnitProperty_SetRenderCallback,
+            kAudioUnitScope_Input, 0,
+            &callback, sizeof(callback));
+        if (status != noErr) {
+            if (error != nullptr) {
+                *error = "Failed to attach the render callback to the AUHAL output unit.";
+            }
+            disposeUnitLocked();
+            releaseHogModeLocked();
+            return false;
+        }
+
+        const auto initStart = std::chrono::steady_clock::now();
+        status = AudioUnitInitialize(unit_);
+        initElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - initStart);
+        if (status != noErr) {
+            if (error != nullptr) {
+                *error = "Failed to initialize the AUHAL output unit.";
+            }
+            disposeUnitLocked();
+            releaseHogModeLocked();
+            return false;
+        }
+        unitInitialized_ = true;
+        needsReinit_ = false;
+        renderEnabled_.store(false, std::memory_order_release);
+
+        publishRenderStateLocked(engine, format);
+        setActiveDeviceMetadataLocked(
+            resolvedDeviceId,
+            resolvedUid,
+            resolvedLabel.empty() ? resolvedUid : resolvedLabel
+        );
+
+        if (logEnabled) {
+            const auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - openStart);
+            if (totalElapsed.count() > 100) {
+                std::fprintf(stderr,
+                    "[astra-audio] slow open() for %d Hz on '%s': total=%lldms "
+                    "(dispose=%lldms hog=%lldms rate=%lldms buffer=%lldms init=%lldms) "
+                    "deviceChanged=%d formatChanged=%d\n",
+                    static_cast<int>(format.sampleRate),
+                    resolvedUid.c_str(),
+                    static_cast<long long>(totalElapsed.count()),
+                    static_cast<long long>(disposeElapsed.count()),
+                    static_cast<long long>(hogElapsed.count()),
+                    static_cast<long long>(rateElapsed.count()),
+                    static_cast<long long>(bufferElapsed.count()),
+                    static_cast<long long>(initElapsed.count()),
+                    deviceChanged ? 1 : 0,
+                    formatChanged ? 1 : 0);
+            }
+        }
         return true;
     }
 
     bool start(std::string* error) override {
-        if (queue_ == nullptr || engine_ == nullptr) {
+        ScopedSlowOpTimer timer("sink.start()", 50);
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        if (unit_ == nullptr || engine_ == nullptr) {
             if (error != nullptr) {
-                *error = "CoreAudio output queue is unavailable.";
+                *error = "CoreAudio output unit is unavailable.";
             }
             return false;
         }
+        if (unitRunning_) {
+            needsReinit_ = false;
+            renderEnabled_.store(true, std::memory_order_release);
+            started_ = true;
+            return true;
+        }
 
-        AudioQueueStop(queue_, true);
-        AudioQueueReset(queue_);
-        size_t enqueuedBuffers = 0;
-        for (BufferState& bufferState : buffers_) {
-            if (!fillAndEnqueue(bufferState, error)) {
-                AudioQueueReset(queue_);
-                started_ = false;
+        if (needsReinit_) {
+            disableRenderAndWaitLocked();
+            if (unitInitialized_) {
+                AudioUnitUninitialize(unit_);
+                unitInitialized_ = false;
+            }
+
+            OSStatus initStatus = AudioUnitInitialize(unit_);
+            if (initStatus != noErr) {
+                if (error != nullptr) {
+                    *error = "Failed to re-initialize the AUHAL output unit before start.";
+                }
                 return false;
             }
-            if (bufferState.lastFrames > 0) {
-                enqueuedBuffers++;
-            }
+            unitInitialized_ = true;
+            needsReinit_ = false;
         }
-        if (enqueuedBuffers == 0) {
+
+        if (!unitInitialized_) {
             if (error != nullptr) {
-                *error = "CoreAudio queue started without any audio frames to enqueue.";
+                *error = "AUHAL output unit is not initialized.";
             }
-            started_ = false;
             return false;
         }
 
-        OSStatus status = AudioQueuePrime(queue_, 0, nullptr);
-        if (status != noErr && error != nullptr) {
-            *error = "Failed to prime the CoreAudio output queue.";
-            AudioQueueReset(queue_);
-            started_ = false;
-            return false;
-        }
-
-        status = AudioQueueStart(queue_, nullptr);
+        renderEnabled_.store(true, std::memory_order_release);
+        const OSStatus status = AudioOutputUnitStart(unit_);
         if (status != noErr) {
+            renderEnabled_.store(false, std::memory_order_release);
+            waitForRenderCallbacksDrainedLocked();
             if (error != nullptr) {
-                *error = "AudioQueueStart failed for CoreAudio playback.";
+                *error = "AudioOutputUnitStart failed for CoreAudio playback.";
             }
-            AudioQueueReset(queue_);
             started_ = false;
             return false;
         }
+        unitRunning_ = true;
         started_ = true;
         return true;
     }
 
     void close() override {
-        stop();
-        releaseHogMode();
-        disposeQueue();
-        engine_ = nullptr;
+        ScopedSlowOpTimer timer("sink.close()", 100);
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        disposeUnitLocked();
+        releaseHogModeLocked();
+        clearRenderStateLocked();
+        clearActiveDeviceMetadataLocked();
+    }
+
+    void pause() override {
+        ScopedSlowOpTimer timer("sink.pause()", 50);
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        suspendRenderingLocked();
+    }
+
+    void stop() override {
+        ScopedSlowOpTimer timer("sink.stop()", 50);
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        suspendRenderingLocked();
+    }
+
+    void reset() override {
+        ScopedSlowOpTimer timer("sink.reset()", 50);
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        suspendRenderingLocked();
+    }
+
+    void beginSeek(bool /*wasPlaying*/) override {
+        // AUHAL stays running for seeks. PlaybackEngine serializes the cursor
+        // update with renderInto(), so stopping render here only adds device churn.
+    }
+
+    void resetAfterSeek(bool /*wasPlaying*/) override {
+        // AUHAL is pull-driven; seeking only needs the engine cursor update.
+        // Stopping/reinitializing here is the crash-prone path on some USB devices.
+    }
+
+    bool shouldCloseOnTrackChange(const TrackFormat&, const TrackFormat&) const override {
+        return false;
+    }
+
+    bool isExclusive() const override {
+        return hogModeAcquired_.load(std::memory_order_acquire);
+    }
+
+    int activeDeviceSampleRate() const override {
+        AudioDeviceID deviceId = kAudioObjectUnknown;
+        int fallbackSampleRate = 0;
+        {
+            std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+            std::lock_guard<std::mutex> metadataLock(metadataMutex_);
+            deviceId = activeDeviceId_;
+            fallbackSampleRate = hasOpenFormat_ ? static_cast<int>(openFormat_.sampleRate) : 0;
+        }
+
+        double sampleRate = 0.0;
+        if (getDeviceNominalSampleRate(deviceId, &sampleRate)) {
+            return static_cast<int>(std::llround(sampleRate));
+        }
+        return fallbackSampleRate;
+    }
+
+    std::string activeDeviceId() const override {
+        std::lock_guard<std::mutex> lock(metadataMutex_);
+        return activeDeviceUid_;
+    }
+
+    std::string activeDeviceLabel() const override {
+        std::lock_guard<std::mutex> lock(metadataMutex_);
+        return activeDeviceLabel_;
+    }
+
+private:
+    void clearActiveDeviceMetadataLocked() {
+        std::lock_guard<std::mutex> lock(metadataMutex_);
         activeDeviceId_ = kAudioObjectUnknown;
         activeDeviceUid_.clear();
         activeDeviceLabel_.clear();
     }
 
-    void pause() override {
-        if (queue_ == nullptr) {
-            return;
-        }
-        AudioQueuePause(queue_);
-        started_ = false;
+    void setActiveDeviceMetadataLocked(
+        AudioDeviceID deviceId,
+        const std::string& uid,
+        const std::string& label
+    ) {
+        std::lock_guard<std::mutex> lock(metadataMutex_);
+        activeDeviceId_ = deviceId;
+        activeDeviceUid_ = uid;
+        activeDeviceLabel_ = label;
     }
 
-    void stop() override {
-        if (queue_ == nullptr) {
-            return;
-        }
-        AudioQueueStop(queue_, true);
-        started_ = false;
-    }
-
-    void reset() override {
-        stop();
-        if (queue_ != nullptr) {
-            AudioQueueReset(queue_);
-        }
-    }
-
-    bool isExclusive() const override {
-        return hogModeAcquired_;
-    }
-
-    std::string activeDeviceId() const override {
-        return activeDeviceUid_;
-    }
-
-    std::string activeDeviceLabel() const override {
-        return activeDeviceLabel_;
-    }
-
-private:
-    struct BufferState {
-        AudioQueueBufferRef buffer = nullptr;
-        size_t lastFrames = 0;
-    };
-
-    static constexpr size_t kBufferCount = 4;
-    static constexpr size_t kFramesPerBuffer = 512;
-
-    static void handleOutputCallback(void* userData, AudioQueueRef, AudioQueueBufferRef buffer) {
-        auto* sink = static_cast<CoreAudioHalSink*>(userData);
-        if (sink != nullptr) {
-            sink->handleOutput(buffer);
-        }
-    }
-
-    void handleOutput(AudioQueueBufferRef buffer) {
-        BufferState* bufferState = nullptr;
-        for (BufferState& state : buffers_) {
-            if (state.buffer == buffer) {
-                bufferState = &state;
-                break;
+    static void silenceOutput(AudioBufferList* ioData, AudioUnitRenderActionFlags* ioActionFlags) {
+        if (ioData != nullptr) {
+            for (UInt32 bufferIndex = 0; bufferIndex < ioData->mNumberBuffers; bufferIndex++) {
+                AudioBuffer& buffer = ioData->mBuffers[bufferIndex];
+                if (buffer.mData != nullptr && buffer.mDataByteSize > 0) {
+                    std::memset(buffer.mData, 0, buffer.mDataByteSize);
+                }
             }
         }
-        if (bufferState == nullptr || engine_ == nullptr) {
-            return;
-        }
-
-        if (bufferState->lastFrames > 0) {
-            engine_->onFramesConsumed(bufferState->lastFrames);
-        }
-
-        if (!fillAndEnqueue(*bufferState, nullptr)) {
-            AudioQueueStop(queue_, false);
-            started_ = false;
+        if (ioActionFlags != nullptr) {
+            *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         }
     }
 
-    bool fillAndEnqueue(BufferState& bufferState, std::string* error = nullptr) {
-        if (queue_ == nullptr || bufferState.buffer == nullptr || engine_ == nullptr || !hasOpenFormat_) {
-            if (error != nullptr) {
-                *error = "CoreAudio output buffer is unavailable.";
+    static OSStatus renderCallback(
+        void* inRefCon,
+        AudioUnitRenderActionFlags* ioActionFlags,
+        const AudioTimeStamp* /*inTimeStamp*/,
+        UInt32 /*inBusNumber*/,
+        UInt32 inNumberFrames,
+        AudioBufferList* ioData
+    ) {
+        auto* sink = static_cast<CoreAudioHalSink*>(inRefCon);
+        if (sink == nullptr || ioData == nullptr || ioData->mNumberBuffers == 0) {
+            return noErr;
+        }
+
+        if (!sink->beginRenderCallback()) {
+            silenceOutput(ioData, ioActionFlags);
+            return noErr;
+        }
+
+        PlaybackEngine* engine = sink->engine_;
+        const TrackFormat format = sink->openFormat_;
+        const bool hasOpenFormat = sink->hasOpenFormat_;
+
+        AudioBuffer& buffer = ioData->mBuffers[0];
+        if (buffer.mData == nullptr) {
+            sink->endRenderCallback();
+            return noErr;
+        }
+
+        if (engine == nullptr || !hasOpenFormat) {
+            silenceOutput(ioData, ioActionFlags);
+            sink->endRenderCallback();
+            return noErr;
+        }
+
+        const UInt32 bytesPerFrame = format.bytesPerFrame();
+        const UInt32 bytesPerSample = format.bytesPerSample();
+        if (bytesPerFrame == 0 || bytesPerSample == 0) {
+            silenceOutput(ioData, ioActionFlags);
+            sink->endRenderCallback();
+            return noErr;
+        }
+
+        const size_t requestedFrames = static_cast<size_t>(inNumberFrames);
+        size_t framesWritten = 0;
+        bool streamEnded = false;
+
+        if (ioData->mNumberBuffers == 1) {
+            const size_t capacityFrames = static_cast<size_t>(buffer.mDataByteSize) / bytesPerFrame;
+            const size_t framesToRender = std::min(requestedFrames, capacityFrames);
+            if (framesToRender == 0) {
+                silenceOutput(ioData, ioActionFlags);
+                sink->endRenderCallback();
+                return noErr;
             }
+
+            try {
+                framesWritten = engine->renderInto(buffer.mData, framesToRender, streamEnded);
+            } catch (...) {
+                sink->renderEnabled_.store(false, std::memory_order_release);
+                silenceOutput(ioData, ioActionFlags);
+                sink->endRenderCallback();
+                return noErr;
+            }
+
+            const UInt32 totalBytes = static_cast<UInt32>(framesToRender * bytesPerFrame);
+            const UInt32 usedBytes = static_cast<UInt32>(framesWritten * bytesPerFrame);
+            if (framesWritten < framesToRender && totalBytes > usedBytes) {
+                std::memset(static_cast<uint8_t*>(buffer.mData) + usedBytes, 0, totalBytes - usedBytes);
+            }
+        } else {
+            size_t frameCapacity = requestedFrames;
+            for (UInt32 bufferIndex = 0; bufferIndex < ioData->mNumberBuffers; bufferIndex++) {
+                AudioBuffer& channelBuffer = ioData->mBuffers[bufferIndex];
+                if (channelBuffer.mData == nullptr || channelBuffer.mDataByteSize == 0) {
+                    frameCapacity = 0;
+                    break;
+                }
+                const UInt32 channelCount = std::max<UInt32>(1, channelBuffer.mNumberChannels);
+                const UInt32 bufferBytesPerFrame = bytesPerSample * channelCount;
+                frameCapacity = std::min<size_t>(
+                    frameCapacity,
+                    static_cast<size_t>(channelBuffer.mDataByteSize) / bufferBytesPerFrame
+                );
+            }
+
+            if (frameCapacity == 0) {
+                silenceOutput(ioData, ioActionFlags);
+                sink->endRenderCallback();
+                return noErr;
+            }
+
+            frameCapacity = std::min(frameCapacity, static_cast<size_t>(sink->renderScratchCapacityFrames_));
+            if (frameCapacity == 0 || sink->renderScratch_.empty()) {
+                silenceOutput(ioData, ioActionFlags);
+                sink->endRenderCallback();
+                return noErr;
+            }
+
+            uint8_t* interleaved = sink->renderScratch_.data();
+            try {
+                framesWritten = engine->renderInto(interleaved, frameCapacity, streamEnded);
+            } catch (...) {
+                sink->renderEnabled_.store(false, std::memory_order_release);
+                silenceOutput(ioData, ioActionFlags);
+                sink->endRenderCallback();
+                return noErr;
+            }
+
+            UInt32 sourceChannel = 0;
+            for (UInt32 bufferIndex = 0; bufferIndex < ioData->mNumberBuffers; bufferIndex++) {
+                AudioBuffer& channelBuffer = ioData->mBuffers[bufferIndex];
+                if (channelBuffer.mData == nullptr || channelBuffer.mDataByteSize == 0) {
+                    continue;
+                }
+                std::memset(channelBuffer.mData, 0, channelBuffer.mDataByteSize);
+
+                const UInt32 channelCount = std::max<UInt32>(1, channelBuffer.mNumberChannels);
+                const UInt32 bufferBytesPerFrame = bytesPerSample * channelCount;
+                const size_t writableFrames = std::min<size_t>(
+                    framesWritten,
+                    static_cast<size_t>(channelBuffer.mDataByteSize) / bufferBytesPerFrame
+                );
+                auto* destination = static_cast<uint8_t*>(channelBuffer.mData);
+
+                for (size_t frame = 0; frame < writableFrames; frame++) {
+                    for (UInt32 channel = 0; channel < channelCount; channel++) {
+                        const UInt32 trackChannel = sourceChannel + channel;
+                        if (trackChannel >= format.channels) {
+                            continue;
+                        }
+                        const uint8_t* source = interleaved
+                            + (frame * bytesPerFrame)
+                            + (trackChannel * bytesPerSample);
+                        std::memcpy(
+                            destination + (frame * bufferBytesPerFrame) + (channel * bytesPerSample),
+                            source,
+                            bytesPerSample
+                        );
+                    }
+                }
+                sourceChannel += channelCount;
+            }
+        }
+
+        if (framesWritten > 0) {
+            engine->onFramesConsumed(framesWritten);
+        }
+
+        if (streamEnded) {
+            sink->renderEnabled_.store(false, std::memory_order_release);
+            if (framesWritten == 0 && ioActionFlags != nullptr) {
+                *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+            }
+        }
+        sink->endRenderCallback();
+        return noErr;
+    }
+
+    bool beginRenderCallback() {
+        if (!renderEnabled_.load(std::memory_order_acquire)) {
             return false;
         }
 
-        bool streamEnded = false;
-        const size_t framesWritten = engine_->renderInto(bufferState.buffer->mAudioData, kFramesPerBuffer, streamEnded);
-        const UInt32 bytesPerFrame = openFormat_.bytesPerFrame();
-        const UInt32 bytesToWrite = static_cast<UInt32>(kFramesPerBuffer * bytesPerFrame);
-
-        if (framesWritten < kFramesPerBuffer) {
-            const UInt32 usedBytes = static_cast<UInt32>(framesWritten * bytesPerFrame);
-            const UInt32 remainingBytes = bytesToWrite - usedBytes;
-            if (remainingBytes > 0) {
-                std::memset(static_cast<uint8_t*>(bufferState.buffer->mAudioData) + usedBytes, 0, remainingBytes);
-            }
-        }
-
-        bufferState.buffer->mAudioDataByteSize = bytesToWrite;
-        bufferState.lastFrames = framesWritten;
-
-        if (framesWritten == 0 && streamEnded) {
-            AudioQueueStop(queue_, false);
-            started_ = false;
-            return true;
-        }
-
-        const OSStatus status = AudioQueueEnqueueBuffer(queue_, bufferState.buffer, 0, nullptr);
-        if (status != noErr) {
-            if (error != nullptr) {
-                *error = "Failed to enqueue a CoreAudio output buffer.";
-            }
+        activeRenderCallbacks_.fetch_add(1, std::memory_order_acq_rel);
+        if (!renderEnabled_.load(std::memory_order_acquire)) {
+            endRenderCallback();
             return false;
         }
         return true;
     }
 
-    void disposeQueue() {
-        if (queue_ == nullptr) {
+    void endRenderCallback() {
+        const uint32_t previous = activeRenderCallbacks_.fetch_sub(1, std::memory_order_acq_rel);
+        if (previous == 1) {
+            renderDrainCv_.notify_all();
+        }
+    }
+
+    void waitForRenderCallbacksDrainedLocked() {
+        if (activeRenderCallbacks_.load(std::memory_order_acquire) == 0) {
             return;
         }
 
-        AudioQueueDispose(queue_, true);
-        queue_ = nullptr;
-        for (BufferState& bufferState : buffers_) {
-            bufferState.buffer = nullptr;
-            bufferState.lastFrames = 0;
+        std::unique_lock<std::mutex> lock(renderDrainMutex_);
+        const bool drained = renderDrainCv_.wait_for(lock, kRenderDrainWaitTimeout, [this]() {
+            return activeRenderCallbacks_.load(std::memory_order_acquire) == 0;
+        });
+        if (!drained) {
+            const uint32_t stuckCount = activeRenderCallbacks_.load(std::memory_order_acquire);
+            if (isAudioDebugLoggingEnabled()) {
+                std::fprintf(stderr,
+                    "[astra-audio] render-drain timed out after %lldms; "
+                    "force-resetting activeRenderCallbacks_ (was %u)\n",
+                    static_cast<long long>(kRenderDrainWaitTimeout.count()),
+                    stuckCount);
+            }
+            activeRenderCallbacks_.store(0, std::memory_order_release);
         }
-        started_ = false;
-        hasOpenFormat_ = false;
     }
 
-    void acquireHogMode(AudioDeviceID deviceId) {
-        hogModeAcquired_ = false;
+    void disableRenderAndWaitLocked() {
+        renderEnabled_.store(false, std::memory_order_release);
+        waitForRenderCallbacksDrainedLocked();
+    }
+
+    void publishRenderStateLocked(PlaybackEngine* engine, const TrackFormat& format) {
+        engine_ = engine;
+        openFormat_ = format;
+        hasOpenFormat_ = true;
+    }
+
+    void clearRenderStateLocked() {
+        engine_ = nullptr;
+        openFormat_ = TrackFormat {};
+        hasOpenFormat_ = false;
+        renderScratch_.clear();
+        renderScratchCapacityFrames_ = 0;
+    }
+
+    void prepareRenderScratchLocked(uint32_t maximumFramesPerSlice, const TrackFormat& format) {
+        renderScratchCapacityFrames_ = std::max<uint32_t>(1, maximumFramesPerSlice);
+        renderScratch_.resize(static_cast<size_t>(renderScratchCapacityFrames_) * format.bytesPerFrame());
+    }
+
+    void suspendRenderingLocked() {
+        disableRenderAndWaitLocked();
+        started_ = false;
+        needsReinit_ = false;
+    }
+
+    void stopUnitLocked(bool markNeedsReinit) {
+        if (unit_ == nullptr || !unitRunning_) {
+            renderEnabled_.store(false, std::memory_order_release);
+            waitForRenderCallbacksDrainedLocked();
+            started_ = false;
+            return;
+        }
+
+        disableRenderAndWaitLocked();
+        AudioOutputUnitStop(unit_);
+        unitRunning_ = false;
+        disableRenderAndWaitLocked();
+        started_ = false;
+        if (markNeedsReinit && unitInitialized_) {
+            needsReinit_ = true;
+        }
+    }
+
+    void disposeUnitLocked() {
+        disableRenderAndWaitLocked();
+        if (unit_ == nullptr) {
+            return;
+        }
+        if (unitRunning_) {
+            AudioOutputUnitStop(unit_);
+            unitRunning_ = false;
+            disableRenderAndWaitLocked();
+        }
+        if (unitInitialized_) {
+            AudioUnitUninitialize(unit_);
+            unitInitialized_ = false;
+        }
+        AudioComponentInstanceDispose(unit_);
+        unit_ = nullptr;
+        clearRenderStateLocked();
+        started_ = false;
+        needsReinit_ = false;
+    }
+
+    bool acquireHogModeLocked(AudioDeviceID deviceId) {
+        hogModeAcquired_.store(false, std::memory_order_release);
         hogPid_ = -1;
         hogDeviceId_ = kAudioObjectUnknown;
         if (deviceId == kAudioObjectUnknown) {
-            return;
+            return false;
         }
 
         AudioObjectPropertyAddress address {
@@ -678,48 +1419,66 @@ private:
         };
 
         pid_t pid = getpid();
-        if (AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(pid), &pid) == noErr) {
+        for (size_t attempt = 0; attempt < kHogModeAcquireMaxAttempts; attempt++) {
+            AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(pid), &pid);
+
             pid_t observedPid = -1;
-            if (waitForDeviceHogMode(deviceId, pid, &observedPid)) {
-                hogModeAcquired_ = true;
+            if (getDeviceHogModePid(deviceId, &observedPid) && observedPid == pid) {
+                hogModeAcquired_.store(true, std::memory_order_release);
                 hogPid_ = pid;
                 hogDeviceId_ = deviceId;
+                return true;
             }
+            usleep(kHogModeSettleSleepUs);
         }
+
+        return false;
     }
 
-    void releaseHogMode() {
-        if (!hogModeAcquired_ || hogDeviceId_ == kAudioObjectUnknown) {
-            hogModeAcquired_ = false;
+    void releaseHogModeLocked() {
+        if (!hogModeAcquired_.load(std::memory_order_acquire) || hogDeviceId_ == kAudioObjectUnknown) {
+            hogModeAcquired_.store(false, std::memory_order_release);
             hogPid_ = -1;
             hogDeviceId_ = kAudioObjectUnknown;
             return;
         }
 
+        const AudioDeviceID deviceId = hogDeviceId_;
         AudioObjectPropertyAddress address {
             kAudioDevicePropertyHogMode,
             kAudioObjectPropertyScopeGlobal,
             kAudioObjectPropertyElementMain
         };
         pid_t pid = -1;
-        AudioObjectSetPropertyData(hogDeviceId_, &address, 0, nullptr, sizeof(pid), &pid);
-        hogModeAcquired_ = false;
+        AudioObjectSetPropertyData(deviceId, &address, 0, nullptr, sizeof(pid), &pid);
+        waitForDeviceHogMode(deviceId, -1);
+        hogModeAcquired_.store(false, std::memory_order_release);
         hogPid_ = -1;
         hogDeviceId_ = kAudioObjectUnknown;
     }
 
+    mutable std::mutex lifecycleMutex_;
+    mutable std::mutex metadataMutex_;
+    std::mutex renderDrainMutex_;
+    std::condition_variable renderDrainCv_;
+    std::atomic<bool> renderEnabled_ { false };
+    std::atomic<uint32_t> activeRenderCallbacks_ { 0 };
+    std::vector<uint8_t> renderScratch_;
+    uint32_t renderScratchCapacityFrames_ = 0;
     PlaybackEngine* engine_ = nullptr;
-    AudioQueueRef queue_ = nullptr;
+    AudioComponentInstance unit_ = nullptr;
+    bool unitInitialized_ = false;
+    bool unitRunning_ = false;
+    bool needsReinit_ = false;
     TrackFormat openFormat_ {};
     bool hasOpenFormat_ = false;
     bool started_ = false;
     AudioDeviceID activeDeviceId_ = kAudioObjectUnknown;
     std::string activeDeviceUid_;
     std::string activeDeviceLabel_;
-    bool hogModeAcquired_ = false;
+    std::atomic<bool> hogModeAcquired_ { false };
     pid_t hogPid_ = -1;
     AudioDeviceID hogDeviceId_ = kAudioObjectUnknown;
-    BufferState buffers_[kBufferCount];
 };
 
 } // namespace
@@ -771,6 +1530,7 @@ public:
     void stop() override {}
     void reset() override {}
     bool isExclusive() const override { return false; }
+    int activeDeviceSampleRate() const override { return 0; }
     std::string activeDeviceId() const override { return {}; }
     std::string activeDeviceLabel() const override { return {}; }
 };

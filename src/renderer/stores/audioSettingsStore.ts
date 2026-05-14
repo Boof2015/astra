@@ -493,9 +493,26 @@ function resolveInitialNativeOutputSelection(
   deviceId: string
   statusMessage: string | null
 } {
-  if (capabilities.activeBackend !== 'alsa-hw') {
+  const selectedNativeDeviceId = capabilities.selectedDeviceId?.trim() ?? ''
+  if (selectedNativeDeviceId.length > 0 && devices.some((device) => device.deviceId === selectedNativeDeviceId)) {
     return {
-      deviceId: '',
+      deviceId: selectedNativeDeviceId,
+      statusMessage: null
+    }
+  }
+
+  if (capabilities.activeBackend !== 'alsa-hw') {
+    const physicalDefaultId = resolvePhysicalDefaultDeviceId(devices)
+    if (physicalDefaultId) {
+      return {
+        deviceId: physicalDefaultId,
+        statusMessage: null
+      }
+    }
+
+    const firstPhysicalDevice = devices.find((device) => !device.isDefaultAlias) ?? null
+    return {
+      deviceId: firstPhysicalDevice?.deviceId ?? '',
       statusMessage: null
     }
   }
@@ -1153,20 +1170,29 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     selectDevice: async (deviceId: string) => {
       try {
-        await audioEngine.setOutputDevice(deviceId)
-        const nativeAudioCapabilities = get().playbackOutputMode === 'bitperfect'
+        const playbackOutputMode = get().playbackOutputMode
+        const requestedDeviceId = playbackOutputMode === 'bitperfect'
+          && (deviceId.trim().length === 0 || deviceId.trim() === 'default')
+          ? (resolvePhysicalDefaultDeviceId(get().availableDevices) ?? deviceId)
+          : deviceId
+
+        await audioEngine.setOutputDevice(requestedDeviceId)
+        const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
           ? audioEngine.getNativeAudioCapabilities()
           : get().nativeAudioCapabilities
+        const selectedDeviceId = playbackOutputMode === 'bitperfect'
+          ? (nativeAudioCapabilities.selectedDeviceId?.trim() || requestedDeviceId)
+          : requestedDeviceId
 
         set({
-          selectedDeviceId: deviceId,
+          selectedDeviceId,
           nativeAudioCapabilities,
           playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
         })
 
-        const storageKey = getOutputStorageKeyForMode(get().playbackOutputMode)
-        if (deviceId.trim().length > 0) {
-          localStorage.setItem(storageKey, deviceId)
+        const storageKey = getOutputStorageKeyForMode(playbackOutputMode)
+        if (selectedDeviceId.trim().length > 0) {
+          localStorage.setItem(storageKey, selectedDeviceId)
         } else {
           localStorage.removeItem(storageKey)
         }

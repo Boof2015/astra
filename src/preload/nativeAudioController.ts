@@ -34,7 +34,7 @@ export interface NativeAudioAddonPlayback {
     duration: number
   ): void
   promoteNextTrack(): NativeAudioPlaybackSnapshot
-  play(): NativeAudioPlaybackSnapshot
+  play(): Promise<NativeAudioPlaybackSnapshot>
   pause(): NativeAudioPlaybackSnapshot
   stop(): NativeAudioPlaybackSnapshot
   seek(seconds: number): NativeAudioPlaybackSnapshot
@@ -799,7 +799,7 @@ export function createNativeAudioController(
     play: async () => {
       const engine = await ensureAvailable()
       try {
-        return normalizePlaybackSnapshot(engine.play())
+        return normalizePlaybackSnapshot(await engine.play())
       } catch (error) {
         if (capabilitiesCache.activeBackend !== 'alsa-hw' || !currentTrackRequest) {
           throw error
@@ -832,7 +832,7 @@ export function createNativeAudioController(
           currentBufferBytes = decodedByteLength
           nextBufferBytes = 0
           nextTrackRequest = null
-          return normalizePlaybackSnapshot(engine.play())
+          return normalizePlaybackSnapshot(await engine.play())
         } finally {
           releaseDecodedPcmBuffer(decoded)
         }

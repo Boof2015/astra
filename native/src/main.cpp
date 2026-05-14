@@ -70,13 +70,14 @@ Napi::Object CreateCapabilitiesObject(Napi::Env env) {
     const bool bitPerfectAvailable = playbackEngine.isBitPerfectAvailable(&reason);
     const auto devices = playbackEngine.getOutputDevices(&reason);
     const auto snapshot = playbackEngine.getSnapshot();
+    const int activeDeviceSampleRate = playbackEngine.getActiveDeviceSampleRate();
 
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("bitPerfectAvailable", Napi::Boolean::New(env, bitPerfectAvailable));
     obj.Set("reasonUnavailable", bitPerfectAvailable ? env.Null() : ToNullableString(env, reason));
     obj.Set("activeBackend", Napi::String::New(env, playbackEngine.backendKind()));
     obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
-    obj.Set("activeSampleRate", snapshot.sampleRate > 0 ? Napi::Number::New(env, snapshot.sampleRate) : env.Null());
+    obj.Set("activeSampleRate", activeDeviceSampleRate > 0 ? Napi::Number::New(env, activeDeviceSampleRate) : env.Null());
     obj.Set("activeSampleFormat", ToNullableString(env, snapshot.sampleFormat));
     obj.Set("selectedDeviceId", ToNullableString(env, playbackEngine.getSelectedDeviceId()));
 
@@ -478,14 +479,53 @@ Napi::Value PlaybackPromoteNextTrack(const Napi::CallbackInfo& info) {
     return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
 }
 
+class PlaybackPlayAsyncWorker : public Napi::AsyncWorker {
+public:
+    PlaybackPlayAsyncWorker(Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(deferred.Env()), deferred_(std::move(deferred)) {}
+
+    void Execute() override {
+        // Runs on a libuv worker thread; V8 is free during this call.
+        // On the Scarlett 4th gen and similar USB DACs, AudioOutputUnitStart
+        // can take ~1s per format change. Keeping it off V8 keeps the UI responsive.
+        try {
+            snapshot_ = playbackEngine.play();
+        } catch (const std::exception& e) {
+            errorMessage_ = e.what();
+            if (errorMessage_.empty()) {
+                errorMessage_ = "Native playback start failed.";
+            }
+        } catch (...) {
+            errorMessage_ = "Native playback start failed with an unknown error.";
+        }
+    }
+
+    void OnOK() override {
+        Napi::HandleScope scope(Env());
+        if (!errorMessage_.empty()) {
+            deferred_.Reject(Napi::Error::New(Env(), errorMessage_).Value());
+            return;
+        }
+        deferred_.Resolve(CreatePlaybackSnapshotObject(Env(), snapshot_));
+    }
+
+    void OnError(const Napi::Error& error) override {
+        Napi::HandleScope scope(Env());
+        deferred_.Reject(error.Value());
+    }
+
+private:
+    Napi::Promise::Deferred deferred_;
+    NativePlayback::PlaybackSnapshot snapshot_ {};
+    std::string errorMessage_;
+};
+
 Napi::Value PlaybackPlay(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    try {
-        return CreatePlaybackSnapshotObject(env, playbackEngine.play());
-    } catch (const std::exception& error) {
-        Napi::Error::New(env, error.what()).ThrowAsJavaScriptException();
-        return env.Null();
-    }
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto* worker = new PlaybackPlayAsyncWorker(deferred);
+    worker->Queue();
+    return deferred.Promise();
 }
 
 Napi::Value PlaybackPause(const Napi::CallbackInfo& info) {
