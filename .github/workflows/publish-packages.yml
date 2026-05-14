@@ -10,6 +10,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   validate-aur:
     name: Validate AUR package
@@ -19,7 +22,7 @@ jobs:
     env:
       AUR_WORKDIR: /home/builder/aur
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Arch validation dependencies
         shell: bash
@@ -153,7 +156,7 @@ jobs:
     env:
       AUR_WORKDIR: /home/builder/aur
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install AUR publishing dependencies
         shell: bash
@@ -293,7 +296,7 @@ jobs:
     if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Compute version string
         id: ver

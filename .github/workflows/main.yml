@@ -1,12 +1,80 @@
-name: Build Check
+name: CI
 
 on:
-  push:
   pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.x
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Cache Electron
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install Linux native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native modules
+        run: npm run rebuild:native
+
+      - name: Verify native module exists
+        shell: bash
+        run: |
+          if [ ! -f native/build/Release/visualizer_dsp.node ]; then
+            echo "ERROR: native DSP module was not built!"
+            exit 1
+          fi
+          echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Validate packaging config
+        run: npm run check:packaging-config
+
+      - name: Build project
+        run: npm run build
+
+  build-smoke:
+    name: Build Smoke (${{ matrix.os }})
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: quality-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -16,30 +84,32 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-2022]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22.x
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
       - name: Cache Electron
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-cache
-
-      - name: Install dependencies
-        run: npm ci
+          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
 
       - name: Install Linux native build tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
 
-      - name: Build native DSP module
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native modules
         run: npm run rebuild:native
 
       - name: Verify native module exists
@@ -54,5 +124,5 @@ jobs:
       - name: Validate packaging config
         run: npm run check:packaging-config
 
-      - name: Build Project
+      - name: Build project
         run: npm run build
