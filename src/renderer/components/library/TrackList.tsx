@@ -52,6 +52,7 @@ interface DbTrack {
 }
 
 export type TrackListSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key' | 'added'
+export type TrackNumberMode = 'album' | 'context' | 'none'
 
 export interface TrackListSortState {
   key: TrackListSortKey
@@ -66,6 +67,8 @@ interface TrackListProps {
   showAlbum?: boolean
   showAddedDate?: boolean
   showNewTrackIndicator?: boolean
+  trackNumberMode?: TrackNumberMode
+  contextTrackNumbersByPath?: ReadonlyMap<string, number>
   externalScroll?: boolean
   playlistSourceId?: number | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | null
@@ -83,6 +86,8 @@ interface TrackListRowSharedProps {
   showTracklistBpmKey: boolean
   showAddedDate: boolean
   showNewTrackIndicator: boolean
+  trackNumberMode: TrackNumberMode
+  contextTrackNumbersByPath?: ReadonlyMap<string, number>
   currentTrackPath: string | null
   loadingTrackPath: string | null
   loadingTrackPercent: number | null
@@ -204,6 +209,19 @@ function hasQueueActionFeedback(queueFeedback: Record<string, true>, action: 'qu
   return Boolean(queueFeedback[`${action}:${trackPath}`])
 }
 
+function resolveContextTrackNumber(
+  contextTrackNumbersByPath: ReadonlyMap<string, number> | undefined,
+  trackPath: string,
+  index: number
+): number {
+  const contextualNumber = contextTrackNumbersByPath?.get(trackPath)
+  if (typeof contextualNumber === 'number' && Number.isFinite(contextualNumber) && contextualNumber > 0) {
+    return Math.trunc(contextualNumber)
+  }
+
+  return index + 1
+}
+
 function resolveTrackRowHeightPx(element: HTMLElement | null): number {
   if (!element) return TRACK_ROW_HEIGHT_FALLBACK_PX
 
@@ -318,6 +336,8 @@ function TrackListRowRenderer({
   showTracklistBpmKey,
   showAddedDate,
   showNewTrackIndicator,
+  trackNumberMode,
+  contextTrackNumbersByPath,
   currentTrackPath,
   loadingTrackPath,
   loadingTrackPercent,
@@ -400,6 +420,11 @@ function TrackListRowRenderer({
     : null
   const isQueueInsertArmed = queueInsertArmedTrackPath === track.path
   const isQueueInsertSelected = selectedTrackPaths.has(track.path)
+  const displayedTrackNumber = trackNumberMode === 'none'
+    ? null
+    : trackNumberMode === 'context'
+      ? resolveContextTrackNumber(contextTrackNumbersByPath, track.path, index)
+      : track.track_number ?? index + 1
 
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
@@ -429,8 +454,10 @@ function TrackListRowRenderer({
             <span className="track-loading-icon" title="Buffering track">
               <span className="loading-spinner-small track-loading-spinner" />
             </span>
+          ) : displayedTrackNumber === null ? (
+            null
           ) : (
-            <span className="track-number">{track.track_number ?? index + 1}</span>
+            <span className="track-number">{displayedTrackNumber}</span>
           )}
         </div>
         <div className="track-col track-col-title">
@@ -626,6 +653,8 @@ export default function TrackList({
   showAlbum = true,
   showAddedDate = false,
   showNewTrackIndicator = false,
+  trackNumberMode = 'album',
+  contextTrackNumbersByPath,
   externalScroll = false,
   playlistSourceId = null,
   jumpToTrackRequest = null,
@@ -1542,6 +1571,8 @@ export default function TrackList({
     showTracklistBpmKey,
     showAddedDate,
     showNewTrackIndicator,
+    trackNumberMode,
+    contextTrackNumbersByPath,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1579,6 +1610,8 @@ export default function TrackList({
     showTracklistBpmKey,
     showAddedDate,
     showNewTrackIndicator,
+    trackNumberMode,
+    contextTrackNumbersByPath,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1627,13 +1660,13 @@ export default function TrackList({
               type="button"
               className={`track-col-sort-btn track-col-default-sort-btn ${sortState === null ? 'active' : ''}`}
               onClick={() => onDefaultOrderReset()}
-              aria-label={sortState === null ? 'Default album order active.' : 'Restore default album order.'}
+              aria-label={sortState === null ? 'Default order active.' : 'Restore default order.'}
             >
               <span className="track-col-sort-label">#</span>
             </button>
           </div>
         ) : (
-          <div className="track-col track-col-num">#</div>
+          <div className="track-col track-col-num">{trackNumberMode === 'none' ? null : '#'}</div>
         )}
         {renderSortableHeader('title', 'Title', 'track-col-title')}
         {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}

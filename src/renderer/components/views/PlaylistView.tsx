@@ -310,6 +310,24 @@ export default function PlaylistView() {
     return selectedPlaylistEntries.map((entry, index) => entry.track ?? createMissingPlaylistTrackPlaceholder(entry, index))
   }, [isFavoritesPlaylist, selectedPlaylistEntries, selectedPlaylistTracks])
 
+  const playlistTrackNumbersByPath = useMemo(() => {
+    const numbersByPath = new Map<string, number>()
+
+    if (isFavoritesPlaylist) {
+      selectedPlaylistTracks.forEach((track, index) => {
+        numbersByPath.set(track.path, index + 1)
+      })
+      return numbersByPath
+    }
+
+    selectedPlaylistEntries.forEach((entry, index) => {
+      const position = Number.isFinite(entry.position) && entry.position >= 0 ? entry.position : index
+      numbersByPath.set(getPlaylistEntryPath(entry), position + 1)
+    })
+
+    return numbersByPath
+  }, [isFavoritesPlaylist, selectedPlaylistEntries, selectedPlaylistTracks])
+
   const displayTracks = useMemo(() => {
     if (!sortState) return playlistDisplayTracks
 
@@ -884,6 +902,8 @@ export default function PlaylistView() {
                 tracks={displayTracks}
                 queueSeedTracks={displayPlayableTracks}
                 queueContextLabel={playlistName ?? 'Playlist'}
+                trackNumberMode="context"
+                contextTrackNumbersByPath={playlistTrackNumbersByPath}
                 playlistSourceId={selectedPlaylistId !== null && selectedPlaylistId > 0 ? selectedPlaylistId : null}
                 enableColumnSorting
                 sortState={sortState}

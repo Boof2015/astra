@@ -1110,6 +1110,7 @@ export default function LibraryView() {
             showAlbum={!selectedAlbum}
             showAddedDate={showTracklistAddedDate}
             showNewTrackIndicator
+            trackNumberMode={selectedAlbum ? 'album' : 'none'}
             externalScroll
             enableColumnSorting
             sortState={sortState}
@@ -1132,6 +1133,7 @@ export default function LibraryView() {
         showAlbum={!selectedAlbum}
         showAddedDate={showTracklistAddedDate}
         showNewTrackIndicator
+        trackNumberMode={selectedAlbum ? 'album' : 'none'}
         enableColumnSorting
         sortState={sortState}
         onSortColumnToggle={handleSortColumnToggle}
