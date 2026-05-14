@@ -8,6 +8,7 @@ const MUSICBRAINZ_USER_AGENT = 'Astra-Discord-CoverArt/0.2.0 (https://github.com
 const RELEASE_SEARCH_LIMIT = 5
 const MAX_RELEASE_CANDIDATES_TO_PROBE = 5
 const MAX_ARTIST_CANDIDATES = 4
+const MAX_ALBUM_CANDIDATES = 3
 const ITUNES_SEARCH_LIMIT = 8
 const ITUNES_TRACK_SEARCH_LIMIT = 12
 const LOOKUP_LOG_INTERVAL_MS = 5000
@@ -53,6 +54,7 @@ interface ItunesSearchResponse {
 }
 
 interface ItunesTrackResult {
+  trackName?: string
   collectionName?: string
   artistName?: string
   artworkUrl100?: string
@@ -125,14 +127,17 @@ const isDev = process.env.NODE_ENV === 'development'
 interface CandidateScore {
   total: number
   album: number
+  title: number
   artist: number
   albumExact: boolean
   albumSuffixStripped: boolean
   artistMatched: boolean
+  titleMatched: boolean
 }
 
 interface CoverUrlCandidate {
   album: string | null
+  title?: string | null
   artist: string | null
   url: string | null
 }
@@ -140,6 +145,13 @@ interface CoverUrlCandidate {
 interface ProviderResolutionResult {
   result: DiscordCoverArtLookupResult
   candidateCount: number
+  hitCandidate?: string
+  hitPhase?: string
+}
+
+interface ReleaseIdCandidate {
+  id: string
+  albumCandidate: string
 }
 
 function sleep(ms: number): Promise<void> {
@@ -225,6 +237,62 @@ function stripEditionSuffixes(normalized: string): string {
     }
   }
   return current
+}
+
+function stripTrailingFeaturedArtistClause(value: string): string | null {
+  const normalized = normalizeText(value)
+  if (!normalized) return null
+
+  const stripped = normalized
+    .replace(/\s*[\(\[\{]?\s*(?:feat\.?|ft\.?|featuring|with)\s+.+$/i, '')
+    .replace(/\s*[-\u2013]\s*(?:feat\.?|ft\.?|featuring|with)\s+.+$/i, '')
+    .trim()
+
+  return normalizeText(stripped)
+}
+
+function appendLookupCandidate(value: string | null, target: string[], seen: Set<string>): void {
+  if (target.length >= MAX_ALBUM_CANDIDATES) return
+
+  const normalized = normalizeText(value)
+  if (!normalized) return
+
+  const key = normalizeMatchKey(normalized)
+  if (!key || seen.has(key)) return
+
+  seen.add(key)
+  target.push(normalized)
+}
+
+export function buildCoverArtAlbumCandidates(album: string, title?: string | null): string[] {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  appendLookupCandidate(album, candidates, seen)
+  appendLookupCandidate(stripTrailingFeaturedArtistClause(album), candidates, seen)
+
+  const normalizedTitle = normalizeText(title)
+  if (
+    normalizedTitle
+    && normalizeMatchKey(normalizedTitle) !== normalizeMatchKey(album)
+  ) {
+    appendLookupCandidate(normalizedTitle, candidates, seen)
+    appendLookupCandidate(stripTrailingFeaturedArtistClause(normalizedTitle), candidates, seen)
+  }
+
+  return candidates
+}
+
+function buildCoverArtTitleCandidates(title: string | null): string[] {
+  if (!title) return []
+
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  appendLookupCandidate(title, candidates, seen)
+  appendLookupCandidate(stripTrailingFeaturedArtistClause(title), candidates, seen)
+
+  return candidates
 }
 
 function toLogKey(album: string, artist: string | null): string {
@@ -343,30 +411,87 @@ function parseSearchScore(value: unknown): number {
   return 0
 }
 
-function scoreAlbumField(candidateAlbum: string | null, album: string): number {
-  const targetAlbum = normalizeMatchKey(album)
+function scoreAlbumField(candidateAlbum: string | null, albums: readonly string[]): number {
   const normalizedCandidate = normalizeMatchKey(candidateAlbum ?? '')
-  if (!targetAlbum || !normalizedCandidate) return 0
+  if (!normalizedCandidate) return 0
 
-  if (normalizedCandidate === targetAlbum) return 40
-  if (normalizedCandidate.startsWith(targetAlbum) || targetAlbum.startsWith(normalizedCandidate)) return 18
-  if (normalizedCandidate.includes(targetAlbum) || targetAlbum.includes(normalizedCandidate)) return 10
-  return 0
+  let bestScore = 0
+  for (const album of albums) {
+    const targetAlbum = normalizeMatchKey(album)
+    if (!targetAlbum) continue
+    if (normalizedCandidate === targetAlbum) {
+      bestScore = Math.max(bestScore, 40)
+      continue
+    }
+    if (normalizedCandidate.startsWith(targetAlbum) || targetAlbum.startsWith(normalizedCandidate)) {
+      bestScore = Math.max(bestScore, 18)
+      continue
+    }
+    if (normalizedCandidate.includes(targetAlbum) || targetAlbum.includes(normalizedCandidate)) {
+      bestScore = Math.max(bestScore, 10)
+    }
+  }
+
+  return bestScore
 }
 
-function isExactAlbumFieldMatch(candidateAlbum: string | null, album: string): boolean {
-  const targetAlbum = normalizeMatchKey(album)
+function isExactAlbumFieldMatch(candidateAlbum: string | null, albums: readonly string[]): boolean {
   const normalizedCandidate = normalizeMatchKey(candidateAlbum ?? '')
-  if (!targetAlbum || !normalizedCandidate) return false
-  return normalizedCandidate === targetAlbum
+  if (!normalizedCandidate) return false
+
+  return albums.some((album) => {
+    const targetAlbum = normalizeMatchKey(album)
+    return Boolean(targetAlbum) && normalizedCandidate === targetAlbum
+  })
 }
 
-function isStrippedAlbumFieldMatch(candidateAlbum: string | null, album: string): boolean {
-  const targetAlbum = normalizeMatchKey(album)
+function isStrippedAlbumFieldMatch(candidateAlbum: string | null, albums: readonly string[]): boolean {
   const normalizedCandidate = normalizeMatchKey(candidateAlbum ?? '')
-  if (!targetAlbum || !normalizedCandidate) return false
-  if (normalizedCandidate === targetAlbum) return false
-  return stripEditionSuffixes(normalizedCandidate) === stripEditionSuffixes(targetAlbum)
+  if (!normalizedCandidate) return false
+
+  for (const album of albums) {
+    const targetAlbum = normalizeMatchKey(album)
+    if (!targetAlbum) continue
+    if (normalizedCandidate === targetAlbum) continue
+    if (stripEditionSuffixes(normalizedCandidate) === stripEditionSuffixes(targetAlbum)) return true
+  }
+
+  return false
+}
+
+function scoreTitleField(candidateTitle: string | null | undefined, titles: readonly string[]): number {
+  if (titles.length === 0) return 0
+  const normalizedCandidate = normalizeMatchKey(candidateTitle ?? '')
+  if (!normalizedCandidate) return 0
+
+  let bestScore = 0
+  for (const title of titles) {
+    const targetTitle = normalizeMatchKey(title)
+    if (!targetTitle) continue
+    if (normalizedCandidate === targetTitle) {
+      bestScore = Math.max(bestScore, 40)
+      continue
+    }
+    if (stripEditionSuffixes(normalizedCandidate) === stripEditionSuffixes(targetTitle)) {
+      bestScore = Math.max(bestScore, 25)
+    }
+  }
+
+  return bestScore
+}
+
+function isShortTokenOrderArtistMatch(left: string, right: string): boolean {
+  if (left === right) return true
+
+  const leftParts = left.split(' ').filter(Boolean)
+  const rightParts = right.split(' ').filter(Boolean)
+  if (leftParts.length < 2 || rightParts.length < 2) return false
+  if (leftParts.length !== rightParts.length) return false
+  if (leftParts.length > 4) return false
+
+  const sortedLeft = [...leftParts].sort().join(' ')
+  const sortedRight = [...rightParts].sort().join(' ')
+  return sortedLeft === sortedRight
 }
 
 function scoreArtistField(candidateArtist: string | null, artists: readonly string[]): number {
@@ -382,6 +507,10 @@ function scoreArtistField(candidateArtist: string | null, artists: readonly stri
       bestScore = Math.max(bestScore, 25)
       continue
     }
+    if (isShortTokenOrderArtistMatch(normalizedCandidate, targetArtist)) {
+      bestScore = Math.max(bestScore, 22)
+      continue
+    }
     if (normalizedCandidate.includes(targetArtist) || targetArtist.includes(normalizedCandidate)) {
       bestScore = Math.max(bestScore, 12)
     }
@@ -393,22 +522,24 @@ function scoreArtistField(candidateArtist: string | null, artists: readonly stri
 function scoreAlbumArtistMatch(
   candidateAlbum: string | null,
   candidateArtist: string | null,
-  album: string,
+  albums: readonly string[],
   artists: readonly string[]
 ): CandidateScore {
-  const albumScore = scoreAlbumField(candidateAlbum, album)
+  const albumScore = scoreAlbumField(candidateAlbum, albums)
   const artistScore = scoreArtistField(candidateArtist, artists)
-  const albumExact = isExactAlbumFieldMatch(candidateAlbum, album)
-  const albumSuffixStripped = !albumExact && isStrippedAlbumFieldMatch(candidateAlbum, album)
+  const albumExact = isExactAlbumFieldMatch(candidateAlbum, albums)
+  const albumSuffixStripped = !albumExact && isStrippedAlbumFieldMatch(candidateAlbum, albums)
   const artistMatched = artists.length === 0 ? false : artistScore > 0
 
   return {
     total: albumScore + artistScore,
     album: albumScore,
+    title: 0,
     artist: artistScore,
     albumExact,
     albumSuffixStripped,
-    artistMatched
+    artistMatched,
+    titleMatched: false
   }
 }
 
@@ -423,12 +554,13 @@ function pickBetterCandidate(
     && candidate.score.album > current.score.album
   ) return candidate
   if (candidate.score.total === current.score.total && candidate.score.artist > current.score.artist) return candidate
+  if (candidate.score.total === current.score.total && candidate.score.title > current.score.title) return candidate
   return current
 }
 
 function chooseBestCoverCandidate(
   candidates: CoverUrlCandidate[],
-  album: string,
+  albums: readonly string[],
   artists: string[],
   options: {
     requireArtistMatch: boolean
@@ -440,7 +572,7 @@ function chooseBestCoverCandidate(
 
   for (const candidate of candidates) {
     if (!candidate.url) continue
-    const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, album, artists)
+    const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, albums, artists)
     if (!score.albumExact) continue
     if (options.requireArtistMatch && !score.artistMatched) continue
     best = pickBetterCandidate(best, { url: candidate.url, score })
@@ -455,10 +587,47 @@ function chooseBestCoverCandidate(
 
   for (const candidate of candidates) {
     if (!candidate.url) continue
-    const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, album, artists)
+    const score = scoreAlbumArtistMatch(candidate.album, candidate.artist, albums, artists)
     if (!score.albumSuffixStripped) continue
     if (options.requireArtistMatch && !score.artistMatched) continue
     best = pickBetterCandidate(best, { url: candidate.url, score })
+  }
+
+  return best?.url ?? null
+}
+
+function chooseBestTrackCoverCandidate(
+  candidates: CoverUrlCandidate[],
+  titles: readonly string[],
+  artists: string[],
+  options: {
+    requireArtistMatch: boolean
+  }
+): string | null {
+  let best: { url: string; score: CandidateScore } | null = null
+
+  for (const candidate of candidates) {
+    if (!candidate.url) continue
+    const titleScore = scoreTitleField(candidate.title, titles)
+    if (titleScore <= 0) continue
+
+    const artistScore = scoreArtistField(candidate.artist, artists)
+    const artistMatched = artists.length === 0 ? false : artistScore > 0
+    if (options.requireArtistMatch && !artistMatched) continue
+
+    best = pickBetterCandidate(best, {
+      url: candidate.url,
+      score: {
+        total: titleScore + artistScore,
+        album: 0,
+        title: titleScore,
+        artist: artistScore,
+        albumExact: false,
+        albumSuffixStripped: false,
+        artistMatched,
+        titleMatched: true
+      }
+    })
   }
 
   return best?.url ?? null
@@ -472,19 +641,25 @@ function releaseArtistLine(release: MusicBrainzRelease): string {
     .join(', ')
 }
 
-function scoreReleaseCandidate(release: MusicBrainzRelease, album: string, artists: string[]): number {
+function scoreReleaseCandidate(release: MusicBrainzRelease, albums: readonly string[], artists: string[]): number {
   let score = parseSearchScore(release.score)
 
-  const targetAlbum = normalizeMatchKey(album)
   const releaseTitle = normalizeMatchKey(release.title ?? '')
 
-  if (targetAlbum && releaseTitle) {
-    if (releaseTitle === targetAlbum) {
-      score += 40
-    } else if (releaseTitle.startsWith(targetAlbum)) {
-      score += 18
-    } else if (releaseTitle.includes(targetAlbum)) {
-      score += 10
+  if (releaseTitle) {
+    for (const album of albums) {
+      const targetAlbum = normalizeMatchKey(album)
+      if (!targetAlbum) continue
+      if (releaseTitle === targetAlbum) {
+        score += 40
+        break
+      } else if (releaseTitle.startsWith(targetAlbum)) {
+        score += 18
+        break
+      } else if (releaseTitle.includes(targetAlbum)) {
+        score += 10
+        break
+      }
     }
   }
 
@@ -568,7 +743,11 @@ type ReleaseCandidateResolutionResult =
       code: string
     }
 
-async function resolveReleaseCandidates(album: string, artist: string | null): Promise<ReleaseCandidateResolutionResult> {
+async function resolveReleaseCandidates(
+  album: string,
+  artist: string | null,
+  albumCandidates: readonly string[] = [album]
+): Promise<ReleaseCandidateResolutionResult> {
   const queryParts = [
     `release:"${escapeMusicBrainzQueryValue(album)}"`
   ]
@@ -612,7 +791,7 @@ async function resolveReleaseCandidates(album: string, artist: string | null): P
     .filter((release) => Boolean(normalizeText(release.id)))
   const strictMatches = releasesWithIds
     .filter((release) => {
-      if (!isExactAlbumFieldMatch(normalizeText(release.title), album)) return false
+      if (!isExactAlbumFieldMatch(normalizeText(release.title), albumCandidates)) return false
       if (targetArtists.length === 0) return true
       return scoreArtistField(releaseArtistLine(release), targetArtists) > 0
     })
@@ -621,7 +800,8 @@ async function resolveReleaseCandidates(album: string, artist: string | null): P
   const seenReleaseIds = new Set<string>()
   const orderedIds = releasesForOrdering
     .sort((left, right) => {
-      return scoreReleaseCandidate(right, album, targetArtists) - scoreReleaseCandidate(left, album, targetArtists)
+      return scoreReleaseCandidate(right, albumCandidates, targetArtists) -
+        scoreReleaseCandidate(left, albumCandidates, targetArtists)
     })
     .map((release) => normalizeText(release.id))
     .filter((value): value is string => Boolean(value))
@@ -742,7 +922,7 @@ function upscaleItunesArtwork(url: string): string {
   return url.replace(/\/\d+x\d+(bb(?:-\d+)?)\./i, '/600x600$1.')
 }
 
-function selectItunesCoverUrl(entry: ItunesAlbumResult): string | null {
+function selectItunesCoverUrl(entry: ItunesAlbumResult | ItunesTrackResult): string | null {
   const artworkCandidates = [
     normalizeText(entry.artworkUrl100),
     normalizeText(entry.artworkUrl60),
@@ -758,7 +938,11 @@ function selectItunesCoverUrl(entry: ItunesAlbumResult): string | null {
   return null
 }
 
-async function resolveCoverArtFromItunesSearch(album: string, artist: string | null): Promise<DiscordCoverArtLookupResult> {
+async function resolveCoverArtFromItunesSearch(
+  album: string,
+  artist: string | null,
+  albumCandidates: readonly string[] = [album]
+): Promise<DiscordCoverArtLookupResult> {
   const term = artist ? `${album} ${artist}` : album
   const params = new URLSearchParams({
     term,
@@ -808,7 +992,7 @@ async function resolveCoverArtFromItunesSearch(album: string, artist: string | n
       artist: normalizeText(entry.artistName),
       url: selectItunesCoverUrl(entry)
     })),
-    album,
+    albumCandidates,
     targetArtists,
     {
       requireArtistMatch: targetArtists.length > 0,
@@ -824,9 +1008,10 @@ async function resolveCoverArtFromItunesSearch(album: string, artist: string | n
 }
 
 async function resolveCoverArtFromItunesTrackSearch(
-  album: string,
+  albumCandidates: readonly string[],
   artist: string | null,
-  title: string
+  title: string,
+  titleCandidates: readonly string[] = [title]
 ): Promise<DiscordCoverArtLookupResult> {
   const term = artist ? `${title} ${artist}` : title
   const params = new URLSearchParams({
@@ -871,24 +1056,40 @@ async function resolveCoverArtFromItunesTrackSearch(
   if (results.length === 0) return { status: 'not_found' }
 
   const targetArtists = artist ? [artist] : []
-  const coverArtUrl = chooseBestCoverCandidate(
-    results.map((entry) => ({
-      album: normalizeText(entry.collectionName),
-      artist: normalizeText(entry.artistName),
-      url: selectItunesCoverUrl(entry)
-    })),
-    album,
+  const coverCandidates = results.map((entry) => ({
+    album: normalizeText(entry.collectionName),
+    title: normalizeText(entry.trackName),
+    artist: normalizeText(entry.artistName),
+    url: selectItunesCoverUrl(entry)
+  }))
+  const albumCoverArtUrl = chooseBestCoverCandidate(
+    coverCandidates,
+    albumCandidates,
     targetArtists,
     {
       requireArtistMatch: targetArtists.length > 0,
       allowSuffixStrippedMatch: true
     }
   )
+  if (albumCoverArtUrl) {
+    return {
+      status: 'hit',
+      url: albumCoverArtUrl
+    }
+  }
 
-  if (!coverArtUrl) return { status: 'not_found' }
+  const trackCoverArtUrl = chooseBestTrackCoverCandidate(
+    coverCandidates,
+    titleCandidates,
+    targetArtists,
+    {
+      requireArtistMatch: targetArtists.length > 0
+    }
+  )
+  if (!trackCoverArtUrl) return { status: 'not_found' }
   return {
     status: 'hit',
-    url: coverArtUrl
+    url: trackCoverArtUrl
   }
 }
 
@@ -898,7 +1099,11 @@ function selectTheAudioDbCoverUrl(entry: TheAudioDbAlbum): string | null {
   return normalizeUrlOrNull(entry.strAlbumThumb)
 }
 
-async function resolveCoverArtFromTheAudioDbSearch(album: string, artist: string | null): Promise<DiscordCoverArtLookupResult> {
+async function resolveCoverArtFromTheAudioDbSearch(
+  album: string,
+  artist: string | null,
+  albumCandidates: readonly string[] = [album]
+): Promise<DiscordCoverArtLookupResult> {
   const params = new URLSearchParams({
     a: album
   })
@@ -948,7 +1153,7 @@ async function resolveCoverArtFromTheAudioDbSearch(album: string, artist: string
       artist: normalizeText(entry.strArtist),
       url: selectTheAudioDbCoverUrl(entry)
     })),
-    album,
+    albumCandidates,
     targetArtists,
     {
       requireArtistMatch: targetArtists.length > 0,
@@ -963,32 +1168,37 @@ async function resolveCoverArtFromTheAudioDbSearch(album: string, artist: string
   }
 }
 
-async function resolveCoverArtWithMusicBrainzAndCoverArtArchive(album: string, artistCandidates: string[]): Promise<ProviderResolutionResult> {
-  const releaseIds: string[] = []
+async function resolveCoverArtWithMusicBrainzAndCoverArtArchive(
+  albumCandidates: readonly string[],
+  artistCandidates: string[]
+): Promise<ProviderResolutionResult> {
+  const releaseCandidates: ReleaseIdCandidate[] = []
   const seenReleaseIds = new Set<string>()
   let transientErrorCode: string | undefined
   const allowArtistlessFallback = artistCandidates.length === 0
 
-  for (const artistCandidate of artistCandidates) {
-    const candidateResult = await resolveReleaseCandidates(album, artistCandidate)
-    if (candidateResult.status === 'transient_error') {
-      transientErrorCode = transientErrorCode ?? candidateResult.code
-      continue
+  for (const albumCandidate of albumCandidates) {
+    for (const artistCandidate of artistCandidates) {
+      const candidateResult = await resolveReleaseCandidates(albumCandidate, artistCandidate, albumCandidates)
+      if (candidateResult.status === 'transient_error') {
+        transientErrorCode = transientErrorCode ?? candidateResult.code
+        continue
+      }
+      if (candidateResult.status === 'not_found') continue
+      pushUniqueReleaseIds(releaseCandidates, candidateResult.releaseIds, albumCandidate, seenReleaseIds)
     }
-    if (candidateResult.status === 'not_found') continue
-    pushUniqueReleaseIds(releaseIds, candidateResult.releaseIds, seenReleaseIds)
+
+    if (allowArtistlessFallback) {
+      const albumOnlyCandidates = await resolveReleaseCandidates(albumCandidate, null, albumCandidates)
+      if (albumOnlyCandidates.status === 'transient_error') {
+        transientErrorCode = transientErrorCode ?? albumOnlyCandidates.code
+      } else if (albumOnlyCandidates.status === 'ok') {
+        pushUniqueReleaseIds(releaseCandidates, albumOnlyCandidates.releaseIds, albumCandidate, seenReleaseIds)
+      }
+    }
   }
 
-  if (allowArtistlessFallback) {
-    const albumOnlyCandidates = await resolveReleaseCandidates(album, null)
-    if (albumOnlyCandidates.status === 'transient_error') {
-      transientErrorCode = transientErrorCode ?? albumOnlyCandidates.code
-    } else if (albumOnlyCandidates.status === 'ok') {
-      pushUniqueReleaseIds(releaseIds, albumOnlyCandidates.releaseIds, seenReleaseIds)
-    }
-  }
-
-  if (releaseIds.length === 0) {
+  if (releaseCandidates.length === 0) {
     if (transientErrorCode) {
       return {
         result: {
@@ -1004,13 +1214,15 @@ async function resolveCoverArtWithMusicBrainzAndCoverArtArchive(album: string, a
     }
   }
 
-  const candidatesToProbe = releaseIds.slice(0, MAX_RELEASE_CANDIDATES_TO_PROBE)
-  for (const releaseId of candidatesToProbe) {
-    const coverResult = await resolveCoverArtForRelease(releaseId)
+  const candidatesToProbe = releaseCandidates.slice(0, MAX_RELEASE_CANDIDATES_TO_PROBE)
+  for (const releaseCandidate of candidatesToProbe) {
+    const coverResult = await resolveCoverArtForRelease(releaseCandidate.id)
     if (coverResult.status === 'hit') {
       return {
         result: coverResult,
-        candidateCount: candidatesToProbe.length
+        candidateCount: candidatesToProbe.length,
+        hitCandidate: releaseCandidate.albumCandidate,
+        hitPhase: 'release'
       }
     }
     if (coverResult.status === 'transient_error') {
@@ -1035,28 +1247,148 @@ async function resolveCoverArtWithMusicBrainzAndCoverArtArchive(album: string, a
 }
 
 async function resolveCoverArtWithItunes(
-  album: string,
+  albumCandidates: readonly string[],
   artistCandidates: string[],
-  title: string | null
+  titleCandidates: readonly string[]
 ): Promise<ProviderResolutionResult> {
   let transientErrorCode: string | undefined
   let queryCount = 0
   const allowArtistlessFallback = artistCandidates.length === 0
 
-  for (const artistCandidate of artistCandidates) {
-    queryCount += 1
-    const result = await resolveCoverArtFromItunesSearch(album, artistCandidate)
-    if (result.status === 'hit') return { result, candidateCount: queryCount }
-    if (result.status === 'transient_error') {
-      transientErrorCode = transientErrorCode ?? result.code
+  for (const albumCandidate of albumCandidates) {
+    for (const artistCandidate of artistCandidates) {
+      queryCount += 1
+      const result = await resolveCoverArtFromItunesSearch(albumCandidate, artistCandidate, albumCandidates)
+      if (result.status === 'hit') {
+        return {
+          result,
+          candidateCount: queryCount,
+          hitCandidate: albumCandidate,
+          hitPhase: 'album'
+        }
+      }
+      if (result.status === 'transient_error') {
+        transientErrorCode = transientErrorCode ?? result.code
+      }
     }
   }
 
-  if (title) {
+  if (titleCandidates.length > 0) {
+    for (const titleCandidate of titleCandidates) {
+      for (const artistCandidate of artistCandidates) {
+        queryCount += 1
+        const result = await resolveCoverArtFromItunesTrackSearch(
+          albumCandidates,
+          artistCandidate,
+          titleCandidate,
+          titleCandidates
+        )
+        if (result.status === 'hit') {
+          return {
+            result,
+            candidateCount: queryCount,
+            hitCandidate: titleCandidate,
+            hitPhase: 'track'
+          }
+        }
+        if (result.status === 'transient_error') {
+          transientErrorCode = transientErrorCode ?? result.code
+        }
+      }
+    }
+  }
+
+  if (!allowArtistlessFallback) {
+    if (transientErrorCode) {
+      return {
+        result: {
+          status: 'transient_error',
+          code: transientErrorCode
+        },
+        candidateCount: queryCount
+      }
+    }
+    return {
+      result: { status: 'not_found' },
+      candidateCount: queryCount
+    }
+  }
+
+  for (const albumCandidate of albumCandidates) {
+    queryCount += 1
+    const albumOnlyResult = await resolveCoverArtFromItunesSearch(albumCandidate, null, albumCandidates)
+    if (albumOnlyResult.status === 'hit') {
+      return {
+        result: albumOnlyResult,
+        candidateCount: queryCount,
+        hitCandidate: albumCandidate,
+        hitPhase: 'album'
+      }
+    }
+    if (albumOnlyResult.status === 'transient_error') {
+      transientErrorCode = transientErrorCode ?? albumOnlyResult.code
+    }
+  }
+
+  if (titleCandidates.length > 0) {
+    for (const titleCandidate of titleCandidates) {
+      queryCount += 1
+      const trackOnlyResult = await resolveCoverArtFromItunesTrackSearch(
+        albumCandidates,
+        null,
+        titleCandidate,
+        titleCandidates
+      )
+      if (trackOnlyResult.status === 'hit') {
+        return {
+          result: trackOnlyResult,
+          candidateCount: queryCount,
+          hitCandidate: titleCandidate,
+          hitPhase: 'track'
+        }
+      }
+      if (trackOnlyResult.status === 'transient_error') {
+        transientErrorCode = transientErrorCode ?? trackOnlyResult.code
+      }
+    }
+  }
+
+  if (transientErrorCode) {
+    return {
+      result: {
+        status: 'transient_error',
+        code: transientErrorCode
+      },
+      candidateCount: queryCount
+    }
+  }
+
+  return {
+    result: { status: 'not_found' },
+    candidateCount: queryCount
+  }
+}
+
+async function resolveCoverArtWithTheAudioDb(
+  albumCandidates: readonly string[],
+  artistCandidates: string[]
+): Promise<ProviderResolutionResult> {
+  let transientErrorCode: string | undefined
+  let queryCount = 0
+  const allowArtistlessFallback = artistCandidates.length === 0
+
+  for (const albumCandidate of albumCandidates) {
     for (const artistCandidate of artistCandidates) {
       queryCount += 1
-      const result = await resolveCoverArtFromItunesTrackSearch(album, artistCandidate, title)
-      if (result.status === 'hit') return { result, candidateCount: queryCount }
+      const result = await resolveCoverArtFromTheAudioDbSearch(albumCandidate, artistCandidate, albumCandidates)
+      if (result.status === 'hit') {
+        return {
+          result,
+          candidateCount: queryCount,
+          hitCandidate: albumCandidate,
+          hitPhase: 'album'
+        }
+      }
       if (result.status === 'transient_error') {
         transientErrorCode = transientErrorCode ?? result.code
       }
@@ -1079,73 +1411,20 @@ async function resolveCoverArtWithItunes(
     }
   }
 
-  queryCount += 1
-  const albumOnlyResult = await resolveCoverArtFromItunesSearch(album, null)
-  if (albumOnlyResult.status === 'hit') return { result: albumOnlyResult, candidateCount: queryCount }
-  if (albumOnlyResult.status === 'transient_error') {
-    transientErrorCode = transientErrorCode ?? albumOnlyResult.code
-  }
-
-  if (title) {
+  for (const albumCandidate of albumCandidates) {
     queryCount += 1
-    const trackOnlyResult = await resolveCoverArtFromItunesTrackSearch(album, null, title)
-    if (trackOnlyResult.status === 'hit') return { result: trackOnlyResult, candidateCount: queryCount }
-    if (trackOnlyResult.status === 'transient_error') {
-      transientErrorCode = transientErrorCode ?? trackOnlyResult.code
-    }
-  }
-
-  if (transientErrorCode) {
-    return {
-      result: {
-        status: 'transient_error',
-        code: transientErrorCode
-      },
-      candidateCount: queryCount
-    }
-  }
-
-  return {
-    result: { status: 'not_found' },
-    candidateCount: queryCount
-  }
-}
-
-async function resolveCoverArtWithTheAudioDb(album: string, artistCandidates: string[]): Promise<ProviderResolutionResult> {
-  let transientErrorCode: string | undefined
-  let queryCount = 0
-  const allowArtistlessFallback = artistCandidates.length === 0
-
-  for (const artistCandidate of artistCandidates) {
-    queryCount += 1
-    const result = await resolveCoverArtFromTheAudioDbSearch(album, artistCandidate)
-    if (result.status === 'hit') return { result, candidateCount: queryCount }
-    if (result.status === 'transient_error') {
-      transientErrorCode = transientErrorCode ?? result.code
-    }
-  }
-
-  if (!allowArtistlessFallback) {
-    if (transientErrorCode) {
+    const albumOnlyResult = await resolveCoverArtFromTheAudioDbSearch(albumCandidate, null, albumCandidates)
+    if (albumOnlyResult.status === 'hit') {
       return {
-        result: {
-          status: 'transient_error',
-          code: transientErrorCode
-        },
-        candidateCount: queryCount
+        result: albumOnlyResult,
+        candidateCount: queryCount,
+        hitCandidate: albumCandidate,
+        hitPhase: 'album'
       }
     }
-    return {
-      result: { status: 'not_found' },
-      candidateCount: queryCount
+    if (albumOnlyResult.status === 'transient_error') {
+      transientErrorCode = transientErrorCode ?? albumOnlyResult.code
     }
-  }
-
-  queryCount += 1
-  const albumOnlyResult = await resolveCoverArtFromTheAudioDbSearch(album, null)
-  if (albumOnlyResult.status === 'hit') return { result: albumOnlyResult, candidateCount: queryCount }
-  if (albumOnlyResult.status === 'transient_error') {
-    transientErrorCode = transientErrorCode ?? albumOnlyResult.code
   }
 
   if (transientErrorCode) {
@@ -1164,11 +1443,19 @@ async function resolveCoverArtWithTheAudioDb(album: string, artistCandidates: st
   }
 }
 
-function pushUniqueReleaseIds(target: string[], source: string[], seen: Set<string>): void {
+function pushUniqueReleaseIds(
+  target: ReleaseIdCandidate[],
+  source: string[],
+  albumCandidate: string,
+  seen: Set<string>
+): void {
   for (const releaseId of source) {
     if (seen.has(releaseId)) continue
     seen.add(releaseId)
-    target.push(releaseId)
+    target.push({
+      id: releaseId,
+      albumCandidate
+    })
   }
 }
 
@@ -1215,6 +1502,9 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
   if (!knownArtistHint && !isSpecificEnoughAlbumForArtistlessLookup(album)) return { status: 'not_found' }
 
   const artistCandidates = resolveLookupArtistCandidates(trackArtist, albumArtist)
+  const albumCandidates = buildCoverArtAlbumCandidates(album, title)
+  const titleCandidates = buildCoverArtTitleCandidates(title)
+  if (albumCandidates.length === 0) return { status: 'not_found' }
   const logArtist = pickLookupLogArtist(trackArtist, albumArtist, artistCandidates)
   const logKey = toLogKey(album, logArtist)
   let transientErrorCode: string | undefined
@@ -1222,15 +1512,15 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
   const providerResolvers = [
     {
       name: 'itunes',
-      resolve: () => resolveCoverArtWithItunes(album, artistCandidates, title)
+      resolve: () => resolveCoverArtWithItunes(albumCandidates, artistCandidates, titleCandidates)
     },
     {
       name: 'musicbrainz_caa',
-      resolve: () => resolveCoverArtWithMusicBrainzAndCoverArtArchive(album, artistCandidates)
+      resolve: () => resolveCoverArtWithMusicBrainzAndCoverArtArchive(albumCandidates, artistCandidates)
     },
     {
       name: 'theaudiodb',
-      resolve: () => resolveCoverArtWithTheAudioDb(album, artistCandidates)
+      resolve: () => resolveCoverArtWithTheAudioDb(albumCandidates, artistCandidates)
     }
   ] as const
 
@@ -1240,20 +1530,26 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
 
     logLookup(`provider-${providerResolver.name}`, logKey, {
       album,
+      albumCandidates,
       artist: logArtist,
       artistCandidates,
       status: result.status,
       code: result.status === 'transient_error' ? result.code : undefined,
-      candidateCount: providerResult.candidateCount
+      candidateCount: providerResult.candidateCount,
+      hitCandidate: providerResult.hitCandidate,
+      hitPhase: providerResult.hitPhase
     })
 
     if (result.status === 'hit') {
       logLookup('lookup-hit', logKey, {
         album,
+        albumCandidates,
         artist: logArtist,
         artistCandidates,
         provider: providerResolver.name,
-        candidateCount: providerResult.candidateCount
+        candidateCount: providerResult.candidateCount,
+        hitCandidate: providerResult.hitCandidate,
+        hitPhase: providerResult.hitPhase
       })
       return result
     }
@@ -1266,6 +1562,7 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
   if (transientErrorCode) {
     logLookup('lookup-transient', logKey, {
       album,
+      albumCandidates,
       artist: logArtist,
       artistCandidates,
       providerCount: providerResolvers.length,
@@ -1279,6 +1576,7 @@ export async function resolveDiscordCoverArtUrl(query: DiscordCoverArtLookupQuer
 
   logLookup('lookup-not-found', logKey, {
     album,
+    albumCandidates,
     artist: logArtist,
     artistCandidates,
     providerCount: providerResolvers.length

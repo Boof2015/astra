@@ -8,6 +8,7 @@ url="https://github.com/Boof2015/astra"
 license=('GPL-3.0-only')
 provides=('astra')
 conflicts=('astra')
+depends=('fuse2')
 options=(!strip !debug)
 source=("astra-0.4.0.beta.AppImage::https://github.com/Boof2015/astra/releases/download/v0.4.0-beta/Astra-0.4.0-beta-Linux.AppImage")
 noextract=("astra-${pkgver}.AppImage")
@@ -23,6 +24,8 @@ prepare() {
 
 package() {
   local _appdir="${srcdir}/squashfs-root"
+  local _appimage_source="${srcdir}/astra-${pkgver}.AppImage"
+  local _appimage_target="${pkgdir}/opt/astra/astra.AppImage"
   local _desktop_path="${pkgdir}/usr/share/applications/astra.desktop"
   local _desktop_source
   local _icon_source
@@ -31,11 +34,10 @@ package() {
   local _icon_installed=0
   local _root_icon
 
-  install -dm755 "${pkgdir}/opt/astra"
-  cp -a "${_appdir}/." "${pkgdir}/opt/astra/"
+  install -Dm755 "${_appimage_source}" "${_appimage_target}"
 
   install -dm755 "${pkgdir}/usr/bin"
-  printf '%s\n' '#!/bin/sh' 'exec /opt/astra/AppRun "$@"' > "${pkgdir}/usr/bin/astra"
+  printf '%s\n' '#!/bin/sh' 'exec /opt/astra/astra.AppImage --no-sandbox "$@"' > "${pkgdir}/usr/bin/astra"
   chmod 755 "${pkgdir}/usr/bin/astra"
 
   _desktop_source="$(find "${_appdir}" -type f -iname '*.desktop' | LC_ALL=C sort | head -n 1)"

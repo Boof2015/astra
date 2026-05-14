@@ -1,7 +1,7 @@
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { EQ_DEVICE_PROFILE_STORAGE_KEY, EQ_STORAGE_KEY, useEQStore } from '../../stores/eqStore'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { ARTIST_BROWSE_MODE_STORAGE_KEY, useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
@@ -13,6 +13,7 @@ import {
   useVisualizerSettingsStore
 } from '../../stores/visualizerSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
@@ -20,6 +21,9 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 import {
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
+  HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
 
@@ -38,6 +42,8 @@ export const RENDERER_SETTINGS_KEYS = [
   PLAYER_VOLUME_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
+  'astra-discord-rpc-compact-status-mode-v1',
+  'astra-discord-rpc-expanded-info-mode-v1',
   'astra-discord-cover-art-cache-v1',
   'astra-discord-cover-art-cache-v2',
   'astra-discord-cover-art-cache-v3',
@@ -49,7 +55,11 @@ export const RENDERER_SETTINGS_KEYS = [
   SPECTRUM_HEATMAP_STORAGE_KEY,
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
+  UI_SCALE_STORAGE_KEY,
+  HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
+  ARTIST_BROWSE_MODE_STORAGE_KEY,
   'astra-library-tracklist-bpm-key-visible-v1',
   EQ_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
@@ -76,7 +86,7 @@ export async function resetIntegrationSettings(): Promise<string> {
   await useDiscordSettingsStore.getState().resetToDefaults()
   const lastFmStatus = await useLastFmSettingsStore.getState().resetToDefaults()
   if (!lastFmStatus) {
-    throw new Error('Failed to reset Last.fm settings.')
+    throw new Error('Failed to reset scrobbling settings.')
   }
   const lyricsStatus = await useLyricsStore.getState().resetToDefaults()
   if (!lyricsStatus) {
@@ -86,7 +96,11 @@ export async function resetIntegrationSettings(): Promise<string> {
   if (!status) {
     throw new Error('Failed to reset local API settings.')
   }
-  return 'Integrations reset (Discord, Last.fm, Lyrics, and Local API).'
+  const phoneRemoteStatus = await usePhoneRemoteSettingsStore.getState().resetToDefaults()
+  if (!phoneRemoteStatus) {
+    throw new Error('Failed to reset phone remote settings.')
+  }
+  return 'Integrations reset (Discord, Scrobbling, Lyrics, Local API, and Phone Remote).'
 }
 
 export async function resetDiscordCoverArtCache(): Promise<string> {
@@ -108,6 +122,9 @@ export async function resetAllSettings(): Promise<string> {
   clearRendererSettingsKeys()
   useVisualizerSettingsStore.getState().resetToDefaults()
   useUIStore.getState().resetAnalyzerRackPreferences()
+  useUIStore.getState().resetUIScalePercent()
+  useUIStore.getState().resetHomeGreetingTextMode()
+  useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   return 'All renderer settings reset.'
 }
 

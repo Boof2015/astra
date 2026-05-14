@@ -63,7 +63,7 @@ export default function OutputDelayCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Output delay cue artwork" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Output delay cue artwork" variant="card" />
           ) : artworkTrack?.artworkData ? (
             <img src={artworkTrack.artworkData} alt="Output delay cue artwork" />
           ) : (

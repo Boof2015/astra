@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { usePlaylistStore, type PlaylistImportResult } from '../../stores/playlistStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
-import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -13,10 +13,13 @@ import PlaylistCover from '../playlists/PlaylistCover'
 
 interface HomeTrack {
   path: string
+  album_identity_key: string
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   format: string
   artwork_hash: string | null
@@ -110,13 +113,6 @@ interface WeightedGreetingPool {
   weight: number
 }
 
-type PlaylistImportStatusTone = 'success' | 'warning' | 'error'
-
-interface PlaylistImportStatus {
-  tone: PlaylistImportStatusTone
-  message: string
-}
-
 interface HomeRecentLimits {
   track: number
   artist: number
@@ -138,40 +134,6 @@ const GREETING_WEIGHT_TIME_AWARE = 0.4
 const GREETING_WEIGHT_DAY_AWARE = 0.28
 const GREETING_WEIGHT_PLAYFUL = 0.32
 const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
-
-function formatPlaylistImportStatus(result: PlaylistImportResult): PlaylistImportStatus {
-  const detailSegments: string[] = []
-  if (result.matchedByMetadataCount > 0) {
-    detailSegments.push(`${result.matchedByMetadataCount} matched by metadata`)
-  }
-  if (result.ambiguousMetadataCount > 0) {
-    detailSegments.push(`${result.ambiguousMetadataCount} ambiguous`)
-  }
-  if (result.unsupportedEntryCount > 0) {
-    detailSegments.push(`${result.unsupportedEntryCount} unsupported`)
-  }
-  const details = detailSegments.length > 0 ? ` (${detailSegments.join(' · ')})` : ''
-
-  if (result.importedCount <= 0 || result.playlistId === null || !result.playlistName) {
-    return {
-      tone: 'error',
-      message: `No tracks were imported from ${result.entriesTotal} entries.${details}`
-    }
-  }
-
-  const skippedCount = result.entriesTotal - result.importedCount
-  if (skippedCount > 0) {
-    return {
-      tone: 'warning',
-      message: `Imported ${result.importedCount}/${result.entriesTotal} tracks to "${result.playlistName}".${details}`
-    }
-  }
-
-  return {
-    tone: 'success',
-    message: `Imported ${result.importedCount} tracks to "${result.playlistName}".`
-  }
-}
 
 const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
   { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
@@ -767,28 +729,60 @@ function getPrimaryContributor(rawArtist: string): string {
   return contributors[0] ?? 'Unknown Artist'
 }
 
-function getRecentArtistCandidate(track: Pick<HomeTrack, 'artist' | 'album_artist'>): string {
+function getRecentArtistCandidate(
+  track: Pick<HomeTrack, 'artist' | 'artist_names' | 'album_artist' | 'album_artist_names'>,
+  mode: LibraryArtistBrowseMode
+): string {
   const albumArtist = (track.album_artist ?? '').replace(/\s+/g, ' ').trim()
+  if (mode === 'strict') {
+    return albumArtist || track.artist.replace(/\s+/g, ' ').trim() || 'Unknown Artist'
+  }
+
   const albumArtistKey = normalizeKey(albumArtist)
 
   if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
     return getPrimaryContributor(albumArtist)
   }
 
+  if (track.artist_names.length > 0) {
+    return track.artist_names[0]
+  }
+  if (track.album_artist_names.length > 0) {
+    return track.album_artist_names[0]
+  }
+
   return getPrimaryContributor(track.artist)
+}
+
+function formatHomeClockTime(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date)
+}
+
+function formatHomeClockDate(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  }).format(date)
 }
 
 export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
-  const recentlyPlayed = useLibraryStore((s) => s.recentlyPlayed as HomeTrack[])
-  const favoriteTracks = useLibraryStore((s) => s.favoriteTracks as HomeTrack[])
+  const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
+  const recentlyPlayedPaths = useLibraryStore((s) => s.recentlyPlayedPaths)
+  const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
+  const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
+  const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
   const setLibraryViewMode = useLibraryStore((s) => s.setViewMode)
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const selectArtist = useLibraryStore((s) => s.selectArtist)
   const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
-  const startPlaybackContext = usePlayerStore((s) => s.startPlaybackContext)
+  const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const playlists = usePlaylistStore((s) => s.playlists)
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
@@ -796,12 +790,21 @@ export default function HomeView() {
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
+  const homeGreetingTextMode = useUIStore((s) => s.homeGreetingTextMode)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
+  const recentlyPlayed = useMemo(
+    () => resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[],
+    [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
+  )
+  const favoriteTracks = useMemo(
+    () => resolveTrackPaths(favoriteTrackPaths) as HomeTrack[],
+    [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
+  )
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [greeting, setGreeting] = useState<GreetingSelection>(() => chooseGreeting(null, new Date()))
-  const [strictArtistCount, setStrictArtistCount] = useState(() => artists.length)
+  const [clockNow, setClockNow] = useState(() => new Date())
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined'
       ? HOME_RECENT_MEDIUM_BREAKPOINT_PX
@@ -826,6 +829,28 @@ export default function HomeView() {
   }, [])
 
   useEffect(() => {
+    if (homeGreetingTextMode !== 'clock') return
+
+    let intervalId: number | null = null
+    const updateClock = () => setClockNow(new Date())
+    updateClock()
+
+    const now = new Date()
+    const msUntilNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds())
+    const timeoutId = window.setTimeout(() => {
+      updateClock()
+      intervalId = window.setInterval(updateClock, 60000)
+    }, Math.max(100, msUntilNextMinute))
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [homeGreetingTextMode])
+
+  useEffect(() => {
     if (typeof window === 'undefined') return
 
     const handleResize = () => {
@@ -847,32 +872,6 @@ export default function HomeView() {
       window.clearTimeout(timeoutId)
     }
   }, [playlistImportStatus])
-
-  useEffect(() => {
-    if (totalTrackCount <= 0) {
-      setStrictArtistCount(0)
-      return
-    }
-
-    let canceled = false
-
-    void window.electronAPI.library.getArtists('strict')
-      .then((strictArtists) => {
-        if (!canceled) {
-          setStrictArtistCount(strictArtists.length)
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load strict artist count for Home view:', error)
-        if (!canceled) {
-          setStrictArtistCount(artists.length)
-        }
-      })
-
-    return () => {
-      canceled = true
-    }
-  }, [artists.length, totalTrackCount])
 
   useEffect(() => {
     if (!hasLibraryContent) return
@@ -1025,17 +1024,16 @@ export default function HomeView() {
       if (seenTrackPaths.has(track.path)) continue
       seenTrackPaths.add(track.path)
       uniqueTracks.push(track)
-      if (uniqueTracks.length >= recentLimits.track) break
     }
     return uniqueTracks
-  }, [recentlyPlayed, recentLimits])
+  }, [recentlyPlayed])
 
   const recentArtists = useMemo(() => {
     const seenArtistKeys = new Set<string>()
     const uniqueArtists: HomeArtist[] = []
 
     for (const track of recentlyPlayed) {
-      const candidateArtist = getRecentArtistCandidate(track) || 'Unknown Artist'
+      const candidateArtist = getRecentArtistCandidate(track, artistBrowseMode) || 'Unknown Artist'
       const key = normalizeKey(candidateArtist)
       if (!key || seenArtistKeys.has(key)) continue
       seenArtistKeys.add(key)
@@ -1053,14 +1051,14 @@ export default function HomeView() {
     }
 
     return uniqueArtists
-  }, [recentlyPlayed, artistByKey, recentLimits])
+  }, [artistBrowseMode, recentlyPlayed, artistByKey, recentLimits])
 
   const recentAlbums = useMemo(() => {
     const seenAlbumIdentityKeys = new Set<string>()
     const uniqueAlbums: HomeAlbum[] = []
 
     for (const track of recentlyPlayed) {
-      const identityKey = buildAlbumIdentityKeyFromTrack(track)
+      const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)
       const metadata = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
@@ -1091,38 +1089,38 @@ export default function HomeView() {
     [playlists, favoriteTracks]
   )
 
-  const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
-    const queueTracks: Track[] = recentTracks.map((recentTrack) => ({
-      id: recentTrack.path,
-      path: recentTrack.path,
-      title: recentTrack.title,
-      artist: recentTrack.artist,
-      album: recentTrack.album,
-      albumArtist: recentTrack.album_artist ?? undefined,
-      duration: recentTrack.duration,
-      format: recentTrack.format,
-      artworkHash: recentTrack.artwork_hash ?? undefined,
-      sampleRate: recentTrack.sample_rate ?? undefined,
-      bitDepth: recentTrack.bit_depth ?? undefined,
-      bitrate: recentTrack.bitrate ?? undefined,
-      channels: recentTrack.channels ?? undefined,
-      codec: recentTrack.codec ?? undefined,
-      codecProfile: recentTrack.codec_profile ?? undefined,
-      isAtmosJoc: recentTrack.is_atmos_joc === 1,
-      replayGainTrackDb: recentTrack.replaygain_track_gain_db ?? undefined,
-      replayGainAlbumDb: recentTrack.replaygain_album_gain_db ?? undefined,
-      sourceType: recentTrack.source_type,
-      sourceId: recentTrack.source_id ?? undefined,
-      sourceTrackId: recentTrack.source_track_id ?? undefined,
-      sourcePath: recentTrack.source_path ?? undefined,
-      isAvailable: recentTrack.is_available === 1,
-      availabilityReason: recentTrack.availability_reason ?? undefined
-    }))
+  const clockGreeting = useMemo(() => ({
+    primary: formatHomeClockTime(clockNow),
+    subline: formatHomeClockDate(clockNow)
+  }), [clockNow])
 
-    await startPlaybackContext(queueTracks, index, {
+  const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
+    await startPlaybackContextByPaths(recentTracks.map((recentTrack) => recentTrack.path), index, {
       contextLabel: 'Recently Played'
     })
   }
+
+  const handleRecentRowWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const element = event.currentTarget
+    const maxScrollLeft = element.scrollWidth - element.clientWidth
+
+    if (maxScrollLeft <= 0) return
+    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+
+    const isAtStart = element.scrollLeft <= 0
+    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
+
+    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
+
+    const deltaY = event.deltaMode === 1
+      ? event.deltaY * 16
+      : event.deltaMode === 2
+        ? event.deltaY * element.clientWidth
+        : event.deltaY
+
+    event.preventDefault()
+    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
+  }, [])
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
@@ -1142,7 +1140,7 @@ export default function HomeView() {
 
       setPlaylistImportStatus(formatPlaylistImportStatus(result))
 
-      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount > 0) {
+      if (result.playlistId !== null && result.playlistId > 0 && result.importedCount + result.missingEntryCount > 0) {
         await selectPlaylist(result.playlistId)
         setActiveView('playlist')
       }
@@ -1200,10 +1198,20 @@ export default function HomeView() {
         <section ref={greetingCardRef} className={`home-greeting-card is-${greeting.bucket}`}>
           <canvas ref={skyCanvasRef} className="home-greeting-sky-canvas" aria-hidden="true" />
           <canvas ref={starCanvasRef} className="home-greeting-star-canvas" aria-hidden="true" />
-          <div className="home-greeting-content">
-            <h1 className="home-greeting-message">{greeting.primary}</h1>
-            {greeting.subline.trim().length > 0 && <p className="home-greeting-subline">{greeting.subline}</p>}
-          </div>
+          {homeGreetingTextMode === 'off' ? (
+            <div className="home-greeting-content" aria-hidden="true" />
+          ) : (
+            <div className="home-greeting-content">
+              <h1 className="home-greeting-message">
+                {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
+              </h1>
+              {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
+                <p className="home-greeting-subline">
+                  {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
+                </p>
+              )}
+            </div>
+          )}
           <div className="home-greeting-stats">
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Tracks</span>
@@ -1215,7 +1223,7 @@ export default function HomeView() {
             </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Artists</span>
-              <span className="home-greeting-stat-value">{strictArtistCount}</span>
+              <span className="home-greeting-stat-value">{artists.length}</span>
             </div>
           </div>
         </section>
@@ -1225,7 +1233,7 @@ export default function HomeView() {
             <h2>RECENTLY PLAYED</h2>
           </div>
           {recentTracks.length > 0 ? (
-            <div className="home-recent-row">
+            <div className="home-recent-row" onWheel={handleRecentRowWheel}>
               {recentTracks.map((track, index) => (
                 <article
                   key={track.path}

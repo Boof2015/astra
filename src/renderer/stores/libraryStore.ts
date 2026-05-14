@@ -5,10 +5,14 @@ import type { TrackSourceType } from '../../types/subsonic'
 export interface DbTrack {
   id: number
   path: string
+  album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -21,6 +25,9 @@ export interface DbTrack {
   bit_depth: number | null
   bitrate: number | null
   channels: number | null
+  codec: string | null
+  codec_profile: string | null
+  is_atmos_joc: number | null
   bpm: number | null
   musical_key: string | null
   source_type: TrackSourceType
@@ -44,12 +51,14 @@ interface Album {
   year: number | null
   artwork_hash: string | null
   track_count: number
+  is_new: boolean
 }
 
 interface Artist {
   artist: string
   track_count: number
   artwork_hash: string | null
+  artwork_source: 'manual' | 'detected' | 'track' | null
 }
 
 export interface LibraryFolder {
@@ -59,10 +68,10 @@ export interface LibraryFolder {
 }
 
 interface LibrarySelectionSnapshot {
-  selectedAlbum: { identity_key?: string; album: string; artist: string } | null
+  selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
-  tracks: DbTrack[]
+  trackPaths: string[]
 }
 
 export interface FolderSubfolderSummary {
@@ -82,10 +91,18 @@ export interface FolderSubdirectoryEntry {
 type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
+export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'
 export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
+type ArtworkResponseFormat = 'object-url' | 'data-url'
 
 export interface ArtworkRequestOptions {
   variant?: ArtworkVariant
+  format?: ArtworkResponseFormat
+}
+
+interface ArtworkCacheEntry {
+  url: string
+  byteLength: number
 }
 
 type ScanStage = 'scanning' | 'backfill' | 'cleanup'
@@ -114,18 +131,24 @@ export interface ScanIssueLog {
 
 interface LibraryStore {
   // State
-  tracks: DbTrack[]
+  trackByPath: Map<string, DbTrack>
+  trackCacheVersion: number
+  trackPaths: string[]
+  fullTrackPaths: string[]
+  fullTrackConsumers: Set<LibraryFullTrackConsumer>
   totalTrackCount: number
   albums: Album[]
+  albumsIncludingSingles: Album[]
+  albumsIncludingSinglesLoaded: boolean
   artists: Artist[]
   folders: LibraryFolder[]
   viewMode: ViewMode
-  selectedAlbum: { identity_key?: string; album: string; artist: string } | null
+  selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
   selectionHistory: LibrarySelectionSnapshot[]
   searchQuery: string
-  searchResults: DbTrack[]
+  searchResultPaths: string[]
   isLoading: boolean
   isScanning: boolean
   isCancelingScan: boolean
@@ -134,19 +157,26 @@ interface LibraryStore {
   folderWarnings: Record<string, string[]>
   lastScanIssueLog: ScanIssueLog | null
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
-  artworkCache: Map<string, string>
+  artworkCache: Map<string, ArtworkCacheEntry>
   favorites: Set<string>
-  favoriteTracks: DbTrack[]
-  recentlyPlayed: DbTrack[]
+  favoriteTrackPaths: string[]
+  recentlyPlayedPaths: string[]
+  artistBrowseMode: LibraryArtistBrowseMode
   showTracklistBpmKey: boolean
   showTracklistAddedDate: boolean
+  folderViewExpandedPaths: Set<string>
+  folderViewScrollTop: number
 
   // Actions
   loadLibrary: () => Promise<void>
   loadTracks: () => Promise<void>
+  loadFullTracks: (consumer?: LibraryFullTrackConsumer) => Promise<void>
   loadTrackCount: () => Promise<void>
   loadAlbums: () => Promise<void>
+  loadAlbumsIncludingSingles: () => Promise<void>
   loadArtists: () => Promise<void>
+  setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
+  clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
   loadFolders: () => Promise<void>
   loadFolderSubfolderSummary: (folderPath: string) => Promise<FolderSubfolderSummary>
   listFolderSubdirectories: (folderPath: string, parentRelativePath?: string) => Promise<FolderSubdirectoryEntry[]>
@@ -162,6 +192,7 @@ interface LibraryStore {
   addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
   rescan: () => Promise<void>
+  forceRescanAll: () => Promise<void>
   backfillReplayGainMetadata: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
   selectAlbum: (
@@ -170,48 +201,268 @@ interface LibraryStore {
     origin?: Exclude<SelectionOrigin, null>,
     identityKey?: string
   ) => Promise<void>
-  selectArtist: (
-    artist: string,
-    origin?: Exclude<SelectionOrigin, null>,
-    mode?: LibraryArtistBrowseMode
-  ) => Promise<void>
-  clearSelection: () => void
+  selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
+  releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => void
+  clearSelection: () => Promise<void>
   goBackSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
   clearSearch: () => void
+  resolveTrackPaths: (trackPaths: readonly string[]) => DbTrack[]
+  resolveTrackPathsWithFetch: (trackPaths: readonly string[]) => Promise<DbTrack[]>
   getArtwork: (hash: string | null, options?: ArtworkRequestOptions) => Promise<string | null>
   loadFavorites: () => Promise<void>
   toggleFavorite: (trackPath: string) => Promise<void>
   isFavorite: (trackPath: string) => boolean
   loadRecentlyPlayed: () => Promise<void>
   recordPlay: (trackPath: string) => Promise<void>
+  markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
+  setArtistBrowseMode: (mode: LibraryArtistBrowseMode) => void
   setShowTracklistBpmKey: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
+  setFolderViewExpandedPaths: (paths: Iterable<string>) => void
+  setFolderViewScrollTop: (scrollTop: number) => void
+  pruneFolderViewExpandedPaths: (validFolderPaths: ReadonlySet<string>) => void
 }
 
 // Artwork cache stored outside of zustand to avoid re-renders
-const MAX_THUMBNAIL_CACHE_ENTRIES = 512
-const MAX_CARD_ARTWORK_CACHE_ENTRIES = 96
-const MAX_FULL_ARTWORK_CACHE_ENTRIES = 32
+const MAX_THUMBNAIL_CACHE_ENTRIES = 128
+const MAX_CARD_ARTWORK_CACHE_ENTRIES = 64
+const MAX_FULL_ARTWORK_CACHE_ENTRIES = 4
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
+const FULL_TRACK_PAGE_LIMIT = 500
+export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
-const artworkCache = new Map<string, string>()
-const cardArtworkCache = new Map<string, string>()
-const thumbnailArtworkCache = new Map<string, string>()
+const artworkCache = new Map<string, ArtworkCacheEntry>()
+const cardArtworkCache = new Map<string, ArtworkCacheEntry>()
+const thumbnailArtworkCache = new Map<string, ArtworkCacheEntry>()
 const artworkRequestCache = new Map<string, Promise<string | null>>()
+let fullTracksRequestId = 0
 
-function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectionOrigin' | 'tracks'>): LibrarySelectionSnapshot | null {
+function estimateArtworkCacheBytes(cache: Map<string, ArtworkCacheEntry>): number {
+  let total = 0
+  for (const [key, entry] of cache.entries()) {
+    total += (key.length * 2) + (entry.url.length * 2) + entry.byteLength
+  }
+  return total
+}
+
+export function getUniqueTrackPaths(tracks: readonly DbTrack[]): string[] {
+  const paths: string[] = []
+  const seen = new Set<string>()
+  for (const track of tracks) {
+    const path = track.path
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    paths.push(path)
+  }
+  return paths
+}
+
+export function resolveCachedTrackPaths(
+  trackPaths: readonly string[],
+  trackByPath: ReadonlyMap<string, DbTrack>
+): { tracks: DbTrack[]; complete: boolean } {
+  if (trackPaths.length === 0) {
+    return { tracks: [], complete: true }
+  }
+
+  const tracks: DbTrack[] = []
+  for (const trackPath of trackPaths) {
+    const track = trackByPath.get(trackPath)
+    if (track) {
+      tracks.push(track)
+    }
+  }
+
+  return {
+    tracks,
+    complete: tracks.length === trackPaths.length
+  }
+}
+
+export function pruneCachedTracks(
+  trackByPath: ReadonlyMap<string, DbTrack>,
+  retainedPaths: ReadonlySet<string>
+): Map<string, DbTrack> {
+  if (trackByPath.size === 0) {
+    return trackByPath instanceof Map ? trackByPath : new Map(trackByPath)
+  }
+
+  let didPrune = false
+  const next = new Map<string, DbTrack>()
+  for (const [trackPath, track] of trackByPath.entries()) {
+    if (retainedPaths.has(trackPath)) {
+      next.set(trackPath, track)
+    } else {
+      didPrune = true
+    }
+  }
+
+  return didPrune ? next : trackByPath instanceof Map ? trackByPath : new Map(trackByPath)
+}
+
+export function updateFullTrackConsumers(
+  current: ReadonlySet<LibraryFullTrackConsumer>,
+  consumer: LibraryFullTrackConsumer | undefined,
+  action: 'retain' | 'release'
+): { consumers: Set<LibraryFullTrackConsumer>; shouldReleaseFullTracks: boolean; changed: boolean } {
+  const consumers = new Set(current)
+  const beforeSize = consumers.size
+  if (consumer) {
+    if (action === 'retain') {
+      consumers.add(consumer)
+    } else {
+      consumers.delete(consumer)
+    }
+  } else if (action === 'release') {
+    consumers.clear()
+  }
+
+  return {
+    consumers,
+    shouldReleaseFullTracks: action === 'release' && consumers.size === 0,
+    changed: consumers.size !== beforeSize || [...consumers].some((entry) => !current.has(entry))
+  }
+}
+
+interface TrackCacheFinalizeOptions {
+  prune?: boolean
+}
+
+interface TrackCacheIngestOptions extends TrackCacheFinalizeOptions {
+  mutate?: boolean
+}
+
+function ingestTracksIntoCache(
+  trackByPath: ReadonlyMap<string, DbTrack>,
+  tracks: readonly DbTrack[],
+  options: TrackCacheIngestOptions = {}
+): { trackByPath: Map<string, DbTrack>; paths: string[]; changed: boolean } {
+  const paths: string[] = []
+  const seen = new Set<string>()
+  let next = trackByPath instanceof Map ? trackByPath : new Map(trackByPath)
+  let changed = false
+
+  for (const track of tracks) {
+    const path = track.path
+    if (!path) continue
+    if (!seen.has(path)) {
+      seen.add(path)
+      paths.push(path)
+    }
+    if (next.get(path) === track) continue
+    if (!changed && !options.mutate) {
+      next = new Map(next)
+    }
+    next.set(path, track)
+    changed = true
+  }
+
+  return { trackByPath: next, paths, changed }
+}
+
+type TrackCachePatch = Partial<Pick<
+  LibraryStore,
+  | 'trackPaths'
+  | 'fullTrackPaths'
+  | 'fullTrackConsumers'
+  | 'searchQuery'
+  | 'searchResultPaths'
+  | 'favorites'
+  | 'favoriteTrackPaths'
+  | 'recentlyPlayedPaths'
+  | 'selectedAlbum'
+  | 'selectedArtist'
+  | 'selectionOrigin'
+  | 'selectionHistory'
+>>
+
+function addPathsToRetainedSet(retainedPaths: Set<string>, trackPaths: readonly string[]): void {
+  for (const trackPath of trackPaths) {
+    retainedPaths.add(trackPath)
+  }
+}
+
+function collectRetainedTrackPaths(state: LibraryStore, patch: TrackCachePatch = {}): Set<string> {
+  const retainedPaths = new Set<string>()
+  const trackPaths = patch.trackPaths ?? state.trackPaths
+  const fullTrackPaths = patch.fullTrackPaths ?? state.fullTrackPaths
+  const fullTrackConsumers = patch.fullTrackConsumers ?? state.fullTrackConsumers
+  const searchResultPaths = patch.searchResultPaths ?? state.searchResultPaths
+  const favoriteTrackPaths = patch.favoriteTrackPaths ?? state.favoriteTrackPaths
+  const recentlyPlayedPaths = patch.recentlyPlayedPaths ?? state.recentlyPlayedPaths
+
+  addPathsToRetainedSet(retainedPaths, trackPaths)
+  if (fullTrackConsumers.size > 0) {
+    addPathsToRetainedSet(retainedPaths, fullTrackPaths)
+  }
+  addPathsToRetainedSet(retainedPaths, searchResultPaths)
+  addPathsToRetainedSet(retainedPaths, favoriteTrackPaths)
+  addPathsToRetainedSet(retainedPaths, recentlyPlayedPaths)
+
+  return retainedPaths
+}
+
+function finalizeTrackCachePatch(
+  state: LibraryStore,
+  patch: TrackCachePatch,
+  trackByPath: Map<string, DbTrack>,
+  cacheChanged: boolean,
+  options: TrackCacheFinalizeOptions = {}
+): TrackCachePatch & Pick<LibraryStore, 'trackByPath' | 'trackCacheVersion'> {
+  const shouldPrune = options.prune !== false
+  const retainedPaths = shouldPrune ? collectRetainedTrackPaths(state, patch) : null
+  const prunedTrackByPath = retainedPaths ? pruneCachedTracks(trackByPath, retainedPaths) : trackByPath
+  const didPrune = shouldPrune && prunedTrackByPath !== trackByPath
+
+  return {
+    ...patch,
+    trackByPath: prunedTrackByPath,
+    trackCacheVersion: cacheChanged || didPrune ? state.trackCacheVersion + 1 : state.trackCacheVersion
+  }
+}
+
+function ingestTracksForPatch(
+  state: LibraryStore,
+  tracks: readonly DbTrack[],
+  patch: TrackCachePatch,
+  options: TrackCacheIngestOptions = {}
+): TrackCachePatch & Pick<LibraryStore, 'trackByPath' | 'trackCacheVersion'> {
+  const ingested = ingestTracksIntoCache(state.trackByPath, tracks, options)
+  return finalizeTrackCachePatch(state, patch, ingested.trackByPath, ingested.changed, options)
+}
+
+function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectionOrigin' | 'trackPaths'>): LibrarySelectionSnapshot | null {
   if (!state.selectedAlbum && !state.selectedArtist) return null
 
   return {
     selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
     selectedArtist: state.selectedArtist,
     selectionOrigin: state.selectionOrigin,
-    tracks: state.tracks
+    trackPaths: [...state.trackPaths]
   }
+}
+
+function resolveTracksFromPaths(
+  trackPaths: readonly string[],
+  trackByPath: ReadonlyMap<string, DbTrack>
+): { tracks: DbTrack[]; complete: boolean } {
+  return resolveCachedTrackPaths(trackPaths, trackByPath)
+}
+
+function isSameAlbumSelection(
+  current: LibraryStore['selectedAlbum'],
+  target: NonNullable<LibraryStore['selectedAlbum']>
+): boolean {
+  return Boolean(
+    current &&
+    current.identity_key === target.identity_key &&
+    current.album === target.album &&
+    current.artist === target.artist
+  )
 }
 
 function appendSelectionHistory(
@@ -241,37 +492,220 @@ function loadTracklistAddedDateVisibilitySetting(): boolean {
   }
 }
 
+function normalizeArtistBrowseMode(mode: LibraryArtistBrowseMode | string | null | undefined): LibraryArtistBrowseMode {
+  return mode === 'strict' ? 'strict' : 'canonical'
+}
+
+function loadArtistBrowseModeSetting(): LibraryArtistBrowseMode {
+  try {
+    return normalizeArtistBrowseMode(localStorage.getItem(ARTIST_BROWSE_MODE_STORAGE_KEY))
+  } catch {
+    return 'canonical'
+  }
+}
+
+function updateAlbumNewFlagInCollection(albums: Album[], albumIdentityKey: string | null, isNew: boolean): Album[] {
+  if (!albumIdentityKey) return albums
+
+  let didChange = false
+  const nextAlbums = albums.map((album) => {
+    if (album.identity_key !== albumIdentityKey || album.is_new === isNew) {
+      return album
+    }
+    didChange = true
+    return {
+      ...album,
+      is_new: isNew
+    }
+  })
+
+  return didChange ? nextAlbums : albums
+}
+
+function updateSelectedAlbumNewFlag(
+  selectedAlbum: LibraryStore['selectedAlbum'],
+  albumIdentityKey: string | null,
+  isNew: boolean
+): LibraryStore['selectedAlbum'] {
+  if (!selectedAlbum || !albumIdentityKey || selectedAlbum.identity_key !== albumIdentityKey || selectedAlbum.is_new === isNew) {
+    return selectedAlbum
+  }
+
+  return {
+    ...selectedAlbum,
+    is_new: isNew
+  }
+}
+
+function updateSelectionHistoryForSeenTrack(
+  selectionHistory: LibrarySelectionSnapshot[],
+  albumIdentityKey: string | null,
+  albumIsNew: boolean
+): LibrarySelectionSnapshot[] {
+  let didChange = false
+  const nextHistory = selectionHistory.map((snapshot) => {
+    const nextSelectedAlbum = snapshot.selectedAlbum && albumIdentityKey && snapshot.selectedAlbum.identity_key === albumIdentityKey
+      ? updateSelectedAlbumNewFlag(snapshot.selectedAlbum, albumIdentityKey, albumIsNew)
+      : snapshot.selectedAlbum
+
+    if (nextSelectedAlbum === snapshot.selectedAlbum) {
+      return snapshot
+    }
+
+    didChange = true
+    return {
+      ...snapshot,
+      selectedAlbum: nextSelectedAlbum
+    }
+  })
+
+  return didChange ? nextHistory : selectionHistory
+}
+
+function getAlbumCoveragePaths(state: LibraryStore, albumIdentityKey: string | null): string[] | null {
+  if (!albumIdentityKey) return null
+  if (state.fullTrackConsumers.size > 0 && state.fullTrackPaths.length > 0) {
+    return state.fullTrackPaths
+  }
+  if (state.selectedAlbum?.identity_key === albumIdentityKey) {
+    return state.trackPaths
+  }
+  return null
+}
+
+function hasAlbumCoverage(state: LibraryStore, albumIdentityKey: string | null): boolean {
+  return getAlbumCoveragePaths(state, albumIdentityKey) !== null
+}
+
+function getAlbumArtistForTrackLookup(track: DbTrack): string {
+  return track.album_artist ?? track.artist
+}
+
+function clearTrackNewFlagInCache(
+  trackByPath: ReadonlyMap<string, DbTrack>,
+  trackPath: string
+): { trackByPath: Map<string, DbTrack>; changed: boolean } {
+  const existing = trackByPath.get(trackPath)
+  if (!existing?.is_new) {
+    return {
+      trackByPath: trackByPath instanceof Map ? trackByPath : new Map(trackByPath),
+      changed: false
+    }
+  }
+
+  const next = new Map(trackByPath)
+  next.set(trackPath, {
+    ...existing,
+    is_new: false
+  })
+  return { trackByPath: next, changed: true }
+}
+
+function computeAlbumIsNew(
+  trackByPath: ReadonlyMap<string, DbTrack>,
+  coveragePaths: readonly string[] | null,
+  albumIdentityKey: string | null
+): boolean {
+  if (!albumIdentityKey || !coveragePaths) return false
+  return coveragePaths.some((trackPath) => {
+    const track = trackByPath.get(trackPath)
+    return track?.album_identity_key === albumIdentityKey && track.is_new
+  })
+}
+
 function getArtworkCacheKey(hash: string, variant: ArtworkVariant): string {
   if (variant === 'thumbnail') return `thumb:${hash}`
   if (variant === 'card') return `card:${hash}`
   return `full:${hash}`
 }
 
+function getArtworkRequestKey(cacheKey: string, format: ArtworkResponseFormat): string {
+  return `${format}:${cacheKey}`
+}
+
+function revokeArtworkCacheEntry(entry: ArtworkCacheEntry | undefined): void {
+  if (!entry?.url.startsWith('blob:')) return
+  URL.revokeObjectURL(entry.url)
+}
+
+function dataUrlToArtworkCacheEntry(dataUrl: string): ArtworkCacheEntry | null {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex <= 0) return null
+
+  const header = dataUrl.slice(0, commaIndex)
+  const payload = dataUrl.slice(commaIndex + 1)
+  const mime = header.match(/^data:([^;,]+)/)?.[1] ?? 'image/jpeg'
+
+  try {
+    if (header.toLocaleLowerCase().includes(';base64')) {
+      const binary = atob(payload)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: mime })
+      return {
+        url: URL.createObjectURL(blob),
+        byteLength: blob.size
+      }
+    }
+
+    const decoded = decodeURIComponent(payload)
+    const blob = new Blob([decoded], { type: mime })
+    return {
+      url: URL.createObjectURL(blob),
+      byteLength: blob.size
+    }
+  } catch {
+    return null
+  }
+}
+
 function setLruCacheEntry(
-  cache: Map<string, string>,
+  cache: Map<string, ArtworkCacheEntry>,
   cacheKey: string,
-  dataUrl: string,
+  entry: ArtworkCacheEntry,
   maxEntries: number
 ): void {
-  if (cache.has(cacheKey)) {
-    cache.delete(cacheKey)
+  const existing = cache.get(cacheKey)
+  if (existing) {
+    revokeArtworkCacheEntry(existing)
   }
-  cache.set(cacheKey, dataUrl)
+  cache.delete(cacheKey)
+  cache.set(cacheKey, entry)
 
   while (cache.size > maxEntries) {
     const oldestKey = cache.keys().next().value
     if (!oldestKey) return
+    revokeArtworkCacheEntry(cache.get(oldestKey))
     cache.delete(oldestKey)
   }
 }
 
-function getLruCacheEntry(cache: Map<string, string>, cacheKey: string): string | undefined {
+function getLruCacheEntry(cache: Map<string, ArtworkCacheEntry>, cacheKey: string): string | undefined {
   const cached = cache.get(cacheKey)
   if (!cached) return undefined
   // Touch entry to keep LRU order.
   cache.delete(cacheKey)
   cache.set(cacheKey, cached)
-  return cached
+  return cached.url
+}
+
+function clearArtworkCache(cache: Map<string, ArtworkCacheEntry>): void {
+  for (const entry of cache.values()) {
+    revokeArtworkCacheEntry(entry)
+  }
+  cache.clear()
+}
+
+function clearAllArtworkCaches(): void {
+  clearArtworkCache(artworkCache)
+  clearArtworkCache(cardArtworkCache)
+  clearArtworkCache(thumbnailArtworkCache)
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', clearAllArtworkCaches)
 }
 
 function normalizeScanIssueLog(scanIssueLog: ScanIssueLog | null | undefined): ScanIssueLog | null {
@@ -312,9 +746,15 @@ function mergeScanIssueLogs(
 
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
-  tracks: [],
+  trackByPath: new Map<string, DbTrack>(),
+  trackCacheVersion: 0,
+  trackPaths: [],
+  fullTrackPaths: [],
+  fullTrackConsumers: new Set<LibraryFullTrackConsumer>(),
   totalTrackCount: 0,
   albums: [],
+  albumsIncludingSingles: [],
+  albumsIncludingSinglesLoaded: false,
   artists: [],
   folders: [],
   viewMode: 'tracks',
@@ -323,7 +763,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   selectionOrigin: null,
   selectionHistory: [],
   searchQuery: '',
-  searchResults: [],
+  searchResultPaths: [],
   isLoading: false,
   isScanning: false,
   isCancelingScan: false,
@@ -334,30 +774,41 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   folderSubfolderSummaries: {},
   artworkCache,
   favorites: new Set<string>(),
-  favoriteTracks: [],
-  recentlyPlayed: [],
+  favoriteTrackPaths: [],
+  recentlyPlayedPaths: [],
+  artistBrowseMode: loadArtistBrowseModeSetting(),
   showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
+  folderViewExpandedPaths: new Set<string>(),
+  folderViewScrollTop: 0,
 
   // Load entire library
   loadLibrary: async () => {
     set({ isLoading: true })
+    const shouldReloadAlbumsIncludingSingles = get().albumsIncludingSinglesLoaded
     const currentSelection = {
       album: get().selectedAlbum,
-      artist: get().selectedArtist
+      artist: get().selectedArtist,
+      artistBrowseMode: get().artistBrowseMode,
+      hasFullTrackConsumers: get().fullTrackConsumers.size > 0
     }
     await Promise.all([
-      get().loadTracks(),
       get().loadTrackCount(),
       get().loadAlbums(),
+      shouldReloadAlbumsIncludingSingles ? get().loadAlbumsIncludingSingles() : Promise.resolve(),
       get().loadArtists(),
       get().loadFolders(),
       get().loadFavorites(),
-      get().loadRecentlyPlayed()
+      get().loadRecentlyPlayed(),
+      currentSelection.hasFullTrackConsumers ? get().loadFullTracks() : Promise.resolve()
     ])
 
     if (currentSelection.album) {
       const albumSelection = currentSelection.album
+      const matchedAlbum = get().albums.find((candidate) => {
+        if (albumSelection.identity_key && candidate.identity_key === albumSelection.identity_key) return true
+        return candidate.album === albumSelection.album && candidate.artist === albumSelection.artist
+      })
       const tracks = await window.electronAPI.library.getTracksByAlbum(
         albumSelection.album,
         albumSelection.artist,
@@ -369,14 +820,26 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (activeAlbum.identity_key !== albumSelection.identity_key) return {}
         if (activeAlbum.album !== albumSelection.album) return {}
         if (activeAlbum.artist !== albumSelection.artist) return {}
-        return { tracks }
+        const paths = getUniqueTrackPaths(tracks)
+        return ingestTracksForPatch(state, tracks, {
+          trackPaths: paths,
+          selectedAlbum: {
+            ...activeAlbum,
+            is_new: matchedAlbum?.is_new ?? false
+          }
+        })
       })
     } else if (currentSelection.artist) {
       const artistSelection = currentSelection.artist
-      const tracks = await window.electronAPI.library.getTracksByArtist(artistSelection)
+      const tracks = await window.electronAPI.library.getTracksByArtist(
+        artistSelection,
+        currentSelection.artistBrowseMode
+      )
       set((state) => {
         if (state.selectedArtist !== artistSelection) return {}
-        return { tracks }
+        if (state.artistBrowseMode !== currentSelection.artistBrowseMode) return {}
+        const paths = getUniqueTrackPaths(tracks)
+        return ingestTracksForPatch(state, tracks, { trackPaths: paths })
       })
     }
 
@@ -385,11 +848,74 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Load tracks
   loadTracks: async () => {
-    const tracks = await window.electronAPI.library.getTracks()
+    await get().loadFullTracks('library')
+  },
+
+  loadFullTracks: async (consumer?: LibraryFullTrackConsumer) => {
+    if (consumer) {
+      set((state) => {
+        const nextConsumers = updateFullTrackConsumers(state.fullTrackConsumers, consumer, 'retain')
+        if (!nextConsumers.changed) return {}
+        return { fullTrackConsumers: nextConsumers.consumers }
+      })
+    }
+
+    if (get().fullTrackConsumers.size === 0) {
+      return
+    }
+
+    const requestId = ++fullTracksRequestId
+    const paths: string[] = []
+    const seenPaths = new Set<string>()
+    let offset = 0
+
+    while (true) {
+      const page = await window.electronAPI.library.getTracksPage({
+        offset,
+        limit: FULL_TRACK_PAGE_LIMIT
+      })
+      if (requestId !== fullTracksRequestId) {
+        return
+      }
+      if (get().fullTrackConsumers.size === 0) {
+        return
+      }
+
+      for (const track of page.tracks) {
+        if (!track.path || seenPaths.has(track.path)) continue
+        seenPaths.add(track.path)
+        paths.push(track.path)
+      }
+
+      set((state) => {
+        if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+          return {}
+        }
+        return ingestTracksForPatch(state, page.tracks, {}, { mutate: true, prune: false })
+      })
+
+      if (!page.hasMore || page.tracks.length === 0) {
+        break
+      }
+
+      const nextOffset = Number(page.nextOffset)
+      offset = Number.isFinite(nextOffset) && nextOffset > offset
+        ? Math.trunc(nextOffset)
+        : offset + page.tracks.length
+    }
+
     set((state) => {
-      // Avoid clobbering active artist/album selections with full library tracks.
-      if (state.selectedAlbum || state.selectedArtist) return {}
-      return { tracks }
+      if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+        return {}
+      }
+
+      const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && (
+        state.viewMode === 'tracks' || state.viewMode === 'folders'
+      )
+      return finalizeTrackCachePatch(state, {
+        fullTrackPaths: paths,
+        ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
+      }, state.trackByPath, false)
     })
   },
 
@@ -412,10 +938,29 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ albums })
   },
 
+  loadAlbumsIncludingSingles: async () => {
+    const albumsIncludingSingles = await window.electronAPI.library.getAlbums({ includeSingles: true })
+    set({ albumsIncludingSingles, albumsIncludingSinglesLoaded: true })
+  },
+
   // Load artists
   loadArtists: async () => {
-    const artists = await window.electronAPI.library.getArtists()
-    set({ artists })
+    const mode = get().artistBrowseMode
+    const artists = await window.electronAPI.library.getArtists(mode)
+    set((state) => {
+      if (state.artistBrowseMode !== mode) return {}
+      return { artists }
+    })
+  },
+
+  setArtistImageFromFile: async (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => {
+    await window.electronAPI.library.setArtistImageFromFile(artist, mode, imagePath)
+    await get().loadArtists()
+  },
+
+  clearArtistImage: async (artist: string, mode: LibraryArtistBrowseMode) => {
+    await window.electronAPI.library.clearArtistImage(artist, mode)
+    await get().loadArtists()
   },
 
   // Load folders
@@ -730,6 +1275,41 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
   },
 
+  forceRescanAll: async () => {
+    set({
+      isScanning: true,
+      isCancelingScan: false,
+      scanProgress: { current: 0, total: 0, file: '' },
+      scanStage: { stage: 'scanning', message: 'Rewriting library metadata...' },
+      lastScanIssueLog: null
+    })
+
+    const unsubscribeProgress = window.electronAPI.library.onScanProgress((progress) => {
+      set({ scanProgress: progress })
+    })
+    const unsubscribeStage = window.electronAPI.library.onScanStage((scanStage) => {
+      set({ scanStage })
+    })
+
+    try {
+      const result = await window.electronAPI.library.forceRescanAll()
+      if (result.canceled) {
+        return
+      }
+      if (result.folderWarnings) {
+        set({ folderWarnings: result.folderWarnings })
+      } else {
+        set({ folderWarnings: {} })
+      }
+      set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
+      await get().loadLibrary()
+    } finally {
+      unsubscribeProgress()
+      unsubscribeStage()
+      set({ isScanning: false, isCancelingScan: false, scanProgress: null, scanStage: null })
+    }
+  },
+
   backfillReplayGainMetadata: async () => {
     if (get().isScanning) return
 
@@ -772,6 +1352,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
       return {
         viewMode: mode,
+        trackPaths: mode === 'tracks' || mode === 'folders' ? state.fullTrackPaths : [],
         selectedAlbum: null,
         selectedArtist: null,
         selectionOrigin: null,
@@ -788,9 +1369,18 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     identityKey?: string
   ) => {
     const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist, identityKey)
-    set((state) => ({
-      selectedAlbum: { identity_key: identityKey, album, artist: artist ?? '' },
-      tracks,
+    const matchedAlbum = get().albums.find((candidate) => {
+      if (identityKey && candidate.identity_key === identityKey) return true
+      return candidate.album === album && candidate.artist === (artist ?? '')
+    })
+    set((state) => ingestTracksForPatch(state, tracks, {
+      selectedAlbum: {
+        identity_key: identityKey,
+        album,
+        artist: artist ?? '',
+        is_new: matchedAlbum?.is_new ?? false
+      },
+      trackPaths: getUniqueTrackPaths(tracks),
       selectedArtist: null,
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
@@ -798,49 +1388,87 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   // Select artist
-  selectArtist: async (
-    artist: string,
-    origin: Exclude<SelectionOrigin, null> = 'library',
-    mode: LibraryArtistBrowseMode = 'canonical'
-  ) => {
+  selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
+    const mode = get().artistBrowseMode
     const tracks = await window.electronAPI.library.getTracksByArtist(artist, mode)
-    set((state) => ({
+    set((state) => ingestTracksForPatch(state, tracks, {
       selectedArtist: artist,
-      tracks,
+      trackPaths: getUniqueTrackPaths(tracks),
       selectedAlbum: null,
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
     }))
   },
 
+  releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => {
+    set((state) => {
+      const nextConsumers = updateFullTrackConsumers(state.fullTrackConsumers, consumer, 'release')
+      if (!nextConsumers.shouldReleaseFullTracks) {
+        return nextConsumers.changed ? { fullTrackConsumers: nextConsumers.consumers } : {}
+      }
+
+      fullTracksRequestId += 1
+      return finalizeTrackCachePatch(state, {
+        fullTrackConsumers: nextConsumers.consumers,
+        fullTrackPaths: [],
+        ...(!state.selectedAlbum && !state.selectedArtist ? { trackPaths: [] } : {})
+      }, state.trackByPath, false)
+    })
+  },
+
   // Clear selection
   clearSelection: async () => {
-    set({ selectedAlbum: null, selectedArtist: null, selectionOrigin: null, selectionHistory: [] })
-    await get().loadTracks()
+    set((state) => ({
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectionOrigin: null,
+      selectionHistory: [],
+      trackPaths: state.viewMode === 'tracks' || state.viewMode === 'folders' ? state.fullTrackPaths : []
+    }))
   },
 
   // Restore previous detail selection when available.
   goBackSelection: async () => {
-    let didRestore = false
+    const state = get()
+    const historyLength = state.selectionHistory.length
+    if (historyLength === 0) return false
 
-    set((state) => {
-      const historyLength = state.selectionHistory.length
-      if (historyLength === 0) return {}
+    const previous = state.selectionHistory[historyLength - 1]
+    if (!previous) return false
 
-      const previous = state.selectionHistory[historyLength - 1]
-      if (!previous) return {}
+    const restoredTracks = resolveTracksFromPaths(previous.trackPaths, state.trackByPath)
+    const restoredAlbum = previous.selectedAlbum ? { ...previous.selectedAlbum } : null
+    const restoredArtist = previous.selectedArtist
 
-      didRestore = true
-      return {
-        selectedAlbum: previous.selectedAlbum ? { ...previous.selectedAlbum } : null,
-        selectedArtist: previous.selectedArtist,
-        selectionOrigin: previous.selectionOrigin,
-        tracks: previous.tracks,
-        selectionHistory: state.selectionHistory.slice(0, -1)
-      }
+    set({
+      selectedAlbum: restoredAlbum,
+      selectedArtist: restoredArtist,
+      selectionOrigin: previous.selectionOrigin,
+      trackPaths: restoredTracks.tracks.map((track) => track.path),
+      selectionHistory: state.selectionHistory.slice(0, -1)
     })
 
-    return didRestore
+    if (restoredArtist) {
+      const mode = get().artistBrowseMode
+      const tracks = await window.electronAPI.library.getTracksByArtist(restoredArtist, mode)
+      set((state) => {
+        if (state.selectedArtist !== restoredArtist) return {}
+        if (state.artistBrowseMode !== mode) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    } else if (restoredAlbum && !restoredTracks.complete) {
+      const tracks = await window.electronAPI.library.getTracksByAlbum(
+        restoredAlbum.album,
+        restoredAlbum.artist,
+        restoredAlbum.identity_key
+      )
+      set((state) => {
+        if (!isSameAlbumSelection(state.selectedAlbum, restoredAlbum)) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    }
+
+    return true
   },
 
   // Search
@@ -848,37 +1476,75 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ searchQuery: query })
     if (query.trim()) {
       const searchResults = await window.electronAPI.library.search(query)
-      set({ searchResults })
+      const paths = getUniqueTrackPaths(searchResults)
+      set((state) => ingestTracksForPatch(state, searchResults, { searchResultPaths: paths }))
     } else {
-      set({ searchResults: [] })
+      set((state) => finalizeTrackCachePatch(state, { searchResultPaths: [] }, state.trackByPath, false))
     }
   },
 
   // Clear search
   clearSearch: () => {
-    set({ searchQuery: '', searchResults: [] })
+    set((state) => finalizeTrackCachePatch(state, { searchQuery: '', searchResultPaths: [] }, state.trackByPath, false))
   },
 
-  // Get artwork data URL (with caching)
+  resolveTrackPaths: (trackPaths: readonly string[]) => {
+    return resolveCachedTrackPaths(trackPaths, get().trackByPath).tracks
+  },
+
+  resolveTrackPathsWithFetch: async (trackPaths: readonly string[]) => {
+    const cached = resolveCachedTrackPaths(trackPaths, get().trackByPath)
+    if (cached.complete) return cached.tracks
+
+    const missingPaths: string[] = []
+    const seenMissingPaths = new Set<string>()
+    const trackByPath = get().trackByPath
+    for (const trackPath of trackPaths) {
+      if (typeof trackPath !== 'string' || trackPath.length === 0) continue
+      if (trackByPath.has(trackPath) || seenMissingPaths.has(trackPath)) continue
+      seenMissingPaths.add(trackPath)
+      missingPaths.push(trackPath)
+    }
+
+    if (missingPaths.length === 0) {
+      return cached.tracks
+    }
+
+    try {
+      const fetchedTracks = await window.electronAPI.library.getTracksByPaths(missingPaths)
+      if (fetchedTracks.length > 0) {
+        set((state) => ingestTracksForPatch(state, fetchedTracks, {}, { prune: false }))
+      }
+    } catch (error) {
+      console.error('Failed to hydrate library tracks by path:', error)
+    }
+
+    return resolveCachedTrackPaths(trackPaths, get().trackByPath).tracks
+  },
+
+  // Get artwork URL (with caching)
   getArtwork: async (hash: string | null, options?: ArtworkRequestOptions) => {
     if (!hash) return null
-    const variant: ArtworkVariant = options?.variant ?? 'full'
+    const variant: ArtworkVariant = options?.variant ?? 'card'
+    const format: ArtworkResponseFormat = options?.format ?? 'object-url'
     const cacheKey = getArtworkCacheKey(hash, variant)
+    const requestKey = getArtworkRequestKey(cacheKey, format)
 
-    // Check cache first
     const cache = variant === 'thumbnail'
       ? thumbnailArtworkCache
       : variant === 'card'
         ? cardArtworkCache
         : artworkCache
-    const cached = getLruCacheEntry(cache, cacheKey)
-    if (cached) {
-      return cached
+    if (format === 'object-url') {
+      const cached = getLruCacheEntry(cache, cacheKey)
+      if (cached) {
+        return cached
+      }
     }
 
     // Deduplicate concurrent requests for the same artwork hash + variant.
-    if (artworkRequestCache.has(cacheKey)) {
-      return artworkRequestCache.get(cacheKey)!
+    if (artworkRequestCache.has(requestKey)) {
+      return artworkRequestCache.get(requestKey)!
     }
 
     const request = (
@@ -889,23 +1555,27 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           : window.electronAPI.library.getArtworkDataUrl(hash)
     )
       .then((dataUrl) => {
-        if (dataUrl) {
-          if (variant === 'thumbnail') {
-            setLruCacheEntry(thumbnailArtworkCache, cacheKey, dataUrl, MAX_THUMBNAIL_CACHE_ENTRIES)
-          } else if (variant === 'card') {
-            setLruCacheEntry(cardArtworkCache, cacheKey, dataUrl, MAX_CARD_ARTWORK_CACHE_ENTRIES)
-          } else {
-            setLruCacheEntry(artworkCache, cacheKey, dataUrl, MAX_FULL_ARTWORK_CACHE_ENTRIES)
-          }
+        if (!dataUrl) return null
+        if (format === 'data-url') return dataUrl
+
+        const entry = dataUrlToArtworkCacheEntry(dataUrl)
+        if (!entry) return dataUrl
+
+        if (variant === 'thumbnail') {
+          setLruCacheEntry(thumbnailArtworkCache, cacheKey, entry, MAX_THUMBNAIL_CACHE_ENTRIES)
+        } else if (variant === 'card') {
+          setLruCacheEntry(cardArtworkCache, cacheKey, entry, MAX_CARD_ARTWORK_CACHE_ENTRIES)
+        } else {
+          setLruCacheEntry(artworkCache, cacheKey, entry, MAX_FULL_ARTWORK_CACHE_ENTRIES)
         }
-        return dataUrl
+        return entry.url
       })
       .catch(() => null)
       .finally(() => {
-        artworkRequestCache.delete(cacheKey)
+        artworkRequestCache.delete(requestKey)
       })
 
-    artworkRequestCache.set(cacheKey, request)
+    artworkRequestCache.set(requestKey, request)
     return request
   },
 
@@ -915,7 +1585,11 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       window.electronAPI.library.getFavoritePaths(),
       window.electronAPI.library.getFavorites()
     ])
-    set({ favorites: new Set(paths), favoriteTracks })
+    const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
+    set((state) => ingestTracksForPatch(state, favoriteTracks, {
+      favorites: new Set(paths),
+      favoriteTrackPaths
+    }))
   },
 
   // Toggle favorite status
@@ -934,7 +1608,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
     // Reload full favorite tracks list
     const favoriteTracks = await window.electronAPI.library.getFavorites()
-    set({ favoriteTracks })
+    const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
+    set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
   },
 
   // Sync check if track is a favorite
@@ -945,7 +1620,54 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Load recently played tracks
   loadRecentlyPlayed: async () => {
     const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
-    set({ recentlyPlayed })
+    const recentlyPlayedPaths = getUniqueTrackPaths(recentlyPlayed)
+    set((state) => ingestTracksForPatch(state, recentlyPlayed, { recentlyPlayedPaths }))
+  },
+
+  markTrackLatestSyncSeen: async (trackPath: string) => {
+    if (!trackPath.trim()) return
+
+    const knownTrack = get().trackByPath.get(trackPath)
+    if (knownTrack && !knownTrack.is_new) {
+      return
+    }
+
+    await window.electronAPI.library.markTrackLatestSyncSeen(trackPath)
+
+    let albumTracks: DbTrack[] | null = null
+    const albumIdentityKey = knownTrack?.album_identity_key ?? null
+    if (knownTrack && albumIdentityKey && !hasAlbumCoverage(get(), albumIdentityKey)) {
+      albumTracks = await window.electronAPI.library.getTracksByAlbum(
+        knownTrack.album,
+        getAlbumArtistForTrackLookup(knownTrack),
+        albumIdentityKey
+      )
+    }
+
+    set((state) => {
+      const matchedTrack = state.trackByPath.get(trackPath)
+      const resolvedAlbumIdentityKey = albumIdentityKey ?? matchedTrack?.album_identity_key ?? null
+      const cleared = clearTrackNewFlagInCache(state.trackByPath, trackPath)
+      const ingested = albumTracks
+        ? ingestTracksIntoCache(cleared.trackByPath, albumTracks)
+        : { trackByPath: cleared.trackByPath, changed: false }
+      const coveragePaths = albumTracks
+        ? getUniqueTrackPaths(albumTracks)
+        : getAlbumCoveragePaths(state, resolvedAlbumIdentityKey)
+      const albumIsNew = computeAlbumIsNew(ingested.trackByPath, coveragePaths, resolvedAlbumIdentityKey)
+
+      return {
+        ...finalizeTrackCachePatch(state, {}, ingested.trackByPath, cleared.changed || ingested.changed),
+        albums: updateAlbumNewFlagInCollection(state.albums, resolvedAlbumIdentityKey, albumIsNew),
+        albumsIncludingSingles: updateAlbumNewFlagInCollection(state.albumsIncludingSingles, resolvedAlbumIdentityKey, albumIsNew),
+        selectedAlbum: updateSelectedAlbumNewFlag(state.selectedAlbum, resolvedAlbumIdentityKey, albumIsNew),
+        selectionHistory: updateSelectionHistoryForSeenTrack(
+          state.selectionHistory,
+          resolvedAlbumIdentityKey,
+          albumIsNew
+        )
+      }
+    })
   },
 
   // Record a track play
@@ -953,7 +1675,35 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     await window.electronAPI.library.addRecentlyPlayed(trackPath)
     // Reload recently played list
     const recentlyPlayed = await window.electronAPI.library.getRecentlyPlayed(RECENTLY_PLAYED_FETCH_LIMIT)
-    set({ recentlyPlayed })
+    const recentlyPlayedPaths = getUniqueTrackPaths(recentlyPlayed)
+    set((state) => ingestTracksForPatch(state, recentlyPlayed, { recentlyPlayedPaths }))
+  },
+
+  setArtistBrowseMode: (mode: LibraryArtistBrowseMode) => {
+    const normalized = normalizeArtistBrowseMode(mode)
+    if (get().artistBrowseMode === normalized) return
+
+    set({ artistBrowseMode: normalized })
+
+    try {
+      localStorage.setItem(ARTIST_BROWSE_MODE_STORAGE_KEY, normalized)
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+
+    void (async () => {
+      await get().loadArtists()
+
+      const selectedArtist = get().selectedArtist
+      if (!selectedArtist) return
+
+      const tracks = await window.electronAPI.library.getTracksByArtist(selectedArtist, normalized)
+      set((state) => {
+        if (state.selectedArtist !== selectedArtist) return {}
+        if (state.artistBrowseMode !== normalized) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    })()
   },
 
   setShowTracklistBpmKey: (enabled: boolean) => {
@@ -976,5 +1726,87 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     } catch {
       // Ignore localStorage write failures in restricted environments.
     }
+  },
+
+  setFolderViewExpandedPaths: (paths: Iterable<string>) => {
+    set({ folderViewExpandedPaths: new Set(paths) })
+  },
+
+  setFolderViewScrollTop: (scrollTop: number) => {
+    const normalized = Number.isFinite(scrollTop) ? Math.max(0, Math.round(scrollTop)) : 0
+    if (get().folderViewScrollTop === normalized) return
+    set({ folderViewScrollTop: normalized })
+  },
+
+  pruneFolderViewExpandedPaths: (validFolderPaths: ReadonlySet<string>) => {
+    set((state) => {
+      if (state.folderViewExpandedPaths.size === 0) return {}
+
+      const nextExpandedPaths = new Set<string>()
+      for (const folderPath of state.folderViewExpandedPaths) {
+        if (validFolderPaths.has(folderPath)) {
+          nextExpandedPaths.add(folderPath)
+        }
+      }
+
+      if (nextExpandedPaths.size === state.folderViewExpandedPaths.size) return {}
+      return { folderViewExpandedPaths: nextExpandedPaths }
+    })
   }
 }))
+
+export function getLibraryDiagnosticsSnapshot(): {
+  totalTrackCount: number
+  visibleTrackCount: number
+  fullTrackCount: number
+  albumCount: number
+  artistCount: number
+  folderCount: number
+  favoriteCount: number
+  favoriteTrackCount: number
+  recentlyPlayedCount: number
+  searchResultCount: number
+  selectionHistoryCount: number
+  selectionHistoryTrackCount: number
+  selectedDetailTrackCount: number
+  scanInProgress: boolean
+  caches: {
+    artworkFullEntries: number
+    artworkFullBytes: number
+    artworkThumbnailEntries: number
+    artworkThumbnailBytes: number
+    artworkCardEntries: number
+    artworkCardBytes: number
+    artworkRequests: number
+  }
+} {
+  const state = useLibraryStore.getState()
+  const selectionHistoryTrackCount = state.selectionHistory.reduce((total, snapshot) => {
+    return total + snapshot.trackPaths.length
+  }, 0)
+  return {
+    totalTrackCount: state.totalTrackCount,
+    visibleTrackCount: state.trackPaths.length,
+    fullTrackCount: state.fullTrackPaths.length,
+    albumCount: state.albums.length,
+    artistCount: state.artists.length,
+    folderCount: state.folders.length,
+    favoriteCount: state.favorites.size,
+    favoriteTrackCount: state.favoriteTrackPaths.length,
+    recentlyPlayedCount: state.recentlyPlayedPaths.length,
+    searchResultCount: state.searchResultPaths.length,
+    selectionHistoryCount: state.selectionHistory.length,
+    selectionHistoryTrackCount,
+    selectedDetailTrackCount: state.selectedAlbum || state.selectedArtist ? state.trackPaths.length : 0,
+    scanInProgress: state.isScanning,
+    caches: {
+      artworkFullEntries: artworkCache.size,
+      artworkFullBytes: estimateArtworkCacheBytes(artworkCache),
+      artworkThumbnailEntries: thumbnailArtworkCache.size,
+      artworkThumbnailBytes: estimateArtworkCacheBytes(thumbnailArtworkCache),
+      artworkCardEntries: cardArtworkCache.size,
+      artworkCardBytes: estimateArtworkCacheBytes(cardArtworkCache),
+      artworkRequests: artworkRequestCache.size
+    }
+  }
+}

@@ -12,6 +12,10 @@ import {
   frequencyAtX,
   tiltOffsetAtFrequency
 } from '../visualizers/ambientSpectrumMath'
+import {
+  resolveFullscreenAmbientCanvasSize,
+  type FullscreenAmbientCanvasSize
+} from '../../utils/fullscreenAmbientCanvas'
 
 export interface FullscreenAmbientSpectrumProps {
   className?: string
@@ -25,7 +29,7 @@ export default function FullscreenAmbientSpectrum({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const smoothedDataRef = useRef<Float32Array<ArrayBuffer> | null>(null)
-  const canvasSizeRef = useRef({ width: 0, height: 0 })
+  const canvasSizeRef = useRef<FullscreenAmbientCanvasSize | null>(null)
 
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
@@ -36,23 +40,24 @@ export default function FullscreenAmbientSpectrum({
     if (!canvas || !container) return
 
     const rect = container.getBoundingClientRect()
-    const width = Math.max(1, Math.floor(rect.width))
-    const height = Math.max(1, Math.floor(rect.height))
-    const dpr = window.devicePixelRatio || 1
+    const nextSize = resolveFullscreenAmbientCanvasSize(
+      rect.width,
+      rect.height,
+      window.devicePixelRatio || 1
+    )
 
-    const pixelWidth = Math.max(1, Math.floor(width * dpr))
-    const pixelHeight = Math.max(1, Math.floor(height * dpr))
-
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${height}px`
-    canvas.width = pixelWidth
-    canvas.height = pixelHeight
+    canvas.style.width = `${nextSize.cssWidth}px`
+    canvas.style.height = `${nextSize.cssHeight}px`
+    if (canvas.width !== nextSize.pixelWidth || canvas.height !== nextSize.pixelHeight) {
+      canvas.width = nextSize.pixelWidth
+      canvas.height = nextSize.pixelHeight
+    }
 
     const ctx = canvas.getContext('2d')
     if (ctx) {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.setTransform(nextSize.dpr, 0, 0, nextSize.dpr, 0, 0)
     }
-    canvasSizeRef.current = { width, height }
+    canvasSizeRef.current = nextSize
   }, [])
 
   useEffect(() => {
@@ -65,6 +70,13 @@ export default function FullscreenAmbientSpectrum({
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', resizeCanvas)
+      const canvas = canvasRef.current
+      if (canvas) {
+        canvas.width = 0
+        canvas.height = 0
+      }
+      smoothedDataRef.current = null
+      canvasSizeRef.current = null
     }
   }, [resizeCanvas])
 
@@ -80,7 +92,7 @@ export default function FullscreenAmbientSpectrum({
     const fillTopAlpha = opacityIntent === 'soft' ? 0.17 : 0.12
     const fillMidAlpha = opacityIntent === 'soft' ? 0.08 : 0.05
 
-    const { width, height } = canvasSizeRef.current
+    const { cssWidth: width, cssHeight: height } = canvasSizeRef.current ?? { cssWidth: 0, cssHeight: 0 }
     if (width <= 0 || height <= 0) {
       return
     }

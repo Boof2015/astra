@@ -1,42 +1,88 @@
 import { create } from 'zustand'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
+import {
+  DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  getNextMiniPlayerTimeDisplayMode,
+  normalizeMiniPlayerTimeDisplayMode,
+  type MiniPlayerTimeDisplayMode
+} from '../../types/miniPlayer.ts'
+import type { UIScaleShortcutAction } from '../../types/uiScale'
 
-export type AppView = 'home' | 'library' | 'eq' | 'settings' | 'playlist' | 'metadata'
-export type WaveformTimeDisplayMode = 'remaining' | 'duration'
+export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
+export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
+export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
 export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
 export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
+export const MIN_UI_SCALE_PERCENT = 80
+export const DEFAULT_UI_SCALE_PERCENT = 100
+export const MAX_UI_SCALE_PERCENT = 125
+export const UI_SCALE_STEP_PERCENT = 5
+export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
+export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
+export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
+export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
 }
 
-export interface QueueInsertDropTarget {
+export type TrackDragSurface = 'queue' | 'sidebar'
+
+export interface QueueTrackDragDropTarget {
+  surface: 'queue'
   kind: 'empty' | 'user'
   index: number
 }
 
-export interface QueueInsertDragState {
+export interface SidebarPlaylistTrackDragDropTarget {
+  surface: 'sidebar'
+  kind: 'playlist'
+  playlistId: number
+}
+
+export interface SidebarCreatePlaylistTrackDragDropTarget {
+  surface: 'sidebar'
+  kind: 'create-playlist'
+}
+
+export type TrackDragDropTarget =
+  | QueueTrackDragDropTarget
+  | SidebarPlaylistTrackDragDropTarget
+  | SidebarCreatePlaylistTrackDragDropTarget
+
+export interface TrackDragState {
   tracks: Track[]
   pointerX: number
   pointerY: number
-  dropTarget: QueueInsertDropTarget | null
+  dropTarget: TrackDragDropTarget | null
 }
 
-function areQueueInsertDropTargetsEqual(
-  left: QueueInsertDropTarget | null,
-  right: QueueInsertDropTarget | null
+export interface SidebarPlaylistCreateRequest {
+  trackPaths: string[]
+}
+
+function areTrackDragDropTargetsEqual(
+  left: TrackDragDropTarget | null,
+  right: TrackDragDropTarget | null
 ): boolean {
   if (left === right) return true
   if (!left || !right) return false
-  return left.kind === right.kind && left.index === right.index
+  if (left.surface !== right.surface || left.kind !== right.kind) return false
+  if (left.surface === 'queue' && right.surface === 'queue') {
+    return left.index === right.index
+  }
+  if (left.kind === 'playlist' && right.kind === 'playlist') {
+    return left.playlistId === right.playlistId
+  }
+  return true
 }
 
-function areQueueInsertTracksEqual(left: Track[], right: Track[]): boolean {
+function areTrackDragTracksEqual(left: Track[], right: Track[]): boolean {
   if (left === right) return true
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {
@@ -60,12 +106,38 @@ export function normalizeAnalyzerHeightPx(value: unknown): number {
   return Math.min(MAX_ANALYZER_HEIGHT_PX, Math.max(MIN_ANALYZER_HEIGHT_PX, snapped))
 }
 
+export function normalizeUIScalePercent(value: unknown): number {
+  if (value == null) return DEFAULT_UI_SCALE_PERCENT
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_UI_SCALE_PERCENT
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_UI_SCALE_PERCENT
+
+  const snapped = Math.round(numeric / UI_SCALE_STEP_PERCENT) * UI_SCALE_STEP_PERCENT
+  return Math.min(MAX_UI_SCALE_PERCENT, Math.max(MIN_UI_SCALE_PERCENT, snapped))
+}
+
+export function getNextUIScalePercent(currentPercent: number, action: UIScaleShortcutAction): number {
+  if (action === 'reset') return DEFAULT_UI_SCALE_PERCENT
+
+  const delta = action === 'increase'
+    ? UI_SCALE_STEP_PERCENT
+    : -UI_SCALE_STEP_PERCENT
+  return normalizeUIScalePercent(currentPercent + delta)
+}
+
+export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {
+  return value === 'clock' || value === 'off' || value === 'messages'
+    ? value
+    : DEFAULT_HOME_GREETING_TEXT_MODE
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
-    return saved === 'duration' ? 'duration' : 'remaining'
+    return normalizeMiniPlayerTimeDisplayMode(saved)
   } catch {
-    return 'remaining'
+    return DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE
   }
 }
 
@@ -109,9 +181,60 @@ function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
   }
 }
 
+function readUIScalePreference(): number {
+  try {
+    return normalizeUIScalePercent(localStorage.getItem(UI_SCALE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_UI_SCALE_PERCENT
+  }
+}
+
+function persistUIScalePreference(percent: number): void {
+  try {
+    localStorage.setItem(UI_SCALE_STORAGE_KEY, String(normalizeUIScalePercent(percent)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readHomeGreetingTextModePreference(): HomeGreetingTextMode {
+  try {
+    return normalizeHomeGreetingTextMode(localStorage.getItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_HOME_GREETING_TEXT_MODE
+  }
+}
+
+function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void {
+  try {
+    localStorage.setItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY, normalizeHomeGreetingTextMode(mode))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readActivityIndicatorExperimentPreference(): boolean {
+  try {
+    return localStorage.getItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
+const initialUIScalePercent = readUIScalePreference()
+const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 let nextLibraryTrackRevealRequestId = 0
 
 interface UIStore {
@@ -125,13 +248,17 @@ interface UIStore {
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
   analyzerHeightPx: number
+  uiScalePercent: number
+  homeGreetingTextMode: HomeGreetingTextMode
+  activityIndicatorExperimentEnabled: boolean
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   isQuickLaunchOpen: boolean
   isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
-  queueInsertDrag: QueueInsertDragState | null
+  trackDrag: TrackDragState | null
+  sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
   setActiveView: (view: AppView) => void
   toggleQueue: () => void
   toggleInfoSidebar: () => void
@@ -149,6 +276,11 @@ interface UIStore {
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
+  setUIScalePercent: (percent: number) => void
+  resetUIScalePercent: () => void
+  setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
+  resetHomeGreetingTextMode: () => void
+  setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   openQuickLaunch: () => void
@@ -161,11 +293,13 @@ interface UIStore {
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
   consumePendingSettingsSection: () => SettingsSectionId | null
-  startQueueInsertDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
-  setQueueInsertDragTracks: (tracks: Track[]) => void
-  updateQueueInsertDragPointer: (pointerX: number, pointerY: number) => void
-  setQueueInsertDropTarget: (target: QueueInsertDropTarget | null) => void
-  clearQueueInsertDrag: () => void
+  startTrackDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
+  setTrackDragTracks: (tracks: Track[]) => void
+  updateTrackDragPointer: (pointerX: number, pointerY: number) => void
+  setTrackDragDropTarget: (surface: TrackDragSurface, target: TrackDragDropTarget | null) => void
+  clearTrackDrag: () => void
+  openSidebarPlaylistCreateRequest: (trackPaths: string[]) => void
+  clearSidebarPlaylistCreateRequest: () => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -179,13 +313,17 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
   analyzerHeightPx: initialAnalyzerHeightPx,
+  uiScalePercent: initialUIScalePercent,
+  homeGreetingTextMode: initialHomeGreetingTextMode,
+  activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   isQuickLaunchOpen: false,
   isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
-  queueInsertDrag: null,
+  trackDrag: null,
+  sidebarPlaylistCreateRequest: null,
   setActiveView: (view) => set({ activeView: view }),
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
@@ -252,8 +390,31 @@ export const useUIStore = create<UIStore>((set, get) => ({
       analyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX,
     })
   },
+  setUIScalePercent: (percent) => {
+    const nextScalePercent = normalizeUIScalePercent(percent)
+    persistUIScalePreference(nextScalePercent)
+    set({ uiScalePercent: nextScalePercent })
+  },
+  resetUIScalePercent: () => {
+    persistUIScalePreference(DEFAULT_UI_SCALE_PERCENT)
+    set({ uiScalePercent: DEFAULT_UI_SCALE_PERCENT })
+  },
+  setHomeGreetingTextMode: (mode) => {
+    const nextMode = normalizeHomeGreetingTextMode(mode)
+    persistHomeGreetingTextModePreference(nextMode)
+    set({ homeGreetingTextMode: nextMode })
+  },
+  resetHomeGreetingTextMode: () => {
+    persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
+    set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setActivityIndicatorExperimentEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistActivityIndicatorExperimentPreference(normalized)
+    set({ activityIndicatorExperimentEnabled: normalized })
+  },
   toggleWaveformTimeDisplayMode: () => set((s) => {
-    const nextMode: WaveformTimeDisplayMode = s.waveformTimeDisplayMode === 'remaining' ? 'duration' : 'remaining'
+    const nextMode = getNextMiniPlayerTimeDisplayMode(s.waveformTimeDisplayMode)
     persistWaveformTimeDisplayModePreference(nextMode)
     return { waveformTimeDisplayMode: nextMode }
   }),
@@ -288,50 +449,62 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
     return section
   },
-  startQueueInsertDrag: (tracks, pointerX, pointerY) => set({
-    queueInsertDrag: {
+  startTrackDrag: (tracks, pointerX, pointerY) => set({
+    trackDrag: {
       tracks,
       pointerX,
       pointerY,
       dropTarget: null
     }
   }),
-  setQueueInsertDragTracks: (tracks) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (areQueueInsertTracksEqual(state.queueInsertDrag.tracks, tracks)) {
+  setTrackDragTracks: (tracks) => set((state) => {
+    if (!state.trackDrag) return state
+    if (areTrackDragTracksEqual(state.trackDrag.tracks, tracks)) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         tracks
       }
     }
   }),
-  updateQueueInsertDragPointer: (pointerX, pointerY) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (state.queueInsertDrag.pointerX === pointerX && state.queueInsertDrag.pointerY === pointerY) {
+  updateTrackDragPointer: (pointerX, pointerY) => set((state) => {
+    if (!state.trackDrag) return state
+    if (state.trackDrag.pointerX === pointerX && state.trackDrag.pointerY === pointerY) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         pointerX,
         pointerY
       }
     }
   }),
-  setQueueInsertDropTarget: (target) => set((state) => {
-    if (!state.queueInsertDrag) return state
-    if (areQueueInsertDropTargetsEqual(state.queueInsertDrag.dropTarget, target)) {
+  setTrackDragDropTarget: (surface, target) => set((state) => {
+    if (!state.trackDrag) return state
+    if (target && target.surface !== surface) return state
+
+    const currentTarget = state.trackDrag.dropTarget
+    if (!target && currentTarget?.surface !== surface) {
+      return state
+    }
+    if (areTrackDragDropTargetsEqual(currentTarget, target)) {
       return state
     }
     return {
-      queueInsertDrag: {
-        ...state.queueInsertDrag,
+      trackDrag: {
+        ...state.trackDrag,
         dropTarget: target
       }
     }
   }),
-  clearQueueInsertDrag: () => set({ queueInsertDrag: null })
+  clearTrackDrag: () => set({ trackDrag: null }),
+  openSidebarPlaylistCreateRequest: (trackPaths) => set({
+    sidebarPlaylistCreateRequest: {
+      trackPaths: [...trackPaths]
+    }
+  }),
+  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null })
 }))

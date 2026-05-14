@@ -32,14 +32,19 @@ export function useOpenAlbumInLibrary() {
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
-  return useCallback(async (albumName: string, trackArtist: string, albumArtist?: string | null) => {
+  return useCallback(async (
+    albumName: string,
+    trackArtist: string,
+    albumArtist?: string | null,
+    albumIdentityKey?: string
+  ) => {
     const album = normalizeDisplay(albumName)
     if (!album) return
 
     const resolvedArtist = resolveAlbumArtist(trackArtist, albumArtist)
 
     setViewMode('tracks')
-    await selectAlbum(album, resolvedArtist, 'library')
+    await selectAlbum(album, resolvedArtist, 'library', albumIdentityKey)
     setActiveView('library')
   }, [selectAlbum, setActiveView, setViewMode])
 }

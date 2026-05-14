@@ -1,0 +1,251 @@
+import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
+import test from 'node:test'
+import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type { PhoneRemoteServiceConfig } from '../../types/phoneRemote'
+import { PhoneRemoteService } from './phoneRemote.ts'
+import { hashToken } from './playbackHttpCore.ts'
+
+async function getFreePort(): Promise<number> {
+  const server = createServer()
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve())
+  })
+
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to allocate a test port.')
+  }
+
+  return address.port
+}
+
+function createSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayerSnapshot {
+  return {
+    playbackState: 'playing',
+    currentTime: 42,
+    duration: 185.5,
+    queueLength: 3,
+    outputDeviceLabel: 'Test Output',
+    timeDisplayMode: 'remaining',
+    visualizerLineColor: '#38bdf8',
+    currentTrack: {
+      id: 'track-1',
+      path: '/music/test.flac',
+      title: 'Test Track',
+      artist: 'Test Artist',
+      album: 'Test Album',
+      artworkData: null,
+      isFavorite: false
+    },
+    ...overrides
+  }
+}
+
+interface HarnessOptions {
+  config?: Partial<PhoneRemoteServiceConfig>
+  pairedDevices?: Array<{
+    id: string
+    name: string
+    clientLabel: string
+    tokenHash: string
+    tokenPrefix: string
+    createdAt: number
+    lastSeenAt: number | null
+    revokedAt: number | null
+  }>
+}
+
+async function createHarness(options: HarnessOptions = {}) {
+  const commands: MiniPlayerCommand[] = []
+  const snapshotState: { current: MiniPlayerSnapshot | null } = {
+    current: createSnapshot()
+  }
+  const port = await getFreePort()
+  const config: PhoneRemoteServiceConfig = {
+    enabled: true,
+    controlsEnabled: true,
+    port,
+    ...(options.config ?? {})
+  }
+
+  const service = new PhoneRemoteService({
+    config,
+    getSnapshot: () => snapshotState.current,
+    dispatchCommand: (command) => {
+      commands.push(command)
+    },
+    pairedDevices: options.pairedDevices
+  })
+
+  await service.applyConfig(config)
+
+  return {
+    service,
+    config,
+    commands,
+    port,
+    publishSnapshot: (snapshot: MiniPlayerSnapshot | null) => {
+      snapshotState.current = snapshot
+      service.publishSnapshot(snapshot)
+    }
+  }
+}
+
+function authHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`
+  }
+}
+
+test('phone remote binds to the LAN host when enabled', async (t) => {
+  const port = await getFreePort()
+  const config: PhoneRemoteServiceConfig = {
+    enabled: false,
+    controlsEnabled: false,
+    port
+  }
+  const service = new PhoneRemoteService({
+    config,
+    getSnapshot: () => createSnapshot(),
+    dispatchCommand: () => {}
+  })
+
+  t.after(async () => {
+    await service.stop()
+  })
+
+  let status = service.getStatus()
+  assert.equal(status.active, false)
+  assert.equal(status.bindHost, '0.0.0.0')
+
+  status = await service.applyConfig({
+    ...config,
+    enabled: true
+  })
+  assert.equal(status.active, true)
+  assert.equal(status.bindHost, '0.0.0.0')
+})
+
+test('/remote/ is unreachable when the phone remote is disabled', async (t) => {
+  const harness = await createHarness({ config: { enabled: false } })
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  await assert.rejects(async () => {
+    await fetch(`http://127.0.0.1:${harness.port}/remote/`)
+  })
+})
+
+test('pairing ticket flow issues a per-device token after approval', async (t) => {
+  const harness = await createHarness()
+  const disabledHarness = await createHarness({ config: { enabled: false } })
+  t.after(async () => {
+    await harness.service.stop()
+    await disabledHarness.service.stop()
+  })
+
+  assert.throws(() => disabledHarness.service.createPairingTicket(`http://127.0.0.1:${disabledHarness.port}`), /active/i)
+
+  const ticket = harness.service.createPairingTicket(`http://127.0.0.1:${harness.port}`)
+
+  const claimResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/claim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      ticket: ticket.ticket,
+      deviceName: 'Test Phone',
+      clientLabel: 'iPhone'
+    })
+  })
+  assert.equal(claimResponse.status, 200)
+  const claimPayload = await claimResponse.json()
+  assert.equal(typeof claimPayload.pollToken, 'string')
+
+  const duplicateClaimResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/claim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      ticket: ticket.ticket,
+      deviceName: 'Duplicate Phone',
+      clientLabel: 'iPhone'
+    })
+  })
+  assert.equal(duplicateClaimResponse.status, 409)
+
+  const pendingRequests = harness.service.listPendingPairingRequests()
+  assert.equal(pendingRequests.length, 1)
+  assert.equal(pendingRequests[0].deviceName, 'Test Phone')
+
+  harness.service.approvePairingRequest(pendingRequests[0].id)
+
+  const approvedResponse = await fetch(
+    `http://127.0.0.1:${harness.port}/v1/pairing/status?pollToken=${encodeURIComponent(claimPayload.pollToken)}`,
+    { cache: 'no-store' }
+  )
+  assert.equal(approvedResponse.status, 200)
+  const approvedPayload = await approvedResponse.json()
+  assert.equal(approvedPayload.state, 'approved')
+  assert.equal(typeof approvedPayload.token, 'string')
+
+  const pairedNowPlayingResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: authHeaders(approvedPayload.token)
+  })
+  assert.equal(pairedNowPlayingResponse.status, 200)
+
+  const consumedResponse = await fetch(
+    `http://127.0.0.1:${harness.port}/v1/pairing/status?pollToken=${encodeURIComponent(claimPayload.pollToken)}`,
+    { cache: 'no-store' }
+  )
+  assert.equal(consumedResponse.status, 410)
+})
+
+test('paired device tokens survive phone remote config changes and revocation closes device streams', async (t) => {
+  const deviceToken = 'test-device-token'
+  const harness = await createHarness({ pairedDevices: [{
+    id: 'device-1',
+    name: 'Test Phone',
+    clientLabel: 'Android Phone',
+    tokenHash: hashToken(deviceToken),
+    tokenPrefix: deviceToken.slice(0, 8),
+    createdAt: Date.now(),
+    lastSeenAt: null,
+    revokedAt: null
+  }] })
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  const deviceStream = await fetch(`http://127.0.0.1:${harness.port}/v1/events`, {
+    headers: authHeaders(deviceToken)
+  })
+  assert.equal(deviceStream.status, 200)
+  assert.ok(deviceStream.body)
+  const reader = deviceStream.body?.getReader()
+  assert.ok(reader)
+  await reader?.read()
+
+  await harness.service.applyConfig({
+    ...harness.config,
+    controlsEnabled: false
+  })
+
+  const deviceStillWorks = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: authHeaders(deviceToken)
+  })
+  assert.equal(deviceStillWorks.status, 200)
+
+  harness.service.revokeAllPairedDevices()
+
+  const streamClosed = await reader?.read()
+  assert.equal(streamClosed?.done, true)
+
+  const revokedResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: authHeaders(deviceToken)
+  })
+  assert.equal(revokedResponse.status, 401)
+})

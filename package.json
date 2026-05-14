@@ -1,17 +1,35 @@
 {
   "name": "astra",
-  "version": "0.5.1-beta",
+  "version": "0.6.0-beta",
   "description": "Audiophile music player with advanced visualization",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node ./scripts/build/writeAppBuildMetadata.cjs && electron-vite dev",
+    "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
+    "build:icons": "node scripts/build/generate-astra-icons.mjs",
     "preview": "electron-vite preview",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
+    "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
+    "test:album-grouping": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumGrouping.test.ts",
+    "test:artist-images": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/artistImages.test.ts",
+    "test:library-latest-sync": "node --experimental-strip-types --experimental-default-type=module --test src/main/services/libraryLatestSync.test.ts",
+    "test:library-sqlite": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test src/main/services/library.test.ts",
+    "test:library-integrity": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/libraryIntegrity.test.ts",
+    "test:lyrics-sidecar": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/lyricsSidecar.test.ts",
+    "test:library-graph": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/libraryGraph.test.ts",
+    "test:renderer-library-store": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/stores/libraryStore.test.ts",
+    "test:renderer-player-store": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/stores/playerStore.test.ts",
+    "test:local-api": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/localApi.test.ts",
+    "test:lastfm": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/lastFm.test.ts",
+    "test:phone-remote": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/phoneRemote.test.ts",
+    "test:activity-indicator": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/astraActivity.test.ts",
+    "test:audio-loudness": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/audio/loudness.test.ts",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
-    "rebuild:native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
-    "postinstall": "npm run rebuild:native || echo 'Native build failed, will use JS fallback'",
+    "rebuild:astra-native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",
+    "rebuild:better-sqlite3": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:native": "npm run rebuild:astra-native && npm run rebuild:better-sqlite3",
+    "postinstall": "npm run rebuild:native || echo 'Native rebuild failed, app may use fallbacks or database access may fail'",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -36,31 +54,31 @@
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "better-sqlite3": "^12.10.0",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "music-metadata": "^11.12.3",
-    "node-addon-api": "^8.5.0",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
+    "node-addon-api": "^8.7.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "react-window": "^2.2.7",
-    "sql.js": "^1.13.0",
-    "zustand": "^5.0.10"
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.3",
+    "@electron/rebuild": "^4.0.4",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/react": "^19.2.9",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.2",
-    "autoprefixer": "^10.4.23",
-    "electron": "^40.0.0",
-    "electron-builder": "^26.0.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "autoprefixer": "^10.5.0",
+    "electron": "^40.10.0",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
-    "node-gyp": "^12.2.0",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.18",
+    "node-gyp": "^12.3.0",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.3"
   },
   "build": {
     "appId": "com.astra.musicplayer",
@@ -71,7 +89,8 @@
     "afterPack": "./scripts/electron-builder/afterPack-prune-ffprobe.cjs",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**"
+      "node_modules/ffprobe-static/**",
+      "node_modules/better-sqlite3/**"
     ],
     "files": [
       "out/**/*",
@@ -153,6 +172,7 @@
         "dmg",
         "zip"
       ],
+      "artifactName": "Astra-${version}-Mac-${arch}.${ext}",
       "icon": "resources/icon.icns",
       "category": "public.app-category.music",
       "hardenedRuntime": true,
@@ -224,10 +244,15 @@
       ],
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "rpm",
+        "tar.gz"
       ],
-      "icon": "resources/icon.png",
+      "artifactName": "Astra-${version}-Linux-${arch}.${ext}",
       "category": "Audio"
+    },
+    "appImage": {
+      "artifactName": "Astra-${version}-Linux.${ext}"
     },
     "dmg": {
       "background": "resources/background.png",
@@ -238,22 +263,17 @@
         "height": 440
       },
       "contents": [
-        {
-          "x": 130,
-          "y": 220,
-          "type": "file"
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
+        { "x": 130, "y": 220, "type": "file" },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
       ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Astra.Setup.${version}.Windows.${ext}"
+    },
+    "portable": {
+      "artifactName": "Astra.Portable.${version}.Windows.${ext}"
     }
   }
 }

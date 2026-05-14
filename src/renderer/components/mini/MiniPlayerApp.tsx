@@ -4,7 +4,11 @@ import type {
   MiniPlayerVisualizerMode,
   MiniPlayerWindowState
 } from '../../../types/miniPlayer'
-import { mergeMiniPlayerSnapshots } from '../../../types/miniPlayer'
+import {
+  DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  mergeMiniPlayerSnapshots,
+  normalizeMiniPlayerTimeDisplayMode
+} from '../../../types/miniPlayer'
 import MiniPlayerBackdropVisualizer from './MiniPlayerBackdropVisualizer'
 import '../../styles/mini-player.css'
 
@@ -15,6 +19,7 @@ const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   queueLength: 0,
   outputDeviceLabel: null,
   currentTrack: null,
+  timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
   visualizerLineColor: '#38bdf8'
 }
 
@@ -26,6 +31,8 @@ const EMPTY_WINDOW_STATE: MiniPlayerWindowState = {
 
 type MiniLayoutMode = 'tiny' | 'compact' | 'wide' | 'hero'
 const SYSTEM_DEFAULT_OUTPUT_SUFFIX = ' (System Default)'
+const PENDING_SEEK_ACK_TOLERANCE_SECONDS = 0.35
+const PENDING_SEEK_FALLBACK_MS = 1200
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -79,11 +86,13 @@ export default function MiniPlayerApp() {
   const [windowState, setWindowState] = useState<MiniPlayerWindowState>(EMPTY_WINDOW_STATE)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [scrubTime, setScrubTime] = useState(0)
+  const [pendingSeekTime, setPendingSeekTime] = useState<number | null>(null)
   const [layoutMode, setLayoutMode] = useState<MiniLayoutMode>('compact')
   const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
   const [previousBackdropArtwork, setPreviousBackdropArtwork] = useState<string | null>(null)
   const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
   const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
+  const pendingSeekFallbackTimeoutRef = useRef<number | null>(null)
   const activeBackdropRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -136,16 +145,39 @@ export default function MiniPlayerApp() {
   }, [])
 
   useEffect(() => {
-    if (!isScrubbing) {
+    if (!isScrubbing && pendingSeekTime === null) {
       setScrubTime(snapshot.currentTime)
     }
-  }, [snapshot.currentTime, isScrubbing])
+  }, [snapshot.currentTime, isScrubbing, pendingSeekTime])
+
+  useEffect(() => {
+    if (pendingSeekTime === null) return
+    if (Math.abs(snapshot.currentTime - pendingSeekTime) > PENDING_SEEK_ACK_TOLERANCE_SECONDS) return
+
+    setPendingSeekTime(null)
+    if (pendingSeekFallbackTimeoutRef.current !== null) {
+      window.clearTimeout(pendingSeekFallbackTimeoutRef.current)
+      pendingSeekFallbackTimeoutRef.current = null
+    }
+  }, [snapshot.currentTime, pendingSeekTime])
+
+  useEffect(() => {
+    setPendingSeekTime(null)
+    if (pendingSeekFallbackTimeoutRef.current !== null) {
+      window.clearTimeout(pendingSeekFallbackTimeoutRef.current)
+      pendingSeekFallbackTimeoutRef.current = null
+    }
+  }, [snapshot.currentTrack?.path, snapshot.duration])
 
   useEffect(() => {
     return () => {
       if (backdropCrossfadeTimeoutRef.current !== null) {
         window.clearTimeout(backdropCrossfadeTimeoutRef.current)
         backdropCrossfadeTimeoutRef.current = null
+      }
+      if (pendingSeekFallbackTimeoutRef.current !== null) {
+        window.clearTimeout(pendingSeekFallbackTimeoutRef.current)
+        pendingSeekFallbackTimeoutRef.current = null
       }
     }
   }, [])
@@ -156,9 +188,13 @@ export default function MiniPlayerApp() {
   const isLoading = snapshot.playbackState === 'loading'
   const backdropArtwork = track?.artworkData ?? null
   const safeDuration = Number.isFinite(snapshot.duration) ? Math.max(0, snapshot.duration) : 0
-  const currentDisplayTime = isScrubbing ? scrubTime : snapshot.currentTime
+  const currentDisplayTime = isScrubbing ? scrubTime : pendingSeekTime ?? snapshot.currentTime
   const clampedDisplayTime = clampTime(currentDisplayTime, safeDuration)
   const remainingTime = Math.max(0, safeDuration - clampedDisplayTime)
+  const timeDisplayMode = normalizeMiniPlayerTimeDisplayMode(snapshot.timeDisplayMode)
+  const showingRemainingTime = timeDisplayMode === 'remaining'
+  const rightTimeLabel = showingRemainingTime ? `-${formatTime(remainingTime)}` : formatTime(safeDuration)
+  const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
   const seekProgress = safeDuration > 0 ? (clampedDisplayTime / safeDuration) * 100 : 0
   const seekStyle = { '--seek-progress': `${Math.max(0, Math.min(100, seekProgress))}%` } as CSSProperties
   const showSeek = layoutMode === 'wide' || layoutMode === 'hero'
@@ -213,11 +249,23 @@ export default function MiniPlayerApp() {
     }, 540)
   }, [backdropArtwork])
 
-  const handleSeekCommit = () => {
+  const handleSeekCommit = (targetTime: number) => {
     if (safeDuration <= 0) return
+    const seekTime = clampTime(targetTime, safeDuration)
+    setScrubTime(seekTime)
+    setPendingSeekTime(seekTime)
+
+    if (pendingSeekFallbackTimeoutRef.current !== null) {
+      window.clearTimeout(pendingSeekFallbackTimeoutRef.current)
+    }
+    pendingSeekFallbackTimeoutRef.current = window.setTimeout(() => {
+      pendingSeekFallbackTimeoutRef.current = null
+      setPendingSeekTime(null)
+    }, PENDING_SEEK_FALLBACK_MS)
+
     window.electronAPI.miniPlayer.sendCommand({
       type: 'seek',
-      time: clampTime(scrubTime, safeDuration)
+      time: seekTime
     })
   }
 
@@ -397,7 +445,15 @@ export default function MiniPlayerApp() {
               <div className="mini-player-seek-wrap">
                 <div className="mini-player-time-row">
                   <span>{formatTime(clampedDisplayTime)}</span>
-                  <span>-{formatTime(remainingTime)}</span>
+                  <button
+                    type="button"
+                    className="mini-player-time-toggle"
+                    onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'toggleTimeDisplayMode' })}
+                    aria-label={rightTimeToggleLabel}
+                    title={rightTimeToggleLabel}
+                  >
+                    {rightTimeLabel}
+                  </button>
                 </div>
                 <input
                   className="mini-player-seek"
@@ -406,11 +462,12 @@ export default function MiniPlayerApp() {
                   min={0}
                   max={safeDuration > 0 ? safeDuration : 1}
                   step={0.01}
-                  value={safeDuration > 0 ? clampTime(scrubTime, safeDuration) : 0}
+                  value={safeDuration > 0 ? clampedDisplayTime : 0}
                   onPointerDown={() => setIsScrubbing(true)}
-                  onPointerUp={() => {
+                  onPointerUp={(event) => {
+                    const next = Number(event.currentTarget.value)
                     setIsScrubbing(false)
-                    handleSeekCommit()
+                    handleSeekCommit(Number.isFinite(next) ? next : scrubTime)
                   }}
                   onPointerCancel={() => setIsScrubbing(false)}
                   onChange={(event) => {
@@ -419,7 +476,8 @@ export default function MiniPlayerApp() {
                   }}
                   onKeyUp={(event) => {
                     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
-                      handleSeekCommit()
+                      const next = Number(event.currentTarget.value)
+                      handleSeekCommit(Number.isFinite(next) ? next : scrubTime)
                     }
                   }}
                   disabled={safeDuration <= 0 || !hasTrack}

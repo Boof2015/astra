@@ -15,7 +15,10 @@ export const ASTRA_LOGO_RIGHT_PATH = 'M580,389.237C580,378.578 588.641,369.937 5
 
 export const ASTRA_LOGO_MAIN_FILL_CSS = 'hsl(var(--accent-h) 100% 50%)'
 export const ASTRA_LOGO_SHADOW_FILL_CSS = 'hsl(var(--accent-h) 40% 14%)'
-export const ASTRA_LOGO_BACKGROUND_FILL = '#000000'
+export const ASTRA_LOGO_BACKGROUND_FILL = '#05070a'
+export const ASTRA_APP_ICON_SYMBOL_SCALE = 0.9
+export const ASTRA_APP_ICON_SQUIRCLE_INSET_RATIO = 64 / 1024
+export const ASTRA_APP_ICON_SQUIRCLE_RADIUS_RATIO = 0.22
 
 export interface AstraLogoSvgMarkupOptions {
   includeBackground?: boolean
@@ -108,8 +111,8 @@ export async function renderAstraLogoPngDataUrl(
 ): Promise<string | null> {
   const dimension = Math.max(16, Math.min(2048, Math.round(size)))
   const backgroundMode = options.backgroundMode ?? 'svg'
-  const squircleInsetRatio = Math.max(0, Math.min(0.2, options.squircleInsetRatio ?? 0.055))
-  const squircleRadiusRatio = Math.max(0.1, Math.min(0.45, options.squircleRadiusRatio ?? 0.22))
+  const squircleInsetRatio = Math.max(0, Math.min(0.2, options.squircleInsetRatio ?? ASTRA_APP_ICON_SQUIRCLE_INSET_RATIO))
+  const squircleRadiusRatio = Math.max(0.1, Math.min(0.45, options.squircleRadiusRatio ?? ASTRA_APP_ICON_SQUIRCLE_RADIUS_RATIO))
   const svgOptions: AstraLogoSvgMarkupOptions = {
     ...options,
     includeBackground: backgroundMode === 'svg' ? (options.includeBackground ?? true) : false,

@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
-import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native'
+import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native/index'
+import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
@@ -59,7 +60,7 @@ export class Vectorscope {
     this.options = { ...defaultOptions, ...optionOverrides }
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => audioEngine.playbackState === 'playing',
+      shouldRun: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
       onFrame: this.drawFrame,
     })
 
@@ -167,6 +168,17 @@ export class Vectorscope {
     // Update sample rate if changed
     this.updateSampleRateIfNeeded()
 
+    const playbackState = audioEngine.playbackState
+    const isPlaying = playbackState === 'playing'
+    const isActive = isPlaybackAnalyzerActive(playbackState)
+
+    if (!isActive) {
+      audioEngine.flushPendingVectorscopeSamples()
+      this.renderStaticLayer()
+      ctx.drawImage(offscreenCanvas, 0, 0)
+      return
+    }
+
     // ---- PERSISTENCE FADE ----
     offscreenCtx.globalCompositeOperation = 'destination-in'
     offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
@@ -174,7 +186,12 @@ export class Vectorscope {
     offscreenCtx.globalCompositeOperation = 'source-over'
 
     // ---- FLUSH SAMPLES ----
-    const pendingSamples = audioEngine.flushPendingVectorscopeSamples()
+    const pendingSamples = isPlaying
+      ? audioEngine.flushPendingVectorscopeSamples()
+      : (() => {
+          audioEngine.flushPendingVectorscopeSamples()
+          return [createStereoSilenceChunk(audioEngine.getSampleRate())]
+        })()
 
     if (options.multiband) {
       // Multiband path: split into 3 bands, render each with its own color
@@ -394,5 +411,17 @@ export class Vectorscope {
     if (isNativeAvailable()) {
       nativeVectorscope.reset()
     }
+
+    this.splitter.reset()
+    this.multibandBuffer.reset()
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.offscreenCanvas.width = 0
+    this.offscreenCanvas.height = 0
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
+    this.lastSampleRate = 0
   }
 }

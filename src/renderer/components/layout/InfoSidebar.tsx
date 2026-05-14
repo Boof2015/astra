@@ -7,55 +7,26 @@ import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
-import type { Track } from '../../types/audio'
-import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
+import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import {
+  buildLyricsQuery,
+  getCompensatedLyricsTime,
+  getActiveLyricsResult,
+  getSyncedLyricsGapProgress,
+  getSyncedLyricsDisplayLines,
+  INFO_SIDEBAR_LYRICS_BODY_COPY,
+  resolveSyncedLyricsTiming,
+  resolveLyricsBodyState
+} from '../../utils/lyricsPresentation'
 
 type InfoSidebarTab = 'info' | 'lyrics'
-
-function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
-  if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
-  return 'LRCLIB'
-}
-
-function buildLyricsQuery(track: Track | null): LyricsTrackQuery | null {
-  if (!track) return null
-  return {
-    path: track.path,
-    title: track.title,
-    artist: track.artist,
-    album: track.album || undefined,
-    durationSeconds: Number.isFinite(track.duration) ? track.duration : undefined
-  }
-}
-
-function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
-    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
-    : 0
-
-  let low = 0
-  let high = lines.length - 1
-  let best = -1
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    if (lines[mid].timestampMs <= currentTimeMs) {
-      best = mid
-      low = mid + 1
-      continue
-    }
-    high = mid - 1
-  }
-
-  return best
-}
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlaybackClock()
+  const duration = usePlayerStore((s) => s.duration)
   const playbackState = usePlayerStore((s) => s.playbackState)
+  const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
@@ -69,20 +40,31 @@ export default function InfoSidebar() {
   const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
-  const activeLyricsResult = useMemo(() => {
-    if (!currentTrack) return null
-    if (lyricsTrackPath !== currentTrack.path) return null
-    return lyricsResult
-  }, [currentTrack, lyricsResult, lyricsTrackPath])
+  const activeLyricsResult = useMemo(() => (
+    getActiveLyricsResult(currentTrack?.path ?? null, lyricsTrackPath, lyricsResult)
+  ), [currentTrack?.path, lyricsResult, lyricsTrackPath])
 
-  const syncedLines = useMemo(() => {
-    if (activeLyricsResult?.status !== 'hit') return []
-    return activeLyricsResult.lyrics.syncedLines
-  }, [activeLyricsResult])
-  const activeSyncedLineIndex = useMemo(
-    () => findActiveSyncedLineIndex(syncedLines, currentTime),
-    [currentTime, syncedLines]
+  const bodyState = useMemo(() => resolveLyricsBodyState({
+    currentTrack,
+    activeLyricsResult,
+    isLoading: lyricsIsLoading,
+    errorMessage: lyricsStoreError,
+    copy: INFO_SIDEBAR_LYRICS_BODY_COPY
+  }), [activeLyricsResult, currentTrack, lyricsIsLoading, lyricsStoreError])
+  const syncedLines = bodyState.kind === 'hit_synced' ? bodyState.syncedLines : []
+  const displayedSyncedLines = useMemo(
+    () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
+    [duration, syncedLines]
   )
+  const compensatedTime = useMemo(
+    () => getCompensatedLyricsTime(currentTime, duration, effectiveDelayMs),
+    [currentTime, duration, effectiveDelayMs]
+  )
+  const syncedLyricsTiming = useMemo(
+    () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
+    [compensatedTime, duration, syncedLines]
+  )
+  const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
 
   useEffect(() => {
     if (activeTab !== 'lyrics') return
@@ -92,14 +74,15 @@ export default function InfoSidebar() {
   useEffect(() => {
     if (activeTab !== 'lyrics') return
     if (playbackState !== 'playing') return
-    if (activeSyncedLineIndex < 0) return
-    const node = syncedLineRefs.current.get(activeSyncedLineIndex)
+    const targetLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : syncedLyricsTiming.focusLineIndex
+    if (targetLineIndex < 0) return
+    const node = syncedLineRefs.current.get(targetLineIndex)
     if (!node) return
     node.scrollIntoView({
       block: 'center',
       behavior: 'smooth'
     })
-  }, [activeSyncedLineIndex, activeTab, playbackState])
+  }, [activeSyncedLineIndex, activeTab, playbackState, syncedLyricsTiming.focusLineIndex])
 
   const setSyncedLineRef = (index: number) => (node: HTMLParagraphElement | null) => {
     if (node) {
@@ -119,99 +102,80 @@ export default function InfoSidebar() {
     void refreshLyricsForTrack(lyricsQuery)
   }
 
+  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
+    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
+    if (progress === null) return displayLine.text
+    return (
+      <span className="lyrics-gap-progress">
+        <span
+          className="lyrics-gap-progress-fill"
+          style={{ transform: `scaleX(${progress})` }}
+        />
+      </span>
+    )
+  }
+
   const renderLyricsContent = () => {
-    if (!currentTrack) {
-      return (
-        <div className="info-lyrics-state">
-          No track selected.
-        </div>
-      )
-    }
-
-    if (lyricsIsLoading && !activeLyricsResult) {
-      return (
-        <div className="info-lyrics-state">
-          Loading lyrics...
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'transient_error') {
-      return (
-        <div className="info-lyrics-state info-lyrics-state-error">
-          {activeLyricsResult.message}
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'not_found') {
-      if (activeLyricsResult.reason === 'online-disabled') {
-        return (
-          <div className="info-lyrics-state">
-            No embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.
-          </div>
-        )
-      }
-      if (activeLyricsResult.reason === 'provider-not-found') {
-        return (
-          <div className="info-lyrics-state">
-            No lyrics found on LRCLIB for this track.
-          </div>
-        )
-      }
-      return (
-        <div className="info-lyrics-state">
-          No embedded lyrics found for this track.
-        </div>
-      )
-    }
-
-    if (activeLyricsResult?.status === 'hit') {
-      const plainLyrics = activeLyricsResult.lyrics.plainLyrics?.trim() ?? ''
-      const hasSyncedLyrics = syncedLines.length > 0
-
+    if (bodyState.kind === 'hit_synced') {
       return (
         <>
           <p className="info-lyrics-meta">
-            Source: {getLyricsSourceLabel(activeLyricsResult.lyrics.source)}
-            {hasSyncedLyrics ? ' • Synced' : ' • Unsynced'}
-            {activeLyricsResult.cached ? ' (cached)' : ''}
+            Source: {bodyState.sourceLabel}
+            {' • Synced'}
+            {bodyState.cached ? ' (cached)' : ''}
           </p>
 
-          {hasSyncedLyrics ? (
-            <div className="info-lyrics-lines">
-              {syncedLines.map((line, index) => (
-                <p
-                  key={`${line.timestampMs}:${index}`}
-                  ref={setSyncedLineRef(index)}
-                  className={`info-lyrics-line ${index === activeSyncedLineIndex ? 'active' : ''}`}
-                >
-                  {line.text}
-                </p>
-              ))}
-            </div>
-          ) : plainLyrics ? (
-            <pre className="info-lyrics-plain">{plainLyrics}</pre>
-          ) : (
-            <div className="info-lyrics-state">
-              Lyrics were found, but no readable text is available.
-            </div>
-          )}
+          <div className="info-lyrics-lines">
+            {displayedSyncedLines.map((displayLine) => (
+              <p
+                key={displayLine.key}
+                ref={setSyncedLineRef(displayLine.displayIndex)}
+                className={[
+                  'info-lyrics-line',
+                  displayLine.kind === 'gap' ? 'is-gap' : '',
+                  displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex ? 'active' : ''
+                ].join(' ').trim()}
+                aria-hidden={displayLine.kind === 'gap'}
+              >
+                {renderGapProgress(displayLine)}
+              </p>
+            ))}
+          </div>
         </>
       )
     }
 
-    if (lyricsStoreError) {
+    if (bodyState.kind === 'hit_plain') {
       return (
-        <div className="info-lyrics-state info-lyrics-state-error">
-          {lyricsStoreError}
-        </div>
+        <>
+          <p className="info-lyrics-meta">
+            Source: {bodyState.sourceLabel}
+            {' • Unsynced'}
+            {bodyState.cached ? ' (cached)' : ''}
+          </p>
+          <pre className="info-lyrics-plain">{bodyState.plainLyrics}</pre>
+        </>
+      )
+    }
+
+    if (bodyState.kind === 'hit_empty') {
+      return (
+        <>
+          <p className="info-lyrics-meta">
+            Source: {bodyState.sourceLabel}
+            {' • Unsynced'}
+            {bodyState.cached ? ' (cached)' : ''}
+          </p>
+          <div className="info-lyrics-state">
+            {bodyState.message}
+          </div>
+        </>
       )
     }
 
     return (
-      <div className="info-lyrics-state">
-        Open the Lyrics tab to load lyrics for the current track.
+      <div className={`info-lyrics-state ${bodyState.kind === 'transient_error' ? 'info-lyrics-state-error' : ''}`.trim()}>
+        {bodyState.message}
       </div>
     )
   }
@@ -262,7 +226,7 @@ export default function InfoSidebar() {
         <>
           <div className="info-sidebar-artwork">
             {currentTrack.artworkHash ? (
-              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
             ) : currentTrack.artworkData ? (
               <img src={currentTrack.artworkData} alt="Album art" />
             ) : (
@@ -275,6 +239,9 @@ export default function InfoSidebar() {
             <div className="info-sidebar-artist">
               <ArtistNameLinks
                 artistText={currentTrack.artist}
+                artistNames={currentTrack.artistNames}
+                browseArtistText={currentTrack.albumArtist}
+                browseArtistNames={currentTrack.albumArtistNames}
                 onArtistClick={openArtistInLibrary}
                 className="info-sidebar-artist-links"
                 linkClassName="artist-name-link-inline"
@@ -290,7 +257,12 @@ export default function InfoSidebar() {
                   type="button"
                   className="info-meta-value info-meta-album-link"
                   onClick={() => {
-                    void openAlbumInLibrary(currentTrack.album, currentTrack.artist, currentTrack.albumArtist)
+                    void openAlbumInLibrary(
+                      currentTrack.album,
+                      currentTrack.artist,
+                      currentTrack.albumArtist,
+                      currentTrack.albumIdentityKey
+                    )
                   }}
                   title={`Show album ${currentTrack.album}`}
                 >

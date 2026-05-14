@@ -1,12 +1,30 @@
 export type MiniPlayerPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+export type MiniPlayerTimeDisplayMode = 'remaining' | 'duration'
 export type MiniPlayerVisualizerMode = 'off' | 'oscilloscope' | 'spectrum'
+
+export const DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE: MiniPlayerTimeDisplayMode = 'remaining'
+
+export function normalizeMiniPlayerTimeDisplayMode(value: unknown): MiniPlayerTimeDisplayMode {
+  return value === 'duration' || value === 'remaining'
+    ? value
+    : DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE
+}
+
+export function getNextMiniPlayerTimeDisplayMode(value: unknown): MiniPlayerTimeDisplayMode {
+  const current = normalizeMiniPlayerTimeDisplayMode(value)
+  return current === 'remaining' ? 'duration' : 'remaining'
+}
 
 export interface MiniPlayerTrackSnapshot {
   id: string
   path: string
   title: string
   artist: string
+  artistNames?: string[]
   album: string
+  albumArtist?: string | null
+  albumArtistNames?: string[]
+  artworkHash?: string | null
   artworkData?: string | null
   isFavorite: boolean
 }
@@ -18,7 +36,25 @@ export interface MiniPlayerSnapshot {
   queueLength: number
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
+  timeDisplayMode: MiniPlayerTimeDisplayMode
   visualizerLineColor: string
+}
+
+export interface MiniPlayerResolvedArtwork {
+  trackPath: string
+  dataUrl: string | null
+}
+
+export function selectMiniPlayerTrackArtworkData(
+  currentTrack: Pick<MiniPlayerTrackSnapshot, 'path' | 'artworkData'> | null | undefined,
+  resolvedArtwork: MiniPlayerResolvedArtwork | null | undefined
+): string | null {
+  if (!currentTrack) return null
+  if (typeof currentTrack.artworkData === 'string') return currentTrack.artworkData
+  if (resolvedArtwork?.trackPath === currentTrack.path) {
+    return resolvedArtwork.dataUrl
+  }
+  return null
 }
 
 export function mergeMiniPlayerSnapshots(
@@ -68,6 +104,7 @@ export type MiniPlayerCommand =
   | { type: 'togglePlay' }
   | { type: 'playNext' }
   | { type: 'playPrevious' }
+  | { type: 'toggleTimeDisplayMode' }
   | { type: 'toggleFavoriteCurrent' }
   | { type: 'seek'; time: number }
   | { type: 'toggleFavorite'; trackPath: string }

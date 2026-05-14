@@ -1,5 +1,6 @@
 import { useUIStore } from '../../stores/uiStore'
 import LibraryView from '../views/LibraryView'
+import GraphView from '../views/GraphView'
 import EQView from '../views/EQView'
 import HomeView from '../views/HomeView'
 import SettingsView from '../views/SettingsView'
@@ -14,6 +15,8 @@ export default function ViewRouter() {
       return <HomeView />
     case 'library':
       return <LibraryView />
+    case 'graph':
+      return <GraphView />
     case 'eq':
       return <EQView />
     case 'settings':

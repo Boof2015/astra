@@ -2,12 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
+import { useUIStore } from '../stores/uiStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
+import { isNativeAvailable } from '../audio/native/index'
 import type {
+  MiniPlayerResolvedArtwork,
   MiniPlayerSnapshot,
   MiniPlayerWindowState
 } from '../../types/miniPlayer'
+import { selectMiniPlayerTrackArtworkData } from '../../types/miniPlayer'
 
 const SNAPSHOT_THROTTLE_MS = 120
 const MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS = 8
@@ -38,6 +42,7 @@ export function useMiniPlayerBridge(): void {
   const currentTime = usePlayerStore((s) => s.currentTime)
   const duration = usePlayerStore((s) => s.duration)
   const queueLength = usePlayerStore((s) => s.getResolvedQueueLength())
+  const timeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
 
   const favorites = useLibraryStore((s) => s.favorites)
   const getArtwork = useLibraryStore((s) => s.getArtwork)
@@ -49,14 +54,16 @@ export function useMiniPlayerBridge(): void {
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isVisualizerRunning = useVisualizerSettingsStore((s) => s.isRunning)
 
-  const [resolvedArtwork, setResolvedArtwork] = useState<string | null>(null)
+  const [resolvedArtwork, setResolvedArtwork] = useState<MiniPlayerResolvedArtwork | null>(null)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>(DEFAULT_MINI_WINDOW_STATE)
+  const nativeVisualizersAvailable = isNativeAvailable()
 
   const publishTimerRef = useRef<number | null>(null)
   const lastPublishRef = useRef(0)
   const latestPendingRef = useRef<MiniPlayerSnapshot | null>(null)
   const previousTrackIdRef = useRef<string | null>(null)
   const previousPlaybackStateRef = useRef(playbackState)
+  const previousTimeDisplayModeRef = useRef(timeDisplayMode)
   const previousArtworkRef = useRef<string | null>(null)
   const visualizerStreamTimerRef = useRef<number | null>(null)
   const visualizerResetSentRef = useRef(false)
@@ -73,23 +80,35 @@ export function useMiniPlayerBridge(): void {
     }
 
     if (track.artworkData) {
-      setResolvedArtwork(track.artworkData)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: track.artworkData
+      })
       return () => {
         isActive = false
       }
     }
 
     if (!track.artworkHash) {
-      setResolvedArtwork(null)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: null
+      })
       return () => {
         isActive = false
       }
     }
 
-    setResolvedArtwork(null)
-    void getArtwork(track.artworkHash).then((url) => {
+    setResolvedArtwork({
+      trackPath: track.path,
+      dataUrl: null
+    })
+    void getArtwork(track.artworkHash, { variant: 'card', format: 'data-url' }).then((url) => {
       if (!isActive) return
-      setResolvedArtwork(url)
+      setResolvedArtwork({
+        trackPath: track.path,
+        dataUrl: url
+      })
     })
 
     return () => {
@@ -131,6 +150,9 @@ export function useMiniPlayerBridge(): void {
         case 'playPrevious':
           void player.playPrevious()
           break
+        case 'toggleTimeDisplayMode':
+          useUIStore.getState().toggleWaveformTimeDisplayMode()
+          break
         case 'toggleFavoriteCurrent': {
           const currentTrackPath = player.currentTrack?.path
           if (!currentTrackPath) break
@@ -171,14 +193,14 @@ export function useMiniPlayerBridge(): void {
 
   useEffect(() => {
     audioEngine.setVisualizerConsumerDemand('mini-player-bridge', {
-      miniSpectrum: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
-      miniOscilloscope: isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
+      miniSpectrum: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
+      miniOscilloscope: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('mini-player-bridge')
     }
-  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode])
+  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode, nativeVisualizersAvailable])
 
   useEffect(() => {
     if (visualizerStreamTimerRef.current !== null) {
@@ -209,7 +231,7 @@ export function useMiniPlayerBridge(): void {
       visualizerResetSentRef.current = true
     }
 
-    const shouldBridgeToMini = miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
+    const shouldBridgeToMini = nativeVisualizersAvailable && miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
     if (!shouldBridgeToMini) {
       audioEngine.flushPendingMiniVisualizerChunks()
       emitReset()
@@ -255,6 +277,7 @@ export function useMiniPlayerBridge(): void {
   }, [
     miniWindowState.isOpen,
     miniWindowState.visualizerMode,
+    nativeVisualizersAvailable,
     playbackState,
     isVisualizerRunning,
     fftSize,
@@ -271,10 +294,12 @@ export function useMiniPlayerBridge(): void {
 
     const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
     const currentTrackId = currentTrack?.id ?? null
+    const effectiveArtworkData = selectMiniPlayerTrackArtworkData(currentTrack, resolvedArtwork)
     const shouldIncludeArtwork = previousTrackIdRef.current !== currentTrackId ||
-      previousArtworkRef.current !== resolvedArtwork
+      previousArtworkRef.current !== effectiveArtworkData
     const shouldForce = shouldIncludeArtwork ||
-      previousPlaybackStateRef.current !== playbackState
+      previousPlaybackStateRef.current !== playbackState ||
+      previousTimeDisplayModeRef.current !== timeDisplayMode
 
     const snapshot: MiniPlayerSnapshot = {
       playbackState,
@@ -282,6 +307,7 @@ export function useMiniPlayerBridge(): void {
       duration: toSafeTime(duration),
       queueLength,
       outputDeviceLabel,
+      timeDisplayMode,
       visualizerLineColor: lineColor,
       currentTrack: currentTrack
         ? {
@@ -289,8 +315,12 @@ export function useMiniPlayerBridge(): void {
             path: currentTrack.path,
             title: currentTrack.title,
             artist: currentTrack.artist,
+            artistNames: currentTrack.artistNames,
             album: currentTrack.album,
-            artworkData: shouldIncludeArtwork ? resolvedArtwork : undefined,
+            albumArtist: currentTrack.albumArtist ?? null,
+            albumArtistNames: currentTrack.albumArtistNames,
+            artworkHash: currentTrack.artworkHash ?? null,
+            artworkData: shouldIncludeArtwork ? effectiveArtworkData : undefined,
             isFavorite,
           }
         : null
@@ -298,7 +328,8 @@ export function useMiniPlayerBridge(): void {
 
     previousTrackIdRef.current = currentTrackId
     previousPlaybackStateRef.current = playbackState
-    previousArtworkRef.current = resolvedArtwork
+    previousTimeDisplayModeRef.current = timeDisplayMode
+    previousArtworkRef.current = effectiveArtworkData
 
     latestPendingRef.current = snapshot
 
@@ -339,6 +370,7 @@ export function useMiniPlayerBridge(): void {
     currentTime,
     duration,
     queueLength,
+    timeDisplayMode,
     selectedDeviceId,
     availableDevices,
     favorites,

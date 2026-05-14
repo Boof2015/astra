@@ -5,8 +5,11 @@ export interface Track {
   origin?: 'library' | 'associated-external'
   title: string
   artist: string
+  artistNames?: string[]
   album: string
   albumArtist?: string
+  albumArtistNames?: string[]
+  albumIdentityKey?: string
   duration: number
   trackNumber?: number
   discNumber?: number
@@ -57,7 +60,7 @@ export interface AudioEngineEvents {
 // EQ Band
 export interface EQBand {
   id: string
-  type: 'lowshelf' | 'peaking' | 'highshelf'
+  type: 'lowshelf' | 'peaking' | 'highshelf' | 'highpass' | 'lowpass'
   frequency: number
   gain: number
   Q: number

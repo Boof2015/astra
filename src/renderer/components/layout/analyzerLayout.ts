@@ -32,6 +32,7 @@ export function buildAnalyzerGridTemplateColumns(
   vectorscopeMode: VectorscopeMode
 ): string {
   if (visibleScopes.length === 0) return ''
+  const hasSingleVisibleScope = visibleScopes.length === 1
 
   return visibleScopes.map((scope) => {
     const weight = widthWeights[scope] ?? 1
@@ -40,7 +41,14 @@ export function buildAnalyzerGridTemplateColumns(
       if (weight <= 0) {
         return `minmax(${minWidth}, ${vectorscopeCollapsedWidth(vectorscopeMode)})`
       }
+      if (hasSingleVisibleScope) {
+        return `minmax(${minWidth}, 1fr)`
+      }
       return `minmax(${minWidth}, ${weight}fr)`
+    }
+
+    if (hasSingleVisibleScope) {
+      return 'minmax(0, 1fr)'
     }
 
     if (usesCollapsedDefaultWeight(scope) && weight <= 0) {

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta id="theme-color-meta" name="theme-color" content="#0b1118" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Astra Remote</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="setup" data-pair-phase="idle" data-view="setup-idle">
+
+    <main class="remote-shell">
+      <!-- ── Header ── -->
+      <header class="remote-header">
+        <div class="remote-header-top">
+          <div class="header-brand-stack">
+            <span class="header-brand">Astra</span>
+            <span class="header-title">Phone Remote</span>
+          </div>
+          <span id="status-pill" class="status-pill status-idle">Idle</span>
+        </div>
+        <div class="remote-header-actions">
+          <button id="reconnect-button" class="header-action-btn" type="button" title="Reconnect" hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            </svg>
+            <span class="header-action-label">Reconnect</span>
+          </button>
+          <button id="forget-button" class="header-action-btn" type="button" title="Forget key" hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+            <span class="header-action-label">Forget</span>
+          </button>
+        </div>
+      </header>
+      <p id="connection-label" class="connection-label">Waiting for pairing.</p>
+
+      <!-- ── Notice ── -->
+      <section id="notice-banner" class="glass-panel notice-banner notice-info" hidden>
+        <p id="notice-text"></p>
+      </section>
+
+      <!-- ── Pair: idle — instructions + paste form ── -->
+      <section id="pair-idle" class="glass-panel page-section pair-section pair-section-idle">
+        <div class="pair-idle-intro">
+          <p class="section-label">Phone Pairing</p>
+          <h2 class="section-title">Pair this phone</h2>
+          <p class="section-copy">From Astra on your desktop, open <strong>Settings → Experimental → Phone Remote</strong>, then scan the QR code or paste the pairing link here.</p>
+        </div>
+        <div class="setup-step-list" aria-hidden="true">
+          <div class="setup-step">
+            <span class="setup-step-number">1</span>
+            <span class="setup-step-copy">Open the pairing popup in Astra.</span>
+          </div>
+          <div class="setup-step">
+            <span class="setup-step-number">2</span>
+            <span class="setup-step-copy">Approve this phone when Astra asks.</span>
+          </div>
+        </div>
+        <div class="pair-or-divider">
+          <span class="pair-or-line"></span>
+          <span class="pair-or-text">or paste link</span>
+          <span class="pair-or-line"></span>
+        </div>
+        <form id="pair-link-form" class="pair-paste-form">
+          <div class="pair-paste-row">
+            <input
+              id="pair-link-input"
+              class="text-input"
+              name="pair-link"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              inputmode="url"
+              placeholder="Pairing link or ticket"
+            />
+            <button id="pair-link-button" class="btn-primary btn-compact" type="submit">Pair</button>
+          </div>
+        </form>
+        <p class="pair-helper-copy">Paste the full pairing link if scanning opens the QR preview instead of this controller.</p>
+        <button id="show-manual-auth-button" class="btn-ghost btn-sm" type="button" hidden>Use API key instead</button>
+      </section>
+
+      <!-- ── Pair: pending — waiting for approval ── -->
+      <section id="pair-pending" class="glass-panel page-section pair-section pair-section-pending">
+        <div class="pair-waiting">
+          <div class="pair-waiting-spinner" aria-hidden="true">
+            <svg width="80" height="80" viewBox="0 0 80 80" fill="none">
+              <circle cx="40" cy="40" r="36" stroke="rgba(255,255,255,0.06)" stroke-width="3"/>
+              <circle cx="40" cy="40" r="36" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-dasharray="56 170" class="pair-spinner-arc"/>
+            </svg>
+          </div>
+          <h2 id="pair-pending-title" class="pair-waiting-title">Waiting for approval</h2>
+          <p id="pair-pending-copy" class="pair-waiting-copy">Open Astra on your desktop and tap <strong>Approve</strong> to connect this phone.</p>
+          <span id="pair-pending-timer" class="pair-timer"></span>
+        </div>
+      </section>
+
+      <!-- ── Pair: error / rejected / expired ── -->
+      <section id="pair-error" class="glass-panel page-section pair-section pair-section-error">
+        <p id="pair-error-title" class="section-label section-label-error">Pairing failed</p>
+        <p id="pair-error-copy" class="section-copy">Something went wrong. Try again from the desktop.</p>
+        <button id="pair-retry-button" class="btn-ghost" type="button">Try again</button>
+      </section>
+
+      <!-- ── Manual auth ── -->
+      <section id="auth-panel" class="glass-panel page-section pair-section pair-section-manual" hidden>
+        <p class="section-label">Manual Fallback</p>
+        <h2 class="section-title">Enter API key</h2>
+        <p class="section-copy">Paste the Local API key shown in Astra's settings.</p>
+        <div id="origin-chip" class="mono-chip"></div>
+        <form id="auth-form" class="auth-form">
+          <input
+            id="auth-token"
+            class="text-input"
+            name="auth-token"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            inputmode="text"
+            placeholder="Paste API key"
+          />
+          <div class="auth-form-row">
+            <button id="connect-button" class="btn-primary" type="submit">Connect</button>
+            <button id="hide-manual-auth-button" class="btn-ghost" type="button">Back</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- ── Player ── -->
+      <section id="remote-controller" class="remote-controller">
+        <div class="controller-card glass-panel">
+          <div class="controller-hero">
+            <div class="artwork-frame">
+              <img id="artwork-image" class="artwork-image" alt="Album art" hidden />
+              <div id="artwork-placeholder" class="artwork-placeholder" aria-hidden="true">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="controller-copy">
+              <p class="section-label controller-label">Now Playing</p>
+              <div class="meta-block">
+                <h2 id="track-title" class="track-title">Nothing playing</h2>
+                <p id="track-artist" class="track-artist"></p>
+                <p id="track-album" class="track-album"></p>
+              </div>
+            </div>
+          </div>
+
+          <div id="transport-panel" class="transport-panel">
+            <div class="seek-stack">
+              <div id="seek-preview" class="seek-preview" hidden>0:00</div>
+              <div
+                class="seek-bar"
+                id="seek-track"
+                tabindex="-1"
+                role="slider"
+                aria-label="Track position"
+                aria-valuemin="0"
+                aria-valuemax="0"
+                aria-valuenow="0"
+                aria-valuetext="Nothing playing"
+                aria-disabled="true"
+              >
+                <div class="seek-bar-fill" id="seek-fill"></div>
+                <div class="seek-bar-thumb" id="seek-thumb"></div>
+              </div>
+            </div>
+            <div class="time-row">
+              <span id="elapsed-time" class="time-label">0:00</span>
+              <span id="remaining-time" class="time-label">-0:00</span>
+            </div>
+
+            <div class="control-grid">
+              <button id="previous-button" class="ctrl-btn ctrl-btn-previous" type="button" aria-label="Previous">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="5" width="2.5" height="14" rx="1"/>
+                  <path d="M20 5.5a1 1 0 0 0-1.5-.86l-10 6a1 1 0 0 0 0 1.72l10 6A1 1 0 0 0 20 17.5v-12z"/>
+                </svg>
+              </button>
+              <button id="play-button" class="ctrl-btn ctrl-btn-play" type="button" aria-label="Play">
+                <svg id="icon-play" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/>
+                </svg>
+                <svg id="icon-pause" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+                  <rect x="6" y="4" width="4" height="16" rx="1"/>
+                  <rect x="14" y="4" width="4" height="16" rx="1"/>
+                </svg>
+                <div id="icon-loading" class="loading-spinner" style="display:none"></div>
+              </button>
+              <button id="next-button" class="ctrl-btn ctrl-btn-next" type="button" aria-label="Next">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="17.5" y="5" width="2.5" height="14" rx="1"/>
+                  <path d="M4 5.5a1 1 0 0 1 1.5-.86l10 6a1 1 0 0 1 0 1.72l-10 6A1 1 0 0 1 4 17.5v-12z"/>
+                </svg>
+              </button>
+              <button id="favorite-button" class="ctrl-btn ctrl-btn-favorite" type="button" aria-label="Favorite">
+                <svg class="fav-outline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+                <svg class="fav-filled" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

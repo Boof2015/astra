@@ -50,7 +50,7 @@ export default function DecodeFallbackCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Fallback decode artwork" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Fallback decode artwork" variant="card" />
           ) : artworkTrack?.artworkData ? (
             <img src={artworkTrack.artworkData} alt="Fallback decode artwork" />
           ) : (

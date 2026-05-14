@@ -9,14 +9,28 @@ import type {
     MiniPlayerWindowState
 } from '../types/miniPlayer'
 import type {
+    LyricsPopoutCommand,
+    LyricsPopoutSnapshot,
+    LyricsPopoutWindowState
+} from '../types/lyricsPopout'
+import type {
     ScopeKind,
     ScopePopoutChunk,
     ScopePopoutState
 } from '../types/scopePopout'
-import type { LocalApiStatus } from '../types/localApi'
+import type {
+  LocalApiStatus
+} from '../types/localApi'
+import type {
+  PhoneRemotePairedDevice,
+  PhoneRemotePairingTicket,
+  PhoneRemotePendingPairingRequest,
+  PhoneRemoteStatus
+} from '../types/phoneRemote'
 import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
+    LastFmCustomProfileInput,
     LastFmStatus
 } from '../types/lastFm'
 import type {
@@ -40,7 +54,8 @@ import type {
     SubsonicSourceTestInput,
     SubsonicSourceTestResult,
     SubsonicSourceUpdateInput,
-    SubsonicStatusSnapshot
+    SubsonicStatusSnapshot,
+    TrackSourceType
 } from '../types/subsonic'
 import type {
     AudioBufferMemoryStats,
@@ -53,6 +68,80 @@ import type {
     NativeAudioVUMeterChunk,
     NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
+import type {
+    MemoryDiagnosticsBlinkResourceUsageSnapshot,
+    MemoryDiagnosticsCaptureBundleResult,
+    MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsProcessMemoryStats,
+    MemoryDiagnosticsRendererSnapshot,
+    MemoryDiagnosticsRendererMemoryStats,
+    MemoryDiagnosticsSnapshotRequest,
+    MemoryDiagnosticsStatus
+} from '../types/diagnostics'
+import type { AppBuildInfo } from '../types/appBuildInfo'
+import type { UIScaleShortcutAction } from '../types/uiScale'
+
+type RuntimeIconImageSetPayload = {
+    images: Array<{
+        size: number
+        dataUrl: string
+    }>
+}
+
+interface DbTrack {
+    id: number
+    path: string
+    album_identity_key: string
+    is_new: boolean
+    title: string
+    artist: string
+    artist_names: string[]
+    album: string
+    album_artist: string | null
+    album_artist_names: string[]
+    duration: number
+    track_number: number | null
+    disc_number: number | null
+    year: number | null
+    genre: string | null
+    artwork_hash: string | null
+    base_artwork_hash: string | null
+    format: string
+    sample_rate: number | null
+    bit_depth: number | null
+    bitrate: number | null
+    channels: number | null
+    codec: string | null
+    codec_profile: string | null
+    is_atmos_joc: number | null
+    replaygain_track_gain_db: number | null
+    replaygain_album_gain_db: number | null
+    bpm: number | null
+    musical_key: string | null
+    source_type: TrackSourceType
+    source_id: number | null
+    source_track_id: string | null
+    source_path: string | null
+    is_available: number
+    availability_reason: string | null
+    file_created_at: number | null
+    added_at: number
+    modified_at: number
+}
+
+interface LibraryTrackPageRequest {
+    offset?: number
+    limit?: number
+}
+
+interface LibraryTrackPage {
+    tracks: DbTrack[]
+    offset: number
+    limit: number
+    total: number
+    nextOffset: number
+    hasMore: boolean
+}
 
 declare global {
     interface Window {
@@ -63,6 +152,7 @@ declare global {
             setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
             loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             play: () => Promise<NativeAudioPlaybackSnapshot>
             pause: () => Promise<NativeAudioPlaybackSnapshot>
             stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -101,6 +191,17 @@ declare global {
                 onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
                 onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
             }
+            lyricsPopout: {
+                open: () => Promise<void>
+                close: () => Promise<void>
+                getWindowState: () => Promise<LyricsPopoutWindowState>
+                getSnapshot: () => Promise<LyricsPopoutSnapshot | null>
+                publishSnapshot: (snapshot: LyricsPopoutSnapshot) => void
+                sendCommand: (command: LyricsPopoutCommand) => void
+                onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
+                onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
+                onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+            }
             scopePopout: {
                 open: (scope: ScopeKind) => Promise<ScopePopoutState>
                 recall: (scope: ScopeKind) => Promise<ScopePopoutState>
@@ -111,8 +212,22 @@ declare global {
             }
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
+            getAppBuildInfo: () => Promise<AppBuildInfo>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
-            getRendererMemoryStats: () => Promise<{ privateMb: number }>
+            getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
+            getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
+            diagnostics: {
+                getStatus: () => Promise<MemoryDiagnosticsStatus>
+                setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+                revealCurrentLog: () => Promise<boolean>
+                revealPreviousLog: () => Promise<boolean>
+                captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+                getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+                publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
+                logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+                onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
+                onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+            }
             updates: {
                 checkForUpdates: () => Promise<{
                     status: 'up-to-date' | 'update-available' | 'error'
@@ -128,7 +243,10 @@ declare global {
                 openReleasesPage: (releaseUrl?: string) => Promise<boolean>
             }
             theme: {
-                setRuntimeIconDataUrl: (dataUrl: string) => void
+                setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
+            }
+            uiScale: {
+                onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
             }
             discord: {
                 configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
@@ -169,12 +287,32 @@ declare global {
                 resetToDefaults: () => Promise<LocalApiStatus>
                 onStatus: (callback: (status: LocalApiStatus) => void) => () => void
             }
+            phoneRemote: {
+                getStatus: () => Promise<PhoneRemoteStatus>
+                createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket>
+                listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
+                listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
+                approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+                rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+                revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
+                revokeAllPairedDevices: () => Promise<number>
+                setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+                setPort: (port: number) => Promise<PhoneRemoteStatus>
+                resetToDefaults: () => Promise<PhoneRemoteStatus>
+                onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+            }
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>
                 setEnabled: (enabled: boolean) => Promise<LastFmStatus>
-                beginAuth: () => Promise<LastFmAuthStartResult>
+                createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+                updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+                deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
+                setActiveProfile: (profileId: string) => Promise<LastFmStatus>
+                setProfileEnabled: (profileId: string, enabled: boolean) => Promise<LastFmStatus>
+                beginAuth: (profileId?: string) => Promise<LastFmAuthStartResult>
                 finishAuth: () => Promise<LastFmAuthFinishResult>
                 disconnect: () => Promise<LastFmStatus>
+                disconnectProfile: (profileId: string) => Promise<LastFmStatus>
                 resetToDefaults: () => Promise<LastFmStatus>
                 onStatus: (callback: (status: LastFmStatus) => void) => () => void
             }
@@ -219,8 +357,10 @@ declare global {
                 metadata?: {
                     title?: string
                     artist?: string
+                    artistNames?: string[]
                     album?: string
                     albumArtist?: string
+                    albumArtistNames?: string[]
                     year?: number
                     trackNumber?: number
                     duration?: number
@@ -246,8 +386,10 @@ declare global {
                 metadata?: {
                     title?: string
                     artist?: string
+                    artistNames?: string[]
                     album?: string
                     albumArtist?: string
+                    albumArtistNames?: string[]
                     year?: number
                     trackNumber?: number
                     duration?: number
@@ -265,8 +407,10 @@ declare global {
             getAudioMetadata: (filePath: string) => Promise<{
                 title?: string
                 artist?: string
+                artistNames?: string[]
                 album?: string
                 albumArtist?: string
+                albumArtistNames?: string[]
                 year?: number
                 trackNumber?: number
                 duration?: number
@@ -368,7 +512,12 @@ declare global {
             readFileAsDataUrl: (filePath: string) => Promise<string | null>
             writeFile: (filePath: string, content: string) => Promise<boolean>
             revealFileInFolder: (filePath: string) => Promise<boolean>
-            library: any
+            library: {
+                getTracks: () => Promise<DbTrack[]>
+                getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
+                getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
+                [key: string]: any
+            }
         }
     }
 }

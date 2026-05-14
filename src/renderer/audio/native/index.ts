@@ -5,16 +5,26 @@ import type { VisualizerDSP, OscilloscopeResult, VectorscopeResult, VectorscopeP
 
 let nativeModule: VisualizerDSP | null = null
 let loadError: Error | null = null
+let nativeUnavailableWarningEmitted = false
 
-// Try to load the native module
+export function warnNativeUnavailableOnce(context?: string): void {
+  if (nativeModule || nativeUnavailableWarningEmitted) {
+    return
+  }
+
+  nativeUnavailableWarningEmitted = true
+  const message = loadError?.message ?? 'Native visualizer DSP module is unavailable.'
+  const prefix = context ? `${context}: ` : ''
+  console.error(`${prefix}${message} Native-only visualizers will remain idle.`)
+}
+
 // Try to load the native module from the exposed API
 if (typeof window !== 'undefined' && window.visualizerAPI) {
   nativeModule = window.visualizerAPI
   console.log('Native visualizer DSP module loaded via preload')
 } else {
-  console.warn('Native visualizer DSP module not available (not found in window.visualizerAPI)')
-  console.warn('Falling back to JavaScript implementation')
   loadError = new Error('Native module not found in window.visualizerAPI')
+  warnNativeUnavailableOnce()
 }
 
 // Check if native module is available

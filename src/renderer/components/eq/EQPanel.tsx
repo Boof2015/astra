@@ -2,6 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
+import type { EQBand } from '../../types/audio'
+import { EQ_PASS_FILTER_DEFAULT_Q, isPassEQBandType } from '../../utils/eq'
 import EQFrequencyResponse from './EQFrequencyResponse'
 import EQSpectrumOverlay from './EQSpectrumOverlay'
 import EQBandSlider from './EQBandSlider'
@@ -66,8 +68,8 @@ export default function EQPanel() {
   }, [showImportMenu])
 
   const handleBandDragOnCurve = useCallback(
-    (index: number, freq: number, gain: number) => {
-      updateBand(index, { frequency: freq, gain })
+    (index: number, updates: Partial<EQBand>) => {
+      updateBand(index, updates)
     },
     [updateBand]
   )
@@ -235,7 +237,6 @@ export default function EQPanel() {
         />
         <EQFrequencyResponse
           bands={bands}
-          preamp={preamp}
           enabled={enabled}
           selectedBandIndex={selectedBandIndex}
           onBandDrag={handleBandDragOnCurve}
@@ -270,7 +271,13 @@ export default function EQPanel() {
             onGainChange={(gain) => updateBand(i, { gain })}
             onFrequencyChange={(frequency) => updateBand(i, { frequency })}
             onQChange={(Q) => updateBand(i, { Q })}
-            onTypeChange={(type) => updateBand(i, { type })}
+            onTypeChange={(type) => {
+              const updates: Partial<EQBand> = { type }
+              if (isPassEQBandType(type) && !isPassEQBandType(band.type)) {
+                updates.Q = EQ_PASS_FILTER_DEFAULT_Q
+              }
+              updateBand(i, updates)
+            }}
             onRemove={() => removeBand(i)}
             isSelected={selectedBandIndex === i}
             onSelect={() => setSelectedBandIndex(i)}

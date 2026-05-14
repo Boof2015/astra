@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
 import { FrameScheduler } from '../../audio/visualizers/frameScheduler'
+import { isNativeAvailable } from '../../audio/native/index'
 import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
+import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 
 interface VisualizerPanelProps {
@@ -43,6 +46,7 @@ const MIN_VECTORSCOPE_DRAWABLE_WIDTH_PX = 96
 const MIN_LISSAJOUS_VECTORSCOPE_TILE_WIDTH_PX = 152
 const MIN_PREVIEW_WEIGHT = 0.4
 const MAX_PREVIEW_WEIGHT = 2.6
+const EMPTY_VISIBLE_SCOPES: ScopeKind[] = []
 
 function parseCssPixelValue(value: string): number | null {
   const numeric = Number.parseFloat(value)
@@ -93,21 +97,79 @@ function clampPreviewWeight(value: number): number {
   return Math.min(MAX_PREVIEW_WEIGHT, Math.max(MIN_PREVIEW_WEIGHT, normalized))
 }
 
-function resizeCanvasToContainer(canvas: HTMLCanvasElement, container: HTMLDivElement): void {
-  const rect = container.getBoundingClientRect()
-  const width = Math.max(1, Math.floor(rect.width))
-  const height = Math.max(1, Math.floor(rect.height))
-  const dpr = window.devicePixelRatio || 1
+function hasRenderedBox(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false
+  }
 
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
-  canvas.width = Math.max(1, Math.floor(width * dpr))
-  canvas.height = Math.max(1, Math.floor(height * dpr))
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    const style = window.getComputedStyle(node)
+    if (
+      style.display === 'none'
+      || style.visibility === 'hidden'
+      || style.visibility === 'collapse'
+      || style.opacity === '0'
+    ) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function useAnalyzerSurfaceVisible(
+  panelRef: RefObject<HTMLDivElement | null>
+): boolean {
+  const [isSurfaceVisible, setIsSurfaceVisible] = useState(() => {
+    return typeof document === 'undefined' || document.visibilityState === 'visible'
+  })
+
+  const updateSurfaceVisible = useCallback(() => {
+    if (document.visibilityState === 'hidden') {
+      setIsSurfaceVisible(false)
+      return
+    }
+
+    const panel = panelRef.current
+    if (!panel) {
+      setIsSurfaceVisible(true)
+      return
+    }
+
+    setIsSurfaceVisible(hasRenderedBox(panel))
+  }, [panelRef])
+
+  useEffect(() => {
+    updateSurfaceVisible()
+  }, [updateSurfaceVisible])
+
+  useEffect(() => {
+    const panel = panelRef.current
+    const observer = typeof ResizeObserver === 'undefined' || !panel
+      ? null
+      : new ResizeObserver(() => updateSurfaceVisible())
+
+    if (observer && panel) {
+      observer.observe(panel)
+    }
+    window.addEventListener('resize', updateSurfaceVisible)
+    document.addEventListener('visibilitychange', updateSurfaceVisible)
+
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateSurfaceVisible)
+      document.removeEventListener('visibilitychange', updateSurfaceVisible)
+    }
+  }, [panelRef, updateSurfaceVisible])
+
+  return isSurfaceVisible
 }
 
 function DockedSpectrumTile({
   lineColor,
   fftSize,
+  displayMode,
   tiltDbPerOctave,
   heatmapFill,
   heatmapTiltDbPerOctave,
@@ -116,6 +178,7 @@ function DockedSpectrumTile({
 }: {
   lineColor: string
   fftSize: number
+  displayMode: SpectrumDisplayMode
   tiltDbPerOctave: number
   heatmapFill: boolean
   heatmapTiltDbPerOctave: number
@@ -125,15 +188,12 @@ function DockedSpectrumTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<SpectrumAnalyzer | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
@@ -145,6 +205,7 @@ function DockedSpectrumTile({
         tiltDbPerOctave,
         heatmapTiltDbPerOctave,
         fftSize,
+        displayMode,
         gradientColors: [
           'rgba(0, 255, 255, 0)',
           `${lineColor}33`,
@@ -158,17 +219,19 @@ function DockedSpectrumTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({
       lineColor,
       fftSize,
+      displayMode,
       fillGradient: !heatmapFill,
       heatmapFill,
       tiltDbPerOctave,
@@ -179,7 +242,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
+  }, [lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
 
   useEffect(() => {
     if (isRunning) {
@@ -188,21 +251,6 @@ function DockedSpectrumTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -227,15 +275,12 @@ function DockedOscilloscopeTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Oscilloscope | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Oscilloscope(canvasRef.current, {
@@ -251,12 +296,13 @@ function DockedOscilloscopeTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, pitchLock, underfillEnabled })
@@ -269,21 +315,6 @@ function DockedOscilloscopeTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -308,15 +339,12 @@ function DockedVectorscopeTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Vectorscope | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Vectorscope(canvasRef.current, {
@@ -332,12 +360,13 @@ function DockedVectorscopeTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode, multiband: vectorscopeMultiband })
@@ -350,21 +379,6 @@ function DockedVectorscopeTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -393,15 +407,12 @@ function DockedSpectrogramTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Spectrogram | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Spectrogram(canvasRef.current, {
@@ -417,12 +428,13 @@ function DockedSpectrogramTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, fftSize, scrollSpeed, clarityMode, scaleMode })
@@ -435,21 +447,6 @@ function DockedSpectrogramTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -474,15 +471,12 @@ function DockedVUMeterTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<VUMeter | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new VUMeter(canvasRef.current, {
@@ -496,12 +490,13 @@ function DockedVUMeterTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode, orientation: vuMeterOrientation })
@@ -514,21 +509,6 @@ function DockedVUMeterTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -549,15 +529,12 @@ function DockedLUFSMeterTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<LUFSMeter | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new LUFSMeter(canvasRef.current, {
@@ -569,12 +546,13 @@ function DockedLUFSMeterTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor })
@@ -587,21 +565,6 @@ function DockedLUFSMeterTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -628,15 +591,12 @@ function DockedWaveformTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<Waveform | null>(null)
-
-  const handleResize = useCallback(() => {
-    if (!canvasRef.current || !containerRef.current) return
-    resizeCanvasToContainer(canvasRef.current, containerRef.current)
-    visualizerRef.current?.resize()
-  }, [])
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
-    handleResize()
+    applyResizeNow()
 
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new Waveform(canvasRef.current, {
@@ -651,12 +611,13 @@ function DockedWaveformTile({
     if (isRunning) {
       visualizerRef.current?.start()
     }
+    visualizerRef.current?.resize()
 
     return () => {
       visualizerRef.current?.dispose()
       visualizerRef.current = null
     }
-  }, [frameScheduler, handleResize])
+  }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
     visualizerRef.current?.setOptions({ lineColor, scrollSpeed, gainDb, multiband })
@@ -669,21 +630,6 @@ function DockedWaveformTile({
       visualizerRef.current?.stop()
     }
   }, [isRunning])
-
-  useEffect(() => {
-    handleResize()
-
-    const observer = new ResizeObserver(() => {
-      handleResize()
-    })
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', handleResize)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [handleResize])
 
   return (
     <div ref={containerRef} className="visualizer-surface">
@@ -721,6 +667,10 @@ function spectrogramScaleLabelShort(mode: SpectrogramScaleMode): string {
 function vuMeterLabelShort(mode: VUMeterMode, orientation: VUMeterOrientation): string {
   if (mode === 'needle') return 'NEEDLE'
   return orientation === 'vertical' ? 'BAR VERT' : 'BAR HORZ'
+}
+
+function spectrumDisplayModeLabelShort(mode: SpectrumDisplayMode): string {
+  return mode === 'bars' ? 'BARS' : 'CURVE'
 }
 
 function scopeLabel(scope: ScopeKind): string {
@@ -789,6 +739,7 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
@@ -807,6 +758,8 @@ export default function VisualizerPanel({
   const setScopeWidthWeights = useVisualizerSettingsStore((s) => s.setScopeWidthWeights)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const openAnalyzerEditMode = useUIStore((s) => s.openAnalyzerEditMode)
+  const isFullscreen = useUIStore((s) => s.isFullscreen)
+  const panelRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const scopeElementRefs = useRef<Partial<Record<ScopeKind, HTMLDivElement | null>>>({})
   const resizeSessionRef = useRef<ResizeSession | null>(null)
@@ -827,6 +780,10 @@ export default function VisualizerPanel({
     return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
   }, [hiddenScopes, scopeOrder])
   const visibleScopes = visibleScopesProp ?? visibleScopesFromStore
+  const isAnalyzerSurfaceVisible = useAnalyzerSurfaceVisible(panelRef)
+  const isDockedAnalyzerActive = isAnalyzerSurfaceVisible && !isFullscreen
+  const nativeVisualizersAvailable = isNativeAvailable()
+  const mountedVisibleScopes = isAnalyzerSurfaceVisible ? visibleScopes : EMPTY_VISIBLE_SCOPES
 
   const effectiveWidthWeights = useMemo(() => {
     if (!resizePreviewWeights) return widthWeights
@@ -866,23 +823,33 @@ export default function VisualizerPanel({
   }, [isEditMode, stopResize])
 
   useEffect(() => {
+    if (isAnalyzerSurfaceVisible) return
     stopResize(false)
-  }, [visibleScopes.length, stopResize])
+  }, [isAnalyzerSurfaceVisible, stopResize])
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    stopResize(false)
+  }, [isFullscreen, stopResize])
+
+  useEffect(() => {
+    stopResize(false)
+  }, [mountedVisibleScopes.length, stopResize])
 
   const updateHandleOffsets = useCallback(() => {
-    if (!isEditMode || visibleScopes.length < 2) {
+    if (!isDockedAnalyzerActive || !isEditMode || mountedVisibleScopes.length < 2) {
       setHandleOffsets([])
       return
     }
 
     const nextOffsets: number[] = []
-    for (let index = 0; index < visibleScopes.length - 1; index += 1) {
-      const leftElement = scopeElementRefs.current[visibleScopes[index]]
+    for (let index = 0; index < mountedVisibleScopes.length - 1; index += 1) {
+      const leftElement = scopeElementRefs.current[mountedVisibleScopes[index]]
       if (!leftElement) continue
       nextOffsets.push(leftElement.offsetLeft + leftElement.offsetWidth)
     }
     setHandleOffsets(nextOffsets)
-  }, [isEditMode, visibleScopes])
+  }, [isDockedAnalyzerActive, isEditMode, mountedVisibleScopes])
 
   useEffect(() => {
     updateHandleOffsets()
@@ -899,7 +866,7 @@ export default function VisualizerPanel({
       observer.observe(gridRef.current)
     }
 
-    for (const scope of visibleScopes) {
+    for (const scope of mountedVisibleScopes) {
       const element = scopeElementRefs.current[scope]
       if (element) {
         observer.observe(element)
@@ -911,34 +878,34 @@ export default function VisualizerPanel({
       observer.disconnect()
       window.removeEventListener('resize', updateHandleOffsets)
     }
-  }, [gridTemplateColumns, isEditMode, updateHandleOffsets, visibleScopes])
+  }, [gridTemplateColumns, isEditMode, mountedVisibleScopes, updateHandleOffsets])
 
   useEffect(() => {
-    const visibleScopeSet = new Set(visibleScopes)
+    const visibleScopeSet = new Set(mountedVisibleScopes)
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
-      spectrum: isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
-      oscilloscope: isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
-      vectorscope: isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
-      spectrogram: isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
-      vumeter: isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
-      lufsmeter: isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
-      waveform: isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform,
+      spectrum: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
+      oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
+      vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
+      spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
+      vumeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
+      lufsmeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
+      waveform: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform,
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isRunning, scopePopoutState, visibleScopes])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()
   }, [openAnalyzerEditMode])
 
   const startResizeDrag = useCallback((handleIndex: number, event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!isEditMode) return
+    if (!isDockedAnalyzerActive || !isEditMode) return
 
-    const leftScope = visibleScopes[handleIndex]
-    const rightScope = visibleScopes[handleIndex + 1]
+    const leftScope = mountedVisibleScopes[handleIndex]
+    const rightScope = mountedVisibleScopes[handleIndex + 1]
     if (!leftScope || !rightScope) return
 
     const leftElement = scopeElementRefs.current[leftScope]
@@ -954,14 +921,14 @@ export default function VisualizerPanel({
     if (pairWidth <= 0) return
 
     const actualWidths = new Map<ScopeKind, number>()
-    for (const scope of visibleScopes) {
+    for (const scope of mountedVisibleScopes) {
       const element = scopeElementRefs.current[scope]
       if (element) {
         actualWidths.set(scope, element.getBoundingClientRect().width)
       }
     }
 
-    const scopesWithFlexibleWidths = visibleScopes.filter((scope) => (widthWeights[scope] ?? 0) > 0)
+    const scopesWithFlexibleWidths = mountedVisibleScopes.filter((scope) => (widthWeights[scope] ?? 0) > 0)
     const totalFlexibleWidth = scopesWithFlexibleWidths.reduce((sum, scope) => sum + (actualWidths.get(scope) ?? 0), 0)
     const totalFlexibleWeight = scopesWithFlexibleWidths.reduce((sum, scope) => sum + (widthWeights[scope] ?? 0), 0)
     const pixelsPerWeight = totalFlexibleWeight > 0 && totalFlexibleWidth > 0
@@ -1036,7 +1003,7 @@ export default function VisualizerPanel({
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', handlePointerUp)
     window.addEventListener('pointercancel', handlePointerUp)
-  }, [isEditMode, onResizePreviewChange, stopResize, visibleScopes, widthWeights])
+  }, [isDockedAnalyzerActive, isEditMode, mountedVisibleScopes, onResizePreviewChange, stopResize, widthWeights])
 
   const renderScopeItem = (scope: ScopeKind) => {
     const isPoppedOut = scopePopoutState[scope]
@@ -1064,7 +1031,7 @@ export default function VisualizerPanel({
       if (isPoppedOut) return 'POPPED OUT'
       switch (scope) {
         case 'spectrum':
-          return `FFT ${fftSize}`
+          return `${spectrumDisplayModeLabelShort(spectrumDisplayMode)} · FFT ${fftSize}`
         case 'oscilloscope':
           return pitchLock ? 'PITCH-LOCK' : 'FREE-RUN'
         case 'vectorscope':
@@ -1136,10 +1103,11 @@ export default function VisualizerPanel({
             frameScheduler={frameScheduler}
             lineColor={lineColor}
             fftSize={fftSize}
+            displayMode={spectrumDisplayMode}
             tiltDbPerOctave={spectrumTiltDbPerOctave}
             heatmapFill={spectrumHeatmap}
             heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'oscilloscope' ? (
           <DockedOscilloscopeTile
@@ -1147,7 +1115,7 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             pitchLock={pitchLock}
             underfillEnabled={oscilloscopeUnderfillEnabled}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'spectrogram' ? (
           <DockedSpectrogramTile
@@ -1157,7 +1125,7 @@ export default function VisualizerPanel({
             scrollSpeed={spectrogramScrollSpeed}
             clarityMode={spectrogramClarityMode}
             scaleMode={spectrogramScaleMode}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'vumeter' ? (
           <DockedVUMeterTile
@@ -1165,13 +1133,13 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             vuMeterMode={vuMeterMode}
             vuMeterOrientation={vuMeterOrientation}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'lufsmeter' ? (
           <DockedLUFSMeterTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'waveform' ? (
           <DockedWaveformTile
@@ -1180,7 +1148,7 @@ export default function VisualizerPanel({
             scrollSpeed={waveformScrollSpeed}
             gainDb={waveformGainDb}
             multiband={waveformMultiband}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : (
           <DockedVectorscopeTile
@@ -1188,7 +1156,7 @@ export default function VisualizerPanel({
             lineColor={lineColor}
             vectorscopeMode={vectorscopeMode}
             vectorscopeMultiband={vectorscopeMultiband}
-            isRunning={isRunning}
+            isRunning={isDockedAnalyzerActive && isRunning}
           />
         )}
       </div>
@@ -1196,33 +1164,33 @@ export default function VisualizerPanel({
   }
 
   return (
-    <div className={`visualizer-panel ${className}`}>
+    <div ref={panelRef} className={`visualizer-panel ${className}`}>
       <div
         ref={gridRef}
         className={[
           'visualizer-grid',
-          visibleScopes.length === 0 ? 'is-empty' : '',
+          isAnalyzerSurfaceVisible && visibleScopes.length === 0 ? 'is-empty' : '',
           isEditMode ? 'is-edit-mode' : '',
         ].filter(Boolean).join(' ')}
-        style={gridTemplateColumns ? { gridTemplateColumns } : undefined}
-        onDragOver={visibleScopes.length === 0 && isEditMode && onRackEmptyDragOver
+        style={isAnalyzerSurfaceVisible && gridTemplateColumns ? { gridTemplateColumns } : undefined}
+        onDragOver={isAnalyzerSurfaceVisible && visibleScopes.length === 0 && isEditMode && onRackEmptyDragOver
           ? (event) => onRackEmptyDragOver(event)
           : undefined}
-        onDrop={visibleScopes.length === 0 && isEditMode && onRackEmptyDrop
+        onDrop={isAnalyzerSurfaceVisible && visibleScopes.length === 0 && isEditMode && onRackEmptyDrop
           ? (event) => onRackEmptyDrop(event)
           : undefined}
       >
-        {visibleScopes.length > 0 ? (
+        {!isAnalyzerSurfaceVisible ? null : visibleScopes.length > 0 ? (
           <>
-            {visibleScopes.map(renderScopeItem)}
-            {isEditMode && draggedScope === null && visibleScopes.length > 1 && handleOffsets.map((offset, index) => (
+            {mountedVisibleScopes.map(renderScopeItem)}
+            {isEditMode && draggedScope === null && mountedVisibleScopes.length > 1 && handleOffsets.map((offset, index) => (
               <button
-                key={`${visibleScopes[index]}:${visibleScopes[index + 1]}`}
+                key={`${mountedVisibleScopes[index]}:${mountedVisibleScopes[index + 1]}`}
                 type="button"
                 className="visualizer-resize-handle"
                 style={{ left: `${offset}px` }}
                 onPointerDown={(event) => startResizeDrag(index, event)}
-                aria-label={`Resize between ${scopeLabel(visibleScopes[index])} and ${scopeLabel(visibleScopes[index + 1])}`}
+                aria-label={`Resize between ${scopeLabel(mountedVisibleScopes[index])} and ${scopeLabel(mountedVisibleScopes[index + 1])}`}
               >
                 <span className="visualizer-resize-handle-grip" aria-hidden="true" />
               </button>

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
+import { useAstraActivity } from '../../hooks/useAstraActivity'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { DEFAULT_ANALYZER_HEIGHT_PX, normalizeAnalyzerHeightPx, useUIStore } from '../../stores/uiStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import AnalyzerEditOverlay from './AnalyzerEditOverlay'
 import { buildAnalyzerGridTemplateColumns } from './analyzerLayout'
@@ -18,6 +21,31 @@ interface ScopeEditDragState {
 interface HeightResizeSession {
   startClientY: number
   startHeightPx: number
+}
+
+const ANALYZER_RAIL_COLLAPSE_QUERY = '(max-width: 1040px)'
+
+function AnalyzerBrandActivity() {
+  const enabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
+  const analyzerRailCollapsed = useMediaQuery(ANALYZER_RAIL_COLLAPSE_QUERY)
+  if (!enabled || analyzerRailCollapsed) {
+    return <div className="analyzer-brand-dot" />
+  }
+
+  return <AnalyzerBrandActivityIndicator />
+}
+
+function AnalyzerBrandActivityIndicator() {
+  const activity = useAstraActivity()
+
+  return (
+    <AstraActivityIndicator
+      className="analyzer-brand-activity"
+      state={activity.state}
+      event={activity.event}
+      size={22}
+    />
+  )
 }
 
 export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: AnalyzerDeckProps) {
@@ -303,8 +331,9 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
         onClick={toggleAnalyzerEditMode}
         aria-pressed={isAnalyzerEditMode}
         aria-label={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
+        title={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
       >
-        <div className="analyzer-brand-dot" />
+        <AnalyzerBrandActivity />
         <div
           className={`analyzer-brand-label analyzer-brand-label-btn ${isAnalyzerEditMode ? 'active' : ''}`.trim()}
         >

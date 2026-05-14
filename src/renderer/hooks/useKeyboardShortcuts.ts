@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { SEEK_STEP_SECONDS, VOLUME_STEP } from '../constants/keyboardShortcuts'
 import { usePlayerStore } from '../stores/playerStore'
-import { useUIStore } from '../stores/uiStore'
+import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
 import { useJumpToNowPlaying } from './useJumpToNowPlaying'
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -49,6 +49,37 @@ export function useKeyboardShortcuts(): void {
   const jumpToNowPlaying = useJumpToNowPlaying()
 
   useEffect(() => {
+    const unsubscribe = window.electronAPI?.uiScale?.onShortcut((action) => {
+      const ui = useUIStore.getState()
+      if (action === 'reset') {
+        ui.resetUIScalePercent()
+        return
+      }
+
+      ui.setUIScalePercent(getNextUIScalePercent(ui.uiScalePercent, action))
+    })
+
+    return () => {
+      unsubscribe?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    let pendingShortcutSeekTime: number | null = null
+
+    const seekByShortcut = (deltaSeconds: number): void => {
+      const player = usePlayerStore.getState()
+      const baseTime = pendingShortcutSeekTime ?? player.currentTime
+      const nextTime = clamp(baseTime + deltaSeconds, 0, player.duration)
+      pendingShortcutSeekTime = nextTime
+
+      void player.seek(nextTime).finally(() => {
+        if (pendingShortcutSeekTime === nextTime) {
+          pendingShortcutSeekTime = null
+        }
+      })
+    }
+
     const handleKeyDown = (e: KeyboardEvent): void => {
       const key = e.key
       const normalizedKey = key.toLowerCase()
@@ -117,16 +148,14 @@ export function useKeyboardShortcuts(): void {
       if (!e.shiftKey && key === 'ArrowRight') {
         e.preventDefault()
         if (e.repeat) return
-        const nextTime = clamp(player.currentTime + SEEK_STEP_SECONDS, 0, player.duration)
-        void player.seek(nextTime)
+        seekByShortcut(SEEK_STEP_SECONDS)
         return
       }
 
       if (!e.shiftKey && key === 'ArrowLeft') {
         e.preventDefault()
         if (e.repeat) return
-        const nextTime = clamp(player.currentTime - SEEK_STEP_SECONDS, 0, player.duration)
-        void player.seek(nextTime)
+        seekByShortcut(-SEEK_STEP_SECONDS)
         return
       }
 

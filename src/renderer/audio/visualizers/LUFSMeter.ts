@@ -1,6 +1,7 @@
 import { audioEngine } from '../AudioEngine'
 import type { LUFSMeterMode } from '../../../types/lufsmeter'
 import { resolveColorToRgb } from '../../utils/color'
+import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
@@ -8,6 +9,7 @@ export interface LUFSMeterDataSource {
   getPendingLUFSMeterSamples: () => Array<{ left: Float32Array; right: Float32Array }>
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface LUFSMeterOptions {
@@ -28,6 +30,7 @@ const defaultLUFSMeterDataSource: LUFSMeterDataSource = {
   getPendingLUFSMeterSamples: () => audioEngine.flushPendingLUFSMeterSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 // ---- Constants ----
@@ -153,7 +156,7 @@ export class LUFSMeter {
     this.dataSource = dataSource ?? defaultLUFSMeterDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.dataSource.isPlaying(),
+      shouldRun: () => this.isActive(),
       onFrame: this.drawFrame,
     })
 
@@ -223,8 +226,12 @@ export class LUFSMeter {
     this.invalidate()
   }
 
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
+  }
+
   private processAudio(): void {
-    const chunks = this.dataSource.getPendingLUFSMeterSamples()
+    const pendingChunks = this.dataSource.getPendingLUFSMeterSamples()
 
     // Check if sample rate changed
     const sr = this.dataSource.getSampleRate()
@@ -233,9 +240,15 @@ export class LUFSMeter {
       this.resetMeters()
     }
 
+    const active = this.isActive()
     const playing = this.dataSource.isPlaying()
+    const chunks = playing
+      ? pendingChunks
+      : active
+        ? [createStereoSilenceChunk(sr)]
+        : pendingChunks
 
-    if (!playing && chunks.length === 0) {
+    if (!active || (!playing && chunks.length === 0)) {
       // Decay toward silence only when truly stopped
       this.momentaryLUFS = this.momentaryLUFS * SMOOTHING + METER_MIN_LUFS * (1 - SMOOTHING)
       this.shortTermLUFS = this.shortTermLUFS * SMOOTHING + METER_MIN_LUFS * (1 - SMOOTHING)
@@ -476,5 +489,17 @@ export class LUFSMeter {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.ringBufferL = new Float32Array(0)
+    this.ringBufferR = new Float32Array(0)
+    this.ringBufferPos = 0
+    this.ringBufferFilled = 0
+    this.integratedBlockLoudness = []
+    this.integratedBlockSumL = 0
+    this.integratedBlockSumR = 0
+    this.integratedBlockSamples = 0
+    this.integratedHopCounter = 0
   }
 }

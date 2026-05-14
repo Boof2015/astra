@@ -1,18 +1,22 @@
 import { audioEngine } from '../AudioEngine'
-import { spectrum as nativeSpectrum, isNativeAvailable } from '../native'
+import { spectrum as nativeSpectrum, isNativeAvailable, warnNativeUnavailableOnce } from '../native/index'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import {
+  DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
+  type SpectrumDisplayMode,
 } from '../../../types/spectrum'
 
 export interface SpectrumAnalyzerDataSource {
   getPendingSpectrumSamples: () => Float32Array[]
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface SpectrumAnalyzerOptions {
@@ -34,6 +38,7 @@ export interface SpectrumAnalyzerOptions {
   heatmapTiltDbPerOctave?: number
   tiltReferenceHz?: number
   fftSize?: number
+  displayMode?: SpectrumDisplayMode
   dataSource?: SpectrumAnalyzerDataSource
   frameScheduler?: FrameScheduler
 }
@@ -88,13 +93,22 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   tiltReferenceHz: 1000,
-  fftSize: 2048
+  fftSize: 2048,
+  displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
 }
+
+const CLASSIC_BAR_FREQUENCIES = [
+  20, 25, 31.5, 40, 50, 63, 80, 100,
+  125, 160, 200, 250, 315, 400, 500, 630,
+  800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
+  5000, 6300, 8000, 10000, 12500, 16000, 20000,
+] as const
 
 const defaultSpectrumDataSource: SpectrumAnalyzerDataSource = {
   getPendingSpectrumSamples: () => audioEngine.flushPendingSpectrumSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 export class SpectrumAnalyzer {
@@ -130,7 +144,7 @@ export class SpectrumAnalyzer {
     this.dataSource = dataSource ?? defaultSpectrumDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.dataSource.isPlaying(),
+      shouldRun: () => this.nativeInitialized && this.isActive(),
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
@@ -155,7 +169,7 @@ export class SpectrumAnalyzer {
       this.nativeInitialized = true
       console.log(`SpectrumAnalyzer: Using native DSP (${this.sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
-      console.error('SpectrumAnalyzer: Native DSP not available!')
+      warnNativeUnavailableOnce('SpectrumAnalyzer')
     }
   }
 
@@ -168,6 +182,10 @@ export class SpectrumAnalyzer {
       nativeSpectrum.setSampleRate(currentRate)
       console.log(`SpectrumAnalyzer: Sample rate updated to ${currentRate}Hz`)
     }
+  }
+
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
   }
 
   private getNativeSmoothing(): number {
@@ -264,6 +282,32 @@ export class SpectrumAnalyzer {
     )
   }
 
+  private getAverageDbInRange(data: Float32Array, startIndex: number, endIndex: number): number {
+    const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
+    const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
+    const lo = Math.floor(Math.min(clampedStart, clampedEnd))
+    const hi = Math.ceil(Math.max(clampedStart, clampedEnd))
+
+    if (hi <= lo) {
+      return this.getInterpolatedValue(data, clampedStart)
+    }
+
+    let powerSum = 0
+    let count = 0
+    for (let i = lo; i <= hi; i++) {
+      const db = data[i]
+      if (!Number.isFinite(db)) continue
+      powerSum += Math.pow(10, db / 10)
+      count += 1
+    }
+
+    if (count === 0) {
+      return this.getInterpolatedValue(data, clampedStart)
+    }
+
+    return 10 * Math.log10(Math.max(1e-12, powerSum / count))
+  }
+
   private applyTilt(db: number, frequency: number, tiltDbPerOctave = this.options.tiltDbPerOctave): number {
     const safeFreq = Math.max(1, frequency)
     const reference = Math.max(1, this.options.tiltReferenceHz)
@@ -288,6 +332,70 @@ export class SpectrumAnalyzer {
     return monoData
   }
 
+  private drawBars(
+    frequencyData: Float32Array,
+    bufferLength: number,
+    binWidth: number,
+    minFrequency: number,
+    maxFrequency: number,
+  ): void {
+    const { canvas, ctx, options } = this
+    const width = canvas.width
+    const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
+    const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter((frequency) => {
+      return frequency >= minFrequency && frequency <= maxFrequency
+    })
+    const barCount = bandFrequencies.length
+    if (barCount === 0) return
+
+    const slotWidth = width / barCount
+    const gapWidth = Math.min(slotWidth * 0.36, Math.max(dpr, 2 * dpr))
+    const barWidth = Math.max(1, slotWidth - gapWidth)
+
+    for (let i = 0; i < barCount; i++) {
+      const centerFrequency = bandFrequencies[i]
+      const lowerBandEdge = i === 0
+        ? barCount === 1
+          ? centerFrequency / Math.SQRT2
+          : centerFrequency / Math.sqrt(bandFrequencies[i + 1] / centerFrequency)
+        : Math.sqrt(bandFrequencies[i - 1] * centerFrequency)
+      const upperBandEdge = i === barCount - 1
+        ? barCount === 1
+          ? centerFrequency * Math.SQRT2
+          : centerFrequency * Math.sqrt(centerFrequency / bandFrequencies[i - 1])
+        : Math.sqrt(centerFrequency * bandFrequencies[i + 1])
+      const frequency0 = Math.max(minFrequency, lowerBandEdge)
+      const frequency1 = Math.min(maxFrequency, upperBandEdge)
+      const bin0 = frequency0 / binWidth
+      const bin1 = Math.min(frequency1 / binWidth, bufferLength - 1)
+      const rawDb = this.getAverageDbInRange(frequencyData, bin0, bin1)
+      const db = this.applyTilt(rawDb, centerFrequency)
+      const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
+      const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
+      const heatmapNormalized = (heatmapDb - options.minDecibels) / (options.maxDecibels - options.minDecibels)
+      const clamped = Math.max(0, Math.min(1, normalized))
+      const heatmapIntensity = Math.pow(Math.max(0, Math.min(1, heatmapNormalized)), HEATMAP_GAMMA)
+      const barHeight = clamped <= 0 ? 0 : Math.max(dpr, clamped * height)
+      if (barHeight <= 0) continue
+
+      const x = Math.floor((i * slotWidth) + (gapWidth / 2))
+      const y = Math.max(0, Math.floor(height - barHeight))
+
+      if (options.heatmapFill) {
+        const li = Math.round(heatmapIntensity * 255)
+        const r = HEAT_LUT[li * 3]
+        const g = HEAT_LUT[li * 3 + 1]
+        const b = HEAT_LUT[li * 3 + 2]
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
+      } else {
+        ctx.fillStyle = options.lineColor
+      }
+
+      ctx.fillRect(x, y, Math.ceil(barWidth), height - y)
+    }
+  }
+
   private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
@@ -299,7 +407,11 @@ export class SpectrumAnalyzer {
 
     // Get frequency data from native FFT
     if (!isNativeAvailable()) {
-      console.error('SpectrumAnalyzer: Native DSP required')
+      const fallbackNyquist = this.sampleRate / 2
+      const fallbackMinFrequency = Math.max(1, Math.min(options.minFrequency, fallbackNyquist))
+      const fallbackMaxFrequency = Math.max(fallbackMinFrequency + 1, Math.min(options.maxFrequency, fallbackNyquist))
+      warnNativeUnavailableOnce('SpectrumAnalyzer')
+      this.renderStaticLayer(fallbackMinFrequency, fallbackMaxFrequency)
       return
     }
 
@@ -309,7 +421,10 @@ export class SpectrumAnalyzer {
     const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
     const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
 
-    if (!this.dataSource.isPlaying()) {
+    const isActive = this.isActive()
+    const isPlaying = this.dataSource.isPlaying()
+
+    if (!isActive) {
       this.dataSource.getPendingSpectrumSamples()
       nativeSpectrum.reset()
       this.renderStaticLayer(minFrequency, maxFrequency)
@@ -317,7 +432,9 @@ export class SpectrumAnalyzer {
     }
 
     const pendingSpectrum = this.dataSource.getPendingSpectrumSamples()
-    const monoData = this.mergePendingSpectrumChunks(pendingSpectrum)
+    const monoData = isPlaying
+      ? this.mergePendingSpectrumChunks(pendingSpectrum)
+      : createMonoSilenceChunk(this.sampleRate, this.options.fftSize)
     if (!monoData) {
       return
     }
@@ -338,6 +455,11 @@ export class SpectrumAnalyzer {
 
     // Calculate frequency mapping
     const binWidth = nyquist / bufferLength
+
+    if (options.displayMode === 'bars') {
+      this.drawBars(frequencyData, bufferLength, binWidth, minFrequency, maxFrequency)
+      return
+    }
 
     // Build one point per horizontal pixel and preserve local peaks.
     const points: { x: number; y: number; heatmapIntensity: number }[] = []
@@ -541,6 +663,12 @@ export class SpectrumAnalyzer {
     if (isNativeAvailable()) {
       nativeSpectrum.reset()
     }
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
     this.lastSampleRate = 0
   }
 }

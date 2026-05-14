@@ -20,7 +20,9 @@ jobs:
             dist_cmd: dist:linux
           - os: macos-latest
             dist_cmd: dist:mac
-          - os: windows-latest
+          # Pin Windows to VS 2022; windows-latest can roll to VS 2026 before
+          # Electron's node-gyp stack recognizes the new Visual Studio version.
+          - os: windows-2022
             dist_cmd: dist:win
 
     steps:
@@ -70,6 +72,9 @@ jobs:
       - name: Build distributable
         run: npm run ${{ matrix.dist_cmd }}
 
+      - name: Verify release artifact names
+        run: node scripts/release/verify-release-artifacts.cjs
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -80,5 +85,7 @@ jobs:
             dist/*.zip
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 30

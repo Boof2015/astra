@@ -14,6 +14,8 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
+import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
+import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -21,16 +23,20 @@ import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useThemeStore } from './stores/themeStore'
 import { useUpdateStore } from './stores/updateStore'
 import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from './stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
+import { useGraphStore } from './stores/graphStore'
 import { usePlayerStore } from './stores/playerStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
+import { useLyricsPopoutBridge } from './hooks/useLyricsPopoutBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
+import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
@@ -70,11 +76,15 @@ function App() {
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
+  useLyricsPopoutBridge()
   useScopePopoutBridge()
+  useMemoryDiagnosticsBridge()
   useCoverArtAccent()
   useRuntimeAppIconSync()
 
   const showQueue = useUIStore((s) => s.showQueue)
+  const activeView = useUIStore((s) => s.activeView)
+  const setActiveView = useUIStore((s) => s.setActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
@@ -82,18 +92,31 @@ function App() {
   const hideAnalyzerRack = useUIStore((s) => s.hideAnalyzerRack)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
+  const uiScalePercent = useUIStore((s) => s.uiScalePercent)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
+  const graphEnabled = useGraphStore((s) => s.enabled)
 
-  const appStyle = useMemo(() => ({
-    '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
-  }) as CSSProperties, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible])
+  const appStyle = useMemo(() => {
+    const uiScale = uiScalePercent / 100
+    return {
+      '--analyzer-height': `${isAnalyzerRackVisible ? (analyzerHeightPreviewPx ?? analyzerHeightPx) : 0}px`,
+      '--ui-scale': String(uiScale),
+      '--ui-scale-size': `${100 / uiScale}%`,
+    } as CSSProperties
+  }, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible, uiScalePercent])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible) {
       setAnalyzerHeightPreviewPx(null)
     }
   }, [isAnalyzerRackVisible])
+
+  useEffect(() => {
+    if (activeView === 'graph' && !graphEnabled) {
+      setActiveView('home')
+    }
+  }, [activeView, graphEnabled, setActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {
@@ -164,6 +187,7 @@ function App() {
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
+    void usePhoneRemoteSettingsStore.getState().init()
     void useLastFmSettingsStore.getState().init()
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
@@ -221,80 +245,83 @@ function App() {
   }, [])
 
   return (
-    <div
-      className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
-      style={appStyle}
-    >
-      <TitleBar />
-      {isAnalyzerRackVisible && (
-        <div
-          ref={rackShellRef}
-          className={`analyzer-rack-shell ${isCollapseToggleNearby ? 'is-collapse-toggle-nearby' : ''}`.trim()}
-        >
-          <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
-          {!isAnalyzerEditMode && (
-            <button
-              ref={collapseToggleRef}
-              type="button"
-              className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
-              onClick={hideAnalyzerRack}
-              title="Hide analyzer rack"
-              aria-label="Hide analyzer rack"
-            >
-              <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
-                <path
-                  d="M1 7l6-5 6 5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          )}
+    <div className="app-scale-host" style={appStyle}>
+      <div
+        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
+      >
+        <TitleBar />
+        {isAnalyzerRackVisible && (
+          <div
+            ref={rackShellRef}
+            className={`analyzer-rack-shell ${isCollapseToggleNearby ? 'is-collapse-toggle-nearby' : ''}`.trim()}
+          >
+            <AnalyzerDeck onAnalyzerHeightPreviewChange={setAnalyzerHeightPreviewPx} />
+            {!isAnalyzerEditMode && (
+              <button
+                ref={collapseToggleRef}
+                type="button"
+                className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
+                onClick={hideAnalyzerRack}
+                title="Hide analyzer rack"
+                aria-label="Hide analyzer rack"
+              >
+                <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+                  <path
+                    d="M1 7l6-5 6 5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+        {!isAnalyzerRackVisible && (
+          <button
+            type="button"
+            className="analyzer-rack-toggle analyzer-rack-restore-toggle"
+            onClick={showAnalyzerRack}
+            title="Show analyzer rack"
+            aria-label="Show analyzer rack"
+          >
+            <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
+              <path
+                d="M1 7l6-5 6 5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+        <div className="app-body">
+          <Sidebar />
+          <div className="app-content">
+            <ViewRouter />
+            {showQueue && (
+              <div className="queue-sidebar">
+                <QueuePanelBoundary>
+                  <QueuePanel />
+                </QueuePanelBoundary>
+              </div>
+            )}
+            {showInfoSidebar && <InfoSidebar />}
+          </div>
         </div>
-      )}
-      {!isAnalyzerRackVisible && (
-        <button
-          type="button"
-          className="analyzer-rack-toggle analyzer-rack-restore-toggle"
-          onClick={showAnalyzerRack}
-          title="Show analyzer rack"
-          aria-label="Show analyzer rack"
-        >
-          <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
-            <path
-              d="M1 7l6-5 6 5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      )}
-      <div className="app-body">
-        <Sidebar />
-        <div className="app-content">
-          <ViewRouter />
-          {showQueue && (
-            <div className="queue-sidebar">
-              <QueuePanelBoundary>
-                <QueuePanel />
-              </QueuePanelBoundary>
-            </div>
-          )}
-          {showInfoSidebar && <InfoSidebar />}
-        </div>
+        <TransportBar />
+        <DecodeFallbackCue />
+        <OutputDelayCue />
+        <AssociatedOpenCue />
+        <UpdateAvailableCue />
+        <QuickLaunchPalette />
+        <KeyboardShortcutsModal />
+        <LibraryIntegrityPanel />
+        <TrackIntegrityResultModal />
+        {isFullscreen && <FullscreenMode />}
       </div>
-      <TransportBar />
-      <DecodeFallbackCue />
-      <OutputDelayCue />
-      <AssociatedOpenCue />
-      <UpdateAvailableCue />
-      <QuickLaunchPalette />
-      <KeyboardShortcutsModal />
-      {isFullscreen && <FullscreenMode />}
     </div>
   )
 }

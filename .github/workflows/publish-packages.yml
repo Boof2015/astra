@@ -98,15 +98,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          grep -Eq '^[[:space:]]*depends = fuse2$' "$AUR_WORKDIR/.SRCINFO"
           PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
           if [ -z "$PKG_FILE" ]; then
             echo "Built package archive not found." >&2
             exit 1
           fi
           bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/bin/astra'
-          bsdtar -tf "$PKG_FILE" | grep -Fx 'opt/astra/AppRun'
+          bsdtar -tf "$PKG_FILE" | grep -Fx 'opt/astra/astra.AppImage'
           bsdtar -tf "$PKG_FILE" | grep -Fx 'usr/share/applications/astra.desktop'
           bsdtar -tf "$PKG_FILE" | grep -Eq '^usr/share/icons/hicolor/.+/apps/astra\.(png|svg)$'
+          if bsdtar -tf "$PKG_FILE" | grep -Fxq 'opt/astra/AppRun'; then
+            echo "Legacy extracted AppRun payload is still present in the package." >&2
+            exit 1
+          fi
+
+      - name: Install and smoke test AUR package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_FILE="$(find "$AUR_WORKDIR" -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n 1)"
+          if [ -z "$PKG_FILE" ]; then
+            echo "Built package archive not found." >&2
+            exit 1
+          fi
+
+          pacman -U --noconfirm "$PKG_FILE"
+
+          su builder -c 'test -x /usr/bin/astra'
+          su builder -c 'test -x /opt/astra/astra.AppImage'
+          stat -c '%a %n' /usr/bin/astra /opt/astra/astra.AppImage
+          grep -Fx 'exec /opt/astra/astra.AppImage --no-sandbox "$@"' /usr/bin/astra
+
+          grep -Fx 'Exec=astra %U' /usr/share/applications/astra.desktop
+          grep -Fx 'TryExec=astra' /usr/share/applications/astra.desktop
+          grep -Fx 'Icon=astra' /usr/share/applications/astra.desktop
+
+          su builder -c '
+            tmpdir="$(mktemp -d)"
+            trap "rm -rf \"$tmpdir\"" EXIT
+            cd "$tmpdir"
+            /opt/astra/astra.AppImage --appimage-extract >/dev/null
+            test -x "$tmpdir/squashfs-root/AppRun"
+            test -x "$tmpdir/squashfs-root/astra"
+            test -f "$tmpdir/squashfs-root/astra.desktop"
+          '
 
   publish-aur:
     name: Publish to AUR
@@ -242,7 +278,7 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.1.2
         with:
           pkgname: astra-music-bin
           pkgbuild: .github/aur/PKGBUILD
@@ -263,16 +299,18 @@ jobs:
         id: ver
         run: |
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}"
-          VER="${TAG#v}"
+          ASSET_VER="${TAG#v}"
+          CASK_VER="${ASSET_VER%-beta}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "ver=$VER" >> $GITHUB_OUTPUT
+          echo "asset_ver=$ASSET_VER" >> $GITHUB_OUTPUT
+          echo "cask_ver=$CASK_VER" >> $GITHUB_OUTPUT
 
       - name: Compute DMG SHA256
         id: sha256
         shell: bash
         run: |
           set -euo pipefail
-          URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.ver }}-Mac-arm64.dmg"
+          URL="https://github.com/Boof2015/astra/releases/download/${{ steps.ver.outputs.tag }}/Astra-${{ steps.ver.outputs.asset_ver }}-Mac-arm64.dmg"
           TMP_FILE="$(mktemp)"
           trap 'rm -f "$TMP_FILE"' EXIT
           curl -fsSL "$URL" -o "$TMP_FILE"
@@ -281,39 +319,157 @@ jobs:
 
       - name: Update cask file
         run: |
-          VER="${{ steps.ver.outputs.ver }}"
+          VER="${{ steps.ver.outputs.cask_ver }}"
           SHA="${{ steps.sha256.outputs.sha256 }}"
-          sed -i "s/version \".*\"/version \"${VER}\"/" .github/homebrew/astra.rb
-          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" .github/homebrew/astra.rb
+          sed -i "s/version \".*\"/version \"${VER}\"/" .github/homebrew/astra-music.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" .github/homebrew/astra-music.rb
 
       - name: Submit PR to homebrew-cask
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
         run: |
-          VER="${{ steps.ver.outputs.ver }}"
+          VER="${{ steps.ver.outputs.cask_ver }}"
           gh repo fork homebrew/homebrew-cask --clone
           cd homebrew-cask
-          git checkout -b "astra-${VER}"
-          cp ../.github/homebrew/astra.rb Casks/a/astra.rb
+          git checkout -b "astra-music-${VER}"
+          cp ../.github/homebrew/astra-music.rb Casks/a/astra-music.rb
           git config user.name "Boof2015"
           git config user.email "contact@novaml.ai"
-          git add Casks/a/astra.rb
-          git commit -m "Update astra to ${VER}"
-          git push origin "astra-${VER}"
+          git add Casks/a/astra-music.rb
+          git commit -m "astra-music ${VER}"
+          git push origin "astra-music-${VER}"
+          {
+            echo "Add Astra, a GPL-3.0 music player with gapless playback, parametric EQ, and real-time DSP visualizers."
+            echo
+            echo "Astra currently has 233 GitHub stars, above Homebrew's 225-star self-submission threshold."
+            echo
+            echo "Disclosure: Codex/ChatGPT helped prepare and review this cask. I reviewed the final cask and PR text myself and can address maintainer feedback manually."
+          } > pr-body.md
           gh pr create \
             --repo homebrew/homebrew-cask \
-            --title "Update astra to ${VER}" \
-            --body "Update astra cask to version ${VER}." \
-            --head "Boof2015:astra-${VER}"
+            --title "astra-music ${VER} (new cask)" \
+            --body-file pr-body.md \
+            --head "Boof2015:astra-music-${VER}"
 
   publish-winget:
     name: Publish to winget
-    # Disabled until the initial Boof2015.Astra manifest exists in winget-pkgs.
-    if: ${{ false }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WINGET_INSTALLERS_REGEX: 'Astra\.Setup\..+\.Windows\.exe$'
     steps:
+      - name: Preflight winget release
+        id: winget-preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TAG="${RELEASE_TAG:-}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Release tag could not be resolved from the workflow event." >&2
+            exit 1
+          fi
+
+          VER="${TAG#v}"
+          if [ -z "$VER" ]; then
+            echo "::error::Release tag '$TAG' does not contain a package version." >&2
+            exit 1
+          fi
+
+          RELEASE_JSON="$(mktemp)"
+          WINGET_RESPONSE="$(mktemp)"
+          trap 'rm -f "$RELEASE_JSON" "$WINGET_RESPONSE"' EXIT
+
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            -o "$RELEASE_JSON"
+
+          MATCH_COUNT="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))] | length' "$RELEASE_JSON")"
+          if [ "$MATCH_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one winget installer asset matching '$WINGET_INSTALLERS_REGEX' for $TAG, found $MATCH_COUNT." >&2
+            echo "Release assets:" >&2
+            jq -r '.assets[]?.name // empty' "$RELEASE_JSON" >&2
+            exit 1
+          fi
+
+          MATCH_NAME="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))][0].name' "$RELEASE_JSON")"
+          MATCH_URL="$(jq -r --arg pattern "$WINGET_INSTALLERS_REGEX" '[.assets[]? | select(.name | test($pattern))][0].browser_download_url' "$RELEASE_JSON")"
+          echo "Validated winget installer asset: $MATCH_NAME"
+          echo "Installer URL: $MATCH_URL"
+
+          WINGET_STATUS="$(curl -sS \
+            -o "$WINGET_RESPONSE" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/b/Boof2015/Astra/${VER}?ref=master")"
+
+          if [ "$WINGET_STATUS" = "200" ]; then
+            echo "Boof2015.Astra $VER already exists in winget-pkgs; skipping winget PR submission."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$WINGET_STATUS" = "404" ]; then
+            echo "Boof2015.Astra $VER is not in winget-pkgs yet; winget PR submission will run."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not check existing winget-pkgs manifest for Boof2015.Astra $VER. GitHub API returned HTTP $WINGET_STATUS." >&2
+            cat "$WINGET_RESPONSE" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify winget token
+        if: ${{ steps.winget-preflight.outputs.should_publish == 'true' }}
+        shell: bash
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_TOKEN:-}" ]; then
+            echo "::error::WINGET_TOKEN is empty or missing. Add a GitHub PAT that can push to Boof2015/winget-pkgs and open PRs against microsoft/winget-pkgs." >&2
+            exit 1
+          fi
+
+          FORK_JSON="$(mktemp)"
+          trap 'rm -f "$FORK_JSON"' EXIT
+          FORK_STATUS="$(curl -sS \
+            -o "$FORK_JSON" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Boof2015/winget-pkgs")"
+
+          if [ "$FORK_STATUS" != "200" ]; then
+            echo "::error::WINGET_TOKEN could not access Boof2015/winget-pkgs. GitHub API returned HTTP $FORK_STATUS." >&2
+            cat "$FORK_JSON" >&2
+            exit 1
+          fi
+
+          CAN_PUSH="$(jq -r '.permissions.push // false' "$FORK_JSON")"
+          if [ "$CAN_PUSH" != "true" ]; then
+            echo "::error::WINGET_TOKEN can access Boof2015/winget-pkgs but does not have push permission." >&2
+            exit 1
+          fi
+
+          echo "WINGET_TOKEN can push to Boof2015/winget-pkgs."
+
       - uses: vedantmgoyal9/winget-releaser@v2
+        if: ${{ steps.winget-preflight.outputs.should_publish == 'true' }}
         with:
           identifier: Boof2015.Astra
+          version: ${{ steps.winget-preflight.outputs.version }}
+          release-tag: ${{ steps.winget-preflight.outputs.tag }}
+          release-repository: astra
+          fork-user: Boof2015
           token: ${{ secrets.WINGET_TOKEN }}
-          installers-regex: 'Astra\.Setup\..+\.Windows\.exe$'
+          installers-regex: ${{ env.WINGET_INSTALLERS_REGEX }}

@@ -5,8 +5,12 @@ interface CreatePlaylistModalProps {
   isOpen: boolean
   onClose: () => void
   onCreate: (name: string, coverImagePath: string | null) => Promise<unknown>
+  onImport?: () => Promise<boolean>
+  importLabel?: string
+  isImporting?: boolean
   title?: string
   initialName?: string
+  pendingTrackCount?: number
 }
 
 function toFilePreviewSource(filePath: string): string {
@@ -18,8 +22,12 @@ export default function CreatePlaylistModal({
   isOpen,
   onClose,
   onCreate,
+  onImport,
+  importLabel = 'Import',
+  isImporting = false,
   title = 'Create Playlist',
-  initialName = ''
+  initialName = '',
+  pendingTrackCount
 }: CreatePlaylistModalProps) {
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
@@ -91,6 +99,20 @@ export default function CreatePlaylistModal({
     }
   }
 
+  const handleImport = async () => {
+    if (!onImport || isSubmitting || isImporting) return
+
+    setSubmitError(null)
+    try {
+      const shouldClose = await onImport()
+      if (shouldClose) {
+        onClose()
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Failed to import playlist.')
+    }
+  }
+
   if (!isOpen) return null
 
   return (
@@ -127,6 +149,12 @@ export default function CreatePlaylistModal({
               autoFocus
             />
           </label>
+
+          {typeof pendingTrackCount === 'number' && pendingTrackCount > 0 && (
+            <div className="playlist-create-track-count" role="status">
+              {pendingTrackCount} {pendingTrackCount === 1 ? 'track' : 'tracks'} will be added after creation.
+            </div>
+          )}
 
           <div className="playlist-create-cover-row">
             <div className="playlist-create-cover-preview">
@@ -175,16 +203,28 @@ export default function CreatePlaylistModal({
         </div>
 
         <div className="modal-footer playlist-create-modal-footer">
-          <button className="settings-btn" onClick={onClose} disabled={isSubmitting}>
-            Cancel
-          </button>
-          <button
-            className="settings-btn settings-btn-primary"
-            onClick={() => void handleCreate()}
-            disabled={isSubmitting || name.trim().length === 0}
-          >
-            {isSubmitting ? 'Creating...' : 'Create'}
-          </button>
+          {onImport && (
+            <button
+              type="button"
+              className="settings-btn playlist-create-import-btn"
+              onClick={() => void handleImport()}
+              disabled={isSubmitting || isImporting}
+            >
+              {isImporting ? 'Importing...' : importLabel}
+            </button>
+          )}
+          <div className="playlist-create-modal-actions">
+            <button className="settings-btn" onClick={onClose} disabled={isSubmitting}>
+              Cancel
+            </button>
+            <button
+              className="settings-btn settings-btn-primary"
+              onClick={() => void handleCreate()}
+              disabled={isSubmitting || name.trim().length === 0}
+            >
+              {isSubmitting ? 'Creating...' : 'Create'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

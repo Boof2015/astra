@@ -3,6 +3,11 @@ import { readdirSync } from 'fs'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import {
+  buildDiscordActivityFromPresence,
+  type DiscordActivityCompactStatusMode,
+  type DiscordActivityExpandedInfoMode
+} from './discordRpcActivity'
 
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
@@ -11,13 +16,14 @@ const DISCORD_RPC_CLIENT_ID = '1471059486100815915'
 const DISCORD_APP_INFO_LOOKUP_URL = `https://discord.com/api/v10/oauth2/applications/${DISCORD_RPC_CLIENT_ID}/rpc`
 const DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS = 5000
 const DISCORD_RPC_USER_AGENT = 'Astra-Discord-RPC/0.2.0 (https://github.com/Boof2015/astra)'
+const DISCORD_SET_ACTIVITY_COALESCE_MS = 150
+const DISCORD_SET_ACTIVITY_ACK_TIMEOUT_MS = 1500
 
 const OPCODE_HANDSHAKE = 0
 const OPCODE_FRAME = 1
 const OPCODE_CLOSE = 2
 const OPCODE_PING = 3
 const OPCODE_PONG = 4
-const DISCORD_ACTIVITY_NAME = 'Astra'
 const DISCORD_LINUX_SOCKET_PREFIXES = ['discord-ipc', 'vesktop-ipc'] as const
 const DISCORD_LINUX_RUNTIME_APP_DIR_HINTS = [
   'app/com.discordapp.Discord',
@@ -56,6 +62,8 @@ export interface DiscordPresenceUpdate {
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled?: boolean
+  compactStatusMode?: DiscordActivityCompactStatusMode
+  expandedInfoMode?: DiscordActivityExpandedInfoMode
 }
 
 export interface DiscordRpcConfigureResult {
@@ -85,6 +93,14 @@ function normalizeBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined
 }
 
+function normalizeCompactStatusMode(value: unknown): DiscordActivityCompactStatusMode {
+  return value === 'artist' ? 'artist' : 'title'
+}
+
+function normalizeExpandedInfoMode(value: unknown): DiscordActivityExpandedInfoMode {
+  return value === 'album' ? 'album' : 'file-info'
+}
+
 function normalizeHttpsUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = value.trim()
@@ -97,53 +113,6 @@ function normalizeHttpsUrl(value: unknown): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function truncate(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value
-  return value.slice(0, maxLength - 1) + '…'
-}
-
-function toTrackLine(artist?: string): string {
-  const normalized = artist?.trim()
-  if (!normalized) return 'Astra'
-  return normalized
-}
-
-function formatSampleRate(sampleRate?: number): string | null {
-  const normalized = normalizeNumber(sampleRate)
-  if (!normalized || normalized <= 0) return null
-  if (normalized >= 1000) {
-    const khz = Math.round((normalized / 1000) * 10) / 10
-    return Number.isInteger(khz) ? `${khz.toFixed(0)}kHz` : `${khz.toFixed(1)}kHz`
-  }
-  return `${Math.round(normalized)}Hz`
-}
-
-function buildQualityLine(track: DiscordTrackPresence): string | null {
-  const parts: string[] = []
-
-  if (track.isAtmosJoc) {
-    parts.push('Atmos JOC')
-  } else {
-    const codec = normalizeText(track.codec)
-    const format = normalizeText(track.format)
-    const codecLine = codec ?? (format ? format.toUpperCase() : null)
-    if (codecLine) {
-      parts.push(codecLine)
-    }
-  }
-
-  const bitDepth = normalizeNumber(track.bitDepth)
-  if (bitDepth && bitDepth > 0) {
-    parts.push(`${Math.round(bitDepth)}-bit`)
-  }
-
-  const sampleRate = formatSampleRate(track.sampleRate)
-  if (sampleRate) parts.push(sampleRate)
-
-  if (parts.length === 0) return null
-  return parts.join(' - ')
 }
 
 function listDirectories(path: string): string[] {
@@ -159,6 +128,8 @@ function listDirectories(path: string): string[] {
 export class DiscordRpcService {
   private enabled = false
   private coverArtEnabled = false
+  private compactStatusMode: DiscordActivityCompactStatusMode = 'title'
+  private expandedInfoMode: DiscordActivityExpandedInfoMode = 'file-info'
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -166,18 +137,33 @@ export class DiscordRpcService {
   private connectPromise: Promise<boolean> | null = null
   private pendingPresence: DiscordPresenceUpdate | null = null
   private lastPresenceSignature: string | null = null
+  private presenceSendTimer: NodeJS.Timeout | null = null
+  private pendingForcePresenceSend = false
+  private setActivityInFlightNonce: string | null = null
+  private setActivityInFlightTimer: NodeJS.Timeout | null = null
+  private sendAfterInFlight = false
   private fallbackLargeImageUrl: string | null = null
   private fallbackLargeImageLookupPromise: Promise<void> | null = null
 
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
     const nextCoverArtEnabled = Boolean(options.coverArtEnabled)
+    const nextCompactStatusMode = normalizeCompactStatusMode(options.compactStatusMode)
+    const nextExpandedInfoMode = normalizeExpandedInfoMode(options.expandedInfoMode)
     const enabledChanged = this.enabled !== nextEnabled
+    const displayChanged = this.coverArtEnabled !== nextCoverArtEnabled
+      || this.compactStatusMode !== nextCompactStatusMode
+      || this.expandedInfoMode !== nextExpandedInfoMode
 
     this.enabled = nextEnabled
     this.coverArtEnabled = nextCoverArtEnabled
+    this.compactStatusMode = nextCompactStatusMode
+    this.expandedInfoMode = nextExpandedInfoMode
 
     if (!this.enabled) {
+      this.clearPresenceSendTimer()
+      this.clearSetActivityInFlight()
+      this.pendingForcePresenceSend = false
       this.clearReconnectTimer()
       this.disconnectSocket()
       return {
@@ -194,6 +180,9 @@ export class DiscordRpcService {
     const connected = await this.ensureConnected()
     if (!this.fallbackLargeImageUrl) {
       void this.ensureFallbackLargeImageUrl()
+    }
+    if (displayChanged && this.ready && this.pendingPresence) {
+      this.queuePendingPresenceSend(0, true)
     }
     if (connected) {
       return {
@@ -242,20 +231,27 @@ export class DiscordRpcService {
       return
     }
 
-    this.sendPendingPresence()
+    this.queuePendingPresenceSend()
   }
 
   clearPresence(): void {
     this.pendingPresence = null
     this.lastPresenceSignature = null
-    if (!this.ready) return
-    this.sendSetActivity(null)
+    this.pendingForcePresenceSend = true
+    if (!this.ready) {
+      this.clearPresenceSendTimer()
+      return
+    }
+    this.queuePendingPresenceSend(0, true)
   }
 
   shutdown(): void {
     this.enabled = false
     this.pendingPresence = null
     this.lastPresenceSignature = null
+    this.clearPresenceSendTimer()
+    this.clearSetActivityInFlight()
+    this.pendingForcePresenceSend = false
     this.clearReconnectTimer()
     this.disconnectSocket()
   }
@@ -344,6 +340,7 @@ export class DiscordRpcService {
   }
 
   private disconnectSocket(): void {
+    this.clearSetActivityInFlight()
     if (!this.socket) return
     const socket = this.socket
     this.socket = null
@@ -440,6 +437,48 @@ export class DiscordRpcService {
     })
   }
 
+  private clearPresenceSendTimer(): void {
+    if (!this.presenceSendTimer) return
+    clearTimeout(this.presenceSendTimer)
+    this.presenceSendTimer = null
+  }
+
+  private clearSetActivityInFlight(): void {
+    if (this.setActivityInFlightTimer) {
+      clearTimeout(this.setActivityInFlightTimer)
+      this.setActivityInFlightTimer = null
+    }
+    this.setActivityInFlightNonce = null
+    this.sendAfterInFlight = false
+  }
+
+  private queuePendingPresenceSend(
+    delayMs = DISCORD_SET_ACTIVITY_COALESCE_MS,
+    force = false
+  ): void {
+    if (!this.enabled || !this.ready) return
+
+    this.pendingForcePresenceSend = this.pendingForcePresenceSend || force
+    this.clearPresenceSendTimer()
+
+    this.presenceSendTimer = setTimeout(() => {
+      this.presenceSendTimer = null
+      const forceSend = this.pendingForcePresenceSend
+      this.pendingForcePresenceSend = false
+      this.flushPendingPresence(forceSend)
+    }, Math.max(0, delayMs))
+  }
+
+  private flushPendingPresence(force = false): void {
+    if (this.setActivityInFlightNonce) {
+      this.sendAfterInFlight = true
+      this.pendingForcePresenceSend = this.pendingForcePresenceSend || force
+      return
+    }
+
+    this.sendPendingPresence(force)
+  }
+
   private sendPendingPresence(force = false): void {
     const activity = this.buildActivityFromPresence(this.pendingPresence)
     const signature = JSON.stringify(activity)
@@ -453,77 +492,40 @@ export class DiscordRpcService {
       return
     }
     if (!force && signature === this.lastPresenceSignature) return
-    if (this.sendSetActivity(activity)) {
+    const nonce = this.sendSetActivity(activity)
+    if (nonce) {
       this.lastPresenceSignature = signature
+      this.setActivityInFlightNonce = nonce
+      this.setActivityInFlightTimer = setTimeout(() => {
+        if (this.setActivityInFlightNonce !== nonce) return
+        this.clearSetActivityInFlight()
+        this.queuePendingPresenceSend(0, this.pendingForcePresenceSend)
+      }, DISCORD_SET_ACTIVITY_ACK_TIMEOUT_MS)
     }
   }
 
-  private sendSetActivity(activity: Record<string, unknown> | null): boolean {
+  private sendSetActivity(activity: Record<string, unknown> | null): string | null {
+    const nonce = randomUUID()
     return this.sendFrame(OPCODE_FRAME, {
       cmd: 'SET_ACTIVITY',
       args: {
         pid: process.pid,
         activity
       },
-      nonce: randomUUID()
-    })
+      nonce
+    }) ? nonce : null
   }
 
   private buildActivityFromPresence(
     presence: DiscordPresenceUpdate | null
   ): Record<string, unknown> | null {
-    if (!presence || !presence.track) return null
-    if (presence.playbackState === 'stopped') return null
-
-    const title = presence.track.title.trim()
-    if (!title) return null
-
-    const activityType = presence.playbackState === 'playing' ? 2 : 0
-    const activity: Record<string, unknown> = {
-      name: DISCORD_ACTIVITY_NAME,
-      type: activityType,
-      details: truncate(title, 128),
-      state: '',
-      instance: false
-    }
-
-    const identityLine = toTrackLine(presence.track.artist)
-    const qualityLine = buildQualityLine(presence.track)
-    const combinedStateLine = [identityLine !== 'Astra' ? identityLine : null, qualityLine]
-      .filter(Boolean)
-      .join(' - ') || identityLine
-    activity.state = truncate(combinedStateLine, 128)
-
-    if (presence.playbackState === 'paused') {
-      activity.state = truncate(`Paused • ${combinedStateLine}`, 128)
-    } else if (presence.playbackState === 'loading') {
-      activity.state = truncate(`Loading • ${combinedStateLine}`, 128)
-    }
-
-    if (presence.playbackState === 'playing') {
-      const duration = normalizeNumber(presence.durationSeconds ?? presence.track.durationSeconds)
-      const current = normalizeNumber(presence.currentTimeSeconds) ?? 0
-      const now = Math.floor(Date.now() / 1000)
-      const start = Math.max(0, now - Math.floor(current))
-      if (duration && duration > 0) {
-        activity.timestamps = {
-          start,
-          end: start + Math.floor(duration)
-        }
-      } else {
-        activity.timestamps = { start }
-      }
-    }
-
-    const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence.track.coverArtUrl) : undefined
-    const largeImage = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
-    if (largeImage) {
-      activity.assets = {
-        large_image: largeImage
-      }
-    }
-
-    return activity
+    const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence?.track?.coverArtUrl) : undefined
+    const largeImageUrl = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
+    return buildDiscordActivityFromPresence(presence, {
+      largeImageUrl,
+      compactStatusMode: this.compactStatusMode,
+      expandedInfoMode: this.expandedInfoMode
+    })
   }
 
   private async ensureFallbackLargeImageUrl(): Promise<void> {
@@ -574,7 +576,7 @@ export class DiscordRpcService {
 
       this.fallbackLargeImageUrl = iconUrl
       if (this.enabled && this.ready && this.pendingPresence) {
-        this.sendPendingPresence(true)
+        this.queuePendingPresenceSend(0, true)
       }
     } finally {
       clearTimeout(timeout)
@@ -648,18 +650,38 @@ export class DiscordRpcService {
     if (opcode !== OPCODE_FRAME || !payload || typeof payload !== 'object') return
 
     const record = payload as Record<string, unknown>
+    const nonce = typeof record.nonce === 'string' ? record.nonce : null
+    if (nonce) {
+      this.handleSetActivityResponse(nonce)
+    }
+
     if (record.evt === 'READY') {
       this.ready = true
       if (!this.fallbackLargeImageUrl) {
         void this.ensureFallbackLargeImageUrl()
       }
-      this.sendPendingPresence(true)
+      this.queuePendingPresenceSend(0, true)
       return
     }
 
     if (record.evt === 'ERROR') {
       const errorData = record.data
       console.warn('Discord RPC protocol error:', errorData)
+    }
+  }
+
+  private handleSetActivityResponse(nonce: string): void {
+    if (nonce !== this.setActivityInFlightNonce) return
+
+    if (this.setActivityInFlightTimer) {
+      clearTimeout(this.setActivityInFlightTimer)
+      this.setActivityInFlightTimer = null
+    }
+    this.setActivityInFlightNonce = null
+
+    if (this.sendAfterInFlight) {
+      this.sendAfterInFlight = false
+      this.queuePendingPresenceSend(0, this.pendingForcePresenceSend)
     }
   }
 }

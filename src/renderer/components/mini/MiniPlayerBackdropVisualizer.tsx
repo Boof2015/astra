@@ -8,8 +8,6 @@ import {
   colorWithAlpha,
   frequencyAtX,
   lerp,
-  neutralHaloColorForLuminance,
-  parseColorToRgb,
   relativeLuminance,
   saturationFromRgb,
   tiltOffsetAtFrequency
@@ -19,8 +17,14 @@ import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
   spectrum as nativeSpectrum
-} from '../../audio/native'
+} from '../../audio/native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
+import {
+  deriveFallbackBackdropMetrics,
+  resolveMiniBackdropRenderProfile,
+  type BackdropMetrics,
+  type MiniBackdropResolvedProfile
+} from './miniPlayerBackdropContrast.ts'
 
 interface MiniPlayerBackdropVisualizerProps {
   mode: MiniPlayerVisualizerMode
@@ -36,10 +40,6 @@ const SPECTRUM_MAX_DB = -10
 const SPECTRUM_SMOOTHING_BASE = 0.9
 const ARTWORK_SAMPLE_SIZE = 28
 const ARTWORK_MIN_ALPHA = 24
-const DEFAULT_BACKDROP_METRICS = {
-  luminance: 0.24,
-  saturation: 0.34
-}
 const MINI_MAX_PENDING_CHUNKS = 24
 const MINI_MAX_DPR = 1.5
 const MINI_COMPACT_SPECTRUM_POINT_CAP = 320
@@ -47,17 +47,9 @@ const MINI_WIDE_SPECTRUM_POINT_CAP = 520
 const MINI_OSCILLOSCOPE_POINT_CAP = 1024
 const MINI_OSCILLOSCOPE_UNDERFILL_POINT_CAP = 640
 
-interface BackdropMetrics {
+interface WeightedLuminanceSample {
   luminance: number
-  saturation: number
-}
-
-interface VisibilityProfile {
-  visibilityBoost: number
-  contrastRisk: number
-  backdropLuminance: number
-  haloColor: string
-  blendMode: 'screen' | 'normal'
+  weight: number
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {
@@ -82,6 +74,25 @@ function loadImage(source: string): Promise<HTMLImageElement> {
   })
 }
 
+function weightedPercentile(
+  samples: WeightedLuminanceSample[],
+  totalWeight: number,
+  percentile: number
+): number {
+  if (samples.length === 0 || totalWeight <= 0) return 0
+
+  const target = clamp(percentile, 0, 1) * totalWeight
+  let cumulative = 0
+  for (const sample of samples) {
+    cumulative += sample.weight
+    if (cumulative >= target) {
+      return sample.luminance
+    }
+  }
+
+  return samples[samples.length - 1]?.luminance ?? 0
+}
+
 function sampleArtworkMetrics(image: HTMLImageElement): BackdropMetrics | null {
   const canvas = document.createElement('canvas')
   canvas.width = ARTWORK_SAMPLE_SIZE
@@ -98,6 +109,7 @@ function sampleArtworkMetrics(image: HTMLImageElement): BackdropMetrics | null {
     let luminanceSum = 0
     let saturationSum = 0
     let totalWeight = 0
+    const luminanceSamples: WeightedLuminanceSample[] = []
 
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3]
@@ -107,16 +119,22 @@ function sampleArtworkMetrics(image: HTMLImageElement): BackdropMetrics | null {
       if (weight <= 0) continue
 
       const rgb = { r: data[i], g: data[i + 1], b: data[i + 2] }
-      luminanceSum += relativeLuminance(rgb) * weight
+      const luminance = relativeLuminance(rgb)
+      luminanceSum += luminance * weight
       saturationSum += saturationFromRgb(rgb) * weight
       totalWeight += weight
+      luminanceSamples.push({ luminance, weight })
     }
 
     if (totalWeight <= 0) return null
 
+    luminanceSamples.sort((left, right) => left.luminance - right.luminance)
+
     return {
-      luminance: clamp(luminanceSum / totalWeight, 0, 1),
-      saturation: clamp(saturationSum / totalWeight, 0, 1)
+      luminanceMean: clamp(luminanceSum / totalWeight, 0, 1),
+      saturationMean: clamp(saturationSum / totalWeight, 0, 1),
+      luminanceP20: clamp(weightedPercentile(luminanceSamples, totalWeight, 0.2), 0, 1),
+      luminanceP80: clamp(weightedPercentile(luminanceSamples, totalWeight, 0.8), 0, 1)
     }
   } catch {
     return null
@@ -134,96 +152,11 @@ async function sampleBackdropMetrics(source: string): Promise<BackdropMetrics | 
   }
 }
 
-function deriveFallbackBackdropMetrics(lineColor: string): BackdropMetrics {
-  const parsed = parseColorToRgb(lineColor)
-  if (!parsed) {
-    return DEFAULT_BACKDROP_METRICS
-  }
-
-  const lineLuminance = relativeLuminance(parsed)
-  const lineSaturation = saturationFromRgb(parsed)
-
-  return {
-    luminance: clamp((lineLuminance * 0.44) + 0.12, 0.14, 0.58),
-    saturation: clamp(lineSaturation * 0.66, 0.08, 0.72)
-  }
-}
-
-function resolveVisibilityProfile(
-  mode: MiniPlayerVisualizerMode,
-  lineColor: string,
-  backdropMetrics: BackdropMetrics
-): VisibilityProfile {
-  const lineRgb = parseColorToRgb(lineColor)
-  const lineLuminance = lineRgb ? relativeLuminance(lineRgb) : 0.58
-  const lineSaturation = lineRgb ? saturationFromRgb(lineRgb) : 0.5
-
-  // Scrim and blur darken the effective background, so we bias sampled luminance lower.
-  const backdropLuminance = clamp((backdropMetrics.luminance * 0.68) + 0.12, 0, 1)
-  const backdropSaturation = clamp(backdropMetrics.saturation, 0, 1)
-  const luminanceDelta = Math.abs(lineLuminance - backdropLuminance)
-
-  const contrastRisk = clamp(1 - (luminanceDelta / 0.42), 0, 1)
-  const desaturationRisk = clamp(1 - (backdropSaturation / 0.32), 0, 1)
-  const lineDesaturationRisk = clamp(1 - (lineSaturation / 0.24), 0, 1)
-  const visibilityBoost = clamp(
-    (contrastRisk * 0.72) +
-    (desaturationRisk * 0.18) +
-    (lineDesaturationRisk * 0.10),
-    0,
-    1
-  )
-
-  const brightConflict = backdropLuminance > 0.72 && lineLuminance > 0.56
-  const darkConflict = backdropLuminance < 0.2 && lineLuminance < 0.34
-  const lowDeltaConflict = luminanceDelta < 0.16
-  const blendMode: 'screen' | 'normal' = (mode !== 'off' && (brightConflict || darkConflict || lowDeltaConflict || contrastRisk > 0.60))
-    ? 'normal'
-    : 'screen'
-
-  return {
-    visibilityBoost,
-    contrastRisk,
-    backdropLuminance,
-    haloColor: neutralHaloColorForLuminance(backdropLuminance),
-    blendMode
-  }
-}
-
-function mixRgb(
-  base: { r: number; g: number; b: number },
-  tint: { r: number; g: number; b: number },
-  amount: number
-): { r: number; g: number; b: number } {
-  const safeAmount = clamp(amount, 0, 1)
-  const mixChannel = (from: number, to: number) => Math.round((from * (1 - safeAmount)) + (to * safeAmount))
-  return {
-    r: mixChannel(base.r, tint.r),
-    g: mixChannel(base.g, tint.g),
-    b: mixChannel(base.b, tint.b),
-  }
-}
-
-function adaptiveMiniUnderfillColor(
-  accentColor: string,
-  backdropLuminance: number,
-  tintAmount: number,
-  alpha: number
-): string {
-  const safeAlpha = clamp(alpha, 0, 1)
-  const accent = parseColorToRgb(accentColor) ?? { r: 56, g: 189, b: 248 }
-  const neutral = backdropLuminance < 0.56
-    ? { r: 246, g: 248, b: 252 }
-    : { r: 20, g: 24, b: 30 }
-  const mixed = mixRgb(neutral, accent, tintAmount)
-  return `rgba(${mixed.r}, ${mixed.g}, ${mixed.b}, ${safeAlpha})`
-}
-
 function resolveOpacity(
   mode: MiniPlayerVisualizerMode,
   layoutMode: 'tiny' | 'compact' | 'wide' | 'hero',
   idle: boolean,
-  profile: VisibilityProfile
+  profile: MiniBackdropResolvedProfile
 ): number {
   if (mode === 'off') return 0
 
@@ -269,7 +202,6 @@ export default function MiniPlayerBackdropVisualizer({
   const canvasSizeRef = useRef({ width: 0, height: 0 })
   const modeRef = useRef(mode)
   const layoutModeRef = useRef(layoutMode)
-  const lineColorRef = useRef(lineColor)
   const idleRef = useRef(isIdle)
 
   const pendingLeftChunksRef = useRef<Float32Array[]>([])
@@ -283,18 +215,14 @@ export default function MiniPlayerBackdropVisualizer({
   const configuredSampleRateRef = useRef(0)
   const configuredFftSizeRef = useRef(0)
   const configuredPitchLockRef = useRef<boolean | null>(null)
-  const visibilityProfileRef = useRef<VisibilityProfile>(
-    resolveVisibilityProfile(mode, lineColor, DEFAULT_BACKDROP_METRICS)
+  const renderProfileRef = useRef<MiniBackdropResolvedProfile>(
+    resolveMiniBackdropRenderProfile(lineColor, deriveFallbackBackdropMetrics(lineColor))
   )
   const [sampledBackdropMetrics, setSampledBackdropMetrics] = useState<BackdropMetrics | null>(null)
 
   useEffect(() => {
     layoutModeRef.current = layoutMode
   }, [layoutMode])
-
-  useEffect(() => {
-    lineColorRef.current = lineColor
-  }, [lineColor])
 
   useEffect(() => {
     idleRef.current = isIdle
@@ -327,22 +255,22 @@ export default function MiniPlayerBackdropVisualizer({
 
   const activeBackdropMetrics = sampledBackdropMetrics ?? fallbackBackdropMetrics
 
-  const visibilityProfile = useMemo(
-    () => resolveVisibilityProfile(mode, lineColor, activeBackdropMetrics),
-    [mode, lineColor, activeBackdropMetrics]
+  const renderProfile = useMemo(
+    () => resolveMiniBackdropRenderProfile(lineColor, activeBackdropMetrics),
+    [lineColor, activeBackdropMetrics]
   )
 
   useEffect(() => {
-    visibilityProfileRef.current = visibilityProfile
-  }, [visibilityProfile])
+    renderProfileRef.current = renderProfile
+  }, [renderProfile])
 
   const visualizerStyle = useMemo(() => {
-    const opacity = resolveOpacity(mode, layoutMode, isIdle, visibilityProfile)
+    const opacity = resolveOpacity(mode, layoutMode, isIdle, renderProfile)
     return {
       '--mini-visualizer-opacity': opacity.toFixed(3),
-      '--mini-visualizer-blend': visibilityProfile.blendMode,
+      '--mini-visualizer-blend': renderProfile.blendMode,
     } as CSSProperties
-  }, [isIdle, layoutMode, mode, visibilityProfile])
+  }, [isIdle, layoutMode, mode, renderProfile])
 
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current
@@ -433,7 +361,6 @@ export default function MiniPlayerBackdropVisualizer({
       const rawUnderfillEnabled = (chunk as { oscilloscopeUnderfillEnabled?: unknown }).oscilloscopeUnderfillEnabled
       oscilloscopeUnderfillEnabledRef.current = typeof rawUnderfillEnabled === 'boolean' ? rawUnderfillEnabled : false
       fftSizeRef.current = Math.max(1024, chunk.fftSize)
-      lineColorRef.current = chunk.lineColor
       const activeMode = modeRef.current
 
       if (chunk.reset) {
@@ -516,10 +443,8 @@ export default function MiniPlayerBackdropVisualizer({
     const drawSpectrum = (
       width: number,
       height: number,
-      accentColor: string,
-      visualizerColor: string,
       idle: boolean,
-      profile: VisibilityProfile
+      profile: MiniBackdropResolvedProfile
     ) => {
       const monoChunks = pendingMonoChunksRef.current
       pendingMonoChunksRef.current = []
@@ -575,12 +500,36 @@ export default function MiniPlayerBackdropVisualizer({
 
       if (points.length < 2) return
 
-      const lineAlpha = clamp((idle ? 0.22 : 0.44) + (idle ? 0.13 : 0.24) * profile.visibilityBoost, 0, 0.78)
-      const fillTopAlpha = clamp((idle ? 0.06 : 0.14) + (idle ? 0.05 : 0.10) * profile.visibilityBoost, 0, 0.38)
-      const fillMidAlpha = clamp((idle ? 0.03 : 0.06) + (idle ? 0.04 : 0.08) * profile.visibilityBoost, 0, 0.26)
-      const haloAlpha = clamp((idle ? 0.18 : 0.26) + (0.34 * profile.visibilityBoost), 0.16, 0.72)
-      const haloWidth = 2.4 + (1.4 * profile.visibilityBoost)
-      const lineWidth = 1.85 + (0.4 * profile.visibilityBoost)
+      const lineAlpha = clamp(
+        (idle ? 0.22 : 0.44) +
+        ((idle ? 0.13 : 0.24) * profile.visibilityBoost) +
+        ((idle ? 0.04 : 0.08) * profile.neutralMix),
+        0,
+        0.84
+      )
+      const fillTopAlpha = clamp(
+        (idle ? 0.06 : 0.14) +
+        ((idle ? 0.05 : 0.10) * profile.visibilityBoost) +
+        (0.04 * profile.neutralMix),
+        0,
+        0.42
+      )
+      const fillMidAlpha = clamp(
+        (idle ? 0.03 : 0.06) +
+        ((idle ? 0.04 : 0.08) * profile.visibilityBoost) +
+        (0.03 * profile.neutralMix),
+        0,
+        0.30
+      )
+      const haloAlpha = clamp(
+        (idle ? 0.18 : 0.26) +
+        (0.26 * profile.visibilityBoost) +
+        (0.22 * profile.neutralMix),
+        0.16,
+        0.82
+      )
+      const haloWidth = 2.4 + (1.0 * profile.visibilityBoost) + (1.0 * profile.neutralMix)
+      const lineWidth = 1.85 + (0.28 * profile.visibilityBoost) + (0.22 * profile.neutralMix)
 
       ctx.beginPath()
       ctx.moveTo(points[0].x, points[0].y)
@@ -592,9 +541,9 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.closePath()
 
       const gradient = ctx.createLinearGradient(0, height, 0, 0)
-      gradient.addColorStop(0, colorWithAlpha(visualizerColor, 0, accentColor))
-      gradient.addColorStop(0.45, colorWithAlpha(visualizerColor, fillMidAlpha, accentColor))
-      gradient.addColorStop(1, colorWithAlpha(visualizerColor, fillTopAlpha, accentColor))
+      gradient.addColorStop(0, colorWithAlpha(profile.fillColor, 0, profile.fillColor))
+      gradient.addColorStop(0.45, colorWithAlpha(profile.fillColor, fillMidAlpha, profile.fillColor))
+      gradient.addColorStop(1, colorWithAlpha(profile.fillColor, fillTopAlpha, profile.fillColor))
       ctx.fillStyle = gradient
       ctx.fill()
 
@@ -614,7 +563,7 @@ export default function MiniPlayerBackdropVisualizer({
       for (let i = 1; i < points.length; i++) {
         ctx.lineTo(points[i].x, points[i].y)
       }
-      ctx.strokeStyle = colorWithAlpha(visualizerColor, lineAlpha, accentColor)
+      ctx.strokeStyle = colorWithAlpha(profile.strokeColor, lineAlpha, profile.strokeColor)
       ctx.lineWidth = lineWidth
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
@@ -624,10 +573,8 @@ export default function MiniPlayerBackdropVisualizer({
     const drawOscilloscope = (
       width: number,
       height: number,
-      accentColor: string,
-      visualizerColor: string,
       idle: boolean,
-      profile: VisibilityProfile
+      profile: MiniBackdropResolvedProfile
     ) => {
       const leftChunks = pendingLeftChunksRef.current
       pendingLeftChunksRef.current = []
@@ -655,22 +602,51 @@ export default function MiniPlayerBackdropVisualizer({
       if (!renderData || renderData.length === 0) return
 
       const centerY = height / 2
-      const baselineAccentAlpha = clamp((idle ? 0.18 : 0.28) + (idle ? 0.06 : 0.16) * profile.visibilityBoost, 0, 0.60)
-      const baselineHaloAlpha = clamp((idle ? 0.14 : 0.22) + (0.26 * profile.visibilityBoost), 0.12, 0.56)
-      const waveformAccentAlpha = clamp((idle ? 0.28 : 0.50) + (idle ? 0.10 : 0.22) * profile.visibilityBoost, 0, 0.82)
-      const waveformHaloAlpha = clamp((idle ? 0.17 : 0.27) + (0.32 * profile.visibilityBoost), 0.14, 0.76)
-      const underfillPeakAlpha = clamp((idle ? 0.12 : 0.24) + (idle ? 0.05 : 0.10) * profile.visibilityBoost, 0.12, 0.38)
-      const underfillTintAmount = clamp((idle ? 0.12 : 0.18) + (0.08 * profile.visibilityBoost), 0.10, 0.30)
+      const baselineAccentAlpha = clamp(
+        (idle ? 0.18 : 0.28) +
+        ((idle ? 0.06 : 0.16) * profile.visibilityBoost) +
+        ((idle ? 0.03 : 0.07) * profile.neutralMix),
+        0,
+        0.66
+      )
+      const baselineHaloAlpha = clamp(
+        (idle ? 0.14 : 0.22) +
+        (0.20 * profile.visibilityBoost) +
+        (0.20 * profile.neutralMix),
+        0.12,
+        0.62
+      )
+      const waveformAccentAlpha = clamp(
+        (idle ? 0.28 : 0.50) +
+        ((idle ? 0.10 : 0.22) * profile.visibilityBoost) +
+        ((idle ? 0.05 : 0.10) * profile.neutralMix),
+        0,
+        0.86
+      )
+      const waveformHaloAlpha = clamp(
+        (idle ? 0.17 : 0.27) +
+        (0.24 * profile.visibilityBoost) +
+        (0.22 * profile.neutralMix),
+        0.14,
+        0.82
+      )
+      const underfillPeakAlpha = clamp(
+        (idle ? 0.12 : 0.24) +
+        ((idle ? 0.05 : 0.10) * profile.visibilityBoost) +
+        (0.06 * profile.neutralMix),
+        0.12,
+        0.42
+      )
       const underfillEnabled = oscilloscopeUnderfillEnabledRef.current
 
       ctx.strokeStyle = colorWithAlpha(profile.haloColor, baselineHaloAlpha, profile.haloColor)
-      ctx.lineWidth = 2.0 + (0.9 * profile.visibilityBoost)
+      ctx.lineWidth = 2.0 + (0.6 * profile.visibilityBoost) + (0.6 * profile.neutralMix)
       ctx.beginPath()
       ctx.moveTo(0, centerY)
       ctx.lineTo(width, centerY)
       ctx.stroke()
 
-      ctx.strokeStyle = colorWithAlpha(visualizerColor, baselineAccentAlpha, accentColor)
+      ctx.strokeStyle = colorWithAlpha(profile.strokeColor, baselineAccentAlpha, profile.strokeColor)
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(0, centerY)
@@ -713,69 +689,13 @@ export default function MiniPlayerBackdropVisualizer({
         const underfillShoulderAlpha = clamp(underfillPeakAlpha * 0.72, 0.09, 0.32)
         const underfillCenterlineAlpha = clamp(underfillPeakAlpha * 0.30, 0.06, 0.14)
         const underfillGradient = ctx.createLinearGradient(0, 0, 0, height)
-        underfillGradient.addColorStop(
-          0,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillPeakAlpha
-          )
-        )
-        underfillGradient.addColorStop(
-          0.44,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillPeakAlpha * 0.94
-          )
-        )
-        underfillGradient.addColorStop(
-          0.48,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillShoulderAlpha
-          )
-        )
-        underfillGradient.addColorStop(
-          0.5,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillCenterlineAlpha
-          )
-        )
-        underfillGradient.addColorStop(
-          0.52,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillShoulderAlpha
-          )
-        )
-        underfillGradient.addColorStop(
-          0.56,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillPeakAlpha * 0.94
-          )
-        )
-        underfillGradient.addColorStop(
-          1,
-          adaptiveMiniUnderfillColor(
-            visualizerColor,
-            profile.backdropLuminance,
-            underfillTintAmount,
-            underfillPeakAlpha
-          )
-        )
+        underfillGradient.addColorStop(0, colorWithAlpha(profile.fillColor, underfillPeakAlpha, profile.fillColor))
+        underfillGradient.addColorStop(0.44, colorWithAlpha(profile.fillColor, underfillPeakAlpha * 0.94, profile.fillColor))
+        underfillGradient.addColorStop(0.48, colorWithAlpha(profile.fillColor, underfillShoulderAlpha, profile.fillColor))
+        underfillGradient.addColorStop(0.5, colorWithAlpha(profile.fillColor, underfillCenterlineAlpha, profile.fillColor))
+        underfillGradient.addColorStop(0.52, colorWithAlpha(profile.fillColor, underfillShoulderAlpha, profile.fillColor))
+        underfillGradient.addColorStop(0.56, colorWithAlpha(profile.fillColor, underfillPeakAlpha * 0.94, profile.fillColor))
+        underfillGradient.addColorStop(1, colorWithAlpha(profile.fillColor, underfillPeakAlpha, profile.fillColor))
         ctx.fillStyle = underfillGradient
         ctx.fill()
       }
@@ -788,7 +708,7 @@ export default function MiniPlayerBackdropVisualizer({
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.strokeStyle = colorWithAlpha(profile.haloColor, waveformHaloAlpha, profile.haloColor)
-      ctx.lineWidth = 2.4 + (1.3 * profile.visibilityBoost)
+      ctx.lineWidth = 2.4 + (0.9 * profile.visibilityBoost) + (0.9 * profile.neutralMix)
       ctx.stroke()
 
       ctx.beginPath()
@@ -796,8 +716,8 @@ export default function MiniPlayerBackdropVisualizer({
       for (let i = 1; i < points.length; i++) {
         ctx.lineTo(points[i].x, points[i].y)
       }
-      ctx.strokeStyle = colorWithAlpha(visualizerColor, waveformAccentAlpha, accentColor)
-      ctx.lineWidth = 1.6 + (0.4 * profile.visibilityBoost)
+      ctx.strokeStyle = colorWithAlpha(profile.strokeColor, waveformAccentAlpha, profile.strokeColor)
+      ctx.lineWidth = 1.6 + (0.28 * profile.visibilityBoost) + (0.24 * profile.neutralMix)
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.stroke()
@@ -805,8 +725,12 @@ export default function MiniPlayerBackdropVisualizer({
 
     drawRef.current = () => {
       const { width, height } = canvasSizeRef.current
-      if (!isNativeAvailable() || width <= 0 || height <= 0) {
+      if (width <= 0 || height <= 0) {
         scheduleNextFrame()
+        return
+      }
+      if (!isNativeAvailable()) {
+        ctx.clearRect(0, 0, width, height)
         return
       }
 
@@ -819,15 +743,13 @@ export default function MiniPlayerBackdropVisualizer({
 
       ensureNativeConfig()
 
-      const visualizerColor = lineColorRef.current
-      const accentColor = visualizerColor
       const idle = idleRef.current
-      const profile = visibilityProfileRef.current
+      const profile = renderProfileRef.current
 
       if (currentMode === 'spectrum') {
-        drawSpectrum(width, height, accentColor, visualizerColor, idle, profile)
+        drawSpectrum(width, height, idle, profile)
       } else {
-        drawOscilloscope(width, height, accentColor, visualizerColor, idle, profile)
+        drawOscilloscope(width, height, idle, profile)
       }
 
       scheduleNextFrame()

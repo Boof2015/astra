@@ -1,5 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { join } from 'path'
+import { getHeapSpaceStatistics } from 'v8'
 import type {
   MiniPlayerCommand,
   MiniPlayerSnapshot,
@@ -7,6 +8,11 @@ import type {
   MiniPlayerVisualizerStreamChunk,
   MiniPlayerWindowState
 } from '../types/miniPlayer'
+import type {
+  LyricsPopoutCommand,
+  LyricsPopoutSnapshot,
+  LyricsPopoutWindowState
+} from '../types/lyricsPopout'
 import type {
   ScopeKind,
   ScopePopoutChunk,
@@ -16,8 +22,15 @@ import type {
   LocalApiStatus
 } from '../types/localApi'
 import type {
+  PhoneRemotePairedDevice,
+  PhoneRemotePairingTicket,
+  PhoneRemotePendingPairingRequest,
+  PhoneRemoteStatus
+} from '../types/phoneRemote'
+import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
+  LastFmCustomProfileInput,
   LastFmStatus
 } from '../types/lastFm'
 import type {
@@ -61,13 +74,41 @@ import type {
   RemoteStreamEvent,
   RemoteStreamInfo
 } from '../types/remoteStream'
+import type {
+  MemoryDiagnosticsBlinkResourceUsageSnapshot,
+  MemoryDiagnosticsCaptureBundleResult,
+  MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsProcessMemoryStats,
+  MemoryDiagnosticsRendererSnapshot,
+  MemoryDiagnosticsRendererMemoryStats,
+  MemoryDiagnosticsSnapshotRequest,
+  MemoryDiagnosticsStatus
+} from '../types/diagnostics'
+import type { AppBuildInfo } from '../types/appBuildInfo'
+import type { UIScaleShortcutAction } from '../types/uiScale'
+import type {
+  IntegrityFinding,
+  IntegrityScanMode,
+  IntegrityScanProgress,
+  IntegrityScanResult,
+  IntegrityScanScope
+} from '../types/libraryIntegrity'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
+
+type RuntimeIconImageSetPayload = {
+  images: Array<{
+    size: number
+    dataUrl: string
+  }>
+}
 
 export interface AudioFileMetadata {
   title?: string
   artist?: string
+  artistNames?: string[]
   album?: string
   albumArtist?: string
+  albumArtistNames?: string[]
   year?: number
   trackNumber?: number
   duration?: number
@@ -98,10 +139,14 @@ export interface AudioLoadOptions {
 export interface DbTrack {
   id: number
   path: string
+  album_identity_key: string
+  is_new: boolean
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -132,6 +177,20 @@ export interface DbTrack {
   modified_at: number
 }
 
+export interface LibraryTrackPageRequest {
+  offset?: number
+  limit?: number
+}
+
+export interface LibraryTrackPage {
+  tracks: DbTrack[]
+  offset: number
+  limit: number
+  total: number
+  nextOffset: number
+  hasMore: boolean
+}
+
 export interface LibraryFolder {
   id: number
   path: string
@@ -160,12 +219,18 @@ export interface Album {
   year: number | null
   artwork_hash: string | null
   track_count: number
+  is_new: boolean
+}
+
+export interface AlbumListOptions {
+  includeSingles?: boolean
 }
 
 export interface Artist {
   artist: string
   track_count: number
   artwork_hash: string | null
+  artwork_source: 'manual' | 'detected' | 'track' | null
 }
 
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
@@ -209,6 +274,19 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count: number
+}
+
+export interface PlaylistTrackEntry {
+  id: number
+  track_path: string
+  position: number
+  added_at: number
+  missing: boolean
+  title: string | null
+  artist: string | null
+  album: string | null
+  track: DbTrack | null
 }
 
 export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
@@ -220,6 +298,7 @@ export interface PlaylistImportResult {
   playlistName: string | null
   entriesTotal: number
   importedCount: number
+  missingEntryCount: number
   matchedByPathCount: number
   matchedByMetadataCount: number
   unmatchedCount: number
@@ -280,9 +359,8 @@ export interface AppPerformanceStats {
   workingSetMb: number
 }
 
-export interface RendererMemoryStats {
-  privateMb: number
-}
+export type MainProcessMemoryStats = MemoryDiagnosticsProcessMemoryStats
+export type RendererMemoryStats = MemoryDiagnosticsRendererMemoryStats
 
 export interface DiscordTrackPresence {
   title: string
@@ -306,6 +384,16 @@ export interface DiscordPresenceUpdate {
   currentTimeSeconds?: number
   durationSeconds?: number
   track?: DiscordTrackPresence | null
+}
+
+export type DiscordRpcCompactStatusMode = 'title' | 'artist'
+export type DiscordRpcExpandedInfoMode = 'file-info' | 'album'
+
+export interface DiscordRpcConfigureOptions {
+  enabled: boolean
+  coverArtEnabled: boolean
+  compactStatusMode?: DiscordRpcCompactStatusMode
+  expandedInfoMode?: DiscordRpcExpandedInfoMode
 }
 
 export interface DiscordRpcConfigureResult {
@@ -421,6 +509,44 @@ const nativeAudioController = createNativeAudioController(visualizerDSP, {
   unavailableReason: nativeAddonLoadError
 })
 
+function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
+  const usage = webFrame.getResourceUsage()
+  return {
+    images: { ...usage.images },
+    scripts: { ...usage.scripts },
+    cssStyleSheets: { ...usage.cssStyleSheets },
+    xslStyleSheets: { ...usage.xslStyleSheets },
+    fonts: { ...usage.fonts },
+    other: { ...usage.other }
+  }
+}
+
+const LIBRARY_TRACK_PAGE_LIMIT = 500
+
+async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
+  const tracks: DbTrack[] = []
+  let offset = 0
+
+  while (true) {
+    const page = await ipcRenderer.invoke('library:getTracksPage', {
+      offset,
+      limit: LIBRARY_TRACK_PAGE_LIMIT
+    }) as LibraryTrackPage
+
+    tracks.push(...page.tracks)
+    if (!page.hasMore || page.tracks.length === 0) {
+      break
+    }
+
+    const nextOffset = Number(page.nextOffset)
+    offset = Number.isFinite(nextOffset) && nextOffset > offset
+      ? Math.trunc(nextOffset)
+      : offset + page.tracks.length
+  }
+
+  return tracks
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -469,6 +595,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  lyricsPopout: {
+    open: () => ipcRenderer.invoke('lyrics-popout:open'),
+    close: () => ipcRenderer.invoke('lyrics-popout:close'),
+    getWindowState: () => ipcRenderer.invoke('lyrics-popout:getWindowState'),
+    getSnapshot: () => ipcRenderer.invoke('lyrics-popout:getSnapshot'),
+    publishSnapshot: (snapshot: LyricsPopoutSnapshot) => ipcRenderer.send('lyrics-popout:publishSnapshot', snapshot),
+    sendCommand: (command: LyricsPopoutCommand) => ipcRenderer.send('lyrics-popout:sendCommand', command),
+    onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: LyricsPopoutSnapshot) => callback(snapshot)
+      ipcRenderer.on('lyrics-popout:snapshot', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:snapshot', handler)
+    },
+    onCommand: (callback: (command: LyricsPopoutCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: LyricsPopoutCommand) => callback(command)
+      ipcRenderer.on('lyrics-popout:command', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:command', handler)
+    },
+    onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: LyricsPopoutWindowState) => callback(state)
+      ipcRenderer.on('lyrics-popout:windowState', handler)
+      return () => ipcRenderer.removeListener('lyrics-popout:windowState', handler)
+    }
+  },
+
   scopePopout: {
     open: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:open', scope),
     recall: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:recall', scope),
@@ -489,11 +639,56 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Platform info
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getAppBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:getBuildInfo'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
+  getMainProcessMemoryStats: (): Promise<MainProcessMemoryStats> => ipcRenderer.invoke('app:getMainProcessMemoryStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
+    const memoryUsage = process.memoryUsage()
+    const heapSpaces = getHeapSpaceStatistics()
+    const getSpaceUsedBytes = (spaceName: string): number | null => {
+      const match = heapSpaces.find((space) => space.space_name === spaceName)
+      return match && Number.isFinite(match.space_used_size)
+        ? match.space_used_size
+        : null
+    }
     return {
-      privateMb: memoryInfo.private / 1024
+      privateMb: memoryInfo.private / 1024,
+      rssBytes: memoryUsage.rss,
+      heapUsedBytes: memoryUsage.heapUsed,
+      heapTotalBytes: memoryUsage.heapTotal,
+      externalBytes: memoryUsage.external,
+      arrayBuffersBytes: memoryUsage.arrayBuffers,
+      heapSpaces: {
+        oldSpaceUsedBytes: getSpaceUsedBytes('old_space'),
+        newSpaceUsedBytes: getSpaceUsedBytes('new_space'),
+        codeSpaceUsedBytes: getSpaceUsedBytes('code_space'),
+        mapSpaceUsedBytes: getSpaceUsedBytes('map_space'),
+        largeObjectSpaceUsedBytes: getSpaceUsedBytes('large_object_space')
+      }
+    }
+  },
+  diagnostics: {
+    getStatus: (): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:getStatus'),
+    setEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:setEnabled', enabled),
+    revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealCurrentLog'),
+    revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealPreviousLog'),
+    captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
+      ipcRenderer.invoke('diagnostics:captureMemoryBundle', tag),
+    getBlinkResourceUsage: (): MemoryDiagnosticsBlinkResourceUsageSnapshot => getBlinkResourceUsage(),
+    publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
+      ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
+    logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
+      ipcRenderer.invoke('diagnostics:logEvent', payload),
+    onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => callback(status)
+      ipcRenderer.on('diagnostics:status', handler)
+      return () => ipcRenderer.removeListener('diagnostics:status', handler)
+    },
+    onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: MemoryDiagnosticsSnapshotRequest) => callback(request)
+      ipcRenderer.on('diagnostics:requestRendererSnapshot', handler)
+      return () => ipcRenderer.removeListener('diagnostics:requestRendererSnapshot', handler)
     }
   },
 
@@ -503,12 +698,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   theme: {
-    setRuntimeIconDataUrl: (dataUrl: string) => ipcRenderer.send('theme:setRuntimeIconDataUrl', dataUrl),
+    setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) =>
+      ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
+  },
+
+  uiScale: {
+    onShortcut: (callback: (action: UIScaleShortcutAction) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, action: UIScaleShortcutAction) => callback(action)
+      ipcRenderer.on('ui-scale:shortcut', handler)
+      return () => ipcRenderer.removeListener('ui-scale:shortcut', handler)
+    }
   },
 
   // Integrations
   discord: {
-    configure: (options: { enabled: boolean; coverArtEnabled: boolean }): Promise<DiscordRpcConfigureResult> =>
+    configure: (options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> =>
       ipcRenderer.invoke('discord:configure', options),
     updatePresence: (update: DiscordPresenceUpdate) => ipcRenderer.send('discord:updatePresence', update),
     clearPresence: () => ipcRenderer.send('discord:clearPresence'),
@@ -531,12 +735,50 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  phoneRemote: {
+    getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:getStatus'),
+    createPairingTicket: (baseUrl?: string): Promise<PhoneRemotePairingTicket> =>
+      ipcRenderer.invoke('phone-remote:createPairingTicket', baseUrl),
+    listPairedDevices: (): Promise<PhoneRemotePairedDevice[]> =>
+      ipcRenderer.invoke('phone-remote:listPairedDevices'),
+    listPendingPairingRequests: (): Promise<PhoneRemotePendingPairingRequest[]> =>
+      ipcRenderer.invoke('phone-remote:listPendingPairingRequests'),
+    approvePairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
+      ipcRenderer.invoke('phone-remote:approvePairingRequest', id),
+    rejectPairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
+      ipcRenderer.invoke('phone-remote:rejectPairingRequest', id),
+    revokePairedDevice: (id: string): Promise<PhoneRemotePairedDevice | null> =>
+      ipcRenderer.invoke('phone-remote:revokePairedDevice', id),
+    revokeAllPairedDevices: (): Promise<number> => ipcRenderer.invoke('phone-remote:revokeAllPairedDevices'),
+    setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:setEnabled', enabled),
+    setPort: (port: number): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:setPort', port),
+    resetToDefaults: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:resetToDefaults'),
+    onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
+      ipcRenderer.on('phone-remote:status', handler)
+      return () => ipcRenderer.removeListener('phone-remote:status', handler)
+    }
+  },
+
   lastFm: {
     getStatus: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:getStatus'),
     setEnabled: (enabled: boolean): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:setEnabled', enabled),
-    beginAuth: (): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth'),
+    createCustomProfile: (input: LastFmCustomProfileInput): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:createCustomProfile', input),
+    updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:updateCustomProfile', profileId, input),
+    deleteCustomProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:deleteCustomProfile', profileId),
+    setActiveProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:setActiveProfile', profileId),
+    setProfileEnabled: (profileId: string, enabled: boolean): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:setProfileEnabled', profileId, enabled),
+    beginAuth: (profileId?: string): Promise<LastFmAuthStartResult> => ipcRenderer.invoke('lastfm:beginAuth', profileId),
     finishAuth: (): Promise<LastFmAuthFinishResult> => ipcRenderer.invoke('lastfm:finishAuth'),
     disconnect: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:disconnect'),
+    disconnectProfile: (profileId: string): Promise<LastFmStatus> =>
+      ipcRenderer.invoke('lastfm:disconnectProfile', profileId),
     resetToDefaults: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:resetToDefaults'),
     onStatus: (callback: (status: LastFmStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: LastFmStatus) => callback(status)
@@ -577,8 +819,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('subsonic:deleteSource', sourceId, purgeTracks),
     testSource: (input: SubsonicSourceTestInput): Promise<SubsonicSourceTestResult> =>
       ipcRenderer.invoke('subsonic:testSource', input),
-    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('subsonic:syncSource', sourceId),
-    syncAll: (): Promise<void> => ipcRenderer.invoke('subsonic:syncAll'),
+    syncSource: (sourceId: number, syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('subsonic:syncSource', sourceId, syncSessionKey),
+    syncAll: (syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('subsonic:syncAll', syncSessionKey),
     getStatus: (): Promise<SubsonicStatusSnapshot> => ipcRenderer.invoke('subsonic:getStatus'),
     onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: SubsonicStatusSnapshot) => callback(status)
@@ -596,8 +838,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('jellyfin:deleteSource', sourceId, purgeTracks),
     testSource: (input: JellyfinSourceTestInput): Promise<JellyfinSourceTestResult> =>
       ipcRenderer.invoke('jellyfin:testSource', input),
-    syncSource: (sourceId: number): Promise<void> => ipcRenderer.invoke('jellyfin:syncSource', sourceId),
-    syncAll: (): Promise<void> => ipcRenderer.invoke('jellyfin:syncAll'),
+    syncSource: (sourceId: number, syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('jellyfin:syncSource', sourceId, syncSessionKey),
+    syncAll: (syncSessionKey?: string): Promise<void> => ipcRenderer.invoke('jellyfin:syncAll', syncSessionKey),
     getStatus: (): Promise<JellyfinStatusSnapshot> => ipcRenderer.invoke('jellyfin:getStatus'),
     onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: JellyfinStatusSnapshot) => callback(status)
@@ -645,13 +887,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Library operations
   library: {
-    getTracks: () => ipcRenderer.invoke('library:getTracks'),
+    getTracks: () => getAllLibraryTracksPaged(),
+    getTracksPage: (request?: LibraryTrackPageRequest) =>
+      ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
+    getTracksByPaths: (trackPaths: string[]) =>
+      ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
-    getAlbums: () => ipcRenderer.invoke('library:getAlbums'),
+    setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) =>
+      ipcRenderer.invoke('library:setArtistImageFromFile', artist, mode, imagePath),
+    clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) =>
+      ipcRenderer.invoke('library:clearArtistImage', artist, mode),
+    getAlbums: (options?: AlbumListOptions) => ipcRenderer.invoke('library:getAlbums', options),
     search: (query: string) => ipcRenderer.invoke('library:search', query),
     getMetadataOverridePaths: () => ipcRenderer.invoke('library:getMetadataOverridePaths'),
     clearMetadataOverrides: (trackPaths: string[]) => ipcRenderer.invoke('library:clearMetadataOverrides', trackPaths),
@@ -705,9 +955,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
     }>,
     cancelScan: () => ipcRenderer.invoke('library:cancelScan') as Promise<{ canceled: boolean }>,
+    startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) =>
+      ipcRenderer.invoke('library:startIntegrityScan', request) as Promise<IntegrityScanResult>,
+    cancelIntegrityScan: () => ipcRenderer.invoke('library:cancelIntegrityScan') as Promise<{ canceled: boolean }>,
+    checkTrackIntegrity: (trackPath: string) =>
+      ipcRenderer.invoke('library:checkTrackIntegrity', trackPath) as Promise<IntegrityScanResult>,
+    checkTracksIntegrity: (trackPaths: string[]) =>
+      ipcRenderer.invoke('library:checkTracksIntegrity', trackPaths) as Promise<IntegrityScanResult>,
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
+      added: number
+      updated: number
+      errors: number
+      removed?: number
+      folderWarnings?: Record<string, string[]>
+      scanIssueLog?: ScanIssueLog
+      canceled?: boolean
+    }>,
+    forceRescanAll: () => ipcRenderer.invoke('library:forceRescanAll') as Promise<{
       added: number
       updated: number
       errors: number
@@ -730,6 +996,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: ScanStageProgress) => callback(progress)
       ipcRenderer.on('library:scanStage', handler)
       return () => ipcRenderer.removeListener('library:scanStage', handler)
+    },
+    onIntegrityScanProgress: (callback: (progress: IntegrityScanProgress) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: IntegrityScanProgress) => callback(progress)
+      ipcRenderer.on('library:integrityScanProgress', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanProgress', handler)
+    },
+    onIntegrityScanFinding: (callback: (finding: IntegrityFinding) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, finding: IntegrityFinding) => callback(finding)
+      ipcRenderer.on('library:integrityScanFinding', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanFinding', handler)
+    },
+    onIntegrityScanComplete: (callback: (result: IntegrityScanResult) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: IntegrityScanResult) => callback(result)
+      ipcRenderer.on('library:integrityScanComplete', handler)
+      return () => ipcRenderer.removeListener('library:integrityScanComplete', handler)
     },
     onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, result: { scanned: number; updated: number; errors: number }) => callback(result)
@@ -755,6 +1036,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Recently played
     getRecentlyPlayed: (limit?: number) => ipcRenderer.invoke('library:getRecentlyPlayed', limit),
+    markTrackLatestSyncSeen: (trackPath: string) => ipcRenderer.invoke('library:markTrackLatestSyncSeen', trackPath),
     addRecentlyPlayed: (trackPath: string) => ipcRenderer.invoke('library:addRecentlyPlayed', trackPath),
 
     // Playlists
@@ -763,6 +1045,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
+    getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
     reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => ipcRenderer.invoke('library:reorderPlaylistTracks', playlistId, orderedTrackPaths),
@@ -770,6 +1053,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
     clearPlaylistCustomCover: (playlistId: number) => ipcRenderer.invoke('library:clearPlaylistCustomCover', playlistId),
     getPlaylistsContainingTrack: (trackPath: string) => ipcRenderer.invoke('library:getPlaylistsContainingTrack', trackPath),
+    getPlaylistsContainingTracks: (trackPaths: string[]) => ipcRenderer.invoke('library:getPlaylistsContainingTracks', trackPaths) as Promise<Array<{ playlistId: number; matchedTrackCount: number }>>,
     importPlaylistFromFile: (filePath: string) => ipcRenderer.invoke('library:importPlaylistFromFile', filePath),
   }
 })
@@ -787,6 +1071,7 @@ declare global {
       setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
       loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       play: () => Promise<NativeAudioPlaybackSnapshot>
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -826,6 +1111,17 @@ declare global {
         onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
         onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
       }
+      lyricsPopout: {
+        open: () => Promise<void>
+        close: () => Promise<void>
+        getWindowState: () => Promise<LyricsPopoutWindowState>
+        getSnapshot: () => Promise<LyricsPopoutSnapshot | null>
+        publishSnapshot: (snapshot: LyricsPopoutSnapshot) => void
+        sendCommand: (command: LyricsPopoutCommand) => void
+        onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
+        onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
+        onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+      }
       scopePopout: {
         open: (scope: ScopeKind) => Promise<ScopePopoutState>
         recall: (scope: ScopeKind) => Promise<ScopePopoutState>
@@ -838,19 +1134,36 @@ declare global {
       // Platform
       platform: NodeJS.Platform
       getAppVersion: () => Promise<string>
+      getAppBuildInfo: () => Promise<AppBuildInfo>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      getMainProcessMemoryStats: () => Promise<MainProcessMemoryStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
+      diagnostics: {
+        getStatus: () => Promise<MemoryDiagnosticsStatus>
+        setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+        revealCurrentLog: () => Promise<boolean>
+        revealPreviousLog: () => Promise<boolean>
+        captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
+        getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+        publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
+        logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+        onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
+        onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+      }
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
         openReleasesPage: (releaseUrl?: string) => Promise<boolean>
       }
       theme: {
-        setRuntimeIconDataUrl: (dataUrl: string) => void
+        setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
+      }
+      uiScale: {
+        onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
       }
 
       // Integrations
       discord: {
-        configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<DiscordRpcConfigureResult>
+        configure: (options: DiscordRpcConfigureOptions) => Promise<DiscordRpcConfigureResult>
         updatePresence: (update: DiscordPresenceUpdate) => void
         clearPresence: () => void
         resolveCoverArt: (query: DiscordCoverArtLookupQuery) => Promise<DiscordCoverArtLookupResult>
@@ -864,12 +1177,32 @@ declare global {
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
       }
+      phoneRemote: {
+        getStatus: () => Promise<PhoneRemoteStatus>
+        createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket>
+        listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
+        listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
+        approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+        rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+        revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
+        revokeAllPairedDevices: () => Promise<number>
+        setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        setPort: (port: number) => Promise<PhoneRemoteStatus>
+        resetToDefaults: () => Promise<PhoneRemoteStatus>
+        onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+      }
       lastFm: {
         getStatus: () => Promise<LastFmStatus>
         setEnabled: (enabled: boolean) => Promise<LastFmStatus>
-        beginAuth: () => Promise<LastFmAuthStartResult>
+        createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+        updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
+        deleteCustomProfile: (profileId: string) => Promise<LastFmStatus>
+        setActiveProfile: (profileId: string) => Promise<LastFmStatus>
+        setProfileEnabled: (profileId: string, enabled: boolean) => Promise<LastFmStatus>
+        beginAuth: (profileId?: string) => Promise<LastFmAuthStartResult>
         finishAuth: () => Promise<LastFmAuthFinishResult>
         disconnect: () => Promise<LastFmStatus>
+        disconnectProfile: (profileId: string) => Promise<LastFmStatus>
         resetToDefaults: () => Promise<LastFmStatus>
         onStatus: (callback: (status: LastFmStatus) => void) => () => void
       }
@@ -891,8 +1224,8 @@ declare global {
         updateSource: (sourceId: number, input: SubsonicSourceUpdateInput) => Promise<SubsonicSource>
         deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
         testSource: (input: SubsonicSourceTestInput) => Promise<SubsonicSourceTestResult>
-        syncSource: (sourceId: number) => Promise<void>
-        syncAll: () => Promise<void>
+        syncSource: (sourceId: number, syncSessionKey?: string) => Promise<void>
+        syncAll: (syncSessionKey?: string) => Promise<void>
         getStatus: () => Promise<SubsonicStatusSnapshot>
         onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
       }
@@ -902,8 +1235,8 @@ declare global {
         updateSource: (sourceId: number, input: JellyfinSourceUpdateInput) => Promise<JellyfinSource>
         deleteSource: (sourceId: number, purgeTracks: boolean) => Promise<void>
         testSource: (input: JellyfinSourceTestInput) => Promise<JellyfinSourceTestResult>
-        syncSource: (sourceId: number) => Promise<void>
-        syncAll: () => Promise<void>
+        syncSource: (sourceId: number, syncSessionKey?: string) => Promise<void>
+        syncAll: (syncSessionKey?: string) => Promise<void>
         getStatus: () => Promise<JellyfinStatusSnapshot>
         onStatus: (callback: (status: JellyfinStatusSnapshot) => void) => () => void
       }
@@ -933,10 +1266,14 @@ declare global {
       // Library operations
       library: {
         getTracks: () => Promise<DbTrack[]>
+        getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
+        getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
-        getAlbums: () => Promise<Album[]>
+        setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
+        clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
+        getAlbums: (options?: AlbumListOptions) => Promise<Album[]>
         search: (query: string) => Promise<DbTrack[]>
         getMetadataOverridePaths: () => Promise<string[]>
         clearMetadataOverrides: (trackPaths: string[]) => Promise<{ cleared: number }>
@@ -992,9 +1329,22 @@ declare global {
           scanIssueLog?: ScanIssueLog
         }>
         cancelScan: () => Promise<{ canceled: boolean }>
+        startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) => Promise<IntegrityScanResult>
+        cancelIntegrityScan: () => Promise<{ canceled: boolean }>
+        checkTrackIntegrity: (trackPath: string) => Promise<IntegrityScanResult>
+        checkTracksIntegrity: (trackPaths: string[]) => Promise<IntegrityScanResult>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
+          added: number
+          updated: number
+          errors: number
+          removed?: number
+          folderWarnings?: Record<string, string[]>
+          scanIssueLog?: ScanIssueLog
+          canceled?: boolean
+        }>
+        forceRescanAll: () => Promise<{
           added: number
           updated: number
           errors: number
@@ -1010,6 +1360,9 @@ declare global {
         getArtworkCardDataUrl: (hash: string) => Promise<string | null>
         onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
         onScanStage: (callback: (progress: ScanStageProgress) => void) => () => void
+        onIntegrityScanProgress: (callback: (progress: IntegrityScanProgress) => void) => () => void
+        onIntegrityScanFinding: (callback: (finding: IntegrityFinding) => void) => () => void
+        onIntegrityScanComplete: (callback: (result: IntegrityScanResult) => void) => () => void
         onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
@@ -1022,6 +1375,7 @@ declare global {
 
         // Recently played
         getRecentlyPlayed: (limit?: number) => Promise<DbTrack[]>
+        markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
         addRecentlyPlayed: (trackPath: string) => Promise<void>
 
         // Playlists
@@ -1030,6 +1384,7 @@ declare global {
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
+        getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
         reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
@@ -1037,6 +1392,7 @@ declare global {
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
         clearPlaylistCustomCover: (playlistId: number) => Promise<void>
         getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
+        getPlaylistsContainingTracks: (trackPaths: string[]) => Promise<Array<{ playlistId: number; matchedTrackCount: number }>>
         importPlaylistFromFile: (filePath: string) => Promise<PlaylistImportResult>
       }
     }

@@ -1,4 +1,5 @@
 import { audioEngine } from '../AudioEngine'
+import { AnalyzerSilenceClock, createMonoSilenceChunkWithSampleCount, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import {
@@ -14,6 +15,7 @@ export interface WaveformDataSource {
   getPendingWaveformSamples: () => Float32Array[]
   getSampleRate: () => number
   isPlaying: () => boolean
+  isActive?: () => boolean
 }
 
 export interface WaveformOptions {
@@ -48,6 +50,7 @@ const defaultWaveformDataSource: WaveformDataSource = {
   getPendingWaveformSamples: () => audioEngine.flushPendingWaveformSamples(),
   getSampleRate: () => audioEngine.getSampleRate(),
   isPlaying: () => audioEngine.playbackState === 'playing',
+  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
 }
 
 // Calibrate 1.0x to the prior 8s window at roughly 512px wide,
@@ -73,6 +76,7 @@ export class Waveform {
   private columnAccumulatorPos = 0
   private samplesPerColumn = 0
   private lastSampleRate = 0
+  private pausedSilenceClock = new AnalyzerSilenceClock()
 
   // Multiband analysis
   private splitter = new MultibandSplitter()
@@ -101,7 +105,7 @@ export class Waveform {
     this.dataSource = dataSource ?? defaultWaveformDataSource
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.dataSource.isPlaying(),
+      shouldRun: () => this.isActive(),
       onFrame: this.drawFrame,
     })
 
@@ -195,6 +199,10 @@ export class Waveform {
     // Resize handled in draw loop
     this.staticLayerKey = ''
     this.invalidate()
+  }
+
+  private isActive(): boolean {
+    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
   }
 
   private computeMinMax(): { min: number; max: number } {
@@ -397,15 +405,28 @@ export class Waveform {
       this.recomputeSamplesPerColumn()
     }
 
-    if (!this.dataSource.isPlaying()) {
+    const isActive = this.isActive()
+    const isPlaying = this.dataSource.isPlaying()
+
+    if (!isActive) {
       this.dataSource.getPendingWaveformSamples() // drain
+      this.pausedSilenceClock.reset()
       // Freeze display — show last waveform
       this.renderStaticLayer(width, height)
       this.ctx.drawImage(this.waterfallCanvas, 0, 0)
       return
     }
 
-    const pending = this.dataSource.getPendingWaveformSamples()
+    if (isPlaying) {
+      this.pausedSilenceClock.reset()
+    }
+
+    const pending = isPlaying
+      ? this.dataSource.getPendingWaveformSamples()
+      : (() => {
+          this.dataSource.getPendingWaveformSamples()
+          return [createMonoSilenceChunkWithSampleCount(this.pausedSilenceClock.nextSampleCount(sampleRate))]
+        })()
     const samplesPerCol = this.samplesPerColumn
     const multiband = this.options.multiband
 
@@ -455,5 +476,22 @@ export class Waveform {
       this.unsubscribePlaybackState()
       this.unsubscribePlaybackState = null
     }
+
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.waterfallCanvas.width = 0
+    this.waterfallCanvas.height = 0
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
+    this.columnAccumulator = new Float32Array(0)
+    this.bandLowAcc = new Float32Array(0)
+    this.bandMidAcc = new Float32Array(0)
+    this.bandHighAcc = new Float32Array(0)
+    this.columnAccumulatorPos = 0
+    this.samplesPerColumn = 0
+    this.lastSampleRate = 0
+    this.splitter.reset()
   }
 }

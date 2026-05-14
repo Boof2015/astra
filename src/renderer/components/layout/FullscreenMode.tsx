@@ -6,9 +6,18 @@ import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
+import VolumeControl from '../player/VolumeControl'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
-import type { LyricsLine, LyricsTrackQuery } from '../../../types/lyrics'
+import { getFullscreenBackdropArtworkCandidates } from '../../utils/fullscreenBackdropArtwork'
+import {
+  getCompensatedLyricsTime,
+  getLyricsSourceLabel,
+  getSyncedLyricsGapProgress,
+  getSyncedLyricsDisplayLines,
+  resolveSyncedLyricsTiming
+} from '../../utils/lyricsPresentation'
+import type { LyricsTrackQuery } from '../../../types/lyrics'
 
 type CueState = 'hidden' | 'visible' | 'handoff'
 type HeroPhase = 'steady' | 'handoff' | 'enter'
@@ -24,10 +33,23 @@ interface LyricsDockLayout {
   openHeightPx: number
 }
 
-function getLyricsSourceLabel(source: 'embedded' | 'lrclib' | 'manual'): string {
-  if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
-  return 'LRCLIB'
+interface LyricsLineMeasurement {
+  key: string
+  topPx: number
+  heightPx: number
+}
+
+function areLyricsLineMeasurementsEqual(
+  current: LyricsLineMeasurement[],
+  next: LyricsLineMeasurement[]
+): boolean {
+  if (current.length !== next.length) return false
+  return current.every((measurement, index) => {
+    const nextMeasurement = next[index]
+    return measurement.key === nextMeasurement.key
+      && measurement.topPx === nextMeasurement.topPx
+      && measurement.heightPx === nextMeasurement.heightPx
+  })
 }
 
 function formatTime(seconds: number): string {
@@ -163,29 +185,6 @@ function buildLyricsQuery(
   }
 }
 
-function findActiveSyncedLineIndex(lines: LyricsLine[], currentTimeSeconds: number): number {
-  if (lines.length === 0) return -1
-  const currentTimeMs = Number.isFinite(currentTimeSeconds)
-    ? Math.max(0, Math.floor(currentTimeSeconds * 1000))
-    : 0
-
-  let low = 0
-  let high = lines.length - 1
-  let best = -1
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    if (lines[mid].timestampMs <= currentTimeMs) {
-      best = mid
-      low = mid + 1
-      continue
-    }
-    high = mid - 1
-  }
-
-  return best
-}
-
 function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
@@ -261,13 +260,12 @@ function FullscreenLyricsDockPanel({
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const activeLyricLineRef = useRef<HTMLParagraphElement | null>(null)
+  const lyricsDockTrackRef = useRef<HTMLDivElement | null>(null)
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
   const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
+  const [lyricsLineMeasurements, setLyricsLineMeasurements] = useState<LyricsLineMeasurement[]>([])
 
-  const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
-  const compensatedTime = duration > 0
-    ? Math.max(0, Math.min(duration, currentTime - effectiveDelaySec))
-    : 0
+  const compensatedTime = getCompensatedLyricsTime(currentTime, duration, effectiveDelayMs)
   const lyricsQuery = useMemo(
     () => buildLyricsQuery(currentTrack),
     [
@@ -287,16 +285,43 @@ function FullscreenLyricsDockPanel({
     if (activeLyricsResult?.status !== 'hit') return []
     return activeLyricsResult.lyrics.syncedLines
   }, [activeLyricsResult])
-  const activeSyncedLineIndex = useMemo(
-    () => findActiveSyncedLineIndex(syncedLines, compensatedTime),
-    [compensatedTime, syncedLines]
+  const displayedSyncedLines = useMemo(
+    () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
+    [duration, syncedLines]
   )
-  const hasSyncedLyrics = syncedLines.length > 0
-  const effectiveSyncedLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : 0
-  const activeSyncedLineText = syncedLines[effectiveSyncedLineIndex]?.text ?? ''
-  const syncedLyricsTrackOffsetY = (
-    lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndex
+  const displayedSyncedLineKeys = useMemo(
+    () => displayedSyncedLines.map((line) => line.key).join('\u0000'),
+    [displayedSyncedLines]
+  )
+  const lyricsLineMeasurementByKey = useMemo(() => {
+    const measurementByKey = new Map<string, LyricsLineMeasurement>()
+    lyricsLineMeasurements.forEach((measurement) => measurementByKey.set(measurement.key, measurement))
+    return measurementByKey
+  }, [lyricsLineMeasurements])
+  const syncedLyricsTiming = useMemo(
+    () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
+    [compensatedTime, duration, syncedLines]
+  )
+  const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
+  const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
+  const effectiveSyncedLineIndex = syncedLyricsTiming.focusLineIndex >= 0 ? syncedLyricsTiming.focusLineIndex : 0
+  const activeSyncedLineText = activeSyncedLineIndex >= 0
+    ? displayedSyncedLines[activeSyncedLineIndex]?.text ?? ''
+    : ''
+  const focusedSyncedLineKey = displayedSyncedLines[effectiveSyncedLineIndex]?.key ?? null
+  const focusedSyncedLineMeasurement = focusedSyncedLineKey
+    ? lyricsLineMeasurementByKey.get(focusedSyncedLineKey)
+    : null
+  const focusedSyncedLineTopPx = focusedSyncedLineMeasurement?.topPx
+    ?? (effectiveSyncedLineIndex * lyricsDockLayout.lineHeightPx)
+  const focusedSyncedLineHeightPx = focusedSyncedLineMeasurement?.heightPx
+    ?? lyricsDockLayout.lineHeightPx
+  const syncedLyricsAnchorCenterPx = (
+    lyricsDockLayout.activeAnchorIndex + 0.5
   ) * lyricsDockLayout.lineHeightPx
+  const syncedLyricsTrackOffsetY = syncedLyricsAnchorCenterPx
+    - focusedSyncedLineTopPx
+    - (focusedSyncedLineHeightPx / 2)
   const lyricsDockStyle = useMemo(() => ({
     '--fullscreen-lyrics-line-height': `${lyricsDockLayout.lineHeightPx}px`,
     '--fullscreen-lyrics-visible-lines': String(lyricsDockLayout.visibleLines),
@@ -306,6 +331,34 @@ function FullscreenLyricsDockPanel({
   const setActiveLyricLineNode = useCallback((node: HTMLParagraphElement | null) => {
     activeLyricLineRef.current = node
   }, [])
+
+  const measureSyncedLyricLines = useCallback(() => {
+    if (!showLyricsDock || !hasSyncedLyrics) {
+      setLyricsLineMeasurements((previous) => previous.length === 0 ? previous : [])
+      return
+    }
+
+    const track = lyricsDockTrackRef.current
+    if (!track) {
+      setLyricsLineMeasurements((previous) => previous.length === 0 ? previous : [])
+      return
+    }
+
+    const nextMeasurements: LyricsLineMeasurement[] = []
+    track.querySelectorAll<HTMLParagraphElement>('.fullscreen-lyrics-dock-line[data-lyrics-line-key]').forEach((node) => {
+      const key = node.dataset.lyricsLineKey
+      if (!key) return
+      nextMeasurements.push({
+        key,
+        topPx: node.offsetTop,
+        heightPx: Math.max(lyricsDockLayout.lineHeightPx, node.offsetHeight)
+      })
+    })
+
+    setLyricsLineMeasurements((previous) => (
+      areLyricsLineMeasurementsEqual(previous, nextMeasurements) ? previous : nextMeasurements
+    ))
+  }, [hasSyncedLyrics, lyricsDockLayout.lineHeightPx, showLyricsDock])
 
   const recalculateActiveLyricFontSize = useCallback(() => {
     const node = activeLyricLineRef.current
@@ -380,15 +433,31 @@ function FullscreenLyricsDockPanel({
     showLyricsDock
   ])
 
+  useLayoutEffect(() => {
+    measureSyncedLyricLines()
+  }, [
+    activeLyricFontSizePx,
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    displayedSyncedLineKeys,
+    effectiveSyncedLineIndex,
+    lyricsDockLayout.visibleLines,
+    measureSyncedLyricLines,
+    showLyricsDock
+  ])
+
   useEffect(() => {
     if (!showLyricsDock || !hasSyncedLyrics) return
     const node = activeLyricLineRef.current
-    if (!node) return
+    const track = lyricsDockTrackRef.current
+    if (!node && !track) return
 
     const resizeObserver = new ResizeObserver(() => {
       recalculateActiveLyricFontSize()
+      measureSyncedLyricLines()
     })
-    resizeObserver.observe(node)
+    if (node) resizeObserver.observe(node)
+    if (track) resizeObserver.observe(track)
 
     return () => {
       resizeObserver.disconnect()
@@ -396,10 +465,25 @@ function FullscreenLyricsDockPanel({
   }, [
     activeSyncedLineIndex,
     activeSyncedLineText,
+    displayedSyncedLineKeys,
     hasSyncedLyrics,
+    measureSyncedLyricLines,
     recalculateActiveLyricFontSize,
     showLyricsDock
   ])
+
+  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
+    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
+    if (progress === null) return displayLine.text
+    return (
+      <span className="lyrics-gap-progress">
+        <span
+          className="lyrics-gap-progress-fill"
+          style={{ transform: `scaleX(${progress})` }}
+        />
+      </span>
+    )
+  }
 
   return (
     <section
@@ -426,17 +510,20 @@ function FullscreenLyricsDockPanel({
         ) : activeLyricsResult?.status === 'hit' && hasSyncedLyrics ? (
           <div className="fullscreen-lyrics-dock-window" aria-live="polite">
             <div
+              ref={lyricsDockTrackRef}
               className="fullscreen-lyrics-dock-track"
               style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
             >
-              {syncedLines.map((line, index) => {
-                const distance = index - effectiveSyncedLineIndex
-                const isActiveLine = distance === 0
+              {displayedSyncedLines.map((displayLine) => {
+                const { displayIndex } = displayLine
+                const distance = displayIndex - effectiveSyncedLineIndex
+                const isActiveLine = displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex
                 const lineClassName = [
                   'fullscreen-lyrics-dock-line',
+                  displayLine.kind === 'gap' ? 'is-gap' : '',
                   isActiveLine
                     ? 'is-active'
-                    : Math.abs(distance) === 1
+                    : Math.abs(distance) <= 1
                       ? 'is-near'
                       : Math.abs(distance) === 2
                         ? 'is-far'
@@ -445,14 +532,16 @@ function FullscreenLyricsDockPanel({
 
                 return (
                   <p
-                    key={`${line.timestampMs}:${index}`}
+                    key={displayLine.key}
                     ref={isActiveLine ? setActiveLyricLineNode : undefined}
                     className={lineClassName}
                     style={isActiveLine && activeLyricFontSizePx != null
                       ? { fontSize: `${activeLyricFontSizePx}px` }
                       : undefined}
+                    data-lyrics-line-key={displayLine.key}
+                    aria-hidden={displayLine.kind === 'gap'}
                   >
-                    <span className="fullscreen-lyrics-dock-line-text">{line.text}</span>
+                    <span className="fullscreen-lyrics-dock-line-text">{renderGapProgress(displayLine)}</span>
                   </p>
                 )
               })}
@@ -535,7 +624,7 @@ function FullscreenNextCueOverlay({
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {nextTrack.artworkHash ? (
-            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" />
+            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" variant="card" />
           ) : nextTrack.artworkData ? (
             <img src={nextTrack.artworkData} alt="Up next artwork" />
           ) : (
@@ -568,12 +657,17 @@ export default function FullscreenMode() {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
+  const currentTrackSource = usePlayerStore((s) => s.currentTrackSource)
+  const playbackFuture = usePlayerStore((s) => s.playbackFuture)
+  const userQueue = usePlayerStore((s) => s.userQueue)
+  const autoQueue = usePlayerStore((s) => s.autoQueue)
+  const autoQueueIndex = usePlayerStore((s) => s.autoQueueIndex)
+  const shuffledAutoIndices = usePlayerStore((s) => s.shuffledAutoIndices)
   const togglePlay = usePlayerStore((s) => s.togglePlay)
   const playNext = usePlayerStore((s) => s.playNext)
   const playPrevious = usePlayerStore((s) => s.playPrevious)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
-  const nextTrack = usePlayerStore((s) => s.getResolvedNextTrack())
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const favorites = useLibraryStore((s) => s.favorites)
@@ -606,6 +700,17 @@ export default function FullscreenMode() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
+  const nextTrack = useMemo(() => usePlayerStore.getState().getResolvedNextTrack(), [
+    autoQueue,
+    autoQueueIndex,
+    currentTrack,
+    currentTrackSource,
+    playbackFuture,
+    repeat,
+    shuffle,
+    shuffledAutoIndices,
+    userQueue
+  ])
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
   const currentTrackId = currentTrack?.id ?? null
   const resolvedChannelCount = currentTrack?.channels ?? null
@@ -704,25 +809,8 @@ export default function FullscreenMode() {
         return
       }
 
-      const artworkCandidates: string[] = []
-
-      if (currentTrack.artworkHash) {
-        try {
-          const hashArtwork = await getArtwork(currentTrack.artworkHash)
-          if (backdropRequestTokenRef.current !== requestToken) return
-          if (hashArtwork) {
-            artworkCandidates.push(hashArtwork)
-          }
-        } catch {
-          if (backdropRequestTokenRef.current !== requestToken) return
-        }
-      }
-
-      if (currentTrack.artworkData) {
-        artworkCandidates.push(currentTrack.artworkData)
-      }
-
-      const uniqueCandidates = [...new Set(artworkCandidates)]
+      const uniqueCandidates = await getFullscreenBackdropArtworkCandidates(currentTrack, getArtwork)
+      if (backdropRequestTokenRef.current !== requestToken) return
       if (uniqueCandidates.length === 0) {
         setResolvedIfCurrent(null)
         return
@@ -878,7 +966,7 @@ export default function FullscreenMode() {
             <div className="fullscreen-main-row">
               <div className="fullscreen-artwork">
                 {currentTrack?.artworkHash ? (
-                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" />
+                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
                 ) : currentTrack?.artworkData ? (
                   <img src={currentTrack.artworkData} alt="Album art" />
                 ) : (
@@ -1006,24 +1094,31 @@ export default function FullscreenMode() {
             <FullscreenWaveformSection />
 
             <div className="fullscreen-footer">
-              <button
-                className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
-                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                onClick={() => currentTrack && void toggleFavorite(currentTrack.path)}
-                disabled={!currentTrack}
-              >
-                {isFavorite ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                  </svg>
-                )}
-                <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
-              </button>
+              <div className="fullscreen-footer-primary">
+                <button
+                  className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
+                  aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                  title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                  onClick={() => currentTrack && void toggleFavorite(currentTrack.path)}
+                  disabled={!currentTrack}
+                >
+                  {isFavorite ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                    </svg>
+                  )}
+                  <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
+                </button>
+
+                <VolumeControl
+                  className="fullscreen-volume"
+                  labelFormatter={(percent) => `${percent}%`}
+                />
+              </div>
 
               <div className="fullscreen-file-readout" aria-hidden={!currentTrack}>
                 <span>{currentTrack?.format?.toUpperCase() ?? '—'}</span>

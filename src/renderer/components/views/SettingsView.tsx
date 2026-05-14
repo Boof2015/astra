@@ -1,13 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
+import LocalApiPairingModal from '../settings/LocalApiPairingModal'
+import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { useUIStore } from '../../stores/uiStore'
+import {
+  DEFAULT_UI_SCALE_PERCENT,
+  MAX_UI_SCALE_PERCENT,
+  MIN_UI_SCALE_PERCENT,
+  UI_SCALE_STEP_PERCENT,
+  useUIStore,
+  type HomeGreetingTextMode
+} from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
   DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -17,9 +26,13 @@ import {
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import { useGraphStore } from '../../stores/graphStore'
+import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -52,6 +65,13 @@ import {
   LOCAL_API_MAX_PORT,
   LOCAL_API_MIN_PORT
 } from '../../../types/localApi'
+import {
+  PHONE_REMOTE_DEFAULT_PORT,
+  PHONE_REMOTE_MAX_PORT,
+  PHONE_REMOTE_MIN_PORT
+} from '../../../types/phoneRemote'
+import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
+import type { AppBuildInfo } from '../../../types/appBuildInfo'
 
 type ResetActionId =
   | 'reset-theme'
@@ -68,6 +88,41 @@ type NormalizationDisableStep = 'warning' | 'final' | null
 type ReplayGainSelectorValue = ReplayGainMode | 'disabled'
 const NORMALIZATION_TARGET_MIN_LUFS = -30
 const NORMALIZATION_TARGET_MAX_LUFS = 0
+
+const CUSTOM_SCROBBLE_PROTOCOLS: LastFmScrobbleProtocol[] = ['lastfm2', 'audioscrobbler', 'listenbrainz']
+
+function getScrobbleProtocolLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'AudioScrobbler'
+  if (protocol === 'listenbrainz') return 'ListenBrainz'
+  return 'Last.fm 2.0'
+}
+
+function getDefaultScrobbleProfileName(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'AudioScrobbler endpoint'
+  if (protocol === 'listenbrainz') return 'ListenBrainz endpoint'
+  return 'Custom endpoint'
+}
+
+function getScrobbleUrlPlaceholder(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'http://localhost:42010/apis/audioscrobbler_legacy'
+  if (protocol === 'listenbrainz') return 'http://localhost:42010/apis/listenbrainz'
+  return 'http://localhost:9078/2.0/'
+}
+
+function getScrobbleUsernameLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'listenbrainz') return 'Username Label (optional)'
+  return 'Username Label'
+}
+
+function getScrobbleSecretLabel(protocol: LastFmScrobbleProtocol): string {
+  if (protocol === 'audioscrobbler') return 'Password or API Key'
+  if (protocol === 'listenbrainz') return 'Auth Token'
+  return 'Session Key or Token'
+}
+
+function isScrobbleUsernameRequired(protocol: LastFmScrobbleProtocol): boolean {
+  return protocol !== 'listenbrainz'
+}
 
 interface ResetActionStatus {
   state: ResetActionState
@@ -105,6 +160,10 @@ const ASTRA_SUPPORT_URL = 'https://ko-fi.com/boof2015'
 const ASTRA_LICENSE_URL = 'https://github.com/Boof2015/astra/blob/main/LICENSE'
 const GPL_V3_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
 const BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY = 'astra-bitperfect-warning-dismissed-v1'
+const DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY = 'astra-settings-developer-section-visible-v1'
+const DEVELOPER_SETTINGS_SECTION_ID: SettingsSectionId = 'developer'
+const DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET = 7
+const DEVELOPER_SETTINGS_REVEAL_RESET_MS = 2500
 
 function buildInitialResetStatusMap(): Record<ResetActionId, ResetActionStatus> {
   return RESET_ACTION_IDS.reduce((acc, actionId) => {
@@ -158,15 +217,54 @@ function parseNormalizationTargetLufsInput(input: string): number | null {
   return Math.round(parsed * 10) / 10
 }
 
+function readDeveloperSectionVisibilityPreference(): boolean {
+  try {
+    return localStorage.getItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistDeveloperSectionVisibilityPreference(visible: boolean): void {
+  try {
+    localStorage.setItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory visibility.
+  }
+}
+
+function formatBuildLabel(buildInfo: AppBuildInfo): string {
+  const shortCommitHash = buildInfo.shortCommitHash ?? buildInfo.commitHash?.slice(0, 7)
+  if (!shortCommitHash) return ''
+  return `${shortCommitHash}${buildInfo.isDirty ? '*' : ''}`
+}
+
+function formatBuildCopyValue(buildInfo: AppBuildInfo): string {
+  return buildInfo.commitHash ?? ''
+}
+
+function formatBuildTooltip(buildInfo: AppBuildInfo): string | undefined {
+  if (!buildInfo.commitHash) return undefined
+  return `Commit: ${buildInfo.commitHash}${buildInfo.isDirty ? '\nWorking tree was dirty when this build started.' : ''}\nClick to copy the full commit hash.`
+}
+
 export default function SettingsView() {
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
+  const [developerSectionVisible, setDeveloperSectionVisible] = useState(() => readDeveloperSectionVisibilityPreference())
   const [appVersionLabel, setAppVersionLabel] = useState('Loading...')
+  const [appBuildLabel, setAppBuildLabel] = useState('')
+  const [appBuildTooltip, setAppBuildTooltip] = useState('')
+  const [appBuildCopyValue, setAppBuildCopyValue] = useState('')
+  const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
+  const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
+  const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
+  const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
   )
-  const { rescan, backfillReplayGainMetadata, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
+  const { rescan, forceRescanAll, backfillReplayGainMetadata, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
   const {
     presetId,
     customAccent,
@@ -194,18 +292,28 @@ export default function SettingsView() {
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
   const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
   const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
+  const disableGaplessPrebufferDev = useAudioSettingsStore((state) => state.disableGaplessPrebufferDev)
+  const setDisableGaplessPrebufferDev = useAudioSettingsStore((state) => state.setDisableGaplessPrebufferDev)
+  const disableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.disableStandardAnalysisGraphDev)
+  const setDisableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.setDisableStandardAnalysisGraphDev)
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  const setArtistBrowseMode = useLibraryStore((state) => state.setArtistBrowseMode)
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
+    compactStatusMode: discordCompactStatusMode,
+    expandedInfoMode: discordExpandedInfoMode,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
     setCoverArtEnabled: setDiscordCoverArtEnabled,
+    setCompactStatusMode: setDiscordCompactStatusMode,
+    setExpandedInfoMode: setDiscordExpandedInfoMode,
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
@@ -217,13 +325,33 @@ export default function SettingsView() {
     rotateToken: rotateLocalApiToken,
   } = useLocalApiSettingsStore()
   const {
+    status: phoneRemoteStatus,
+    pairedDevices: phoneRemotePairedDevices,
+    pendingPairingRequests: phoneRemotePendingPairingRequests,
+    activePairingTicket: phoneRemoteActivePairingTicket,
+    errorMessage: phoneRemoteErrorMessage,
+    init: initPhoneRemote,
+    setEnabled: setPhoneRemoteEnabled,
+    setPort: setPhoneRemotePort,
+    createPairingTicket: createPhoneRemotePairingTicket,
+    clearActivePairingTicket: clearPhoneRemoteActivePairingTicket,
+    approvePairingRequest: approvePhoneRemotePairingRequest,
+    rejectPairingRequest: rejectPhoneRemotePairingRequest,
+    revokePairedDevice: revokePhoneRemotePairedDevice,
+    revokeAllPairedDevices: revokeAllPhoneRemotePairedDevices
+  } = usePhoneRemoteSettingsStore()
+  const {
     status: lastFmStatus,
     isAuthorizing: lastFmIsAuthorizing,
     errorMessage: lastFmErrorMessage,
     authHint: lastFmAuthHint,
     setEnabled: setLastFmEnabled,
+    createCustomProfile: createLastFmCustomProfile,
+    updateCustomProfile: updateLastFmCustomProfile,
+    deleteCustomProfile: deleteLastFmCustomProfile,
+    setProfileEnabled: setLastFmProfileEnabled,
     beginAuth: beginLastFmAuth,
-    disconnect: disconnectLastFm,
+    disconnectProfile: disconnectLastFmProfile,
   } = useLastFmSettingsStore()
   const {
     status: lyricsStatus,
@@ -242,10 +370,34 @@ export default function SettingsView() {
     checkForUpdates,
     openReleasesPage,
   } = useUpdateStore()
+  const {
+    status: diagnosticsStatus,
+    isLoading: diagnosticsIsLoading,
+    isCapturingBundle: diagnosticsIsCapturingBundle,
+    lastCaptureResult: diagnosticsLastCaptureResult,
+    errorMessage: diagnosticsErrorMessage,
+    init: initDiagnostics,
+    setEnabled: setDiagnosticsEnabled,
+    captureBundle: captureDiagnosticsBundle,
+    revealCurrentLog,
+    revealPreviousLog,
+  } = useDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
+  const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
+  const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
+  const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
+  const [lastFmProfileProtocolInput, setLastFmProfileProtocolInput] = useState<LastFmScrobbleProtocol>('lastfm2')
+  const [lastFmProfileNameInput, setLastFmProfileNameInput] = useState('')
+  const [lastFmProfileUrlInput, setLastFmProfileUrlInput] = useState('')
+  const [lastFmProfileUsernameInput, setLastFmProfileUsernameInput] = useState('')
+  const [lastFmProfileSessionKeyInput, setLastFmProfileSessionKeyInput] = useState('')
   const [localApiFeedback, setLocalApiFeedback] = useState('')
+  const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
+  const [lastFmProfileFeedback, setLastFmProfileFeedback] = useState('')
+  const [infoFeedback, setInfoFeedback] = useState('')
+  const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
   const [sleepTimerCustomMinutesInput, setSleepTimerCustomMinutesInput] = useState(
     String(SLEEP_TIMER_PRESET_MINUTES[1] ?? SLEEP_TIMER_PRESET_MINUTES[0] ?? 30)
   )
@@ -259,9 +411,25 @@ export default function SettingsView() {
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
     return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
   })
+  const developerRevealClickCountRef = useRef(0)
+  const developerRevealResetTimeoutRef = useRef<number | null>(null)
   const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
+  const uiScalePercent = useUIStore((state) => state.uiScalePercent)
+  const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
+  const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
+  const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
+  const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
+  const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
+  const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
+  const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
+  const libraryGraphEnabled = useGraphStore((state) => state.enabled)
+  const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
+  const openFullGraph = useGraphStore((state) => state.openFullMap)
+  const libraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
+  const setLibraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.setEnabled)
+  const openLibraryIntegrityPanel = useLibraryIntegrityStore((state) => state.openPanel)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const sleepTimerIsActive = useSleepTimerStore((state) => state.isActive)
@@ -317,6 +485,10 @@ export default function SettingsView() {
     }
     return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
   }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
+  const visibleSettingsSections = useMemo(
+    () => SETTINGS_SECTIONS.filter((section) => developerSectionVisible || !('hidden' in section && section.hidden)),
+    [developerSectionVisible]
+  )
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -324,12 +496,34 @@ export default function SettingsView() {
 
   useEffect(() => {
     void initLocalApi()
-  }, [initLocalApi])
+    void initPhoneRemote()
+  }, [initLocalApi, initPhoneRemote])
+
+  useEffect(() => {
+    void initDiagnostics()
+  }, [initDiagnostics])
 
   useEffect(() => {
     if (!localApiStatus) return
     setLocalApiPortInput(String(localApiStatus.port))
   }, [localApiStatus?.port])
+
+  useEffect(() => {
+    if (!phoneRemoteStatus) return
+    setPhoneRemotePortInput(String(phoneRemoteStatus.port))
+  }, [phoneRemoteStatus?.port])
+
+  useEffect(() => {
+    const lanUrls = phoneRemoteStatus?.lanUrls ?? []
+    if (lanUrls.length === 0) {
+      setLocalApiSelectedPairingBaseUrl('')
+      return
+    }
+    if (localApiSelectedPairingBaseUrl && lanUrls.includes(localApiSelectedPairingBaseUrl)) {
+      return
+    }
+    setLocalApiSelectedPairingBaseUrl(lanUrls[0])
+  }, [phoneRemoteStatus?.lanUrls, localApiSelectedPairingBaseUrl])
 
   useEffect(() => {
     if (!localApiFeedback) return
@@ -338,6 +532,22 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [localApiFeedback])
+
+  useEffect(() => {
+    if (!phoneRemoteFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setPhoneRemoteFeedback('')
+    }, 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [phoneRemoteFeedback])
+
+  useEffect(() => {
+    if (!lastFmProfileFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setLastFmProfileFeedback('')
+    }, 3200)
+    return () => window.clearTimeout(timeoutId)
+  }, [lastFmProfileFeedback])
 
   useEffect(() => {
     if (!sleepTimerFeedback) return
@@ -358,13 +568,78 @@ export default function SettingsView() {
   }, [showBitPerfectWarning])
 
   useEffect(() => {
+    return () => {
+      if (developerRevealResetTimeoutRef.current != null) {
+        window.clearTimeout(developerRevealResetTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (pendingSettingsSection === null) return
 
     const pendingSection = consumePendingSettingsSection()
-    if (pendingSection) {
-      setActiveSectionId(pendingSection)
+    if (!pendingSection) return
+
+    const pendingSectionDefinition = SETTINGS_SECTIONS.find((section) => section.id === pendingSection)
+    if (
+      pendingSectionDefinition != null &&
+      'hidden' in pendingSectionDefinition &&
+      pendingSectionDefinition.hidden &&
+      !developerSectionVisible
+    ) {
+      return
     }
-  }, [consumePendingSettingsSection, pendingSettingsSection])
+
+    setActiveSectionId(pendingSection)
+  }, [consumePendingSettingsSection, developerSectionVisible, pendingSettingsSection])
+
+  useEffect(() => {
+    if (!developerSectionVisible && activeSectionId === DEVELOPER_SETTINGS_SECTION_ID) {
+      setActiveSectionId('info')
+    }
+  }, [activeSectionId, developerSectionVisible])
+
+  const resetDeveloperRevealProgress = () => {
+    developerRevealClickCountRef.current = 0
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+      developerRevealResetTimeoutRef.current = null
+    }
+  }
+
+  const revealDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(true)
+    setDeveloperSectionVisible(true)
+    setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+    resetDeveloperRevealProgress()
+  }
+
+  const handleAppVersionClick = () => {
+    if (developerSectionVisible) {
+      setActiveSectionId(DEVELOPER_SETTINGS_SECTION_ID)
+      return
+    }
+
+    developerRevealClickCountRef.current += 1
+    if (developerRevealResetTimeoutRef.current != null) {
+      window.clearTimeout(developerRevealResetTimeoutRef.current)
+    }
+    developerRevealResetTimeoutRef.current = window.setTimeout(() => {
+      developerRevealClickCountRef.current = 0
+      developerRevealResetTimeoutRef.current = null
+    }, DEVELOPER_SETTINGS_REVEAL_RESET_MS)
+
+    if (developerRevealClickCountRef.current >= DEVELOPER_SETTINGS_REVEAL_CLICK_TARGET) {
+      revealDeveloperSection()
+    }
+  }
+
+  const handleHideDeveloperSection = () => {
+    persistDeveloperSectionVisibilityPreference(false)
+    setDeveloperSectionVisible(false)
+    resetDeveloperRevealProgress()
+  }
 
   const resetActions = useMemo<ResetActionDefinition[]>(() => ([
     {
@@ -392,10 +667,10 @@ export default function SettingsView() {
     {
       id: 'reset-integrations',
       title: 'Reset Integrations',
-      description: 'Disable Discord, Last.fm, Lyrics lookup, and the Local API.',
+      description: 'Disable Discord, scrobbling, Lyrics lookup, and the Local API.',
       buttonLabel: 'Reset Integrations',
       confirmTitle: 'Reset Integration Settings',
-      confirmMessage: 'This will disable Discord, Last.fm scrobbling, online lyrics lookup, and the local integration API, then clear related preferences.',
+      confirmMessage: 'This will disable Discord, scrobbling, online lyrics lookup, and the local integration API, then clear related preferences.',
       confirmLabel: 'Reset Integrations',
       destructive: false,
       run: resetIntegrationSettings,
@@ -489,6 +764,26 @@ export default function SettingsView() {
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
   const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
   const localApiToken = localApiStatus?.token ?? ''
+  const phoneRemoteEnabled = phoneRemoteStatus?.enabled ?? false
+  const phoneRemoteControlsEnabled = phoneRemoteStatus?.controlsEnabled ?? localApiControlsEnabled
+  const phoneRemoteLanUrls = phoneRemoteStatus?.lanUrls ?? []
+  const phoneRemoteControllerUrls = phoneRemoteLanUrls.map((url) => `${url}/remote/`)
+  const localApiSelectedPairingUrl = localApiSelectedPairingBaseUrl
+    ? `${localApiSelectedPairingBaseUrl}/remote/`
+    : phoneRemoteControllerUrls[0] ?? ''
+  const phoneRemotePairedDeviceCount = phoneRemoteStatus?.pairedDeviceCount ?? phoneRemotePairedDevices.length
+  const phoneRemotePendingPairingCount = phoneRemoteStatus?.pendingPairingCount ?? phoneRemotePendingPairingRequests.length
+  const localApiPhoneRemoteSummary = !phoneRemoteEnabled
+    ? 'Phone remote is off. Turn it on when you want Astra to expose `/remote/` on your LAN.'
+    : phoneRemoteLanUrls.length === 0
+      ? 'Phone remote is enabled, but Astra has not found a usable `192.168.*` LAN address yet.'
+      : phoneRemotePendingPairingCount > 0
+        ? `${phoneRemotePendingPairingCount} phone${phoneRemotePendingPairingCount === 1 ? '' : 's'} waiting for approval.`
+        : phoneRemotePairedDeviceCount > 0
+          ? `${phoneRemotePairedDeviceCount} phone${phoneRemotePairedDeviceCount === 1 ? '' : 's'} paired.`
+          : phoneRemoteControlsEnabled
+            ? 'Phone remote is ready for full control.'
+            : 'Phone remote is ready in read-only mode until playback controls are enabled.'
   const localApiStatusLabel = !localApiStatus
     ? 'Loading local API status...'
     : localApiStatus.active
@@ -496,19 +791,45 @@ export default function SettingsView() {
       : localApiStatus.enabled
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
-  const lastFmConnected = lastFmStatus?.connected ?? false
+  const localApiActiveDevices = useMemo(
+    () => phoneRemotePairedDevices.filter((d) => d.revokedAt == null),
+    [phoneRemotePairedDevices]
+  )
+  const localApiControllerUrl = phoneRemoteControllerUrls[0] ?? ''
+  const localApiInlineQrSvg = useMemo(() => {
+    if (!localApiControllerUrl) return ''
+    try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
+  }, [localApiControllerUrl])
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
+  const lastFmAuthPendingProfileId = lastFmStatus?.authPendingProfileId ?? null
   const lastFmHasApiCredentials = lastFmStatus?.hasApiCredentials ?? true
-  const lastFmUsername = lastFmStatus?.username
+  const lastFmProfiles = lastFmStatus?.profiles ?? []
   const lastFmPendingScrobbles = lastFmStatus?.pendingScrobbles ?? 0
-  const lastFmStatusLabel = lastFmStatus?.statusMessage ?? 'Loading Last.fm status...'
+  const lastFmStatusLabel = lastFmStatus?.statusMessage ?? 'Loading scrobbling status...'
   const lastFmQueueLabel = `Pending scrobbles: ${lastFmPendingScrobbles}.`
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
-  const lastFmCanConnect = lastFmHasApiCredentials && !lastFmConnected && !lastFmIsAuthorizing
+  const lastFmProfileModalOpen = lastFmProfileModalMode != null
+  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Destination' : 'Add Destination'
+  const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
+    !lastFmProfileUrlInput.trim() ||
+    (isScrobbleUsernameRequired(lastFmProfileProtocolInput) && !lastFmProfileUsernameInput.trim()) ||
+    (lastFmProfileModalMode === 'create' && !lastFmProfileSessionKeyInput.trim())
   const lyricsEnabled = lyricsStatus?.enabled ?? false
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
+  const diagnosticsEnabled = diagnosticsStatus?.enabled ?? false
+  const diagnosticsSampleIntervalLabel = `${Math.round((diagnosticsStatus?.sampleIntervalMs ?? 15000) / 1000)} seconds`
+  const diagnosticsCurrentLogPath = diagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsPreviousLogPath = diagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
+  const diagnosticsSessionLabel = diagnosticsStatus?.sessionStartedAt
+    ? `Current session started ${new Date(diagnosticsStatus.sessionStartedAt).toLocaleString()}.`
+    : diagnosticsEnabled
+      ? 'Waiting for the current diagnostics session header.'
+      : 'Diagnostics are disabled.'
+  const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
+    ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
+    : 'No memory bundle captured in this session.'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
@@ -537,9 +858,31 @@ export default function SettingsView() {
   useEffect(() => {
     let isMounted = true
 
-    const loadAppVersion = async () => {
+    const loadAppBuildInfo = async () => {
+      if (window.electronAPI?.getAppBuildInfo) {
+        try {
+          const buildInfo = await window.electronAPI.getAppBuildInfo()
+          if (!isMounted) return
+          setAppVersionLabel(buildInfo.version ? `v${buildInfo.version}` : 'Unavailable')
+          setAppBuildLabel(formatBuildLabel(buildInfo))
+          setAppBuildTooltip(formatBuildTooltip(buildInfo) ?? '')
+          setAppBuildCopyValue(formatBuildCopyValue(buildInfo))
+        } catch {
+          if (!isMounted) return
+          setAppVersionLabel('Unavailable')
+          setAppBuildLabel('')
+          setAppBuildTooltip('')
+          setAppBuildCopyValue('')
+        }
+        return
+      }
+
       if (!window.electronAPI?.getAppVersion) {
-        if (isMounted) setAppVersionLabel('Unavailable')
+        if (!isMounted) return
+        setAppVersionLabel('Unavailable')
+        setAppBuildLabel('')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
         return
       }
 
@@ -547,12 +890,19 @@ export default function SettingsView() {
         const version = await window.electronAPI.getAppVersion()
         if (!isMounted) return
         setAppVersionLabel(version ? `v${version}` : 'Unavailable')
+        setAppBuildLabel('')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
       } catch {
-        if (isMounted) setAppVersionLabel('Unavailable')
+        if (!isMounted) return
+        setAppVersionLabel('Unavailable')
+        setAppBuildLabel('')
+        setAppBuildTooltip('')
+        setAppBuildCopyValue('')
       }
     }
 
-    void loadAppVersion()
+    void loadAppBuildInfo()
     return () => {
       isMounted = false
     }
@@ -629,6 +979,26 @@ export default function SettingsView() {
     }
   }
 
+  const copyPhoneRemoteToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setPhoneRemoteFeedback(`${label} copied.`)
+    } catch {
+      setPhoneRemoteFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
+  const copyInfoToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setInfoFeedbackTone('success')
+      setInfoFeedback(`${label} copied.`)
+    } catch {
+      setInfoFeedbackTone('error')
+      setInfoFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
   const handleSaveLocalApiPort = () => {
     const parsedPort = Number(localApiPortInput)
     if (!Number.isInteger(parsedPort) || parsedPort < LOCAL_API_MIN_PORT || parsedPort > LOCAL_API_MAX_PORT) {
@@ -646,6 +1016,166 @@ export default function SettingsView() {
     void rotateLocalApiToken().then((status) => {
       if (!status) return
       setLocalApiFeedback('API key regenerated.')
+    })
+  }
+
+  const handleSavePhoneRemotePort = () => {
+    const parsedPort = Number(phoneRemotePortInput)
+    if (!Number.isInteger(parsedPort) || parsedPort < PHONE_REMOTE_MIN_PORT || parsedPort > PHONE_REMOTE_MAX_PORT) {
+      setPhoneRemoteFeedback(`Port must be an integer between ${PHONE_REMOTE_MIN_PORT} and ${PHONE_REMOTE_MAX_PORT}.`)
+      return
+    }
+
+    void setPhoneRemotePort(parsedPort).then((status) => {
+      if (!status) return
+      setPhoneRemoteFeedback(`Phone remote port set to ${status.port}.`)
+    })
+  }
+
+  const openLastFmCreateProfileModal = () => {
+    const protocol: LastFmScrobbleProtocol = 'lastfm2'
+    setLastFmProfileModalMode('create')
+    setLastFmEditingProfileId(null)
+    setLastFmProfileProtocolInput(protocol)
+    setLastFmProfileNameInput(getDefaultScrobbleProfileName(protocol))
+    setLastFmProfileUrlInput('')
+    setLastFmProfileUsernameInput('')
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const openLastFmEditProfileModal = (profile: LastFmProfileStatus) => {
+    if (profile.kind !== 'custom') return
+    setLastFmProfileModalMode('edit')
+    setLastFmEditingProfileId(profile.id)
+    setLastFmProfileProtocolInput(profile.protocol)
+    setLastFmProfileNameInput(profile.name)
+    setLastFmProfileUrlInput(profile.apiBaseUrl)
+    setLastFmProfileUsernameInput(profile.username ?? '')
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const closeLastFmProfileModal = () => {
+    setLastFmProfileModalMode(null)
+    setLastFmEditingProfileId(null)
+    setLastFmProfileSessionKeyInput('')
+  }
+
+  const handleLastFmProfileProtocolChange = (protocol: LastFmScrobbleProtocol) => {
+    const previousProtocol = lastFmProfileProtocolInput
+    setLastFmProfileProtocolInput(protocol)
+    if (
+      lastFmProfileModalMode === 'create' &&
+      lastFmProfileNameInput === getDefaultScrobbleProfileName(previousProtocol)
+    ) {
+      setLastFmProfileNameInput(getDefaultScrobbleProfileName(protocol))
+    }
+  }
+
+  const handleSaveLastFmProfile = () => {
+    const input = {
+      protocol: lastFmProfileProtocolInput,
+      name: lastFmProfileNameInput,
+      apiBaseUrl: lastFmProfileUrlInput,
+      username: lastFmProfileUsernameInput,
+      sessionKey: lastFmProfileSessionKeyInput.trim() ? lastFmProfileSessionKeyInput : null
+    }
+
+    const savePromise = lastFmProfileModalMode === 'edit' && lastFmEditingProfileId
+      ? updateLastFmCustomProfile(lastFmEditingProfileId, input)
+      : createLastFmCustomProfile(input)
+
+    void savePromise.then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback(lastFmProfileModalMode === 'edit' ? 'Destination updated.' : 'Destination added.')
+      closeLastFmProfileModal()
+    })
+  }
+
+  const handleDeleteLastFmProfile = (profile: LastFmProfileStatus) => {
+    if (profile.kind !== 'custom') return
+    if (!window.confirm(`Delete ${profile.name}?`)) return
+    void deleteLastFmCustomProfile(profile.id).then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback('Destination deleted.')
+    })
+  }
+
+  const canToggleLastFmProfile = (profile: LastFmProfileStatus): boolean => {
+    return profile.connected && (!profile.requiresApiCredentials || lastFmHasApiCredentials)
+  }
+
+  const handleToggleLastFmProfile = (profile: LastFmProfileStatus) => {
+    if (!canToggleLastFmProfile(profile)) return
+    void setLastFmProfileEnabled(profile.id, !profile.enabled).then((status) => {
+      if (!status || status.lastError) return
+      setLastFmProfileFeedback(`${profile.name} ${profile.enabled ? 'disabled' : 'enabled'}.`)
+    })
+  }
+
+  const handleEnablePhoneRemoteControl = () => {
+    void (async () => {
+      if (!phoneRemoteEnabled) {
+        const status = await setPhoneRemoteEnabled(true)
+        if (!status) return
+      }
+
+      if (!localApiControlsEnabled) {
+        const status = await setLocalApiControlsEnabled(true)
+        if (!status) return
+      }
+
+      setPhoneRemoteFeedback('Phone remote control enabled.')
+    })()
+  }
+
+  const handleOpenPhoneRemotePairingModal = () => {
+    setLocalApiPairingModalOpen(true)
+  }
+
+  const handleClosePhoneRemotePairingModal = () => {
+    setLocalApiPairingModalOpen(false)
+    clearPhoneRemoteActivePairingTicket()
+  }
+
+  const handleCreatePhoneRemotePairingTicket = () => {
+    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+      if (!ticket) return
+      setPhoneRemoteFeedback('Pairing ticket generated.')
+    })
+  }
+
+  const handleRefreshPhoneRemotePairingTicket = () => {
+    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+      if (!ticket) return
+      setPhoneRemoteFeedback('Pairing ticket refreshed.')
+    })
+  }
+
+  const handleApprovePhoneRemotePairingRequest = (id: string) => {
+    void approvePhoneRemotePairingRequest(id).then(() => {
+      setPhoneRemoteFeedback('Pairing request approved.')
+    })
+  }
+
+  const handleRejectPhoneRemotePairingRequest = (id: string) => {
+    void rejectPhoneRemotePairingRequest(id).then(() => {
+      setPhoneRemoteFeedback('Pairing request rejected.')
+    })
+  }
+
+  const handleRevokePhoneRemotePairedDevice = (id: string) => {
+    void revokePhoneRemotePairedDevice(id).then(() => {
+      setPhoneRemoteFeedback('Paired phone revoked.')
+    })
+  }
+
+  const handleRevokeAllPhoneRemoteDevices = () => {
+    void revokeAllPhoneRemotePairedDevices().then((revokedCount) => {
+      if (revokedCount > 0) {
+        setPhoneRemoteFeedback(`${revokedCount} paired phone${revokedCount === 1 ? '' : 's'} revoked.`)
+        return
+      }
+      setPhoneRemoteFeedback('No paired phones to revoke.')
     })
   }
 
@@ -825,7 +1355,7 @@ export default function SettingsView() {
 
         <div className="settings-layout">
           <nav className="settings-sidebar" aria-label="Settings sections">
-            {SETTINGS_SECTIONS.map((section) => (
+            {visibleSettingsSections.map((section) => (
               <button
                 key={section.id}
                 type="button"
@@ -843,7 +1373,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Appearance</h3>
-              <p>Theme and accent preferences.</p>
             </div>
             <div className="settings-theme-grid">
               {THEME_PRESET_LIST.map((preset) => (
@@ -858,106 +1387,158 @@ export default function SettingsView() {
                 </button>
               ))}
             </div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span className="settings-field-label">
-                  {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
-                </span>
-                <div className="settings-accent-inputs">
-                  <input
-                    className="settings-color settings-color-wide"
-                    type="color"
-                    value={fallbackAccent}
-                    onChange={(event) => {
-                      const next = event.target.value.toLowerCase()
-                      setAccentInputValue(next)
-                      setCustomAccent(next)
-                    }}
-                  />
-                  <input
-                    className="settings-select settings-accent-hex-input"
-                    type="text"
-                    value={accentInputValue}
-                    onChange={(event) => handleAccentColorInput(event.target.value)}
-                    onBlur={() => {
-                      const normalized = normalizeHexColor(accentInputValue)
-                      if (!normalized) {
-                        setAccentInputValue(fallbackAccent)
-                        return
-                      }
-                      setAccentInputValue(normalized)
-                    }}
-                    placeholder={defaultPresetAccent}
-                    spellCheck={false}
-                  />
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Accent</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">
+                      {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
+                    </span>
+                    <div className="settings-accent-inputs">
+                      <input
+                        className="settings-color settings-color-wide"
+                        type="color"
+                        value={fallbackAccent}
+                        onChange={(event) => {
+                          const next = event.target.value.toLowerCase()
+                          setAccentInputValue(next)
+                          setCustomAccent(next)
+                        }}
+                      />
+                      <input
+                        className="settings-select settings-accent-hex-input"
+                        type="text"
+                        value={accentInputValue}
+                        onChange={(event) => handleAccentColorInput(event.target.value)}
+                        onBlur={() => {
+                          const normalized = normalizeHexColor(accentInputValue)
+                          if (!normalized) {
+                            setAccentInputValue(fallbackAccent)
+                            return
+                          }
+                          setAccentInputValue(normalized)
+                        }}
+                        placeholder={defaultPresetAccent}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Accent Source</span>
+                    <select
+                      className="settings-select"
+                      value={accentSource}
+                      onChange={(event) => {
+                        const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
+                        setAccentSource(source)
+                      }}
+                    >
+                      <option value="theme">Theme Accent</option>
+                      <option value="cover-art">Cover Art (Now Playing)</option>
+                    </select>
+                  </label>
+                  {accentSource === 'cover-art' && (
+                    <label className="settings-field">
+                      <span className="settings-field-label">Cover Art Method</span>
+                      <select
+                        className="settings-select"
+                        value={coverArtAccentMethod}
+                        onChange={(event) => {
+                          const method: CoverArtAccentMethod = event.target.value === 'average'
+                            ? 'average'
+                            : event.target.value === 'vibrant'
+                              ? 'vibrant'
+                              : 'dominant'
+                          setCoverArtAccentMethod(method)
+                        }}
+                      >
+                        <option value="dominant">Dominant</option>
+                        <option value="vibrant">Vibrant</option>
+                        <option value="average">Average</option>
+                      </select>
+                    </label>
+                  )}
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
+                    </span>
+                    {customAccent ? (
+                      <button className="settings-btn" onClick={usePresetAccent}>
+                        Use Preset Accent
+                      </button>
+                    ) : (
+                      <span className="settings-chip">Using Preset Accent</span>
+                    )}
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Theme</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={() => {
+                        resetThemeToDefault()
+                        setAccentInputValue(defaultPresetAccent)
+                      }}
+                    >
+                      Reset Theme to Default
+                    </button>
+                  </div>
                 </div>
-              </label>
-              <label className="settings-field">
-                <span className="settings-field-label">Accent Source</span>
-                <select
-                  className="settings-select"
-                  value={accentSource}
-                  onChange={(event) => {
-                    const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
-                    setAccentSource(source)
-                  }}
-                >
-                  <option value="theme">Theme Accent</option>
-                  <option value="cover-art">Cover Art (Now Playing)</option>
-                </select>
-              </label>
-              {accentSource === 'cover-art' && (
-                <label className="settings-field">
-                  <span className="settings-field-label">Cover Art Method</span>
-                  <select
-                    className="settings-select"
-                    value={coverArtAccentMethod}
-                    onChange={(event) => {
-                      const method: CoverArtAccentMethod = event.target.value === 'average'
-                        ? 'average'
-                        : event.target.value === 'vibrant'
-                          ? 'vibrant'
-                          : 'dominant'
-                      setCoverArtAccentMethod(method)
-                    }}
-                  >
-                    <option value="dominant">Dominant</option>
-                    <option value="vibrant">Vibrant</option>
-                    <option value="average">Average</option>
-                  </select>
-                </label>
-              )}
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">
-                  {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
-                </span>
-                {customAccent ? (
-                  <button className="settings-btn" onClick={usePresetAccent}>
-                    Use Preset Accent
-                  </button>
-                ) : (
-                  <span className="settings-chip">Using Preset Accent</span>
-                )}
               </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Theme</span>
-                <button
-                  className="settings-btn settings-btn-primary"
-                  onClick={() => {
-                    resetThemeToDefault()
-                    setAccentInputValue(defaultPresetAccent)
-                  }}
-                >
-                  Reset Theme to Default
-                </button>
+              <div className="settings-card">
+                <div className="settings-card-label">Interface Scale</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">UI Scale</span>
+                    <div className="settings-scale-row">
+                      <input
+                        className="settings-scale-slider"
+                        type="range"
+                        min={MIN_UI_SCALE_PERCENT}
+                        max={MAX_UI_SCALE_PERCENT}
+                        step={UI_SCALE_STEP_PERCENT}
+                        value={uiScalePercent}
+                        onChange={(event) => setUIScalePercent(Number(event.target.value))}
+                        aria-label="UI scale"
+                      />
+                      <span className="settings-chip settings-chip-mono settings-scale-value">
+                        {uiScalePercent}%
+                      </span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        onClick={resetUIScalePercent}
+                        disabled={uiScalePercent === DEFAULT_UI_SCALE_PERCENT}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Text</span>
+                    <select
+                      className="settings-select"
+                      value={homeGreetingTextMode}
+                      onChange={(event) => {
+                        const mode = event.target.value === 'clock' || event.target.value === 'off'
+                          ? event.target.value
+                          : 'messages'
+                        setHomeGreetingTextMode(mode as HomeGreetingTextMode)
+                      }}
+                    >
+                      <option value="messages">Messages</option>
+                      <option value="clock">Clock</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                </div>
               </div>
             </div>
-            <p className="settings-note">The current Astra look is preserved as the default preset.</p>
-            {accentSource === 'cover-art' && (
-              <p className="settings-note">
-                Cover art accents use the selected method on the current track artwork. Vibrant favors richer, less-muted colors. If artwork is missing or no usable color is found, Astra uses the fallback accent color.
-              </p>
-            )}
           </section>
             )}
 
@@ -965,7 +1546,6 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Library</h3>
-              <p>Manage folders and refresh indexed metadata.</p>
             </div>
             <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
               <button className="settings-btn settings-btn-primary" onClick={() => setShowFolderSettings(true)}>
@@ -978,107 +1558,142 @@ export default function SettingsView() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
                 </svg>
-                Rescan Library
+                Scan for Changes
+              </button>
+              <button className="settings-btn" onClick={forceRescanAll} disabled={isScanning}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                </svg>
+                Force Rescan All
               </button>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Normalization</span>
-                <button
-                  className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
-                  onClick={handleNormalizationToggle}
-                  disabled={bitPerfectModeActive}
-                  title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
-                >
-                  {normalizationEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-              <label className="settings-field">
-                <span className="settings-field-label">Normalization Target</span>
-                <div className="settings-inline-row">
-                  <input
-                    className="settings-select settings-inline-input settings-inline-input-compact"
-                    type="number"
-                    min={NORMALIZATION_TARGET_MIN_LUFS}
-                    max={NORMALIZATION_TARGET_MAX_LUFS}
-                    step={0.5}
-                    value={normalizationTargetInput}
-                    disabled={!normalizationEnabled || bitPerfectModeActive}
-                    onChange={(event) => {
-                      setNormalizationTargetInput(event.target.value)
-                      if (normalizationTargetError) {
-                        setNormalizationTargetError('')
-                      }
-                    }}
-                    onBlur={commitNormalizationTarget}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter') return
-                      event.preventDefault()
-                      commitNormalizationTarget()
-                    }}
-                  />
-                  <span className="settings-chip settings-chip-mono">LUFS</span>
-                  <button
-                    type="button"
-                    className="settings-chip settings-chip-mono settings-chip-danger"
-                    disabled={!normalizationEnabled || bitPerfectModeActive}
-                    onClick={resetNormalizationTarget}
-                  >
-                    RESET
-                  </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Normalization</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Normalization</span>
+                    <button
+                      className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
+                      onClick={handleNormalizationToggle}
+                      disabled={bitPerfectModeActive}
+                      title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                    >
+                      {normalizationEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Normalization Target</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={NORMALIZATION_TARGET_MIN_LUFS}
+                        max={NORMALIZATION_TARGET_MAX_LUFS}
+                        step={0.5}
+                        value={normalizationTargetInput}
+                        disabled={!normalizationEnabled || bitPerfectModeActive}
+                        onChange={(event) => {
+                          setNormalizationTargetInput(event.target.value)
+                          if (normalizationTargetError) {
+                            setNormalizationTargetError('')
+                          }
+                        }}
+                        onBlur={commitNormalizationTarget}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          event.preventDefault()
+                          commitNormalizationTarget()
+                        }}
+                      />
+                      <span className="settings-chip settings-chip-mono">LUFS</span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        disabled={!normalizationEnabled || bitPerfectModeActive}
+                        onClick={resetNormalizationTarget}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">ReplayGain</span>
+                    <select
+                      className="settings-select"
+                      value={replayGainSelectorValue}
+                      disabled={bitPerfectModeActive}
+                      onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
+                    >
+                      <option value="disabled">Disabled</option>
+                      <option value="auto">Auto</option>
+                      <option value="track">Track</option>
+                      <option value="album">Album</option>
+                    </select>
+                  </label>
                 </div>
-              </label>
-              <label className="settings-field">
-                <span className="settings-field-label">ReplayGain</span>
-                <select
-                  className="settings-select"
-                  value={replayGainSelectorValue}
-                  disabled={bitPerfectModeActive}
-                  onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
-                >
-                  <option value="disabled">Disabled</option>
-                  <option value="auto">Auto</option>
-                  <option value="track">Track</option>
-                  <option value="album">Album</option>
-                </select>
-              </label>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Tracklist BPM/Key Columns</span>
-                <button
-                  className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
-                  onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
-                >
-                  {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
-                </button>
               </div>
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Tracklist Added Column</span>
-                <button
-                  className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
-                  onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
-                >
-                  {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
-                </button>
+              <div className="settings-card">
+                <div className="settings-card-label">Artist Parsing</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Artist Parsing</span>
+                    <div className="settings-inline-row">
+                      <button
+                        className={`settings-toggle ${artistBrowseMode === 'strict' ? 'active' : ''}`}
+                        onClick={() => setArtistBrowseMode('strict')}
+                        aria-pressed={artistBrowseMode === 'strict'}
+                        title="Use stored Album Artist and Artist tags as written"
+                      >
+                        File tags
+                      </button>
+                      <button
+                        className={`settings-toggle ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
+                        onClick={() => setArtistBrowseMode('canonical')}
+                        aria-pressed={artistBrowseMode === 'canonical'}
+                        title="Use Astra's primary artist and collaboration grouping"
+                      >
+                        Astra grouping
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Tracklist Columns</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">BPM / Key</span>
+                    <button
+                      className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
+                      onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
+                    >
+                      {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Added Date</span>
+                    <button
+                      className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
+                      onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
+                    >
+                      {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-            <p className="settings-note">Manage Folders includes folder-level permission warnings.</p>
-            <p className="settings-note">
-              Normalization Target applies to built-in normalization. ReplayGain values override it on tagged tracks when ReplayGain is active.
-            </p>
             {bitPerfectModeActive && (
               <p className="settings-note">
                 {BIT_PERFECT_DSP_DISABLED_MESSAGE}
               </p>
             )}
-            <p className="settings-note">
-              Experimental.
-            </p>
             {normalizationTargetError && (
               <p className="settings-note settings-note-error">{normalizationTargetError}</p>
             )}
             {!normalizationEnabled && (
               <p className="settings-note settings-note-error">
-                Normalization is disabled. ReplayGain can stay configured, but playback gain is bypassed until normalization is re-enabled.
+                ReplayGain is configured but playback gain is bypassed while normalization is off.
               </p>
             )}
             <RemoteServersPanel />
@@ -1089,34 +1704,35 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Analyzer</h3>
-              <p>Profiles, docked scope layout, and visualizer behavior.</p>
             </div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span className="settings-field-label">Mini Player Visualizer</span>
-                <select
-                  className="settings-select"
-                  value={miniPlayerVisualizerMode}
-                  onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
-                >
-                  <option value="off">Off</option>
-                  <option value="oscilloscope">Oscilloscope</option>
-                  <option value="spectrum">Spectrum</option>
-                </select>
-              </label>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Visualizer</span>
-                <button
-                  className={`settings-toggle ${isRunning ? 'active' : ''}`}
-                  onClick={() => setIsRunning(!isRunning)}
-                >
-                  {isRunning ? 'Running' : 'Paused'}
-                </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Visualizer</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Mini Player Visualizer</span>
+                    <select
+                      className="settings-select"
+                      value={miniPlayerVisualizerMode}
+                      onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
+                    >
+                      <option value="off">Off</option>
+                      <option value="oscilloscope">Oscilloscope</option>
+                      <option value="spectrum">Spectrum</option>
+                    </select>
+                  </label>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Visualizer</span>
+                    <button
+                      className={`settings-toggle ${isRunning ? 'active' : ''}`}
+                      onClick={() => setIsRunning(!isRunning)}
+                    >
+                      {isRunning ? 'Running' : 'Paused'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-            <p className="settings-note">Visualizer line color follows the active theme accent.</p>
-            <p className="settings-note">For smoother mini-player visuals, use FFT 1024/2048 in the active analyzer profile, disable oscilloscope underfill there, and avoid hero mode on lower-end GPUs.</p>
           </section>
             )}
 
@@ -1124,45 +1740,49 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Audio Output</h3>
-              <p>Output device, delay compensation, and channel routing.</p>
             </div>
-            <div className="settings-grid">
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Playback Path</span>
-                <div className="settings-inline-row">
-                  <button
-                    className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
-                    onClick={() => handlePlaybackPathChange('standard')}
-                  >
-                    Standard
-                  </button>
-                  <div className="settings-inline-row">
-                    <button
-                      className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
-                      onClick={() => handlePlaybackPathChange('bitperfect')}
-                    >
-                      Bit-Perfect (Exclusive)
-                    </button>
-                    <span className="settings-chip settings-chip-mono settings-chip-danger">
-                      Experimental
-                    </span>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Playback Path</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Playback Path</span>
+                    <div className="settings-inline-row">
+                      <button
+                        className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
+                        onClick={() => handlePlaybackPathChange('standard')}
+                      >
+                        Standard
+                      </button>
+                      <div className="settings-inline-row">
+                        <button
+                          className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
+                          onClick={() => handlePlaybackPathChange('bitperfect')}
+                        >
+                          Bit-Perfect (Exclusive)
+                        </button>
+                        <span className="settings-chip settings-chip-mono settings-chip-danger">
+                          Experimental
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-              <div className="settings-field">
-                <span className="settings-field-label">Native Status</span>
-                <div className="settings-inline-row">
-                  <span className="settings-chip settings-chip-mono">
-                    {nativeBackendLabel}
-                  </span>
-                  {nativeAudioCapabilities.activeSampleRate && (
-                    <span className="settings-chip settings-chip-mono">
-                      {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
-                    </span>
-                  )}
-                  <span className="settings-chip settings-chip-mono">
-                    {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
-                  </span>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Native Status</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono">
+                        {nativeBackendLabel}
+                      </span>
+                      {nativeAudioCapabilities.activeSampleRate && (
+                        <span className="settings-chip settings-chip-mono">
+                          {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
+                        </span>
+                      )}
+                      <span className="settings-chip settings-chip-mono">
+                        {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1188,72 +1808,73 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Playback</h3>
-              <p>Session-level playback behavior and sleep timer controls.</p>
             </div>
-            <div className="settings-sleep-controls">
-              <div className="settings-sleep-presets">
-                {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
-                  <button
-                    key={minutes}
-                    type="button"
-                    className="settings-btn"
-                    onClick={() => handleSleepTimerPreset(minutes)}
-                    disabled={!canStartSleepTimer}
-                  >
-                    {minutes} min
-                  </button>
-                ))}
-              </div>
-              <div className="settings-sleep-custom-row">
-                <input
-                  className="settings-select"
-                  type="number"
-                  min={SLEEP_TIMER_MIN_MINUTES}
-                  max={SLEEP_TIMER_MAX_MINUTES}
-                  step={1}
-                  value={sleepTimerCustomMinutesInput}
-                  onChange={(event) => setSleepTimerCustomMinutesInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter') return
-                    event.preventDefault()
-                    handleSleepTimerCustomStart()
-                  }}
-                />
-                <button
-                  type="button"
-                  className="settings-btn settings-btn-primary"
-                  onClick={handleSleepTimerCustomStart}
-                  disabled={!canStartSleepTimer}
-                >
-                  {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
-                </button>
-                {sleepTimerIsActive && (
-                  <button
-                    type="button"
-                    className="settings-btn"
-                    onClick={handleSleepTimerCancel}
-                  >
-                    Cancel
-                  </button>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Sleep Timer</div>
+                <div className="settings-sleep-controls">
+                  <div className="settings-sleep-presets">
+                    {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
+                      <button
+                        key={minutes}
+                        type="button"
+                        className="settings-btn"
+                        onClick={() => handleSleepTimerPreset(minutes)}
+                        disabled={!canStartSleepTimer}
+                      >
+                        {minutes} min
+                      </button>
+                    ))}
+                  </div>
+                  <div className="settings-sleep-custom-row">
+                    <input
+                      className="settings-select"
+                      type="number"
+                      min={SLEEP_TIMER_MIN_MINUTES}
+                      max={SLEEP_TIMER_MAX_MINUTES}
+                      step={1}
+                      value={sleepTimerCustomMinutesInput}
+                      onChange={(event) => setSleepTimerCustomMinutesInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return
+                        event.preventDefault()
+                        handleSleepTimerCustomStart()
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleSleepTimerCustomStart}
+                      disabled={!canStartSleepTimer}
+                    >
+                      {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
+                    </button>
+                    {sleepTimerIsActive && (
+                      <button
+                        type="button"
+                        className="settings-btn"
+                        onClick={handleSleepTimerCancel}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className={`settings-note settings-sleep-status${sleepTimerIsActive ? ' settings-sleep-status-active' : ''}`}>
+                  {sleepTimerStatusLabel}
+                </p>
+                {sleepTimerFeedback && (
+                  <p className={`settings-note ${sleepTimerFeedbackTone === 'error' ? 'settings-note-error' : 'settings-note-success'}`}>
+                    {sleepTimerFeedback}
+                  </p>
+                )}
+                {!canStartSleepTimer && (
+                  <p className="settings-note">
+                    Load a track to start a sleep timer.
+                  </p>
                 )}
               </div>
             </div>
-            <p className={`settings-note settings-sleep-status${sleepTimerIsActive ? ' settings-sleep-status-active' : ''}`}>
-              {sleepTimerStatusLabel}
-            </p>
-            {sleepTimerFeedback && (
-              <p className={`settings-note ${sleepTimerFeedbackTone === 'error' ? 'settings-note-error' : 'settings-note-success'}`}>
-                {sleepTimerFeedback}
-              </p>
-            )}
-            {!canStartSleepTimer && (
-              <p className="settings-note">
-                Load a track and keep playback in playing or paused state to start a sleep timer.
-              </p>
-            )}
-            <p className="settings-note">
-              Sleep timer counts down in real time, pauses playback when it expires, and does not persist after restart.
-            </p>
           </section>
             )}
 
@@ -1261,58 +1882,156 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
-              <p>Optional platform integrations outside library sources.</p>
             </div>
             <div className="settings-integration-cards">
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Last.fm</h4>
-                  <p>Now Playing updates and scrobbling for your Last.fm profile.</p>
+                  <h4>Scrobbling</h4>
+                  <p>Now Playing updates and scrobbles for your connected destinations.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Last.fm Scrobbling</span>
+                    <span className="settings-field-label">Scrobbling</span>
                     <button
                       className={`settings-toggle ${lastFmEnabled ? 'active' : ''}`}
                       onClick={() => void setLastFmEnabled(!lastFmEnabled)}
-                      disabled={!lastFmConnected || !lastFmHasApiCredentials}
                     >
                       {lastFmEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
 
-                  <div className="settings-field">
-                    <span className="settings-field-label">Last.fm Account</span>
-                    <div className="settings-inline-row">
-                      <span className="settings-chip settings-chip-mono settings-chip-grow">
-                        {lastFmConnected
-                          ? `Connected as ${lastFmUsername ?? 'Unknown User'}`
-                          : 'Not connected'}
-                      </span>
+                  <div className="settings-field settings-lastfm-profiles-field">
+                    <div className="settings-lastfm-profiles-head">
+                      <span className="settings-field-label">Destinations</span>
                       <button
+                        type="button"
                         className="settings-btn settings-btn-primary"
-                        onClick={() => void beginLastFmAuth()}
-                        disabled={!lastFmCanConnect}
+                        onClick={openLastFmCreateProfileModal}
                       >
-                        {lastFmIsAuthorizing ? 'Waiting...' : lastFmAuthPending ? 'Check Again' : 'Connect'}
+                        Add Destination
                       </button>
-                      <button
-                        className="settings-btn"
-                        onClick={() => void disconnectLastFm()}
-                        disabled={!lastFmConnected && !lastFmAuthPending}
-                      >
-                        Disconnect
-                      </button>
+                    </div>
+                    <div className="settings-lastfm-profile-list">
+                      {lastFmProfiles.map((profile) => {
+                        const canToggleProfile = canToggleLastFmProfile(profile)
+                        const profileAuthPending = lastFmAuthPending && lastFmAuthPendingProfileId === profile.id
+                        const canConnectProfile = lastFmHasApiCredentials &&
+                          profile.kind === 'official' &&
+                          profile.protocol === 'lastfm2' &&
+                          !profile.connected &&
+                          !lastFmIsAuthorizing
+                        const rowClassName = [
+                          'settings-lastfm-profile-row',
+                          profile.enabled ? 'active' : 'inactive',
+                          !canToggleProfile ? 'blocked' : ''
+                        ].filter(Boolean).join(' ')
+
+                        return (
+                          <div key={profile.id} className={rowClassName}>
+                            <label className="settings-lastfm-profile-check">
+                              <input
+                                type="checkbox"
+                                checked={profile.enabled}
+                                disabled={!canToggleProfile}
+                                onChange={() => handleToggleLastFmProfile(profile)}
+                                aria-label={`${profile.enabled ? 'Disable' : 'Enable'} ${profile.name}`}
+                              />
+                              <span aria-hidden="true" />
+                            </label>
+                            <div className="settings-lastfm-profile-main">
+                              <div className="settings-lastfm-profile-title-row">
+                                <span className="settings-lastfm-profile-name">{profile.name}</span>
+                                <span className="settings-chip settings-chip-mono">
+                                  {profile.protocolLabel}
+                                </span>
+                              </div>
+                              <div className="settings-lastfm-profile-meta">
+                                <span>{profile.apiBaseUrl}</span>
+                                <span>
+                                  {profile.connected
+                                    ? profile.username
+                                      ? `Connected as ${profile.username}`
+                                      : 'Token configured'
+                                    : 'Not connected'}
+                                </span>
+                                <span>{profile.pendingScrobbles} pending</span>
+                                {profile.lastError && (
+                                  <span className="settings-lastfm-profile-error">{profile.lastError}</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="settings-lastfm-profile-actions">
+                              {profile.kind === 'official' && profile.protocol === 'lastfm2' && (!profile.connected || profileAuthPending) && (
+                                <button
+                                  type="button"
+                                  className="settings-lastfm-icon-btn"
+                                  onClick={() => void beginLastFmAuth(profile.id)}
+                                  disabled={!canConnectProfile && !profileAuthPending}
+                                  title={profileAuthPending ? 'Authorization pending' : 'Connect'}
+                                  aria-label={profileAuthPending ? 'Authorization pending' : `Connect ${profile.name}`}
+                                >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M10.5 13.5L13.5 10.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                    <path d="M8.2 15.8L6.8 17.2C5.6 18.4 3.8 18.4 2.6 17.2C1.5 16 1.5 14.2 2.6 13L6.1 9.5C7.3 8.3 9.1 8.3 10.3 9.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                    <path d="M15.8 8.2L17.2 6.8C18.4 5.6 20.2 5.6 21.4 6.8C22.5 8 22.5 9.8 21.4 11L17.9 14.5C16.7 15.7 14.9 15.7 13.7 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                  </svg>
+                                </button>
+                              )}
+                              {profile.connected && (
+                                <button
+                                  type="button"
+                                  className="settings-lastfm-icon-btn"
+                                  onClick={() => void disconnectLastFmProfile(profile.id)}
+                                  title="Disconnect"
+                                  aria-label={`Disconnect ${profile.name}`}
+                                >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M7 7L17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                    <path d="M17 7L7 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                  </svg>
+                                </button>
+                              )}
+                              {profile.kind === 'custom' && (
+                                <button
+                                  type="button"
+                                  className="settings-lastfm-icon-btn"
+                                  onClick={() => openLastFmEditProfileModal(profile)}
+                                  title="Edit"
+                                  aria-label={`Edit ${profile.name}`}
+                                >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M4 20H8.4L19.2 9.2C20.1 8.3 20.1 6.9 19.2 6L18 4.8C17.1 3.9 15.7 3.9 14.8 4.8L4 15.6V20Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                    <path d="M13.8 5.8L18.2 10.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                  </svg>
+                                </button>
+                              )}
+                              {profile.canDelete && (
+                                <button
+                                  type="button"
+                                  className="settings-lastfm-icon-btn danger"
+                                  onClick={() => handleDeleteLastFmProfile(profile)}
+                                  title="Delete"
+                                  aria-label={`Delete ${profile.name}`}
+                                >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M5 7H19" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                                    <path d="M9 7V5H15V7" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                    <path d="M8 10V19H16V10" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 </div>
                 <p className="settings-note">{lastFmStatusLabel}</p>
                 <p className="settings-note">{lastFmQueueLabel}</p>
+                {lastFmProfileFeedback && <p className="settings-note settings-note-success">{lastFmProfileFeedback}</p>}
                 {lastFmAuthHint && <p className="settings-note settings-note-success">{lastFmAuthHint}</p>}
                 {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
-                <p className="settings-note">
-                  Last.fm is optional, disabled by default, and only submits listening data when connected and enabled.
-                </p>
                 {!lastFmHasApiCredentials && (
                   <p className="settings-note settings-note-error">
                     Last.fm API credentials are missing in this build.
@@ -1323,7 +2042,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Lyrics</h4>
-                  <p>Embedded lyrics with optional LRCLIB fallback.</p>
+                  <p>LRC files and embedded lyrics with optional LRCLIB fallback.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -1338,9 +2057,6 @@ export default function SettingsView() {
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
-                <p className="settings-note">
-                  Online lookup is off by default. Astra only queries LRCLIB when the Lyrics tab is opened and embedded lyrics are missing.
-                </p>
               </div>
 
               <div className="settings-integration-card">
@@ -1368,11 +2084,66 @@ export default function SettingsView() {
                       {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Compact Status</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord compact status"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{ transform: discordCompactStatusMode === 'artist' ? 'translateX(100%)' : 'translateX(0)' }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordCompactStatusMode === 'title' ? 'active' : ''}`}
+                        onClick={() => void setDiscordCompactStatusMode('title')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordCompactStatusMode === 'title'}
+                      >
+                        Title
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordCompactStatusMode === 'artist' ? 'active' : ''}`}
+                        onClick={() => void setDiscordCompactStatusMode('artist')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordCompactStatusMode === 'artist'}
+                      >
+                        Artist
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Profile Info Line</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord profile info line"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{ transform: discordExpandedInfoMode === 'album' ? 'translateX(100%)' : 'translateX(0)' }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordExpandedInfoMode === 'file-info' ? 'active' : ''}`}
+                        onClick={() => void setDiscordExpandedInfoMode('file-info')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordExpandedInfoMode === 'file-info'}
+                      >
+                        File Info
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordExpandedInfoMode === 'album' ? 'active' : ''}`}
+                        onClick={() => void setDiscordExpandedInfoMode('album')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordExpandedInfoMode === 'album'}
+                      >
+                        Album
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <p className="settings-note">{discordStatusMessage}</p>
-                <p className="settings-note">
-                  Enabling Discord Cover Art performs internet lookups to MusicBrainz and Cover Art Archive.
-                </p>
               </div>
 
               <div className="settings-integration-card">
@@ -1396,7 +2167,6 @@ export default function SettingsView() {
                     <button
                       className={`settings-toggle ${localApiControlsEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiControlsEnabled(!localApiControlsEnabled)}
-                      disabled={!localApiEnabled}
                     >
                       {localApiControlsEnabled ? 'Enabled' : 'Disabled'}
                     </button>
@@ -1440,8 +2210,17 @@ export default function SettingsView() {
                     <span className="settings-field-label">Local API Key</span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">
-                        {localApiToken || 'Unavailable'}
+                        {localApiToken
+                          ? (showApiKey ? localApiToken : '•'.repeat(Math.min(localApiToken.length, 24)))
+                          : 'Unavailable'}
                       </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => setShowApiKey((v) => !v)}
+                        disabled={!localApiToken}
+                      >
+                        {showApiKey ? 'Hide' : 'Show'}
+                      </button>
                       <button
                         className="settings-btn"
                         onClick={() => void copyToClipboard(localApiToken, 'API key')}
@@ -1458,9 +2237,193 @@ export default function SettingsView() {
                 <p className="settings-note">{localApiStatusLabel}</p>
                 {localApiFeedback && <p className="settings-note settings-note-success">{localApiFeedback}</p>}
                 {localApiErrorMessage && <p className="settings-note settings-note-error">{localApiErrorMessage}</p>}
-                <p className="settings-note">
-                  The local API is loopback-only, off by default, and read-only unless controls are explicitly enabled.
-                </p>
+              </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'experimental' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Experimental</h3>
+            </div>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Activity Indicator</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Scope Rail Activity Indicator</span>
+                    <button
+                      className={`settings-toggle ${activityIndicatorExperimentEnabled ? 'active' : ''}`}
+                      onClick={() => setActivityIndicatorExperimentEnabled(!activityIndicatorExperimentEnabled)}
+                    >
+                      {activityIndicatorExperimentEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, scans, syncs, and transient background work.
+                  </p>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Library Graph</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Library Graph</span>
+                    <button
+                      className={`settings-toggle ${libraryGraphEnabled ? 'active' : ''}`}
+                      onClick={() => setLibraryGraphEnabled(!libraryGraphEnabled)}
+                    >
+                      {libraryGraphEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Graph</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!libraryGraphEnabled}
+                      onClick={() => {
+                        openFullGraph()
+                        setActiveView('graph')
+                      }}
+                    >
+                      Open Full Map
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Library Integrity Check</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Integrity Check</span>
+                    <button
+                      className={`settings-toggle ${libraryIntegrityEnabled ? 'active' : ''}`}
+                      onClick={() => setLibraryIntegrityEnabled(!libraryIntegrityEnabled)}
+                    >
+                      {libraryIntegrityEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Scanner</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!libraryIntegrityEnabled}
+                      onClick={openLibraryIntegrityPanel}
+                    >
+                      Open Integrity Check
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Quick scans inspect local file headers and metadata. Deep scans decode FLAC files and add quality-signal hints.
+                  </p>
+                </div>
+              </div>
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Phone Remote</h4>
+                  <p>Opt-in LAN controller surface for the phone PWA.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Phone Remote</span>
+                    <button
+                      className={`settings-toggle ${phoneRemoteEnabled ? 'active' : ''}`}
+                      onClick={() => void setPhoneRemoteEnabled(!phoneRemoteEnabled)}
+                    >
+                      {phoneRemoteEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Phone Remote Port</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={PHONE_REMOTE_MIN_PORT}
+                        max={PHONE_REMOTE_MAX_PORT}
+                        step={1}
+                        value={phoneRemotePortInput}
+                        onChange={(event) => setPhoneRemotePortInput(event.target.value)}
+                        onBlur={handleSavePhoneRemotePort}
+                      />
+                      <button className="settings-btn" onClick={handleSavePhoneRemotePort}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Status</span>
+                    <span className="settings-info-value">{localApiPhoneRemoteSummary}</span>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Pair a New Phone</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleOpenPhoneRemotePairingModal}
+                    >
+                      Pair Phone
+                    </button>
+                  </div>
+                </div>
+                {phoneRemoteFeedback && <p className="settings-note settings-note-success">{phoneRemoteFeedback}</p>}
+                {phoneRemoteErrorMessage && <p className="settings-note settings-note-error">{phoneRemoteErrorMessage}</p>}
+
+                {/* Inline paired devices */}
+                {localApiActiveDevices.length > 0 && (
+                  <div className="local-api-inline-devices">
+                    <div className="local-api-inline-devices-header">
+                      <span className="local-api-inline-devices-count">
+                        {localApiActiveDevices.length} paired phone{localApiActiveDevices.length !== 1 ? 's' : ''}
+                      </span>
+                      {localApiControllerUrl && localApiInlineQrSvg && (
+                        <button
+                          className={`settings-btn${showInlinePhoneQr ? ' settings-btn-primary' : ''}`}
+                          onClick={() => setShowInlinePhoneQr((prev) => !prev)}
+                        >
+                          {showInlinePhoneQr ? 'Hide QR' : 'Open on Phone'}
+                        </button>
+                      )}
+                    </div>
+
+                    {showInlinePhoneQr && localApiControllerUrl && localApiInlineQrSvg && (
+                      <div className="local-api-inline-qr">
+                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: localApiInlineQrSvg }} />
+                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan to open the remote — no new pairing needed</p>
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => { void navigator.clipboard.writeText(localApiControllerUrl) }}
+                        >
+                          Copy Link
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="local-api-inline-devices-list">
+                      {localApiActiveDevices.map((device) => (
+                        <div key={device.id} className="local-api-inline-device">
+                          <div className="local-api-inline-device-info">
+                            <span className="local-api-inline-device-name">{device.name}</span>
+                            <span className="local-api-inline-device-detail">
+                              Last seen {device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : 'Never'}
+                            </span>
+                          </div>
+                          <button
+                            className="settings-btn settings-btn-danger"
+                            onClick={() => handleRevokePhoneRemotePairedDevice(device.id)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ))}
+                      {localApiActiveDevices.length >= 2 && (
+                        <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllPhoneRemoteDevices}>
+                          Revoke All
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -1470,57 +2433,84 @@ export default function SettingsView() {
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Info</h3>
-              <p>Version, updates, attribution, and license details.</p>
             </div>
-            <div className="settings-grid settings-info-grid">
-              <div className="settings-field">
-                <span className="settings-field-label">App Version</span>
-                <span className="settings-info-value">{appVersionLabel}</span>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Updates</div>
+                <div className="settings-grid">
+                  <div className="settings-field">
+                    <span className="settings-field-label">App Version</span>
+                    <div className="settings-version-inline">
+                      <button
+                        type="button"
+                        className="settings-version-reveal-btn settings-info-value"
+                        onClick={handleAppVersionClick}
+                        aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
+                      >
+                        {appVersionLabel}
+                      </button>
+                      {appBuildLabel && (
+                        <button
+                          type="button"
+                          className="settings-build-copy-btn"
+                          title={appBuildTooltip || undefined}
+                          aria-label="Copy full build hash"
+                          onClick={() => void copyInfoToClipboard(appBuildCopyValue, 'Build hash')}
+                        >
+                          {appBuildLabel}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="settings-fields-row">
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Auto-check on Startup</span>
+                      <button
+                        className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
+                        onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
+                      >
+                        {autoCheckEnabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Check for Updates</span>
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        onClick={() => void checkForUpdates()}
+                        disabled={updateCheckState === 'checking'}
+                      >
+                        {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
+                      </button>
+                    </div>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Download</span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void openReleasesPage()}
+                      >
+                        Open Releases
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {infoFeedback && (
+                  <p className={`settings-note ${infoFeedbackTone === 'success' ? 'settings-note-success' : 'settings-note-error'}`}>
+                    {infoFeedback}
+                  </p>
+                )}
+                <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
+                  {updateStatusMessage}
+                </p>
+                {updateAvailable && latestTag && (
+                  <p className="settings-note settings-update-meta">
+                    Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
+                  </p>
+                )}
+                <p className="settings-note settings-update-meta">
+                  {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
+                </p>
               </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Auto-check on Startup</span>
-                <button
-                  className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
-                  onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
-                >
-                  {autoCheckEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Check for Updates</span>
-                <button
-                  className="settings-btn settings-btn-primary"
-                  onClick={() => void checkForUpdates()}
-                  disabled={updateCheckState === 'checking'}
-                >
-                  {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
-                </button>
-              </div>
-
-              <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Download</span>
-                <button
-                  className="settings-btn"
-                  onClick={() => void openReleasesPage()}
-                >
-                  Open Releases
-                </button>
-              </div>
-
             </div>
-            <p className={`settings-note settings-update-status settings-update-status-${updateStatusTone}`}>
-              {updateStatusMessage}
-            </p>
-            {updateAvailable && latestTag && (
-              <p className="settings-note settings-update-meta">
-                Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
-              </p>
-            )}
-            <p className="settings-note settings-update-meta">
-              {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
-            </p>
             <div className="settings-actions settings-info-actions">
               <button
                 type="button"
@@ -1584,11 +2574,128 @@ export default function SettingsView() {
           </section>
             )}
 
+            {activeSectionId === 'developer' && developerSectionVisible && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Developer</h3>
+            </div>
+            <div className="settings-actions settings-info-actions">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={handleHideDeveloperSection}
+              >
+                Hide Developer Section
+              </button>
+            </div>
+            <div className="settings-info-panels">
+              <div className="settings-info-panel">
+                <h4>Memory Diagnostics</h4>
+                <p>
+                  Writes a CSV memory log every {diagnosticsSampleIntervalLabel} plus playback breadcrumbs
+                  so you can correlate growth with track changes, buffering, gapless handoffs, and remote streams.
+                </p>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Diagnostics Logging</span>
+                  <button
+                    type="button"
+                    className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
+                    onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
+                    disabled={diagnosticsIsLoading && diagnosticsStatus === null}
+                  >
+                    {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">Current log</p>
+                <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>
+                <p className="settings-info-meta">Previous log</p>
+                <p className="settings-info-path">{diagnosticsPreviousLogPath}</p>
+                <p className="settings-info-meta">{diagnosticsSessionLabel}</p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void captureDiagnosticsBundle()}
+                    disabled={diagnosticsIsCapturingBundle}
+                  >
+                    {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
+                  </button>
+                </div>
+                <p className="settings-info-meta">{diagnosticsLastBundleLabel}</p>
+                {diagnosticsLastCaptureResult && (
+                  <p className="settings-info-path">{diagnosticsLastCaptureResult.directoryPath}</p>
+                )}
+                {diagnosticsErrorMessage && (
+                  <p className="settings-note settings-note-error">{diagnosticsErrorMessage}</p>
+                )}
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealCurrentLog()}
+                    disabled={!diagnosticsStatus?.hasCurrentLog}
+                  >
+                    Reveal Current Log
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => void revealPreviousLog()}
+                    disabled={!diagnosticsStatus?.hasPreviousLog}
+                  >
+                    Reveal Previous Log
+                  </button>
+                </div>
+              </div>
+              <div className="settings-info-panel">
+                <h4>Playback Overrides</h4>
+                {import.meta.env.DEV ? (
+                  <>
+                    <p>Temporary switches for isolating standard-mode playback behavior during local debugging.</p>
+                    <div className="settings-grid">
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Gapless Prebuffer</span>
+                        <button
+                          className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
+                          onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
+                        >
+                          {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                      <div className="settings-field settings-field-inline">
+                        <span className="settings-field-label">Disable Analysis/EQ Taps</span>
+                        <button
+                          className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
+                          onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
+                        >
+                          {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="settings-note">
+                      When gapless prebuffer is disabled, Astra stops preloading the next track and clears scheduled handoffs so you can compare memory growth without gapless-style buffering.
+                    </p>
+                    <p className="settings-note">
+                      When analysis and EQ taps are disabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p>Playback override switches are only available in development builds.</p>
+                    <p className="settings-note">
+                      Production builds keep these toggles off and ignore their stored values.
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          </section>
+            )}
+
             {activeSectionId === 'danger' && (
             <section className="settings-section settings-section-panel settings-danger-zone">
             <div className="settings-section-head">
               <h3>Danger Zone</h3>
-              <p>Use these actions when troubleshooting or intentionally resetting data.</p>
             </div>
             <div className="settings-danger-groups">
               <div className="settings-danger-group">
@@ -1659,6 +2766,120 @@ export default function SettingsView() {
         onCancel={() => setShowBitPerfectWarning(false)}
         onConfirm={handleConfirmBitPerfectWarning}
       />
+      {lastFmProfileModalOpen && (
+        <div className="modal-overlay" onClick={closeLastFmProfileModal}>
+          <div
+            className="modal-content settings-lastfm-profile-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>{lastFmProfileModalTitle}</h2>
+              <button className="modal-close" onClick={closeLastFmProfileModal} aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body settings-lastfm-profile-form">
+              <label className="settings-field">
+                <span className="settings-field-label">Destination Name</span>
+                <input
+                  className="settings-select"
+                  type="text"
+                  value={lastFmProfileNameInput}
+                  autoFocus
+                  onChange={(event) => setLastFmProfileNameInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">Protocol</span>
+                <select
+                  className="settings-select"
+                  value={lastFmProfileProtocolInput}
+                  onChange={(event) => handleLastFmProfileProtocolChange(event.target.value as LastFmScrobbleProtocol)}
+                >
+                  {CUSTOM_SCROBBLE_PROTOCOLS.map((protocol) => (
+                    <option key={protocol} value={protocol}>
+                      {getScrobbleProtocolLabel(protocol)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">API Base URL</span>
+                <input
+                  className="settings-select"
+                  type="url"
+                  value={lastFmProfileUrlInput}
+                  placeholder={getScrobbleUrlPlaceholder(lastFmProfileProtocolInput)}
+                  onChange={(event) => setLastFmProfileUrlInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{getScrobbleUsernameLabel(lastFmProfileProtocolInput)}</span>
+                <input
+                  className="settings-select"
+                  type="text"
+                  value={lastFmProfileUsernameInput}
+                  autoComplete="off"
+                  onChange={(event) => setLastFmProfileUsernameInput(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{getScrobbleSecretLabel(lastFmProfileProtocolInput)}</span>
+                <input
+                  className="settings-select"
+                  type="password"
+                  value={lastFmProfileSessionKeyInput}
+                  placeholder={lastFmProfileModalMode === 'edit' ? `Leave blank to keep current ${getScrobbleSecretLabel(lastFmProfileProtocolInput).toLowerCase()}` : ''}
+                  autoComplete="off"
+                  onChange={(event) => setLastFmProfileSessionKeyInput(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="settings-btn" onClick={closeLastFmProfileModal}>
+                Cancel
+              </button>
+              <button
+                className="settings-btn settings-btn-primary"
+                onClick={handleSaveLastFmProfile}
+                disabled={lastFmProfileSaveDisabled}
+              >
+                {lastFmProfileModalMode === 'edit' ? 'Save Destination' : 'Add Destination'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {localApiPairingModalOpen && (
+        <LocalApiPairingModal
+          ticket={phoneRemoteActivePairingTicket}
+          pairedDevices={phoneRemotePairedDevices}
+          pendingRequests={phoneRemotePendingPairingRequests}
+          apiEnabled={phoneRemoteEnabled}
+          remoteWebEnabled={phoneRemoteEnabled}
+          controlsEnabled={localApiControlsEnabled}
+          lanUrls={phoneRemoteLanUrls}
+          selectedBaseUrl={localApiSelectedPairingBaseUrl}
+          selectedControllerUrl={localApiSelectedPairingUrl}
+          feedbackMessage={phoneRemoteFeedback}
+          errorMessage={phoneRemoteErrorMessage}
+          onClose={handleClosePhoneRemotePairingModal}
+          onEnableRemoteControl={handleEnablePhoneRemoteControl}
+          onSelectBaseUrl={setLocalApiSelectedPairingBaseUrl}
+          onGenerateTicket={handleCreatePhoneRemotePairingTicket}
+          onRefreshTicket={handleRefreshPhoneRemotePairingTicket}
+          onCopyPairingUrl={() => {
+            if (!phoneRemoteActivePairingTicket) return
+            void copyPhoneRemoteToClipboard(phoneRemoteActivePairingTicket.pairingUrl, 'Pairing link')
+          }}
+          onApproveRequest={handleApprovePhoneRemotePairingRequest}
+          onRejectRequest={handleRejectPhoneRemotePairingRequest}
+          onRevokeDevice={handleRevokePhoneRemotePairedDevice}
+          onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
+        />
+      )}
     </div>
   )
 }

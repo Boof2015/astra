@@ -38,10 +38,11 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     })
   }
 
-  const fetchStatus = async (): Promise<LocalApiStatus> => {
+  const fetchAll = async (): Promise<LocalApiStatus> => {
     const status = await window.electronAPI.localApi.getStatus()
     ensureSubscription()
-    return applyStatus(status)
+    applyStatus(status)
+    return status
   }
 
   return {
@@ -54,7 +55,7 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
       if (get().isInitialized) return
       set({ isLoading: true })
       try {
-        await fetchStatus()
+        await fetchAll()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -65,7 +66,7 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     refresh: async () => {
       set({ isLoading: true })
       try {
-        await fetchStatus()
+        await fetchAll()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -121,6 +122,6 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
         set({ errorMessage: toErrorMessage(error) })
         return null
       }
-    },
+    }
   }
 })

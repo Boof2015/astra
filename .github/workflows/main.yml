@@ -11,7 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Pin Windows to VS 2022; windows-latest can roll to VS 2026 before
+        # Electron's node-gyp stack recognizes the new Visual Studio version.
+        os: [ubuntu-latest, macos-latest, windows-2022]
 
     steps:
       - uses: actions/checkout@v4

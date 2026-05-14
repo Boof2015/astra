@@ -1,8 +1,13 @@
 import { Fragment } from 'react'
+import { useLibraryStore } from '../../stores/libraryStore'
 import { parseArtistMetadata } from '../../utils/artistMetadata'
+import { buildArtistNameTokens } from '../../../shared/library/artistCredits.ts'
 
 interface ArtistNameLinksProps {
   artistText: string
+  artistNames?: string[] | null
+  browseArtistText?: string | null
+  browseArtistNames?: string[] | null
   onArtistClick: (artist: string) => void | Promise<void>
   className?: string
   linkClassName?: string
@@ -15,24 +20,55 @@ function joinClasses(...classNames: Array<string | undefined>): string {
 
 export default function ArtistNameLinks({
   artistText,
+  artistNames,
+  browseArtistText,
+  browseArtistNames,
   onArtistClick,
   className,
   linkClassName,
   stopPropagation = false
 }: ArtistNameLinksProps) {
-  const tokens = parseArtistMetadata(artistText)
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  const normalizedArtistText = artistText.replace(/\s+/g, ' ').trim()
+  const normalizedBrowseArtistText = (browseArtistText ?? '').replace(/\s+/g, ' ').trim()
+  const parsedArtistTokens = artistNames && artistNames.length > 0
+    ? buildArtistNameTokens(artistNames)
+    : parseArtistMetadata(artistText)
+  const tokens = artistBrowseMode === 'canonical' ? parsedArtistTokens : []
   const containerClassName = joinClasses('artist-name-links', className)
   const buttonClassName = joinClasses('artist-name-link', linkClassName)
-
-  if (tokens.length === 0) {
-    return <span className={containerClassName}>{artistText}</span>
-  }
 
   const handleArtistClick = (event: React.MouseEvent<HTMLButtonElement>, artist: string) => {
     if (stopPropagation) {
       event.stopPropagation()
     }
     void onArtistClick(artist)
+  }
+
+  if (artistBrowseMode === 'strict') {
+    const strictTargetArtist = (browseArtistNames && browseArtistNames.length === 1 ? browseArtistNames[0] : '')
+      || normalizedBrowseArtistText
+      || normalizedArtistText
+    if (!strictTargetArtist) {
+      return <span className={containerClassName}>{artistText}</span>
+    }
+
+    return (
+      <span className={containerClassName}>
+        <button
+          type="button"
+          className={buttonClassName}
+          onClick={(event) => handleArtistClick(event, strictTargetArtist)}
+          title={`Show tracks by ${strictTargetArtist}`}
+        >
+          {artistText}
+        </button>
+      </span>
+    )
+  }
+
+  if (tokens.length === 0) {
+    return <span className={containerClassName}>{artistText}</span>
   }
 
   return (

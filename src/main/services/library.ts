@@ -1,4 +1,3 @@
-import initSqlJs, { Database } from 'sql.js'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
@@ -7,14 +6,73 @@ import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
+import { createRequire } from 'module'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import {
+  buildAlbumIdentityKeyByTrackId,
+  buildCanonicalAlbumIdentityKey,
+  buildAlbumIdentityKeyFromTrack as buildFallbackAlbumIdentityKeyFromTrack,
+  groupTracksByAlbumIdentity,
+  type AlbumGroupingMode
+} from '../../shared/library/albumGrouping'
+import {
+  isAlbumGroupEligible,
+  type AlbumEligibilityOptions
+} from '../../shared/library/albumEligibility'
+import {
+  getArtistImageKey,
+  isSupportedArtistImageExtension,
+  pickBestArtistImageCandidate,
+  resolveArtistArtwork,
+  type ArtistArtworkSource,
+  type ArtistImageCandidate
+} from '../../shared/library/artistImages'
+import {
+  deserializeArtistNames,
+  formatArtistNames,
+  normalizeArtistNames,
+  serializeArtistNames
+} from '../../shared/library/artistCredits'
+import {
+  isAlbumNewForLatestSync,
+  isTrackNewForLatestSync,
+  type LatestLibrarySyncSummary
+} from './libraryLatestSync'
 import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
+import type { IntegrityScanScope } from '../../types/libraryIntegrity'
+import {
+  filterIntegrityTargetsByScope,
+  type IntegrityScanTrackTarget
+} from './libraryIntegrity'
+
+interface BetterSqliteDatabaseConstructor {
+  new(filename: string, options?: { timeout?: number; fileMustExist?: boolean }): BetterSqliteDatabase
+}
+
+interface BetterSqliteDatabase {
+  inTransaction: boolean
+  prepare(sql: string): BetterSqliteStatement
+  exec(sql: string): BetterSqliteDatabase
+  pragma(sql: string): unknown
+  function(name: string, options: { deterministic?: boolean; varargs?: boolean }, fn: (...args: unknown[]) => unknown): BetterSqliteDatabase
+  close(): BetterSqliteDatabase
+}
+
+interface BetterSqliteStatement {
+  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint }
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+  iterate(...params: unknown[]): IterableIterator<unknown>
+}
+
+const require = createRequire(import.meta.url)
+const BetterSqliteDatabase = require('better-sqlite3') as BetterSqliteDatabaseConstructor
 
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
@@ -25,10 +83,14 @@ const AUDIO_EXTENSIONS = new Set([
 export interface DbTrack {
   id: number
   path: string
+  album_identity_key?: string
+  is_new: boolean
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -57,6 +119,27 @@ export interface DbTrack {
   file_created_at: number | null
   added_at: number
   modified_at: number
+}
+
+export interface LibraryTrackPageRequest {
+  offset?: number
+  limit?: number
+}
+
+export interface LibraryTrackPage {
+  tracks: DbTrack[]
+  offset: number
+  limit: number
+  total: number
+  nextOffset: number
+  hasMore: boolean
+}
+
+interface DbTrackRow extends Omit<DbTrack, 'is_new' | 'artist_names' | 'album_artist_names'> {
+  artist_names_json: string | null
+  album_artist_names_json: string | null
+  sync_session_key: string | null
+  latest_sync_dismissed_at: number | null
 }
 
 export interface SubsonicSourceRow {
@@ -246,6 +329,26 @@ export interface Playlist {
   custom_cover_hash: string | null
   auto_cover_hash: string | null
   track_count: number
+  missing_track_count: number
+}
+
+export interface PlaylistTrackEntry {
+  id: number
+  track_path: string
+  position: number
+  added_at: number
+  missing: boolean
+  title: string | null
+  artist: string | null
+  album: string | null
+  track: DbTrack | null
+}
+
+export interface ArtistRecord {
+  artist: string
+  track_count: number
+  artwork_hash: string | null
+  artwork_source: ArtistArtworkSource
 }
 
 export interface PlaylistImportResult {
@@ -255,6 +358,7 @@ export interface PlaylistImportResult {
   playlistName: string | null
   entriesTotal: number
   importedCount: number
+  missingEntryCount: number
   matchedByPathCount: number
   matchedByMetadataCount: number
   unmatchedCount: number
@@ -262,6 +366,19 @@ export interface PlaylistImportResult {
   unsupportedEntryCount: number
   warnings: string[]
 }
+
+export interface Album {
+  identity_key: string
+  album: string
+  artist: string
+  primary_artist: string | null
+  year: number | null
+  artwork_hash: string | null
+  track_count: number
+  is_new: boolean
+}
+
+export type AlbumListOptions = AlbumEligibilityOptions
 
 export type MetadataSaveMode = 'virtual' | 'file'
 
@@ -314,8 +431,15 @@ interface ScanControlOptions extends ScanIssueOptions {
   signal?: AbortSignal
 }
 
+type LibraryFolderScanMode = 'incremental' | 'force'
+
 interface ScanWriteOptions extends ScanControlOptions {
   persist?: boolean
+  syncSessionKey?: string | null
+}
+
+interface FolderScanOptions extends ScanWriteOptions {
+  mode?: LibraryFolderScanMode
 }
 
 export class LibraryScanCancelledError extends Error {
@@ -356,10 +480,60 @@ function createLibraryScanIssue(phase: LibraryScanIssuePhase, path: string, erro
   }
 }
 
-let db: Database | null = null
+class LibrarySqliteDatabase {
+  private readonly database: BetterSqliteDatabase
+
+  constructor(database: BetterSqliteDatabase) {
+    this.database = database
+  }
+
+  get inTransaction(): boolean {
+    return this.database.inTransaction
+  }
+
+  run(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number | bigint } {
+    if (params.length > 0) {
+      return this.database.prepare(sql).run(...params)
+    }
+
+    this.database.exec(sql)
+    return { changes: 0, lastInsertRowid: 0 }
+  }
+
+  exec(sql: string): void {
+    this.database.exec(sql)
+  }
+
+  get<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | undefined {
+    return this.database.prepare(sql).get(...params) as T | undefined
+  }
+
+  all<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
+    return this.database.prepare(sql).all(...params) as T[]
+  }
+
+  iterate<T = Record<string, unknown>>(sql: string, params: unknown[] = []): IterableIterator<T> {
+    return this.database.prepare(sql).iterate(...params) as IterableIterator<T>
+  }
+
+  pragma(sql: string): unknown {
+    return this.database.pragma(sql)
+  }
+
+  registerFunction(name: string, options: { deterministic?: boolean; varargs?: boolean }, fn: (...args: unknown[]) => unknown): void {
+    this.database.function(name, options, fn)
+  }
+
+  close(): void {
+    this.database.close()
+  }
+}
+
+let db: LibrarySqliteDatabase | null = null
 let dbPath: string = ''
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
+let artistImageDir: string = ''
 let replayGainScanEnabled: boolean = true
 const SCAN_PARALLEL_MIN_FILES = 250
 const SCAN_PARALLEL_MIN_WORKERS = 2
@@ -368,14 +542,27 @@ const BACKFILL_PARALLEL_MIN_FILES = 80
 const BACKFILL_PARALLEL_MIN_WORKERS = 2
 const BACKFILL_PARALLEL_MAX_WORKERS = 3
 const SQLITE_SAFE_MAX_VARIABLES = 900
+const DEFAULT_LIBRARY_TRACK_PAGE_LIMIT = 500
+const MAX_LIBRARY_TRACK_PAGE_LIMIT = 2000
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
+const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
+const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
+const LIBRARY_QUERY_METRICS_ENV = 'ASTRA_LIBRARY_QUERY_METRICS'
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
   t.path AS path,
   COALESCE(o.title, t.title) AS title,
   COALESCE(o.artist, t.artist) AS artist,
+  CASE
+    WHEN o.artist IS NULL THEN t.artist_names_json
+    ELSE NULL
+  END AS artist_names_json,
   COALESCE(o.album, t.album) AS album,
   COALESCE(o.album_artist, t.album_artist) AS album_artist,
+  CASE
+    WHEN o.album_artist IS NULL THEN t.album_artist_names_json
+    ELSE NULL
+  END AS album_artist_names_json,
   t.duration AS duration,
   COALESCE(o.track_number, t.track_number) AS track_number,
   COALESCE(o.disc_number, t.disc_number) AS disc_number,
@@ -405,6 +592,8 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.is_available AS is_available,
   t.availability_reason AS availability_reason,
   t.file_created_at AS file_created_at,
+  t.sync_session_key AS sync_session_key,
+  t.latest_sync_dismissed_at AS latest_sync_dismissed_at,
   t.added_at AS added_at,
   t.modified_at AS modified_at
 `
@@ -524,12 +713,28 @@ async function runWithConcurrency<T>(
   await Promise.all(Array.from({ length: workerCount }, () => runWorker()))
 }
 
-// Save database to file
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function backupExistingSqlJsDatabase(): Promise<void> {
+  if (!dbPath || !(await pathExists(dbPath))) return
+
+  const backupPath = `${dbPath}.sqljs-backup`
+  if (await pathExists(backupPath)) return
+
+  await copyFile(dbPath, backupPath)
+}
+
+// Writes are file-backed with better-sqlite3, so persistence no longer exports
+// the entire database into JS memory.
 async function saveDatabase(): Promise<void> {
-  if (!db || !dbPath) return
-  const data = db.export()
-  const buffer = Buffer.from(data)
-  await writeFile(dbPath, buffer)
+  return
 }
 
 export function beginLibraryWriteTransaction(): void {
@@ -551,11 +756,52 @@ export async function persistLibraryDatabase(): Promise<void> {
   await saveDatabase()
 }
 
+function isLibraryQueryMetricsEnabled(): boolean {
+  const value = process.env[LIBRARY_QUERY_METRICS_ENV]
+  return value === '1' || value?.toLowerCase() === 'true'
+}
+
+function countQueryResultRows(result: unknown): number | null {
+  if (Array.isArray(result)) return result.length
+  return null
+}
+
+function formatMetricBytes(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`
+}
+
+function measureLibraryQuery<T>(name: string, query: () => T): T {
+  if (!isLibraryQueryMetricsEnabled()) {
+    return query()
+  }
+
+  const beforeMemory = process.memoryUsage()
+  const startedAt = process.hrtime.bigint()
+  const result = query()
+  const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000
+  const afterMemory = process.memoryUsage()
+  const resultCount = countQueryResultRows(result)
+
+  console.info('[library:sqlite-query]', {
+    name,
+    durationMs: Number(durationMs.toFixed(2)),
+    resultCount,
+    heapBefore: formatMetricBytes(beforeMemory.heapUsed),
+    heapAfter: formatMetricBytes(afterMemory.heapUsed),
+    heapDelta: formatMetricBytes(afterMemory.heapUsed - beforeMemory.heapUsed),
+    rssBefore: formatMetricBytes(beforeMemory.rss),
+    rssAfter: formatMetricBytes(afterMemory.rss),
+    rssDelta: formatMetricBytes(afterMemory.rss - beforeMemory.rss),
+  })
+
+  return result
+}
+
 function readCount(sql: string): number {
   if (!db) return 0
-  const result = db.exec(sql)
-  if (result.length === 0 || result[0].values.length === 0) return 0
-  const raw = result[0].values[0][0]
+  const row = db.get<Record<string, unknown>>(sql)
+  if (!row) return 0
+  const raw = Object.values(row)[0]
   return typeof raw === 'number' ? raw : Number(raw) || 0
 }
 
@@ -581,22 +827,117 @@ async function clearPlaylistCoverDirectory(): Promise<void> {
   }
 }
 
-// Helper to convert sql.js result to objects
-function rowsToObjects<T>(columns: string[], values: unknown[][]): T[] {
-  return values.map(row => {
-    const obj: Record<string, unknown> = {}
-    columns.forEach((col, i) => {
-      obj[col] = row[i]
-    })
-    return obj as T
+async function clearArtistImageDirectory(): Promise<void> {
+  if (!artistImageDir) return
+
+  try {
+    await rm(artistImageDir, { recursive: true, force: true })
+    await mkdir(artistImageDir, { recursive: true })
+  } catch (error) {
+    console.warn('Failed to clear artist image directory:', artistImageDir, error)
+  }
+}
+
+function readEffectiveTrackRows(sql: string, params: unknown[] = []): DbTrackRow[] {
+  if (!db) return []
+  return db.all<DbTrackRow>(sql, params)
+}
+
+function iterateEffectiveTrackRows(sql: string, params: unknown[] = []): Iterable<DbTrackRow> {
+  if (!db) return []
+  return db.iterate<DbTrackRow>(sql, params)
+}
+
+function buildAlbumIdentityKeysByPath(tracks: readonly DbTrackRow[]): Map<string, string> {
+  return buildAlbumIdentityKeyByTrackId(tracks, (track) => track.path)
+}
+
+function readAllTrackRowsUnordered(): DbTrackRow[] {
+  return readEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)
+}
+
+function normalizeSqliteAlbumKey(value: unknown): string {
+  const album = typeof value === 'string' ? value : String(value ?? '')
+  return normalizeKey(normalizeAlbumName(album))
+}
+
+function readAlbumIdentityRowsByAlbumKeys(albumKeys: Iterable<string>): DbTrackRow[] {
+  if (!db) return []
+  const normalizedAlbumKeys = Array.from(new Set(
+    Array.from(albumKeys)
+      .map((albumKey) => normalizeKey(albumKey))
+      .filter((albumKey) => albumKey.length > 0)
+  ))
+  if (normalizedAlbumKeys.length === 0) return []
+
+  const rows: DbTrackRow[] = []
+  for (let offset = 0; offset < normalizedAlbumKeys.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = normalizedAlbumKeys.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    rows.push(...readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      WHERE astra_normalize_album_key(COALESCE(o.album, t.album)) IN (${placeholders})
+    `, chunk))
+  }
+  return rows
+}
+
+function readAlbumIdentityRowsForTracks(tracks: readonly DbTrackRow[]): DbTrackRow[] {
+  const albumKeys = tracks.map((track) => normalizeKey(normalizeAlbumName(track.album)))
+  return readAlbumIdentityRowsByAlbumKeys(albumKeys)
+}
+
+function readEffectiveTrackRowsByAlbumKey(albumKey: string): DbTrackRow[] {
+  const normalizedAlbumKey = normalizeKey(albumKey)
+  if (!normalizedAlbumKey) return []
+  return readEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE astra_normalize_album_key(COALESCE(o.album, t.album)) = ?
+  `, [normalizedAlbumKey])
+}
+
+function attachAlbumIdentityKeys(
+  tracks: readonly DbTrackRow[],
+  libraryTracks?: readonly DbTrackRow[],
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+): DbTrack[] {
+  if (tracks.length === 0) return []
+
+  const effectiveLibraryTracks = libraryTracks ?? readAlbumIdentityRowsForTracks(tracks)
+  const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
+
+  return tracks.map((track) => {
+    const {
+      sync_session_key,
+      latest_sync_dismissed_at,
+      artist_names_json,
+      album_artist_names_json,
+      ...rest
+    } = track
+    const artistNames = deserializeArtistNames(artist_names_json)
+    const albumArtistNames = deserializeArtistNames(album_artist_names_json)
+    return {
+      ...rest,
+      artist: artistNames.length > 1 ? formatArtistNames(artistNames) : rest.artist,
+      artist_names: artistNames,
+      album_artist: albumArtistNames.length > 1
+        ? formatArtistNames(albumArtistNames)
+        : rest.album_artist ?? (albumArtistNames[0] ?? null),
+      album_artist_names: albumArtistNames,
+      album_identity_key: albumIdentityKeysByPath.get(track.path) ?? buildFallbackAlbumIdentityKeyFromTrack(track),
+      is_new: isTrackNewForLatestSync(sync_session_key, latestSyncSummary, latest_sync_dismissed_at)
+    }
   })
 }
 
-function readEffectiveTracks(sql: string): DbTrack[] {
-  if (!db) return []
-  const result = db.exec(sql)
-  if (result.length === 0) return []
-  return rowsToObjects<DbTrack>(result[0].columns, result[0].values)
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[]): DbTrack[] {
+  const tracks = readEffectiveTrackRows(sql)
+  return attachAlbumIdentityKeys(tracks, libraryTracks)
 }
 
 function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
@@ -641,8 +982,6 @@ interface CountedDisplayVariant {
   count: number
 }
 
-type AlbumGroupingMode = 'explicit-album-artist' | 'artwork-hash' | 'track-artist'
-
 interface AlbumGroupAccumulator {
   identityKey: string
   groupingMode: AlbumGroupingMode
@@ -656,13 +995,11 @@ interface AlbumGroupAccumulator {
   firstArtworkHash: string | null
   year: number | null
   trackCount: number
-  tracks: DbTrack[]
+  tracks: DbTrackRow[]
 }
 
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
-const UNKNOWN_ALBUM_KEY = UNKNOWN_ALBUM_NAME.toLocaleLowerCase()
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
-const MIN_TRACKS_FOR_ALBUM = 2
 const VARIOUS_ARTISTS_NAME = 'Various Artists'
 
 export type ArtistBrowseMode = 'strict' | 'canonical'
@@ -678,16 +1015,6 @@ function normalizeKey(value: string): string {
 function normalizeAlbumName(album: string): string {
   const normalized = normalizeDisplay(album)
   return normalized || UNKNOWN_ALBUM_NAME
-}
-
-function isUnknownAlbumKey(albumKey: string): boolean {
-  return albumKey === UNKNOWN_ALBUM_KEY
-}
-
-function isEligibleAlbumGroup(group: AlbumGroupAccumulator): boolean {
-  if (group.trackCount < MIN_TRACKS_FOR_ALBUM) return false
-  if (isUnknownAlbumKey(group.albumKey)) return false
-  return true
 }
 
 function splitCollaborators(rawArtist: string): string[] {
@@ -733,15 +1060,67 @@ function splitAlbumArtistCollaborators(rawAlbumArtist: string): string[] {
   return Array.from(unique.values())
 }
 
+function getParsedTrackArtistNames(track: Pick<DbTrackRow, 'artist_names_json'>): string[] {
+  return deserializeArtistNames(track.artist_names_json)
+}
+
+function getParsedAlbumArtistNames(track: Pick<DbTrackRow, 'album_artist_names_json'>): string[] {
+  return deserializeArtistNames(track.album_artist_names_json)
+}
+
+function getCanonicalArtistIndexNames(track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>): string[] {
+  const unique = new Map<string, string>()
+  const addArtistName = (artistName: string) => {
+    const display = normalizeDisplay(artistName)
+    const key = normalizeKey(display)
+    if (!key || unique.has(key)) return
+    unique.set(key, display)
+  }
+
+  addArtistName(resolveCanonicalBrowseArtist(track))
+
+  const parsedTrackArtists = getParsedTrackArtistNames(track)
+  for (const artistName of parsedTrackArtists) addArtistName(artistName)
+
+  const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+  if (parsedTrackArtists.length === 0) {
+    for (const artistName of parsedAlbumArtists) addArtistName(artistName)
+  }
+
+  return Array.from(unique.values())
+}
+
 function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   const contributors = splitCollaborators(trackArtist)
   return contributors[0] ?? UNKNOWN_ARTIST_NAME
+}
+
+function getPrimaryArtistFromTrack(track: Pick<DbTrackRow, 'artist' | 'artist_names_json'>): string {
+  const parsedTrackArtists = getParsedTrackArtistNames(track)
+  if (parsedTrackArtists.length > 0) return parsedTrackArtists[0]
+  return getPrimaryArtistFromTrackArtist(track.artist)
 }
 
 function getPrimaryArtistFromAlbumArtist(albumArtist: string): string {
   const contributors = splitAlbumArtistCollaborators(albumArtist)
   if (contributors.length > 0) return contributors[0]
   return normalizeDisplay(albumArtist) || UNKNOWN_ARTIST_NAME
+}
+
+function getNormalizedAlbumArtistForAlbumIdentity(
+  track: Pick<DbTrackRow, 'album_artist' | 'album_artist_names_json'>
+): string {
+  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
+  if (normalizedAlbumArtist) return normalizedAlbumArtist
+
+  const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+  if (parsedAlbumArtists.length > 0) return formatArtistNames(parsedAlbumArtists)
+  return ''
+}
+
+function normalizeArtworkIdentityHash(hash: string | null | undefined): string | null {
+  const normalized = normalizeDisplay(hash ?? '')
+  return normalized ? normalized.toLocaleLowerCase() : null
 }
 
 function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
@@ -752,17 +1131,21 @@ function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist
   return normalizedTrackArtist || UNKNOWN_ARTIST_NAME
 }
 
-function resolveCanonicalBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
+function resolveCanonicalBrowseArtist(
+  track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>
+): string {
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
+    const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+    if (parsedAlbumArtists.length > 0) return parsedAlbumArtists[0]
     return getPrimaryArtistFromAlbumArtist(normalizedAlbumArtist)
   }
 
-  const normalizedPrimaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist))
+  const normalizedPrimaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track))
   return normalizedPrimaryArtist || UNKNOWN_ARTIST_NAME
 }
 
-function trackMatchesBrowseArtist(track: DbTrack, targetArtistKey: string, mode: ArtistBrowseMode): boolean {
+function trackMatchesBrowseArtist(track: DbTrackRow, targetArtistKey: string, mode: ArtistBrowseMode): boolean {
   const browseArtistKey = normalizeKey(
     mode === 'strict' ? resolveStrictBrowseArtist(track) : resolveCanonicalBrowseArtist(track)
   )
@@ -771,6 +1154,9 @@ function trackMatchesBrowseArtist(track: DbTrack, targetArtistKey: string, mode:
   if (mode === 'strict') {
     return false
   }
+
+  if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
+  if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
 
   const albumArtistKey = normalizeKey(track.album_artist ?? '')
   if (albumArtistKey && albumArtistKey === targetArtistKey) return true
@@ -833,14 +1219,10 @@ function pickMostFrequentArtworkHash(
   return bestHash ?? fallback
 }
 
-function readAllTracksUnordered(): DbTrack[] {
-  return readEffectiveTracks(`
-    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
-  `)
-}
-
-function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+function compareTracksByDiscTrackTitle(
+  a: Pick<DbTrackRow, 'disc_number' | 'track_number' | 'title' | 'path'>,
+  b: Pick<DbTrackRow, 'disc_number' | 'track_number' | 'title' | 'path'>
+): number {
   const discA = a.disc_number ?? 0
   const discB = b.disc_number ?? 0
   if (discA !== discB) return discA - discB
@@ -855,19 +1237,13 @@ function compareTracksByDiscTrackTitle(a: DbTrack, b: DbTrack): number {
   return a.path.localeCompare(b.path)
 }
 
-function compareTracksByAlbumDiscTrackTitle(a: DbTrack, b: DbTrack): number {
+function compareTracksByAlbumDiscTrackTitle(
+  a: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>,
+  b: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>
+): number {
   const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
   if (albumCompare !== 0) return albumCompare
   return compareTracksByDiscTrackTitle(a, b)
-}
-
-function normalizeArtworkHash(hash: string | null): string | null {
-  const normalized = normalizeDisplay(hash ?? '')
-  return normalized ? normalized.toLocaleLowerCase() : null
-}
-
-function buildAlbumIdentityKey(albumKey: string, discriminator: string): string {
-  return `album:${albumKey}::${discriminator}`
 }
 
 function addAliasArtistKey(aliasArtistKeys: Set<string>, rawValue: string): void {
@@ -876,17 +1252,23 @@ function addAliasArtistKey(aliasArtistKeys: Set<string>, rawValue: string): void
   aliasArtistKeys.add(key)
 }
 
-function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrack, primaryArtist: string): void {
+function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrackRow, primaryArtist: string): void {
   addAliasArtistKey(group.aliasArtistKeys, primaryArtist)
   addAliasArtistKey(group.aliasArtistKeys, track.artist)
 
   for (const collaborator of splitCollaborators(track.artist)) {
     addAliasArtistKey(group.aliasArtistKeys, collaborator)
   }
+  for (const artistName of getParsedTrackArtistNames(track)) {
+    addAliasArtistKey(group.aliasArtistKeys, artistName)
+  }
 
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
     addAliasArtistKey(group.aliasArtistKeys, normalizedAlbumArtist)
+  }
+  for (const artistName of getParsedAlbumArtistNames(track)) {
+    addAliasArtistKey(group.aliasArtistKeys, artistName)
   }
 }
 
@@ -921,7 +1303,7 @@ function createAlbumGroupAccumulator(
 
 function addTrackToAlbumGroup(
   group: AlbumGroupAccumulator,
-  track: DbTrack,
+  track: DbTrackRow,
   albumName: string,
   displayArtist: string,
   primaryArtist: string
@@ -951,11 +1333,7 @@ function addTrackToAlbumGroup(
 }
 
 function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
-  if (
-    group.groupingMode === 'artwork-hash'
-    && group.trackCount >= MIN_TRACKS_FOR_ALBUM
-    && group.primaryArtistKeys.size > 1
-  ) {
+  if (group.groupingMode === 'shared-artwork-compilation') {
     group.artistVariants = new Map()
     incrementDisplayVariant(group.artistVariants, VARIOUS_ARTISTS_NAME)
     group.artistKey = normalizeKey(VARIOUS_ARTISTS_NAME)
@@ -969,43 +1347,24 @@ function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
   }
 }
 
-function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator> {
+function buildAlbumGroups(tracks: DbTrackRow[]): Map<string, AlbumGroupAccumulator> {
   const groups = new Map<string, AlbumGroupAccumulator>()
 
-  for (const track of tracks) {
-    const albumName = normalizeAlbumName(track.album)
-    const albumKey = normalizeKey(albumName)
-    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrackArtist(track.artist)) || 'Unknown Artist'
-    const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey('Unknown Artist')
-    const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
-    const artworkIdentityHash = normalizeArtworkHash(track.base_artwork_hash ?? track.artwork_hash)
+  for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
+    const group = createAlbumGroupAccumulator(
+      identityGroup.identityKey,
+      identityGroup.groupingMode,
+      identityGroup.albumKey,
+      identityGroup.displayArtist
+    )
 
-    let identityKey: string
-    let groupingMode: AlbumGroupingMode
-    let displayArtist: string
-
-    if (normalizedAlbumArtist) {
-      const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey('Unknown Artist')
-      identityKey = buildAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`)
-      groupingMode = 'explicit-album-artist'
-      displayArtist = normalizedAlbumArtist
-    } else if (artworkIdentityHash) {
-      identityKey = buildAlbumIdentityKey(albumKey, `ah:${artworkIdentityHash}`)
-      groupingMode = 'artwork-hash'
-      displayArtist = primaryArtist
-    } else {
-      identityKey = buildAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`)
-      groupingMode = 'track-artist'
-      displayArtist = primaryArtist
+    for (const track of identityGroup.tracks) {
+      const albumName = normalizeAlbumName(track.album)
+      const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
+      addTrackToAlbumGroup(group, track, albumName, identityGroup.displayArtist, primaryArtist)
     }
 
-    let group = groups.get(identityKey)
-    if (!group) {
-      group = createAlbumGroupAccumulator(identityKey, groupingMode, albumKey, displayArtist)
-      groups.set(identityKey, group)
-    }
-
-    addTrackToAlbumGroup(group, track, albumName, displayArtist, primaryArtist)
+    groups.set(group.identityKey, group)
   }
 
   for (const group of groups.values()) {
@@ -1015,32 +1374,173 @@ function buildAlbumGroups(tracks: DbTrack[]): Map<string, AlbumGroupAccumulator>
   return groups
 }
 
+interface MissingAlbumArtistBucketProbe {
+  primaryArtistKeys: Set<string>
+  firstArtworkHash: string | null
+  hasArtworkMismatch: boolean
+}
+
+interface ResolvedAlbumIdentity {
+  identityKey: string
+  groupingMode: AlbumGroupingMode
+  albumKey: string
+  displayArtist: string
+}
+
+interface AlbumSummaryAccumulator {
+  identityKey: string
+  groupingMode: AlbumGroupingMode
+  albumKey: string
+  displayArtist: string
+  albumVariants: Map<string, CountedDisplayVariant>
+  artistVariants: Map<string, CountedDisplayVariant>
+  artworkCounts: Map<string, number>
+  firstArtworkHash: string | null
+  year: number | null
+  trackCount: number
+  hasUnplayedLatestSyncTrack: boolean
+}
+
+function readMissingAlbumArtistBucketProbes(): Map<string, MissingAlbumArtistBucketProbe> {
+  const probes = new Map<string, MissingAlbumArtistBucketProbe>()
+
+  for (const track of iterateEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)) {
+    if (getNormalizedAlbumArtistForAlbumIdentity(track)) continue
+
+    const albumKey = normalizeKey(normalizeAlbumName(track.album))
+    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
+    const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
+    const artworkHash = normalizeArtworkIdentityHash(track.base_artwork_hash)
+    let probe = probes.get(albumKey)
+    if (!probe) {
+      probe = {
+        primaryArtistKeys: new Set<string>(),
+        firstArtworkHash: artworkHash,
+        hasArtworkMismatch: false
+      }
+      probes.set(albumKey, probe)
+    } else if (probe.firstArtworkHash !== artworkHash) {
+      probe.hasArtworkMismatch = true
+    }
+    probe.primaryArtistKeys.add(primaryArtistKey)
+  }
+
+  return probes
+}
+
+function getSharedArtworkHashForProbe(probe: MissingAlbumArtistBucketProbe | undefined): string | null {
+  if (!probe || probe.primaryArtistKeys.size <= 1) return null
+  if (probe.hasArtworkMismatch) return null
+  return probe.firstArtworkHash
+}
+
+function resolveAlbumIdentityForTrack(
+  track: DbTrackRow,
+  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>
+): ResolvedAlbumIdentity {
+  const albumKey = normalizeKey(normalizeAlbumName(track.album))
+  const normalizedAlbumArtist = getNormalizedAlbumArtistForAlbumIdentity(track)
+  if (normalizedAlbumArtist) {
+    const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
+    return {
+      identityKey: buildCanonicalAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`),
+      groupingMode: 'explicit-album-artist',
+      albumKey,
+      displayArtist: normalizedAlbumArtist
+    }
+  }
+
+  const sharedArtworkHash = getSharedArtworkHashForProbe(missingAlbumArtistBucketProbes.get(albumKey))
+  if (sharedArtworkHash) {
+    return {
+      identityKey: buildCanonicalAlbumIdentityKey(albumKey, `ah:${sharedArtworkHash}`),
+      groupingMode: 'shared-artwork-compilation',
+      albumKey,
+      displayArtist: VARIOUS_ARTISTS_NAME
+    }
+  }
+
+  const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
+  const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
+  return {
+    identityKey: buildCanonicalAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`),
+    groupingMode: 'track-artist',
+    albumKey,
+    displayArtist: primaryArtist
+  }
+}
+
+function createAlbumSummaryAccumulator(identity: ResolvedAlbumIdentity): AlbumSummaryAccumulator {
+  return {
+    identityKey: identity.identityKey,
+    groupingMode: identity.groupingMode,
+    albumKey: identity.albumKey,
+    displayArtist: identity.displayArtist,
+    albumVariants: new Map(),
+    artistVariants: new Map(),
+    artworkCounts: new Map(),
+    firstArtworkHash: null,
+    year: null,
+    trackCount: 0,
+    hasUnplayedLatestSyncTrack: false
+  }
+}
+
+function addTrackToAlbumSummary(
+  group: AlbumSummaryAccumulator,
+  track: DbTrackRow,
+  latestSyncSummary: LatestLibrarySyncSummary | null
+): void {
+  incrementDisplayVariant(group.albumVariants, normalizeAlbumName(track.album))
+  incrementDisplayVariant(group.artistVariants, group.displayArtist)
+  group.trackCount += 1
+
+  if (track.year !== null && (group.year === null || track.year > group.year)) {
+    group.year = track.year
+  }
+
+  if (track.artwork_hash) {
+    if (group.firstArtworkHash === null) {
+      group.firstArtworkHash = track.artwork_hash
+    }
+    group.artworkCounts.set(track.artwork_hash, (group.artworkCounts.get(track.artwork_hash) ?? 0) + 1)
+  }
+
+  if (!group.hasUnplayedLatestSyncTrack) {
+    group.hasUnplayedLatestSyncTrack = isTrackNewForLatestSync(
+      track.sync_session_key,
+      latestSyncSummary,
+      track.latest_sync_dismissed_at
+    )
+  }
+}
+
 // Initialize database
 export async function initDatabase(): Promise<void> {
   const userDataPath = app.getPath('userData')
   dbPath = join(userDataPath, 'library.db')
   artworkDir = join(userDataPath, 'artwork')
   playlistCoverDir = join(userDataPath, 'playlist-covers')
+  artistImageDir = join(userDataPath, 'artist-images')
 
-  // Create artwork and playlist cover directories.
+  // Create artwork and custom image directories.
   try {
     await mkdir(artworkDir, { recursive: true })
     await mkdir(playlistCoverDir, { recursive: true })
+    await mkdir(artistImageDir, { recursive: true })
   } catch (err) {
-    console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir }, err)
+    console.error('Failed to create media cache directories:', { artworkDir, playlistCoverDir, artistImageDir }, err)
   }
 
-  // Initialize sql.js
-  const SQL = await initSqlJs()
+  await backupExistingSqlJsDatabase()
 
-  // Try to load existing database
-  try {
-    const fileBuffer = await readFile(dbPath)
-    db = new SQL.Database(fileBuffer)
-  } catch {
-    // Create new database
-    db = new SQL.Database()
-  }
+  db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
+  db.pragma('foreign_keys = ON')
+  db.pragma('busy_timeout = 5000')
+  db.registerFunction('astra_normalize_album_key', { deterministic: true }, normalizeSqliteAlbumKey)
 
   // Create tables
   db.run(`
@@ -1049,8 +1549,10 @@ export async function initDatabase(): Promise<void> {
       path TEXT UNIQUE NOT NULL,
       title TEXT NOT NULL,
       artist TEXT NOT NULL,
+      artist_names_json TEXT,
       album TEXT NOT NULL,
       album_artist TEXT,
+      album_artist_names_json TEXT,
       duration REAL NOT NULL,
       track_number INTEGER,
       disc_number INTEGER,
@@ -1076,6 +1578,8 @@ export async function initDatabase(): Promise<void> {
       is_available INTEGER NOT NULL DEFAULT 1,
       availability_reason TEXT,
       file_created_at INTEGER,
+      sync_session_key TEXT,
+      latest_sync_dismissed_at INTEGER,
       added_at INTEGER NOT NULL,
       modified_at INTEGER NOT NULL
     )
@@ -1158,6 +1662,16 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN artist_names_json TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN album_artist_names_json TEXT')
+  } catch {
+    // Column already exists.
+  }
 
   // Schema migration: extended codec metadata for pre-play Atmos/multichannel indicators.
   try {
@@ -1231,6 +1745,16 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run('ALTER TABLE tracks ADD COLUMN sync_session_key TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN latest_sync_dismissed_at INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
   } catch {
     // Column already exists.
@@ -1271,6 +1795,7 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_scope ON tracks(source_type, source_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_track ON tracks(source_type, source_id, source_track_id)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_sync_session_key ON tracks(sync_session_key)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_cache_updated_at ON lyrics_cache(updated_at)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_track_overrides_updated_at ON lyrics_track_overrides(updated_at)')
 
@@ -1354,6 +1879,22 @@ export async function initDatabase(): Promise<void> {
   }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
 
+  // Artist images table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS artist_images (
+      browse_mode TEXT NOT NULL,
+      artist_key TEXT NOT NULL,
+      artist_name TEXT NOT NULL,
+      manual_image_hash TEXT,
+      detected_image_hash TEXT,
+      detected_source_path TEXT,
+      detected_source_mtime INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (browse_mode, artist_key)
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_artist_images_browse_mode ON artist_images(browse_mode)')
+
   // Playlist tracks table
   db.run(`
     CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -1362,9 +1903,27 @@ export async function initDatabase(): Promise<void> {
       track_path TEXT NOT NULL,
       position INTEGER NOT NULL,
       added_at INTEGER NOT NULL,
+      fallback_title TEXT,
+      fallback_artist TEXT,
+      fallback_album TEXT,
       FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
     )
   `)
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_title TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_artist TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlist_tracks ADD COLUMN fallback_album TEXT')
+  } catch {
+    // Column already exists.
+  }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   normalizePlaylistTrackMemberships()
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
@@ -1395,11 +1954,8 @@ export function setReplayGainScanEnabled(enabled: boolean): void {
 
 export function getAppMeta(key: string): string | null {
   if (!db) return null
-  const stmt = db.prepare('SELECT value FROM app_meta WHERE key = ? LIMIT 1')
-  stmt.bind([key])
-  const value = stmt.step() ? (stmt.getAsObject().value as string | undefined) : undefined
-  stmt.free()
-  return value ?? null
+  const row = db.get<{ value?: unknown }>('SELECT value FROM app_meta WHERE key = ? LIMIT 1', [key])
+  return typeof row?.value === 'string' ? row.value : null
 }
 
 export async function setAppMeta(key: string, value: string): Promise<void> {
@@ -1414,10 +1970,53 @@ export async function setAppMeta(key: string, value: string): Promise<void> {
   await saveDatabase()
 }
 
+export function getLatestLibrarySyncSummary(): LatestLibrarySyncSummary | null {
+  const rawValue = getAppMeta(LATEST_LIBRARY_SYNC_SUMMARY_META_KEY)
+  if (!rawValue) return null
+
+  try {
+    const parsed = JSON.parse(rawValue) as {
+      sessionKey?: unknown
+      completedAt?: unknown
+      newAlbumIdentityKeys?: unknown
+    }
+
+    const sessionKey = typeof parsed.sessionKey === 'string' ? parsed.sessionKey.trim() : ''
+    const completedAt = typeof parsed.completedAt === 'number' && Number.isFinite(parsed.completedAt)
+      ? parsed.completedAt
+      : Number.NaN
+    if (!sessionKey || !Number.isFinite(completedAt)) {
+      return null
+    }
+
+    const keys = Array.isArray(parsed.newAlbumIdentityKeys)
+      ? parsed.newAlbumIdentityKeys
+      : []
+    const newAlbumIdentityKeys = Array.from(new Set(
+      keys
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )).sort((a, b) => a.localeCompare(b))
+
+    return {
+      sessionKey,
+      completedAt,
+      newAlbumIdentityKeys
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function setLatestLibrarySyncSummary(summary: LatestLibrarySyncSummary): Promise<void> {
+  await setAppMeta(LATEST_LIBRARY_SYNC_SUMMARY_META_KEY, JSON.stringify(summary))
+}
+
 function normalizePlaylistTrackMemberships(): void {
   if (!db) return
 
-  const stmt = db.prepare(`
+  const rows = db.iterate<{ id?: unknown; playlist_id?: unknown; track_path?: unknown }>(`
     SELECT id, playlist_id, track_path
     FROM playlist_tracks
     ORDER BY playlist_id ASC, position ASC, id ASC
@@ -1427,37 +2026,32 @@ function normalizePlaylistTrackMemberships(): void {
   const playlistTrackPaths = new Map<number, Set<string>>()
   const duplicateRowIds: number[] = []
 
-  try {
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as { id?: unknown; playlist_id?: unknown; track_path?: unknown }
-      const rowId = Number(row.id)
-      const playlistId = Number(row.playlist_id)
-      const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
-      if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0 || !trackPath) {
-        continue
-      }
-
-      let seenTrackPaths = playlistTrackPaths.get(playlistId)
-      if (!seenTrackPaths) {
-        seenTrackPaths = new Set<string>()
-        playlistTrackPaths.set(playlistId, seenTrackPaths)
-      }
-
-      if (seenTrackPaths.has(trackPath)) {
-        duplicateRowIds.push(rowId)
-        continue
-      }
-
-      seenTrackPaths.add(trackPath)
-      const rowIds = playlistRowIds.get(playlistId)
-      if (rowIds) {
-        rowIds.push(rowId)
-      } else {
-        playlistRowIds.set(playlistId, [rowId])
-      }
+  for (const row of rows) {
+    const rowId = Number(row.id)
+    const playlistId = Number(row.playlist_id)
+    const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
+    if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0 || !trackPath) {
+      continue
     }
-  } finally {
-    stmt.free()
+
+    let seenTrackPaths = playlistTrackPaths.get(playlistId)
+    if (!seenTrackPaths) {
+      seenTrackPaths = new Set<string>()
+      playlistTrackPaths.set(playlistId, seenTrackPaths)
+    }
+
+    if (seenTrackPaths.has(trackPath)) {
+      duplicateRowIds.push(rowId)
+      continue
+    }
+
+    seenTrackPaths.add(trackPath)
+    const rowIds = playlistRowIds.get(playlistId)
+    if (rowIds) {
+      rowIds.push(rowId)
+    } else {
+      playlistRowIds.set(playlistId, [rowId])
+    }
   }
 
   for (const rowId of duplicateRowIds) {
@@ -1523,7 +2117,7 @@ function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
 
 export function listSubsonicSources(): SubsonicSourcePublic[] {
   if (!db) return []
-  const result = db.exec(`
+  return db.all<SubsonicSourceRow>(`
     SELECT
       id,
       name,
@@ -1539,14 +2133,12 @@ export function listSubsonicSources(): SubsonicSourcePublic[] {
       updated_at
     FROM subsonic_sources
     ORDER BY created_at ASC, id ASC
-  `)
-  if (result.length === 0) return []
-  return rowsToObjects<SubsonicSourceRow>(result[0].columns, result[0].values).map(toSubsonicSourcePublic)
+  `).map(toSubsonicSourcePublic)
 }
 
 export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | null {
   if (!db) return null
-  const stmt = db.prepare(`
+  const row = db.get<SubsonicSourceRow>(`
     SELECT
       id,
       name,
@@ -1563,10 +2155,7 @@ export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | nul
     FROM subsonic_sources
     WHERE id = ?
     LIMIT 1
-  `)
-  stmt.bind([sourceId])
-  const row = stmt.step() ? (stmt.getAsObject() as SubsonicSourceRow) : null
-  stmt.free()
+  `, [sourceId]) ?? null
   if (!row) return null
   row.last_status = normalizeSubsonicLastStatus(row.last_status)
   return row
@@ -1610,8 +2199,7 @@ export async function createSubsonicSource(input: {
     ]
   )
 
-  const insertedIdResult = db.exec('SELECT last_insert_rowid() as id')
-  const sourceId = Number(insertedIdResult[0]?.values?.[0]?.[0] ?? 0)
+  const sourceId = Number(db.get<{ id?: unknown }>('SELECT last_insert_rowid() as id')?.id ?? 0)
   const source = getSubsonicSourceById(sourceId)
   if (!source) {
     throw new Error('Failed to create Subsonic source.')
@@ -1686,7 +2274,7 @@ export async function updateSubsonicSource(
 
 export function listJellyfinSources(): JellyfinSourcePublic[] {
   if (!db) return []
-  const result = db.exec(`
+  return db.all<JellyfinSourceRow>(`
     SELECT
       id,
       name,
@@ -1702,14 +2290,12 @@ export function listJellyfinSources(): JellyfinSourcePublic[] {
       updated_at
     FROM jellyfin_sources
     ORDER BY created_at ASC, id ASC
-  `)
-  if (result.length === 0) return []
-  return rowsToObjects<JellyfinSourceRow>(result[0].columns, result[0].values).map(toJellyfinSourcePublic)
+  `).map(toJellyfinSourcePublic)
 }
 
 export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | null {
   if (!db) return null
-  const stmt = db.prepare(`
+  const row = db.get<JellyfinSourceRow>(`
     SELECT
       id,
       name,
@@ -1726,10 +2312,7 @@ export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | nul
     FROM jellyfin_sources
     WHERE id = ?
     LIMIT 1
-  `)
-  stmt.bind([sourceId])
-  const row = stmt.step() ? (stmt.getAsObject() as JellyfinSourceRow) : null
-  stmt.free()
+  `, [sourceId]) ?? null
   if (!row) return null
   row.last_status = normalizeJellyfinLastStatus(row.last_status)
   return row
@@ -1773,8 +2356,7 @@ export async function createJellyfinSource(input: {
     ]
   )
 
-  const insertedIdResult = db.exec('SELECT last_insert_rowid() as id')
-  const sourceId = Number(insertedIdResult[0]?.values?.[0]?.[0] ?? 0)
+  const sourceId = Number(db.get<{ id?: unknown }>('SELECT last_insert_rowid() as id')?.id ?? 0)
   const source = getJellyfinSourceById(sourceId)
   if (!source) {
     throw new Error('Failed to create Jellyfin source.')
@@ -1879,10 +2461,7 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
     const sourcePathPattern = `subsonic://${sourceId}/%`
     let includeUnknownSourceTracks = false
     if (source) {
-      const countStmt = db.prepare('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?')
-      countStmt.bind([sourceId])
-      const countRow = countStmt.step() ? (countStmt.getAsObject() as { count?: unknown }) : null
-      countStmt.free()
+      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?', [sourceId])
       const otherSourcesCount = Number(countRow?.count ?? 0)
       includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
     }
@@ -1890,16 +2469,9 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
     const trackSelectSql = includeUnknownSourceTracks
       ? "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
       : "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)"
-    const stmt = db.prepare(trackSelectSql)
-    stmt.bind([sourceId, sourcePathPattern])
-    const trackPaths: string[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as { path?: unknown }
-      if (typeof row.path === 'string' && row.path.trim().length > 0) {
-        trackPaths.push(row.path)
-      }
-    }
-    stmt.free()
+    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+      .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
+      .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
     deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
@@ -1963,7 +2535,7 @@ export async function markSubsonicTracksAvailability(
   options: { persist?: boolean } = {}
 ): Promise<number> {
   if (!db) return 0
-  db.run(
+  const result = db.run(
     `UPDATE tracks
      SET is_available = ?,
          availability_reason = ?,
@@ -1971,8 +2543,7 @@ export async function markSubsonicTracksAvailability(
      WHERE source_type = 'subsonic' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
   )
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -1985,7 +2556,7 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
 ): Promise<number> {
   if (!db) return 0
 
-  db.run(
+  const result = db.run(
     `UPDATE tracks
      SET is_available = 1,
          availability_reason = NULL,
@@ -1996,8 +2567,7 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
        AND availability_reason = 'source_unavailable'`,
     [Date.now(), sourceId]
   )
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -2007,16 +2577,13 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
 export async function upsertSubsonicTracks(
   sourceId: number,
   tracks: SubsonicTrackUpsertInput[],
-  options: { persist?: boolean } = {}
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
     return { inserted: 0, updated: 0 }
   }
 
-  const sourceExistsStmt = db.prepare('SELECT 1 FROM subsonic_sources WHERE id = ? LIMIT 1')
-  sourceExistsStmt.bind([sourceId])
-  const sourceExists = sourceExistsStmt.step()
-  sourceExistsStmt.free()
+  const sourceExists = Boolean(db.get('SELECT 1 FROM subsonic_sources WHERE id = ? LIMIT 1', [sourceId]))
   if (!sourceExists) {
     return { inserted: 0, updated: 0 }
   }
@@ -2026,18 +2593,17 @@ export async function upsertSubsonicTracks(
   const now = Date.now()
 
   for (const track of tracks) {
-    const existingStmt = db.prepare('SELECT id FROM tracks WHERE path = ? LIMIT 1')
-    existingStmt.bind([track.path])
-    const exists = existingStmt.step()
-    existingStmt.free()
+    const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
 
     if (exists) {
       db.run(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
+             artist_names_json = NULL,
              album = ?,
              album_artist = ?,
+             album_artist_names_json = NULL,
              duration = ?,
              track_number = ?,
              disc_number = ?,
@@ -2130,9 +2696,10 @@ export async function upsertSubsonicTracks(
         source_path,
         is_available,
         availability_reason,
+        sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -2160,6 +2727,7 @@ export async function upsertSubsonicTracks(
         sourceId,
         track.source_track_id,
         track.source_path,
+        options.syncSessionKey ?? null,
         now,
         now
       ]
@@ -2197,9 +2765,8 @@ export async function markMissingSubsonicTracksUnavailable(
     params.push(...seenSourceTrackIds)
   }
 
-  db.run(sql, params)
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const result = db.run(sql, params)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -2208,16 +2775,13 @@ export async function markMissingSubsonicTracksUnavailable(
 
 export function getTrackByPath(trackPath: string): DbTrack | null {
   if (!db) return null
-  const stmt = db.prepare(`
+  const row = db.get<DbTrackRow>(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
     WHERE t.path = ?
     LIMIT 1
-  `)
-  stmt.bind([trackPath])
-  const row = stmt.step() ? (stmt.getAsObject() as DbTrack) : null
-  stmt.free()
-  return row
+  `, [trackPath]) ?? null
+  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
 }
 
 export async function setTrackAvailability(
@@ -2242,22 +2806,15 @@ export async function setTrackAvailability(
 
 export function getSubsonicTrackCountsBySource(sourceId: number): { total: number; available: number } {
   if (!db) return { total: 0, available: 0 }
-  const stmt = db.prepare(`
+  const row = db.get<{ total?: unknown; available?: unknown }>(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END) AS available
     FROM tracks
     WHERE source_type = 'subsonic' AND source_id = ?
-  `)
-  stmt.bind([sourceId])
-  let total = 0
-  let available = 0
-  if (stmt.step()) {
-    const row = stmt.getAsObject() as { total?: unknown; available?: unknown }
-    total = Number(row.total ?? 0)
-    available = Number(row.available ?? 0)
-  }
-  stmt.free()
+  `, [sourceId])
+  const total = Number(row?.total ?? 0)
+  const available = Number(row?.available ?? 0)
   return {
     total: Number.isFinite(total) ? total : 0,
     available: Number.isFinite(available) ? available : 0
@@ -2272,10 +2829,7 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
     const sourcePathPattern = `jellyfin://${sourceId}/%`
     let includeUnknownSourceTracks = false
     if (source) {
-      const countStmt = db.prepare('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?')
-      countStmt.bind([sourceId])
-      const countRow = countStmt.step() ? (countStmt.getAsObject() as { count?: unknown }) : null
-      countStmt.free()
+      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?', [sourceId])
       const otherSourcesCount = Number(countRow?.count ?? 0)
       includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
     }
@@ -2283,16 +2837,9 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
     const trackSelectSql = includeUnknownSourceTracks
       ? "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
       : "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)"
-    const stmt = db.prepare(trackSelectSql)
-    stmt.bind([sourceId, sourcePathPattern])
-    const trackPaths: string[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as { path?: unknown }
-      if (typeof row.path === 'string' && row.path.trim().length > 0) {
-        trackPaths.push(row.path)
-      }
-    }
-    stmt.free()
+    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+      .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
+      .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
     deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
@@ -2356,7 +2903,7 @@ export async function markJellyfinTracksAvailability(
   options: { persist?: boolean } = {}
 ): Promise<number> {
   if (!db) return 0
-  db.run(
+  const result = db.run(
     `UPDATE tracks
      SET is_available = ?,
          availability_reason = ?,
@@ -2364,8 +2911,7 @@ export async function markJellyfinTracksAvailability(
      WHERE source_type = 'jellyfin' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
   )
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -2378,7 +2924,7 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
 ): Promise<number> {
   if (!db) return 0
 
-  db.run(
+  const result = db.run(
     `UPDATE tracks
      SET is_available = 1,
          availability_reason = NULL,
@@ -2389,8 +2935,7 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
        AND availability_reason = 'source_unavailable'`,
     [Date.now(), sourceId]
   )
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -2400,16 +2945,13 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
 export async function upsertJellyfinTracks(
   sourceId: number,
   tracks: JellyfinTrackUpsertInput[],
-  options: { persist?: boolean } = {}
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
     return { inserted: 0, updated: 0 }
   }
 
-  const sourceExistsStmt = db.prepare('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1')
-  sourceExistsStmt.bind([sourceId])
-  const sourceExists = sourceExistsStmt.step()
-  sourceExistsStmt.free()
+  const sourceExists = Boolean(db.get('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1', [sourceId]))
   if (!sourceExists) {
     return { inserted: 0, updated: 0 }
   }
@@ -2419,18 +2961,17 @@ export async function upsertJellyfinTracks(
   const now = Date.now()
 
   for (const track of tracks) {
-    const existingStmt = db.prepare('SELECT id FROM tracks WHERE path = ? LIMIT 1')
-    existingStmt.bind([track.path])
-    const exists = existingStmt.step()
-    existingStmt.free()
+    const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
 
     if (exists) {
       db.run(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
+             artist_names_json = NULL,
              album = ?,
              album_artist = ?,
+             album_artist_names_json = NULL,
              duration = ?,
              track_number = ?,
              disc_number = ?,
@@ -2523,9 +3064,10 @@ export async function upsertJellyfinTracks(
         source_path,
         is_available,
         availability_reason,
+        sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -2553,6 +3095,7 @@ export async function upsertJellyfinTracks(
         sourceId,
         track.source_track_id,
         track.source_path,
+        options.syncSessionKey ?? null,
         now,
         now
       ]
@@ -2590,9 +3133,8 @@ export async function markMissingJellyfinTracksUnavailable(
     params.push(...seenSourceTrackIds)
   }
 
-  db.run(sql, params)
-  const changesResult = db.exec('SELECT changes() as count')
-  const count = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+  const result = db.run(sql, params)
+  const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -2601,22 +3143,15 @@ export async function markMissingJellyfinTracksUnavailable(
 
 export function getJellyfinTrackCountsBySource(sourceId: number): { total: number; available: number } {
   if (!db) return { total: 0, available: 0 }
-  const stmt = db.prepare(`
+  const row = db.get<{ total?: unknown; available?: unknown }>(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END) AS available
     FROM tracks
     WHERE source_type = 'jellyfin' AND source_id = ?
-  `)
-  stmt.bind([sourceId])
-  let total = 0
-  let available = 0
-  if (stmt.step()) {
-    const row = stmt.getAsObject() as { total?: unknown; available?: unknown }
-    total = Number(row.total ?? 0)
-    available = Number(row.available ?? 0)
-  }
-  stmt.free()
+  `, [sourceId])
+  const total = Number(row?.total ?? 0)
+  const available = Number(row?.available ?? 0)
   return {
     total: Number.isFinite(total) ? total : 0,
     available: Number.isFinite(available) ? available : 0
@@ -2626,7 +3161,7 @@ export function getJellyfinTrackCountsBySource(sourceId: number): { total: numbe
 export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean } = {}): Promise<number> {
   if (!db) return 0
 
-  const result = db.exec(`
+  const rows = db.all<{ path?: unknown }>(`
     SELECT path
     FROM tracks
     WHERE (
@@ -2639,9 +3174,6 @@ export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean }
       AND COALESCE(availability_reason, '') <> 'source_deleted'
     )
   `)
-  if (result.length === 0) return 0
-
-  const rows = rowsToObjects<{ path?: unknown }>(result[0].columns, result[0].values)
   const orphanPaths = Array.from(new Set(
     rows
       .map((row) => (typeof row.path === 'string' ? row.path.trim() : ''))
@@ -2655,9 +3187,7 @@ export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean }
   for (let offset = 0; offset < orphanPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
     const chunk = orphanPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
     const placeholders = chunk.map(() => '?').join(', ')
-    db.run(`DELETE FROM tracks WHERE path IN (${placeholders})`, chunk)
-    const changesResult = db.exec('SELECT changes() as count')
-    const chunkDeleted = Number(changesResult[0]?.values?.[0]?.[0] ?? 0)
+    const chunkDeleted = db.run(`DELETE FROM tracks WHERE path IN (${placeholders})`, chunk).changes
     if (Number.isFinite(chunkDeleted) && chunkDeleted > 0) {
       deletedCount += chunkDeleted
     }
@@ -2691,16 +3221,25 @@ function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
   const lines: LyricsLine[] = []
   for (const entry of rawValue) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-    const line = entry as { timestampMs?: unknown; text?: unknown }
+    const line = entry as { timestampMs?: unknown; text?: unknown; kind?: unknown }
     if (typeof line.text !== 'string') continue
 
     const text = line.text.trim()
-    if (!text) continue
-
     const timestamp = typeof line.timestampMs === 'number' && Number.isFinite(line.timestampMs)
       ? Math.max(0, Math.floor(line.timestampMs))
       : null
     if (timestamp === null) continue
+
+    if (line.kind === 'silence') {
+      lines.push({
+        timestampMs: timestamp,
+        text: '',
+        kind: 'silence'
+      })
+      continue
+    }
+
+    if (!text) continue
 
     lines.push({
       timestampMs: timestamp,
@@ -2743,7 +3282,7 @@ function hasManualLyricsOverride(entry: {
 export function getLyricsCache(trackPath: string, metadataSignature: string): LyricsCacheEntry | null {
   if (!db) return null
 
-  const stmt = db.prepare(`
+  const row = db.get<Record<string, unknown>>(`
     SELECT
       track_path,
       metadata_signature,
@@ -2757,15 +3296,8 @@ export function getLyricsCache(trackPath: string, metadataSignature: string): Ly
     FROM lyrics_cache
     WHERE track_path = ? AND metadata_signature = ?
     LIMIT 1
-  `)
-  stmt.bind([trackPath, metadataSignature])
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as Record<string, unknown>
-  stmt.free()
+  `, [trackPath, metadataSignature])
+  if (!row) return null
 
   const normalizedPath = toText(row.track_path)
   const normalizedSignature = toText(row.metadata_signature)
@@ -2845,7 +3377,7 @@ export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEn
   const normalizedTrackPath = normalizeLyricsTrackPath(trackPath)
   if (!normalizedTrackPath) return null
 
-  const stmt = db.prepare(`
+  const row = db.get<Record<string, unknown>>(`
     SELECT
       track_path,
       plain_lyrics,
@@ -2856,15 +3388,8 @@ export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEn
     FROM lyrics_track_overrides
     WHERE track_path = ?
     LIMIT 1
-  `)
-  stmt.bind([normalizedTrackPath])
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as Record<string, unknown>
-  stmt.free()
+  `, [normalizedTrackPath])
+  if (!row) return null
 
   const resolvedTrackPath = toText(row.track_path)
   if (!resolvedTrackPath) return null
@@ -3015,236 +3540,757 @@ export async function setLyricsTrackSyncOffset(trackPaths: string[], offsetMs: n
   return updated
 }
 
+const ALL_TRACKS_ORDER_BY_CLAUSE = `
+  ORDER BY
+    COALESCE(o.title, t.title) COLLATE NOCASE,
+    COALESCE(o.album, t.album) COLLATE NOCASE,
+    COALESCE(o.disc_number, t.disc_number, 0),
+    COALESCE(o.track_number, t.track_number, 0),
+    t.path COLLATE NOCASE
+`
+
+function normalizeLibraryTrackPageRequest(
+  request?: LibraryTrackPageRequest | null
+): { offset: number; limit: number } {
+  const rawOffset = Number(request?.offset)
+  const rawLimit = Number(request?.limit)
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.trunc(rawOffset) : 0
+  const requestedLimit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.trunc(rawLimit)
+    : DEFAULT_LIBRARY_TRACK_PAGE_LIMIT
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIBRARY_TRACK_PAGE_LIMIT)
+  return { offset, limit }
+}
+
 // Get all tracks
 export function getAllTracks(): DbTrack[] {
-  return readEffectiveTracks(`
+  return measureLibraryQuery('getTracks', () => {
+    const tracks = readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
+    `)
+    return attachAlbumIdentityKeys(tracks, tracks)
+  })
+}
+
+export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryTrackPage {
+  return measureLibraryQuery('getTrackPage', () => {
+    const { offset, limit } = normalizeLibraryTrackPageRequest(request)
+    const total = getTrackCount()
+    if (!db || total === 0 || offset >= total) {
+      return {
+        tracks: [],
+        offset,
+        limit,
+        total,
+        nextOffset: offset,
+        hasMore: false
+      }
+    }
+
+    const rows = readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
+      LIMIT ? OFFSET ?
+    `, [limit, offset])
+    const tracks = attachAlbumIdentityKeys(rows)
+    const nextOffset = offset + rows.length
+
+    return {
+      tracks,
+      offset,
+      limit,
+      total,
+      nextOffset,
+      hasMore: nextOffset < total
+    }
+  })
+}
+
+export function getTracksByPaths(trackPaths: readonly string[] | null | undefined): DbTrack[] {
+  return measureLibraryQuery('getTracksByPaths', () => {
+    if (!db || !Array.isArray(trackPaths) || trackPaths.length === 0) return []
+
+    const requestedPaths = trackPaths.filter((trackPath): trackPath is string => (
+      typeof trackPath === 'string' && trackPath.length > 0
+    ))
+    if (requestedPaths.length === 0) return []
+
+    const uniquePaths = Array.from(new Set(requestedPaths))
+    const rows: DbTrackRow[] = []
+    for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+      const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+      const placeholders = chunk.map(() => '?').join(', ')
+      rows.push(...readEffectiveTrackRows(`
+        SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+        ${EFFECTIVE_TRACK_FROM_CLAUSE}
+        WHERE t.path IN (${placeholders})
+      `, chunk))
+    }
+
+    const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
+    const tracks: DbTrack[] = []
+    for (const trackPath of requestedPaths) {
+      const track = tracksByPath.get(trackPath)
+      if (track) tracks.push(track)
+    }
+    return tracks
+  })
+}
+
+export function getIntegrityScanTrackTargets(scope: IntegrityScanScope): IntegrityScanTrackTarget[] {
+  if (!db) return []
+  const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
-    ORDER BY
-      COALESCE(o.title, t.title) COLLATE NOCASE,
-      COALESCE(o.album, t.album) COLLATE NOCASE,
-      COALESCE(o.disc_number, t.disc_number, 0),
-      COALESCE(o.track_number, t.track_number, 0),
-      t.path COLLATE NOCASE
+    WHERE t.source_type = 'local'
+    ORDER BY t.path COLLATE NOCASE
   `)
+
+  return filterIntegrityTargetsByScope(
+    tracks.map((track) => ({
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      format: track.format,
+      sampleRate: track.sample_rate,
+      bitDepth: track.bit_depth,
+      bitrate: track.bitrate,
+      channels: track.channels
+    })),
+    scope
+  )
 }
 
 // Get tracks by artist
 export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'canonical'): DbTrack[] {
-  if (!db) return []
-  const targetArtistKey = normalizeKey(artist)
-  if (!targetArtistKey) return []
-  const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+  return measureLibraryQuery('getTracksByArtist', () => {
+    if (!db) return []
+    const targetArtistKey = normalizeKey(artist)
+    if (!targetArtistKey) return []
+    const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
 
-  const tracks = readAllTracksUnordered()
-  const matched = tracks.filter((track) => trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode))
+    const matched: DbTrackRow[] = []
+    for (const track of iterateEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    `)) {
+      if (trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode)) {
+        matched.push(track)
+      }
+    }
 
-  return matched.sort(compareTracksByAlbumDiscTrackTitle)
+    return attachAlbumIdentityKeys(
+      matched.sort(compareTracksByAlbumDiscTrackTitle),
+      readAlbumIdentityRowsForTracks(matched)
+    )
+  })
 }
 
 // Get tracks by album
 export function getTracksByAlbum(album: string, artist?: string, identityKey?: string): DbTrack[] {
-  if (!db) return []
-  const albumKey = normalizeKey(normalizeAlbumName(album))
-  const tracks = readAllTracksUnordered()
-  if (tracks.length === 0) return []
-  const groups = buildAlbumGroups(tracks)
+  return measureLibraryQuery('getTracksByAlbum', () => {
+    if (!db) return []
+    const albumKey = normalizeKey(normalizeAlbumName(album))
+    const tracks = readEffectiveTrackRowsByAlbumKey(albumKey)
+    if (tracks.length === 0) return []
+    const groups = buildAlbumGroups(tracks)
 
-  const normalizedIdentityKey = normalizeDisplay(identityKey ?? '')
-  if (normalizedIdentityKey) {
-    const directGroup = groups.get(normalizedIdentityKey)
-    if (directGroup && directGroup.albumKey === albumKey) {
-      return [...directGroup.tracks].sort(compareTracksByDiscTrackTitle)
+    const normalizedIdentityKey = normalizeDisplay(identityKey ?? '')
+    if (normalizedIdentityKey) {
+      const directGroup = groups.get(normalizedIdentityKey)
+      if (directGroup && directGroup.albumKey === albumKey) {
+        return attachAlbumIdentityKeys([...directGroup.tracks].sort(compareTracksByDiscTrackTitle), tracks)
+      }
     }
-  }
 
-  if (!artist || !normalizeDisplay(artist)) {
-    const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
-    return matched.sort(compareTracksByDiscTrackTitle)
-  }
-
-  const artistKey = normalizeKey(artist)
-  if (!artistKey) {
-    const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
-    return matched.sort(compareTracksByDiscTrackTitle)
-  }
-
-  const albumGroups = Array.from(groups.values()).filter((group) => group.albumKey === albumKey)
-  for (const group of albumGroups) {
-    if (group.artistKey === artistKey) {
-      return [...group.tracks].sort(compareTracksByDiscTrackTitle)
+    if (!artist || !normalizeDisplay(artist)) {
+      const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
+      return attachAlbumIdentityKeys(matched.sort(compareTracksByDiscTrackTitle), tracks)
     }
-  }
 
-  const aliasMatches = albumGroups.filter((group) => group.aliasArtistKeys.has(artistKey))
-  if (aliasMatches.length === 1) {
-    return [...aliasMatches[0].tracks].sort(compareTracksByDiscTrackTitle)
-  }
+    const artistKey = normalizeKey(artist)
+    if (!artistKey) {
+      const matched = tracks.filter((track) => normalizeKey(normalizeAlbumName(track.album)) === albumKey)
+      return attachAlbumIdentityKeys(matched.sort(compareTracksByDiscTrackTitle), tracks)
+    }
 
-  // Defensive fallback if canonical grouping misses a case.
-  const fallback = tracks.filter((track) => {
-    if (normalizeKey(normalizeAlbumName(track.album)) !== albumKey) return false
-    if (normalizeKey(track.album_artist ?? '') === artistKey) return true
-    if (normalizeKey(track.artist) === artistKey) return true
-    return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
+    const albumGroups = Array.from(groups.values()).filter((group) => group.albumKey === albumKey)
+    for (const group of albumGroups) {
+      if (group.artistKey === artistKey) {
+        return attachAlbumIdentityKeys([...group.tracks].sort(compareTracksByDiscTrackTitle), tracks)
+      }
+    }
+
+    const aliasMatches = albumGroups.filter((group) => group.aliasArtistKeys.has(artistKey))
+    if (aliasMatches.length === 1) {
+      return attachAlbumIdentityKeys([...aliasMatches[0].tracks].sort(compareTracksByDiscTrackTitle), tracks)
+    }
+
+    // Defensive fallback if canonical grouping misses a case.
+    const fallback = tracks.filter((track) => {
+      if (normalizeKey(normalizeAlbumName(track.album)) !== albumKey) return false
+      if (normalizeKey(track.album_artist ?? '') === artistKey) return true
+      if (normalizeKey(track.artist) === artistKey) return true
+      if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
+      if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
+      return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
+    })
+    return attachAlbumIdentityKeys(fallback.sort(compareTracksByDiscTrackTitle), tracks)
   })
-  return fallback.sort(compareTracksByDiscTrackTitle)
 }
 
-// Get unique artists
-export function getArtists(mode: ArtistBrowseMode = 'canonical'): { artist: string; track_count: number; artwork_hash: string | null }[] {
-  if (!db) return []
-  const tracks = readAllTracksUnordered()
-  if (tracks.length === 0) return []
-  const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
-  const browseArtistResolver = resolvedMode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
+interface ArtistImageRow {
+  browse_mode: ArtistBrowseMode
+  artist_key: string
+  artist_name: string
+  manual_image_hash: string | null
+  detected_image_hash: string | null
+  detected_source_path: string | null
+  detected_source_mtime: number | null
+  updated_at: number
+}
 
-  interface ArtistAggregate {
-    artist: string
-    track_count: number
-    artwork_hash: string | null
-    newestArtworkYear: number
-    newestArtworkAddedAt: number
-    newestArtworkModifiedAt: number
+function normalizeArtistBrowseMode(mode?: ArtistBrowseMode): ArtistBrowseMode {
+  return mode === 'strict' ? 'strict' : 'canonical'
+}
+
+function normalizeArtistImageInput(artist: string, mode?: ArtistBrowseMode): {
+  mode: ArtistBrowseMode
+  artistName: string
+  artistKey: string
+} {
+  const artistName = normalizeDisplay(artist) || UNKNOWN_ARTIST_NAME
+  const artistKey = getArtistImageKey(artistName)
+  if (!artistKey) {
+    throw new Error('Artist name is required.')
   }
 
-  const artistCounts = new Map<string, ArtistAggregate>()
+  return {
+    mode: normalizeArtistBrowseMode(mode),
+    artistName,
+    artistKey
+  }
+}
 
-  for (const track of tracks) {
-    const browseArtist = browseArtistResolver(track)
-    const key = normalizeKey(browseArtist)
-    if (!key) continue
+function readArtistImageRowsForMode(mode: ArtistBrowseMode): Map<string, ArtistImageRow> {
+  const rows = new Map<string, ArtistImageRow>()
+  if (!db) return rows
 
-    const existing = artistCounts.get(key)
-    if (existing) {
-      existing.track_count += 1
-    } else {
-      artistCounts.set(key, {
-        artist: browseArtist,
-        track_count: 1,
-        artwork_hash: null,
-        newestArtworkYear: -1,
-        newestArtworkAddedAt: -1,
-        newestArtworkModifiedAt: -1,
+  for (const row of db.iterate<Record<string, unknown>>(`
+    SELECT
+      browse_mode,
+      artist_key,
+      artist_name,
+      manual_image_hash,
+      detected_image_hash,
+      detected_source_path,
+      detected_source_mtime,
+      updated_at
+    FROM artist_images
+    WHERE browse_mode = ?
+  `, [mode])) {
+    const artistKey = typeof row.artist_key === 'string' ? row.artist_key : ''
+    if (!artistKey) continue
+
+    const detectedSourceMtime = typeof row.detected_source_mtime === 'number'
+      ? row.detected_source_mtime
+      : (row.detected_source_mtime == null ? null : Number(row.detected_source_mtime))
+    const normalizedDetectedSourceMtime = typeof detectedSourceMtime === 'number' && Number.isFinite(detectedSourceMtime)
+      ? detectedSourceMtime
+      : null
+
+    rows.set(artistKey, {
+      browse_mode: mode,
+      artist_key: artistKey,
+      artist_name: typeof row.artist_name === 'string' ? row.artist_name : UNKNOWN_ARTIST_NAME,
+      manual_image_hash: typeof row.manual_image_hash === 'string' ? row.manual_image_hash : null,
+      detected_image_hash: typeof row.detected_image_hash === 'string' ? row.detected_image_hash : null,
+      detected_source_path: typeof row.detected_source_path === 'string' ? row.detected_source_path : null,
+      detected_source_mtime: normalizedDetectedSourceMtime,
+      updated_at: typeof row.updated_at === 'number' ? row.updated_at : Date.now()
+    })
+  }
+
+  return rows
+}
+
+function normalizeCachedImageExtension(imagePath: string): string {
+  const rawExtension = extname(imagePath).toLowerCase()
+  if (rawExtension === '.png') return '.png'
+  if (rawExtension === '.webp') return '.webp'
+  if (rawExtension === '.gif') return '.gif'
+  if (rawExtension === '.bmp') return '.bmp'
+  if (rawExtension === '.jpg' || rawExtension === '.jpeg') return '.jpg'
+  return '.jpg'
+}
+
+async function cacheArtistImageFile(imagePath: string): Promise<string> {
+  const normalizedPath = imagePath.trim()
+  if (!normalizedPath) {
+    throw new Error('Artist image path is required.')
+  }
+
+  const imageData = await readFile(normalizedPath)
+  if (imageData.length === 0) {
+    throw new Error('Artist image file is empty.')
+  }
+
+  await mkdir(artistImageDir, { recursive: true })
+  const extension = normalizeCachedImageExtension(normalizedPath)
+  const contentHash = createHash('sha256').update(imageData).digest('hex')
+  const fileName = `${contentHash}${extension}`
+  const targetPath = join(artistImageDir, fileName)
+
+  try {
+    await writeFile(targetPath, imageData, { flag: 'wx' })
+  } catch (error) {
+    if (getErrorCode(error) !== 'EEXIST') {
+      throw error
+    }
+  }
+
+  return `${ARTIST_IMAGE_HASH_PREFIX}${fileName}`
+}
+
+export async function setArtistImageFromFile(
+  artist: string,
+  mode: ArtistBrowseMode,
+  imagePath: string
+): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+
+  const input = normalizeArtistImageInput(artist, mode)
+  const imageHash = await cacheArtistImageFile(imagePath)
+  const now = Date.now()
+
+  db.run(
+    `INSERT INTO artist_images (
+      browse_mode,
+      artist_key,
+      artist_name,
+      manual_image_hash,
+      detected_image_hash,
+      detected_source_path,
+      detected_source_mtime,
+      updated_at
+    ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?)
+    ON CONFLICT(browse_mode, artist_key) DO UPDATE SET
+      artist_name = excluded.artist_name,
+      manual_image_hash = excluded.manual_image_hash,
+      updated_at = excluded.updated_at`,
+    [
+      input.mode,
+      input.artistKey,
+      input.artistName,
+      imageHash,
+      now
+    ]
+  )
+
+  await saveDatabase()
+}
+
+export async function clearArtistImage(
+  artist: string,
+  mode: ArtistBrowseMode
+): Promise<void> {
+  if (!db) return
+
+  const input = normalizeArtistImageInput(artist, mode)
+  db.run(
+    `UPDATE artist_images
+     SET artist_name = ?,
+         manual_image_hash = NULL,
+         updated_at = ?
+     WHERE browse_mode = ? AND artist_key = ?`,
+    [
+      input.artistName,
+      Date.now(),
+      input.mode,
+      input.artistKey
+    ]
+  )
+
+  await saveDatabase()
+}
+
+function collectArtistImageSearchDirectories(trackPath: string): string[] {
+  const directories: string[] = []
+  const trackDirectory = dirname(trackPath)
+  const parentDirectory = dirname(trackDirectory)
+
+  for (const directory of [parentDirectory, trackDirectory]) {
+    if (!directory || directories.includes(directory)) continue
+    directories.push(directory)
+  }
+
+  return directories
+}
+
+async function readArtistImageCandidatesInDirectory(directoryPath: string): Promise<ArtistImageCandidate[]> {
+  try {
+    const entries = await readdir(directoryPath, { withFileTypes: true })
+    const candidates: ArtistImageCandidate[] = []
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+
+      const extension = extname(entry.name).toLowerCase()
+      if (!isSupportedArtistImageExtension(extension)) continue
+
+      const filePath = join(directoryPath, entry.name)
+      let fileStat: Awaited<ReturnType<typeof stat>>
+      try {
+        fileStat = await stat(filePath)
+      } catch {
+        continue
+      }
+      if (!fileStat.isFile()) continue
+
+      const sourceMtime = Math.round(fileStat.mtimeMs)
+      candidates.push({
+        path: filePath,
+        baseName: basename(entry.name, extension),
+        extension,
+        mtimeMs: sourceMtime
       })
     }
 
-    if (!track.artwork_hash) continue
-    const aggregate = artistCounts.get(key)
-    if (!aggregate) continue
+    return candidates
+  } catch {
+    return []
+  }
+}
 
-    const candidateYear = track.year ?? -1
-    const shouldReplaceArtwork = (
-      aggregate.artwork_hash == null
-      || candidateYear > aggregate.newestArtworkYear
-      || (
-        candidateYear === aggregate.newestArtworkYear
-        && (
-          track.added_at > aggregate.newestArtworkAddedAt
-          || (
-            track.added_at === aggregate.newestArtworkAddedAt
-            && track.modified_at > aggregate.newestArtworkModifiedAt
+async function refreshDetectedArtistImagesForMode(
+  mode: ArtistBrowseMode,
+  localTracks: DbTrackRow[]
+): Promise<void> {
+  if (!db) return
+
+  const browseArtistResolver = mode === 'strict' ? resolveStrictBrowseArtist : resolveCanonicalBrowseArtist
+  const artists = new Map<string, { artistName: string; directories: Set<string> }>()
+
+  for (const track of localTracks) {
+    const artistName = browseArtistResolver(track)
+    const artistKey = getArtistImageKey(artistName)
+    if (!artistKey) continue
+
+    let entry = artists.get(artistKey)
+    if (!entry) {
+      entry = { artistName, directories: new Set() }
+      artists.set(artistKey, entry)
+    }
+
+    for (const directory of collectArtistImageSearchDirectories(track.path)) {
+      entry.directories.add(directory)
+    }
+  }
+
+  const existingRows = readArtistImageRowsForMode(mode)
+  const directoryCandidateCache = new Map<string, Promise<ArtistImageCandidate[]>>()
+  const now = Date.now()
+
+  for (const [artistKey, entry] of artists.entries()) {
+    const candidates: ArtistImageCandidate[] = []
+    for (const directory of entry.directories) {
+      let pendingCandidates = directoryCandidateCache.get(directory)
+      if (!pendingCandidates) {
+        pendingCandidates = readArtistImageCandidatesInDirectory(directory)
+        directoryCandidateCache.set(directory, pendingCandidates)
+      }
+      candidates.push(...await pendingCandidates)
+    }
+
+    const bestCandidate = pickBestArtistImageCandidate(candidates, entry.artistName)
+    const existing = existingRows.get(artistKey)
+    let detectedImageHash: string | null = null
+    let detectedSourcePath: string | null = null
+    let detectedSourceMtime: number | null = null
+
+    if (bestCandidate) {
+      detectedSourcePath = bestCandidate.path
+      detectedSourceMtime = Math.round(bestCandidate.mtimeMs)
+      try {
+        detectedImageHash = (
+          existing?.detected_image_hash &&
+          existing.detected_source_path === detectedSourcePath &&
+          existing.detected_source_mtime === detectedSourceMtime
+        )
+          ? existing.detected_image_hash
+          : await cacheArtistImageFile(bestCandidate.path)
+      } catch (error) {
+        console.warn('Failed to cache detected artist image:', bestCandidate.path, error)
+        detectedImageHash = null
+        detectedSourcePath = null
+        detectedSourceMtime = null
+      }
+    }
+
+    db.run(
+      `INSERT INTO artist_images (
+        browse_mode,
+        artist_key,
+        artist_name,
+        manual_image_hash,
+        detected_image_hash,
+        detected_source_path,
+        detected_source_mtime,
+        updated_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+      ON CONFLICT(browse_mode, artist_key) DO UPDATE SET
+        artist_name = excluded.artist_name,
+        detected_image_hash = excluded.detected_image_hash,
+        detected_source_path = excluded.detected_source_path,
+        detected_source_mtime = excluded.detected_source_mtime,
+        updated_at = excluded.updated_at`,
+      [
+        mode,
+        artistKey,
+        entry.artistName,
+        detectedImageHash,
+        detectedSourcePath,
+        detectedSourceMtime,
+        now
+      ]
+    )
+  }
+
+  for (const [artistKey, row] of existingRows.entries()) {
+    if (artists.has(artistKey)) continue
+    if (!row.detected_image_hash && !row.detected_source_path && row.detected_source_mtime == null) continue
+
+    db.run(
+      `UPDATE artist_images
+       SET detected_image_hash = NULL,
+           detected_source_path = NULL,
+           detected_source_mtime = NULL,
+           updated_at = ?
+       WHERE browse_mode = ? AND artist_key = ?`,
+      [now, mode, artistKey]
+    )
+  }
+}
+
+export async function refreshDetectedArtistImages(): Promise<void> {
+  if (!db) return
+
+  const localTracks = readAllTrackRowsUnordered().filter((track) => track.source_type === 'local')
+  await refreshDetectedArtistImagesForMode('canonical', localTracks)
+  await refreshDetectedArtistImagesForMode('strict', localTracks)
+}
+
+// Get unique artists
+export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[] {
+  return measureLibraryQuery('getArtists', () => {
+    if (!db) return []
+    const resolvedMode = normalizeArtistBrowseMode(mode)
+    const artistImageRows = readArtistImageRowsForMode(resolvedMode)
+
+    interface ArtistAggregate {
+      artist: string
+      track_count: number
+      artwork_hash: string | null
+      newestArtworkYear: number
+      newestArtworkAddedAt: number
+      newestArtworkModifiedAt: number
+    }
+
+    const artistCounts = new Map<string, ArtistAggregate>()
+
+    const addTrackToArtist = (track: DbTrackRow, browseArtist: string) => {
+      const key = normalizeKey(browseArtist)
+      if (!key) return
+
+      const existing = artistCounts.get(key)
+      if (existing) {
+        existing.track_count += 1
+      } else {
+        artistCounts.set(key, {
+          artist: browseArtist,
+          track_count: 1,
+          artwork_hash: null,
+          newestArtworkYear: -1,
+          newestArtworkAddedAt: -1,
+          newestArtworkModifiedAt: -1,
+        })
+      }
+
+      if (!track.artwork_hash) return
+      const aggregate = artistCounts.get(key)
+      if (!aggregate) return
+
+      const candidateYear = track.year ?? -1
+      const shouldReplaceArtwork = (
+        aggregate.artwork_hash == null
+        || candidateYear > aggregate.newestArtworkYear
+        || (
+          candidateYear === aggregate.newestArtworkYear
+          && (
+            track.added_at > aggregate.newestArtworkAddedAt
+            || (
+              track.added_at === aggregate.newestArtworkAddedAt
+              && track.modified_at > aggregate.newestArtworkModifiedAt
+            )
           )
         )
       )
-    )
 
-    if (!shouldReplaceArtwork) continue
-    aggregate.artwork_hash = track.artwork_hash
-    aggregate.newestArtworkYear = candidateYear
-    aggregate.newestArtworkAddedAt = track.added_at
-    aggregate.newestArtworkModifiedAt = track.modified_at
-  }
+      if (!shouldReplaceArtwork) return
+      aggregate.artwork_hash = track.artwork_hash
+      aggregate.newestArtworkYear = candidateYear
+      aggregate.newestArtworkAddedAt = track.added_at
+      aggregate.newestArtworkModifiedAt = track.modified_at
+    }
 
-  return Array.from(artistCounts.values())
-    .map(({ artist, track_count, artwork_hash }) => ({ artist, track_count, artwork_hash }))
-    .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
+    for (const track of iterateEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    `)) {
+      const browseArtists = resolvedMode === 'strict'
+        ? [resolveStrictBrowseArtist(track)]
+        : getCanonicalArtistIndexNames(track)
+
+      const seenTrackArtistKeys = new Set<string>()
+      for (const browseArtist of browseArtists) {
+        const key = normalizeKey(browseArtist)
+        if (!key || seenTrackArtistKeys.has(key)) continue
+        seenTrackArtistKeys.add(key)
+        addTrackToArtist(track, browseArtist)
+      }
+    }
+
+    return Array.from(artistCounts.values())
+      .map(({ artist, track_count, artwork_hash }) => {
+        const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
+        const resolvedArtwork = resolveArtistArtwork(
+          artistImageRow?.manual_image_hash,
+          artistImageRow?.detected_image_hash,
+          artwork_hash
+        )
+        return {
+          artist,
+          track_count,
+          artwork_hash: resolvedArtwork.artwork_hash,
+          artwork_source: resolvedArtwork.artwork_source
+        }
+      })
+      .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
+  })
 }
 
 // Get unique albums
-export function getAlbums(): {
-  identity_key: string
-  album: string
-  artist: string
-  primary_artist: string | null
-  year: number | null
-  artwork_hash: string | null
-  track_count: number
-}[] {
-  if (!db) return []
-  const tracks = readAllTracksUnordered()
-  if (tracks.length === 0) return []
+export function listAlbumIdentityKeys(): string[] {
+  const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
+  const identityKeys = new Set<string>()
+  for (const track of iterateEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)) {
+    identityKeys.add(resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes).identityKey)
+  }
+  return Array.from(identityKeys).sort((a, b) => a.localeCompare(b))
+}
 
-  const groups = buildAlbumGroups(tracks)
-  const albums = Array.from(groups.values())
-    .filter(isEligibleAlbumGroup)
-    .map((group) => {
-      const album = pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album')
-      const artist = pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist')
+export function getAlbums(options: AlbumListOptions = {}): Album[] {
+  return measureLibraryQuery('getAlbums', () => {
+    if (!db) return []
 
-      let primaryArtist: string | null
-      if (group.groupingMode === 'explicit-album-artist') {
-        primaryArtist = getPrimaryArtistFromAlbumArtist(artist)
-      } else if (group.groupingMode === 'artwork-hash' && group.primaryArtistKeys.size > 1) {
-        primaryArtist = null
-      } else {
-        primaryArtist = artist
+    const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
+    const groups = new Map<string, AlbumSummaryAccumulator>()
+    const latestSyncSummary = getLatestLibrarySyncSummary()
+
+    for (const track of iterateEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    `)) {
+      const identity = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes)
+      let group = groups.get(identity.identityKey)
+      if (!group) {
+        group = createAlbumSummaryAccumulator(identity)
+        groups.set(identity.identityKey, group)
       }
+      addTrackToAlbumSummary(group, track, latestSyncSummary)
+    }
 
-      if (normalizeKey(primaryArtist ?? '') === normalizeKey(VARIOUS_ARTISTS_NAME)) {
-        primaryArtist = null
-      }
+    const albumEligibilityOptions: AlbumEligibilityOptions = {
+      includeSingles: options.includeSingles === true
+    }
+    const albums = Array.from(groups.values())
+      .filter((group) => isAlbumGroupEligible(group, albumEligibilityOptions))
+      .map((group) => {
+        const album = pickMostFrequentDisplayVariant(group.albumVariants, 'Unknown Album')
+        const artist = pickMostFrequentDisplayVariant(group.artistVariants, 'Unknown Artist')
 
-      return {
-        identity_key: group.identityKey,
-        album,
-        artist,
-        primary_artist: primaryArtist,
-        year: group.year,
-        artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
-        track_count: group.trackCount
-      }
+        let primaryArtist: string | null
+        if (group.groupingMode === 'explicit-album-artist') {
+          primaryArtist = getPrimaryArtistFromAlbumArtist(artist)
+        } else if (group.groupingMode === 'shared-artwork-compilation') {
+          primaryArtist = null
+        } else {
+          primaryArtist = artist
+        }
+
+        if (normalizeKey(primaryArtist ?? '') === normalizeKey(VARIOUS_ARTISTS_NAME)) {
+          primaryArtist = null
+        }
+
+        return {
+          identity_key: group.identityKey,
+          album,
+          artist,
+          primary_artist: primaryArtist,
+          year: group.year,
+          artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
+          track_count: group.trackCount,
+          is_new: isAlbumNewForLatestSync(group.identityKey, latestSyncSummary, group.hasUnplayedLatestSyncTrack)
+        }
+      })
+
+    return albums.sort((a, b) => {
+      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+      if (albumCompare !== 0) return albumCompare
+      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+      if (artistCompare !== 0) return artistCompare
+      return a.identity_key.localeCompare(b.identity_key)
     })
-
-  return albums.sort((a, b) => {
-    const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
-    if (albumCompare !== 0) return albumCompare
-    const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-    if (artistCompare !== 0) return artistCompare
-    return a.identity_key.localeCompare(b.identity_key)
   })
 }
 
 // Search tracks
 export function searchTracks(query: string): DbTrack[] {
-  if (!db) return []
-  const pattern = `%${query}%`
-  const stmt = db.prepare(`
-    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
-    WHERE COALESCE(o.title, t.title) LIKE ? OR COALESCE(o.artist, t.artist) LIKE ? OR COALESCE(o.album, t.album) LIKE ?
-    ORDER BY
-      COALESCE(o.title, t.title) COLLATE NOCASE,
-      COALESCE(o.album, t.album) COLLATE NOCASE,
-      COALESCE(o.disc_number, t.disc_number, 0),
-      COALESCE(o.track_number, t.track_number, 0),
-      t.path COLLATE NOCASE
-    LIMIT 100
-  `)
-  stmt.bind([pattern, pattern, pattern])
-  const tracks: DbTrack[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as DbTrack
-    tracks.push(row)
-  }
-  stmt.free()
-  return tracks
+  return measureLibraryQuery('search', () => {
+    if (!db) return []
+    const pattern = `%${query}%`
+    const tracks = db.all<DbTrackRow>(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      WHERE COALESCE(o.title, t.title) LIKE ?
+        OR COALESCE(o.artist, t.artist) LIKE ?
+        OR (o.artist IS NULL AND t.artist_names_json LIKE ?)
+        OR COALESCE(o.album, t.album) LIKE ?
+        OR (o.album_artist IS NULL AND t.album_artist_names_json LIKE ?)
+      ORDER BY
+        COALESCE(o.title, t.title) COLLATE NOCASE,
+        COALESCE(o.album, t.album) COLLATE NOCASE,
+        COALESCE(o.disc_number, t.disc_number, 0),
+        COALESCE(o.track_number, t.track_number, 0),
+        t.path COLLATE NOCASE
+      LIMIT 100
+    `, [pattern, pattern, pattern, pattern, pattern])
+    return attachAlbumIdentityKeys(tracks)
+  })
 }
 
 function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | null {
   if (!db) return null
 
-  const stmt = db.prepare(`
+  const row = db.get<Record<string, unknown>>(`
     SELECT
       t.path AS path,
       t.title AS base_title,
@@ -3273,16 +4319,8 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
     WHERE t.path = ?
       AND t.source_type = 'local'
     LIMIT 1
-  `)
-  stmt.bind([trackPath])
-
-  if (!stmt.step()) {
-    stmt.free()
-    return null
-  }
-
-  const row = stmt.getAsObject() as Record<string, unknown>
-  stmt.free()
+  `, [trackPath])
+  if (!row) return null
 
   const path = toText(row.path)
   const baseTitle = toText(row.base_title)
@@ -3507,9 +4545,7 @@ function getRelativeParentPath(relativeSubfolderPath: string): string {
 // Get library folders
 export function getLibraryFolders(): LibraryFolder[] {
   if (!db) return []
-  const result = db.exec('SELECT * FROM folders ORDER BY path')
-  if (result.length === 0) return []
-  return rowsToObjects<LibraryFolder>(result[0].columns, result[0].values)
+  return db.all<LibraryFolder>('SELECT * FROM folders ORDER BY path')
 }
 
 function getLibraryFolderByPath(folderPath: string): LibraryFolder | null {
@@ -3520,17 +4556,12 @@ function getLibraryFolderByPath(folderPath: string): LibraryFolder | null {
 function getFolderExclusionRows(folderId: number): FolderExclusionRow[] {
   if (!db) return []
 
-  const stmt = db.prepare('SELECT relative_path, absolute_path FROM folder_exclusions WHERE folder_id = ? ORDER BY relative_path')
-  stmt.bind([folderId])
-
   const rows: FolderExclusionRow[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as FolderExclusionRow
+  for (const row of db.iterate<FolderExclusionRow>('SELECT relative_path, absolute_path FROM folder_exclusions WHERE folder_id = ? ORDER BY relative_path', [folderId])) {
     if (typeof row.relative_path === 'string' && typeof row.absolute_path === 'string') {
       rows.push(row)
     }
   }
-  stmt.free()
   return rows
 }
 
@@ -3608,13 +4639,9 @@ function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
   ))
   if (normalizedPrefixes.length === 0) return 0
 
-  const result = db.exec("SELECT id, path FROM tracks WHERE source_type = 'local'")
-  if (result.length === 0) return 0
+  const trackIdsToRemove: number[] = []
 
-  const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)
-  let removedCount = 0
-
-  for (const track of tracks) {
+  for (const track of db.iterate<{ id: number; path: string }>("SELECT id, path FROM tracks WHERE source_type = 'local'")) {
     const normalizedTrackPath = normalizeComparableFsPath(track.path)
     const matchesExcludedPrefix = normalizedPrefixes.some((normalizedPrefix) => {
       if (normalizedTrackPath === normalizedPrefix) return true
@@ -3625,11 +4652,14 @@ function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
     })
     if (!matchesExcludedPrefix) continue
 
-    db.run('DELETE FROM tracks WHERE id = ?', [track.id])
-    removedCount += 1
+    trackIdsToRemove.push(track.id)
   }
 
-  return removedCount
+  for (const trackId of trackIdsToRemove) {
+    db.run('DELETE FROM tracks WHERE id = ?', [trackId])
+  }
+
+  return trackIdsToRemove.length
 }
 
 // Add library folder
@@ -3637,9 +4667,8 @@ export async function addLibraryFolder(folderPath: string): Promise<LibraryFolde
   if (!db) return null
   const now = Date.now()
   try {
-    db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
-    const result = db.exec('SELECT last_insert_rowid() as id')
-    const id = result[0].values[0][0] as number
+    const insertResult = db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
+    const id = Number(insertResult.lastInsertRowid)
     await saveDatabase()
     return { id, path: folderPath, added_at: now }
   } catch {
@@ -3859,6 +4888,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
+  db.run('UPDATE artist_images SET detected_image_hash = NULL, detected_source_path = NULL, detected_source_mtime = NULL, updated_at = ?', [Date.now()])
 
   await clearArtworkCacheDirectory()
   await saveDatabase()
@@ -3878,20 +4908,50 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM tracks')
   db.run('DELETE FROM folder_exclusions')
   db.run('DELETE FROM folders')
+  db.run('DELETE FROM artist_images')
   db.run('DELETE FROM app_meta')
 
   await clearArtworkCacheDirectory()
   await clearPlaylistCoverDirectory()
+  await clearArtistImageDirectory()
   await saveDatabase()
 }
 
 // Scan a folder for audio files
+interface ExistingTrackScanState {
+  id: number
+  modified_at: number
+  file_created_at: number | null
+  replaygain_track_gain_db: number | null
+  replaygain_album_gain_db: number | null
+}
+
+function shouldSkipIncrementalTrackScan(
+  existing: ExistingTrackScanState | undefined,
+  fileModifiedAtMs: number
+): boolean {
+  if (!existing) {
+    return false
+  }
+
+  const replayGainMissing = Boolean(
+    replayGainScanEnabled
+    && (
+      existing.replaygain_track_gain_db == null
+      || existing.replaygain_album_gain_db == null
+    )
+  )
+  const fileCreatedAtMissing = existing.file_created_at == null
+
+  return existing.modified_at >= fileModifiedAtMs && !replayGainMissing && !fileCreatedAtMissing
+}
+
 export async function scanFolder(
   folderPath: string,
   onProgress?: (current: number, total: number, file: string) => void,
-  options: ScanWriteOptions = {}
+  options: FolderScanOptions = {}
 ): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
-  const { persist = true, signal, onIssue } = options
+  const { persist = true, signal, onIssue, syncSessionKey = null, mode = 'incremental' } = options
   if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
   throwIfScanCancelled(signal)
 
@@ -3906,14 +4966,6 @@ export async function scanFolder(
   let errors = 0
   let processed = 0
 
-  interface ExistingTrackScanState {
-    id: number
-    modified_at: number
-    file_created_at: number | null
-    replaygain_track_gain_db: number | null
-    replaygain_album_gain_db: number | null
-  }
-
   const scanWorkerCount = resolveScanWorkerCount(files.length)
 
   await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
@@ -3924,26 +4976,13 @@ export async function scanFolder(
       const fileStat = await stat(filePath)
       const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
-      const checkStmt = db.prepare(
-        'SELECT id, modified_at, file_created_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?'
+      const existing = db.get<ExistingTrackScanState>(
+        'SELECT id, modified_at, file_created_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?',
+        [filePath]
       )
-      checkStmt.bind([filePath])
-      let existing: ExistingTrackScanState | undefined
-      if (checkStmt.step()) {
-        existing = checkStmt.getAsObject() as ExistingTrackScanState
-      }
-      checkStmt.free()
 
-      const replayGainMissing = Boolean(
-        replayGainScanEnabled
-        && existing
-        && (
-          existing.replaygain_track_gain_db == null
-          || existing.replaygain_album_gain_db == null
-        )
-      )
-      const fileCreatedAtMissing = Boolean(existing && existing.file_created_at == null)
-      if (existing && existing.modified_at >= fileStat.mtimeMs && !replayGainMissing && !fileCreatedAtMissing) {
+      const shouldSkipKnownFile = mode === 'incremental' && shouldSkipIncrementalTrackScan(existing, fileStat.mtimeMs)
+      if (shouldSkipKnownFile) {
         return
       }
 
@@ -3952,10 +4991,10 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
-          metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+          metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
@@ -3964,14 +5003,14 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, album, album_artist, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
-          filePath, metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+          filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, now
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
       }
@@ -3992,6 +5031,7 @@ export async function scanFolder(
   }, { signal })
 
   throwIfScanCancelled(signal)
+  reconcileMissingPlaylistEntriesByMetadata()
   if (persist) {
     await saveDatabase()
   }
@@ -4705,8 +5745,10 @@ async function resolveCodecMetadata(
 async function extractMetadata(filePath: string): Promise<{
   title: string
   artist: string
+  artistNamesJson: string | null
   album: string
   albumArtist: string | null
+  albumArtistNamesJson: string | null
   duration: number
   trackNumber: number | null
   discNumber: number | null
@@ -4771,12 +5813,22 @@ async function extractMetadata(filePath: string): Promise<{
   }
 
   const fileName = basename(filePath, extname(filePath))
+  const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
+  const parsedAlbumArtistNames = normalizeArtistNames(common.albumartists ?? [])
+  const artistDisplay = parsedArtistNames.length > 1
+    ? formatArtistNames(parsedArtistNames)
+    : toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
+  const albumArtistDisplay = parsedAlbumArtistNames.length > 1
+    ? formatArtistNames(parsedAlbumArtistNames)
+    : toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
 
   return {
     title: common.title || fileName,
-    artist: common.artist || 'Unknown Artist',
+    artist: artistDisplay,
+    artistNamesJson: parsedArtistNames.length > 1 ? serializeArtistNames(parsedArtistNames) : null,
     album: common.album || 'Unknown Album',
-    albumArtist: common.albumartist || null,
+    albumArtist: albumArtistDisplay,
+    albumArtistNamesJson: parsedAlbumArtistNames.length > 1 ? serializeArtistNames(parsedAlbumArtistNames) : null,
     duration: format.duration || 0,
     trackNumber: common.track?.no || null,
     discNumber: common.disk?.no || null,
@@ -4830,25 +5882,18 @@ function getBackfillCandidatePaths(options: {
     params.push(`${options.folderPath}%`)
   }
 
-  const stmt = db.prepare(sql)
-  if (params.length > 0) {
-    stmt.bind(params)
-  }
-
   const paths: string[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject()
+  for (const row of db.iterate<{ path?: unknown }>(sql, params)) {
     if (typeof row.path === 'string') {
       paths.push(row.path)
     }
   }
-  stmt.free()
   return paths
 }
 
 function getReplayGainBackfillCandidatePaths(): string[] {
   if (!db) return []
-  const result = db.exec(`
+  return db.all<{ path?: unknown }>(`
     SELECT path
     FROM tracks
     WHERE source_type = 'local'
@@ -4857,23 +5902,31 @@ function getReplayGainBackfillCandidatePaths(): string[] {
         OR replaygain_album_gain_db IS NULL
       )
   `)
-  if (result.length === 0) return []
-  return result[0].values
-    .map((row) => (typeof row[0] === 'string' ? row[0] : null))
+    .map((row) => (typeof row.path === 'string' ? row.path : null))
     .filter((value): value is string => value !== null)
 }
 
 function getFileCreatedAtBackfillCandidatePaths(): string[] {
   if (!db) return []
-  const result = db.exec(`
+  return db.all<{ path?: unknown }>(`
     SELECT path
     FROM tracks
     WHERE source_type = 'local'
       AND file_created_at IS NULL
   `)
-  if (result.length === 0) return []
-  return result[0].values
-    .map((row) => (typeof row[0] === 'string' ? row[0] : null))
+    .map((row) => (typeof row.path === 'string' ? row.path : null))
+    .filter((value): value is string => value !== null)
+}
+
+function getArtistCreditBackfillCandidatePaths(): string[] {
+  if (!db) return []
+  return db.all<{ path?: unknown }>(`
+    SELECT path
+    FROM tracks
+    WHERE source_type = 'local'
+    ORDER BY path COLLATE NOCASE
+  `)
+    .map((row) => (typeof row.path === 'string' ? row.path : null))
     .filter((value): value is string => value !== null)
 }
 
@@ -4912,6 +5965,22 @@ async function backfillTrackAudioMetadata(path: string): Promise<void> {
       resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
       bpm,
       musicalKey,
+      path
+    ]
+  )
+}
+
+async function backfillTrackArtistCreditMetadata(path: string): Promise<void> {
+  if (!db) return
+  const metadata = await mm.parseFile(path, getMusicMetadataParseOptions(path, { skipCovers: true }))
+  const artistNames = normalizeArtistNames(metadata.common.artists ?? [])
+  const albumArtistNames = normalizeArtistNames(metadata.common.albumartists ?? [])
+
+  db.run(
+    "UPDATE tracks SET artist_names_json = ?, album_artist_names_json = ? WHERE path = ? AND source_type = 'local'",
+    [
+      artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
+      albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
       path
     ]
   )
@@ -5036,6 +6105,52 @@ export async function backfillMissingFileCreatedAt(
         console.warn(`Failed to backfill file creation time for ${path}:`, err)
       }
       errors += 1
+    }
+  }, { signal })
+
+  throwIfScanCancelled(signal)
+  if (persist && updated > 0) {
+    await saveDatabase()
+  }
+
+  return { scanned: paths.length, updated, errors }
+}
+
+export async function backfillMissingArtistCreditMetadata(
+  onProgress?: BackfillProgressCallback,
+  options: ScanWriteOptions = {}
+): Promise<{ scanned: number; updated: number; errors: number }> {
+  const { persist = true, signal, onIssue } = options
+  const paths = getArtistCreditBackfillCandidatePaths()
+  if (paths.length === 0) {
+    onProgress?.(0, 0, '')
+    return { scanned: 0, updated: 0, errors: 0 }
+  }
+
+  let updated = 0
+  let errors = 0
+  let processed = 0
+  const workerCount = resolveBackfillWorkerCount(paths.length)
+  onProgress?.(0, paths.length, '')
+
+  await runWithConcurrency(paths, workerCount, async (path) => {
+    try {
+      throwIfScanCancelled(signal)
+      await backfillTrackArtistCreditMetadata(path)
+      updated += 1
+    } catch (err) {
+      if (isLibraryScanCancelledError(err)) {
+        throw err
+      }
+      const issue = createLibraryScanIssue('backfill', path, err)
+      onIssue?.(issue)
+      if (issue.code !== 'ENOENT' && issue.code !== 'ENOTDIR') {
+        console.warn(`Failed to backfill artist credit metadata for ${path}:`, err)
+      }
+      errors += 1
+    } finally {
+      processed += 1
+      onProgress?.(processed, paths.length, path)
     }
   }, { signal })
 
@@ -5202,6 +6317,9 @@ export function getArtworkPath(hash: string): string {
   if (hash.startsWith(PLAYLIST_COVER_HASH_PREFIX)) {
     return join(playlistCoverDir, hash.slice(PLAYLIST_COVER_HASH_PREFIX.length))
   }
+  if (hash.startsWith(ARTIST_IMAGE_HASH_PREFIX)) {
+    return join(artistImageDir, hash.slice(ARTIST_IMAGE_HASH_PREFIX.length))
+  }
 
   // New format: hash includes extension (e.g., "abc123.png")
   // Old format: hash is just the md5, file saved as .jpg
@@ -5215,9 +6333,7 @@ export function getArtworkPath(hash: string): string {
 // Get track count
 export function getTrackCount(): number {
   if (!db) return 0
-  const result = db.exec('SELECT COUNT(*) as count FROM tracks')
-  if (result.length === 0) return 0
-  return result[0].values[0][0] as number
+  return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
 }
 
 function resolveEditableValuesForSave(
@@ -5270,18 +6386,23 @@ function buildFfmpegMetadataArgs(values: {
   year: number | null
   trackNumber: number | null
   discNumber: number | null
-}): string[] {
-  const args: string[] = [
-    '-metadata', `title=${values.title}`,
-    '-metadata', `artist=${values.artist}`,
-    '-metadata', `album=${values.album}`,
-    '-metadata', `album_artist=${values.albumArtist ?? ''}`,
-    '-metadata', `genre=${values.genre ?? ''}`,
-    '-metadata', `date=${values.year !== null ? String(values.year) : ''}`,
-    '-metadata', `year=${values.year !== null ? String(values.year) : ''}`,
-    '-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`,
-    '-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`
-  ]
+}, changedFields: MetadataEditChanges): string[] {
+  const args: string[] = []
+  if (changedFields.title !== undefined) args.push('-metadata', `title=${values.title}`)
+  if (changedFields.artist !== undefined) args.push('-metadata', `artist=${values.artist}`)
+  if (changedFields.album !== undefined) args.push('-metadata', `album=${values.album}`)
+  if (changedFields.albumArtist !== undefined) args.push('-metadata', `album_artist=${values.albumArtist ?? ''}`)
+  if (changedFields.genre !== undefined) args.push('-metadata', `genre=${values.genre ?? ''}`)
+  if (changedFields.year !== undefined) {
+    const yearValue = values.year !== null ? String(values.year) : ''
+    args.push('-metadata', `date=${yearValue}`, '-metadata', `year=${yearValue}`)
+  }
+  if (changedFields.trackNumber !== undefined) {
+    args.push('-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`)
+  }
+  if (changedFields.discNumber !== undefined) {
+    args.push('-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`)
+  }
   return args
 }
 
@@ -5315,6 +6436,7 @@ async function writeTrackMetadataToFile(
     trackNumber: number | null
     discNumber: number | null
   },
+  changedFields: MetadataEditChanges,
   artworkChange: ResolvedMetadataArtworkChange
 ): Promise<void> {
   const ffmpegPath = await resolveFfmpegBinaryPath()
@@ -5347,7 +6469,7 @@ async function writeTrackMetadataToFile(
     }
 
     ffmpegArgs.push(
-      ...buildFfmpegMetadataArgs(values),
+      ...buildFfmpegMetadataArgs(values, changedFields),
       outputPath
     )
 
@@ -5371,10 +6493,10 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, album=?, album_artist=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
-    metadata.title, metadata.artist, metadata.album, metadata.albumArtist,
+    metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
@@ -5409,9 +6531,9 @@ function normalizeMetadataEditTrackPaths(trackPaths: string[]): string[] {
 
 export function getMetadataOverridePaths(): string[] {
   if (!db) return []
-  const result = db.exec('SELECT track_path FROM track_metadata_overrides ORDER BY track_path COLLATE NOCASE')
-  if (result.length === 0) return []
-  return result[0].values.map((row) => String(row[0]))
+  return db.all<{ track_path?: unknown }>('SELECT track_path FROM track_metadata_overrides ORDER BY track_path COLLATE NOCASE')
+    .map((row) => String(row.track_path ?? ''))
+    .filter((trackPath) => trackPath.length > 0)
 }
 
 export async function clearMetadataOverrides(trackPaths: string[]): Promise<{ cleared: number }> {
@@ -5420,9 +6542,7 @@ export async function clearMetadataOverrides(trackPaths: string[]): Promise<{ cl
   if (normalizedPaths.length === 0) return { cleared: 0 }
 
   const placeholders = normalizedPaths.map(() => '?').join(', ')
-  db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, normalizedPaths)
-  const changesResult = db.exec('SELECT changes() as count')
-  const cleared = changesResult.length > 0 ? Number(changesResult[0].values[0][0] ?? 0) : 0
+  const cleared = db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, normalizedPaths).changes
   await saveDatabase()
   return { cleared: Number.isFinite(cleared) ? cleared : 0 }
 }
@@ -5467,7 +6587,7 @@ export async function saveMetadataEdits(
         upsertTrackMetadataOverride(trackPath, row)
       } else {
         const resolvedValues = resolveEditableValuesForSave(snapshot, normalizedChanges)
-        await writeTrackMetadataToFile(trackPath, resolvedValues, artworkChange)
+        await writeTrackMetadataToFile(trackPath, resolvedValues, normalizedChanges, artworkChange)
         await updateTrackRowFromFileMetadata(trackPath)
         db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
       }
@@ -5511,10 +6631,11 @@ export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, 
   const result: Record<string, TrackOverrideSnapshot | null> = {}
 
   for (const trackPath of trackPaths) {
-    const stmt = db.prepare('SELECT title, artist, album, album_artist, genre, year, track_number, disc_number, artwork_hash, artwork_cleared FROM track_metadata_overrides WHERE track_path = ?')
-    stmt.bind([trackPath])
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as Record<string, unknown>
+    const row = db.get<Record<string, unknown>>(
+      'SELECT title, artist, album, album_artist, genre, year, track_number, disc_number, artwork_hash, artwork_cleared FROM track_metadata_overrides WHERE track_path = ?',
+      [trackPath]
+    )
+    if (row) {
       result[trackPath] = {
         title: row.title as string | null,
         artist: row.artist as string | null,
@@ -5530,7 +6651,6 @@ export function getTrackOverrideSnapshots(trackPaths: string[]): Record<string, 
     } else {
       result[trackPath] = null
     }
-    stmt.free()
   }
 
   return result
@@ -5588,9 +6708,9 @@ export function getFavorites(): DbTrack[] {
 
 export function getFavoritePaths(): string[] {
   if (!db) return []
-  const result = db.exec('SELECT track_path FROM favorites')
-  if (result.length === 0) return []
-  return result[0].values.map((row: unknown[]) => row[0] as string)
+  return db.all<{ track_path?: unknown }>('SELECT track_path FROM favorites')
+    .map((row) => (typeof row.track_path === 'string' ? row.track_path : null))
+    .filter((trackPath): trackPath is string => trackPath !== null)
 }
 
 export async function addFavorite(trackPath: string): Promise<void> {
@@ -5617,6 +6737,12 @@ export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   `)
 }
 
+export async function markTrackLatestSyncSeen(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath])
+  await saveDatabase()
+}
+
 export async function addRecentlyPlayed(trackPath: string): Promise<void> {
   if (!db) return
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, Date.now()])
@@ -5633,7 +6759,7 @@ export async function addRecentlyPlayed(trackPath: string): Promise<void> {
 
 export function getPlaylists(): Playlist[] {
   if (!db) return []
-  const result = db.exec(`
+  return db.all<Playlist>(`
     SELECT
       p.id,
       p.name,
@@ -5644,7 +6770,7 @@ export function getPlaylists(): Playlist[] {
       (
         SELECT t.artwork_hash
         FROM playlist_tracks ptc
-        LEFT JOIN tracks t ON t.path = ptc.track_path
+        INNER JOIN tracks t ON t.path = ptc.track_path
         WHERE ptc.playlist_id = p.id
         ORDER BY ptc.position ASC
         LIMIT 1
@@ -5654,29 +6780,33 @@ export function getPlaylists(): Playlist[] {
         FROM playlist_tracks pt
         INNER JOIN tracks t ON t.path = pt.track_path
         WHERE pt.playlist_id = p.id
-      ) as track_count
+      ) as track_count,
+      (
+        SELECT COUNT(*)
+        FROM playlist_tracks ptm
+        LEFT JOIN tracks t ON t.path = ptm.track_path
+        WHERE ptm.playlist_id = p.id
+          AND t.path IS NULL
+      ) as missing_track_count
     FROM playlists p
     ORDER BY
       CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
       p.last_played_at DESC,
       p.updated_at DESC
   `)
-  if (result.length === 0) return []
-  return rowsToObjects<Playlist>(result[0].columns, result[0].values)
 }
 
 export async function createPlaylist(name: string): Promise<Playlist> {
   if (!db) throw new Error('Database not initialized')
   const now = Date.now()
-  db.run('INSERT INTO playlists (name, created_at, updated_at, last_played_at, custom_cover_hash) VALUES (?, ?, ?, ?, ?)', [
+  const insertResult = db.run('INSERT INTO playlists (name, created_at, updated_at, last_played_at, custom_cover_hash) VALUES (?, ?, ?, ?, ?)', [
     name,
     now,
     now,
     null,
     null
   ])
-  const result = db.exec('SELECT last_insert_rowid() as id')
-  const id = result[0].values[0][0] as number
+  const id = Number(insertResult.lastInsertRowid)
   await saveDatabase()
   return {
     id,
@@ -5686,7 +6816,8 @@ export async function createPlaylist(name: string): Promise<Playlist> {
     last_played_at: null,
     custom_cover_hash: null,
     auto_cover_hash: null,
-    track_count: 0
+    track_count: 0,
+    missing_track_count: 0
   }
 }
 
@@ -5720,64 +6851,130 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
   `)
 }
 
-export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
-  if (!db || trackPaths.length === 0) return
+type PlaylistTrackEntryRow = Partial<DbTrackRow> & {
+  playlist_track_id?: unknown
+  playlist_track_path?: unknown
+  playlist_position?: unknown
+  playlist_added_at?: unknown
+  fallback_title?: unknown
+  fallback_artist?: unknown
+  fallback_album?: unknown
+}
 
-  const uniqueTrackPaths: string[] = []
-  const seenTrackPaths = new Set<string>()
-  for (const trackPath of trackPaths) {
-    if (typeof trackPath !== 'string' || trackPath.length === 0 || seenTrackPaths.has(trackPath)) continue
-    seenTrackPaths.add(trackPath)
-    uniqueTrackPaths.push(trackPath)
-  }
-  if (uniqueTrackPaths.length === 0) return
+export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[] {
+  if (!db) return []
+  if (!Number.isInteger(playlistId) || playlistId <= 0) return []
 
-  const existingStmt = db.prepare('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?')
-  const existingTrackPaths = new Set<string>()
-  try {
-    existingStmt.bind([playlistId])
-    while (existingStmt.step()) {
-      const row = existingStmt.getAsObject() as { track_path?: unknown }
-      if (typeof row.track_path === 'string' && row.track_path.length > 0) {
-        existingTrackPaths.add(row.track_path)
-      }
+  const rows = db.all<PlaylistTrackEntryRow>(`
+    SELECT
+      pt.id AS playlist_track_id,
+      pt.track_path AS playlist_track_path,
+      pt.position AS playlist_position,
+      pt.added_at AS playlist_added_at,
+      pt.fallback_title AS fallback_title,
+      pt.fallback_artist AS fallback_artist,
+      pt.fallback_album AS fallback_album,
+      ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    FROM playlist_tracks pt
+    LEFT JOIN tracks t ON t.path = pt.track_path
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE pt.playlist_id = ?
+    ORDER BY pt.position ASC, pt.id ASC
+  `, [playlistId])
+
+  const availableRows: DbTrackRow[] = []
+  for (const row of rows) {
+    if (typeof row.path === 'string' && Number(row.id) > 0) {
+      availableRows.push(row as DbTrackRow)
     }
-  } finally {
-    existingStmt.free()
+  }
+  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows).map((track) => [track.path, track]))
+
+  return rows.map((row, index) => {
+    const entryId = Number(row.playlist_track_id)
+    const position = Number(row.playlist_position)
+    const addedAt = Number(row.playlist_added_at)
+    const trackPath = typeof row.playlist_track_path === 'string' ? row.playlist_track_path : ''
+    if (!Number.isInteger(entryId) || entryId <= 0 || !trackPath) {
+      throw new Error('Invalid playlist track rows for playlist entry lookup.')
+    }
+
+    const track = tracksByPath.get(trackPath) ?? null
+    return {
+      id: entryId,
+      track_path: trackPath,
+      position: Number.isFinite(position) ? position : index,
+      added_at: Number.isFinite(addedAt) ? addedAt : 0,
+      missing: track === null,
+      title: typeof row.fallback_title === 'string' && row.fallback_title.trim().length > 0 ? row.fallback_title : null,
+      artist: typeof row.fallback_artist === 'string' && row.fallback_artist.trim().length > 0 ? row.fallback_artist : null,
+      album: typeof row.fallback_album === 'string' && row.fallback_album.trim().length > 0 ? row.fallback_album : null,
+      track
+    }
+  })
+}
+
+interface PlaylistEntryInsertInput {
+  trackPath: string
+  fallbackTitle?: string | null
+  fallbackArtist?: string | null
+  fallbackAlbum?: string | null
+}
+
+async function addPlaylistEntries(playlistId: number, entries: PlaylistEntryInsertInput[]): Promise<void> {
+  if (!db || entries.length === 0) return
+
+  const uniqueEntries: PlaylistEntryInsertInput[] = []
+  const seenTrackPaths = new Set<string>()
+  for (const entry of entries) {
+    const trackPath = typeof entry.trackPath === 'string' ? entry.trackPath.trim() : ''
+    if (!trackPath || seenTrackPaths.has(trackPath)) continue
+    seenTrackPaths.add(trackPath)
+    uniqueEntries.push({
+      trackPath,
+      fallbackTitle: normalizeOptionalTextField(entry.fallbackTitle ?? null),
+      fallbackArtist: normalizeOptionalTextField(entry.fallbackArtist ?? null),
+      fallbackAlbum: normalizeOptionalTextField(entry.fallbackAlbum ?? null)
+    })
+  }
+  if (uniqueEntries.length === 0) return
+
+  const existingTrackPaths = new Set<string>()
+  for (const row of db.iterate<{ track_path?: unknown }>('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?', [playlistId])) {
+    if (typeof row.track_path === 'string' && row.track_path.length > 0) {
+      existingTrackPaths.add(row.track_path)
+    }
   }
 
-  const pendingTrackPaths = uniqueTrackPaths.filter((trackPath) => !existingTrackPaths.has(trackPath))
-  if (pendingTrackPaths.length === 0) return
+  const pendingEntries = uniqueEntries.filter((entry) => !existingTrackPaths.has(entry.trackPath))
+  if (pendingEntries.length === 0) return
 
-  // Get current max position
-  const maxStmt = db.prepare('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?')
-  maxStmt.bind([playlistId])
-  const maxPosRow = maxStmt.step() ? (maxStmt.getAsObject() as { max_pos?: unknown }) : null
+  const maxPosRow = db.get<{ max_pos?: unknown }>('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
   const maxPos = typeof maxPosRow?.max_pos === 'number' ? maxPosRow.max_pos : -1
-  maxStmt.free()
   let position = maxPos + 1
   const now = Date.now()
-  for (const trackPath of pendingTrackPaths) {
+  for (const entry of pendingEntries) {
     db.run(
-      'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at) VALUES (?, ?, ?, ?)',
-      [playlistId, trackPath, position++, now]
+      'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [playlistId, entry.trackPath, position++, now, entry.fallbackTitle ?? null, entry.fallbackArtist ?? null, entry.fallbackAlbum ?? null]
     )
   }
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
   await saveDatabase()
 }
 
+export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
+  await addPlaylistEntries(playlistId, trackPaths.map((trackPath) => ({ trackPath })))
+}
+
 export async function removeFromPlaylist(playlistId: number, trackPath: string): Promise<void> {
   if (!db) return
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_path = ?', [playlistId, trackPath])
   // Reorder positions
-  const idStmt = db.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC')
-  idStmt.bind([playlistId])
   const idRows: Array<{ id?: unknown }> = []
-  while (idStmt.step()) {
-    idRows.push(idStmt.getAsObject() as { id?: unknown })
+  for (const row of db.iterate<{ id?: unknown }>('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC', [playlistId])) {
+    idRows.push(row)
   }
-  idStmt.free()
   idRows.forEach((row, i) => {
     db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [i, row.id])
   })
@@ -5790,22 +6987,15 @@ export async function reorderPlaylistTracks(playlistId: number, orderedTrackPath
   if (!Number.isInteger(playlistId) || playlistId <= 0) return
   if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
 
-  const rowStmt = db.prepare('SELECT id, track_path FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC')
   const existingRows: Array<{ id: number; track_path: string }> = []
 
-  try {
-    rowStmt.bind([playlistId])
-    while (rowStmt.step()) {
-      const row = rowStmt.getAsObject() as { id?: unknown; track_path?: unknown }
-      const rowId = Number(row.id)
-      const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
-      if (!Number.isFinite(rowId) || rowId <= 0 || !trackPath) {
-        throw new Error('Invalid playlist track rows for reorder operation.')
-      }
-      existingRows.push({ id: rowId, track_path: trackPath })
+  for (const row of db.iterate<{ id?: unknown; track_path?: unknown }>('SELECT id, track_path FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC', [playlistId])) {
+    const rowId = Number(row.id)
+    const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
+    if (!Number.isFinite(rowId) || rowId <= 0 || !trackPath) {
+      throw new Error('Invalid playlist track rows for reorder operation.')
     }
-  } finally {
-    rowStmt.free()
+    existingRows.push({ id: rowId, track_path: trackPath })
   }
 
   if (existingRows.length === 0) {
@@ -5904,20 +7094,60 @@ export async function clearPlaylistCustomCover(playlistId: number): Promise<void
 
 export function getPlaylistsContainingTrack(trackPath: string): number[] {
   if (!db) return []
-  const stmt = db.prepare('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id')
-  stmt.bind([trackPath])
-
   const ids: number[] = []
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as { playlist_id?: unknown }
+  for (const row of db.iterate<{ playlist_id?: unknown }>('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id', [trackPath])) {
     const playlistId = Number(row.playlist_id)
     if (Number.isFinite(playlistId) && playlistId > 0) {
       ids.push(playlistId)
     }
   }
-
-  stmt.free()
   return ids
+}
+
+export interface PlaylistTrackMembershipSummary {
+  playlistId: number
+  matchedTrackCount: number
+}
+
+export function getPlaylistsContainingTracks(trackPaths: string[]): PlaylistTrackMembershipSummary[] {
+  if (!db || !Array.isArray(trackPaths) || trackPaths.length === 0) return []
+
+  const uniqueTrackPaths: string[] = []
+  const seen = new Set<string>()
+  for (const trackPath of trackPaths) {
+    if (typeof trackPath !== 'string') continue
+    const normalizedPath = trackPath.trim()
+    if (!normalizedPath || seen.has(normalizedPath)) continue
+    seen.add(normalizedPath)
+    uniqueTrackPaths.push(normalizedPath)
+  }
+  if (uniqueTrackPaths.length === 0) return []
+
+  const summaryByPlaylistId = new Map<number, number>()
+  for (let offset = 0; offset < uniqueTrackPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = uniqueTrackPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(',')
+    const rows = db.all<{ playlist_id?: unknown; matched_track_count?: unknown }>(`
+      SELECT playlist_id, COUNT(DISTINCT track_path) AS matched_track_count
+      FROM playlist_tracks
+      WHERE track_path IN (${placeholders})
+      GROUP BY playlist_id
+      ORDER BY playlist_id
+    `, chunk)
+
+    for (const row of rows) {
+      const playlistId = Number(row.playlist_id)
+      const matchedTrackCount = Number(row.matched_track_count)
+      if (!Number.isInteger(playlistId) || playlistId <= 0 || !Number.isFinite(matchedTrackCount) || matchedTrackCount <= 0) {
+        continue
+      }
+      summaryByPlaylistId.set(playlistId, (summaryByPlaylistId.get(playlistId) ?? 0) + matchedTrackCount)
+    }
+  }
+
+  return Array.from(summaryByPlaylistId.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([playlistId, matchedTrackCount]) => ({ playlistId, matchedTrackCount }))
 }
 
 interface PlaylistImportLookupIndex {
@@ -5938,7 +7168,9 @@ type MetadataMatchResult =
   | { kind: 'ambiguous' }
   | { kind: 'none' }
 
-function buildPlaylistImportLookupIndex(tracks: DbTrack[]): PlaylistImportLookupIndex {
+function buildPlaylistImportLookupIndex(
+  tracks: Array<Pick<DbTrackRow, 'path' | 'title' | 'artist' | 'artist_names_json' | 'album' | 'album_artist_names_json'>>
+): PlaylistImportLookupIndex {
   const index: PlaylistImportLookupIndex = {
     exactPath: new Map(),
     caseInsensitivePath: new Map(),
@@ -5955,17 +7187,29 @@ function buildPlaylistImportLookupIndex(tracks: DbTrack[]): PlaylistImportLookup
     }
 
     const titleKey = normalizeKey(track.title)
-    const artistKey = normalizeKey(track.artist)
+    const artistKeys = new Set<string>()
+    const displayArtistKey = normalizeKey(track.artist)
+    if (displayArtistKey) artistKeys.add(displayArtistKey)
+    for (const artistName of getParsedTrackArtistNames(track)) {
+      const key = normalizeKey(artistName)
+      if (key) artistKeys.add(key)
+    }
+    for (const artistName of getParsedAlbumArtistNames(track)) {
+      const key = normalizeKey(artistName)
+      if (key) artistKeys.add(key)
+    }
     const albumKey = normalizeKey(track.album)
 
     if (titleKey) {
       upsertUniqueLookupEntry(index.metadataByTitle, titleKey, track.path)
     }
-    if (titleKey && artistKey) {
-      upsertUniqueLookupEntry(index.metadataByTitleArtist, `${titleKey}\u0000${artistKey}`, track.path)
-    }
-    if (titleKey && artistKey && albumKey) {
-      upsertUniqueLookupEntry(index.metadataByTitleArtistAlbum, `${titleKey}\u0000${artistKey}\u0000${albumKey}`, track.path)
+    for (const artistKey of artistKeys) {
+      if (titleKey && artistKey) {
+        upsertUniqueLookupEntry(index.metadataByTitleArtist, `${titleKey}\u0000${artistKey}`, track.path)
+      }
+      if (titleKey && artistKey && albumKey) {
+        upsertUniqueLookupEntry(index.metadataByTitleArtistAlbum, `${titleKey}\u0000${artistKey}\u0000${albumKey}`, track.path)
+      }
     }
   }
 
@@ -6003,27 +7247,8 @@ function stripOuterQuotes(value: string): string {
   return value.slice(1, -1)
 }
 
-function resolveImportedPlaylistEntryPath(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
-  const trimmed = stripOuterQuotes(rawPath.trim())
-  if (!trimmed) return null
-
-  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
-  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
-  let candidatePath = trimmed
-
-  if (schemeMatch && !isWindowsAbsolutePath) {
-    const scheme = schemeMatch[1].toLocaleLowerCase()
-    if (scheme === 'file') {
-      try {
-        candidatePath = fileURLToPath(trimmed)
-      } catch {
-        return null
-      }
-    } else {
-      return null
-    }
-  }
-
+function resolveImportedPlaylistEntryPathCandidate(candidatePath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
+  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(candidatePath) || /^\\\\[^\\]/.test(candidatePath)
   let absolutePath = candidatePath
   if (isWindowsAbsolutePath && process.platform !== 'win32') {
     // Keep explicit Windows absolute paths as-is; these can still match on Windows,
@@ -6045,6 +7270,58 @@ function resolveImportedPlaylistEntryPath(rawPath: string, importFilePath: strin
     normalizedPath,
     caseInsensitivePath: normalizedPath.toLocaleLowerCase()
   }
+}
+
+function decodeUriEncodedPlaylistPath(candidatePath: string): string | null {
+  if (!candidatePath.includes('%')) return null
+
+  try {
+    const decodedPath = decodeURIComponent(candidatePath)
+    return decodedPath !== candidatePath ? decodedPath : null
+  } catch {
+    return null
+  }
+}
+
+function resolveImportedPlaylistEntryPaths(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath[] | null {
+  const trimmed = stripOuterQuotes(rawPath.trim())
+  if (!trimmed) return null
+
+  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
+  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
+  const candidatePaths: string[] = []
+
+  if (schemeMatch && !isWindowsAbsolutePath) {
+    const scheme = schemeMatch[1].toLocaleLowerCase()
+    if (scheme === 'file') {
+      try {
+        candidatePaths.push(fileURLToPath(trimmed))
+      } catch {
+        return null
+      }
+    } else {
+      return null
+    }
+  } else {
+    candidatePaths.push(trimmed)
+
+    // Some M3U exporters percent-encode plain local paths without a file:// scheme.
+    const decodedPath = decodeUriEncodedPlaylistPath(trimmed)
+    if (decodedPath) {
+      candidatePaths.push(decodedPath)
+    }
+  }
+
+  const resolvedPaths: ResolvedPlaylistImportPath[] = []
+  const seenNormalizedPaths = new Set<string>()
+  for (const candidatePath of candidatePaths) {
+    const resolvedPath = resolveImportedPlaylistEntryPathCandidate(candidatePath, importFilePath)
+    if (!resolvedPath || seenNormalizedPaths.has(resolvedPath.normalizedPath)) continue
+    seenNormalizedPaths.add(resolvedPath.normalizedPath)
+    resolvedPaths.push(resolvedPath)
+  }
+
+  return resolvedPaths.length > 0 ? resolvedPaths : null
 }
 
 function matchPlaylistEntryByMetadata(entry: ParsedPlaylistEntry, index: PlaylistImportLookupIndex): MetadataMatchResult {
@@ -6080,6 +7357,71 @@ function deriveImportedPlaylistName(filePath: string): string {
   return rawName.length > 0 ? rawName : 'Imported Playlist'
 }
 
+function normalizePreservedPlaylistImportEntryPath(rawPath: string): string | null {
+  const normalized = stripOuterQuotes(rawPath.trim())
+  return normalized.length > 0 ? normalized : null
+}
+
+function reconcileMissingPlaylistEntriesByMetadata(): number {
+  if (!db) return 0
+
+  const rows = db.all<{
+    id?: unknown
+    playlist_id?: unknown
+    fallback_title?: unknown
+    fallback_artist?: unknown
+    fallback_album?: unknown
+  }>(`
+    SELECT
+      pt.id,
+      pt.playlist_id,
+      pt.fallback_title,
+      pt.fallback_artist,
+      pt.fallback_album
+    FROM playlist_tracks pt
+    LEFT JOIN tracks t ON t.path = pt.track_path
+    WHERE t.path IS NULL
+      AND pt.fallback_title IS NOT NULL
+      AND TRIM(pt.fallback_title) <> ''
+    ORDER BY pt.playlist_id ASC, pt.position ASC, pt.id ASC
+  `)
+  if (rows.length === 0) return 0
+
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
+  let reconciled = 0
+
+  for (const row of rows) {
+    const rowId = Number(row.id)
+    const playlistId = Number(row.playlist_id)
+    if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0) {
+      continue
+    }
+
+    const metadataMatch = matchPlaylistEntryByMetadata({
+      title: typeof row.fallback_title === 'string' ? row.fallback_title : undefined,
+      artist: typeof row.fallback_artist === 'string' ? row.fallback_artist : undefined,
+      album: typeof row.fallback_album === 'string' ? row.fallback_album : undefined
+    }, lookup)
+    if (metadataMatch.kind !== 'matched') continue
+
+    const duplicateRow = db.get<{ id?: unknown }>(
+      'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? LIMIT 1',
+      [playlistId, metadataMatch.trackPath]
+    )
+    if (duplicateRow) continue
+
+    const result = db.run(
+      'UPDATE playlist_tracks SET track_path = ? WHERE id = ?',
+      [metadataMatch.trackPath, rowId]
+    )
+    if (result.changes > 0) {
+      reconciled += result.changes
+    }
+  }
+
+  return reconciled
+}
+
 export async function importPlaylistFromFile(filePath: string): Promise<PlaylistImportResult> {
   if (!db) throw new Error('Database not initialized')
 
@@ -6090,38 +7432,47 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
 
   const content = await readFile(sourceFilePath, 'utf-8')
   const parsed = parsePlaylistDocument(sourceFilePath, content)
-  const lookup = buildPlaylistImportLookupIndex(readAllTracksUnordered())
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
   const matchedTrackPaths: string[] = []
+  const playlistEntries: PlaylistEntryInsertInput[] = []
   const warnings = [...parsed.warnings]
 
   let matchedByPathCount = 0
   let matchedByMetadataCount = 0
+  let missingEntryCount = 0
   let unmatchedCount = 0
   let ambiguousMetadataCount = 0
   let unsupportedEntryCount = 0
 
   for (const entry of parsed.entries) {
     let matchedTrackPath: string | null = null
+    let missingTrackPath: string | null = null
+    let hasUnsupportedPath = false
 
     if (entry.path) {
-      const resolvedPath = resolveImportedPlaylistEntryPath(entry.path, sourceFilePath)
-      if (!resolvedPath) {
-        unsupportedEntryCount += 1
-        continue
-      }
+      const resolvedPaths = resolveImportedPlaylistEntryPaths(entry.path, sourceFilePath)
+      if (!resolvedPaths) {
+        hasUnsupportedPath = true
+        missingTrackPath = normalizePreservedPlaylistImportEntryPath(entry.path)
+      } else {
+        missingTrackPath = resolvedPaths[0]?.normalizedPath ?? null
+        for (const resolvedPath of resolvedPaths) {
+          matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
+            ?? null
 
-      matchedTrackPath = lookup.exactPath.get(resolvedPath.normalizedPath)
-        ?? null
+          if (!matchedTrackPath) {
+            const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
+            if (typeof caseInsensitiveMatch === 'string') {
+              matchedTrackPath = caseInsensitiveMatch
+            }
+          }
 
-      if (!matchedTrackPath) {
-        const caseInsensitiveMatch = lookup.caseInsensitivePath.get(resolvedPath.caseInsensitivePath)
-        if (typeof caseInsensitiveMatch === 'string') {
-          matchedTrackPath = caseInsensitiveMatch
+          if (matchedTrackPath) break
         }
-      }
 
-      if (matchedTrackPath) {
-        matchedByPathCount += 1
+        if (matchedTrackPath) {
+          matchedByPathCount += 1
+        }
       }
     }
 
@@ -6131,28 +7482,57 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
         matchedTrackPath = metadataMatch.trackPath
         matchedByMetadataCount += 1
       } else if (metadataMatch.kind === 'ambiguous') {
+        if (missingTrackPath) {
+          playlistEntries.push({
+            trackPath: missingTrackPath,
+            fallbackTitle: entry.title ?? null,
+            fallbackArtist: entry.artist ?? null,
+            fallbackAlbum: entry.album ?? null
+          })
+          missingEntryCount += 1
+          unmatchedCount += 1
+          continue
+        }
         ambiguousMetadataCount += 1
+        if (hasUnsupportedPath) {
+          unsupportedEntryCount += 1
+        }
         unmatchedCount += 1
         continue
       }
     }
 
     if (!matchedTrackPath) {
+      if (missingTrackPath) {
+        playlistEntries.push({
+          trackPath: missingTrackPath,
+          fallbackTitle: entry.title ?? null,
+          fallbackArtist: entry.artist ?? null,
+          fallbackAlbum: entry.album ?? null
+        })
+        missingEntryCount += 1
+        unmatchedCount += 1
+        continue
+      }
+      if (hasUnsupportedPath) {
+        unsupportedEntryCount += 1
+      }
       unmatchedCount += 1
       continue
     }
 
     matchedTrackPaths.push(matchedTrackPath)
+    playlistEntries.push({ trackPath: matchedTrackPath })
   }
 
   const importedCount = matchedTrackPaths.length
   let playlistId: number | null = null
   let playlistName: string | null = null
 
-  if (importedCount > 0) {
+  if (playlistEntries.length > 0) {
     playlistName = deriveImportedPlaylistName(sourceFilePath)
     const playlist = await createPlaylist(playlistName)
-    await addToPlaylist(playlist.id, matchedTrackPaths)
+    await addPlaylistEntries(playlist.id, playlistEntries)
     playlistId = playlist.id
   }
 
@@ -6162,7 +7542,10 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
   if (ambiguousMetadataCount > 0) {
     warnings.push(`${ambiguousMetadataCount} entries were skipped due to ambiguous metadata matches.`)
   }
-  const unmatchedNonAmbiguous = unmatchedCount - ambiguousMetadataCount
+  if (missingEntryCount > 0) {
+    warnings.push(`${missingEntryCount} unmatched entries were preserved as missing playlist tracks.`)
+  }
+  const unmatchedNonAmbiguous = unmatchedCount - ambiguousMetadataCount - missingEntryCount
   if (unmatchedNonAmbiguous > 0) {
     warnings.push(`${unmatchedNonAmbiguous} entries could not be matched to library tracks.`)
   }
@@ -6174,6 +7557,7 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
     playlistName,
     entriesTotal: parsed.entries.length,
     importedCount,
+    missingEntryCount,
     matchedByPathCount,
     matchedByMetadataCount,
     unmatchedCount,
@@ -6188,10 +7572,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   const { persist = true, signal, onIssue } = options
   if (!db) return 0
 
-  const result = db.exec("SELECT id, path FROM tracks WHERE source_type = 'local'")
-  if (result.length === 0) return 0
-
-  const tracks = rowsToObjects<{ id: number; path: string }>(result[0].columns, result[0].values)
+  const tracks = db.all<{ id: number; path: string }>("SELECT id, path FROM tracks WHERE source_type = 'local'")
   let removed = 0
 
   for (const track of tracks) {

@@ -2,9 +2,11 @@ import { audioEngine } from '../AudioEngine'
 import {
   oscilloscope as nativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
-  isNativeAvailable
-} from '../native'
+  isNativeAvailable,
+  warnNativeUnavailableOnce
+} from '../native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
+import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
@@ -114,7 +116,7 @@ export class Oscilloscope {
     this.options = { ...defaultOptions, ...optionOverrides }
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => audioEngine.playbackState === 'playing',
+      shouldRun: () => this.nativeInitialized && isPlaybackAnalyzerActive(audioEngine.playbackState),
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
@@ -146,7 +148,7 @@ export class Oscilloscope {
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
     } else if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP not available!')
+      warnNativeUnavailableOnce('Oscilloscope')
     }
   }
 
@@ -204,23 +206,41 @@ export class Oscilloscope {
 
     // Native C++ is being fed continuously by AudioWorklet via AudioEngine
     if (!isNativeAvailable()) {
-      console.error('Oscilloscope: Native DSP required')
+      warnNativeUnavailableOnce('Oscilloscope')
       return
     }
 
     // Check if sample rate needs updating (AudioContext may have initialized after us)
     this.updateSampleRateIfNeeded()
 
-    // Flush ALL pending samples to native C++ (prevents sample loss)
-    const pendingSamples = audioEngine.flushPendingOscilloscopeSamples()
+    const playbackState = audioEngine.playbackState
+    const isPlaying = playbackState === 'playing'
+    const isActive = isPlaybackAnalyzerActive(playbackState)
+
+    if (!isActive) {
+      audioEngine.flushPendingOscilloscopeSamples()
+      return
+    }
+
+    // Flush ALL pending samples to native C++ while playing. While paused, discard
+    // stale queued audio and advance the scope with zeros so it renders silence.
+    const pendingSamples = isPlaying
+      ? audioEngine.flushPendingOscilloscopeSamples()
+      : (() => {
+          audioEngine.flushPendingOscilloscopeSamples()
+          const sampleRate = audioEngine.getSampleRate()
+          return [createMonoSilenceChunk(sampleRate, getNormalizedOscilloscopeDisplaySamples(sampleRate))]
+        })()
     for (const chunk of pendingSamples) {
       nativeOscilloscope.pushSamples(chunk)
-      this.samplesReceived += chunk.length
+      if (isPlaying) {
+        this.samplesReceived += chunk.length
+      }
     }
 
     // Skip pitch-locked processing during warmup period.
     // Bypass mode (pitchLock=false) should render immediately using a moving window.
-    if (options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
+    if (isPlaying && options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
       // During warmup, just show a static waveform or grid
       return
     }
@@ -400,6 +420,13 @@ export class Oscilloscope {
     if (isNativeAvailable()) {
       nativeOscilloscope.reset()
     }
+
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+    this.staticLayerCanvas.width = 0
+    this.staticLayerCanvas.height = 0
+    this.canvas.width = 0
+    this.canvas.height = 0
+    this.staticLayerKey = ''
 
     // Reset warmup state
     this.samplesReceived = 0

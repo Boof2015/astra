@@ -1,12 +1,15 @@
 import { useCallback, useRef, useMemo } from 'react'
 import { EQBand } from '../../types/audio'
+import {
+  computeCombinedEQMagnitude,
+  isPassEQBandType,
+} from '../../utils/eq'
 
 interface EQFrequencyResponseProps {
   bands: EQBand[]
-  preamp: number
   enabled: boolean
   selectedBandIndex: number | null
-  onBandDrag: (index: number, freq: number, gain: number) => void
+  onBandDrag: (index: number, updates: Partial<EQBand>) => void
   onBandSelect: (index: number) => void
   sampleRate: number
   width: number
@@ -48,71 +51,8 @@ function formatFreq(hz: number): string {
   return `${Math.round(hz)}`
 }
 
-/**
- * Compute the magnitude response (in dB) of a single biquad filter at a test frequency.
- * Uses standard audio EQ cookbook formulas.
- */
-function computeFilterMagnitude(band: EQBand, testFreq: number, sampleRate: number): number {
-  const w0 = (2 * Math.PI * band.frequency) / sampleRate
-  const w = (2 * Math.PI * testFreq) / sampleRate
-  const A = Math.pow(10, band.gain / 40)
-  const sinW0 = Math.sin(w0)
-  const cosW0 = Math.cos(w0)
-  const alpha = sinW0 / (2 * band.Q)
-
-  let b0: number, b1: number, b2: number, a0: number, a1: number, a2: number
-
-  switch (band.type) {
-    case 'peaking':
-      b0 = 1 + alpha * A
-      b1 = -2 * cosW0
-      b2 = 1 - alpha * A
-      a0 = 1 + alpha / A
-      a1 = -2 * cosW0
-      a2 = 1 - alpha / A
-      break
-    case 'lowshelf': {
-      const sqrtA = Math.sqrt(A)
-      b0 = A * ((A + 1) - (A - 1) * cosW0 + 2 * sqrtA * alpha)
-      b1 = 2 * A * ((A - 1) - (A + 1) * cosW0)
-      b2 = A * ((A + 1) - (A - 1) * cosW0 - 2 * sqrtA * alpha)
-      a0 = (A + 1) + (A - 1) * cosW0 + 2 * sqrtA * alpha
-      a1 = -2 * ((A - 1) + (A + 1) * cosW0)
-      a2 = (A + 1) + (A - 1) * cosW0 - 2 * sqrtA * alpha
-      break
-    }
-    case 'highshelf': {
-      const sqrtA = Math.sqrt(A)
-      b0 = A * ((A + 1) + (A - 1) * cosW0 + 2 * sqrtA * alpha)
-      b1 = -2 * A * ((A - 1) + (A + 1) * cosW0)
-      b2 = A * ((A + 1) + (A - 1) * cosW0 - 2 * sqrtA * alpha)
-      a0 = (A + 1) - (A - 1) * cosW0 + 2 * sqrtA * alpha
-      a1 = 2 * ((A - 1) - (A + 1) * cosW0)
-      a2 = (A + 1) - (A - 1) * cosW0 - 2 * sqrtA * alpha
-      break
-    }
-  }
-
-  // Evaluate H(e^jw) magnitude
-  const cosW = Math.cos(w)
-  const sinW = Math.sin(w)
-  const cos2W = Math.cos(2 * w)
-  const sin2W = Math.sin(2 * w)
-
-  const numReal = b0 / a0 + (b1 / a0) * cosW + (b2 / a0) * cos2W
-  const numImag = -(b1 / a0) * sinW - (b2 / a0) * sin2W
-  const denReal = 1 + (a1 / a0) * cosW + (a2 / a0) * cos2W
-  const denImag = -(a1 / a0) * sinW - (a2 / a0) * sin2W
-
-  const numMag = Math.sqrt(numReal * numReal + numImag * numImag)
-  const denMag = Math.sqrt(denReal * denReal + denImag * denImag)
-
-  return 20 * Math.log10(numMag / (denMag + 1e-20))
-}
-
 export default function EQFrequencyResponse({
   bands,
-  preamp,
   enabled,
   selectedBandIndex,
   onBandDrag,
@@ -135,13 +75,7 @@ export default function EQFrequencyResponse({
     for (let i = 0; i <= numPoints; i++) {
       const x = (i / numPoints) * width
       const freq = xToFreq(x, width)
-      let totalDb = 0
-
-      if (enabled) {
-        for (const band of bands) {
-          totalDb += computeFilterMagnitude(band, freq, sampleRate)
-        }
-      }
+      let totalDb = enabled ? computeCombinedEQMagnitude(bands, freq, sampleRate) : 0
 
       // Clamp display
       totalDb = Math.max(MIN_DB - 2, Math.min(MAX_DB + 2, totalDb))
@@ -152,7 +86,7 @@ export default function EQFrequencyResponse({
     const curvePath = `M${points.join(' L')}`
     const fillPath = `M${(0).toFixed(1)},${zeroY.toFixed(1)} L${points.join(' L')} L${width.toFixed(1)},${zeroY.toFixed(1)} Z`
     return { curvePath, fillPath }
-  }, [bands, preamp, enabled, sampleRate, width, height])
+  }, [bands, enabled, sampleRate, width, height])
 
   const getSVGCoords = useCallback(
     (e: React.PointerEvent): { x: number; y: number } => {
@@ -171,7 +105,7 @@ export default function EQFrequencyResponse({
     (e: React.PointerEvent, index: number) => {
       e.preventDefault()
       e.stopPropagation()
-      ;(e.target as SVGElement).setPointerCapture(e.pointerId)
+      ;(e.currentTarget as SVGElement).setPointerCapture(e.pointerId)
       draggingRef.current = index
       onBandSelect(index)
     },
@@ -181,12 +115,22 @@ export default function EQFrequencyResponse({
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (draggingRef.current === null) return
+      const band = bands[draggingRef.current]
+      if (!band) return
       const { x, y } = getSVGCoords(e)
       const freq = Math.max(MIN_FREQ, Math.min(MAX_FREQ, xToFreq(x, width)))
+      if (isPassEQBandType(band.type)) {
+        onBandDrag(draggingRef.current, { frequency: Math.round(freq) })
+        return
+      }
+
       const gain = Math.max(MIN_DB, Math.min(MAX_DB, yToDb(y, height)))
-      onBandDrag(draggingRef.current, Math.round(freq), Math.round(gain * 10) / 10)
+      onBandDrag(draggingRef.current, {
+        frequency: Math.round(freq),
+        gain: Math.round(gain * 10) / 10,
+      })
     },
-    [getSVGCoords, onBandDrag, width, height]
+    [bands, getSVGCoords, onBandDrag, width, height]
   )
 
   const handlePointerUp = useCallback(() => {
@@ -243,17 +187,42 @@ export default function EQFrequencyResponse({
       {/* Band control points */}
       {enabled &&
         bands.map((band, i) => {
+          const passFilter = isPassEQBandType(band.type)
           const cx = freqToX(band.frequency, width)
-          const cy = dbToY(band.gain, height)
+          const pointDb = passFilter
+            ? computeCombinedEQMagnitude(bands, band.frequency, sampleRate)
+            : band.gain
+          const cy = dbToY(Math.max(MIN_DB - 2, Math.min(MAX_DB + 2, pointDb)), height)
           return (
-            <circle
+            <g
               key={band.id}
-              cx={cx}
-              cy={cy}
-              className={`eq-band-point ${selectedBandIndex === i ? 'selected' : ''}`}
+              className={`eq-band-point ${selectedBandIndex === i ? 'selected' : ''} ${passFilter ? 'pass-filter' : ''}`}
               onPointerDown={(e) => handlePointPointerDown(e, i)}
               style={{ touchAction: 'none' }}
-            />
+            >
+              {passFilter && (
+                <line
+                  className="eq-band-pass-guide"
+                  x1={cx}
+                  y1={0}
+                  x2={cx}
+                  y2={height}
+                />
+              )}
+              {passFilter ? (
+                <polygon
+                  className="eq-band-point-shape"
+                  points={`${cx},${cy - 8} ${cx + 8},${cy} ${cx},${cy + 8} ${cx - 8},${cy}`}
+                />
+              ) : (
+                <circle
+                  className="eq-band-point-shape"
+                  cx={cx}
+                  cy={cy}
+                  r={8}
+                />
+              )}
+            </g>
           )
         })}
     </svg>

@@ -50,8 +50,10 @@ type TrackRecord = {
   path: string
   title: string
   artist: string
+  artist_names?: string[]
   album: string
   album_artist: string | null
+  album_artist_names?: string[]
   genre: string | null
   year: number | null
   track_number: number | null
@@ -76,6 +78,7 @@ interface MetadataTrackRowSharedProps {
 
 const METADATA_ROW_HEIGHT_FALLBACK_PX = 38
 const METADATA_LIST_OVERSCAN_COUNT = 8
+const METADATA_TRACK_PAGE_LIMIT = 500
 
 function resolveMetadataRowHeightPx(element: HTMLElement | null): number {
   if (!element) return METADATA_ROW_HEIGHT_FALLBACK_PX
@@ -402,9 +405,35 @@ export default function MetadataView() {
   const reloadEditorTracks = useCallback(async (): Promise<TrackRecord[]> => {
     setIsTracksLoading(true)
     try {
-      const allTracks = await window.electronAPI.library.getTracks()
-      const nextTracks = (allTracks as TrackRecord[]).filter((track) => (track.source_type ?? 'local') === 'local')
-      setExcludedRemoteTrackCount(Math.max(0, (allTracks as TrackRecord[]).length - nextTracks.length))
+      const nextTracks: TrackRecord[] = []
+      let excludedRemoteTrackCount = 0
+      let offset = 0
+
+      while (true) {
+        const page = await window.electronAPI.library.getTracksPage({
+          offset,
+          limit: METADATA_TRACK_PAGE_LIMIT
+        })
+
+        for (const track of page.tracks) {
+          if ((track.source_type ?? 'local') === 'local') {
+            nextTracks.push(track)
+          } else {
+            excludedRemoteTrackCount += 1
+          }
+        }
+
+        if (!page.hasMore || page.tracks.length === 0) {
+          break
+        }
+
+        const nextOffset = Number(page.nextOffset)
+        offset = Number.isFinite(nextOffset) && nextOffset > offset
+          ? Math.trunc(nextOffset)
+          : offset + page.tracks.length
+      }
+
+      setExcludedRemoteTrackCount(excludedRemoteTrackCount)
       setTracks(nextTracks)
       return nextTracks
     } finally {
@@ -897,8 +926,10 @@ export default function MetadataView() {
           ...state.currentTrack,
           title: refreshed.title,
           artist: refreshed.artist,
+          artistNames: refreshed.artist_names,
           album: refreshed.album,
           albumArtist: refreshed.album_artist ?? undefined,
+          albumArtistNames: refreshed.album_artist_names,
           genre: refreshed.genre ?? undefined,
           year: refreshed.year ?? undefined,
           trackNumber: refreshed.track_number ?? undefined,
@@ -1531,7 +1562,7 @@ export default function MetadataView() {
             </div>
 
             <p className="metadata-lyrics-tools-note">
-              Imported manual lyrics override embedded and LRCLIB results. Sync offset retimes synced lyrics from any source.
+              Imported manual lyrics override LRC files, embedded tags, and LRCLIB results. Sync offset retimes synced lyrics from any source.
             </p>
 
             <div className="metadata-lyrics-tools-actions">
