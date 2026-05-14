@@ -33,6 +33,25 @@ interface LyricsDockLayout {
   openHeightPx: number
 }
 
+interface LyricsLineMeasurement {
+  key: string
+  topPx: number
+  heightPx: number
+}
+
+function areLyricsLineMeasurementsEqual(
+  current: LyricsLineMeasurement[],
+  next: LyricsLineMeasurement[]
+): boolean {
+  if (current.length !== next.length) return false
+  return current.every((measurement, index) => {
+    const nextMeasurement = next[index]
+    return measurement.key === nextMeasurement.key
+      && measurement.topPx === nextMeasurement.topPx
+      && measurement.heightPx === nextMeasurement.heightPx
+  })
+}
+
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
   const mins = Math.floor(seconds / 60)
@@ -241,8 +260,10 @@ function FullscreenLyricsDockPanel({
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const activeLyricLineRef = useRef<HTMLParagraphElement | null>(null)
+  const lyricsDockTrackRef = useRef<HTMLDivElement | null>(null)
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
   const [activeLyricFontSizePx, setActiveLyricFontSizePx] = useState<number | null>(null)
+  const [lyricsLineMeasurements, setLyricsLineMeasurements] = useState<LyricsLineMeasurement[]>([])
 
   const compensatedTime = getCompensatedLyricsTime(currentTime, duration, effectiveDelayMs)
   const lyricsQuery = useMemo(
@@ -268,6 +289,15 @@ function FullscreenLyricsDockPanel({
     () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
     [duration, syncedLines]
   )
+  const displayedSyncedLineKeys = useMemo(
+    () => displayedSyncedLines.map((line) => line.key).join('\u0000'),
+    [displayedSyncedLines]
+  )
+  const lyricsLineMeasurementByKey = useMemo(() => {
+    const measurementByKey = new Map<string, LyricsLineMeasurement>()
+    lyricsLineMeasurements.forEach((measurement) => measurementByKey.set(measurement.key, measurement))
+    return measurementByKey
+  }, [lyricsLineMeasurements])
   const syncedLyricsTiming = useMemo(
     () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
     [compensatedTime, duration, syncedLines]
@@ -278,9 +308,20 @@ function FullscreenLyricsDockPanel({
   const activeSyncedLineText = activeSyncedLineIndex >= 0
     ? displayedSyncedLines[activeSyncedLineIndex]?.text ?? ''
     : ''
-  const syncedLyricsTrackOffsetY = (
-    lyricsDockLayout.activeAnchorIndex - effectiveSyncedLineIndex
+  const focusedSyncedLineKey = displayedSyncedLines[effectiveSyncedLineIndex]?.key ?? null
+  const focusedSyncedLineMeasurement = focusedSyncedLineKey
+    ? lyricsLineMeasurementByKey.get(focusedSyncedLineKey)
+    : null
+  const focusedSyncedLineTopPx = focusedSyncedLineMeasurement?.topPx
+    ?? (effectiveSyncedLineIndex * lyricsDockLayout.lineHeightPx)
+  const focusedSyncedLineHeightPx = focusedSyncedLineMeasurement?.heightPx
+    ?? lyricsDockLayout.lineHeightPx
+  const syncedLyricsAnchorCenterPx = (
+    lyricsDockLayout.activeAnchorIndex + 0.5
   ) * lyricsDockLayout.lineHeightPx
+  const syncedLyricsTrackOffsetY = syncedLyricsAnchorCenterPx
+    - focusedSyncedLineTopPx
+    - (focusedSyncedLineHeightPx / 2)
   const lyricsDockStyle = useMemo(() => ({
     '--fullscreen-lyrics-line-height': `${lyricsDockLayout.lineHeightPx}px`,
     '--fullscreen-lyrics-visible-lines': String(lyricsDockLayout.visibleLines),
@@ -290,6 +331,34 @@ function FullscreenLyricsDockPanel({
   const setActiveLyricLineNode = useCallback((node: HTMLParagraphElement | null) => {
     activeLyricLineRef.current = node
   }, [])
+
+  const measureSyncedLyricLines = useCallback(() => {
+    if (!showLyricsDock || !hasSyncedLyrics) {
+      setLyricsLineMeasurements((previous) => previous.length === 0 ? previous : [])
+      return
+    }
+
+    const track = lyricsDockTrackRef.current
+    if (!track) {
+      setLyricsLineMeasurements((previous) => previous.length === 0 ? previous : [])
+      return
+    }
+
+    const nextMeasurements: LyricsLineMeasurement[] = []
+    track.querySelectorAll<HTMLParagraphElement>('.fullscreen-lyrics-dock-line[data-lyrics-line-key]').forEach((node) => {
+      const key = node.dataset.lyricsLineKey
+      if (!key) return
+      nextMeasurements.push({
+        key,
+        topPx: node.offsetTop,
+        heightPx: Math.max(lyricsDockLayout.lineHeightPx, node.offsetHeight)
+      })
+    })
+
+    setLyricsLineMeasurements((previous) => (
+      areLyricsLineMeasurementsEqual(previous, nextMeasurements) ? previous : nextMeasurements
+    ))
+  }, [hasSyncedLyrics, lyricsDockLayout.lineHeightPx, showLyricsDock])
 
   const recalculateActiveLyricFontSize = useCallback(() => {
     const node = activeLyricLineRef.current
@@ -364,15 +433,31 @@ function FullscreenLyricsDockPanel({
     showLyricsDock
   ])
 
+  useLayoutEffect(() => {
+    measureSyncedLyricLines()
+  }, [
+    activeLyricFontSizePx,
+    activeSyncedLineIndex,
+    activeSyncedLineText,
+    displayedSyncedLineKeys,
+    effectiveSyncedLineIndex,
+    lyricsDockLayout.visibleLines,
+    measureSyncedLyricLines,
+    showLyricsDock
+  ])
+
   useEffect(() => {
     if (!showLyricsDock || !hasSyncedLyrics) return
     const node = activeLyricLineRef.current
-    if (!node) return
+    const track = lyricsDockTrackRef.current
+    if (!node && !track) return
 
     const resizeObserver = new ResizeObserver(() => {
       recalculateActiveLyricFontSize()
+      measureSyncedLyricLines()
     })
-    resizeObserver.observe(node)
+    if (node) resizeObserver.observe(node)
+    if (track) resizeObserver.observe(track)
 
     return () => {
       resizeObserver.disconnect()
@@ -380,7 +465,9 @@ function FullscreenLyricsDockPanel({
   }, [
     activeSyncedLineIndex,
     activeSyncedLineText,
+    displayedSyncedLineKeys,
     hasSyncedLyrics,
+    measureSyncedLyricLines,
     recalculateActiveLyricFontSize,
     showLyricsDock
   ])
@@ -423,6 +510,7 @@ function FullscreenLyricsDockPanel({
         ) : activeLyricsResult?.status === 'hit' && hasSyncedLyrics ? (
           <div className="fullscreen-lyrics-dock-window" aria-live="polite">
             <div
+              ref={lyricsDockTrackRef}
               className="fullscreen-lyrics-dock-track"
               style={{ transform: `translate3d(0, ${syncedLyricsTrackOffsetY}px, 0)` }}
             >
@@ -450,6 +538,7 @@ function FullscreenLyricsDockPanel({
                     style={isActiveLine && activeLyricFontSizePx != null
                       ? { fontSize: `${activeLyricFontSizePx}px` }
                       : undefined}
+                    data-lyrics-line-key={displayLine.key}
                     aria-hidden={displayLine.kind === 'gap'}
                   >
                     <span className="fullscreen-lyrics-dock-line-text">{renderGapProgress(displayLine)}</span>
