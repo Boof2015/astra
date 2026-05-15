@@ -2,10 +2,12 @@ import { strict as assert } from 'node:assert'
 import test from 'node:test'
 import {
   buildSourceLayout,
+  canUseStereoAmbientUpmix,
   getSourceChannelId,
   getSourceChannelLabel,
   isIdentityChannelMixMatrix,
   resolveChannelMixMatrix,
+  resolveStereoAmbientUpmixPlan,
   type ChannelMixMatrix,
 } from './sourceChannelLayout.ts'
 
@@ -267,4 +269,107 @@ test('manual LFE fold-down augments front rows only when enabled', () => {
       [],
     ]
   )
+})
+
+test('stereo ambient upmix activation is standard-mode opt-in only', () => {
+  const base = {
+    sourceChannels: 2,
+    outputChannels: 6,
+    multichannelEnabled: true,
+    standardMode: true,
+    stereoUpmixMode: 'ambient' as const,
+    manualRoutingMap: null,
+  }
+
+  assert.equal(canUseStereoAmbientUpmix(base), true)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, standardMode: false }), false)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, stereoUpmixMode: 'off' }), false)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, multichannelEnabled: false }), false)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, sourceChannels: 6 }), false)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, outputChannels: 2 }), false)
+  assert.equal(canUseStereoAmbientUpmix({ ...base, outputChannels: 3 }), false)
+})
+
+test('stereo ambient upmix keeps fronts direct and generates only rear ambience', () => {
+  assert.deepEqual(
+    resolveStereoAmbientUpmixPlan(4).routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'direct'],
+      ['FR', 'direct'],
+      ['SL', 'ambience'],
+      ['SR', 'ambience'],
+    ]
+  )
+
+  assert.deepEqual(
+    resolveStereoAmbientUpmixPlan(6).routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'direct'],
+      ['FR', 'direct'],
+      ['SL', 'ambience'],
+      ['SR', 'ambience'],
+    ]
+  )
+
+  assert.deepEqual(
+    resolveStereoAmbientUpmixPlan(8).routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'direct'],
+      ['FR', 'direct'],
+      ['BL', 'ambience'],
+      ['BR', 'ambience'],
+      ['SL', 'ambience'],
+      ['SR', 'ambience'],
+    ]
+  )
+
+  assert.equal(
+    resolveStereoAmbientUpmixPlan(6).routes.some((route) => route.outputId === 'FC' || route.outputId === 'LFE'),
+    false
+  )
+
+  const sideLeftRoute = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SL')
+  assert.deepEqual(
+    sideLeftRoute?.inputs.map((input) => [input.sourceIndex, input.gain]),
+    [[0, 0.25], [1, -0.25]]
+  )
+  assert.equal(sideLeftRoute?.highpassHz, 300)
+  assert.equal(sideLeftRoute?.lowpassHz, 8000)
+  assert.equal(sideLeftRoute?.delaySeconds, 0.012)
+  assert.deepEqual(sideLeftRoute?.allpassFrequenciesHz, [420, 1700, 4300])
+
+  const sideRightRoute = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SR')
+  assert.deepEqual(
+    sideRightRoute?.inputs.map((input) => [input.sourceIndex, input.gain]),
+    [[0, -0.25], [1, 0.25]]
+  )
+  assert.deepEqual(sideRightRoute?.allpassFrequenciesHz, [380, 1900, 4700])
+})
+
+test('stereo ambient upmix rear routes cancel centered/mono content', () => {
+  for (const channelCount of [4, 6, 8]) {
+    const plan = resolveStereoAmbientUpmixPlan(channelCount)
+    for (const route of plan.routes) {
+      if (route.kind !== 'ambience') continue
+      const sum = route.inputs.reduce((total, input) => total + input.gain, 0)
+      assert.ok(
+        Math.abs(sum) < 1e-9,
+        `Route ${route.outputId} at ${channelCount}ch should sum to 0, got ${sum}`
+      )
+    }
+  }
+})
+
+test('stereo ambient upmix decorrelates rear pairs via distinct all-pass cascades', () => {
+  const sideLeft = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SL')
+  const sideRight = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SR')
+  assert.ok(sideLeft && sideRight, 'expected SL and SR routes')
+  assert.notDeepEqual(sideLeft.allpassFrequenciesHz, sideRight.allpassFrequenciesHz)
+  assert.ok(sideLeft.allpassFrequenciesHz.length > 0, 'expected non-empty all-pass cascade on SL')
+
+  const backLeft = resolveStereoAmbientUpmixPlan(8).routes.find((route) => route.outputId === 'BL')
+  const backRight = resolveStereoAmbientUpmixPlan(8).routes.find((route) => route.outputId === 'BR')
+  assert.ok(backLeft && backRight, 'expected BL and BR routes')
+  assert.notDeepEqual(backLeft.allpassFrequenciesHz, backRight.allpassFrequenciesHz)
+  assert.notDeepEqual(backLeft.allpassFrequenciesHz, sideLeft.allpassFrequenciesHz)
 })

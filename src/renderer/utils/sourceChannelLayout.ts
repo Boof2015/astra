@@ -23,6 +23,30 @@ export interface ChannelMixInput {
 }
 
 export type ChannelMixMatrix = ChannelMixInput[][]
+export type StereoUpmixMode = 'off' | 'ambient'
+
+export type StereoAmbientUpmixRouteKind = 'direct' | 'ambience'
+
+export interface StereoAmbientUpmixInput {
+  sourceIndex: 0 | 1
+  gain: number
+}
+
+export interface StereoAmbientUpmixRoute {
+  outputIndex: number
+  outputId: string
+  kind: StereoAmbientUpmixRouteKind
+  inputs: StereoAmbientUpmixInput[]
+  delaySeconds: number
+  highpassHz: number | null
+  lowpassHz: number | null
+  allpassFrequenciesHz: number[]
+}
+
+export interface StereoAmbientUpmixPlan {
+  outputChannels: number
+  routes: StereoAmbientUpmixRoute[]
+}
 
 export interface ResolveChannelMixMatrixOptions {
   sourceChannels: number
@@ -32,9 +56,27 @@ export interface ResolveChannelMixMatrixOptions {
   includeLfeInDownmix?: boolean
 }
 
+export interface CanUseStereoAmbientUpmixOptions {
+  sourceChannels: number
+  outputChannels: number
+  multichannelEnabled: boolean
+  standardMode: boolean
+  stereoUpmixMode: StereoUpmixMode
+}
+
 const CENTER_GAIN = Math.SQRT1_2
 const SURROUND_GAIN = Math.SQRT1_2
 const LFE_DOWNMIX_GAIN = 0.5
+const SIDE_AMBIENCE_GAIN = 0.25
+const BACK_AMBIENCE_GAIN = 0.18
+// HPFs are intentionally aggressive (cascaded twice in the audio graph for
+// 24 dB/oct) and the cutoffs are well above kick/bass territory. Any low-end
+// leakage on the rears acoustically (or via receiver bass management) sums
+// anti-phase with the front bass and audibly cancels it.
+const SIDE_AMBIENCE_HIGHPASS_HZ = 300
+const SIDE_AMBIENCE_LOWPASS_HZ = 8000
+const BACK_AMBIENCE_HIGHPASS_HZ = 300
+const BACK_AMBIENCE_LOWPASS_HZ = 6500
 
 const CHANNEL_DEFINITIONS: Record<string, Omit<SourceChannel, 'index'>> = {
   M: { id: 'M', label: 'Mono', role: 'mono' },
@@ -61,6 +103,10 @@ const STANDARD_LAYOUTS: Record<number, string[]> = {
 function normalizeChannelCount(value: number): number {
   if (!Number.isFinite(value)) return 1
   return Math.max(1, Math.min(32, Math.trunc(value)))
+}
+
+export function normalizeStereoUpmixMode(value: unknown): StereoUpmixMode {
+  return value === 'ambient' ? 'ambient' : 'off'
 }
 
 function buildFallbackChannel(index: number): SourceChannel {
@@ -367,6 +413,120 @@ export function resolveChannelMixMatrix(options: ResolveChannelMixMatrixOptions)
   }
 
   return buildAutomaticMatrix(sourceChannels, outputChannels, includeLfeInDownmix)
+}
+
+interface StereoAmbientRouteSpec {
+  outputId: string
+  kind: StereoAmbientUpmixRouteKind
+  inputs: StereoAmbientUpmixInput[]
+  delaySeconds?: number
+  highpassHz?: number | null
+  lowpassHz?: number | null
+  allpassFrequenciesHz?: number[]
+}
+
+function addStereoAmbientRoute(
+  routes: StereoAmbientUpmixRoute[],
+  layout: readonly SourceChannel[],
+  spec: StereoAmbientRouteSpec
+): void {
+  const outputIndex = findOutputIndex(layout, [spec.outputId])
+  if (outputIndex == null) return
+
+  routes.push({
+    outputIndex,
+    outputId: spec.outputId,
+    kind: spec.kind,
+    inputs: spec.inputs,
+    delaySeconds: spec.delaySeconds ?? 0,
+    highpassHz: spec.highpassHz ?? null,
+    lowpassHz: spec.lowpassHz ?? null,
+    allpassFrequenciesHz: spec.allpassFrequenciesHz ?? [],
+  })
+}
+
+export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmbientUpmixPlan {
+  const normalizedOutputChannels = normalizeChannelCount(outputChannels)
+  const outputLayout = buildSpeakerLayout(normalizedOutputChannels)
+  const routes: StereoAmbientUpmixRoute[] = []
+
+  // Sign-flipped pair coefficients on the rears form a pure (L-R) difference signal
+  // scaled per route. Centered/mono content cancels to 0 in the rears, preserving
+  // the front image; only stereo decorrelation (ambience) reaches the surrounds.
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'FL', kind: 'direct', inputs: [{ sourceIndex: 0, gain: 1 }],
+  })
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'FR', kind: 'direct', inputs: [{ sourceIndex: 1, gain: 1 }],
+  })
+
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'SL',
+    kind: 'ambience',
+    inputs: [
+      { sourceIndex: 0, gain: SIDE_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: -SIDE_AMBIENCE_GAIN },
+    ],
+    highpassHz: SIDE_AMBIENCE_HIGHPASS_HZ,
+    lowpassHz: SIDE_AMBIENCE_LOWPASS_HZ,
+    allpassFrequenciesHz: [420, 1700, 4300],
+    delaySeconds: 0.012,
+  })
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'SR',
+    kind: 'ambience',
+    inputs: [
+      { sourceIndex: 0, gain: -SIDE_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: SIDE_AMBIENCE_GAIN },
+    ],
+    highpassHz: SIDE_AMBIENCE_HIGHPASS_HZ,
+    lowpassHz: SIDE_AMBIENCE_LOWPASS_HZ,
+    allpassFrequenciesHz: [380, 1900, 4700],
+    delaySeconds: 0.016,
+  })
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'BL',
+    kind: 'ambience',
+    inputs: [
+      { sourceIndex: 0, gain: BACK_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: -BACK_AMBIENCE_GAIN },
+    ],
+    highpassHz: BACK_AMBIENCE_HIGHPASS_HZ,
+    lowpassHz: BACK_AMBIENCE_LOWPASS_HZ,
+    allpassFrequenciesHz: [310, 1300, 3200],
+    delaySeconds: 0.022,
+  })
+  addStereoAmbientRoute(routes, outputLayout, {
+    outputId: 'BR',
+    kind: 'ambience',
+    inputs: [
+      { sourceIndex: 0, gain: -BACK_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: BACK_AMBIENCE_GAIN },
+    ],
+    highpassHz: BACK_AMBIENCE_HIGHPASS_HZ,
+    lowpassHz: BACK_AMBIENCE_LOWPASS_HZ,
+    allpassFrequenciesHz: [340, 1450, 3500],
+    delaySeconds: 0.026,
+  })
+
+  routes.sort((a, b) => a.outputIndex - b.outputIndex)
+
+  return {
+    outputChannels: normalizedOutputChannels,
+    routes,
+  }
+}
+
+export function canUseStereoAmbientUpmix(options: CanUseStereoAmbientUpmixOptions): boolean {
+  if (!options.standardMode) return false
+  if (options.stereoUpmixMode !== 'ambient') return false
+  if (!options.multichannelEnabled) return false
+
+  const sourceChannels = normalizeChannelCount(options.sourceChannels)
+  const outputChannels = normalizeChannelCount(options.outputChannels)
+  if (sourceChannels !== 2 || outputChannels <= 2) return false
+
+  return resolveStereoAmbientUpmixPlan(outputChannels).routes.some((route) => route.kind === 'ambience')
 }
 
 export function isIdentityChannelMixMatrix(

@@ -22,9 +22,14 @@ import {
   type LoudnessAnalysis
 } from './loudness'
 import {
+  canUseStereoAmbientUpmix,
   isIdentityChannelMixMatrix,
+  normalizeStereoUpmixMode,
   resolveChannelMixMatrix,
-  type ChannelMixMatrix
+  resolveStereoAmbientUpmixPlan,
+  type ChannelMixMatrix,
+  type StereoAmbientUpmixRoute,
+  type StereoUpmixMode
 } from '../utils/sourceChannelLayout'
 
 type EventCallback = (...args: unknown[]) => void
@@ -318,11 +323,11 @@ export class AudioEngine {
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
   private multichannelEnabled: boolean = false
   private includeLfeInDownmix: boolean = false
+  private stereoUpmixMode: StereoUpmixMode = 'off'
   private manualChannelRoutingMap: number[] | null = null
   private sourceRoutingNodes: WeakMap<AudioNode, {
-    splitter: ChannelSplitterNode
-    merger: ChannelMergerNode
-    gainNodes: GainNode[]
+    inputNode: AudioNode | null
+    nodes: AudioNode[]
   }> = new WeakMap()
   private playbackOutputMode: PlaybackOutputMode = 'standard'
   private nativeCapabilities: NativeAudioCapabilities = {
@@ -1360,6 +1365,19 @@ export class AudioEngine {
     this.applyChannelRoutingPreferences(sourceChannels)
 
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
+    const shouldUseStereoAmbientUpmix = canUseStereoAmbientUpmix({
+      sourceChannels,
+      outputChannels,
+      multichannelEnabled: this.multichannelEnabled,
+      standardMode: this.playbackOutputMode === 'standard',
+      stereoUpmixMode: this.stereoUpmixMode,
+    })
+
+    if (shouldUseStereoAmbientUpmix) {
+      this.connectStereoAmbientUpmix(sourceNode, outputChannels)
+      return
+    }
+
     const channelMixMatrix = resolveChannelMixMatrix({
       sourceChannels,
       outputChannels,
@@ -1379,6 +1397,7 @@ export class AudioEngine {
 
     if (!shouldUseRoutingMatrix) {
       sourceNode.connect(this.normalizationGainNode)
+      this.sourceRoutingNodes.set(sourceNode, { inputNode: null, nodes: [] })
       return
     }
 
@@ -1395,9 +1414,138 @@ export class AudioEngine {
     sourceNode.connect(splitter)
 
     const gainNodes = this.connectChannelMixMatrix(splitter, merger, channelMixMatrix)
+    const connectedOutputs = new Set<number>()
+    for (let outputIndex = 0; outputIndex < channelMixMatrix.length; outputIndex++) {
+      if ((channelMixMatrix[outputIndex]?.length ?? 0) > 0) {
+        connectedOutputs.add(outputIndex)
+      }
+    }
+    const silenceNodes = this.connectSilentMergerInputs(merger, outputChannels, connectedOutputs)
 
     merger.connect(this.normalizationGainNode)
-    this.sourceRoutingNodes.set(sourceNode, { splitter, merger, gainNodes })
+    this.sourceRoutingNodes.set(sourceNode, {
+      inputNode: splitter,
+      nodes: [splitter, ...gainNodes, ...silenceNodes, merger],
+    })
+  }
+
+  private connectStereoAmbientUpmix(sourceNode: AudioNode, outputChannels: number): void {
+    if (!this.context || !this.normalizationGainNode) return
+
+    const plan = resolveStereoAmbientUpmixPlan(outputChannels)
+    const splitter = this.context.createChannelSplitter(2)
+    const merger = this.context.createChannelMerger(Math.max(1, plan.outputChannels))
+    const nodes: AudioNode[] = [splitter, merger]
+
+    this.applyNodeRoutingMode(splitter, 2, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(merger, plan.outputChannels, 'explicit', 'discrete')
+
+    sourceNode.connect(splitter)
+
+    const connectedOutputs = new Set<number>()
+    for (const route of plan.routes) {
+      if (route.kind === 'direct') {
+        this.connectStereoUpmixDirectRoute(splitter, merger, route, nodes)
+      } else {
+        this.connectStereoUpmixAmbienceRoute(splitter, merger, route, nodes)
+      }
+      connectedOutputs.add(route.outputIndex)
+    }
+    nodes.push(...this.connectSilentMergerInputs(merger, plan.outputChannels, connectedOutputs))
+
+    merger.connect(this.normalizationGainNode)
+    this.sourceRoutingNodes.set(sourceNode, {
+      inputNode: splitter,
+      nodes,
+    })
+  }
+
+  private connectStereoUpmixDirectRoute(
+    splitter: ChannelSplitterNode,
+    merger: ChannelMergerNode,
+    route: StereoAmbientUpmixRoute,
+    nodes: AudioNode[]
+  ): void {
+    if (!this.context) return
+
+    for (const input of route.inputs) {
+      if (Math.abs(input.gain - 1) <= 1e-6) {
+        splitter.connect(merger, input.sourceIndex, route.outputIndex)
+        continue
+      }
+
+      const gainNode = this.context.createGain()
+      gainNode.gain.value = input.gain
+      this.applyNodeRoutingMode(gainNode, 1, 'explicit', 'discrete')
+      splitter.connect(gainNode, input.sourceIndex)
+      gainNode.connect(merger, 0, route.outputIndex)
+      nodes.push(gainNode)
+    }
+  }
+
+  private connectStereoUpmixAmbienceRoute(
+    splitter: ChannelSplitterNode,
+    merger: ChannelMergerNode,
+    route: StereoAmbientUpmixRoute,
+    nodes: AudioNode[]
+  ): void {
+    if (!this.context) return
+
+    const sumNode = this.context.createGain()
+    const highpass1 = this.context.createBiquadFilter()
+    const highpass2 = this.context.createBiquadFilter()
+    const lowpass = this.context.createBiquadFilter()
+    const delayNode = this.context.createDelay(0.08)
+    const routeNodes: AudioNode[] = [sumNode, highpass1, highpass2, lowpass]
+
+    sumNode.gain.value = 1
+    const highpassHz = route.highpassHz ?? 120
+    highpass1.type = 'highpass'
+    highpass1.frequency.value = highpassHz
+    highpass1.Q.value = 0.707
+    highpass2.type = 'highpass'
+    highpass2.frequency.value = highpassHz
+    highpass2.Q.value = 0.707
+    lowpass.type = 'lowpass'
+    lowpass.frequency.value = route.lowpassHz ?? 7000
+    lowpass.Q.value = 0.707
+    delayNode.delayTime.value = route.delaySeconds
+
+    const allpassNodes: BiquadFilterNode[] = []
+    for (const frequency of route.allpassFrequenciesHz) {
+      const allpass = this.context.createBiquadFilter()
+      allpass.type = 'allpass'
+      allpass.frequency.value = frequency
+      allpass.Q.value = 0.707
+      allpassNodes.push(allpass)
+      routeNodes.push(allpass)
+    }
+    routeNodes.push(delayNode)
+
+    for (const node of routeNodes) {
+      this.applyNodeRoutingMode(node, 1, 'explicit', 'discrete')
+    }
+
+    for (const input of route.inputs) {
+      const gainNode = this.context.createGain()
+      gainNode.gain.value = input.gain
+      this.applyNodeRoutingMode(gainNode, 1, 'explicit', 'discrete')
+      splitter.connect(gainNode, input.sourceIndex)
+      gainNode.connect(sumNode)
+      nodes.push(gainNode)
+    }
+
+    sumNode.connect(highpass1)
+    highpass1.connect(highpass2)
+    highpass2.connect(lowpass)
+    let tail: AudioNode = lowpass
+    for (const allpass of allpassNodes) {
+      tail.connect(allpass)
+      tail = allpass
+    }
+    tail.connect(delayNode)
+    delayNode.connect(merger, 0, route.outputIndex)
+    nodes.push(...routeNodes)
   }
 
   private connectChannelMixMatrix(
@@ -1427,6 +1575,29 @@ export class AudioEngine {
     }
 
     return gainNodes
+  }
+
+  private connectSilentMergerInputs(
+    merger: ChannelMergerNode,
+    outputChannels: number,
+    connectedOutputs: ReadonlySet<number>
+  ): AudioNode[] {
+    if (!this.context) return []
+
+    const emptyOutputIndexes = Array.from({ length: outputChannels }, (_, index) => index)
+      .filter((index) => !connectedOutputs.has(index))
+    if (emptyOutputIndexes.length === 0) return []
+
+    const silenceSource = this.context.createConstantSource()
+    silenceSource.offset.value = 0
+    this.applyNodeRoutingMode(silenceSource, 1, 'explicit', 'discrete')
+
+    for (const outputIndex of emptyOutputIndexes) {
+      silenceSource.connect(merger, 0, outputIndex)
+    }
+
+    silenceSource.start()
+    return [silenceSource]
   }
 
   private connectSourceToAnalysisTap(sourceNode: AudioNode, sourceChannels: number): void {
@@ -1554,11 +1725,20 @@ export class AudioEngine {
     const routingNodes = this.sourceRoutingNodes.get(sourceNode)
     if (!routingNodes) return
 
-    try { routingNodes.splitter.disconnect() } catch { /* ignore */ }
-    for (const gainNode of routingNodes.gainNodes) {
-      try { gainNode.disconnect() } catch { /* ignore */ }
+    if (this.normalizationGainNode) {
+      try { sourceNode.disconnect(this.normalizationGainNode) } catch { /* ignore */ }
     }
-    try { routingNodes.merger.disconnect() } catch { /* ignore */ }
+
+    if (routingNodes.inputNode) {
+      try { sourceNode.disconnect(routingNodes.inputNode) } catch { /* ignore */ }
+    }
+
+    for (const node of routingNodes.nodes) {
+      try { node.disconnect() } catch { /* ignore */ }
+      if ('stop' in node && typeof node.stop === 'function') {
+        try { node.stop() } catch { /* ignore */ }
+      }
+    }
     this.sourceRoutingNodes.delete(sourceNode)
   }
 
@@ -1583,6 +1763,16 @@ export class AudioEngine {
       // Ignore disconnect races while replacing the remote stream node.
     }
     this.remoteStreamNode = null
+  }
+
+  private rebuildRemoteStreamRoutingIfActive(): boolean {
+    if (!this.remoteStreamNode || !this.remoteStreamState || this.playbackOutputMode === 'bitperfect') {
+      return false
+    }
+
+    this.disconnectSourceRouting(this.remoteStreamNode)
+    this.connectSourceWithRouting(this.remoteStreamNode, this.remoteStreamState.channels)
+    return true
   }
 
   private async clearRemoteStreamState(cancelSession: boolean): Promise<void> {
@@ -1975,6 +2165,10 @@ export class AudioEngine {
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+
     if (this.multichannelEnabled && this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
     }
@@ -1989,6 +2183,10 @@ export class AudioEngine {
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
     }
@@ -2002,6 +2200,28 @@ export class AudioEngine {
 
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  async setStereoUpmixMode(mode: StereoUpmixMode): Promise<void> {
+    this.stereoUpmixMode = normalizeStereoUpmixMode(mode)
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)

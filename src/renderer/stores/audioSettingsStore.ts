@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import {
+  normalizeStereoUpmixMode,
+  type StereoUpmixMode,
+} from '../utils/sourceChannelLayout'
 import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
@@ -57,6 +61,7 @@ interface AudioSettingsStore {
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
   includeLfeInDownmix: boolean
+  stereoUpmixMode: StereoUpmixMode
   channelRoutingMap: number[] | null
   normalizationEnabled: boolean
   normalizationTargetLufs: number
@@ -80,6 +85,7 @@ interface AudioSettingsStore {
   setCalibrationInputDeviceId: (deviceId: string) => void
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
   setIncludeLfeInDownmix: (enabled: boolean) => Promise<void>
+  setStereoUpmixMode: (mode: StereoUpmixMode) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
   setNormalizationEnabled: (enabled: boolean) => void
@@ -105,6 +111,7 @@ const PLAYBACK_OUTPUT_MODE_STORAGE_KEY = 'astra-playback-output-mode-v1'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-v1'
+const STEREO_UPMIX_MODE_STORAGE_KEY = 'astra-audio-stereo-upmix-mode-v1'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
@@ -1000,6 +1007,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectedOutputChannelCount: null,
     multichannelEnabled: false,
     includeLfeInDownmix: false,
+    stereoUpmixMode: 'off',
     channelRoutingMap: null,
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -1229,6 +1237,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       set({ includeLfeInDownmix: normalized })
       localStorage.setItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY, normalized ? '1' : '0')
       await audioEngine.setIncludeLfeInDownmix(normalized)
+    },
+
+    setStereoUpmixMode: async (mode: StereoUpmixMode) => {
+      const normalized = normalizeStereoUpmixMode(mode)
+      set({ stereoUpmixMode: normalized })
+      localStorage.setItem(STEREO_UPMIX_MODE_STORAGE_KEY, normalized)
+      await audioEngine.setStereoUpmixMode(normalized)
     },
 
     setChannelRoutingMap: async (map: number[] | null) => {
@@ -1703,6 +1718,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
+      localStorage.removeItem(STEREO_UPMIX_MODE_STORAGE_KEY)
       localStorage.removeItem(ROUTING_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
@@ -1728,6 +1744,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         await audioEngine.setIncludeLfeInDownmix(false)
       } catch (error) {
         console.warn('Failed to reset LFE downmix mode:', error)
+      }
+
+      try {
+        await audioEngine.setStereoUpmixMode('off')
+      } catch (error) {
+        console.warn('Failed to reset stereo upmix mode:', error)
       }
 
       try {
@@ -1795,6 +1817,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         selectedOutputChannelCount,
         multichannelEnabled: false,
         includeLfeInDownmix: false,
+        stereoUpmixMode: 'off',
         channelRoutingMap: null,
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -1915,6 +1938,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const savedIncludeLfeInDownmix = localStorage.getItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
       const includeLfeInDownmix = savedIncludeLfeInDownmix === '1'
       await get().setIncludeLfeInDownmix(includeLfeInDownmix)
+
+      const savedStereoUpmixMode = normalizeStereoUpmixMode(
+        localStorage.getItem(STEREO_UPMIX_MODE_STORAGE_KEY)
+      )
+      await get().setStereoUpmixMode(savedStereoUpmixMode)
 
       const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
       if (savedRoutingMap) {

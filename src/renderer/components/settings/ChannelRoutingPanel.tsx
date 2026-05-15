@@ -8,9 +8,12 @@ import { usePlayerStore } from '../../stores/playerStore'
 import {
   buildSourceLayout,
   buildSpeakerLayout,
+  canUseStereoAmbientUpmix,
   type ChannelMixInput,
   getSourceChannelId,
   resolveChannelMixMatrix,
+  resolveStereoAmbientUpmixPlan,
+  type StereoAmbientUpmixRoute,
 } from '../../utils/sourceChannelLayout'
 
 function formatChannels(value: number | null): string {
@@ -30,9 +33,11 @@ export default function ChannelRoutingPanel() {
     selectedOutputChannelCount,
     multichannelEnabled,
     includeLfeInDownmix,
+    stereoUpmixMode,
     playbackOutputMode,
     setMultichannelEnabled,
     setIncludeLfeInDownmix,
+    setStereoUpmixMode,
     channelRoutingMap,
     setChannelRoutingMap,
     resetChannelRoutingMap,
@@ -82,9 +87,26 @@ export default function ChannelRoutingPanel() {
     resolvedTrackChannels,
   ])
 
-  const mappedChannels = effectiveMixMatrix.reduce((total, row) => (
-    row.length > 0 ? total + 1 : total
-  ), 0)
+  const stereoAmbientUpmixActive = hasOutputChannels && hasTrackChannels && canUseStereoAmbientUpmix({
+    sourceChannels: resolvedTrackChannels,
+    outputChannels: resolvedOutputChannels,
+    multichannelEnabled,
+    standardMode: playbackOutputMode === 'standard',
+    stereoUpmixMode,
+  })
+
+  const stereoAmbientUpmixRoutes = useMemo(() => {
+    if (!stereoAmbientUpmixActive) return new Map<number, StereoAmbientUpmixRoute>()
+    return new Map(
+      resolveStereoAmbientUpmixPlan(resolvedOutputChannels).routes.map((route) => [route.outputIndex, route])
+    )
+  }, [resolvedOutputChannels, stereoAmbientUpmixActive])
+
+  const mappedChannels = stereoAmbientUpmixActive
+    ? stereoAmbientUpmixRoutes.size
+    : effectiveMixMatrix.reduce((total, row) => (
+      row.length > 0 ? total + 1 : total
+    ), 0)
 
   const downmixActive = hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveMixMatrix.length
   const hasManualRouting = Boolean(channelRoutingMap && channelRoutingMap.length > 0)
@@ -114,8 +136,25 @@ export default function ChannelRoutingPanel() {
     return `Mix ${sourceIds.join(' + ')}`
   }
 
+  const formatUpmixDetail = (route: StereoAmbientUpmixRoute): string => {
+    if (route.kind === 'direct') {
+      const sourceId = route.inputs[0]
+        ? (sourceLayout[route.inputs[0].sourceIndex]?.id ?? getSourceChannelId(route.inputs[0].sourceIndex))
+        : 'Stereo'
+      return `From ${sourceId}`
+    }
+
+    return route.outputId.endsWith('R') ? 'Side ambience R' : 'Side ambience L'
+  }
+
+  const sourceBusDetail = !multichannelEnabled
+    ? 'Stereo compatibility mode'
+    : (stereoAmbientUpmixActive
+        ? 'Stereo ambience upmix'
+        : (currentTrack?.isAtmosJoc ? 'Atmos JOC source' : 'PCM channel map'))
+
   const handleMappingChange = (outputIndex: number, rawValue: string) => {
-    if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled) return
+    if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled || stereoAmbientUpmixActive) return
 
     const parsed = Number(rawValue)
     const sourceIndex = Number.isFinite(parsed) ? Math.trunc(parsed) : -1
@@ -174,8 +213,20 @@ export default function ChannelRoutingPanel() {
         >
           {includeLfeInDownmix ? 'LFE Fold On' : 'LFE Fold Off'}
         </button>
+        <button
+          type="button"
+          className={`channel-routing-mode-toggle ${stereoUpmixMode === 'ambient' ? 'active' : ''}`}
+          onClick={bitPerfectModeActive ? undefined : (() => void setStereoUpmixMode(stereoUpmixMode === 'ambient' ? 'off' : 'ambient'))}
+          disabled={bitPerfectModeActive}
+          title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+        >
+          {stereoUpmixMode === 'ambient' ? 'Ambient Upmix On' : 'Ambient Upmix Off'}
+        </button>
         <span className="channel-routing-chip">Mapped {mappedChannels}/{formatChannels(outputChannels)}</span>
-        {hasManualRouting && multichannelEnabled && (
+        {stereoAmbientUpmixActive && (
+          <span className="channel-routing-chip channel-routing-chip-active">Upmix Active</span>
+        )}
+        {hasManualRouting && multichannelEnabled && !stereoAmbientUpmixActive && (
           <span className="channel-routing-chip channel-routing-chip-active">Remap Active</span>
         )}
         {hasManualRouting && !multichannelEnabled && (
@@ -186,7 +237,7 @@ export default function ChannelRoutingPanel() {
             Downmix {resolvedTrackChannels}{'->'}{effectiveOutputChannels}
           </span>
         )}
-        {hasManualRouting && (
+        {hasManualRouting && !stereoAmbientUpmixActive && (
           <button
             type="button"
             className="channel-routing-reset-btn"
@@ -204,19 +255,21 @@ export default function ChannelRoutingPanel() {
           <span className="channel-routing-source-label">File Bus</span>
           <span className="channel-routing-source-value">{formatChannels(trackChannels)}</span>
           <span className="channel-routing-source-sub">
-            {!multichannelEnabled
-              ? 'Stereo compatibility mode'
-              : (currentTrack?.isAtmosJoc ? 'Atmos JOC source' : 'PCM channel map')}
+            {sourceBusDetail}
           </span>
         </div>
 
         <div className="channel-routing-route-list">
           {hasOutputChannels && outputLayout.map((speaker, index) => {
+            const upmixRoute = stereoAmbientUpmixRoutes.get(index) ?? null
             const row = effectiveMixMatrix[index] ?? []
-            const active = row.length > 0
-            const sourceIndex = isUnitySingleSource(row) ? row[0].sourceIndex : -1
+            const active = upmixRoute ? true : row.length > 0
+            const sourceIndex = upmixRoute?.kind === 'direct'
+              ? (upmixRoute.inputs[0]?.sourceIndex ?? -1)
+              : (isUnitySingleSource(row) ? row[0].sourceIndex : -1)
             const manualSourceIndex = channelRoutingMap?.[index]
             const normalizedManualSourceIndex = (
+              !stereoAmbientUpmixActive &&
               hasManualRouting &&
               typeof manualSourceIndex === 'number' &&
               Number.isInteger(manualSourceIndex) &&
@@ -225,15 +278,23 @@ export default function ChannelRoutingPanel() {
             )
               ? manualSourceIndex
               : null
-            const isAutoMix = active && !isUnitySingleSource(row)
+            const isAutoMix = upmixRoute?.kind === 'ambience' || (active && !upmixRoute && !isUnitySingleSource(row))
             const detail = active
-              ? formatMixDetail(row)
+              ? (upmixRoute ? formatUpmixDetail(upmixRoute) : formatMixDetail(row))
               : (multichannelEnabled ? 'Muted' : 'Inactive in stereo mode')
-            const selectValue = multichannelEnabled
+            const selectValue = stereoAmbientUpmixActive
+              ? (upmixRoute ? 'upmix' : '-1')
+              : multichannelEnabled
               ? (normalizedManualSourceIndex != null
                   ? String(normalizedManualSourceIndex)
                   : (isAutoMix ? 'auto' : String(sourceIndex)))
               : 'auto'
+            const selectDisabled = (
+              !hasTrackChannels ||
+              !multichannelEnabled ||
+              bitPerfectModeActive ||
+              stereoAmbientUpmixActive
+            )
             return (
               <div
                 key={speaker.id}
@@ -256,10 +317,13 @@ export default function ChannelRoutingPanel() {
                     className="channel-routing-route-select"
                     value={selectValue}
                     onChange={(event) => handleMappingChange(index, event.target.value)}
-                    disabled={!hasTrackChannels || !multichannelEnabled || bitPerfectModeActive}
+                    disabled={selectDisabled}
                     title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
                     aria-label={`Route output channel ${speaker.id}`}
                   >
+                    {selectValue === 'upmix' && (
+                      <option value="upmix">Generated upmix</option>
+                    )}
                     {selectValue === 'auto' && (
                       <option value="auto">Auto mix</option>
                     )}
