@@ -56,6 +56,7 @@ interface AudioSettingsStore {
   selectedCalibrationInputDeviceId: string
   selectedOutputChannelCount: number | null
   multichannelEnabled: boolean
+  includeLfeInDownmix: boolean
   channelRoutingMap: number[] | null
   normalizationEnabled: boolean
   normalizationTargetLufs: number
@@ -78,6 +79,7 @@ interface AudioSettingsStore {
   selectDevice: (deviceId: string) => Promise<void>
   setCalibrationInputDeviceId: (deviceId: string) => void
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
+  setIncludeLfeInDownmix: (enabled: boolean) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
   setNormalizationEnabled: (enabled: boolean) => void
@@ -102,6 +104,7 @@ const NATIVE_OUTPUT_STORAGE_KEY = 'astra-native-audio-output-device'
 const PLAYBACK_OUTPUT_MODE_STORAGE_KEY = 'astra-playback-output-mode-v1'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
+const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-v1'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
@@ -996,6 +999,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectedCalibrationInputDeviceId: '',
     selectedOutputChannelCount: null,
     multichannelEnabled: false,
+    includeLfeInDownmix: false,
     channelRoutingMap: null,
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -1218,6 +1222,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       set({ multichannelEnabled: enabled })
       localStorage.setItem(MULTICHANNEL_STORAGE_KEY, enabled ? '1' : '0')
       await audioEngine.setMultichannelEnabled(enabled)
+    },
+
+    setIncludeLfeInDownmix: async (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      set({ includeLfeInDownmix: normalized })
+      localStorage.setItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY, normalized ? '1' : '0')
+      await audioEngine.setIncludeLfeInDownmix(normalized)
     },
 
     setChannelRoutingMap: async (map: number[] | null) => {
@@ -1691,6 +1702,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
+      localStorage.removeItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
       localStorage.removeItem(ROUTING_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
@@ -1710,6 +1722,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         await audioEngine.setMultichannelEnabled(false)
       } catch (error) {
         console.warn('Failed to reset multichannel mode:', error)
+      }
+
+      try {
+        await audioEngine.setIncludeLfeInDownmix(false)
+      } catch (error) {
+        console.warn('Failed to reset LFE downmix mode:', error)
       }
 
       try {
@@ -1776,6 +1794,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         selectedCalibrationInputDeviceId: '',
         selectedOutputChannelCount,
         multichannelEnabled: false,
+        includeLfeInDownmix: false,
         channelRoutingMap: null,
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -1892,6 +1911,10 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const savedMultichannel = localStorage.getItem(MULTICHANNEL_STORAGE_KEY)
       const multichannelEnabled = savedMultichannel === '1'
       await get().setMultichannelEnabled(multichannelEnabled)
+
+      const savedIncludeLfeInDownmix = localStorage.getItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
+      const includeLfeInDownmix = savedIncludeLfeInDownmix === '1'
+      await get().setIncludeLfeInDownmix(includeLfeInDownmix)
 
       const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
       if (savedRoutingMap) {

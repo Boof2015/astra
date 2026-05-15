@@ -304,9 +304,7 @@ export class VUMeter {
   }
 
   private getChannelLabel(channelIndex: number): string {
-    if (this.activeChannelCount <= 1) return 'M'
-    if (this.activeChannelCount === 2) return channelIndex === 0 ? 'L' : 'R'
-    return getSourceChannelId(channelIndex)
+    return getSourceChannelId(channelIndex, this.activeChannelCount || 1)
   }
 
   private getDisplayChannelIndex(index: number): number {

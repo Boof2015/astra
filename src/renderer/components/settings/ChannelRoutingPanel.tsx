@@ -6,64 +6,20 @@ import {
 } from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
+  buildSourceLayout,
+  buildSpeakerLayout,
+  type ChannelMixInput,
   getSourceChannelId,
-  getSourceChannelLabel,
+  resolveChannelMixMatrix,
 } from '../../utils/sourceChannelLayout'
-
-interface SpeakerChannel {
-  id: string
-  label: string
-}
-
-function buildSpeakerLayout(channelCount: number): SpeakerChannel[] {
-  switch (channelCount) {
-    case 2:
-      return [
-        { id: 'FL', label: 'Front Left' },
-        { id: 'FR', label: 'Front Right' },
-      ]
-    case 4:
-      return [
-        { id: 'FL', label: 'Front Left' },
-        { id: 'FR', label: 'Front Right' },
-        { id: 'RL', label: 'Rear Left' },
-        { id: 'RR', label: 'Rear Right' },
-      ]
-    case 6:
-      return [
-        { id: 'FL', label: 'Front Left' },
-        { id: 'FR', label: 'Front Right' },
-        { id: 'C', label: 'Center' },
-        { id: 'LFE', label: 'LFE/Sub' },
-        { id: 'SL', label: 'Side Left' },
-        { id: 'SR', label: 'Side Right' },
-      ]
-    case 8:
-      return [
-        { id: 'FL', label: 'Front Left' },
-        { id: 'FR', label: 'Front Right' },
-        { id: 'C', label: 'Center' },
-        { id: 'LFE', label: 'LFE/Sub' },
-        { id: 'SL', label: 'Side Left' },
-        { id: 'SR', label: 'Side Right' },
-        { id: 'BL', label: 'Back Left' },
-        { id: 'BR', label: 'Back Right' },
-      ]
-    default:
-      return buildFallbackLayout(channelCount)
-  }
-}
-
-function buildFallbackLayout(channelCount: number): SpeakerChannel[] {
-  return Array.from({ length: channelCount }, (_, i) => ({
-    id: `CH${i + 1}`,
-    label: `Channel ${i + 1}`,
-  }))
-}
 
 function formatChannels(value: number | null): string {
   if (!value || value <= 0) return '\u2014'
   return `${value}ch`
+}
+
+function isUnitySingleSource(row: readonly ChannelMixInput[]): boolean {
+  return row.length === 1 && Math.abs(row[0].gain - 1) <= 1e-6
 }
 
 export default function ChannelRoutingPanel() {
@@ -73,8 +29,10 @@ export default function ChannelRoutingPanel() {
     availableDevices,
     selectedOutputChannelCount,
     multichannelEnabled,
+    includeLfeInDownmix,
     playbackOutputMode,
     setMultichannelEnabled,
+    setIncludeLfeInDownmix,
     channelRoutingMap,
     setChannelRoutingMap,
     resetChannelRoutingMap,
@@ -99,40 +57,36 @@ export default function ChannelRoutingPanel() {
     [hasOutputChannels, resolvedOutputChannels]
   )
 
-  const effectiveRouting = useMemo(() => {
-    if (!hasOutputChannels) return []
+  const sourceLayout = useMemo(
+    () => (hasTrackChannels ? buildSourceLayout(resolvedTrackChannels) : []),
+    [hasTrackChannels, resolvedTrackChannels]
+  )
 
-    return Array.from({ length: resolvedOutputChannels }, (_, outputIndex) => {
-      if (!hasTrackChannels) return -1
+  const effectiveMixMatrix = useMemo(() => {
+    if (!hasOutputChannels || !hasTrackChannels) return []
 
-      if (!multichannelEnabled) {
-        return outputIndex < Math.min(2, resolvedOutputChannels) ? Math.min(outputIndex, resolvedTrackChannels - 1) : -1
-      }
-
-      const manualSourceIndex = channelRoutingMap?.[outputIndex]
-      if (typeof manualSourceIndex === 'number' && Number.isInteger(manualSourceIndex)) {
-        if (manualSourceIndex === -1) return -1
-        if (manualSourceIndex >= 0 && manualSourceIndex < resolvedTrackChannels) return manualSourceIndex
-      }
-
-      return outputIndex < resolvedTrackChannels ? outputIndex : -1
+    return resolveChannelMixMatrix({
+      sourceChannels: resolvedTrackChannels,
+      outputChannels: resolvedOutputChannels,
+      multichannelEnabled,
+      manualRoutingMap: channelRoutingMap,
+      includeLfeInDownmix,
     })
   }, [
     channelRoutingMap,
     hasOutputChannels,
     hasTrackChannels,
+    includeLfeInDownmix,
     multichannelEnabled,
     resolvedOutputChannels,
     resolvedTrackChannels,
   ])
 
-  const mappedChannels = multichannelEnabled
-    ? effectiveRouting.reduce((total, sourceIndex) => (
-      sourceIndex >= 0 ? total + 1 : total
-    ), 0)
-    : (hasTrackChannels ? Math.min(2, resolvedOutputChannels) : 0)
+  const mappedChannels = effectiveMixMatrix.reduce((total, row) => (
+    row.length > 0 ? total + 1 : total
+  ), 0)
 
-  const downmixActive = hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveOutputChannels
+  const downmixActive = hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveMixMatrix.length
   const hasManualRouting = Boolean(channelRoutingMap && channelRoutingMap.length > 0)
 
   const selectedDeviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
@@ -142,11 +96,23 @@ export default function ChannelRoutingPanel() {
 
   const sourceOptions = useMemo(() => {
     if (!hasTrackChannels) return []
-    return Array.from({ length: resolvedTrackChannels }, (_, index) => ({
-      value: index,
-      label: `${getSourceChannelId(index)} - ${getSourceChannelLabel(index)}`
+    return sourceLayout.map((channel) => ({
+      value: channel.index,
+      label: `${channel.id} - ${channel.label}`
     }))
-  }, [hasTrackChannels, resolvedTrackChannels])
+  }, [hasTrackChannels, sourceLayout])
+
+  const formatMixDetail = (row: readonly ChannelMixInput[]): string => {
+    if (row.length === 0) return 'Muted'
+    if (!multichannelEnabled) return 'Stereo mix'
+
+    const sourceIds = row.map((input) => sourceLayout[input.sourceIndex]?.id ?? getSourceChannelId(input.sourceIndex))
+    if (isUnitySingleSource(row)) {
+      return `From ${sourceIds[0]}`
+    }
+
+    return `Mix ${sourceIds.join(' + ')}`
+  }
 
   const handleMappingChange = (outputIndex: number, rawValue: string) => {
     if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled) return
@@ -157,8 +123,14 @@ export default function ChannelRoutingPanel() {
       ? sourceIndex
       : -1
 
+    const currentManualMap = channelRoutingMap && channelRoutingMap.length > 0
+      ? channelRoutingMap
+      : null
+
     const nextMap = Array.from({ length: resolvedOutputChannels }, (_, index) => (
-      index === outputIndex ? normalizedSourceIndex : (effectiveRouting[index] ?? -1)
+      index === outputIndex
+        ? normalizedSourceIndex
+        : (currentManualMap?.[index] ?? (index < resolvedTrackChannels ? index : -1))
     ))
 
     const isDefaultMap = nextMap.every((mappedSourceIndex, index) => {
@@ -192,6 +164,15 @@ export default function ChannelRoutingPanel() {
           title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
         >
           {multichannelEnabled ? 'Multichannel On' : 'Stereo Safe'}
+        </button>
+        <button
+          type="button"
+          className={`channel-routing-mode-toggle ${includeLfeInDownmix ? 'active' : ''}`}
+          onClick={bitPerfectModeActive ? undefined : (() => void setIncludeLfeInDownmix(!includeLfeInDownmix))}
+          disabled={bitPerfectModeActive}
+          title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+        >
+          {includeLfeInDownmix ? 'LFE Fold On' : 'LFE Fold Off'}
         </button>
         <span className="channel-routing-chip">Mapped {mappedChannels}/{formatChannels(outputChannels)}</span>
         {hasManualRouting && multichannelEnabled && (
@@ -231,11 +212,28 @@ export default function ChannelRoutingPanel() {
 
         <div className="channel-routing-route-list">
           {hasOutputChannels && outputLayout.map((speaker, index) => {
-            const sourceIndex = effectiveRouting[index] ?? -1
-            const active = sourceIndex >= 0
-            const detail = multichannelEnabled
-              ? (active ? `From ${getSourceChannelId(sourceIndex)}` : 'Muted')
-              : (active ? 'Auto stereo mix' : 'Inactive in stereo mode')
+            const row = effectiveMixMatrix[index] ?? []
+            const active = row.length > 0
+            const sourceIndex = isUnitySingleSource(row) ? row[0].sourceIndex : -1
+            const manualSourceIndex = channelRoutingMap?.[index]
+            const normalizedManualSourceIndex = (
+              hasManualRouting &&
+              typeof manualSourceIndex === 'number' &&
+              Number.isInteger(manualSourceIndex) &&
+              manualSourceIndex >= -1 &&
+              manualSourceIndex < resolvedTrackChannels
+            )
+              ? manualSourceIndex
+              : null
+            const isAutoMix = active && !isUnitySingleSource(row)
+            const detail = active
+              ? formatMixDetail(row)
+              : (multichannelEnabled ? 'Muted' : 'Inactive in stereo mode')
+            const selectValue = multichannelEnabled
+              ? (normalizedManualSourceIndex != null
+                  ? String(normalizedManualSourceIndex)
+                  : (isAutoMix ? 'auto' : String(sourceIndex)))
+              : 'auto'
             return (
               <div
                 key={speaker.id}
@@ -256,12 +254,15 @@ export default function ChannelRoutingPanel() {
                   </div>
                   <select
                     className="channel-routing-route-select"
-                    value={multichannelEnabled ? sourceIndex : -1}
+                    value={selectValue}
                     onChange={(event) => handleMappingChange(index, event.target.value)}
                     disabled={!hasTrackChannels || !multichannelEnabled || bitPerfectModeActive}
                     title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
                     aria-label={`Route output channel ${speaker.id}`}
                   >
+                    {selectValue === 'auto' && (
+                      <option value="auto">Auto mix</option>
+                    )}
                     <option value={-1}>Mute</option>
                     {sourceOptions.map((option) => (
                       <option key={option.value} value={option.value}>

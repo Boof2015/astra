@@ -21,6 +21,11 @@ import {
   resolveStaticNormalizationGain,
   type LoudnessAnalysis
 } from './loudness'
+import {
+  isIdentityChannelMixMatrix,
+  resolveChannelMixMatrix,
+  type ChannelMixMatrix
+} from '../utils/sourceChannelLayout'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -312,10 +317,12 @@ export class AudioEngine {
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
   private multichannelEnabled: boolean = false
+  private includeLfeInDownmix: boolean = false
   private manualChannelRoutingMap: number[] | null = null
   private sourceRoutingNodes: WeakMap<AudioNode, {
     splitter: ChannelSplitterNode
     merger: ChannelMergerNode
+    gainNodes: GainNode[]
   }> = new WeakMap()
   private playbackOutputMode: PlaybackOutputMode = 'standard'
   private nativeCapabilities: NativeAudioCapabilities = {
@@ -1265,11 +1272,11 @@ export class AudioEngine {
       return Math.max(1, Math.min(maxChannels, manualMapChannelCount))
     }
 
-    const preferred = sourceChannels && sourceChannels > 0
-      ? sourceChannels
-      : this.audioBuffer?.numberOfChannels ?? 2
+    if ((sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0) {
+      return maxChannels
+    }
 
-    return Math.max(1, Math.min(maxChannels, preferred))
+    return Math.max(1, Math.min(maxChannels, 2))
   }
 
   private applyNodeRoutingMode(
@@ -1347,28 +1354,27 @@ export class AudioEngine {
     }
   }
 
-  private getEffectiveChannelMap(sourceChannels: number, outputChannels: number): Array<number | null> {
-    return Array.from({ length: outputChannels }, (_, outputIndex) => {
-      const manualSourceIndex = this.manualChannelRoutingMap?.[outputIndex]
-      if (typeof manualSourceIndex === 'number' && Number.isInteger(manualSourceIndex)) {
-        if (manualSourceIndex === -1) return null
-        if (manualSourceIndex >= 0 && manualSourceIndex < sourceChannels) return manualSourceIndex
-      }
-
-      return outputIndex < sourceChannels ? outputIndex : null
-    })
-  }
-
   private connectSourceWithRouting(sourceNode: AudioNode, sourceChannels: number): void {
     if (!this.context || !this.normalizationGainNode) return
 
     this.applyChannelRoutingPreferences(sourceChannels)
 
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
-    const shouldUseRoutingMatrix = Boolean(
-      this.multichannelEnabled &&
-      this.manualChannelRoutingMap &&
-      this.manualChannelRoutingMap.length > 0
+    const channelMixMatrix = resolveChannelMixMatrix({
+      sourceChannels,
+      outputChannels,
+      multichannelEnabled: this.multichannelEnabled,
+      manualRoutingMap: this.manualChannelRoutingMap,
+      includeLfeInDownmix: this.includeLfeInDownmix,
+    })
+    const hasManualRouting = Boolean(
+      this.multichannelEnabled && this.manualChannelRoutingMap && this.manualChannelRoutingMap.length > 0
+    )
+    const shouldUseRoutingMatrix = (
+      hasManualRouting ||
+      sourceChannels !== outputChannels ||
+      outputChannels > 2 ||
+      !isIdentityChannelMixMatrix(channelMixMatrix, sourceChannels, outputChannels)
     )
 
     if (!shouldUseRoutingMatrix) {
@@ -1382,21 +1388,45 @@ export class AudioEngine {
     this.applyNodeRoutingMode(
       merger,
       outputChannels,
-      outputChannels > 2 ? 'explicit' : 'max',
-      outputChannels > 2 ? 'discrete' : 'speakers'
+      'explicit',
+      'discrete'
     )
 
     sourceNode.connect(splitter)
 
-    const channelMap = this.getEffectiveChannelMap(sourceChannels, outputChannels)
-    for (let outputIndex = 0; outputIndex < outputChannels; outputIndex++) {
-      const sourceIndex = channelMap[outputIndex]
-      if (sourceIndex === null) continue
-      splitter.connect(merger, sourceIndex, outputIndex)
-    }
+    const gainNodes = this.connectChannelMixMatrix(splitter, merger, channelMixMatrix)
 
     merger.connect(this.normalizationGainNode)
-    this.sourceRoutingNodes.set(sourceNode, { splitter, merger })
+    this.sourceRoutingNodes.set(sourceNode, { splitter, merger, gainNodes })
+  }
+
+  private connectChannelMixMatrix(
+    splitter: ChannelSplitterNode,
+    merger: ChannelMergerNode,
+    matrix: ChannelMixMatrix
+  ): GainNode[] {
+    const gainNodes: GainNode[] = []
+
+    for (let outputIndex = 0; outputIndex < matrix.length; outputIndex++) {
+      for (const input of matrix[outputIndex]) {
+        if (!Number.isFinite(input.gain) || input.gain <= 0) continue
+
+        if (Math.abs(input.gain - 1) <= 1e-6) {
+          splitter.connect(merger, input.sourceIndex, outputIndex)
+          continue
+        }
+
+        const gainNode = this.context?.createGain()
+        if (!gainNode) continue
+        gainNode.gain.value = input.gain
+        this.applyNodeRoutingMode(gainNode, 1, 'explicit', 'discrete')
+        splitter.connect(gainNode, input.sourceIndex)
+        gainNode.connect(merger, 0, outputIndex)
+        gainNodes.push(gainNode)
+      }
+    }
+
+    return gainNodes
   }
 
   private connectSourceToAnalysisTap(sourceNode: AudioNode, sourceChannels: number): void {
@@ -1525,6 +1555,9 @@ export class AudioEngine {
     if (!routingNodes) return
 
     try { routingNodes.splitter.disconnect() } catch { /* ignore */ }
+    for (const gainNode of routingNodes.gainNodes) {
+      try { gainNode.disconnect() } catch { /* ignore */ }
+    }
     try { routingNodes.merger.disconnect() } catch { /* ignore */ }
     this.sourceRoutingNodes.delete(sourceNode)
   }
@@ -1949,6 +1982,20 @@ export class AudioEngine {
 
   async setMultichannelEnabled(enabled: boolean): Promise<void> {
     this.multichannelEnabled = enabled
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  async setIncludeLfeInDownmix(enabled: boolean): Promise<void> {
+    this.includeLfeInDownmix = Boolean(enabled)
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
