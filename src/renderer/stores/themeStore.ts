@@ -35,6 +35,7 @@ interface SavedThemeSettings {
   customAccent: string | null
   accentSource: AccentSource
   coverArtAccentMethod: CoverArtAccentMethod
+  customCss: string | null
 }
 
 export interface ThemeSettingsState {
@@ -44,12 +45,14 @@ export interface ThemeSettingsState {
   coverArtAccentMethod: CoverArtAccentMethod
   coverArtAccent: string | null
   resolvedTokens: ResolvedThemeTokens
+  customCss: string | null
   setPreset: (presetId: ThemePresetId) => void
   setCustomAccent: (accentHex: string) => void
   usePresetAccent: () => void
   setAccentSource: (source: AccentSource) => void
   setCoverArtAccentMethod: (method: CoverArtAccentMethod) => void
   setCoverArtAccent: (accentHexOrNull: string | null) => void
+  setCustomCss: (css: string | null) => void
   resetToDefault: () => void
   initFromSaved: () => void
 }
@@ -313,17 +316,32 @@ function applyAccentTokensToDocument(accent: string, accentHover: string, accent
   root.style.setProperty('--accent-h', `${accentHue}`)
 }
 
+function applyCustomCssToDocument(css: string | null): void {
+  const STYLE_ID = 'astra-custom-css'
+  let styleTag = document.getElementById(STYLE_ID) as HTMLStyleElement | null
+
+  if (!styleTag) {
+    styleTag = document.createElement('style')
+    styleTag.id = STYLE_ID
+    document.head.appendChild(styleTag)
+  }
+
+  styleTag.textContent = css ?? ''
+}
+
 function persistThemeSettings(
   presetId: ThemePresetId,
   customAccent: string | null,
   accentSource: AccentSource,
-  coverArtAccentMethod: CoverArtAccentMethod
+  coverArtAccentMethod: CoverArtAccentMethod,
+  customCss: string | null
 ): void {
   localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
     presetId,
     customAccent,
     accentSource,
     coverArtAccentMethod,
+    customCss,
   }))
 }
 
@@ -337,6 +355,7 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       customAccent?: unknown
       accentSource?: unknown
       coverArtAccentMethod?: unknown
+      customCss?: unknown
     }
 
     const presetCandidate = parsed.presetId
@@ -365,11 +384,14 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       ? parsed.coverArtAccentMethod
       : DEFAULT_COVER_ART_ACCENT_METHOD
 
+    const customCss = typeof parsed.customCss === 'string' ? parsed.customCss : null
+
     return {
       presetId,
       customAccent,
       accentSource,
       coverArtAccentMethod,
+      customCss,
     }
   } catch {
     return null
@@ -394,6 +416,7 @@ interface ThemeMutation {
   accentSource: AccentSource
   coverArtAccentMethod: CoverArtAccentMethod
   coverArtAccent: string | null
+  customCss: string | null
 }
 
 export const useThemeStore = create<ThemeSettingsState>((set, get) => {
@@ -432,6 +455,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
 
     applyNonAccentTokensToDocument(targetTokens)
     applyAccentTokensToDocument(initialTokens.accent, initialTokens.accentHover, initialTokens.accentGlow)
+    applyCustomCssToDocument(nextState.customCss)
     useVisualizerSettingsStore.getState().setLineColor(initialTokens.accent)
 
     set({
@@ -441,6 +465,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       coverArtAccentMethod: nextState.coverArtAccentMethod,
       coverArtAccent: normalizedCoverArtAccent,
       resolvedTokens: initialTokens,
+      customCss: nextState.customCss
     })
 
     if (persist) {
@@ -448,7 +473,8 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         nextState.presetId,
         normalizedCustomAccent,
         nextState.accentSource,
-        nextState.coverArtAccentMethod
+        nextState.coverArtAccentMethod,
+        nextState.customCss
       )
     }
 
@@ -554,6 +580,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
     coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
     coverArtAccent: null,
     resolvedTokens: defaultTokens,
+    customCss: null,
     setPreset: (presetId) => {
       const state = get()
       applyAndSet({
@@ -562,6 +589,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
         coverArtAccent: state.coverArtAccent,
+        customCss: state.customCss,
       }, true)
     },
     setCustomAccent: (accentHex) => {
@@ -575,6 +603,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
         coverArtAccent: state.coverArtAccent,
+        customCss: state.customCss,
       }, true)
     },
     usePresetAccent: () => {
@@ -585,6 +614,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
         coverArtAccent: state.coverArtAccent,
+        customCss: state.customCss,
       }, true)
     },
     setAccentSource: (source) => {
@@ -595,6 +625,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: source,
         coverArtAccentMethod: state.coverArtAccentMethod,
         coverArtAccent: source === 'cover-art' ? state.coverArtAccent : null,
+        customCss: state.customCss,
       }, true)
     },
     setCoverArtAccentMethod: (method) => {
@@ -605,6 +636,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: state.accentSource,
         coverArtAccentMethod: method,
         coverArtAccent: state.coverArtAccent,
+        customCss: state.customCss,
       }, true)
     },
     setCoverArtAccent: (accentHexOrNull) => {
@@ -618,7 +650,19 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
         coverArtAccent: normalized,
+        customCss: state.customCss,
       }, false)
+    },
+    setCustomCss: (css) => {
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+        customCss: css,
+      }, true)
     },
     resetToDefault: () => {
       applyAndSet({
@@ -627,6 +671,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: DEFAULT_ACCENT_SOURCE,
         coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
         coverArtAccent: null,
+        customCss: null,
       }, true)
     },
     initFromSaved: () => {
@@ -638,6 +683,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
           accentSource: DEFAULT_ACCENT_SOURCE,
           coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
           coverArtAccent: null,
+          customCss: null,
         }, false)
         return
       }
@@ -648,6 +694,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         accentSource: saved.accentSource,
         coverArtAccentMethod: saved.coverArtAccentMethod,
         coverArtAccent: null,
+        customCss: saved.customCss,
       }, false)
     },
   }

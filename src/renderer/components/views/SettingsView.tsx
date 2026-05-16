@@ -271,11 +271,13 @@ export default function SettingsView() {
     accentSource,
     coverArtAccentMethod,
     resolvedTokens,
+    customCss,
     setPreset,
     setCustomAccent,
     usePresetAccent,
     setAccentSource,
     setCoverArtAccentMethod,
+    setCustomCss,
     resetToDefault: resetThemeToDefault,
   } = useThemeStore()
   const {
@@ -1535,6 +1537,21 @@ export default function SettingsView() {
                       <option value="clock">Clock</option>
                       <option value="off">Off</option>
                     </select>
+                  </label>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Custom CSS (Advanced)</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <textarea
+                      className="settings-select"
+                      style={{ resize: 'vertical' }}
+                      value={customCss ?? ''}
+                      onChange={(event) => setCustomCss(event.target.value)}
+                      placeholder="/* Add your custom CSS here... */"
+                      spellCheck={false}
+                    />
                   </label>
                 </div>
               </div>
