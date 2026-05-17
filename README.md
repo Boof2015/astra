@@ -14,11 +14,11 @@ A desktop music player for people who still have a music library. <a href="https
 
 ![Astra home screen](assets/Homescreen.png)
 
-Astra plays your local music - FLACs, MP3s, whatever your collection looks like. It has a native C++ DSP engine, real-time visualizers, a parametric EQ, Dolby Atmos decoding, and a UI that adapts to your music. No telemetry, no accounts, no streaming.
+Astra plays your local music - FLACs, MP3s, whatever your collection looks like. It has a native C++ DSP engine, real-time visualizers, a parametric EQ, Dolby Atmos decoding, scrobbling, and a UI that adapts to your music. No telemetry, no accounts, no streaming.
 
 ## Playback
 
-Gapless playback with pre-buffering so albums flow the way they were intended. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, and AIFF natively, with an FFmpeg fallback for anything else. Dolby Atmos multichannel decoding works without Atmos-compatible hardware.
+Gapless playback with pre-buffering so albums flow the way they were intended. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, AIFF, ALAC, APE, and WavPack natively, with an FFmpeg fallback for anything else. Dolby Atmos multichannel decoding works without Atmos-compatible hardware. Bit-perfect output bypasses the OS mixer for direct hardware delivery — WASAPI Exclusive on Windows, CoreAudio HAL on macOS, ALSA hw on Linux.
 
 ## Visualizers
 
@@ -26,21 +26,21 @@ Seven real-time visualizers powered by a native C++ module - oscilloscope, spect
 
 ## Equalizer
 
-A fully parametric EQ with up to 10 bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
+Up to 10 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
 
 ![Astra equalizer](assets/EQ.png)
 
 ## Library
 
-Point Astra at your music folders and it handles metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player. A Quick Launch shortcut gets you anywhere without touching the mouse.
+Point Astra at your music folders and it handles metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. Reads ID3v2.4 and Vorbis Comments, parses multiartist tags properly, supports custom artist images, and scans `.lrc` files by filename. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player. A Quick Launch palette and full keyboard shortcuts get you anywhere without touching the mouse.
 
 ## Audio Settings
 
-Output device selection, loudness normalization, per-channel remapping for multichannel setups, and delay calibration for wireless or Bluetooth speakers.
+Output device selection, loudness normalization with ReplayGain support, per-channel remapping for multichannel setups, and delay calibration for wireless or Bluetooth speakers.
 
 ## Interface
 
-Fullscreen mode shows album art with an ambient spectrum backdrop.
+The seek bar renders the actual waveform of the current track. Fullscreen mode shows album art with an ambient spectrum backdrop.
 
 ![Astra fullscreen mode](assets/Fullscreen.png)
 
@@ -48,25 +48,38 @@ The mini player keeps controls accessible when you want Astra out of the way.
 
 ![Astra mini player](assets/Miniplayer.png)
 
-There's also synced lyrics with auto-scroll, pulled automatically from embedded lyrics, an .lrc file, or from LRCLIB.
+There's also synced lyrics with auto-scroll, pulled automatically from embedded lyrics, an .lrc file, or from LRCLIB. The lyrics panel pops out into its own window if you want it somewhere else.
 
 ![Astra lyrics](assets/Lyrics.png)
+
+## Scrobbling
+
+Built-in support for Last.fm, AudioScrobbler, and ListenBrainz, plus a custom scrobbler profile system if you're running your own endpoint. Built in multiscrobble lets you submit to as many services as you want at once.
 
 ## Integrations
 
 Everything that touches the network is optional and off by default.
 
-- **Discord Rich Presence** - show what you're listening to with cover art
-- **Last.fm** - automatic scrobbling
-- **Jellyfin & Navidrome** - browse and play your self-hosted media server library directly inside Astra
+- **Discord Rich Presence** - show what you're listening to with cover art, with options for how the presence is laid out
+- **Self-hosted media servers** - Jellyfin, plus any Subsonic-compatible server (Navidrome, Airsonic, Gonic, Funkwhale, etc.)
 
 ## Astra API
 
 An optional local REST API lets external tools read the current track, playback position, and cover art, or control playback. Loopback only, bearer token auth, disabled by default. See the [API docs](https://github.com/Boof2015/astra/wiki/Astra-API) for details.
 
+## Experimental
+
+Opt-in experimental features that may get changed or removed based on feedback:
+
+- **PWA phone controller** - control playback from your phone over local network, with system media controls and a QR code pairing wizard
+- **Library integrity scanner** - find broken files, missing metadata, and quality issues across your library
+- **Graph visualization** - additional visualizer mode to see connections between artists in your library
+- **Ambient stereo-to-multichannel upmix** - fills the rear channels on multichannel setups when you're playing stereo files
+- **5×5 grid activity indicator** - shows what Astra is doing in the background
+
 ## Download
 
-Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page.
+Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page. Windows users can also `winget install Boof2015.Astra`. Linux builds ship as AppImage, DEB, RPM, and tarball.
 
 Also available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
 
@@ -94,7 +107,7 @@ npm run build            # Build application assets
 npm run dist             # Package for current platform
 npm run dist:mac         # macOS (DMG + ZIP)
 npm run dist:win         # Windows (NSIS + Portable)
-npm run dist:linux       # Linux (AppImage + DEB)
+npm run dist:linux       # Linux (AppImage + DEB + RPM + tarball)
 ```
 
 ## Documentation
