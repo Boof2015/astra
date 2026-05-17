@@ -67,8 +67,10 @@ export interface CanUseStereoAmbientUpmixOptions {
 const CENTER_GAIN = Math.SQRT1_2
 const SURROUND_GAIN = Math.SQRT1_2
 const LFE_DOWNMIX_GAIN = 0.5
-const SIDE_AMBIENCE_GAIN = 0.25
-const BACK_AMBIENCE_GAIN = 0.18
+const SIDE_AMBIENCE_GAIN = Math.pow(10, -2 / 20)
+const SIDE_AMBIENCE_CROSSFEED_GAIN = SIDE_AMBIENCE_GAIN * 0.5
+const BACK_AMBIENCE_GAIN = Math.pow(10, -2 / 20)
+const BACK_AMBIENCE_CROSSFEED_GAIN = BACK_AMBIENCE_GAIN * 0.5
 // HPFs are intentionally aggressive (cascaded twice in the audio graph for
 // 24 dB/oct) and the cutoffs are well above kick/bass territory. Any low-end
 // leakage on the rears acoustically (or via receiver bass management) sums
@@ -450,9 +452,9 @@ export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmb
   const outputLayout = buildSpeakerLayout(normalizedOutputChannels)
   const routes: StereoAmbientUpmixRoute[] = []
 
-  // Sign-flipped pair coefficients on the rears form a pure (L-R) difference signal
-  // scaled per route. Centered/mono content cancels to 0 in the rears, preserving
-  // the front image; only stereo decorrelation (ambience) reaches the surrounds.
+  // Sign-flipped crossfeed emphasizes the stereo difference signal, but it is
+  // intentionally weaker than the same-side feed so centered content does not
+  // disappear completely from the ambient bed.
   addStereoAmbientRoute(routes, outputLayout, {
     outputId: 'FL', kind: 'direct', inputs: [{ sourceIndex: 0, gain: 1 }],
   })
@@ -465,7 +467,7 @@ export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmb
     kind: 'ambience',
     inputs: [
       { sourceIndex: 0, gain: SIDE_AMBIENCE_GAIN },
-      { sourceIndex: 1, gain: -SIDE_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: -SIDE_AMBIENCE_CROSSFEED_GAIN },
     ],
     highpassHz: SIDE_AMBIENCE_HIGHPASS_HZ,
     lowpassHz: SIDE_AMBIENCE_LOWPASS_HZ,
@@ -476,7 +478,7 @@ export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmb
     outputId: 'SR',
     kind: 'ambience',
     inputs: [
-      { sourceIndex: 0, gain: -SIDE_AMBIENCE_GAIN },
+      { sourceIndex: 0, gain: -SIDE_AMBIENCE_CROSSFEED_GAIN },
       { sourceIndex: 1, gain: SIDE_AMBIENCE_GAIN },
     ],
     highpassHz: SIDE_AMBIENCE_HIGHPASS_HZ,
@@ -489,7 +491,7 @@ export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmb
     kind: 'ambience',
     inputs: [
       { sourceIndex: 0, gain: BACK_AMBIENCE_GAIN },
-      { sourceIndex: 1, gain: -BACK_AMBIENCE_GAIN },
+      { sourceIndex: 1, gain: -BACK_AMBIENCE_CROSSFEED_GAIN },
     ],
     highpassHz: BACK_AMBIENCE_HIGHPASS_HZ,
     lowpassHz: BACK_AMBIENCE_LOWPASS_HZ,
@@ -500,7 +502,7 @@ export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmb
     outputId: 'BR',
     kind: 'ambience',
     inputs: [
-      { sourceIndex: 0, gain: -BACK_AMBIENCE_GAIN },
+      { sourceIndex: 0, gain: -BACK_AMBIENCE_CROSSFEED_GAIN },
       { sourceIndex: 1, gain: BACK_AMBIENCE_GAIN },
     ],
     highpassHz: BACK_AMBIENCE_HIGHPASS_HZ,

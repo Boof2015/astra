@@ -13,6 +13,10 @@ import {
 
 const G = Number(Math.SQRT1_2.toFixed(6))
 const L = 0.5
+const SIDE_AMBIENCE_GAIN = Number((10 ** (-2 / 20)).toFixed(6))
+const SIDE_AMBIENCE_CROSSFEED_GAIN = Number(((10 ** (-2 / 20)) * 0.5).toFixed(6))
+const BACK_AMBIENCE_GAIN = Number((10 ** (-2 / 20)).toFixed(6))
+const BACK_AMBIENCE_CROSSFEED_GAIN = Number(((10 ** (-2 / 20)) * 0.5).toFixed(6))
 
 function compact(matrix: ChannelMixMatrix): Array<Array<[number, number]>> {
   return matrix.map((row) => (
@@ -330,8 +334,8 @@ test('stereo ambient upmix keeps fronts direct and generates only rear ambience'
 
   const sideLeftRoute = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SL')
   assert.deepEqual(
-    sideLeftRoute?.inputs.map((input) => [input.sourceIndex, input.gain]),
-    [[0, 0.25], [1, -0.25]]
+    sideLeftRoute?.inputs.map((input) => [input.sourceIndex, Number(input.gain.toFixed(6))]),
+    [[0, SIDE_AMBIENCE_GAIN], [1, -SIDE_AMBIENCE_CROSSFEED_GAIN]]
   )
   assert.equal(sideLeftRoute?.highpassHz, 300)
   assert.equal(sideLeftRoute?.lowpassHz, 8000)
@@ -340,21 +344,27 @@ test('stereo ambient upmix keeps fronts direct and generates only rear ambience'
 
   const sideRightRoute = resolveStereoAmbientUpmixPlan(6).routes.find((route) => route.outputId === 'SR')
   assert.deepEqual(
-    sideRightRoute?.inputs.map((input) => [input.sourceIndex, input.gain]),
-    [[0, -0.25], [1, 0.25]]
+    sideRightRoute?.inputs.map((input) => [input.sourceIndex, Number(input.gain.toFixed(6))]),
+    [[0, -SIDE_AMBIENCE_CROSSFEED_GAIN], [1, SIDE_AMBIENCE_GAIN]]
   )
   assert.deepEqual(sideRightRoute?.allpassFrequenciesHz, [380, 1900, 4700])
+
+  const backLeftRoute = resolveStereoAmbientUpmixPlan(8).routes.find((route) => route.outputId === 'BL')
+  assert.deepEqual(
+    backLeftRoute?.inputs.map((input) => [input.sourceIndex, Number(input.gain.toFixed(6))]),
+    [[0, BACK_AMBIENCE_GAIN], [1, -BACK_AMBIENCE_CROSSFEED_GAIN]]
+  )
 })
 
-test('stereo ambient upmix rear routes cancel centered/mono content', () => {
+test('stereo ambient upmix surround routes keep a low-level centered bed', () => {
   for (const channelCount of [4, 6, 8]) {
     const plan = resolveStereoAmbientUpmixPlan(channelCount)
     for (const route of plan.routes) {
       if (route.kind !== 'ambience') continue
       const sum = route.inputs.reduce((total, input) => total + input.gain, 0)
       assert.ok(
-        Math.abs(sum) < 1e-9,
-        `Route ${route.outputId} at ${channelCount}ch should sum to 0, got ${sum}`
+        sum > 0,
+        `Route ${route.outputId} at ${channelCount}ch should keep centered content, got ${sum}`
       )
     }
   }
