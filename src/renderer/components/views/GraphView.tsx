@@ -220,6 +220,7 @@ export default function GraphView() {
   const setActiveView = useUIStore((state) => state.setActiveView)
 
   const surfaceRef = useRef<HTMLDivElement | null>(null)
+  const surfaceObserverRef = useRef<ResizeObserver | null>(null)
   const dragStateRef = useRef<GraphDragState | null>(null)
   const dragMovedRef = useRef(false)
   const viewportFrameRef = useRef<number | null>(null)
@@ -259,28 +260,27 @@ export default function GraphView() {
     void loadFullTracks('graph')
   }, [graphTracks.length, isLibraryLoading, loadFullTracks, totalTrackCount])
 
-  useEffect(() => {
-    const surface = surfaceRef.current
-    if (!surface) return
-
-    const updateSurfaceSize = () => {
-      const rect = surface.getBoundingClientRect()
-      setSurfaceSize({
-        width: rect.width,
-        height: rect.height
-      })
+  const setSurfaceRef = useCallback((node: HTMLDivElement | null) => {
+    surfaceObserverRef.current?.disconnect()
+    surfaceObserverRef.current = null
+    surfaceRef.current = node
+    if (!node) {
+      setSurfaceSize({ width: 0, height: 0 })
+      return
     }
-
-    updateSurfaceSize()
-
-    const observer = new ResizeObserver(() => {
-      updateSurfaceSize()
-    })
-    observer.observe(surface)
-
-    return () => {
-      observer.disconnect()
+    const measure = () => {
+      const rect = node.getBoundingClientRect()
+      setSurfaceSize({ width: rect.width, height: rect.height })
     }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    surfaceObserverRef.current = observer
+  }, [])
+
+  useEffect(() => () => {
+    surfaceObserverRef.current?.disconnect()
+    surfaceObserverRef.current = null
   }, [])
 
   const graph = useMemo(
@@ -1071,7 +1071,7 @@ export default function GraphView() {
     <div className="graph-view">
       <div className="graph-canvas-frame">
         <div
-          ref={surfaceRef}
+          ref={setSurfaceRef}
           className={`graph-surface${isPanning ? ' is-panning' : ''}`}
           onClick={handleSurfaceClick}
           onPointerDown={handleSurfacePointerDown}

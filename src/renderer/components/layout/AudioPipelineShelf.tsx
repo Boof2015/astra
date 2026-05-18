@@ -7,6 +7,7 @@ import {
 } from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
+import { canUseStereoAmbientUpmix } from '../../utils/sourceChannelLayout'
 
 interface PipelineNode {
   id: string
@@ -124,11 +125,13 @@ export default function AudioPipelineShelf() {
   const availableDevices = useAudioSettingsStore((s) => s.availableDevices)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const multichannelEnabled = useAudioSettingsStore((s) => s.multichannelEnabled)
+  const stereoUpmixMode = useAudioSettingsStore((s) => s.stereoUpmixMode)
   const channelRoutingMap = useAudioSettingsStore((s) => s.channelRoutingMap)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
+  const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
 
   const nodes = useMemo((): PipelineNode[] => {
@@ -172,6 +175,17 @@ export default function AudioPipelineShelf() {
       const srcCh = currentTrack.channels ?? 2
       const outCh = channelRoutingMap.length
       result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: `${srcCh}ch \u2192 ${outCh}ch` })
+    }
+
+    const upmixOutputChannels = selectedOutputChannelCount ?? audioEngine.getOutputMaxChannelCount() ?? 2
+    if (canUseStereoAmbientUpmix({
+      sourceChannels: currentTrack.channels ?? 2,
+      outputChannels: upmixOutputChannels,
+      multichannelEnabled,
+      standardMode: playbackOutputMode === 'standard',
+      stereoUpmixMode,
+    })) {
+      result.push({ id: 'upmix', icon: RoutingIcon, label: 'Upmix', detail: `2ch \u2192 ${upmixOutputChannels}ch` })
     }
 
     // Normalization
@@ -221,11 +235,13 @@ export default function AudioPipelineShelf() {
     availableDevices,
     effectiveDelayMs,
     multichannelEnabled,
+    stereoUpmixMode,
     channelRoutingMap,
     normalizationEnabled,
     normalizationTargetLufs,
     replayGainScanEnabled,
     playbackOutputMode,
+    selectedOutputChannelCount,
     nativeAudioCapabilities.activeSampleRate,
   ])
 
