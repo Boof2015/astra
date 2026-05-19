@@ -1,13 +1,17 @@
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
-import { join, extname, basename, dirname, isAbsolute, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
+import { join, extname, basename, dirname, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
-import { fileURLToPath } from 'url'
 import { tmpdir, cpus } from 'os'
 import { createRequire } from 'module'
 import { parsePlaylistDocument, type ParsedPlaylistEntry, type PlaylistImportDetectedFormat } from './playlistImport'
+import {
+  normalizePlaylistPathForLookup,
+  resolveImportedPlaylistEntryPaths,
+  stripPlaylistEntryOuterQuotes
+} from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
 import {
   buildAlbumIdentityKeyByTrackId,
@@ -7158,11 +7162,6 @@ interface PlaylistImportLookupIndex {
   metadataByTitle: Map<string, string | null>
 }
 
-interface ResolvedPlaylistImportPath {
-  normalizedPath: string
-  caseInsensitivePath: string
-}
-
 type MetadataMatchResult =
   | { kind: 'matched'; trackPath: string }
   | { kind: 'ambiguous' }
@@ -7180,7 +7179,7 @@ function buildPlaylistImportLookupIndex(
   }
 
   for (const track of tracks) {
-    const normalizedTrackPath = normalizePathForLookup(track.path)
+    const normalizedTrackPath = normalizePlaylistPathForLookup(track.path)
     if (normalizedTrackPath) {
       index.exactPath.set(normalizedTrackPath, track.path)
       upsertUniqueLookupEntry(index.caseInsensitivePath, normalizedTrackPath.toLocaleLowerCase(), track.path)
@@ -7228,102 +7227,6 @@ function upsertUniqueLookupEntry(map: Map<string, string | null>, key: string, v
   }
 }
 
-function normalizePathForLookup(inputPath: string): string {
-  const trimmed = inputPath.trim()
-  if (!trimmed) return ''
-
-  const platformAwarePath = process.platform === 'win32'
-    ? trimmed.replace(/\//g, '\\')
-    : trimmed.replace(/\\/g, '/')
-
-  return normalizePath(platformAwarePath)
-}
-
-function stripOuterQuotes(value: string): string {
-  if (value.length < 2) return value
-  const startsWithSingle = value.startsWith("'") && value.endsWith("'")
-  const startsWithDouble = value.startsWith('"') && value.endsWith('"')
-  if (!startsWithSingle && !startsWithDouble) return value
-  return value.slice(1, -1)
-}
-
-function resolveImportedPlaylistEntryPathCandidate(candidatePath: string, importFilePath: string): ResolvedPlaylistImportPath | null {
-  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(candidatePath) || /^\\\\[^\\]/.test(candidatePath)
-  let absolutePath = candidatePath
-  if (isWindowsAbsolutePath && process.platform !== 'win32') {
-    // Keep explicit Windows absolute paths as-is; these can still match on Windows,
-    // and should not be resolved relative to a POSIX import directory.
-    absolutePath = candidatePath
-  } else {
-    const normalizedSeparators = process.platform === 'win32'
-      ? candidatePath.replace(/\//g, '\\')
-      : candidatePath.replace(/\\/g, '/')
-    absolutePath = isAbsolute(normalizedSeparators)
-      ? normalizedSeparators
-      : resolvePath(dirname(importFilePath), normalizedSeparators)
-  }
-
-  const normalizedPath = normalizePathForLookup(absolutePath)
-  if (!normalizedPath) return null
-
-  return {
-    normalizedPath,
-    caseInsensitivePath: normalizedPath.toLocaleLowerCase()
-  }
-}
-
-function decodeUriEncodedPlaylistPath(candidatePath: string): string | null {
-  if (!candidatePath.includes('%')) return null
-
-  try {
-    const decodedPath = decodeURIComponent(candidatePath)
-    return decodedPath !== candidatePath ? decodedPath : null
-  } catch {
-    return null
-  }
-}
-
-function resolveImportedPlaylistEntryPaths(rawPath: string, importFilePath: string): ResolvedPlaylistImportPath[] | null {
-  const trimmed = stripOuterQuotes(rawPath.trim())
-  if (!trimmed) return null
-
-  const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed)
-  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(trimmed)
-  const candidatePaths: string[] = []
-
-  if (schemeMatch && !isWindowsAbsolutePath) {
-    const scheme = schemeMatch[1].toLocaleLowerCase()
-    if (scheme === 'file') {
-      try {
-        candidatePaths.push(fileURLToPath(trimmed))
-      } catch {
-        return null
-      }
-    } else {
-      return null
-    }
-  } else {
-    candidatePaths.push(trimmed)
-
-    // Some M3U exporters percent-encode plain local paths without a file:// scheme.
-    const decodedPath = decodeUriEncodedPlaylistPath(trimmed)
-    if (decodedPath) {
-      candidatePaths.push(decodedPath)
-    }
-  }
-
-  const resolvedPaths: ResolvedPlaylistImportPath[] = []
-  const seenNormalizedPaths = new Set<string>()
-  for (const candidatePath of candidatePaths) {
-    const resolvedPath = resolveImportedPlaylistEntryPathCandidate(candidatePath, importFilePath)
-    if (!resolvedPath || seenNormalizedPaths.has(resolvedPath.normalizedPath)) continue
-    seenNormalizedPaths.add(resolvedPath.normalizedPath)
-    resolvedPaths.push(resolvedPath)
-  }
-
-  return resolvedPaths.length > 0 ? resolvedPaths : null
-}
-
 function matchPlaylistEntryByMetadata(entry: ParsedPlaylistEntry, index: PlaylistImportLookupIndex): MetadataMatchResult {
   const titleKey = normalizeKey(entry.title ?? '')
   if (!titleKey) {
@@ -7358,7 +7261,7 @@ function deriveImportedPlaylistName(filePath: string): string {
 }
 
 function normalizePreservedPlaylistImportEntryPath(rawPath: string): string | null {
-  const normalized = stripOuterQuotes(rawPath.trim())
+  const normalized = stripPlaylistEntryOuterQuotes(rawPath.trim())
   return normalized.length > 0 ? normalized : null
 }
 

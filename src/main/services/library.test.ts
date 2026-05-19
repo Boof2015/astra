@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, relative } from 'path'
 import test from 'node:test'
+import { pathToFileURL } from 'url'
 import * as library from './library.ts'
 
 function createRiffChunk(id: string, payload: Buffer): Buffer {
@@ -326,6 +327,47 @@ test('playlist import matches percent-encoded local M3U paths', async (t) => {
   assert.equal(literalPercentResult.matchedByPathCount, 1)
   assert.ok(literalPercentResult.playlistId)
   assert.deepEqual(library.getPlaylistTracks(literalPercentResult.playlistId).map((track) => track.path), [literalPercentTrackPath])
+})
+
+test('playlist import matches VLC-style file URI M3U paths', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const vlcMusicDir = join(musicDir, '\u25b6 Music')
+  const trackPath = join(vlcMusicDir, '01 Tia Na S\u00e9.wav')
+  await mkdir(vlcMusicDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Tia Na Se', 'Rambo goyard')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const playlistPath = join(dir, 'vlc-file-uri-path.m3u')
+  await writeFile(
+    playlistPath,
+    [
+      '#EXTM3U',
+      '#EXTINF:165,Rambo goyard - Tia Na S\u00e9',
+      pathToFileURL(trackPath).href,
+      ''
+    ].join('\n'),
+    'utf-8'
+  )
+
+  const result = await library.importPlaylistFromFile(playlistPath)
+  assert.equal(result.detectedFormat, 'm3u')
+  assert.equal(result.entriesTotal, 1)
+  assert.equal(result.importedCount, 1)
+  assert.equal(result.missingEntryCount, 0)
+  assert.equal(result.matchedByPathCount, 1)
+  assert.equal(result.unmatchedCount, 0)
+  assert.equal(result.unsupportedEntryCount, 0)
+  assert.ok(result.playlistId)
+  assert.deepEqual(library.getPlaylistTracks(result.playlistId).map((track) => track.path), [trackPath])
 })
 
 test('playlist import falls back to metadata for unsupported M3U URIs', async (t) => {
