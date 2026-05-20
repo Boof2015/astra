@@ -9,6 +9,7 @@ import {
   useAudioSettingsStore
 } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
+import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { audioEngine } from '../../audio/AudioEngine'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -138,6 +139,7 @@ export default function TransportBar() {
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
   const playbackModeStatusMessage = useAudioSettingsStore((s) => s.playbackModeStatusMessage)
+  const jumpToNowPlaying = useJumpToNowPlaying()
 
   const isAssociationTrack = currentTrack?.origin === 'associated-external'
   const isFavorite = currentTrack && !isAssociationTrack ? favorites.has(currentTrack.path) : false
@@ -150,7 +152,7 @@ export default function TransportBar() {
   })
 
   // Marquee scroll for long titles
-  const titleOuterRef = useRef<HTMLDivElement>(null)
+  const titleOuterRef = useRef<HTMLButtonElement>(null)
   const titleInnerRef = useRef<HTMLSpanElement>(null)
   const [titleOverflows, setTitleOverflows] = useState(false)
 
@@ -358,14 +360,21 @@ export default function TransportBar() {
           </div>
         </div>
         <div className="transport-text">
-          <div
+          <button
+            type="button"
             ref={titleOuterRef}
-            className={`now-playing-title${titleOverflows ? ' marquee-active' : ''}`}
+            className={`now-playing-title now-playing-title-button${titleOverflows ? ' marquee-active' : ''}`}
+            onClick={() => {
+              void jumpToNowPlaying()
+            }}
+            disabled={!currentTrack}
+            title="Jump to playing (J)"
+            aria-label="Jump to playing (J)"
           >
             <span ref={titleInnerRef} className="now-playing-title-inner">
               {currentTrack?.title ?? 'No track playing'}
             </span>
-          </div>
+          </button>
           <div className="transport-subline">
             <div className="now-playing-artist">
               {currentTrack?.artist?.trim()

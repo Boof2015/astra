@@ -12,6 +12,7 @@ import type { UIScaleShortcutAction } from '../../types/uiScale'
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
+export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
@@ -25,10 +26,22 @@ export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
+export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
+export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
 
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
+}
+
+export interface PlaylistTrackRevealRequest {
+  id: number
+  playlistId: number
+  trackPath: string
+}
+
+export interface QueueNowPlayingRevealRequest {
+  id: number
 }
 
 export type TrackDragSurface = 'queue' | 'sidebar'
@@ -132,6 +145,12 @@ export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextM
     : DEFAULT_HOME_GREETING_TEXT_MODE
 }
 
+export function normalizeJumpToPlayingDestination(value: unknown): JumpToPlayingDestination {
+  return value === 'library-tracks' || value === 'album' || value === 'artist' || value === 'queue' || value === 'smart-source'
+    ? value
+    : DEFAULT_JUMP_TO_PLAYING_DESTINATION
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
@@ -229,13 +248,32 @@ function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
   }
 }
 
+function readJumpToPlayingDestinationPreference(): JumpToPlayingDestination {
+  try {
+    return normalizeJumpToPlayingDestination(localStorage.getItem(JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY))
+  } catch {
+    return DEFAULT_JUMP_TO_PLAYING_DESTINATION
+  }
+}
+
+function persistJumpToPlayingDestinationPreference(destination: JumpToPlayingDestination): void {
+  try {
+    localStorage.setItem(JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY, normalizeJumpToPlayingDestination(destination))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
+const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 let nextLibraryTrackRevealRequestId = 0
+let nextPlaylistTrackRevealRequestId = 0
+let nextQueueNowPlayingRevealRequestId = 0
 
 interface UIStore {
   activeView: AppView
@@ -251,8 +289,11 @@ interface UIStore {
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
   activityIndicatorExperimentEnabled: boolean
+  jumpToPlayingDestination: JumpToPlayingDestination
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
+  playlistTrackRevealRequest: PlaylistTrackRevealRequest | null
+  queueNowPlayingRevealRequest: QueueNowPlayingRevealRequest | null
   isQuickLaunchOpen: boolean
   isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
@@ -281,8 +322,15 @@ interface UIStore {
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
+  setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
+  resetJumpToPlayingDestination: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
+  clearLibraryTrackRevealRequest: (requestId: number) => void
+  requestPlaylistTrackReveal: (playlistId: number, trackPath: string) => void
+  clearPlaylistTrackRevealRequest: (requestId: number) => void
+  requestQueueNowPlayingReveal: () => void
+  clearQueueNowPlayingRevealRequest: (requestId: number) => void
   openQuickLaunch: () => void
   closeQuickLaunch: () => void
   toggleQuickLaunch: () => void
@@ -316,8 +364,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
+  jumpToPlayingDestination: initialJumpToPlayingDestination,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
+  playlistTrackRevealRequest: null,
+  queueNowPlayingRevealRequest: null,
   isQuickLaunchOpen: false,
   isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
@@ -413,6 +464,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
     persistActivityIndicatorExperimentPreference(normalized)
     set({ activityIndicatorExperimentEnabled: normalized })
   },
+  setJumpToPlayingDestination: (destination) => {
+    const normalized = normalizeJumpToPlayingDestination(destination)
+    persistJumpToPlayingDestinationPreference(normalized)
+    set({ jumpToPlayingDestination: normalized })
+  },
+  resetJumpToPlayingDestination: () => {
+    persistJumpToPlayingDestinationPreference(DEFAULT_JUMP_TO_PLAYING_DESTINATION)
+    set({ jumpToPlayingDestination: DEFAULT_JUMP_TO_PLAYING_DESTINATION })
+  },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode = getNextMiniPlayerTimeDisplayMode(s.waveformTimeDisplayMode)
     persistWaveformTimeDisplayModePreference(nextMode)
@@ -426,6 +486,36 @@ export const useUIStore = create<UIStore>((set, get) => ({
         trackPath
       }
     }
+  }),
+  clearLibraryTrackRevealRequest: (requestId) => set((state) => {
+    if (state.libraryTrackRevealRequest?.id !== requestId) return {}
+    return { libraryTrackRevealRequest: null }
+  }),
+  requestPlaylistTrackReveal: (playlistId, trackPath) => set(() => {
+    nextPlaylistTrackRevealRequestId += 1
+    return {
+      playlistTrackRevealRequest: {
+        id: nextPlaylistTrackRevealRequestId,
+        playlistId,
+        trackPath
+      }
+    }
+  }),
+  clearPlaylistTrackRevealRequest: (requestId) => set((state) => {
+    if (state.playlistTrackRevealRequest?.id !== requestId) return {}
+    return { playlistTrackRevealRequest: null }
+  }),
+  requestQueueNowPlayingReveal: () => set(() => {
+    nextQueueNowPlayingRevealRequestId += 1
+    return {
+      queueNowPlayingRevealRequest: {
+        id: nextQueueNowPlayingRevealRequestId
+      }
+    }
+  }),
+  clearQueueNowPlayingRevealRequest: (requestId) => set((state) => {
+    if (state.queueNowPlayingRevealRequest?.id !== requestId) return {}
+    return { queueNowPlayingRevealRequest: null }
   }),
   openQuickLaunch: () => set({ isQuickLaunchOpen: true }),
   closeQuickLaunch: () => set({ isQuickLaunchOpen: false }),

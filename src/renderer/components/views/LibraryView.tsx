@@ -5,21 +5,21 @@ import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useGraphStore } from '../../stores/graphStore'
-import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { Track } from '../../types/audio'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
-import ArtistList from '../library/ArtistList'
+import ArtistList, { type ArtistListViewMode, type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
-import { type ListImperativeAPI } from 'react-window'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
 type AlbumSortMode = 'title' | 'artist'
+type ArtistRootViewMode = ArtistListViewMode
 const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
+const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
   try {
@@ -35,6 +35,14 @@ function loadIncludeSinglesInAlbumsSetting(): boolean {
     return localStorage.getItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY) === '1'
   } catch {
     return false
+  }
+}
+
+function loadArtistRootViewModeSetting(): ArtistRootViewMode {
+  try {
+    return localStorage.getItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY) === 'grid' ? 'grid' : 'list'
+  } catch {
+    return 'list'
   }
 }
 
@@ -209,7 +217,6 @@ export default function LibraryView() {
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
-  const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
   const autoQueue = usePlayerStore((s) => s.autoQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
@@ -218,9 +225,9 @@ export default function LibraryView() {
   const graphEnabled = useGraphStore((s) => s.enabled)
   const openFocusedGraph = useGraphStore((s) => s.openFocusedGraph)
   const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
+  const clearLibraryTrackRevealRequest = useUIStore((s) => s.clearLibraryTrackRevealRequest)
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
-  const jumpToNowPlaying = useJumpToNowPlaying()
   const [searchQuery, setSearchQuery] = useState('')
   const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
@@ -229,6 +236,7 @@ export default function LibraryView() {
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
   const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
+  const [artistRootViewMode, setArtistRootViewMode] = useState<ArtistRootViewMode>(() => loadArtistRootViewModeSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
@@ -237,7 +245,7 @@ export default function LibraryView() {
   const shufflePlayPendingRef = useRef(false)
   const albumGridRef = useRef<HTMLDivElement | null>(null)
   const albumGridScrollRef = useRef(0)
-  const artistListRef = useRef<ListImperativeAPI | null>(null)
+  const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
   const artistScrollRef = useRef(0)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const pendingScrollRef = useRef<'albums' | 'artists' | null>(null)
@@ -246,6 +254,7 @@ export default function LibraryView() {
   const hasSearchQuery = normalizedQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
+  const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
   const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && (
     viewMode === 'tracks' || viewMode === 'folders' || selectedSourceFilters.size > 0
@@ -299,6 +308,12 @@ export default function LibraryView() {
   }, [consumePendingLibrarySearchQuery, pendingLibrarySearchQuery])
 
   useEffect(() => {
+    if (!libraryTrackRevealRequest) return
+    setSearchQuery('')
+    setSelectedSourceFilters(new Set())
+  }, [libraryTrackRevealRequest])
+
+  useEffect(() => {
     if (!previousInDetailViewRef.current && inDetailView) {
       setSearchQuery('')
     }
@@ -347,6 +362,14 @@ export default function LibraryView() {
       // Ignore localStorage write failures in restricted environments.
     }
   }, [includeSinglesInAlbums])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY, artistRootViewMode)
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  }, [artistRootViewMode])
 
   useEffect(() => {
     if (!includeSinglesInAlbums || !isAlbumRootView || albumsIncludingSinglesLoaded) return
@@ -415,8 +438,8 @@ export default function LibraryView() {
     if (pending === 'albums' && albumGridRef.current) {
       albumGridRef.current.scrollTop = albumGridScrollRef.current
       pendingScrollRef.current = null
-    } else if (pending === 'artists' && artistListRef.current?.element) {
-      artistListRef.current.element.scrollTop = artistScrollRef.current
+    } else if (pending === 'artists' && artistViewportRef.current?.element) {
+      artistViewportRef.current.element.scrollTop = artistScrollRef.current
       pendingScrollRef.current = null
     }
   })
@@ -495,7 +518,7 @@ export default function LibraryView() {
   }, [])
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
-    artistScrollRef.current = artistListRef.current?.element?.scrollTop ?? 0
+    artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
     await selectArtist(artistName, 'library')
   }, [selectArtist])
 
@@ -1022,7 +1045,14 @@ export default function LibraryView() {
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
           : <div className="library-empty"><p>No artists found</p></div>
       }
-      return <ArtistList artists={filteredArtists} onSelectArtist={handleSelectArtistFromList} listRef={artistListRef} />
+      return (
+        <ArtistList
+          artists={filteredArtists}
+          onSelectArtist={handleSelectArtistFromList}
+          viewMode={artistRootViewMode}
+          viewportRef={artistViewportRef}
+        />
+      )
     }
 
     if (selectedArtist) {
@@ -1118,6 +1148,7 @@ export default function LibraryView() {
             enableDefaultOrderReset={Boolean(selectedAlbum)}
             onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
             jumpToTrackRequest={libraryTrackRevealRequest}
+            onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
           />
         </div>
       )
@@ -1140,6 +1171,7 @@ export default function LibraryView() {
         enableDefaultOrderReset={Boolean(selectedAlbum)}
         onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
+        onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
       />
     )
   }
@@ -1315,6 +1347,47 @@ export default function LibraryView() {
               </div>
             </div>
           )}
+          {isArtistRootView && (
+            <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
+              <span
+                className="library-segmented-highlight"
+                aria-hidden="true"
+                style={{ transform: artistRootViewMode === 'grid' ? 'translateX(100%)' : 'translateX(0%)' }}
+              />
+              <button
+                type="button"
+                className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
+                onClick={() => setArtistRootViewMode('list')}
+                aria-label="Show artists as list"
+                aria-pressed={artistRootViewMode === 'list'}
+                title="List view"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M8 6h13" />
+                  <path d="M8 12h13" />
+                  <path d="M8 18h13" />
+                  <path d="M3 6h.01" />
+                  <path d="M3 12h.01" />
+                  <path d="M3 18h.01" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
+                onClick={() => setArtistRootViewMode('grid')}
+                aria-label="Show artists as grid"
+                aria-pressed={artistRootViewMode === 'grid'}
+                title="Grid view"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="7" height="7" rx="1" />
+                  <rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" />
+                  <rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
+              </button>
+            </div>
+          )}
           {isTracklistContext && (
             <button
               type="button"
@@ -1364,24 +1437,6 @@ export default function LibraryView() {
               </button>
             )}
           </div>
-          <button
-            className="icon-btn"
-            onClick={() => {
-              jumpToNowPlaying()
-            }}
-            title="Jump to now playing (J)"
-            aria-label="Jump to now playing (J)"
-            disabled={!currentTrackPath}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="7" />
-              <circle cx="12" cy="12" r="2.5" />
-              <path d="M12 2v3" />
-              <path d="M12 19v3" />
-              <path d="M2 12h3" />
-              <path d="M19 12h3" />
-            </svg>
-          </button>
           <button className="icon-btn" onClick={handleOpenFile} title="Open File">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>

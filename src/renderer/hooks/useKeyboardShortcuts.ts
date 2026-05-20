@@ -197,7 +197,7 @@ export function useKeyboardShortcuts(): void {
       if (!e.shiftKey && normalizedKey === 'j') {
         e.preventDefault()
         if (e.repeat) return
-        jumpToNowPlaying()
+        void jumpToNowPlaying()
         return
       }
 

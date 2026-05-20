@@ -11,7 +11,7 @@ import {
   useRef,
   useState
 } from 'react'
-import { List, RowComponentProps } from 'react-window'
+import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -263,6 +263,8 @@ export default function QueuePanel() {
   const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
   const trackDrag = useUIStore((state) => state.trackDrag)
   const setTrackDragDropTarget = useUIStore((state) => state.setTrackDragDropTarget)
+  const queueNowPlayingRevealRequest = useUIStore((state) => state.queueNowPlayingRevealRequest)
+  const clearQueueNowPlayingRevealRequest = useUIStore((state) => state.clearQueueNowPlayingRevealRequest)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [reorderDragOverIndex, setReorderDragOverIndex] = useState<number | null>(null)
@@ -272,9 +274,11 @@ export default function QueuePanel() {
   const [queueScrollGlowEdge, setQueueScrollGlowEdge] = useState<'top' | 'bottom' | null>(null)
   const [isDropSettling, setIsDropSettling] = useState(false)
   const dragNodeRef = useRef<HTMLDivElement | null>(null)
+  const listRef = useRef<ListImperativeAPI>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
   const previousDragActiveRef = useRef(false)
   const previousUserQueueLengthRef = useRef(userQueue.length)
+  const consumedQueueRevealRequestIdRef = useRef<number | null>(null)
   const settleTimerRef = useRef<number | null>(null)
   const userQueueEntries = useMemo(
     () => getResolvedUserQueueEntries(),
@@ -584,6 +588,34 @@ export default function QueuePanel() {
     userQueueEntries
   ])
 
+  useEffect(() => {
+    if (!queueNowPlayingRevealRequest) return
+    if (consumedQueueRevealRequestIdRef.current === queueNowPlayingRevealRequest.id) return
+
+    const targetIndex = rows.findIndex((row) => row.kind === 'track' && row.variant === 'current')
+    if (targetIndex < 0) return
+
+    let canceled = false
+    const scrollToTarget = () => {
+      if (canceled) return
+      if (!listRef.current) return
+
+      listRef.current.scrollToRow({
+        index: targetIndex,
+        align: 'center',
+        behavior: 'smooth'
+      })
+      consumedQueueRevealRequestIdRef.current = queueNowPlayingRevealRequest.id
+      clearQueueNowPlayingRevealRequest(queueNowPlayingRevealRequest.id)
+    }
+
+    const frameId = window.requestAnimationFrame(scrollToTarget)
+    return () => {
+      canceled = true
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [clearQueueNowPlayingRevealRequest, queueNowPlayingRevealRequest, queueItemRowHeight, queueSectionRowHeight, rows])
+
   const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
     setDragIndex(index)
     dragNodeRef.current = event.currentTarget
@@ -711,6 +743,7 @@ export default function QueuePanel() {
         <List
           className="queue-list-virtualized"
           defaultHeight={QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX * 8}
+          listRef={listRef}
           overscanCount={QUEUE_LIST_OVERSCAN_COUNT}
           rowComponent={QueueRow}
           rowCount={rows.length}

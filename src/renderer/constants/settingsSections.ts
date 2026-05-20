@@ -50,7 +50,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'playback',
     label: 'Playback',
-    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat']
+    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
   },
   {
     id: 'integrations',

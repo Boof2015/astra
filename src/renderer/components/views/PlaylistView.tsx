@@ -213,6 +213,8 @@ export default function PlaylistView() {
     importPlaylistFromFile
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
+  const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
@@ -267,6 +269,19 @@ export default function PlaylistView() {
     setIsSavingReorder(false)
     setIsDiscardReorderConfirmOpen(false)
   }, [selectedPlaylistId])
+
+  useEffect(() => {
+    if (!playlistTrackRevealRequest) return
+    if (selectedPlaylistId !== playlistTrackRevealRequest.playlistId) return
+    if (!isReorderMode) return
+
+    setIsReorderMode(false)
+    setReorderedEntries(null)
+    setDragIndex(null)
+    setDropIndex(null)
+    setReorderError(null)
+    setIsDiscardReorderConfirmOpen(false)
+  }, [isReorderMode, playlistTrackRevealRequest, selectedPlaylistId])
 
   useEffect(() => {
     if (showTracklistBpmKey) return
@@ -904,12 +919,18 @@ export default function PlaylistView() {
                 queueContextLabel={playlistName ?? 'Playlist'}
                 trackNumberMode="context"
                 contextTrackNumbersByPath={playlistTrackNumbersByPath}
-                playlistSourceId={selectedPlaylistId !== null && selectedPlaylistId > 0 ? selectedPlaylistId : null}
+                playlistSourceId={selectedPlaylistId}
                 enableColumnSorting
                 sortState={sortState}
                 onSortColumnToggle={handleSortColumnToggle}
                 enableDefaultOrderReset
                 onDefaultOrderReset={handleResetToDefaultOrder}
+                jumpToTrackRequest={
+                  selectedPlaylistId === playlistTrackRevealRequest?.playlistId
+                    ? playlistTrackRevealRequest
+                    : null
+                }
+                onJumpToTrackRequestConsumed={clearPlaylistTrackRevealRequest}
               />
             )}
           </>

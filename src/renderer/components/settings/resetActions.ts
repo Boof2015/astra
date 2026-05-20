@@ -23,6 +23,7 @@ import {
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
@@ -58,6 +59,7 @@ export const RENDERER_SETTINGS_KEYS = [
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   ARTIST_BROWSE_MODE_STORAGE_KEY,
   'astra-library-tracklist-bpm-key-visible-v1',
@@ -125,6 +127,7 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetUIScalePercent()
   useUIStore.getState().resetHomeGreetingTextMode()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
+  useUIStore.getState().resetJumpToPlayingDestination()
   return 'All renderer settings reset.'
 }
 

@@ -164,7 +164,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: 'jump-to-now-playing',
     section: 'global',
     action: 'Jump to Now Playing',
-    description: 'Reveal the current track in the Library view.',
+    description: 'Reveal the current track using the configured Jump to Playing destination.',
     bindings: [{ tokens: ['j'] }]
   },
   {

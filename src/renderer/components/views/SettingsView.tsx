@@ -11,11 +11,13 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
   DEFAULT_UI_SCALE_PERCENT,
+  DEFAULT_JUMP_TO_PLAYING_DESTINATION,
   MAX_UI_SCALE_PERCENT,
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
   useUIStore,
-  type HomeGreetingTextMode
+  type HomeGreetingTextMode,
+  type JumpToPlayingDestination
 } from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -421,6 +423,8 @@ export default function SettingsView() {
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
+  const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
+  const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -1810,6 +1814,30 @@ export default function SettingsView() {
               <h3>Playback</h3>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Navigation</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Jump to Playing opens</span>
+                    <select
+                      className="settings-select"
+                      value={jumpToPlayingDestination}
+                      onChange={(event) => {
+                        setJumpToPlayingDestination(event.target.value as JumpToPlayingDestination)
+                      }}
+                    >
+                      <option value="smart-source">Smart Source</option>
+                      <option value="library-tracks">Library Tracks</option>
+                      <option value="album">Album</option>
+                      <option value="artist">Artist</option>
+                      <option value="queue">Queue</option>
+                    </select>
+                  </label>
+                </div>
+                {jumpToPlayingDestination !== DEFAULT_JUMP_TO_PLAYING_DESTINATION && (
+                  <p className="settings-note">Default: Smart Source</p>
+                )}
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Sleep Timer</div>
                 <div className="settings-sleep-controls">

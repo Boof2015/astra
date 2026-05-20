@@ -4,7 +4,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
-import { useUIStore, type LibraryTrackRevealRequest } from '../../stores/uiStore'
+import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
@@ -71,7 +71,8 @@ interface TrackListProps {
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
   externalScroll?: boolean
   playlistSourceId?: number | null
-  jumpToTrackRequest?: LibraryTrackRevealRequest | null
+  jumpToTrackRequest?: LibraryTrackRevealRequest | PlaylistTrackRevealRequest | null
+  onJumpToTrackRequestConsumed?: (requestId: number) => void
   enableColumnSorting?: boolean
   sortState?: TrackListSortState | null
   onSortColumnToggle?: (key: TrackListSortKey) => void
@@ -658,6 +659,7 @@ export default function TrackList({
   externalScroll = false,
   playlistSourceId = null,
   jumpToTrackRequest = null,
+  onJumpToTrackRequestConsumed,
   enableColumnSorting = false,
   sortState = null,
   onSortColumnToggle,
@@ -759,13 +761,58 @@ export default function TrackList({
     const targetIndex = tracks.findIndex((track) => track.path === jumpToTrackRequest.trackPath)
     if (targetIndex < 0) return
 
-    listRef.current?.scrollToRow({
-      index: targetIndex,
-      align: 'center',
-      behavior: 'smooth'
-    })
-    consumedJumpRequestIdRef.current = jumpToTrackRequest.id
-  }, [jumpToTrackRequest, tracks])
+    let canceled = false
+    const markRequestConsumed = () => {
+      consumedJumpRequestIdRef.current = jumpToTrackRequest.id
+      onJumpToTrackRequestConsumed?.(jumpToTrackRequest.id)
+    }
+
+    let frameId = 0
+    let remainingAttempts = 6
+
+    const scheduleRetry = () => {
+      if (canceled || remainingAttempts <= 0) return
+      remainingAttempts -= 1
+      frameId = window.requestAnimationFrame(scrollToTarget)
+    }
+
+    const scrollToTarget = () => {
+      if (canceled) return
+      if (externalScroll) {
+        const rowElement = listBodyRef.current?.querySelector<HTMLElement>(`.track-row[data-track-index="${targetIndex}"]`)
+        if (!rowElement) {
+          scheduleRetry()
+          return
+        }
+
+        rowElement.scrollIntoView({
+          block: 'center',
+          inline: 'nearest',
+          behavior: 'smooth'
+        })
+        markRequestConsumed()
+        return
+      }
+
+      if (!listRef.current) {
+        scheduleRetry()
+        return
+      }
+
+      listRef.current.scrollToRow({
+        index: targetIndex,
+        align: 'center',
+        behavior: 'smooth'
+      })
+      markRequestConsumed()
+    }
+
+    frameId = window.requestAnimationFrame(scrollToTarget)
+    return () => {
+      canceled = true
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [externalScroll, jumpToTrackRequest, onJumpToTrackRequestConsumed, tracks, listViewportHeight, trackRowHeight])
 
   useLayoutEffect(() => {
     const element = listBodyRef.current
