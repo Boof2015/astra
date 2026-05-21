@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { LyricsPopoutSnapshot } from '../../../types/lyricsPopout'
 import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
+import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
+import LyricsLineContent from '../lyrics/LyricsLineContent'
 import {
   DEFAULT_LYRICS_BODY_COPY,
+  BASE_COMPACT_LYRICS_LINE_HEIGHT_PX,
+  getCompactSyncedLyricsLineHeights,
   getCompensatedLyricsTime,
   getLyricsMetaChipText,
-  getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
   resolveSyncedLyricsTiming,
   resolveLyricsBodyState
@@ -74,6 +77,7 @@ export default function LyricsPopoutApp() {
   const [isExpanded, setIsExpanded] = useState(true)
   const hasAdoptedPreferredExpandedRef = useRef(false)
   const currentTime = useLyricsPopoutClock(snapshot)
+  const lyricsDisplaySettings = useLyricsDisplaySettingsStore((s) => s.settings)
   const trackTitle = useMemo(() => snapshot.currentTrack?.title?.trim() || '', [snapshot.currentTrack?.title])
   const trackDetail = useMemo(() => (
     [snapshot.currentTrack?.artist, snapshot.currentTrack?.album]
@@ -124,6 +128,15 @@ export default function LyricsPopoutApp() {
     () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: snapshot.duration }),
     [snapshot.duration, syncedLines]
   )
+  const compactSyncedLineHeightsPx = useMemo(
+    () => getCompactSyncedLyricsLineHeights(displayedSyncedLines, lyricsDisplaySettings),
+    [displayedSyncedLines, lyricsDisplaySettings]
+  )
+  const getCompactLineStyle = useCallback((displayIndex: number) => ({
+    '--transport-lyrics-focus-row-height': `${
+      compactSyncedLineHeightsPx[displayIndex] ?? BASE_COMPACT_LYRICS_LINE_HEIGHT_PX
+    }px`
+  } as CSSProperties), [compactSyncedLineHeightsPx])
   const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
   const syncedLyricsTiming = useMemo(
     () => resolveSyncedLyricsTiming(syncedLines, currentTime, { durationSeconds: snapshot.duration }),
@@ -142,6 +155,7 @@ export default function LyricsPopoutApp() {
 
   const {
     followPaused,
+    collapsedWindowStyle,
     collapsedTrackStyle,
     effectiveSyncedLineIndex,
     expandedListRef,
@@ -154,24 +168,17 @@ export default function LyricsPopoutApp() {
     hasSyncedLyrics,
     activeSyncedLineIndex,
     focusedSyncedLineIndex: syncedLyricsTiming.focusLineIndex,
-    contentKey: snapshot.currentTrack?.path ?? null
+    contentKey: snapshot.currentTrack?.path ?? null,
+    collapsedLineHeightsPx: compactSyncedLineHeightsPx
   })
 
-  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
-    const progress = getSyncedLyricsGapProgress(displayLine, currentTime)
-    if (progress === null) return displayLine.text
-    return (
-      <span className="lyrics-gap-progress">
-        <span
-          className="lyrics-gap-progress-fill"
-          style={{ transform: `scaleX(${progress})` }}
-        />
-      </span>
-    )
-  }
-
   const renderCompactSyncedWindow = () => (
-    <div key="lyrics-popout-collapsed-window" className="transport-lyrics-focus-window" aria-live="polite">
+    <div
+      key="lyrics-popout-collapsed-window"
+      className="transport-lyrics-focus-window"
+      style={collapsedWindowStyle}
+      aria-live="polite"
+    >
       <div
         className="transport-lyrics-focus-track"
         style={collapsedTrackStyle}
@@ -191,8 +198,18 @@ export default function LyricsPopoutApp() {
                   : 'is-distant'
           ].join(' ')
           return (
-            <p key={displayLine.key} className={className} aria-hidden={displayLine.kind === 'gap'}>
-              {renderGapProgress(displayLine)}
+            <p
+              key={displayLine.key}
+              className={className}
+              style={getCompactLineStyle(displayIndex)}
+              aria-hidden={displayLine.kind === 'gap'}
+            >
+              <LyricsLineContent
+                displayLine={displayLine}
+                currentTimeSeconds={currentTime}
+                isActive={displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex}
+                settings={lyricsDisplaySettings}
+              />
             </p>
           )
         })}
@@ -242,7 +259,12 @@ export default function LyricsPopoutApp() {
               ].join(' ').trim()}
               aria-hidden={displayLine.kind === 'gap'}
             >
-              {renderGapProgress(displayLine)}
+              <LyricsLineContent
+                displayLine={displayLine}
+                currentTimeSeconds={currentTime}
+                isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
+                settings={lyricsDisplaySettings}
+              />
             </p>
           ))}
         </div>

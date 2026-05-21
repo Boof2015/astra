@@ -31,6 +31,7 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
+import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
@@ -360,6 +361,12 @@ export default function SettingsView() {
     errorMessage: lyricsErrorMessage,
     setEnabled: setLyricsEnabled,
   } = useLyricsStore()
+  const lyricsDisplaySettings = useLyricsDisplaySettingsStore((state) => state.settings)
+  const setLyricsWordTimingEnabled = useLyricsDisplaySettingsStore((state) => state.setWordTimingEnabled)
+  const setLyricsFuriganaEnabled = useLyricsDisplaySettingsStore((state) => state.setFuriganaEnabled)
+  const setLyricsTranslationsEnabled = useLyricsDisplaySettingsStore((state) => state.setTranslationsEnabled)
+  const setLyricsTranslationLanguagePriority = useLyricsDisplaySettingsStore((state) => state.setTranslationLanguagePriority)
+  const setLyricsVoiceLabelsEnabled = useLyricsDisplaySettingsStore((state) => state.setVoiceLabelsEnabled)
   const {
     autoCheckEnabled,
     checkState: updateCheckState,
@@ -408,6 +415,9 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
+  const [lyricsTranslationPriorityInput, setLyricsTranslationPriorityInput] = useState(() => (
+    lyricsDisplaySettings.translationLanguagePriority.join(', ')
+  ))
   const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
   const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
@@ -564,6 +574,10 @@ export default function SettingsView() {
   useEffect(() => {
     setNormalizationTargetInput(formatNormalizationTargetLufs(normalizationTargetLufs))
   }, [normalizationTargetLufs])
+
+  useEffect(() => {
+    setLyricsTranslationPriorityInput(lyricsDisplaySettings.translationLanguagePriority.join(', '))
+  }, [lyricsDisplaySettings.translationLanguagePriority])
 
   useEffect(() => {
     if (!showBitPerfectWarning) {
@@ -2070,7 +2084,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Lyrics</h4>
-                  <p>LRC files and embedded lyrics with optional LRCLIB fallback.</p>
+                  <p>LRC, XLRC, embedded lyrics, and optional LRCLIB fallback.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -2082,8 +2096,61 @@ export default function SettingsView() {
                       {lyricsEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">XLRC Word Timing</span>
+                    <button
+                      className={`settings-toggle ${lyricsDisplaySettings.wordTimingEnabled ? 'active' : ''}`}
+                      onClick={() => setLyricsWordTimingEnabled(!lyricsDisplaySettings.wordTimingEnabled)}
+                    >
+                      {lyricsDisplaySettings.wordTimingEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">XLRC Furigana</span>
+                    <button
+                      className={`settings-toggle ${lyricsDisplaySettings.furiganaEnabled ? 'active' : ''}`}
+                      onClick={() => setLyricsFuriganaEnabled(!lyricsDisplaySettings.furiganaEnabled)}
+                    >
+                      {lyricsDisplaySettings.furiganaEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">XLRC Translations</span>
+                    <button
+                      className={`settings-toggle ${lyricsDisplaySettings.translationsEnabled ? 'active' : ''}`}
+                      onClick={() => setLyricsTranslationsEnabled(!lyricsDisplaySettings.translationsEnabled)}
+                    >
+                      {lyricsDisplaySettings.translationsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">XLRC Voice Labels</span>
+                    <button
+                      className={`settings-toggle ${lyricsDisplaySettings.voiceLabelsEnabled ? 'active' : ''}`}
+                      onClick={() => setLyricsVoiceLabelsEnabled(!lyricsDisplaySettings.voiceLabelsEnabled)}
+                    >
+                      {lyricsDisplaySettings.voiceLabelsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Translation Priority</span>
+                    <input
+                      className="settings-select"
+                      type="text"
+                      value={lyricsTranslationPriorityInput}
+                      onChange={(event) => setLyricsTranslationPriorityInput(event.target.value)}
+                      onBlur={() => setLyricsTranslationLanguagePriority(lyricsTranslationPriorityInput)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          setLyricsTranslationLanguagePriority(lyricsTranslationPriorityInput)
+                        }
+                      }}
+                      placeholder="en, ja-Latn"
+                    />
+                  </label>
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
+                <p className="settings-note">XLRC translation codes are matched left to right, with the first available translation shown.</p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
               </div>
 

@@ -23,6 +23,7 @@ function makeResult(path: string): LyricsLookupResult {
     lyrics: {
       source: 'manual',
       provider: null,
+      format: 'plain',
       plainLyrics: `Lyrics for ${path}`,
       syncedLyrics: null,
       syncedLines: []

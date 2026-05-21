@@ -43,7 +43,8 @@ import {
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
 } from './libraryLatestSync'
-import type { LyricsLine, LyricsProvider } from '../../types/lyrics'
+import { sanitizeLyricsLines } from './lyricsParsing'
+import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
   SubsonicSourceLastStatus,
@@ -291,6 +292,7 @@ export interface LyricsCacheEntry {
   status: LyricsCacheStatus
   source: LyricsCacheSource
   provider: LyricsProvider | null
+  format: LyricsFormat
   plainLyrics: string | null
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
@@ -311,6 +313,7 @@ export interface LyricsCacheUpsertInput {
 
 export interface LyricsTrackOverrideEntry {
   trackPath: string
+  format: LyricsFormat
   plainLyrics: string | null
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
@@ -319,6 +322,7 @@ export interface LyricsTrackOverrideEntry {
 }
 
 export interface LyricsTrackManualInput {
+  format: LyricsFormat
   plainLyrics: string | null
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
@@ -1642,6 +1646,7 @@ export async function initDatabase(): Promise<void> {
   db.run(`
     CREATE TABLE IF NOT EXISTS lyrics_track_overrides (
       track_path TEXT PRIMARY KEY NOT NULL,
+      format TEXT,
       plain_lyrics TEXT,
       synced_lyrics TEXT,
       synced_lines_json TEXT NOT NULL,
@@ -1770,6 +1775,11 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE lyrics_track_overrides ADD COLUMN sync_offset_ms INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE lyrics_track_overrides ADD COLUMN format TEXT')
   } catch {
     // Column already exists.
   }
@@ -3219,42 +3229,6 @@ function normalizeLyricsCacheProvider(value: unknown): LyricsProvider | null {
   return null
 }
 
-function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
-  if (!Array.isArray(rawValue)) return []
-
-  const lines: LyricsLine[] = []
-  for (const entry of rawValue) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-    const line = entry as { timestampMs?: unknown; text?: unknown; kind?: unknown }
-    if (typeof line.text !== 'string') continue
-
-    const text = line.text.trim()
-    const timestamp = typeof line.timestampMs === 'number' && Number.isFinite(line.timestampMs)
-      ? Math.max(0, Math.floor(line.timestampMs))
-      : null
-    if (timestamp === null) continue
-
-    if (line.kind === 'silence') {
-      lines.push({
-        timestampMs: timestamp,
-        text: '',
-        kind: 'silence'
-      })
-      continue
-    }
-
-    if (!text) continue
-
-    lines.push({
-      timestampMs: timestamp,
-      text
-    })
-  }
-
-  lines.sort((left, right) => left.timestampMs - right.timestampMs)
-  return lines
-}
-
 function parseLyricsLinesJson(value: string | null): LyricsLine[] {
   if (value == null) return []
   const normalized = value.trim()
@@ -3265,6 +3239,29 @@ function parseLyricsLinesJson(value: string | null): LyricsLine[] {
   } catch {
     return []
   }
+}
+
+function normalizeLyricsFormat(value: unknown): LyricsFormat | null {
+  if (value === 'plain' || value === 'lrc' || value === 'xlrc') return value
+  return null
+}
+
+function hasRichLyricsLine(line: LyricsLine): boolean {
+  return (
+    (line.words?.length ?? 0) > 0
+    || (line.furigana?.length ?? 0) > 0
+    || (line.translations?.length ?? 0) > 0
+    || Boolean(line.voice)
+  )
+}
+
+function inferLyricsFormat(entry: {
+  syncedLyrics: string | null
+  syncedLines: LyricsLine[]
+}): LyricsFormat {
+  if (entry.syncedLines.some(hasRichLyricsLine)) return 'xlrc'
+  if (entry.syncedLyrics !== null || entry.syncedLines.length > 0) return 'lrc'
+  return 'plain'
 }
 
 function normalizeLyricsTrackPath(trackPath: string): string {
@@ -3311,15 +3308,20 @@ export function getLyricsCache(trackPath: string, metadataSignature: string): Ly
     return null
   }
 
+  const plainLyrics = toText(row.plain_lyrics)
+  const syncedLyrics = toText(row.synced_lyrics)
+  const syncedLines = parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null)
+
   return {
     trackPath: normalizedPath,
     metadataSignature: normalizedSignature,
     status: normalizedStatus,
     source: normalizedSource,
     provider: normalizeLyricsCacheProvider(row.provider),
-    plainLyrics: toText(row.plain_lyrics),
-    syncedLyrics: toText(row.synced_lyrics),
-    syncedLines: parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null),
+    format: inferLyricsFormat({ syncedLyrics, syncedLines }),
+    plainLyrics,
+    syncedLyrics,
+    syncedLines,
     updatedAt: toNumber(row.updated_at) ?? Date.now()
   }
 }
@@ -3384,6 +3386,7 @@ export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEn
   const row = db.get<Record<string, unknown>>(`
     SELECT
       track_path,
+      format,
       plain_lyrics,
       synced_lyrics,
       synced_lines_json,
@@ -3400,6 +3403,10 @@ export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEn
 
   return {
     trackPath: resolvedTrackPath,
+    format: normalizeLyricsFormat(row.format) ?? inferLyricsFormat({
+      syncedLyrics: toText(row.synced_lyrics),
+      syncedLines: parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null)
+    }),
     plainLyrics: toText(row.plain_lyrics),
     syncedLyrics: toText(row.synced_lyrics),
     syncedLines: parseLyricsLinesJson(typeof row.synced_lines_json === 'string' ? row.synced_lines_json : null),
@@ -3428,13 +3435,15 @@ export async function upsertLyricsTrackManual(
     db.run(
       `INSERT INTO lyrics_track_overrides (
         track_path,
+        format,
         plain_lyrics,
         synced_lyrics,
         synced_lines_json,
         sync_offset_ms,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(track_path) DO UPDATE SET
+        format = excluded.format,
         plain_lyrics = excluded.plain_lyrics,
         synced_lyrics = excluded.synced_lyrics,
         synced_lines_json = excluded.synced_lines_json,
@@ -3442,6 +3451,7 @@ export async function upsertLyricsTrackManual(
         updated_at = excluded.updated_at`,
       [
         trackPath,
+        input.format,
         input.plainLyrics,
         input.syncedLyrics,
         syncedLinesJson,
@@ -3475,7 +3485,8 @@ export async function clearLyricsTrackManual(trackPaths: string[]): Promise<numb
     } else {
       db.run(
         `UPDATE lyrics_track_overrides
-         SET plain_lyrics = NULL,
+         SET format = NULL,
+             plain_lyrics = NULL,
              synced_lyrics = NULL,
              synced_lines_json = ?,
              updated_at = ?

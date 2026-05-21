@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './library'
-import { lookupSidecarLrcLyrics } from './lyricsSidecar'
+import { lookupSidecarLyrics } from './lyricsSidecar'
 import {
   createLyricsPayload,
   normalizeLyricsText,
@@ -11,6 +11,7 @@ import {
   toPlainLyricsFromLines
 } from './lyricsParsing'
 import type {
+  LyricsFormat,
   LyricsLine,
   LyricsManualClearResult,
   LyricsManualImportResult,
@@ -112,11 +113,21 @@ function hasManualLyricsOverride(entry: {
 function applySyncOffsetToLines(lines: LyricsLine[], offsetMs: number): LyricsLine[] {
   if (lines.length === 0 || offsetMs === 0) return lines
 
-  const shifted = lines.map((line) => ({
-    timestampMs: Math.max(0, line.timestampMs + offsetMs),
-    text: line.text,
-    ...(line.kind === 'silence' ? { kind: 'silence' as const } : {})
-  }))
+  const shifted = lines.map((line): LyricsLine => {
+    const timestampMs = Math.max(0, line.timestampMs + offsetMs)
+    if (line.kind === 'silence') {
+      return { timestampMs, text: '', kind: 'silence' }
+    }
+
+    return {
+      ...line,
+      timestampMs,
+      words: line.words?.map((word) => ({
+        ...word,
+        timestampMs: Math.max(0, word.timestampMs + offsetMs)
+      }))
+    }
+  })
   shifted.sort((left, right) => left.timestampMs - right.timestampMs)
   return shifted
 }
@@ -194,7 +205,7 @@ function parseLrclibEntry(entry: Record<string, unknown>): LyricsPayload | null 
   const plainLyrics = normalizeLyricsText(entry.plainLyrics) ?? normalizeLyricsText(entry.plain_lyrics)
   const syncedRaw = normalizeLyricsText(entry.syncedLyrics) ?? normalizeLyricsText(entry.synced_lyrics)
   const syncedLines = syncedRaw ? parseLrcSyncedLines(syncedRaw) : []
-  return createLyricsPayload('lrclib', 'lrclib', plainLyrics, syncedRaw, syncedLines)
+  return createLyricsPayload('lrclib', 'lrclib', syncedLines.length > 0 ? 'lrc' : 'plain', plainLyrics, syncedRaw, syncedLines)
 }
 
 function scoreSearchEntry(entry: Record<string, unknown>, query: LyricsTrackQuery): number {
@@ -356,7 +367,7 @@ async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload |
     }
 
     const syncedLyrics = toPlainLyricsFromLines(bestSyncedLines)
-    return createLyricsPayload('embedded', null, plainLyrics, syncedLyrics, bestSyncedLines)
+    return createLyricsPayload('embedded', null, bestSyncedLines.length > 0 ? 'lrc' : 'plain', plainLyrics, syncedLyrics, bestSyncedLines)
   } catch {
     return null
   }
@@ -424,6 +435,7 @@ export class LyricsService {
       return {
         trackPath: '',
         hasManualLyrics: false,
+        format: 'plain',
         plainLyrics: null,
         syncedLyrics: null,
         syncedLines: [],
@@ -437,6 +449,7 @@ export class LyricsService {
       return {
         trackPath: normalizedTrackPath,
         hasManualLyrics: false,
+        format: 'plain',
         plainLyrics: null,
         syncedLyrics: null,
         syncedLines: [],
@@ -449,6 +462,7 @@ export class LyricsService {
     return {
       trackPath: override.trackPath,
       hasManualLyrics,
+      format: override.format,
       plainLyrics: override.plainLyrics,
       syncedLyrics: override.syncedLyrics,
       syncedLines: override.syncedLines,
@@ -457,18 +471,23 @@ export class LyricsService {
     }
   }
 
-  async importManualLyrics(trackPaths: string[], lyricsText: string): Promise<LyricsManualImportResult> {
+  async importManualLyrics(
+    trackPaths: string[],
+    lyricsText: string,
+    format: LyricsFormat = 'lrc'
+  ): Promise<LyricsManualImportResult> {
     const normalizedTrackPaths = normalizeTrackPathList(trackPaths)
     if (normalizedTrackPaths.length === 0) {
       throw new Error('Select at least one track before importing lyrics.')
     }
 
-    const payload = parseLyricsText(lyricsText, 'manual')
+    const payload = parseLyricsText(lyricsText, 'manual', format)
     if (!payload) {
       throw new Error('Selected lyrics file is empty or could not be parsed.')
     }
 
     const updated = await library.upsertLyricsTrackManual(normalizedTrackPaths, {
+      format: payload.format,
       plainLyrics: payload.plainLyrics,
       syncedLyrics: payload.syncedLyrics,
       syncedLines: payload.syncedLines
@@ -545,6 +564,7 @@ export class LyricsService {
       const manualPayload = createLyricsPayload(
         'manual',
         null,
+        trackOverride.format,
         trackOverride.plainLyrics,
         trackOverride.syncedLyrics,
         trackOverride.syncedLines
@@ -559,12 +579,12 @@ export class LyricsService {
       }
     }
 
-    const sidecarLrc = await lookupSidecarLrcLyrics(path)
-    if (sidecarLrc) {
+    const sidecarLyrics = await lookupSidecarLyrics(path)
+    if (sidecarLyrics) {
       this.setLastError(null)
       return {
-        ...sidecarLrc,
-        lyrics: applyTrackOffsetToPayload(sidecarLrc.lyrics, trackOffsetMs)
+        ...sidecarLyrics,
+        lyrics: applyTrackOffsetToPayload(sidecarLyrics.lyrics, trackOffsetMs)
       }
     }
 
@@ -575,6 +595,7 @@ export class LyricsService {
           const payload = createLyricsPayload(
             cached.source,
             cached.provider,
+            cached.format,
             cached.plainLyrics,
             cached.syncedLyrics,
             cached.syncedLines

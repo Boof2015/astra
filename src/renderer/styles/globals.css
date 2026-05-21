@@ -2851,7 +2851,7 @@ button, .titlebar {
 }
 
 .transport-lyrics-shelf-open {
-  max-height: 248px;
+  max-height: 320px;
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%, var(--transport-lyrics-stack-offset));
@@ -2981,10 +2981,11 @@ button, .titlebar {
 }
 
 .transport-lyrics-focus-window {
-  height: calc(var(--transport-lyrics-focus-line-height) * 3);
+  height: var(--transport-lyrics-focus-window-height, calc(var(--transport-lyrics-focus-line-height) * 3));
   overflow: hidden;
   mask-image: linear-gradient(to bottom, transparent 0%, black 14%, black 86%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 14%, black 86%, transparent 100%);
+  transition: height 140ms ease;
 }
 
 .transport-lyrics-focus-track {
@@ -2996,8 +2997,8 @@ button, .titlebar {
 
 .transport-lyrics-focus-line {
   margin: 0;
-  min-height: var(--transport-lyrics-focus-line-height);
-  height: var(--transport-lyrics-focus-line-height);
+  min-height: var(--transport-lyrics-focus-row-height, var(--transport-lyrics-focus-line-height));
+  height: var(--transport-lyrics-focus-row-height, var(--transport-lyrics-focus-line-height));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3088,6 +3089,136 @@ button, .titlebar {
   align-items: center;
   justify-content: center;
   pointer-events: none;
+}
+
+.lyrics-line-content,
+.lyrics-line-main,
+.lyrics-word-sequence,
+.lyrics-line-text {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.lyrics-line-content {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.lyrics-line-main {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.35em;
+  line-height: 1.18;
+}
+
+.lyrics-word-sequence {
+  display: inline;
+}
+
+.lyrics-word {
+  --lyrics-word-progress: 0;
+  position: relative;
+  display: inline;
+  color: inherit;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.95) 0%,
+      rgba(255, 255, 255, 0.95) calc(var(--lyrics-word-progress) * 100%),
+      currentColor calc(var(--lyrics-word-progress) * 100%),
+      currentColor 100%
+    );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.lyrics-word.is-past {
+  opacity: 0.92;
+}
+
+.lyrics-word.is-active {
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.12);
+}
+
+.lyrics-line-voice {
+  flex: 0 0 auto;
+  border: 1px solid rgba(var(--accent-rgb), 0.36);
+  border-radius: 999px;
+  padding: 1px 5px;
+  color: rgba(var(--accent-rgb), 0.95);
+  font-size: 0.68em;
+  font-weight: 700;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.lyrics-line-translation {
+  display: block;
+  max-width: 100%;
+  color: rgba(255, 255, 255, 0.54);
+  font-size: 0.78em;
+  font-weight: 460;
+  line-height: 1.22;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lyrics-line-content ruby {
+  ruby-position: over;
+}
+
+.lyrics-line-content rt {
+  color: rgba(255, 255, 255, 0.64);
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.64);
+  font-size: 0.46em;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.transport-lyrics-focus-line .lyrics-line-content {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: var(--transport-lyrics-focus-row-height, var(--transport-lyrics-focus-line-height));
+  overflow: hidden;
+  padding-inline: 16px;
+}
+
+.transport-lyrics-focus-line .lyrics-line-content.has-rich-lyrics {
+  gap: 3px;
+}
+
+.transport-lyrics-focus-line .lyrics-line-translation {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.transport-lyrics-expanded-line .lyrics-line-content,
+.info-lyrics-line .lyrics-line-content,
+.fullscreen-lyrics-dock-line .lyrics-line-content {
+  width: 100%;
+}
+
+.info-lyrics-line .lyrics-line-content {
+  align-items: flex-start;
+}
+
+.info-lyrics-line .lyrics-line-main {
+  justify-content: flex-start;
+}
+
+.fullscreen-lyrics-dock-line .lyrics-line-translation {
+  max-width: min(92%, 760px);
+  font-size: 0.5em;
+  line-height: 1.24;
+}
+
+.fullscreen-lyrics-dock-line .lyrics-line-content.has-rich-lyrics {
+  gap: 6px;
+  padding-block: 2px;
 }
 
 .lyrics-gap-progress {

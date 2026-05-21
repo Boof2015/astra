@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
+import LyricsLineContent from '../lyrics/LyricsLineContent'
 import {
   buildLyricsQuery,
+  BASE_COMPACT_LYRICS_LINE_HEIGHT_PX,
   DEFAULT_LYRICS_BODY_COPY,
   getCompensatedLyricsTime,
   getActiveLyricsResult,
+  getCompactSyncedLyricsLineHeights,
   getLyricsMetaChipText,
   getLyricsRequestKey,
-  getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
   resolveSyncedLyricsTiming,
   resolveLyricsBodyState
@@ -34,6 +37,7 @@ export default function TransportLyricsShelf() {
   const lyricsStoreError = useLyricsStore((s) => s.errorMessage)
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
+  const lyricsDisplaySettings = useLyricsDisplaySettingsStore((s) => s.settings)
   const lastLyricsRequestKeyRef = useRef<string | null>(null)
 
   const lyricsQuery = useMemo(
@@ -68,6 +72,15 @@ export default function TransportLyricsShelf() {
     () => getSyncedLyricsDisplayLines(syncedLines, { durationSeconds: duration }),
     [duration, syncedLines]
   )
+  const compactSyncedLineHeightsPx = useMemo(
+    () => getCompactSyncedLyricsLineHeights(displayedSyncedLines, lyricsDisplaySettings),
+    [displayedSyncedLines, lyricsDisplaySettings]
+  )
+  const getCompactLineStyle = useCallback((displayIndex: number) => ({
+    '--transport-lyrics-focus-row-height': `${
+      compactSyncedLineHeightsPx[displayIndex] ?? BASE_COMPACT_LYRICS_LINE_HEIGHT_PX
+    }px`
+  } as CSSProperties), [compactSyncedLineHeightsPx])
   const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
   const syncedLyricsTiming = useMemo(
     () => resolveSyncedLyricsTiming(syncedLines, compensatedTime, { durationSeconds: duration }),
@@ -86,6 +99,7 @@ export default function TransportLyricsShelf() {
 
   const {
     followPaused,
+    collapsedWindowStyle,
     collapsedTrackStyle,
     effectiveSyncedLineIndex,
     expandedListRef,
@@ -98,7 +112,8 @@ export default function TransportLyricsShelf() {
     hasSyncedLyrics,
     activeSyncedLineIndex,
     focusedSyncedLineIndex: syncedLyricsTiming.focusLineIndex,
-    contentKey: currentTrack?.path ?? null
+    contentKey: currentTrack?.path ?? null,
+    collapsedLineHeightsPx: compactSyncedLineHeightsPx
   })
 
   const refreshLyrics = useCallback(() => {
@@ -117,21 +132,13 @@ export default function TransportLyricsShelf() {
     void loadLyricsForTrack(lyricsQuery)
   }, [loadLyricsForTrack, lyricsQuery, showLyricsShelf])
 
-  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
-    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
-    if (progress === null) return displayLine.text
-    return (
-      <span className="lyrics-gap-progress">
-        <span
-          className="lyrics-gap-progress-fill"
-          style={{ transform: `scaleX(${progress})` }}
-        />
-      </span>
-    )
-  }
-
   const renderCollapsedSyncedWindow = () => (
-    <div key="lyrics-collapsed-window" className="transport-lyrics-focus-window" aria-live="polite">
+    <div
+      key="lyrics-collapsed-window"
+      className="transport-lyrics-focus-window"
+      style={collapsedWindowStyle}
+      aria-live="polite"
+    >
       <div
         className="transport-lyrics-focus-track"
         style={collapsedTrackStyle}
@@ -151,8 +158,18 @@ export default function TransportLyricsShelf() {
                   : 'is-distant'
           ].join(' ')
           return (
-            <p key={displayLine.key} className={className} aria-hidden={displayLine.kind === 'gap'}>
-              {renderGapProgress(displayLine)}
+            <p
+              key={displayLine.key}
+              className={className}
+              style={getCompactLineStyle(displayIndex)}
+              aria-hidden={displayLine.kind === 'gap'}
+            >
+              <LyricsLineContent
+                displayLine={displayLine}
+                currentTimeSeconds={compensatedTime}
+                isActive={displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex}
+                settings={lyricsDisplaySettings}
+              />
             </p>
           )
         })}
@@ -211,7 +228,12 @@ export default function TransportLyricsShelf() {
               ].join(' ').trim()}
               aria-hidden={displayLine.kind === 'gap'}
             >
-              {renderGapProgress(displayLine)}
+              <LyricsLineContent
+                displayLine={displayLine}
+                currentTimeSeconds={compensatedTime}
+                isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
+                settings={lyricsDisplaySettings}
+              />
             </p>
           ))}
         </div>

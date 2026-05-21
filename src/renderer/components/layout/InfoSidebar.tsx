@@ -8,11 +8,12 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
+import LyricsLineContent from '../lyrics/LyricsLineContent'
 import {
   buildLyricsQuery,
   getCompensatedLyricsTime,
   getActiveLyricsResult,
-  getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
   INFO_SIDEBAR_LYRICS_BODY_COPY,
   resolveSyncedLyricsTiming,
@@ -37,6 +38,7 @@ export default function InfoSidebar() {
   const lyricsStoreError = useLyricsStore((s) => s.errorMessage)
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
+  const lyricsDisplaySettings = useLyricsDisplaySettingsStore((s) => s.settings)
   const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
@@ -102,19 +104,6 @@ export default function InfoSidebar() {
     void refreshLyricsForTrack(lyricsQuery)
   }
 
-  const renderGapProgress = (displayLine: (typeof displayedSyncedLines)[number]) => {
-    const progress = getSyncedLyricsGapProgress(displayLine, compensatedTime)
-    if (progress === null) return displayLine.text
-    return (
-      <span className="lyrics-gap-progress">
-        <span
-          className="lyrics-gap-progress-fill"
-          style={{ transform: `scaleX(${progress})` }}
-        />
-      </span>
-    )
-  }
-
   const renderLyricsContent = () => {
     if (bodyState.kind === 'hit_synced') {
       return (
@@ -137,7 +126,12 @@ export default function InfoSidebar() {
                 ].join(' ').trim()}
                 aria-hidden={displayLine.kind === 'gap'}
               >
-                {renderGapProgress(displayLine)}
+                <LyricsLineContent
+                  displayLine={displayLine}
+                  currentTimeSeconds={compensatedTime}
+                  isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
+                  settings={lyricsDisplaySettings}
+                />
               </p>
             ))}
           </div>

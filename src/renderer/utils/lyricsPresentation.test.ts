@@ -2,12 +2,23 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   findActiveSyncedLineIndex,
+  getCompactSyncedLyricsLineHeights,
+  getPreferredLyricsTranslation,
   getLyricsSourceLabel,
   getRenderableSyncedLines,
   getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
+  resolveLyricsWordTiming,
   resolveSyncedLyricsTiming
 } from './lyricsPresentation.ts'
+
+const defaultLyricsLayerSettings = {
+  wordTimingEnabled: true,
+  furiganaEnabled: true,
+  translationsEnabled: true,
+  translationLanguagePriority: ['en', 'ja-Latn'],
+  voiceLabelsEnabled: false
+}
 
 const lines = [
   { timestampMs: 1_000, text: 'line 1' },
@@ -187,4 +198,65 @@ test('getSyncedLyricsGapProgress resolves calm progress through a gap row', () =
 
 test('getLyricsSourceLabel labels local LRC files', () => {
   assert.equal(getLyricsSourceLabel('lrc'), 'LRC File')
+})
+
+test('getLyricsSourceLabel labels XLRC and manual XLRC sources', () => {
+  assert.equal(getLyricsSourceLabel('xlrc', 'xlrc'), 'XLRC File')
+  assert.equal(getLyricsSourceLabel('manual', 'xlrc'), 'Manual XLRC')
+  assert.equal(getLyricsSourceLabel('manual', 'lrc'), 'Manual')
+})
+
+test('getPreferredLyricsTranslation follows language priority with fallback', () => {
+  const line = {
+    timestampMs: 1_000,
+    text: 'line',
+    translations: [
+      { lang: 'ja-Latn', text: 'romaji' },
+      { lang: 'en', text: 'English' }
+    ]
+  }
+
+  assert.deepEqual(getPreferredLyricsTranslation(line, ['en', 'ja-Latn']), { lang: 'en', text: 'English' })
+  assert.deepEqual(getPreferredLyricsTranslation(line, ['ko']), { lang: 'ja-Latn', text: 'romaji' })
+})
+
+test('getCompactSyncedLyricsLineHeights grows only affected rich rows', () => {
+  const displayLines = getSyncedLyricsDisplayLines([
+    {
+      timestampMs: 500,
+      text: 'plain'
+    },
+    {
+      timestampMs: 750,
+      text: 'voice only',
+      voice: 'Lead'
+    },
+    {
+      timestampMs: 1_000,
+      text: '顔',
+      furigana: [{ start: 0, end: 1, base: '顔', reading: 'kao' }],
+      translations: [{ lang: 'en', text: 'face' }]
+    }
+  ])
+
+  assert.deepEqual(getCompactSyncedLyricsLineHeights(displayLines, {
+    ...defaultLyricsLayerSettings,
+    voiceLabelsEnabled: true
+  }), [34, 34, 62])
+  assert.deepEqual(getCompactSyncedLyricsLineHeights(displayLines, {
+    ...defaultLyricsLayerSettings,
+    furiganaEnabled: false,
+    translationsEnabled: false
+  }), [34, 34, 34])
+})
+
+test('resolveLyricsWordTiming resolves active word and progress', () => {
+  assert.deepEqual(resolveLyricsWordTiming([
+    { timestampMs: 1_000, text: 'one' },
+    { timestampMs: 2_000, text: 'two' },
+    { timestampMs: 3_000, text: 'three' }
+  ], 2.5), {
+    activeWordIndex: 1,
+    progressByIndex: [1, 0.5, 0]
+  })
 })
