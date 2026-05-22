@@ -66,6 +66,15 @@ test('parseLrcSyncedLines strips enhanced LRC word timing tags', () => {
   )
 })
 
+test('parseLyricsText keeps Enhanced LRC word timing out of LRC rich fields', () => {
+  const payload = parseLyricsText('[00:10.00]<00:10.00>Hello <00:10.30>world', 'lrc', 'lrc')
+
+  assert.ok(payload)
+  assert.deepEqual(payload.syncedLines, [
+    { timestampMs: 10_000, text: 'Hello world' }
+  ])
+})
+
 test('parseLrcSyncedLines preserves repeated timestamps on one row', () => {
   assert.deepEqual(
     parseLrcSyncedLines('[00:10.00][00:42.00]Chorus'),
@@ -81,6 +90,7 @@ test('parseLyricsText maps XLRC rich data while preserving silence cues', () => 
     [
       '[lang:ja]',
       '[langs:ja,en,ja-Latn]',
+      '[offset:+100]',
       '',
       '[00:00.00]',
       '[00:12.40]<00:12.40>私[わたし]<00:12.90>が<00:13.10>歌[うた]う',
@@ -98,19 +108,19 @@ test('parseLyricsText maps XLRC rich data while preserving silence cues', () => 
   assert.equal(payload.format, 'xlrc')
   assert.equal(payload.plainLyrics, '私が歌う\n君は')
   assert.deepEqual(payload.syncedLines, [
-    { timestampMs: 0, text: '', kind: 'silence' },
+    { timestampMs: 100, text: '', kind: 'silence' },
     {
-      timestampMs: 12_400,
+      timestampMs: 12_500,
       text: '私が歌う',
       words: [
         {
-          timestampMs: 12_400,
+          timestampMs: 12_500,
           text: '私',
           furigana: [{ start: 0, end: 1, base: '私', reading: 'わたし' }]
         },
-        { timestampMs: 12_900, text: 'が' },
+        { timestampMs: 13_000, text: 'が' },
         {
-          timestampMs: 13_100,
+          timestampMs: 13_200,
           text: '歌う',
           furigana: [{ start: 0, end: 1, base: '歌', reading: 'うた' }]
         }
@@ -125,7 +135,7 @@ test('parseLyricsText maps XLRC rich data while preserving silence cues', () => 
       ]
     },
     {
-      timestampMs: 15_200,
+      timestampMs: 15_300,
       text: '君は',
       translations: [{ lang: 'en', text: 'You are' }],
       voice: 'A'
