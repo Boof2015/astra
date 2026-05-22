@@ -1614,6 +1614,12 @@ button, .titlebar {
   position: relative;
   z-index: 3;
   width: min(960px, calc(100vw - 76px));
+  transition: width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Immersive lyrics: the stage takes over most of the viewport */
+.fullscreen-content:has(.fullscreen-stage.lyrics-open) {
+  width: min(1180px, calc(100vw - 88px));
 }
 
 .fullscreen-stage {
@@ -1624,7 +1630,8 @@ button, .titlebar {
 }
 
 .fullscreen-stage.lyrics-open {
-  transform: translateY(-7px);
+  transform: none;
+  height: min(1000px, calc(100vh - 72px));
 }
 
 .fullscreen-hero {
@@ -1639,7 +1646,15 @@ button, .titlebar {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
-  transition: opacity 0.3s ease, transform 0.36s ease;
+  transition:
+    opacity 0.3s ease,
+    transform 0.36s ease,
+    padding 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    gap 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.44s ease,
+    border-color 0.44s ease,
+    box-shadow 0.44s ease,
+    backdrop-filter 0.44s ease;
   will-change: opacity, transform;
 }
 
@@ -1662,6 +1677,9 @@ button, .titlebar {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  transition:
+    margin-bottom 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-status-label {
@@ -1704,7 +1722,12 @@ button, .titlebar {
 .fullscreen-main-row {
   display: flex;
   align-items: center;
+  width: 100%;
   gap: 28px;
+  transition:
+    width 0.48s cubic-bezier(0.22, 1, 0.36, 1),
+    gap 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-artwork {
@@ -1716,6 +1739,11 @@ button, .titlebar {
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.42);
   background: #060606;
   flex-shrink: 0;
+  transition:
+    width 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 0.38s ease,
+    box-shadow 0.38s ease,
+    transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-artwork img {
@@ -1737,6 +1765,7 @@ button, .titlebar {
 .fullscreen-track-info {
   min-width: 0;
   flex: 1;
+  transition: transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-title {
@@ -1748,6 +1777,9 @@ button, .titlebar {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition:
+    font-size 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-bottom 0.36s ease;
 }
 
 .fullscreen-title-inner {
@@ -1766,11 +1798,16 @@ button, .titlebar {
   font-size: clamp(18px, 2.4vw, 28px);
   color: rgba(255, 255, 255, 0.82);
   margin-bottom: 6px;
+  transition:
+    font-size 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-bottom 0.36s ease,
+    color 0.28s ease;
 }
 
 .fullscreen-album {
   font-size: 14px;
   color: rgba(255, 255, 255, 0.56);
+  transition: font-size 0.36s ease, color 0.28s ease;
 }
 
 .fullscreen-audio-badges {
@@ -1779,6 +1816,7 @@ button, .titlebar {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  transition: margin-top 0.36s ease, opacity 0.28s ease;
 }
 
 .fullscreen-audio-badge {
@@ -1803,226 +1841,337 @@ button, .titlebar {
   color: #fef3c7;
 }
 
-.fullscreen-lyrics-dock {
-  --fullscreen-lyrics-line-height: 46px;
-  --fullscreen-lyrics-visible-lines: 3;
-  --fullscreen-lyrics-open-height: 196px;
-  --fullscreen-lyrics-dock-radius: 16px;
-  max-height: 0;
-  margin-top: 0;
-  opacity: 0;
-  overflow: hidden;
-  border-radius: var(--fullscreen-lyrics-dock-radius);
-  pointer-events: none;
-  transform: translateY(22px) scale(0.94);
-  will-change: transform, opacity, max-height;
-  contain: layout paint;
-  transition:
-    max-height 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    margin-top 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+.fullscreen-hero.lyrics-active {
+  height: 100%;
+  gap: 14px;
+  padding: 24px 32px;
+  /* Keep the OG glass card — it now frames the whole lyrics view as one pane */
 }
 
-.fullscreen-lyrics-dock.is-open {
-  max-height: var(--fullscreen-lyrics-open-height);
-  margin-top: 12px;
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0) scale(1);
+.fullscreen-hero.lyrics-active .fullscreen-hero-topbar {
+  margin-bottom: -1px;
 }
 
-.fullscreen-lyrics-dock-glass {
+.fullscreen-hero.lyrics-active .fullscreen-main-row {
+  width: auto;
+  max-width: min(560px, 70%);
+  align-self: flex-start;
+  align-items: center;
+  gap: 14px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-artwork {
+  width: 76px;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.46);
+}
+
+/* Identity stays legible now that the glass has receded */
+.fullscreen-hero.lyrics-active .fullscreen-title,
+.fullscreen-hero.lyrics-active .fullscreen-artist,
+.fullscreen-hero.lyrics-active .fullscreen-album {
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-track-info {
+  flex: 1;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-title {
+  font-size: clamp(18px, 2vw, 24px);
+  margin-bottom: 3px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-artist {
+  font-size: clamp(12px, 1.3vw, 15px);
+  margin-bottom: 2px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-album {
+  font-size: 10px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-audio-badges {
+  margin-top: 6px;
+}
+
+.fullscreen-lyrics-focus-band {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  align-self: center;
+  max-height: 0;
+  margin: -4px 0;
+  padding: 0 10px;
   overflow: hidden;
   isolation: isolate;
-  border-radius: var(--fullscreen-lyrics-dock-radius);
-  clip-path: inset(0 round var(--fullscreen-lyrics-dock-radius));
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.34);
-  background-clip: padding-box;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
-  padding: 11px 16px 12px;
+  border-radius: 0;
   opacity: 0;
-  transform: translateY(12px) scale(0.965);
-  will-change: transform, opacity;
-  transition:
-    opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.36s ease;
-}
-
-.fullscreen-lyrics-dock-glass::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  clip-path: inherit;
   pointer-events: none;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 42%),
-    radial-gradient(80% 64% at 90% 100%, rgba(var(--accent-rgb), 0.14), transparent 72%);
-  opacity: 0.14;
-  transition: opacity 0.36s ease;
+  transform: translateY(-6px) scaleY(0.985);
+  transform-origin: center;
+  will-change: max-height, margin, padding, opacity, transform;
+  transition:
+    height 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    margin 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.3s ease,
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.fullscreen-lyrics-dock.is-open .fullscreen-lyrics-dock-glass {
+.fullscreen-hero.lyrics-active .fullscreen-lyrics-focus-band {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100vh;
+  width: 100%;
+  margin: 0;
+  padding: 6px 10px 0;
   opacity: 1;
-  transform: translateY(0) scale(1);
-}
-
-.fullscreen-lyrics-dock.is-open .fullscreen-lyrics-dock-glass::before {
-  opacity: 0.26;
-}
-
-.fullscreen-lyrics-dock-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.fullscreen-lyrics-dock-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-.fullscreen-lyrics-dock-source {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.48);
-  text-transform: uppercase;
-}
-
-.fullscreen-lyrics-dock-window {
-  height: calc(var(--fullscreen-lyrics-line-height) * var(--fullscreen-lyrics-visible-lines));
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-}
-
-.fullscreen-lyrics-dock-track {
+  pointer-events: auto;
+  transform: translateY(0) scaleY(1);
   display: flex;
   flex-direction: column;
-  transition: transform 95ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
+  justify-content: center;
+  /* Open: height fills instantly via flex (max-height is NOT transitioned here),
+     only fade/settle animate — keeps the open feel unchanged. Closing falls back
+     to the base transition, so max-height animates 100vh → 0 and the lyrics area
+     collapses in step with the artwork/title shrinking instead of snapping shut. */
+  transition:
+    opacity 0.3s ease,
+    padding 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.fullscreen-lyrics-dock-line {
+/* Plain (unsynced) lyrics fill the immersive band instead of a tiny strip */
+.fullscreen-hero.lyrics-active .fullscreen-lyrics-focus-plain {
+  max-height: 100%;
+  overflow-y: auto;
+  font-size: clamp(18px, 2vw, 26px);
+  line-height: 1.5;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 12%, #000 86%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 12%, #000 86%, transparent 100%);
+}
+
+.fullscreen-lyrics-focus-band::before {
+  content: none;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-lyrics-focus-band::before {
+  opacity: 0;
+}
+
+.fullscreen-lyrics-focus-meta {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 2;
+  max-width: min(42%, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.fullscreen-lyrics-expanded-list {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 2vh, 30px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Generous block padding lets the active line settle at the vertical center
+     even when it's the very first or last line of the song. */
+  padding-block: clamp(120px, 36vh, 380px);
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 15%, #000 82%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 15%, #000 82%, transparent 100%);
+}
+
+.fullscreen-lyrics-expanded-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.fullscreen-lyrics-recenter {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 5px 14px;
+  border: 1px solid rgba(var(--accent-rgb), 0.5);
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.18);
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  transition: all var(--transition-fast);
+}
+
+.fullscreen-lyrics-recenter:hover {
+  background: rgba(var(--accent-rgb), 0.3);
+  border-color: rgba(var(--accent-rgb), 0.7);
+}
+
+.fullscreen-lyrics-focus-line {
   margin: 0;
-  min-height: var(--fullscreen-lyrics-line-height);
+  /* Never compress in the scrolling column — keep natural text height so the
+     list scrolls instead of the lines piling up on top of each other. */
+  flex: 0 0 auto;
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
   text-align: center;
-  line-height: 1.24;
-  color: rgba(255, 255, 255, 0.4);
-  opacity: 0.38;
-  filter: blur(1.08px);
-  transform: scale(0.982);
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.42);
+  opacity: 0.42;
+  transform: scale(0.984);
+  /* lyrics now float on the artwork backdrop — keep every tier readable */
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.5);
   transition:
     color 240ms ease,
     opacity 240ms ease,
-    filter 240ms ease,
     transform 240ms ease,
     text-shadow 240ms ease;
 }
 
-.fullscreen-lyrics-dock-line-text {
-  display: block;
-  max-width: 100%;
-  text-align: center;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+.fullscreen-lyrics-focus-line.is-near {
+  color: rgba(255, 255, 255, 0.78);
+  opacity: 0.84;
+  transform: scale(0.994);
+  font-size: clamp(20px, 2.1vw, 27px);
+  font-weight: 560;
 }
 
-.fullscreen-lyrics-dock-line.is-near {
-  color: rgba(255, 255, 255, 0.7);
-  opacity: 0.82;
-  filter: blur(0.32px);
-  transform: scale(0.992);
-  font-size: clamp(18px, 2.2vw, 27px);
-  font-weight: 520;
-}
-
-.fullscreen-lyrics-dock-line.is-far {
+.fullscreen-lyrics-focus-line.is-far {
   color: rgba(255, 255, 255, 0.58);
-  opacity: 0.68;
-  filter: blur(0.58px);
-  transform: scale(0.986);
-  font-size: clamp(16px, 1.9vw, 23px);
+  opacity: 0.6;
+  transform: scale(0.99);
+  font-size: clamp(16px, 1.7vw, 21px);
 }
 
-.fullscreen-lyrics-dock-line.is-active {
+.fullscreen-lyrics-focus-line.is-active {
   color: #fff;
   opacity: 1;
-  filter: blur(0);
   transform: scale(1);
-  font-size: clamp(23px, 2.8vw, 34px);
-  font-weight: 700;
-  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.1);
+  font-size: clamp(28px, 3.4vw, 44px);
+  font-weight: 760;
+  line-height: 1.16;
+  text-shadow:
+    0 2px 18px rgba(0, 0, 0, 0.55),
+    0 1px 16px rgba(255, 255, 255, 0.14),
+    0 0 30px rgba(var(--accent-rgb), 0.22);
+  /* gentle rise as the line becomes active */
+  animation: fullscreenLyricRise 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.fullscreen-lyrics-dock-line.is-gap {
+.fullscreen-lyrics-focus-line.is-gap {
   opacity: 1;
-  filter: blur(0);
   transform: scale(1);
   text-shadow: none;
 }
 
-.fullscreen-lyrics-dock-line.is-distant {
-  font-size: clamp(14px, 1.6vw, 20px);
+.fullscreen-lyrics-focus-line.is-distant {
+  font-size: clamp(13px, 1.45vw, 18px);
+  opacity: 0.4;
 }
 
-.fullscreen-lyrics-dock-state,
-.fullscreen-lyrics-dock-plain {
+@keyframes fullscreenLyricRise {
+  from {
+    transform: translateY(8px) scale(0.965);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Ribbon slides up into place when lyrics opens (no fade) so it moves like the
+   rest of the card. The column→row reflow happens instantly at the start, so
+   only the opaque slide is perceived — it doesn't read as "fading in". */
+@keyframes fullscreenRibbonIn {
+  from {
+    transform: translateY(14px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.fullscreen-lyrics-focus-state,
+.fullscreen-lyrics-focus-plain {
+  position: relative;
+  z-index: 1;
   margin: 0 auto;
-  max-width: 96%;
+  max-width: min(92%, 840px);
+  min-height: 116px;
   text-align: center;
 }
 
-.fullscreen-lyrics-dock-state {
-  min-height: calc(var(--fullscreen-lyrics-line-height) * 2);
+.fullscreen-lyrics-focus-state {
   display: grid;
   place-items: center;
-  font-size: 12px;
-  line-height: 1.44;
-  color: rgba(255, 255, 255, 0.64);
+  font-size: clamp(15px, 1.7vw, 20px);
+  line-height: 1.38;
+  color: rgba(255, 255, 255, 0.72);
 }
 
-.fullscreen-lyrics-dock-state-error {
+.fullscreen-lyrics-focus-state-error {
   color: #fecaca;
 }
 
-.fullscreen-lyrics-dock-state-not-found {
-  font-size: clamp(17px, 2.2vw, 26px);
-  font-weight: 620;
-  line-height: 1.28;
-  letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.88);
-  text-shadow:
-    0 1px 16px rgba(255, 255, 255, 0.12),
-    0 0 28px rgba(var(--accent-rgb), 0.18);
+.fullscreen-lyrics-focus-state-not-found {
+  color: rgba(255, 255, 255, 0.82);
 }
 
-.fullscreen-lyrics-dock-plain {
-  white-space: pre-wrap;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+.fullscreen-lyrics-focus-plain {
+  max-height: 154px;
   overflow: hidden;
-  min-height: calc(var(--fullscreen-lyrics-line-height) * 2);
-  font-size: clamp(16px, 2vw, 22px);
-  line-height: 1.36;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: clamp(16px, 1.8vw, 22px);
+  line-height: 1.42;
   color: rgba(255, 255, 255, 0.88);
+  mask-image: linear-gradient(to bottom, black 0%, black 78%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 78%, transparent 100%);
+}
+
+/* Groups the transport (controls + waveform + footer). Neutral when lyrics are off
+   — replicates the hero's inter-child spacing so that layout is unchanged. */
+.fullscreen-console {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Lyrics on: collapse the transport into one glassy "console" strip at the bottom */
+.fullscreen-hero.lyrics-active .fullscreen-console {
+  flex: 0 0 auto;
+  /* Ribbon: one horizontal transport row at the foot of the card */
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  gap: 20px;
+  padding: 0;
+  animation: fullscreenRibbonIn 0.46s 0.05s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .fullscreen-controls {
@@ -2030,6 +2179,25 @@ button, .titlebar {
   align-items: center;
   justify-content: center;
   gap: 10px;
+  transition:
+    transform 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 0.36s ease;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-controls {
+  flex: 0 0 auto;
+  transform: none;
+  gap: 8px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-control-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-control-btn-play {
+  width: 40px;
+  height: 40px;
 }
 
 .fullscreen-control-btn {
@@ -2080,10 +2248,41 @@ button, .titlebar {
   position: relative;
   height: 72px;
   padding: 0 26px;
+  transition:
+    height 0.44s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.36s ease,
+    transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-waveform-wrap .waveform-seek-bar {
   height: 72px;
+  transition: height 0.44s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-waveform-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  padding: 0 44px;
+  transform: none;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-waveform-wrap .waveform-seek-bar {
+  height: 44px;
+}
+
+/* Ribbon: time readouts sit centered in the scrubber's end gutters */
+.fullscreen-hero.lyrics-active .fullscreen-time {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-time-current {
+  left: 6px;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-time-remaining {
+  right: 6px;
 }
 
 .fullscreen-waveform-wrap .waveform-hover-time {
@@ -2114,6 +2313,19 @@ button, .titlebar {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  transition: transform 0.44s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.28s ease;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-footer {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 16px;
+  transform: none;
+}
+
+.fullscreen-hero.lyrics-active .fullscreen-footer-primary {
+  flex-wrap: nowrap;
 }
 
 .fullscreen-footer-primary {
@@ -2581,10 +2793,25 @@ button, .titlebar {
     animation: none;
   }
 
+  .fullscreen-content,
   .fullscreen-hero,
   .fullscreen-stage,
-  .fullscreen-lyrics-dock,
-  .fullscreen-lyrics-dock-track,
+  .fullscreen-main-row,
+  .fullscreen-artwork,
+  .fullscreen-track-info,
+  .fullscreen-title,
+  .fullscreen-artist,
+  .fullscreen-album,
+  .fullscreen-audio-badges,
+  .fullscreen-lyrics-focus-band,
+  .fullscreen-lyrics-focus-band::before,
+  .fullscreen-lyrics-expanded-list,
+  .fullscreen-backdrop-scrim,
+  .fullscreen-console,
+  .fullscreen-controls,
+  .fullscreen-waveform-wrap,
+  .fullscreen-waveform-wrap .waveform-seek-bar,
+  .fullscreen-footer,
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
@@ -2608,7 +2835,14 @@ button, .titlebar {
 
   .fullscreen-hero,
   .fullscreen-stage,
-  .fullscreen-lyrics-dock,
+  .fullscreen-main-row,
+  .fullscreen-artwork,
+  .fullscreen-track-info,
+  .fullscreen-lyrics-focus-band,
+  .fullscreen-lyrics-focus-band::before,
+  .fullscreen-controls,
+  .fullscreen-waveform-wrap,
+  .fullscreen-footer,
   .fullscreen-next-cue,
   .decode-fallback-cue,
   .output-delay-cue,
@@ -2623,6 +2857,10 @@ button, .titlebar {
   .transport-lyrics-shelf,
   .transport-lyrics-focus-track {
     transform: none !important;
+  }
+
+  .fullscreen-lyrics-expanded-list {
+    scroll-behavior: auto;
   }
 
   .titlebar-logo,
@@ -2645,12 +2883,13 @@ button, .titlebar {
     opacity: 0.5;
   }
 
-  .fullscreen-lyrics-dock {
+  .fullscreen-lyrics-focus-band {
     filter: none !important;
   }
 
-  .fullscreen-lyrics-dock-line {
+  .fullscreen-lyrics-focus-line {
     filter: none !important;
+    animation: none !important;
   }
 
   .transport-lyrics-focus-line {
@@ -3198,8 +3437,16 @@ button, .titlebar {
 
 .transport-lyrics-expanded-line .lyrics-line-content,
 .info-lyrics-line .lyrics-line-content,
-.fullscreen-lyrics-dock-line .lyrics-line-content {
+.fullscreen-lyrics-focus-line .lyrics-line-content {
   width: 100%;
+}
+
+.fullscreen-lyrics-focus-line .lyrics-line-content {
+  box-sizing: border-box;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  padding-inline: clamp(8px, 3vw, 28px);
 }
 
 .info-lyrics-line .lyrics-line-content {
@@ -3210,15 +3457,42 @@ button, .titlebar {
   justify-content: flex-start;
 }
 
-.fullscreen-lyrics-dock-line .lyrics-line-translation {
+.fullscreen-lyrics-focus-line .lyrics-line-translation {
+  display: inline;
+  width: auto;
   max-width: min(92%, 760px);
-  font-size: 0.5em;
-  line-height: 1.24;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  contain: none;
+  isolation: auto;
+  opacity: 0.74;
+  font-size: 0.46em;
+  line-height: 1.12;
+  -webkit-text-fill-color: currentColor;
+  background: transparent;
+  background-color: transparent;
+  box-shadow: none;
+  filter: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
-.fullscreen-lyrics-dock-line .lyrics-line-content.has-rich-lyrics {
-  gap: 6px;
-  padding-block: 2px;
+.fullscreen-lyrics-focus-line .lyrics-line-main {
+  flex-wrap: wrap;
+  max-width: 100%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.fullscreen-lyrics-focus-line .lyrics-line-text,
+.fullscreen-lyrics-focus-line .lyrics-word-sequence {
+  overflow-wrap: anywhere;
+}
+
+.fullscreen-lyrics-focus-line .lyrics-line-content.has-rich-lyrics {
+  gap: 3px;
+  padding-block: 0;
 }
 
 .lyrics-gap-progress {
@@ -3243,19 +3517,13 @@ button, .titlebar {
   transition: transform 220ms linear;
 }
 
-.fullscreen-lyrics-dock-line.is-gap .fullscreen-lyrics-dock-line-text {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-}
-
-.fullscreen-lyrics-dock-line.is-gap .lyrics-gap-progress {
-  width: clamp(132px, 18vw, 300px);
+.fullscreen-lyrics-focus-line.is-gap .lyrics-gap-progress {
+  width: clamp(160px, 32vw, 440px);
   height: 4px;
   background: rgba(255, 255, 255, 0.18);
 }
 
-.fullscreen-lyrics-dock-line.is-gap .lyrics-gap-progress-fill {
+.fullscreen-lyrics-focus-line.is-gap .lyrics-gap-progress-fill {
   background: rgba(255, 255, 255, 0.7);
   box-shadow: 0 0 18px rgba(255, 255, 255, 0.18);
 }
@@ -13161,29 +13429,43 @@ body::after {
   }
 
   .fullscreen-stage.lyrics-open {
-    transform: translateY(-5px);
+    transform: none;
   }
 
-  .fullscreen-lyrics-dock {
-    --fullscreen-lyrics-line-height: 42px;
-    --fullscreen-lyrics-dock-radius: 14px;
+  .fullscreen-hero.lyrics-active {
+    gap: 12px;
+    padding: 19px 16px 20px;
   }
 
-  .fullscreen-lyrics-dock.is-open {
-    max-height: var(--fullscreen-lyrics-open-height);
-    margin-top: 10px;
+  .fullscreen-hero.lyrics-active .fullscreen-main-row {
+    width: min(580px, 100%);
+    gap: 14px;
   }
 
-  .fullscreen-lyrics-dock-line.is-active {
-    font-size: clamp(20px, 3.1vw, 29px);
+  .fullscreen-hero.lyrics-active .fullscreen-artwork {
+    width: 112px;
   }
 
-  .fullscreen-lyrics-dock-line.is-near {
-    font-size: clamp(16px, 2.2vw, 21px);
+  .fullscreen-hero.lyrics-active .fullscreen-title {
+    font-size: clamp(23px, 3.4vw, 31px);
   }
 
-  .fullscreen-lyrics-dock-state-not-found {
-    font-size: clamp(16px, 2.1vw, 22px);
+  .fullscreen-hero.lyrics-active .fullscreen-lyrics-focus-band {
+    width: 100%;
+    margin-inline: 0;
+    padding: 2px 8px 0;
+  }
+
+  .fullscreen-lyrics-focus-line.is-active {
+    font-size: clamp(21px, 3.3vw, 29px);
+  }
+
+  .fullscreen-lyrics-focus-line.is-near {
+    font-size: clamp(15px, 2.5vw, 20px);
+  }
+
+  .fullscreen-lyrics-focus-state {
+    font-size: clamp(14px, 2.2vw, 18px);
   }
 
   .fullscreen-time-current {
@@ -13486,46 +13768,84 @@ body::after {
   }
 
   .fullscreen-stage.lyrics-open {
-    transform: translateY(-4px);
+    transform: none;
   }
 
-  .fullscreen-lyrics-dock {
-    --fullscreen-lyrics-line-height: 34px;
-    --fullscreen-lyrics-dock-radius: 12px;
+  .fullscreen-hero.lyrics-active {
+    gap: 10px;
+    padding: 14px 10px 16px;
   }
 
-  .fullscreen-lyrics-dock.is-open {
-    max-height: var(--fullscreen-lyrics-open-height);
-    margin-top: 8px;
+  .fullscreen-hero.lyrics-active .fullscreen-main-row {
+    flex-direction: row;
+    align-items: center;
+    width: min(360px, 100%);
+    gap: 10px;
   }
 
-  .fullscreen-lyrics-dock-glass {
-    padding: 9px 11px 10px;
+  .fullscreen-hero.lyrics-active .fullscreen-artwork {
+    width: 78px;
+    margin: 0;
+    border-radius: 10px;
   }
 
-  .fullscreen-lyrics-dock-head {
-    margin-bottom: 6px;
+  .fullscreen-hero.lyrics-active .fullscreen-track-info {
+    text-align: left;
   }
 
-  .fullscreen-lyrics-dock-line.is-active {
-    font-size: clamp(17px, 5vw, 24px);
+  .fullscreen-hero.lyrics-active .fullscreen-title {
+    font-size: clamp(20px, 5.6vw, 26px);
+    margin-bottom: 4px;
   }
 
-  .fullscreen-lyrics-dock-line.is-near {
-    font-size: clamp(14px, 3.6vw, 18px);
-    filter: blur(0.26px);
+  .fullscreen-hero.lyrics-active .fullscreen-artist {
+    font-size: clamp(13px, 3.6vw, 16px);
+    margin-bottom: 2px;
   }
 
-  .fullscreen-lyrics-dock-line.is-far {
-    font-size: clamp(12px, 2.8vw, 15px);
+  .fullscreen-hero.lyrics-active .fullscreen-album {
+    font-size: 10px;
   }
 
-  .fullscreen-lyrics-dock-state-not-found {
-    font-size: clamp(15px, 4.1vw, 19px);
+  .fullscreen-hero.lyrics-active .fullscreen-audio-badges {
+    justify-content: flex-start;
+    margin-top: 5px;
   }
 
-  .fullscreen-lyrics-dock-plain {
-    font-size: 12px;
+  .fullscreen-hero.lyrics-active .fullscreen-lyrics-focus-band {
+    width: 100%;
+    margin-inline: 0;
+    padding: 2px 6px 1px;
+  }
+
+  .fullscreen-lyrics-focus-meta {
+    top: 8px;
+    right: 12px;
+    max-width: 54%;
+    font-size: 8px;
+  }
+
+  .fullscreen-lyrics-focus-line.is-active {
+    font-size: clamp(18px, 5vw, 23px);
+  }
+
+  .fullscreen-lyrics-focus-line.is-near {
+    font-size: clamp(13px, 3.7vw, 17px);
+  }
+
+  .fullscreen-lyrics-focus-line.is-far {
+    font-size: clamp(11px, 2.8vw, 15px);
+  }
+
+  .fullscreen-lyrics-focus-state {
+    min-height: 104px;
+    font-size: clamp(13px, 3.6vw, 17px);
+  }
+
+  .fullscreen-lyrics-focus-plain {
+    min-height: 104px;
+    max-height: 132px;
+    font-size: 13px;
   }
 
   .fullscreen-audio-badge {
