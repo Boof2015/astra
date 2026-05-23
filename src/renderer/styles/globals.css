@@ -4516,6 +4516,10 @@ button, .titlebar {
   background: rgba(251, 191, 36, 0.04);
 }
 
+.track-row-playlist-removable .track-col-actions {
+  width: 154px;
+}
+
 .track-row-unavailable .track-title,
 .track-row-unavailable .track-artist,
 .track-row-unavailable .track-album {
@@ -9247,6 +9251,23 @@ body.folder-settings-open .app {
   color: var(--accent);
 }
 
+.track-action-btn:disabled,
+.track-action-btn:disabled:hover {
+  cursor: not-allowed;
+  opacity: 0.5;
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.track-action-btn-danger {
+  color: #fca5a5;
+}
+
+.track-action-btn-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
+}
+
 /* ============================================
    Now Playing Metadata
    ============================================ */
@@ -13702,6 +13723,10 @@ body::after {
     width: 106px;
   }
 
+  .track-row-playlist-removable .track-col-actions {
+    width: 132px;
+  }
+
   .track-actions {
     gap: 2px;
   }
@@ -17435,6 +17460,17 @@ body::after {
   border-color: rgba(var(--accent-rgb), 0.36);
   background: rgba(var(--accent-rgb), 0.14);
   color: #fff;
+}
+
+.track-context-menu-item-danger,
+.track-context-menu-item-danger .track-context-menu-icon {
+  color: #fca5a5;
+}
+
+.track-context-menu-item-danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.36);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
 }
 
 .track-context-menu-item:disabled {

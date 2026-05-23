@@ -123,6 +123,9 @@ interface TrackListRowSharedProps {
   onToggleFavorite: (event: React.MouseEvent, trackPath: string) => void
   onOpenPlaylistPopup: (event: React.MouseEvent<HTMLButtonElement>, track: DbTrack) => void
   onTrackContextMenu: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => void
+  onRemoveFromPlaylist: (event: React.MouseEvent, track: DbTrack) => void
+  canRemoveFromPlaylist: boolean
+  isRemovingFromPlaylist: boolean
   showQueueInsertAffordance: boolean
   queueInsertArmedTrackPath: string | null
   selectedTrackPaths: Set<string>
@@ -368,6 +371,9 @@ function TrackListRowRenderer({
   onToggleFavorite,
   onOpenPlaylistPopup,
   onTrackContextMenu,
+  onRemoveFromPlaylist,
+  canRemoveFromPlaylist,
+  isRemovingFromPlaylist,
   showQueueInsertAffordance,
   queueInsertArmedTrackPath,
   selectedTrackPaths
@@ -435,13 +441,14 @@ function TrackListRowRenderer({
         className={`track-row ${isCurrent ? 'track-row-active' : ''} ${isCurrentLoading ? 'track-row-loading' : ''} ${
           isUnavailable ? 'track-row-unavailable' : ''
         } ${isMissingPlaylistEntry ? 'track-row-missing-playlist-entry' : ''} ${
+          canRemoveFromPlaylist ? 'track-row-playlist-removable' : ''} ${
           showQueueInsertAffordance && !isMissingPlaylistEntry ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
         data-track-index={index}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, index)}
-        onContextMenu={isMissingPlaylistEntry ? undefined : (event) => onTrackContextMenu(event, track)}
+        onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track)}
         onClick={(event) => {
           if (isMissingPlaylistEntry) return
           void onTrackClick(event, track, index)
@@ -580,63 +587,81 @@ function TrackListRowRenderer({
           <span className="track-duration">{isMissingPlaylistEntry ? '--:--' : formatDuration(track.duration)}</span>
         </div>
         <div className="track-col track-col-actions">
-          {!isMissingPlaylistEntry && <div className="track-actions">
-            <button
-              className={`track-action-btn ${favorites.has(track.path) ? 'active' : ''}`}
-              onClick={(event) => onToggleFavorite(event, track.path)}
-              title={favorites.has(track.path) ? 'Remove from favorites' : 'Add to favorites'}
-            >
-              {favorites.has(track.path) ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                </svg>
-              )}
-            </button>
-            <div className="track-playlist-wrap">
+          {(!isMissingPlaylistEntry || canRemoveFromPlaylist) && <div className="track-actions">
+            {!isMissingPlaylistEntry && (
+              <>
+                <button
+                  className={`track-action-btn ${favorites.has(track.path) ? 'active' : ''}`}
+                  onClick={(event) => onToggleFavorite(event, track.path)}
+                  title={favorites.has(track.path) ? 'Remove from favorites' : 'Add to favorites'}
+                >
+                  {favorites.has(track.path) ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                    </svg>
+                  )}
+                </button>
+                <div className="track-playlist-wrap">
+                  <button
+                    className={`track-action-btn ${playlistPopupTrackPath === track.path ? 'track-playlist-trigger-open' : ''}`}
+                    onClick={(event) => onOpenPlaylistPopup(event, track)}
+                    title="Add to playlist"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+                    </svg>
+                  </button>
+                </div>
               <button
-                className={`track-action-btn ${playlistPopupTrackPath === track.path ? 'track-playlist-trigger-open' : ''}`}
-                onClick={(event) => onOpenPlaylistPopup(event, track)}
-                title="Add to playlist"
+                className={`track-action-btn ${showPlayNextCheck ? 'queued' : ''}`}
+                onClick={(event) => onPlayNext(event, track)}
+                title={showPlayNextCheck ? 'Queued to play next' : 'Play Next'}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
+                {showPlayNextCheck ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+                  </svg>
+                )}
+              </button>
+                <button
+                  className={`track-action-btn ${showAddQueueCheck ? 'queued' : ''}`}
+                  onClick={(event) => onAddToQueue(event, track)}
+                  title={showAddQueueCheck ? 'In queue' : 'Add to Queue'}
+                >
+                  {showAddQueueCheck ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M13 7h-2v4H7v2h4v4h2v-4h4v-2h-4V7zm-1-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
+                    </svg>
+                  )}
+                </button>
+              </>
+            )}
+            {canRemoveFromPlaylist && (
+              <button
+                className="track-action-btn track-action-btn-danger"
+                onClick={(event) => onRemoveFromPlaylist(event, track)}
+                title="Remove from playlist"
+                disabled={isRemovingFromPlaylist}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 7h14" />
+                  <path d="M9 7V5h6v2" />
+                  <path d="M8 10v9h8v-9" />
                 </svg>
               </button>
-            </div>
-            <button
-              className={`track-action-btn ${showPlayNextCheck ? 'queued' : ''}`}
-              onClick={(event) => onPlayNext(event, track)}
-              title={showPlayNextCheck ? 'Queued to play next' : 'Play Next'}
-            >
-              {showPlayNextCheck ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-                </svg>
-              )}
-            </button>
-            <button
-              className={`track-action-btn ${showAddQueueCheck ? 'queued' : ''}`}
-              onClick={(event) => onAddToQueue(event, track)}
-              title={showAddQueueCheck ? 'In queue' : 'Add to Queue'}
-            >
-              {showAddQueueCheck ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M13 7h-2v4H7v2h4v4h2v-4h4v-2h-4V7zm-1-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
-                </svg>
-              )}
-            </button>
+            )}
           </div>}
         </div>
       </div>
@@ -714,6 +739,7 @@ export default function TrackList({
   const [queueInsertArmedTrackPath, setQueueInsertArmedTrackPath] = useState<string | null>(null)
   const [selectedTrackPaths, setSelectedTrackPaths] = useState<Set<string>>(new Set())
   const [isQueueInsertDragOwner, setIsQueueInsertDragOwner] = useState(false)
+  const [isRemovingFromPlaylist, setIsRemovingFromPlaylist] = useState(false)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
 
@@ -872,6 +898,7 @@ export default function TrackList({
   }, [queueSeedTracks])
   const nextQueuedTrackPath = userQueue[0]?.path ?? null
 
+  const canRemoveFromPlaylist = playlistSourceId !== null && playlistSourceId > 0
   const currentTrackPath = currentTrack?.path ?? null
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -1420,6 +1447,37 @@ export default function TrackList({
     }
   }, [addToPlaylist, isPlaylistMembershipMutating, playlistMembershipCounts, refreshPlaylistMembership, removeFromPlaylist])
 
+  const removeTrackPathsFromCurrentPlaylist = useCallback(async (trackPaths: string[]) => {
+    const playlistId = playlistSourceId
+    if (playlistId === null || playlistId <= 0) return
+    if (isRemovingFromPlaylist) return
+
+    const uniqueTrackPaths = Array.from(new Set(trackPaths.filter((trackPath) => trackPath.trim().length > 0)))
+    if (uniqueTrackPaths.length === 0) return
+
+    setIsRemovingFromPlaylist(true)
+    try {
+      for (const trackPath of uniqueTrackPaths) {
+        await removeFromPlaylist(playlistId, trackPath)
+      }
+      closePlaylistPopup()
+      setTrackContextMenu(null)
+      setSelectedTrackPaths(new Set())
+    } finally {
+      setIsRemovingFromPlaylist(false)
+    }
+  }, [closePlaylistPopup, isRemovingFromPlaylist, playlistSourceId, removeFromPlaylist])
+
+  const handleRemoveTrackFromPlaylist = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
+    event.stopPropagation()
+    void removeTrackPathsFromCurrentPlaylist([dbTrack.path])
+  }, [removeTrackPathsFromCurrentPlaylist])
+
+  const handleContextRemoveFromPlaylist = useCallback(() => {
+    if (!trackContextMenu) return
+    void removeTrackPathsFromCurrentPlaylist(trackContextMenu.tracks.map((track) => track.path))
+  }, [removeTrackPathsFromCurrentPlaylist, trackContextMenu])
+
   const handleOpenCreatePlaylistModal = useCallback(() => {
     if (!playlistPopup) return
     setPlaylistPopupFeedback(null)
@@ -1635,6 +1693,9 @@ export default function TrackList({
 
   const contextMenuTrackCount = trackContextMenu?.tracks.length ?? 0
   const contextMenuLocalTrackCount = trackContextMenu?.tracks.filter((track) => track.source_type === 'local').length ?? 0
+  const contextMenuContainsMissingPlaylistEntry = Boolean(
+    trackContextMenu?.tracks.some((track) => isMissingPlaylistEntryTrack(track))
+  )
   const isContextIntegrityBusy = Boolean(
     trackContextMenu
     && integrityBusyPaths.some((trackPath) => trackContextMenu.tracks.some((track) => track.path === trackPath))
@@ -1676,6 +1737,9 @@ export default function TrackList({
     onToggleFavorite: handleToggleFavorite,
     onOpenPlaylistPopup: handleOpenPlaylistPopup,
     onTrackContextMenu: handleTrackContextMenu,
+    onRemoveFromPlaylist: handleRemoveTrackFromPlaylist,
+    canRemoveFromPlaylist,
+    isRemovingFromPlaylist,
     showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
     selectedTrackPaths
@@ -1715,6 +1779,9 @@ export default function TrackList({
     handleToggleFavorite,
     handleOpenPlaylistPopup,
     handleTrackContextMenu,
+    handleRemoveTrackFromPlaylist,
+    canRemoveFromPlaylist,
+    isRemovingFromPlaylist,
     queueInsertArmedTrackPath,
     selectedTrackPaths
   ])
@@ -1902,6 +1969,7 @@ export default function TrackList({
             type="button"
             className="track-context-menu-item"
             onClick={handleContextPlayNext}
+            disabled={contextMenuContainsMissingPlaylistEntry}
           >
             <span className="track-context-menu-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1914,6 +1982,7 @@ export default function TrackList({
             type="button"
             className="track-context-menu-item"
             onClick={handleContextAddToQueue}
+            disabled={contextMenuContainsMissingPlaylistEntry}
           >
             <span className="track-context-menu-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1926,6 +1995,7 @@ export default function TrackList({
             type="button"
             className="track-context-menu-item"
             onClick={handleOpenContextPlaylistPopup}
+            disabled={contextMenuContainsMissingPlaylistEntry}
           >
             <span className="track-context-menu-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1934,11 +2004,32 @@ export default function TrackList({
             </span>
             Add to Playlist...
           </button>
+          {canRemoveFromPlaylist && (
+            <button
+              type="button"
+              className="track-context-menu-item track-context-menu-item-danger"
+              onClick={handleContextRemoveFromPlaylist}
+              disabled={isRemovingFromPlaylist}
+            >
+              <span className="track-context-menu-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 7h14" />
+                  <path d="M9 7V5h6v2" />
+                  <path d="M8 10v9h8v-9" />
+                </svg>
+              </span>
+              {isRemovingFromPlaylist
+                ? 'Removing...'
+                : contextMenuTrackCount > 1
+                  ? `Remove from Playlist (${contextMenuTrackCount})`
+                  : 'Remove from Playlist'}
+            </button>
+          )}
           <button
             type="button"
             className="track-context-menu-item"
             onClick={handleContextEditMetadata}
-            disabled={contextMenuLocalTrackCount === 0}
+            disabled={contextMenuContainsMissingPlaylistEntry || contextMenuLocalTrackCount === 0}
           >
             <span className="track-context-menu-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1952,6 +2043,7 @@ export default function TrackList({
             type="button"
             className="track-context-menu-item"
             onClick={handleContextEditLyrics}
+            disabled={contextMenuContainsMissingPlaylistEntry}
           >
             <span className="track-context-menu-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1967,7 +2059,7 @@ export default function TrackList({
               type="button"
               className="track-context-menu-item"
               onClick={handleCheckTrackIntegrity}
-              disabled={contextMenuLocalTrackCount === 0 || isContextIntegrityBusy}
+              disabled={contextMenuContainsMissingPlaylistEntry || contextMenuLocalTrackCount === 0 || isContextIntegrityBusy}
             >
               <span className="track-context-menu-icon">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
