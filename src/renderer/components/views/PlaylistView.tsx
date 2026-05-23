@@ -1,6 +1,7 @@
-import { DragEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import {
   buildPlaylistDisplaySections,
@@ -219,6 +220,11 @@ export default function PlaylistView() {
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
+  const autoQueue = usePlayerStore((s) => s.autoQueue)
+  const autoQueueSourcePlaylistId = usePlayerStore((s) => s.autoQueueSourcePlaylistId)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths),
     [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
@@ -252,6 +258,12 @@ export default function PlaylistView() {
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isDiscardReorderConfirmOpen, setIsDiscardReorderConfirmOpen] = useState(false)
+  const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
+  const [isCoverMenuOpen, setIsCoverMenuOpen] = useState(false)
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const shufflePlayPendingRef = useRef(false)
+  const coverControlRef = useRef<HTMLDivElement | null>(null)
+  const moreMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setIsRenaming(false)
@@ -268,7 +280,38 @@ export default function PlaylistView() {
     setIsDeleteConfirmOpen(false)
     setIsSavingReorder(false)
     setIsDiscardReorderConfirmOpen(false)
+    setIsCoverMenuOpen(false)
+    setIsMoreMenuOpen(false)
   }, [selectedPlaylistId])
+
+  useEffect(() => {
+    if (!isCoverMenuOpen && !isMoreMenuOpen) return
+
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+
+      if (isCoverMenuOpen && !coverControlRef.current?.contains(target)) {
+        setIsCoverMenuOpen(false)
+      }
+      if (isMoreMenuOpen && !moreMenuRef.current?.contains(target)) {
+        setIsMoreMenuOpen(false)
+      }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setIsCoverMenuOpen(false)
+      setIsMoreMenuOpen(false)
+    }
+
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isCoverMenuOpen, isMoreMenuOpen])
 
   useEffect(() => {
     if (!playlistTrackRevealRequest) return
@@ -364,6 +407,10 @@ export default function PlaylistView() {
     () => displayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),
     [displayTracks]
   )
+  const displayPlayableTrackPaths = useMemo(
+    () => displayPlayableTracks.map((track) => track.path),
+    [displayPlayableTracks]
+  )
 
   const playlistMissingCount = selectedPlaylistEntries.reduce(
     (count, entry) => count + (entry.missing || entry.track === null ? 1 : 0),
@@ -379,6 +426,21 @@ export default function PlaylistView() {
   }, [isFavoritesPlaylist, isReorderMode, isSavingReorder, loadPlaylists, selectPlaylist, selectedPlaylistId, trackCacheVersion])
 
   const canReorderTracks = !isFavoritesPlaylist && selectedPlaylistId !== null && selectedPlaylistId > 0
+  const isShufflePlayDisabled = isShufflePlayPending || isReorderMode || isSavingReorder || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
+  const isShufflePlayActive = useMemo(() => {
+    if (!shuffle) return false
+    if (selectedPlaylistId === null) return false
+    if (autoQueueSourcePlaylistId !== selectedPlaylistId) return false
+    if (autoQueue.length === 0 || autoQueue.length !== displayPlayableTrackPaths.length) return false
+
+    for (let index = 0; index < autoQueue.length; index += 1) {
+      if (autoQueue[index]?.path !== displayPlayableTrackPaths[index]) {
+        return false
+      }
+    }
+
+    return true
+  }, [autoQueue, autoQueueSourcePlaylistId, displayPlayableTrackPaths, selectedPlaylistId, shuffle])
   const hasUnsavedReorderChanges = useMemo(() => {
     if (!isReorderMode || !reorderedEntries) return false
     if (reorderedEntries.length !== selectedPlaylistEntries.length) return true
@@ -401,6 +463,7 @@ export default function PlaylistView() {
 
   const handleStartRename = () => {
     if (isFavoritesPlaylist || isReorderMode || isSavingReorder) return
+    setIsMoreMenuOpen(false)
     setRenameValue(playlist?.name ?? '')
     setIsRenaming(true)
   }
@@ -452,6 +515,7 @@ export default function PlaylistView() {
 
   const handleRequestDelete = () => {
     if (isFavoritesPlaylist || isReorderMode || isSavingReorder || isDeletingPlaylist) return
+    setIsMoreMenuOpen(false)
     setIsDeleteConfirmOpen(true)
   }
 
@@ -469,6 +533,7 @@ export default function PlaylistView() {
   }
 
   const handleChangeCover = async () => {
+    setIsCoverMenuOpen(false)
     if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover || isReorderMode || isSavingReorder) return
     const imagePath = await window.electronAPI.openFileDialog({
       title: 'Choose playlist cover',
@@ -485,6 +550,7 @@ export default function PlaylistView() {
   }
 
   const handleClearCover = async () => {
+    setIsCoverMenuOpen(false)
     if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover || isReorderMode || isSavingReorder) return
     if (!playlist?.custom_cover_hash) return
 
@@ -515,8 +581,34 @@ export default function PlaylistView() {
     setSortState(null)
   }, [])
 
+  const handleShufflePlayPlaylist = useCallback(async () => {
+    if (shufflePlayPendingRef.current) return
+    if (selectedPlaylistId === null || displayPlayableTrackPaths.length === 0 || isReorderMode || isSavingReorder) return
+
+    shufflePlayPendingRef.current = true
+    setIsShufflePlayPending(true)
+
+    try {
+      const randomStartIndex = Math.floor(Math.random() * displayPlayableTrackPaths.length)
+      await startPlaybackContextByPaths(displayPlayableTrackPaths, randomStartIndex, {
+        sourcePlaylistId: selectedPlaylistId,
+        contextLabel: playlistName ?? 'Playlist'
+      })
+      if (!shuffle) {
+        toggleShuffle()
+      }
+    } catch (error) {
+      console.error('Failed to shuffle play playlist:', error)
+    } finally {
+      shufflePlayPendingRef.current = false
+      setIsShufflePlayPending(false)
+    }
+  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, shuffle, startPlaybackContextByPaths, toggleShuffle])
+
   const handleToggleReorderMode = useCallback(() => {
     if (!canReorderTracks || isSavingReorder) return
+    setIsCoverMenuOpen(false)
+    setIsMoreMenuOpen(false)
 
     if (isReorderMode) {
       if (hasUnsavedReorderChanges) {
@@ -734,12 +826,58 @@ export default function PlaylistView() {
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
           </button>
-          <PlaylistCover
-            hash={playlistCoverHash}
-            name={playlistName ?? FAVORITES_PLAYLIST_NAME}
-            isFavorites={isFavoritesPlaylist}
-            className="playlist-header-cover"
-          />
+          <div className="playlist-header-cover-control" ref={coverControlRef}>
+            <PlaylistCover
+              hash={playlistCoverHash}
+              name={playlistName ?? FAVORITES_PLAYLIST_NAME}
+              isFavorites={isFavoritesPlaylist}
+              className="playlist-header-cover"
+            />
+            {!isFavoritesPlaylist && (
+              <>
+                <button
+                  type="button"
+                  className="playlist-header-cover-edit-btn"
+                  onClick={() => {
+                    setIsCoverMenuOpen((isOpen) => !isOpen)
+                    setIsMoreMenuOpen(false)
+                  }}
+                  disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                  aria-haspopup="menu"
+                  aria-expanded={isCoverMenuOpen}
+                  aria-label="Edit playlist cover"
+                  title="Edit playlist cover"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                  </svg>
+                </button>
+                {isCoverMenuOpen && (
+                  <div className="playlist-header-cover-menu" role="menu">
+                    <button
+                      type="button"
+                      className="playlist-header-menu-item"
+                      role="menuitem"
+                      onClick={() => void handleChangeCover()}
+                      disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    >
+                      Change cover
+                    </button>
+                    <button
+                      type="button"
+                      className="playlist-header-menu-item"
+                      role="menuitem"
+                      onClick={() => void handleClearCover()}
+                      disabled={isUpdatingCover || !playlist?.custom_cover_hash || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    >
+                      Remove cover
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
           <div className="playlist-header-meta">
             {isRenaming ? (
               <input
@@ -774,56 +912,96 @@ export default function PlaylistView() {
         <div className="playlist-header-actions">
           <button
             type="button"
-            className="settings-btn settings-btn-primary playlist-action-btn"
-            onClick={() => setIsCreatePlaylistModalOpen(true)}
-            disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+            className={`icon-btn library-shuffle-btn playlist-shuffle-btn ${isShufflePlayActive ? 'active' : ''}`}
+            onClick={() => {
+              void handleShufflePlayPlaylist()
+            }}
+            title="Shuffle play playlist"
+            aria-label="Shuffle play playlist"
+            disabled={isShufflePlayDisabled}
           >
-            New Playlist
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M16 3h5v5" />
+              <path d="M4 20 21 3" />
+              <path d="M21 16v5h-5" />
+              <path d="M15 15 21 21" />
+              <path d="M4 4 9 9" />
+            </svg>
+            <span className="library-shuffle-btn-label">Shuffle all</span>
           </button>
           {!isFavoritesPlaylist && (
-            <>
-              <button
-                type="button"
-                className="settings-btn playlist-action-btn"
-                onClick={handleStartRename}
-                disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
-              >
-                Rename
-              </button>
-              <button
-                type="button"
-                className="settings-btn playlist-action-btn"
-                onClick={() => void handleChangeCover()}
-                disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
-              >
-                {isUpdatingCover ? 'Updating Cover...' : 'Change Cover'}
-              </button>
-              <button
-                type="button"
-                className="settings-btn playlist-action-btn"
-                onClick={() => void handleClearCover()}
-                disabled={isUpdatingCover || !playlist?.custom_cover_hash || isReorderMode || isSavingReorder || isDeletingPlaylist}
-              >
-                Remove Cover
-              </button>
-              <button
-                type="button"
-                className={`settings-btn playlist-action-btn ${isReorderMode ? 'settings-btn-primary' : ''}`}
-                onClick={handleToggleReorderMode}
-                disabled={isSavingReorder || isDeletingPlaylist || (!isReorderMode && playlistEntryCount < 2)}
-              >
-                {isReorderMode ? 'Exit Reorder' : 'Reorder Tracks'}
-              </button>
-              <button
-                type="button"
-                className="settings-btn playlist-action-btn playlist-action-btn-danger"
-                onClick={handleRequestDelete}
-                disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
-              >
-                Delete
-              </button>
-            </>
+            <button
+              type="button"
+              className={`icon-btn playlist-header-icon-btn ${isReorderMode ? 'active' : ''}`}
+              onClick={handleToggleReorderMode}
+              disabled={isSavingReorder || isDeletingPlaylist || (!isReorderMode && playlistEntryCount < 2)}
+              title={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
+              aria-label={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
+              aria-pressed={isReorderMode}
+            >
+              <svg width="15" height="17" viewBox="0 0 320 512" fill="currentColor" aria-hidden="true">
+                <path d="M137.4 41.4c12.5-12.5 32.8-12.5 45.3 0l128 128c9.2 9.2 11.9 22.9 6.9 34.9S301 224 288 224H32c-12.9 0-24.6-7.8-29.6-19.8s-2.2-25.7 6.9-34.9l128-128zm0 429.3-128-128c-9.2-9.2-11.9-22.9-6.9-34.9S19.1 288 32 288h256c12.9 0 24.6 7.8 29.6 19.8s2.2 25.7-6.9 34.9l-128 128c-12.5 12.5-32.8 12.5-45.3 0z" />
+              </svg>
+            </button>
           )}
+          <div className="playlist-header-menu-wrap" ref={moreMenuRef}>
+            <button
+              type="button"
+              className={`icon-btn playlist-header-icon-btn ${isMoreMenuOpen ? 'active' : ''}`}
+              onClick={() => {
+                setIsMoreMenuOpen((isOpen) => !isOpen)
+                setIsCoverMenuOpen(false)
+              }}
+              aria-haspopup="menu"
+              aria-expanded={isMoreMenuOpen}
+              aria-label="More playlist actions"
+              title="More playlist actions"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.8" />
+                <circle cx="12" cy="12" r="1.8" />
+                <circle cx="19" cy="12" r="1.8" />
+              </svg>
+            </button>
+            {isMoreMenuOpen && (
+              <div className="playlist-header-more-menu" role="menu">
+                <button
+                  type="button"
+                  className="playlist-header-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsMoreMenuOpen(false)
+                    setIsCreatePlaylistModalOpen(true)
+                  }}
+                  disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                >
+                  New playlist
+                </button>
+                {!isFavoritesPlaylist && (
+                  <>
+                    <button
+                      type="button"
+                      className="playlist-header-menu-item"
+                      role="menuitem"
+                      onClick={handleStartRename}
+                      disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="playlist-header-menu-item danger"
+                      role="menuitem"
+                      onClick={handleRequestDelete}
+                      disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="playlist-content">
