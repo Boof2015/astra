@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, relative } from 'path'
 import test from 'node:test'
@@ -570,4 +570,125 @@ test('playlist reorder preserves missing track entries after cleanup', async (t)
   const reorderedEntries = library.getPlaylistTrackEntries(playlist.id)
   assert.deepEqual(reorderedEntries.map((entry) => entry.track_path), [availableTrackPath, missingTrackPath])
   assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
+})
+
+test('playlist export writes extended M3U with relative local paths', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const nestedDir = join(musicDir, 'Export Artist')
+  const firstTrackPath = join(nestedDir, 'First Track.wav')
+  const secondTrackPath = join(musicDir, 'Second Track.wav')
+  await mkdir(nestedDir, { recursive: true })
+  await writeTaggedWavFixture(firstTrackPath, 'First Track', 'Export Artist')
+  await writeTaggedWavFixture(secondTrackPath, 'Second Track', 'Export Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 2)
+  assert.equal(scan.errors, 0)
+
+  const playlist = await library.createPlaylist('Export Set')
+  await library.addToPlaylist(playlist.id, [firstTrackPath, secondTrackPath])
+
+  const exportDir = join(dir, 'exports')
+  await mkdir(exportDir)
+  const exportPath = join(exportDir, 'Export Set.m3u8')
+  const result = await library.exportPlaylistToM3u(playlist.id, exportPath)
+
+  assert.equal(result.format, 'm3u8')
+  assert.equal(result.exportedCount, 2)
+  assert.deepEqual(result.warnings, [])
+
+  const lines = (await readFile(exportPath, 'utf-8')).trimEnd().split('\n')
+  assert.equal(lines[0], '#EXTM3U')
+  assert.match(lines[1], /^#EXTINF:-?\d+,Export Artist - First Track$/)
+  assert.equal(lines[2], relative(exportDir, firstTrackPath).replace(/\\/g, '/'))
+  assert.match(lines[3], /^#EXTINF:-?\d+,Export Artist - Second Track$/)
+  assert.equal(lines[4], relative(exportDir, secondTrackPath).replace(/\\/g, '/'))
+})
+
+test('playlist export preserves missing imported entries', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const missingTrackPath = join(musicDir, 'missing-export.wav')
+  await mkdir(musicDir)
+
+  const playlistPath = join(dir, 'missing-export-source.m3u')
+  await writeFile(
+    playlistPath,
+    [
+      '#EXTM3U',
+      '#EXTINF:123,Missing Artist - Missing Export',
+      relative(dir, missingTrackPath),
+      ''
+    ].join('\n'),
+    'utf-8'
+  )
+
+  const importResult = await library.importPlaylistFromFile(playlistPath)
+  assert.equal(importResult.importedCount, 0)
+  assert.equal(importResult.missingEntryCount, 1)
+  assert.ok(importResult.playlistId)
+
+  const exportDir = join(dir, 'exports')
+  await mkdir(exportDir)
+  const exportPath = join(exportDir, 'missing-export.m3u8')
+  const exportResult = await library.exportPlaylistToM3u(importResult.playlistId, exportPath)
+
+  assert.equal(exportResult.exportedCount, 1)
+  const lines = (await readFile(exportPath, 'utf-8')).trimEnd().split('\n')
+  assert.deepEqual(lines, [
+    '#EXTM3U',
+    '#EXTINF:-1,Missing Artist - Missing Export',
+    relative(exportDir, missingTrackPath).replace(/\\/g, '/')
+  ])
+})
+
+test('playlist export supports Favorites as an M3U playlist', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const favoriteTrackPath = join(musicDir, 'favorite-export.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(favoriteTrackPath, 'Favorite Export', 'Favorite Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+  await library.addFavorite(favoriteTrackPath)
+
+  const exportDir = join(dir, 'exports')
+  await mkdir(exportDir)
+  const exportPath = join(exportDir, 'Favorites.m3u8')
+  const result = await library.exportPlaylistToM3u(-1, exportPath)
+
+  assert.equal(result.playlistId, -1)
+  assert.equal(result.exportedCount, 1)
+  const lines = (await readFile(exportPath, 'utf-8')).trimEnd().split('\n')
+  assert.equal(lines[0], '#EXTM3U')
+  assert.match(lines[1], /^#EXTINF:-?\d+,Favorite Artist - Favorite Export$/)
+  assert.equal(lines[2], relative(exportDir, favoriteTrackPath).replace(/\\/g, '/'))
+})
+
+test('playlist export rejects unsupported file extensions', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Invalid Export')
+
+  await assert.rejects(
+    () => library.exportPlaylistToM3u(playlist.id, join(dir, 'invalid-export.txt')),
+    /Unsupported playlist export format/
+  )
 })

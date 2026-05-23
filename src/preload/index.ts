@@ -308,6 +308,14 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export interface PlaylistExportResult {
+  filePath: string
+  format: 'm3u' | 'm3u8'
+  playlistId: number
+  exportedCount: number
+  warnings: string[]
+}
+
 export type MetadataSaveMode = 'virtual' | 'file'
 
 export interface MetadataEditChanges {
@@ -1056,6 +1064,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistsContainingTrack: (trackPath: string) => ipcRenderer.invoke('library:getPlaylistsContainingTrack', trackPath),
     getPlaylistsContainingTracks: (trackPaths: string[]) => ipcRenderer.invoke('library:getPlaylistsContainingTracks', trackPaths) as Promise<Array<{ playlistId: number; matchedTrackCount: number }>>,
     importPlaylistFromFile: (filePath: string) => ipcRenderer.invoke('library:importPlaylistFromFile', filePath),
+    exportPlaylistToM3u: (playlistId: number, filePath: string) => ipcRenderer.invoke('library:exportPlaylistToM3u', playlistId, filePath),
   }
 })
 
@@ -1395,6 +1404,7 @@ declare global {
         getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
         getPlaylistsContainingTracks: (trackPaths: string[]) => Promise<Array<{ playlistId: number; matchedTrackCount: number }>>
         importPlaylistFromFile: (filePath: string) => Promise<PlaylistImportResult>
+        exportPlaylistToM3u: (playlistId: number, filePath: string) => Promise<PlaylistExportResult>
       }
     }
 

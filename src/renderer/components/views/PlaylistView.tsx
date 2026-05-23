@@ -10,7 +10,7 @@ import {
   isSystemFavoritesPlaylistId
 } from '../../utils/playlistSystem'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
-import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
+import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -211,7 +211,8 @@ export default function PlaylistView() {
     setPlaylistCustomCoverFromFile,
     clearPlaylistCustomCover,
     reorderPlaylistTracks,
-    importPlaylistFromFile
+    importPlaylistFromFile,
+    exportPlaylistToM3u
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
@@ -255,6 +256,7 @@ export default function PlaylistView() {
   const [reorderError, setReorderError] = useState<string | null>(null)
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
+  const [isExportingPlaylist, setIsExportingPlaylist] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isDiscardReorderConfirmOpen, setIsDiscardReorderConfirmOpen] = useState(false)
@@ -277,6 +279,7 @@ export default function PlaylistView() {
     setIsDeletingPlaylist(false)
     setReorderError(null)
     setIsCreatePlaylistModalOpen(false)
+    setIsExportingPlaylist(false)
     setIsDeleteConfirmOpen(false)
     setIsSavingReorder(false)
     setIsDiscardReorderConfirmOpen(false)
@@ -518,6 +521,26 @@ export default function PlaylistView() {
     setIsMoreMenuOpen(false)
     setIsDeleteConfirmOpen(true)
   }
+
+  const handleExportPlaylist = useCallback(async () => {
+    if (isExportingPlaylist) return
+    if (selectedPlaylistId === null) return
+    if (isReorderMode || isSavingReorder || isDeletingPlaylist) return
+
+    setIsMoreMenuOpen(false)
+    setIsExportingPlaylist(true)
+    try {
+      const result = await exportPlaylistToM3u(selectedPlaylistId, playlistName ?? 'Playlist')
+      if (!result) return
+      setPlaylistImportStatus(formatPlaylistExportStatus(result))
+    } catch (error) {
+      console.error('Failed to export playlist:', error)
+      const message = error instanceof Error ? error.message : 'Failed to export playlist.'
+      setPlaylistImportStatus({ tone: 'error', message })
+    } finally {
+      setIsExportingPlaylist(false)
+    }
+  }, [exportPlaylistToM3u, isDeletingPlaylist, isExportingPlaylist, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId])
 
   const handleConfirmDelete = async () => {
     if (isFavoritesPlaylist || isReorderMode || isSavingReorder || isDeletingPlaylist) return
@@ -976,6 +999,17 @@ export default function PlaylistView() {
                   disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
                 >
                   New playlist
+                </button>
+                <button
+                  type="button"
+                  className="playlist-header-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    void handleExportPlaylist()
+                  }}
+                  disabled={isReorderMode || isSavingReorder || isDeletingPlaylist || isExportingPlaylist}
+                >
+                  {isExportingPlaylist ? 'Exporting...' : 'Export M3U'}
                 </button>
                 {!isFavoritesPlaylist && (
                   <>

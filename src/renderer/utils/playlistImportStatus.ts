@@ -1,4 +1,4 @@
-import type { PlaylistImportResult } from '../stores/playlistStore'
+import type { PlaylistExportResult, PlaylistImportResult } from '../stores/playlistStore'
 
 export type PlaylistImportStatusTone = 'success' | 'warning' | 'error'
 
@@ -50,5 +50,20 @@ export function formatPlaylistImportStatus(result: PlaylistImportResult): Playli
   return {
     tone: 'warning',
     message: `Imported ${addedEntryCount} ${addedEntryCount === 1 ? 'entry' : 'entries'} to "${result.playlistName}".${details}`
+  }
+}
+
+function getFileNameFromPath(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() || filePath
+}
+
+export function formatPlaylistExportStatus(result: PlaylistExportResult): PlaylistImportStatus {
+  const fileName = getFileNameFromPath(result.filePath)
+  const entryLabel = result.exportedCount === 1 ? 'entry' : 'entries'
+  const warningDetail = result.warnings.length > 0 ? ` ${result.warnings[0]}` : ''
+
+  return {
+    tone: result.warnings.length > 0 ? 'warning' : 'success',
+    message: `Exported ${result.exportedCount} ${entryLabel} to "${fileName}".${warningDetail}`
   }
 }

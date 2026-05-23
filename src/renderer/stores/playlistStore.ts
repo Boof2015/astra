@@ -32,6 +32,14 @@ export interface PlaylistImportResult {
   warnings: string[]
 }
 
+export interface PlaylistExportResult {
+  filePath: string
+  format: 'm3u' | 'm3u8'
+  playlistId: number
+  exportedCount: number
+  warnings: string[]
+}
+
 export interface CreatePlaylistOptions {
   name: string
   coverImagePath?: string | null
@@ -115,12 +123,29 @@ interface PlaylistStore {
   getPlaylistsContainingTracks: (trackPaths: string[]) => Promise<PlaylistTrackMembershipSummary[]>
   getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
+  exportPlaylistToM3u: (playlistId: number, playlistName: string) => Promise<PlaylistExportResult | null>
 }
 
 function getPlayableTracksFromEntries(entries: PlaylistTrackEntry[]): DbTrack[] {
   return entries
     .map((entry) => entry.track)
     .filter((track): track is DbTrack => track !== null)
+}
+
+function sanitizePlaylistExportFileName(playlistName: string): string {
+  const sanitized = playlistName
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
+    .replace(/\.+$/g, '')
+    .slice(0, 80)
+    .trim()
+  return sanitized || 'Playlist'
+}
+
+function ensurePlaylistExportExtension(filePath: string): string {
+  const fileName = filePath.split(/[\\/]/).pop() ?? filePath
+  if (/\.[^.]+$/.test(fileName)) return filePath
+  return `${filePath}.m3u8`
 }
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
@@ -283,6 +308,22 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       const result = await window.electronAPI.library.importPlaylistFromFile(filePath)
       await get().loadPlaylists()
       return result
+    },
+
+    exportPlaylistToM3u: async (playlistId: number, playlistName: string) => {
+      if (!Number.isInteger(playlistId)) return null
+
+      const filePath = await window.electronAPI.showSaveDialog({
+        title: 'Export Playlist',
+        defaultPath: `${sanitizePlaylistExportFileName(playlistName)}.m3u8`,
+        filters: [
+          { name: 'M3U8 Playlists', extensions: ['m3u8'] },
+          { name: 'M3U Playlists', extensions: ['m3u'] }
+        ]
+      })
+      if (!filePath) return null
+
+      return window.electronAPI.library.exportPlaylistToM3u(playlistId, ensurePlaylistExportExtension(filePath))
     }
   }
 })

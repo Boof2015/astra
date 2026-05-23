@@ -5915,6 +5915,10 @@ ipcMain.handle('library:importPlaylistFromFile', async (_event, filePath: string
   return library.importPlaylistFromFile(filePath)
 })
 
+ipcMain.handle('library:exportPlaylistToM3u', async (_event, playlistId: number, filePath: string) => {
+  return library.exportPlaylistToM3u(playlistId, filePath)
+})
+
 // ============================================
 // Helper functions
 // ============================================

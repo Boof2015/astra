@@ -1,6 +1,6 @@
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
-import { join, extname, basename, dirname, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
+import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
@@ -372,6 +372,14 @@ export interface PlaylistImportResult {
   unmatchedCount: number
   ambiguousMetadataCount: number
   unsupportedEntryCount: number
+  warnings: string[]
+}
+
+export interface PlaylistExportResult {
+  filePath: string
+  format: 'm3u' | 'm3u8'
+  playlistId: number
+  exportedCount: number
   warnings: string[]
 }
 
@@ -7260,6 +7268,174 @@ function deriveImportedPlaylistName(filePath: string): string {
 function normalizePreservedPlaylistImportEntryPath(rawPath: string): string | null {
   const normalized = stripPlaylistEntryOuterQuotes(rawPath.trim())
   return normalized.length > 0 ? normalized : null
+}
+
+const SYSTEM_FAVORITES_PLAYLIST_ID = -1
+
+interface PlaylistM3uExportEntry {
+  trackPath: string
+  title: string | null
+  artist: string | null
+  duration: number | null
+  sourceType: TrackSourceType | null
+}
+
+function derivePlaylistExportFormat(filePath: string): 'm3u' | 'm3u8' {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.m3u') return 'm3u'
+  if (extension === '.m3u8') return 'm3u8'
+  throw new Error('Unsupported playlist export format. Use .m3u or .m3u8.')
+}
+
+function isWindowsAbsolutePlaylistPath(inputPath: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(inputPath)
+    || /^\\\\[^\\]/.test(inputPath)
+    || /^\/\/[^/]/.test(inputPath)
+}
+
+function hasNonFilePlaylistUriScheme(inputPath: string): boolean {
+  const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(inputPath)
+  if (!schemeMatch || isWindowsAbsolutePlaylistPath(inputPath)) return false
+  return schemeMatch[1].toLocaleLowerCase() !== 'file'
+}
+
+function canWriteRelativeM3uPath(inputPath: string): boolean {
+  if (process.platform !== 'win32' && isWindowsAbsolutePlaylistPath(inputPath)) {
+    return false
+  }
+  return isAbsolutePath(inputPath)
+}
+
+function normalizeM3uLineValue(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').trim()
+}
+
+function normalizeM3uPathValue(value: string): string {
+  return normalizeM3uLineValue(value).replace(/\\/g, '/')
+}
+
+function basenameFromPlaylistPath(value: string): string {
+  const normalized = normalizeM3uLineValue(value)
+  const parts = normalized.split(/[\\/]/)
+  return parts[parts.length - 1] || normalized
+}
+
+function formatM3uDuration(duration: number | null): number {
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) {
+    return -1
+  }
+  return Math.max(0, Math.round(duration))
+}
+
+function formatM3uDisplayTitle(entry: PlaylistM3uExportEntry): string {
+  const title = normalizeM3uLineValue(entry.title ?? '')
+  const artist = normalizeM3uLineValue(entry.artist ?? '')
+
+  if (title && artist) return `${artist} - ${title}`
+  if (title) return title
+  if (artist) return artist
+  return basenameFromPlaylistPath(entry.trackPath)
+}
+
+function formatM3uEntryPath(entry: PlaylistM3uExportEntry, exportFilePath: string): string {
+  const rawPath = normalizeM3uLineValue(entry.trackPath)
+  if (!rawPath) return rawPath
+
+  if (entry.sourceType === 'local' && canWriteRelativeM3uPath(rawPath)) {
+    const relativeExportPath = relativePath(dirname(exportFilePath), rawPath)
+    if (relativeExportPath && !isAbsolutePath(relativeExportPath)) {
+      return normalizeM3uPathValue(relativeExportPath)
+    }
+  }
+
+  return normalizeM3uPathValue(rawPath)
+}
+
+function serializePlaylistEntriesToM3u(entries: PlaylistM3uExportEntry[], exportFilePath: string): string {
+  const lines = ['#EXTM3U']
+
+  for (const entry of entries) {
+    const entryPath = formatM3uEntryPath(entry, exportFilePath)
+    if (!entryPath) continue
+
+    lines.push(`#EXTINF:${formatM3uDuration(entry.duration)},${formatM3uDisplayTitle(entry)}`)
+    lines.push(entryPath)
+  }
+
+  return `${lines.join('\n')}\n`
+}
+
+function getPlaylistM3uExportEntries(playlistId: number): PlaylistM3uExportEntry[] {
+  if (!db) throw new Error('Database not initialized')
+  if (!Number.isInteger(playlistId)) {
+    throw new Error('Playlist id is required.')
+  }
+
+  if (playlistId === SYSTEM_FAVORITES_PLAYLIST_ID) {
+    return getFavorites().map((track) => ({
+      trackPath: track.path,
+      title: track.title,
+      artist: track.artist,
+      duration: track.duration,
+      sourceType: track.source_type
+    }))
+  }
+
+  if (playlistId <= 0) {
+    throw new Error('Playlist id is required.')
+  }
+
+  const playlistRow = db.get<{ id?: unknown }>('SELECT id FROM playlists WHERE id = ? LIMIT 1', [playlistId])
+  if (!playlistRow) {
+    throw new Error('Playlist not found.')
+  }
+
+  return getPlaylistTrackEntries(playlistId).map((entry) => ({
+    trackPath: entry.track_path,
+    title: entry.track?.title ?? entry.title,
+    artist: entry.track?.artist ?? entry.artist,
+    duration: entry.track?.duration ?? null,
+    sourceType: entry.track?.source_type ?? (hasNonFilePlaylistUriScheme(entry.track_path) ? null : 'local')
+  }))
+}
+
+function countPotentiallyNonPortableM3uEntries(entries: PlaylistM3uExportEntry[]): number {
+  return entries.reduce((count, entry) => {
+    if (entry.sourceType && entry.sourceType !== 'local') {
+      return count + 1
+    }
+    if (entry.sourceType === null && hasNonFilePlaylistUriScheme(entry.trackPath)) {
+      return count + 1
+    }
+    return count
+  }, 0)
+}
+
+export async function exportPlaylistToM3u(playlistId: number, filePath: string): Promise<PlaylistExportResult> {
+  if (!db) throw new Error('Database not initialized')
+
+  const exportFilePath = filePath.trim()
+  if (!exportFilePath) {
+    throw new Error('Playlist export file path is required.')
+  }
+
+  const format = derivePlaylistExportFormat(exportFilePath)
+  const entries = getPlaylistM3uExportEntries(playlistId)
+  const warnings: string[] = []
+  const nonPortableEntryCount = countPotentiallyNonPortableM3uEntries(entries)
+  if (nonPortableEntryCount > 0) {
+    warnings.push(`${nonPortableEntryCount} entries reference remote or app-specific locations and may not work outside Astra.`)
+  }
+
+  await writeFile(exportFilePath, serializePlaylistEntriesToM3u(entries, exportFilePath), 'utf-8')
+
+  return {
+    filePath: exportFilePath,
+    format,
+    playlistId,
+    exportedCount: entries.length,
+    warnings
+  }
 }
 
 function reconcileMissingPlaylistEntriesByMetadata(): number {
