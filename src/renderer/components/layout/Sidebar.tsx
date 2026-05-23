@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore, type AppView, type TrackDragDropTarget } from '../../stores/uiStore'
@@ -84,6 +85,12 @@ const settingsIcon = (
   </svg>
 )
 
+interface SidebarTooltip {
+  label: string
+  left: number
+  top: number
+}
+
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
   const trackDrag = useUIStore((s) => s.trackDrag)
@@ -113,8 +120,10 @@ export default function Sidebar() {
   const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
   const [isOverflowDragHover, setIsOverflowDragHover] = useState(false)
   const [sidebarDropSettledKey, setSidebarDropSettledKey] = useState<string | null>(null)
+  const [sidebarTooltip, setSidebarTooltip] = useState<SidebarTooltip | null>(null)
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null)
   const popoutRef = useRef<HTMLDivElement | null>(null)
+  const sidebarTooltipAnchorRef = useRef<HTMLElement | null>(null)
   const overflowAutoOpenTimerRef = useRef<number | null>(null)
   const sidebarDropSettleTimerRef = useRef<number | null>(null)
   const overflowOpenedByDragRef = useRef(false)
@@ -166,6 +175,84 @@ export default function Sidebar() {
       maxHeight: Math.max(180, window.innerHeight - top - edgePadding)
     })
   }, [])
+
+  const clearSidebarTooltip = useCallback(() => {
+    sidebarTooltipAnchorRef.current = null
+    setSidebarTooltip(null)
+  }, [])
+
+  const updateSidebarTooltip = useCallback((anchor: HTMLElement) => {
+    const label = anchor.dataset.sidebarTooltip?.trim()
+
+    if (!label || (Boolean(trackDrag) && anchor.matches('.sidebar-drop-target'))) {
+      clearSidebarTooltip()
+      return
+    }
+
+    const rect = anchor.getBoundingClientRect()
+    const nextTooltip: SidebarTooltip = {
+      label,
+      left: rect.right + 8,
+      top: rect.top + rect.height / 2
+    }
+
+    setSidebarTooltip((current) => (
+      current
+        && current.label === nextTooltip.label
+        && current.left === nextTooltip.left
+        && current.top === nextTooltip.top
+        ? current
+        : nextTooltip
+    ))
+  }, [clearSidebarTooltip, trackDrag])
+
+  const getTooltipAnchor = useCallback((target: EventTarget | null, sidebarElement: HTMLElement): HTMLElement | null => {
+    if (!(target instanceof Element)) return null
+
+    const anchor = target.closest<HTMLElement>('[data-sidebar-tooltip]')
+    if (!anchor || !sidebarElement.contains(anchor)) return null
+
+    return anchor
+  }, [])
+
+  const showSidebarTooltip = useCallback((anchor: HTMLElement) => {
+    sidebarTooltipAnchorRef.current = anchor
+    updateSidebarTooltip(anchor)
+  }, [updateSidebarTooltip])
+
+  const handleSidebarTooltipPointerOver = useCallback((event: PointerEvent<HTMLElement>) => {
+    const anchor = getTooltipAnchor(event.target, event.currentTarget)
+    if (!anchor) return
+
+    showSidebarTooltip(anchor)
+  }, [getTooltipAnchor, showSidebarTooltip])
+
+  const handleSidebarTooltipPointerOut = useCallback((event: PointerEvent<HTMLElement>) => {
+    const anchor = getTooltipAnchor(event.target, event.currentTarget)
+    if (!anchor || sidebarTooltipAnchorRef.current !== anchor) return
+
+    const nextTarget = event.relatedTarget
+    if (nextTarget instanceof Node && anchor.contains(nextTarget)) return
+
+    clearSidebarTooltip()
+  }, [clearSidebarTooltip, getTooltipAnchor])
+
+  const handleSidebarTooltipFocus = useCallback((event: FocusEvent<HTMLElement>) => {
+    const anchor = getTooltipAnchor(event.target, event.currentTarget)
+    if (!anchor) return
+
+    showSidebarTooltip(anchor)
+  }, [getTooltipAnchor, showSidebarTooltip])
+
+  const handleSidebarTooltipBlur = useCallback((event: FocusEvent<HTMLElement>) => {
+    const anchor = getTooltipAnchor(event.target, event.currentTarget)
+    if (!anchor || sidebarTooltipAnchorRef.current !== anchor) return
+
+    const nextTarget = event.relatedTarget
+    if (nextTarget instanceof Node && anchor.contains(nextTarget)) return
+
+    clearSidebarTooltip()
+  }, [clearSidebarTooltip, getTooltipAnchor])
 
   useEffect(() => {
     if (sidebarOverflowPlaylists.length === 0) {
@@ -243,6 +330,10 @@ export default function Sidebar() {
       return
     }
 
+    if (sidebarTooltipAnchorRef.current?.matches('.sidebar-drop-target')) {
+      clearSidebarTooltip()
+    }
+
     const target = document.elementFromPoint(trackDrag.pointerX, trackDrag.pointerY)
     if (!(target instanceof Element)) {
       setTrackDragDropTarget('sidebar', null)
@@ -279,7 +370,29 @@ export default function Sidebar() {
     }
 
     setTrackDragDropTarget('sidebar', null)
-  }, [setTrackDragDropTarget, trackDrag])
+  }, [clearSidebarTooltip, setTrackDragDropTarget, trackDrag])
+
+  useLayoutEffect(() => {
+    if (!sidebarTooltip) return
+
+    const handleViewportChange = () => {
+      const anchor = sidebarTooltipAnchorRef.current
+      if (!anchor || !anchor.isConnected) {
+        clearSidebarTooltip()
+        return
+      }
+
+      updateSidebarTooltip(anchor)
+    }
+
+    window.addEventListener('resize', handleViewportChange)
+    document.addEventListener('scroll', handleViewportChange, true)
+
+    return () => {
+      window.removeEventListener('resize', handleViewportChange)
+      document.removeEventListener('scroll', handleViewportChange, true)
+    }
+  }, [clearSidebarTooltip, sidebarTooltip, updateSidebarTooltip])
 
   useEffect(() => {
     if (!trackDrag || sidebarOverflowPlaylists.length === 0) {
@@ -443,7 +556,13 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="sidebar">
+    <aside
+      className="sidebar"
+      onPointerOver={handleSidebarTooltipPointerOver}
+      onPointerOut={handleSidebarTooltipPointerOut}
+      onFocus={handleSidebarTooltipFocus}
+      onBlur={handleSidebarTooltipBlur}
+    >
       <div className="sidebar-scroll-area">
         <nav className="sidebar-nav">
           {navItems.map((item) => (
@@ -452,9 +571,9 @@ export default function Sidebar() {
               className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
               onClick={() => handleNavClick(item.id)}
               aria-label={item.label}
+              data-sidebar-tooltip={item.label}
             >
               {item.icon}
-              <span className="nav-tooltip">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -468,6 +587,7 @@ export default function Sidebar() {
                   className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   aria-label={playlist.name}
+                  data-sidebar-tooltip={playlist.name}
                   data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
                   data-sidebar-drop-playlist-id={!playlist.isSystemFavorites ? playlist.id : undefined}
                 >
@@ -482,7 +602,6 @@ export default function Sidebar() {
                       className="sidebar-playlist-btn-cover"
                     />
                   )}
-                  <span className="nav-tooltip">{playlist.name}</span>
                   {!playlist.isSystemFavorites && (
                     <span className="sidebar-drop-label">Add to Playlist</span>
                   )}
@@ -501,15 +620,13 @@ export default function Sidebar() {
                     })
                   }}
                   aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
+                  data-sidebar-tooltip={isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                     <circle cx="5" cy="12" r="1.8" />
                     <circle cx="12" cy="12" r="1.8" />
                     <circle cx="19" cy="12" r="1.8" />
                   </svg>
-                  <span className="nav-tooltip">
-                    {isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
-                  </span>
                 </button>
               )}
             </div>
@@ -523,13 +640,13 @@ export default function Sidebar() {
               setIsCreatePlaylistModalOpen(true)
             }}
             aria-label="Create playlist"
+            data-sidebar-tooltip="Create playlist"
             data-sidebar-drop-target="create-playlist"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            <span className="nav-tooltip">Create playlist</span>
             <span className="sidebar-drop-label">Create Playlist</span>
           </button>
         </div>
@@ -540,9 +657,9 @@ export default function Sidebar() {
           className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveView('settings')}
           aria-label="Settings"
+          data-sidebar-tooltip="Settings"
         >
           {settingsIcon}
-          <span className="nav-tooltip">Settings</span>
         </button>
       </div>
 
@@ -587,6 +704,16 @@ export default function Sidebar() {
             </div>
           </div>
         </>
+      )}
+      {sidebarTooltip && createPortal(
+        <div
+          className="sidebar-nav-tooltip"
+          role="tooltip"
+          style={{ left: sidebarTooltip.left, top: sidebarTooltip.top }}
+        >
+          {sidebarTooltip.label}
+        </div>,
+        document.body
       )}
       <CreatePlaylistModal
         isOpen={isCreatePlaylistModalOpen}

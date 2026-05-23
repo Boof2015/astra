@@ -9880,40 +9880,37 @@ body::after {
   flex-shrink: 0;
 }
 
-.nav-tooltip {
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%) scale(0.92);
-  opacity: 0;
+.sidebar-nav-tooltip {
+  position: fixed;
+  transform: translateY(-50%) scale(1);
+  opacity: 1;
   pointer-events: none;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
   white-space: nowrap;
+  max-width: min(280px, calc(100vw - var(--sidebar-width) - 24px));
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #cfd5db;
   background: #101010;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   padding: 4px 8px;
-  z-index: 200;
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  z-index: 900;
+  animation: sidebarNavTooltipIn 0.14s ease both;
 }
 
-.nav-btn:hover .nav-tooltip {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-}
+@keyframes sidebarNavTooltipIn {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.92);
+  }
 
-.sidebar-playlist-create-btn:hover .nav-tooltip,
-.sidebar-playlist-create-btn:focus-visible .nav-tooltip {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-}
-
-.sidebar-drop-target.is-drop-active .nav-tooltip {
-  opacity: 0 !important;
-  transform: translateY(-50%) scale(0.92) !important;
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
 }
 
 @keyframes sidebarDropTargetSettle {
