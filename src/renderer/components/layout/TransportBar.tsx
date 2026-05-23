@@ -198,12 +198,6 @@ export default function TransportBar() {
   }, [])
 
   useEffect(() => {
-    if (!showLyricsShelf) return
-    if (!showEQPopover) return
-    setShowEQPopover(false)
-  }, [showEQPopover, showLyricsShelf])
-
-  useEffect(() => {
     if (playbackOutputMode !== 'bitperfect') return
     if (!showEQPopover) return
     setShowEQPopover(false)
