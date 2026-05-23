@@ -84,16 +84,6 @@ const settingsIcon = (
   </svg>
 )
 
-const metadataIcon = (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 6h16" />
-    <path d="M4 12h10" />
-    <path d="M4 18h7" />
-    <path d="m17 11 3 3-3 3" />
-    <path d="M14 14h6" />
-  </svg>
-)
-
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
   const trackDrag = useUIStore((s) => s.trackDrag)
@@ -544,15 +534,6 @@ export default function Sidebar() {
       </div>
 
       <div className="sidebar-bottom-actions">
-        <button
-          className={`sidebar-icon-btn nav-btn sidebar-metadata-btn ${activeView === 'metadata' ? 'active' : ''}`}
-          onClick={() => setActiveView('metadata')}
-          aria-label="Metadata Editor"
-        >
-          {metadataIcon}
-          <span className="nav-tooltip">Metadata</span>
-        </button>
-
         <button
           className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveView('settings')}

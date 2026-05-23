@@ -6392,7 +6392,7 @@ function resolveEditableValuesForSave(
   return { title, artist, album, albumArtist, genre, year, trackNumber, discNumber }
 }
 
-function buildFfmpegMetadataArgs(values: {
+export interface ResolvedMetadataValues {
   title: string
   artist: string
   album: string
@@ -6401,24 +6401,22 @@ function buildFfmpegMetadataArgs(values: {
   year: number | null
   trackNumber: number | null
   discNumber: number | null
-}, changedFields: MetadataEditChanges): string[] {
-  const args: string[] = []
-  if (changedFields.title !== undefined) args.push('-metadata', `title=${values.title}`)
-  if (changedFields.artist !== undefined) args.push('-metadata', `artist=${values.artist}`)
-  if (changedFields.album !== undefined) args.push('-metadata', `album=${values.album}`)
-  if (changedFields.albumArtist !== undefined) args.push('-metadata', `album_artist=${values.albumArtist ?? ''}`)
-  if (changedFields.genre !== undefined) args.push('-metadata', `genre=${values.genre ?? ''}`)
-  if (changedFields.year !== undefined) {
-    const yearValue = values.year !== null ? String(values.year) : ''
-    args.push('-metadata', `date=${yearValue}`, '-metadata', `year=${yearValue}`)
-  }
-  if (changedFields.trackNumber !== undefined) {
-    args.push('-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`)
-  }
-  if (changedFields.discNumber !== undefined) {
-    args.push('-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`)
-  }
-  return args
+}
+
+export function buildFfmpegMetadataRewriteArgs(values: ResolvedMetadataValues): string[] {
+  const yearValue = values.year !== null ? String(values.year) : ''
+  return [
+    '-map_metadata', '-1',
+    '-metadata', `title=${values.title}`,
+    '-metadata', `artist=${values.artist}`,
+    '-metadata', `album=${values.album}`,
+    '-metadata', `album_artist=${values.albumArtist ?? ''}`,
+    '-metadata', `genre=${values.genre ?? ''}`,
+    '-metadata', `date=${yearValue}`,
+    '-metadata', `year=${yearValue}`,
+    '-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`,
+    '-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`
+  ]
 }
 
 function buildFfmpegArtworkArgs(artworkChange: ResolvedMetadataArtworkChange): string[] {
@@ -6441,17 +6439,7 @@ function buildFfmpegArtworkArgs(artworkChange: ResolvedMetadataArtworkChange): s
 
 async function writeTrackMetadataToFile(
   trackPath: string,
-  values: {
-    title: string
-    artist: string
-    album: string
-    albumArtist: string | null
-    genre: string | null
-    year: number | null
-    trackNumber: number | null
-    discNumber: number | null
-  },
-  changedFields: MetadataEditChanges,
+  values: ResolvedMetadataValues,
   artworkChange: ResolvedMetadataArtworkChange
 ): Promise<void> {
   const ffmpegPath = await resolveFfmpegBinaryPath()
@@ -6476,6 +6464,7 @@ async function writeTrackMetadataToFile(
 
     ffmpegArgs.push(
       ...buildFfmpegArtworkArgs(artworkChange),
+      ...buildFfmpegMetadataRewriteArgs(values),
       '-c', 'copy'
     )
 
@@ -6483,10 +6472,7 @@ async function writeTrackMetadataToFile(
       ffmpegArgs.push('-c:v', 'mjpeg')
     }
 
-    ffmpegArgs.push(
-      ...buildFfmpegMetadataArgs(values, changedFields),
-      outputPath
-    )
+    ffmpegArgs.push(outputPath)
 
     await execFileAsync(
       ffmpegPath,
@@ -6602,7 +6588,7 @@ export async function saveMetadataEdits(
         upsertTrackMetadataOverride(trackPath, row)
       } else {
         const resolvedValues = resolveEditableValuesForSave(snapshot, normalizedChanges)
-        await writeTrackMetadataToFile(trackPath, resolvedValues, normalizedChanges, artworkChange)
+        await writeTrackMetadataToFile(trackPath, resolvedValues, artworkChange)
         await updateTrackRowFromFileMetadata(trackPath)
         db.run('DELETE FROM track_metadata_overrides WHERE track_path = ?', [trackPath])
       }

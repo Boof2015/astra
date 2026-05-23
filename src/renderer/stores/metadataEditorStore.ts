@@ -35,6 +35,17 @@ export interface MetadataEditResult {
   failures: MetadataEditFailure[]
 }
 
+export interface MetadataEditorPanelRequest {
+  id: number
+  trackPaths: string[]
+  skippedRemoteCount: number
+}
+
+export interface OpenMetadataEditorPanelRequest {
+  trackPaths: string[]
+  skippedRemoteCount?: number
+}
+
 interface UndoSnapshot {
   previousOverrides: Record<string, TrackOverrideSnapshot | null>
   trackPaths: string[]
@@ -42,6 +53,7 @@ interface UndoSnapshot {
 
 const METADATA_SAVE_MODE_STORAGE_KEY = 'astra-metadata-save-mode-v1'
 const MAX_UNDO_STACK_SIZE = 20
+let nextPanelRequestId = 0
 
 function readSavedDefaultMode(): MetadataSaveMode {
   try {
@@ -63,12 +75,15 @@ function persistDefaultMode(mode: MetadataSaveMode): void {
 interface MetadataEditorStore {
   defaultSaveMode: MetadataSaveMode
   saveMode: MetadataSaveMode
+  panelRequest: MetadataEditorPanelRequest | null
   overridePaths: Set<string>
   isSaving: boolean
   lastResult: MetadataEditResult | null
   undoStack: UndoSnapshot[]
   redoStack: UndoSnapshot[]
 
+  openPanel: (request: OpenMetadataEditorPanelRequest) => void
+  closePanel: () => void
   setSaveMode: (mode: MetadataSaveMode) => void
   setDefaultSaveMode: (mode: MetadataSaveMode) => void
   loadOverridePaths: () => Promise<void>
@@ -81,14 +96,41 @@ interface MetadataEditorStore {
 
 const initialDefaultMode = readSavedDefaultMode()
 
+function normalizePanelTrackPaths(trackPaths: string[]): string[] {
+  const normalized = trackPaths
+    .map((trackPath) => trackPath.trim())
+    .filter((trackPath) => trackPath.length > 0)
+  return Array.from(new Set(normalized))
+}
+
 export const useMetadataEditorStore = create<MetadataEditorStore>((set, get) => ({
   defaultSaveMode: initialDefaultMode,
   saveMode: initialDefaultMode,
+  panelRequest: null,
   overridePaths: new Set<string>(),
   isSaving: false,
   lastResult: null,
   undoStack: [],
   redoStack: [],
+
+  openPanel: (request) => {
+    const trackPaths = normalizePanelTrackPaths(request.trackPaths)
+    if (trackPaths.length === 0) return
+
+    nextPanelRequestId += 1
+    set({
+      panelRequest: {
+        id: nextPanelRequestId,
+        trackPaths,
+        skippedRemoteCount: Math.max(0, Math.trunc(request.skippedRemoteCount ?? 0))
+      },
+      lastResult: null
+    })
+  },
+
+  closePanel: () => {
+    set({ panelRequest: null })
+  },
 
   setSaveMode: (mode) => {
     set({ saveMode: mode })

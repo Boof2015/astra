@@ -16,6 +16,8 @@ import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
+import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
+import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -320,6 +322,8 @@ function App() {
         <KeyboardShortcutsModal />
         <LibraryIntegrityPanel />
         <TrackIntegrityResultModal />
+        <MetadataEditorPanel />
+        <LyricsEditorPanel />
         {isFullscreen && <FullscreenMode />}
       </div>
     </div>

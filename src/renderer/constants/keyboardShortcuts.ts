@@ -223,7 +223,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: 'focus-search-field',
     section: 'contextual',
     action: 'Focus Search Field',
-    description: 'Focus the visible Library or Metadata search input when one is on screen.',
+    description: 'Focus the visible Library search input when one is on screen.',
     bindings: [{ tokens: ['/'] }]
   }
 ]

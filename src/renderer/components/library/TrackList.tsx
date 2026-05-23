@@ -6,6 +6,8 @@ import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
+import { useMetadataEditorStore } from '../../stores/metadataEditorStore'
+import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
@@ -695,6 +697,10 @@ export default function TrackList({
   const integrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
   const checkTracksIntegrity = useLibraryIntegrityStore((state) => state.checkTracks)
   const integrityBusyPaths = useLibraryIntegrityStore((state) => state.singleTrackBusyPaths)
+  const openMetadataEditor = useMetadataEditorStore((state) => state.openPanel)
+  const closeMetadataEditor = useMetadataEditorStore((state) => state.closePanel)
+  const openLyricsEditor = useLyricsEditorStore((state) => state.openPanel)
+  const closeLyricsEditor = useLyricsEditorStore((state) => state.closePanel)
 
   const [playlistPopup, setPlaylistPopup] = useState<TrackPlaylistPopupState | null>(null)
   const [trackContextMenu, setTrackContextMenu] = useState<TrackContextMenuState | null>(null)
@@ -1369,6 +1375,29 @@ export default function TrackList({
     setTrackContextMenu(null)
   }, [openPlaylistPopupForTracks, trackContextMenu])
 
+  const handleContextEditMetadata = useCallback(() => {
+    if (!trackContextMenu) return
+    const localTracks = trackContextMenu.tracks.filter((track) => track.source_type === 'local')
+    if (localTracks.length === 0) return
+
+    openMetadataEditor({
+      trackPaths: localTracks.map((track) => track.path),
+      skippedRemoteCount: trackContextMenu.tracks.length - localTracks.length
+    })
+    closeLyricsEditor()
+    setTrackContextMenu(null)
+  }, [closeLyricsEditor, openMetadataEditor, trackContextMenu])
+
+  const handleContextEditLyrics = useCallback(() => {
+    if (!trackContextMenu) return
+    const trackPaths = trackContextMenu.tracks.map((track) => track.path)
+    if (trackPaths.length === 0) return
+
+    closeMetadataEditor()
+    openLyricsEditor({ trackPaths })
+    setTrackContextMenu(null)
+  }, [closeMetadataEditor, openLyricsEditor, trackContextMenu])
+
   const handleToggleTrackPlaylistMembership = useCallback(async (event: React.MouseEvent, playlistId: number, trackPaths: string[]) => {
     event.stopPropagation()
     if (isPlaylistMembershipMutating) return
@@ -1545,7 +1574,7 @@ export default function TrackList({
     if (!trackContextMenu) return undefined
 
     const panelWidth = 220
-    const panelHeight = integrityEnabled ? 184 : 126
+    const panelHeight = integrityEnabled ? 252 : 194
     const edgePadding = 8
     const left = Math.min(
       Math.max(edgePadding, trackContextMenu.x),
@@ -1904,6 +1933,34 @@ export default function TrackList({
               </svg>
             </span>
             Add to Playlist...
+          </button>
+          <button
+            type="button"
+            className="track-context-menu-item"
+            onClick={handleContextEditMetadata}
+            disabled={contextMenuLocalTrackCount === 0}
+          >
+            <span className="track-context-menu-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+            </span>
+            {contextMenuLocalTrackCount > 1 ? `Edit Metadata (${contextMenuLocalTrackCount})` : 'Edit Metadata'}
+          </button>
+          <button
+            type="button"
+            className="track-context-menu-item"
+            onClick={handleContextEditLyrics}
+          >
+            <span className="track-context-menu-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 18V5l12-2v13" />
+                <circle cx="6" cy="18" r="3" />
+                <circle cx="18" cy="16" r="3" />
+              </svg>
+            </span>
+            {contextMenuTrackCount > 1 ? `Edit Lyrics (${contextMenuTrackCount})` : 'Edit Lyrics'}
           </button>
           {integrityEnabled && (
             <button

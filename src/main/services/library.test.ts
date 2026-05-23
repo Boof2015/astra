@@ -150,6 +150,32 @@ async function setupSeededLibrary(t: test.TestContext): Promise<void> {
   ])
 }
 
+test('metadata file writes rebuild core tags instead of layering changed fields', () => {
+  const args = library.buildFfmpegMetadataRewriteArgs({
+    title: 'One Song',
+    artist: 'One Artist',
+    album: 'One Album',
+    albumArtist: 'Album Artist',
+    genre: 'Electronic',
+    year: 2026,
+    trackNumber: 7,
+    discNumber: 1
+  })
+
+  assert.deepEqual(args, [
+    '-map_metadata', '-1',
+    '-metadata', 'title=One Song',
+    '-metadata', 'artist=One Artist',
+    '-metadata', 'album=One Album',
+    '-metadata', 'album_artist=Album Artist',
+    '-metadata', 'genre=Electronic',
+    '-metadata', 'date=2026',
+    '-metadata', 'year=2026',
+    '-metadata', 'track=7',
+    '-metadata', 'disc=1'
+  ])
+})
+
 test('library grouping queries preserve shared-cover compilation identities', async (t) => {
   await setupSeededLibrary(t)
 

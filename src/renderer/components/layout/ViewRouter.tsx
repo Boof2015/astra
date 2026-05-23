@@ -5,7 +5,6 @@ import EQView from '../views/EQView'
 import HomeView from '../views/HomeView'
 import SettingsView from '../views/SettingsView'
 import PlaylistView from '../views/PlaylistView'
-import MetadataView from '../views/MetadataView'
 
 export default function ViewRouter() {
   const activeView = useUIStore((s) => s.activeView)
@@ -23,8 +22,6 @@ export default function ViewRouter() {
       return <SettingsView />
     case 'playlist':
       return <PlaylistView />
-    case 'metadata':
-      return <MetadataView />
     default:
       return <HomeView />
   }

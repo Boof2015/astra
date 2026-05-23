@@ -9,7 +9,7 @@ import {
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 
-export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist' | 'metadata'
+export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
