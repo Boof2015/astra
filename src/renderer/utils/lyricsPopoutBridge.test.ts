@@ -42,6 +42,7 @@ function createLyricsResult(): LyricsLookupResult {
     lyrics: {
       source: 'embedded',
       provider: null,
+      format: 'lrc',
       plainLyrics: 'plain lyrics',
       syncedLyrics: '[00:01.00]line 1',
       syncedLines: [{ timestampMs: 1000, text: 'line 1' }]

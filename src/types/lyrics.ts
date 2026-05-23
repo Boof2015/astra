@@ -1,11 +1,34 @@
 export type LyricsProvider = 'lrclib'
-export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc'
+export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc' | 'xlrc'
+export type LyricsFormat = 'plain' | 'lrc' | 'xlrc'
 export type LyricsLookupStatus = 'hit' | 'not_found' | 'transient_error'
+
+export interface LyricsFurigana {
+  start: number
+  end: number
+  base: string
+  reading: string
+}
+
+export interface LyricsWord {
+  timestampMs: number
+  text: string
+  furigana?: LyricsFurigana[]
+}
+
+export interface LyricsTranslation {
+  lang: string
+  text: string
+}
 
 export interface LyricsLine {
   timestampMs: number
   text: string
   kind?: 'silence'
+  words?: LyricsWord[]
+  furigana?: LyricsFurigana[]
+  translations?: LyricsTranslation[]
+  voice?: string | null
 }
 
 export interface LyricsTrackQuery {
@@ -19,6 +42,7 @@ export interface LyricsTrackQuery {
 export interface LyricsPayload {
   source: LyricsSource
   provider: LyricsProvider | null
+  format: LyricsFormat
   plainLyrics: string | null
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
@@ -39,6 +63,7 @@ export interface LyricsStatus {
 export interface LyricsTrackOverride {
   trackPath: string
   hasManualLyrics: boolean
+  format: LyricsFormat
   plainLyrics: string | null
   syncedLyrics: string | null
   syncedLines: LyricsLine[]

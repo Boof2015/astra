@@ -134,7 +134,7 @@ import {
   type LastFmProfileConfig,
   type LastFmServiceConfig
 } from '../types/lastFm'
-import type { LyricsTrackQuery } from '../types/lyrics'
+import type { LyricsFormat, LyricsTrackQuery } from '../types/lyrics'
 import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   JellyfinSource,
@@ -1606,6 +1606,10 @@ function normalizeLyricsTrackPaths(rawTrackPaths: unknown): string[] {
 function normalizeLyricsOffsetMs(rawOffsetMs: unknown): number | null {
   if (typeof rawOffsetMs !== 'number' || !Number.isFinite(rawOffsetMs)) return null
   return Math.trunc(rawOffsetMs)
+}
+
+function normalizeLyricsImportFormat(rawFormat: unknown): LyricsFormat {
+  return rawFormat === 'xlrc' || rawFormat === 'plain' || rawFormat === 'lrc' ? rawFormat : 'lrc'
 }
 
 async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
@@ -4057,10 +4061,15 @@ ipcMain.handle('lyrics:getTrackOverride', (_event, rawTrackPath: unknown) => {
   return lyricsService.getTrackOverride(trackPath)
 })
 
-ipcMain.handle('lyrics:importManualLyrics', async (_event, rawTrackPaths: unknown, rawLyricsText: unknown) => {
+ipcMain.handle('lyrics:importManualLyrics', async (
+  _event,
+  rawTrackPaths: unknown,
+  rawLyricsText: unknown,
+  rawFormat: unknown
+) => {
   const trackPaths = normalizeLyricsTrackPaths(rawTrackPaths)
   const lyricsText = typeof rawLyricsText === 'string' ? rawLyricsText : ''
-  return lyricsService.importManualLyrics(trackPaths, lyricsText)
+  return lyricsService.importManualLyrics(trackPaths, lyricsText, normalizeLyricsImportFormat(rawFormat))
 })
 
 ipcMain.handle('lyrics:clearManualLyrics', async (_event, rawTrackPaths: unknown) => {
@@ -4613,7 +4622,7 @@ ipcMain.handle('dialog:openFile', async (_event, options: {
 })
 
 const FS_READ_TEXT_ALLOWED_EXTENSIONS = new Set([
-  '.json', '.txt', '.lrc', '.csv', '.m3u', '.m3u8', '.xspf', '.wpl', '.asx'
+  '.json', '.txt', '.lrc', '.xlrc', '.csv', '.m3u', '.m3u8', '.xspf', '.wpl', '.asx'
 ])
 const FS_READ_IMAGE_ALLOWED_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.avif'

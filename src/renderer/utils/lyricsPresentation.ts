@@ -1,5 +1,14 @@
 import type { Track } from '../types/audio'
-import type { LyricsLine, LyricsLookupResult, LyricsSource, LyricsTrackQuery } from '../../types/lyrics'
+import type {
+  LyricsFormat,
+  LyricsLine,
+  LyricsLookupResult,
+  LyricsPayload,
+  LyricsSource,
+  LyricsTrackQuery,
+  LyricsTranslation,
+  LyricsWord
+} from '../../types/lyrics'
 
 export interface LyricsBodyCopy {
   noTrackMessage: string
@@ -44,11 +53,16 @@ export const INFO_SIDEBAR_LYRICS_BODY_COPY: LyricsBodyCopy = {
   idleMessage: 'Open the Lyrics tab to load lyrics for the current track.'
 }
 
-export function getLyricsSourceLabel(source: LyricsSource): string {
+export function getLyricsSourceLabel(source: LyricsSource, format?: LyricsFormat): string {
   if (source === 'embedded') return 'Embedded'
-  if (source === 'manual') return 'Manual'
+  if (source === 'manual') return format === 'xlrc' ? 'Manual XLRC' : 'Manual'
+  if (source === 'xlrc') return 'XLRC File'
   if (source === 'lrc') return 'LRC File'
   return 'LRCLIB'
+}
+
+export function getLyricsPayloadSourceLabel(payload: LyricsPayload): string {
+  return getLyricsSourceLabel(payload.source, payload.format)
 }
 
 export function buildLyricsQuery(track: Track | null): LyricsTrackQuery | null {
@@ -255,6 +269,147 @@ export function getSyncedLyricsGapProgress(
   return Math.max(0, Math.min(1, progress))
 }
 
+export function getPreferredLyricsTranslation(
+  line: LyricsLine,
+  languagePriority: string[]
+): LyricsTranslation | null {
+  const translations = line.translations ?? []
+  if (translations.length === 0) return null
+
+  const normalizedPriority = languagePriority
+    .map((lang) => lang.trim().toLocaleLowerCase())
+    .filter(Boolean)
+  for (const preferredLang of normalizedPriority) {
+    const match = translations.find((translation) => translation.lang.toLocaleLowerCase() === preferredLang)
+    if (match) return match
+  }
+
+  return translations[0] ?? null
+}
+
+export interface LyricsLayerSettings {
+  wordTimingEnabled: boolean
+  furiganaEnabled: boolean
+  translationsEnabled: boolean
+  translationLanguagePriority: string[]
+  voiceLabelsEnabled: boolean
+}
+
+export const BASE_COMPACT_LYRICS_LINE_HEIGHT_PX = 34
+export const RICH_COMPACT_LYRICS_LINE_HEIGHT_PX = 58
+export const DENSE_RICH_COMPACT_LYRICS_LINE_HEIGHT_PX = 62
+
+function hasUsableFurigana(furigana: LyricsLine['furigana'] | LyricsWord['furigana']): boolean {
+  return Boolean(furigana?.some((entry) => (
+    entry.reading.trim().length > 0
+    && entry.start >= 0
+    && entry.end > entry.start
+  )))
+}
+
+function hasEnabledLyricsFurigana(line: LyricsLine, settings: LyricsLayerSettings): boolean {
+  if (!settings.furiganaEnabled) return false
+  if (hasUsableFurigana(line.furigana)) return true
+  return Boolean(line.words?.some((word) => hasUsableFurigana(word.furigana)))
+}
+
+export function getEnabledLyricsLayerState(
+  line: LyricsLine,
+  settings: LyricsLayerSettings
+): {
+  hasWordTiming: boolean
+  hasFurigana: boolean
+  hasTranslation: boolean
+  hasVoice: boolean
+} {
+  const hasWordTiming = settings.wordTimingEnabled && Boolean(line.words?.length)
+  const hasFurigana = hasEnabledLyricsFurigana(line, settings)
+  const hasTranslation = settings.translationsEnabled
+    && getPreferredLyricsTranslation(line, settings.translationLanguagePriority) !== null
+  const hasVoice = settings.voiceLabelsEnabled && Boolean(line.voice?.trim())
+
+  return {
+    hasWordTiming,
+    hasFurigana,
+    hasTranslation,
+    hasVoice
+  }
+}
+
+export function hasEnabledLyricsLineExtra(line: LyricsLine, settings: LyricsLayerSettings): boolean {
+  const layerState = getEnabledLyricsLayerState(line, settings)
+  return layerState.hasFurigana || layerState.hasTranslation
+}
+
+export function getCompactSyncedLyricsDisplayLineHeight(
+  displayLine: SyncedLyricsDisplayLine,
+  settings: LyricsLayerSettings
+): number {
+  if (displayLine.kind !== 'lyric') return BASE_COMPACT_LYRICS_LINE_HEIGHT_PX
+
+  const layerState = getEnabledLyricsLayerState(displayLine.line, settings)
+  if (
+    (layerState.hasTranslation && layerState.hasFurigana)
+  ) {
+    return DENSE_RICH_COMPACT_LYRICS_LINE_HEIGHT_PX
+  }
+  if (layerState.hasTranslation || layerState.hasFurigana) {
+    return RICH_COMPACT_LYRICS_LINE_HEIGHT_PX
+  }
+
+  return BASE_COMPACT_LYRICS_LINE_HEIGHT_PX
+}
+
+export function getCompactSyncedLyricsLineHeights(
+  displayLines: SyncedLyricsDisplayLine[],
+  settings: LyricsLayerSettings
+): number[] {
+  return displayLines.map((displayLine) => (
+    getCompactSyncedLyricsDisplayLineHeight(displayLine, settings)
+  ))
+}
+
+export interface LyricsWordTimingState {
+  activeWordIndex: number
+  progressByIndex: number[]
+}
+
+export function resolveLyricsWordTiming(
+  words: LyricsWord[],
+  currentTimeSeconds: number
+): LyricsWordTimingState {
+  if (words.length === 0) {
+    return {
+      activeWordIndex: -1,
+      progressByIndex: []
+    }
+  }
+
+  const currentTimeMs = toPlaybackTimeMs(currentTimeSeconds)
+  let activeWordIndex = -1
+  for (let index = 0; index < words.length; index += 1) {
+    if (words[index].timestampMs <= currentTimeMs) {
+      activeWordIndex = index
+      continue
+    }
+    break
+  }
+
+  const progressByIndex = words.map((word, index) => {
+    if (index < activeWordIndex) return 1
+    if (index > activeWordIndex || activeWordIndex < 0) return 0
+
+    const nextWord = words[index + 1] ?? null
+    if (!nextWord || nextWord.timestampMs <= word.timestampMs) return 1
+    return Math.max(0, Math.min(1, (currentTimeMs - word.timestampMs) / (nextWord.timestampMs - word.timestampMs)))
+  })
+
+  return {
+    activeWordIndex,
+    progressByIndex
+  }
+}
+
 export function hasRenderableSyncedLines(lines: LyricsLine[]): boolean {
   return lines.some(isRenderableSyncedLine)
 }
@@ -405,7 +560,7 @@ export function getLyricsMetaChipText(options: {
   if (!currentTrack) return 'No Track'
   if (isLoading && !activeLyricsResult) return 'Loading'
   if (activeLyricsResult?.status === 'hit') {
-    const sourceLabel = getLyricsSourceLabel(activeLyricsResult.lyrics.source)
+    const sourceLabel = getLyricsPayloadSourceLabel(activeLyricsResult.lyrics)
     const syncLabel = hasSyncedLyrics ? 'Synced' : 'Unsynced'
     const cachedLabel = activeLyricsResult.cached ? ' • Cached' : ''
     return `${sourceLabel} • ${syncLabel}${cachedLabel}`
@@ -457,7 +612,7 @@ export function resolveLyricsBodyState(options: ResolveLyricsBodyStateOptions): 
   }
 
   if (activeLyricsResult?.status === 'hit') {
-    const sourceLabel = getLyricsSourceLabel(activeLyricsResult.lyrics.source)
+    const sourceLabel = getLyricsPayloadSourceLabel(activeLyricsResult.lyrics)
     const cached = activeLyricsResult.cached
     const syncedLines = activeLyricsResult.lyrics.syncedLines
     if (hasRenderableSyncedLines(syncedLines)) {

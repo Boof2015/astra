@@ -19,6 +19,7 @@ interface UseLyricsSyncedViewOptions {
   focusedSyncedLineIndex?: number
   contentKey?: string | null
   collapsedLineHeightPx?: number
+  collapsedLineHeightsPx?: number[]
   collapsedActiveAnchorIndex?: number
   expandedOpenRecenterDelayMs?: number
 }
@@ -28,6 +29,7 @@ interface UseLyricsSyncedViewResult {
   setFollowPaused: (paused: boolean) => void
   expandedListRef: MutableRefObject<HTMLDivElement | null>
   effectiveSyncedLineIndex: number
+  collapsedWindowStyle: CSSProperties
   collapsedTrackStyle: CSSProperties
   setSyncedLineRef: (index: number) => (node: HTMLParagraphElement | null) => void
   pauseFollowFromManualScroll: () => void
@@ -42,6 +44,7 @@ export function useLyricsSyncedView({
   focusedSyncedLineIndex,
   contentKey = null,
   collapsedLineHeightPx = 34,
+  collapsedLineHeightsPx,
   collapsedActiveAnchorIndex = 1,
   expandedOpenRecenterDelayMs = DEFAULT_EXPANDED_OPEN_RECENTER_DELAY_MS
 }: UseLyricsSyncedViewOptions): UseLyricsSyncedViewResult {
@@ -58,14 +61,64 @@ export function useLyricsSyncedView({
     : activeSyncedLineIndex >= 0
       ? activeSyncedLineIndex
       : 0
-  const collapsedTrackOffsetY = (
-    collapsedActiveAnchorIndex - effectiveSyncedLineIndex
-  ) * collapsedLineHeightPx
+
+  const collapsedLineMetrics = useMemo(() => {
+    const heights = collapsedLineHeightsPx?.map((height) => (
+      Number.isFinite(height) && height > 0 ? height : collapsedLineHeightPx
+    )) ?? []
+    const tops: number[] = []
+    let totalHeightPx = 0
+    heights.forEach((height) => {
+      tops.push(totalHeightPx)
+      totalHeightPx += height
+    })
+    return { heights, tops, totalHeightPx }
+  }, [collapsedLineHeightPx, collapsedLineHeightsPx])
+
+  const getCollapsedLineHeight = useCallback((index: number) => {
+    if (index >= 0 && index < collapsedLineMetrics.heights.length) {
+      return collapsedLineMetrics.heights[index]
+    }
+    return collapsedLineHeightPx
+  }, [collapsedLineHeightPx, collapsedLineMetrics.heights])
+
+  const getCollapsedLineTop = useCallback((index: number) => {
+    if (index < 0) return index * collapsedLineHeightPx
+    if (index < collapsedLineMetrics.tops.length) return collapsedLineMetrics.tops[index]
+    return collapsedLineMetrics.totalHeightPx
+      + ((index - collapsedLineMetrics.heights.length) * collapsedLineHeightPx)
+  }, [
+    collapsedLineHeightPx,
+    collapsedLineMetrics.heights.length,
+    collapsedLineMetrics.tops,
+    collapsedLineMetrics.totalHeightPx
+  ])
+
+  const hasVariableCollapsedRows = collapsedLineMetrics.heights.length > 0
+  const focusedCollapsedLineHeightPx = getCollapsedLineHeight(effectiveSyncedLineIndex)
+  const adjacentCollapsedLineHeightPx = Math.max(
+    collapsedLineHeightPx,
+    getCollapsedLineHeight(effectiveSyncedLineIndex - 1),
+    getCollapsedLineHeight(effectiveSyncedLineIndex + 1)
+  )
+  const collapsedWindowHeightPx = hasVariableCollapsedRows
+    ? focusedCollapsedLineHeightPx + (adjacentCollapsedLineHeightPx * 2)
+    : collapsedLineHeightPx * 3
+  const collapsedAnchorCenterPx = hasVariableCollapsedRows
+    ? collapsedWindowHeightPx / 2
+    : (collapsedActiveAnchorIndex + 0.5) * collapsedLineHeightPx
+  const collapsedTrackOffsetY = collapsedAnchorCenterPx
+    - getCollapsedLineTop(effectiveSyncedLineIndex)
+    - (focusedCollapsedLineHeightPx / 2)
+
+  const collapsedWindowStyle = useMemo(() => ({
+    '--transport-lyrics-focus-line-height': `${collapsedLineHeightPx}px`,
+    '--transport-lyrics-focus-window-height': `${collapsedWindowHeightPx}px`
+  } as CSSProperties), [collapsedLineHeightPx, collapsedWindowHeightPx])
 
   const collapsedTrackStyle = useMemo(() => ({
-    '--transport-lyrics-focus-line-height': `${collapsedLineHeightPx}px`,
     transform: `translate3d(0, ${collapsedTrackOffsetY}px, 0)`
-  } as CSSProperties), [collapsedLineHeightPx, collapsedTrackOffsetY])
+  } as CSSProperties), [collapsedTrackOffsetY])
 
   const setFollowPaused = useCallback((paused: boolean) => {
     setFollowPausedState(paused)
@@ -217,6 +270,7 @@ export function useLyricsSyncedView({
     setFollowPaused,
     expandedListRef,
     effectiveSyncedLineIndex,
+    collapsedWindowStyle,
     collapsedTrackStyle,
     setSyncedLineRef,
     pauseFollowFromManualScroll,

@@ -7,7 +7,7 @@ import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/m
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
-import type { LyricsTrackOverride } from '../../../types/lyrics'
+import type { LyricsFormat, LyricsTrackOverride } from '../../../types/lyrics'
 
 interface DraftField {
   value: string
@@ -682,18 +682,21 @@ export default function MetadataView() {
 
     const filePath = await window.electronAPI.openFileDialog({
       title: 'Import lyrics file',
-      filters: [{ name: 'Lyrics', extensions: ['lrc', 'txt'] }]
+      filters: [{ name: 'Lyrics', extensions: ['xlrc', 'lrc', 'txt'] }]
     })
     if (!filePath) return
 
     setIsLyricsActionRunning(true)
     try {
+      const lyricsFormat: LyricsFormat = filePath.toLocaleLowerCase().endsWith('.xlrc') ? 'xlrc' : 'lrc'
       const lyricsText = await window.electronAPI.readTextFile(filePath)
-      const result = await window.electronAPI.lyrics.importManualLyrics(selectedTrackPaths, lyricsText)
+      const result = await window.electronAPI.lyrics.importManualLyrics(selectedTrackPaths, lyricsText, lyricsFormat)
       await loadLyricsOverrideState(selectedTrackPaths)
       await refreshLyricsForActiveTrack(selectedTrackPaths)
 
-      const importedMode = result.hasSyncedLyrics ? 'synced' : 'plain'
+      const importedMode = lyricsFormat === 'xlrc'
+        ? 'XLRC'
+        : result.hasSyncedLyrics ? 'synced' : 'plain'
       setLyricsStatusMessage(`Imported ${importedMode} manual lyrics for ${result.updated} track${result.updated === 1 ? '' : 's'}.`)
     } catch (error) {
       setLyricsValidationError(toErrorMessage(error, 'Failed to import manual lyrics.'))
@@ -1562,7 +1565,7 @@ export default function MetadataView() {
             </div>
 
             <p className="metadata-lyrics-tools-note">
-              Imported manual lyrics override LRC files, embedded tags, and LRCLIB results. Sync offset retimes synced lyrics from any source.
+              Imported manual lyrics override XLRC/LRC files, embedded tags, and LRCLIB results. Sync offset retimes synced lyrics from any source.
             </p>
 
             <div className="metadata-lyrics-tools-actions">

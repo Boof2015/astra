@@ -4,8 +4,10 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import test from 'node:test'
 import {
+  lookupSidecarLyrics,
   lookupSidecarLrcLyrics,
-  resolveSidecarLrcPath
+  resolveSidecarLrcPath,
+  resolveSidecarXlrcPath
 } from './lyricsSidecar.ts'
 
 async function createTempDir() {
@@ -33,6 +35,7 @@ test('finds an LRC file next to a matching audio filename', async (t) => {
   if (result.status !== 'hit') assert.fail('Expected sidecar lyrics lookup to hit.')
   assert.equal(result.cached, false)
   assert.equal(result.lyrics.source, 'lrc')
+  assert.equal(result.lyrics.format, 'lrc')
   assert.equal(result.lyrics.provider, null)
   assert.equal(result.lyrics.plainLyrics, 'First line\nSecond line')
   assert.equal(result.lyrics.syncedLyrics, '[00:01.25]First line\n[00:02.500]Second line')
@@ -62,12 +65,60 @@ test('handles extension-case fallback for matching LRC files', async (t) => {
   assert.ok(result)
   if (result.status !== 'hit') assert.fail('Expected extension-case sidecar lookup to hit.')
   assert.equal(result.lyrics.source, 'lrc')
+  assert.equal(result.lyrics.format, 'lrc')
   assert.deepEqual(result.lyrics.syncedLines, [
     { timestampMs: 100, text: 'Fallback line' }
   ])
 })
 
+test('finds an XLRC file next to a matching audio filename', async (t) => {
+  const temp = await createTempDir()
+  t.after(temp.cleanup)
+
+  await writeFile(
+    join(temp.dir, 'Track.xlrc'),
+    '[00:01.00]<00:01.00>私[わたし]\n[>en]Me',
+    'utf-8'
+  )
+
+  const result = await lookupSidecarLyrics(join(temp.dir, 'Track.flac'))
+  assert.ok(result)
+  if (result.status !== 'hit') assert.fail('Expected sidecar lyrics lookup to hit.')
+  assert.equal(result.lyrics.source, 'xlrc')
+  assert.equal(result.lyrics.format, 'xlrc')
+  assert.deepEqual(result.lyrics.syncedLines, [
+    {
+      timestampMs: 1_000,
+      text: '私',
+      words: [
+        {
+          timestampMs: 1_000,
+          text: '私',
+          furigana: [{ start: 0, end: 1, base: '私', reading: 'わたし' }]
+        }
+      ],
+      furigana: [{ start: 0, end: 1, base: '私', reading: 'わたし' }],
+      translations: [{ lang: 'en', text: 'Me' }]
+    }
+  ])
+})
+
+test('prefers XLRC sidecars before LRC sidecars', async (t) => {
+  const temp = await createTempDir()
+  t.after(temp.cleanup)
+
+  await writeFile(join(temp.dir, 'Track.lrc'), '[00:01.00]LRC line', 'utf-8')
+  await writeFile(join(temp.dir, 'Track.xlrc'), '[00:01.00]XLRC line', 'utf-8')
+
+  const result = await lookupSidecarLyrics(join(temp.dir, 'Track.flac'))
+  assert.ok(result)
+  if (result.status !== 'hit') assert.fail('Expected sidecar lyrics lookup to hit.')
+  assert.equal(result.lyrics.source, 'xlrc')
+  assert.equal(result.lyrics.plainLyrics, 'XLRC line')
+})
+
 test('skips URL-style remote track paths', async () => {
   assert.equal(await resolveSidecarLrcPath('subsonic://1/track/Track.flac'), null)
   assert.equal(await resolveSidecarLrcPath('jellyfin://1/track/Track.flac'), null)
+  assert.equal(await resolveSidecarXlrcPath('subsonic://1/track/Track.flac'), null)
 })

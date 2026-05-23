@@ -16,6 +16,10 @@ import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
+import {
+  LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
+  useLyricsDisplaySettingsStore
+} from '../../stores/lyricsDisplaySettingsStore'
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerStore'
 import {
@@ -61,6 +65,7 @@ export const RENDERER_SETTINGS_KEYS = [
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
+  LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   ARTIST_BROWSE_MODE_STORAGE_KEY,
   'astra-library-tracklist-bpm-key-visible-v1',
   EQ_STORAGE_KEY,
@@ -94,6 +99,7 @@ export async function resetIntegrationSettings(): Promise<string> {
   if (!lyricsStatus) {
     throw new Error('Failed to reset lyrics settings.')
   }
+  useLyricsDisplaySettingsStore.getState().resetToDefaults()
   const status = await useLocalApiSettingsStore.getState().resetToDefaults()
   if (!status) {
     throw new Error('Failed to reset local API settings.')
@@ -120,6 +126,7 @@ export async function resetAllSettings(): Promise<string> {
   await useAudioSettingsStore.getState().resetToDefaults()
   usePlayerStore.getState().resetAudioPreferences()
   await useDiscordSettingsStore.getState().resetToDefaults()
+  useLyricsDisplaySettingsStore.getState().resetToDefaults()
   useEQStore.getState().resetToDefaults()
   clearRendererSettingsKeys()
   useVisualizerSettingsStore.getState().resetToDefaults()

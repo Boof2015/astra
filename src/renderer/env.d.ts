@@ -34,6 +34,7 @@ import type {
     LastFmStatus
 } from '../types/lastFm'
 import type {
+    LyricsFormat,
     LyricsManualClearResult,
     LyricsManualImportResult,
     LyricsLookupResult,
@@ -322,7 +323,7 @@ declare global {
                 getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
                 refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
                 getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>
-                importManualLyrics: (trackPaths: string[], lyricsText: string) => Promise<LyricsManualImportResult>
+                importManualLyrics: (trackPaths: string[], lyricsText: string, format?: LyricsFormat) => Promise<LyricsManualImportResult>
                 clearManualLyrics: (trackPaths: string[]) => Promise<LyricsManualClearResult>
                 setTrackOffset: (trackPaths: string[], offsetMs: number) => Promise<LyricsOffsetSetResult>
                 resetToDefaults: () => Promise<LyricsStatus>
