@@ -21,6 +21,7 @@ interface UseLyricsSyncedViewOptions {
   collapsedLineHeightPx?: number
   collapsedLineHeightsPx?: number[]
   collapsedActiveAnchorIndex?: number
+  expandedActiveAnchorRatio?: number
   expandedOpenRecenterDelayMs?: number
 }
 
@@ -46,6 +47,7 @@ export function useLyricsSyncedView({
   collapsedLineHeightPx = 34,
   collapsedLineHeightsPx,
   collapsedActiveAnchorIndex = 1,
+  expandedActiveAnchorRatio = 0.5,
   expandedOpenRecenterDelayMs = DEFAULT_EXPANDED_OPEN_RECENTER_DELAY_MS
 }: UseLyricsSyncedViewOptions): UseLyricsSyncedViewResult {
   const [followPaused, setFollowPausedState] = useState(false)
@@ -145,13 +147,14 @@ export function useLyricsSyncedView({
     const containerRect = container.getBoundingClientRect()
     const lineRect = lineNode.getBoundingClientRect()
     const lineOffsetWithinContainer = lineRect.top - containerRect.top
-    const centeredTop = (
+    const anchorRatio = Math.max(0.2, Math.min(0.8, expandedActiveAnchorRatio))
+    const anchoredTop = (
       container.scrollTop +
       lineOffsetWithinContainer -
-      ((container.clientHeight - lineNode.clientHeight) / 2)
+      ((container.clientHeight * anchorRatio) - (lineNode.clientHeight / 2))
     )
     const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
-    const targetTop = Math.max(0, Math.min(centeredTop, maxTop))
+    const targetTop = Math.max(0, Math.min(anchoredTop, maxTop))
 
     markProgrammaticScroll()
     if (behavior === 'auto') {
@@ -162,7 +165,7 @@ export function useLyricsSyncedView({
       top: targetTop,
       behavior
     })
-  }, [activeSyncedLineIndex, effectiveSyncedLineIndex, markProgrammaticScroll])
+  }, [activeSyncedLineIndex, effectiveSyncedLineIndex, expandedActiveAnchorRatio, markProgrammaticScroll])
 
   const pauseFollowFromManualScroll = useCallback(() => {
     if (!isExpanded) return

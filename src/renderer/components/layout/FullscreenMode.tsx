@@ -210,7 +210,8 @@ function FullscreenLyricsFocusBand({
     hasSyncedLyrics,
     activeSyncedLineIndex,
     focusedSyncedLineIndex: syncedLyricsTiming.focusLineIndex,
-    contentKey: currentTrack?.path ?? null
+    contentKey: currentTrack?.path ?? null,
+    expandedActiveAnchorRatio: 0.43
   })
 
   useEffect(() => {
