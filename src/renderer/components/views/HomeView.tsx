@@ -901,19 +901,14 @@ export default function HomeView() {
     }
 
     const syncCanvasDimensions = () => {
-      const rect = card.getBoundingClientRect()
-      const nextWidth = Math.max(1, Math.floor(rect.width))
-      const nextHeight = Math.max(1, Math.floor(rect.height))
+      const nextWidth = Math.max(1, Math.floor(card.clientWidth))
+      const nextHeight = Math.max(1, Math.floor(card.clientHeight))
       if (nextWidth === width && nextHeight === height) return
 
       width = nextWidth
       height = nextHeight
       starField = createStarField(width, height)
 
-      skyCanvas.style.width = `${width}px`
-      skyCanvas.style.height = `${height}px`
-      starCanvas.style.width = `${width}px`
-      starCanvas.style.height = `${height}px`
       starCanvas.width = width
       starCanvas.height = height
 

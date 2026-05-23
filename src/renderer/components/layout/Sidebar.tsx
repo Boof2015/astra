@@ -444,93 +444,95 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <nav className="sidebar-nav">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
-            onClick={() => handleNavClick(item.id)}
-            aria-label={item.label}
-          >
-            {item.icon}
-            <span className="nav-tooltip">{item.label}</span>
-          </button>
-        ))}
-      </nav>
+      <div className="sidebar-scroll-area">
+        <nav className="sidebar-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
+              onClick={() => handleNavClick(item.id)}
+              aria-label={item.label}
+            >
+              {item.icon}
+              <span className="nav-tooltip">{item.label}</span>
+            </button>
+          ))}
+        </nav>
 
-      <div className="sidebar-playlist-cluster">
-        {(sidebarQuickPlaylists.length > 0 || sidebarOverflowPlaylists.length > 0) && (
-          <div className="sidebar-playlist-quick">
-            {sidebarQuickPlaylists.map((playlist) => (
-              <button
-                key={playlist.id}
-                className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
-                onClick={() => void handleOpenPlaylist(playlist.id)}
-                aria-label={playlist.name}
-                data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
-                data-sidebar-drop-playlist-id={!playlist.isSystemFavorites ? playlist.id : undefined}
-              >
-                {playlist.isSystemFavorites ? (
+        <div className="sidebar-playlist-cluster">
+          {(sidebarQuickPlaylists.length > 0 || sidebarOverflowPlaylists.length > 0) && (
+            <div className="sidebar-playlist-quick">
+              {sidebarQuickPlaylists.map((playlist) => (
+                <button
+                  key={playlist.id}
+                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
+                  onClick={() => void handleOpenPlaylist(playlist.id)}
+                  aria-label={playlist.name}
+                  data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
+                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites ? playlist.id : undefined}
+                >
+                  {playlist.isSystemFavorites ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                    </svg>
+                  ) : (
+                    <PlaylistCover
+                      hash={playlist.cover_hash}
+                      name={playlist.name}
+                      className="sidebar-playlist-btn-cover"
+                    />
+                  )}
+                  <span className="nav-tooltip">{playlist.name}</span>
+                  {!playlist.isSystemFavorites && (
+                    <span className="sidebar-drop-label">Add to Playlist</span>
+                  )}
+                </button>
+              ))}
+
+              {sidebarOverflowPlaylists.length > 0 && (
+                <button
+                  ref={overflowButtonRef}
+                  className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen ? 'active' : ''} ${Boolean(trackDrag) ? 'is-drop-active' : ''} ${isOverflowDragHover ? 'is-drop-hover' : ''}`.trim()}
+                  onClick={() => {
+                    overflowOpenedByDragRef.current = false
+                    setIsOverflowOpen((value) => !value)
+                    requestAnimationFrame(() => {
+                      updateOverflowPopoutPosition()
+                    })
+                  }}
+                  aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
+                >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                    <circle cx="5" cy="12" r="1.8" />
+                    <circle cx="12" cy="12" r="1.8" />
+                    <circle cx="19" cy="12" r="1.8" />
                   </svg>
-                ) : (
-                  <PlaylistCover
-                    hash={playlist.cover_hash}
-                    name={playlist.name}
-                    className="sidebar-playlist-btn-cover"
-                  />
-                )}
-                <span className="nav-tooltip">{playlist.name}</span>
-                {!playlist.isSystemFavorites && (
-                  <span className="sidebar-drop-label">Add to Playlist</span>
-                )}
-              </button>
-            ))}
+                  <span className="nav-tooltip">
+                    {isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
 
-            {sidebarOverflowPlaylists.length > 0 && (
-              <button
-                ref={overflowButtonRef}
-                className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen ? 'active' : ''} ${Boolean(trackDrag) ? 'is-drop-active' : ''} ${isOverflowDragHover ? 'is-drop-hover' : ''}`.trim()}
-                onClick={() => {
-                  overflowOpenedByDragRef.current = false
-                  setIsOverflowOpen((value) => !value)
-                  requestAnimationFrame(() => {
-                    updateOverflowPopoutPosition()
-                  })
-                }}
-                aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <circle cx="5" cy="12" r="1.8" />
-                  <circle cx="12" cy="12" r="1.8" />
-                  <circle cx="19" cy="12" r="1.8" />
-                </svg>
-                <span className="nav-tooltip">
-                  {isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
-                </span>
-              </button>
-            )}
-          </div>
-        )}
-
-        <button
-          type="button"
-          className={`sidebar-playlist-create-btn ${getSidebarDropClassName('create-playlist')}`.trim()}
-          onClick={() => {
-            setCreatePlaylistTrackPaths(null)
-            setIsCreatePlaylistModalOpen(true)
-          }}
-          aria-label="Create playlist"
-          data-sidebar-drop-target="create-playlist"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          <span className="nav-tooltip">Create playlist</span>
-          <span className="sidebar-drop-label">Create Playlist</span>
-        </button>
+          <button
+            type="button"
+            className={`sidebar-playlist-create-btn ${getSidebarDropClassName('create-playlist')}`.trim()}
+            onClick={() => {
+              setCreatePlaylistTrackPaths(null)
+              setIsCreatePlaylistModalOpen(true)
+            }}
+            aria-label="Create playlist"
+            data-sidebar-drop-target="create-playlist"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span className="nav-tooltip">Create playlist</span>
+            <span className="sidebar-drop-label">Create Playlist</span>
+          </button>
+        </div>
       </div>
 
       <div className="sidebar-bottom-actions">
