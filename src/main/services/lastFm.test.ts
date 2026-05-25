@@ -367,7 +367,7 @@ test('playback sends now-playing updates to every enabled profile', async (t) =>
     requests.map((request) => request.url).sort(),
     [LASTFM_OFFICIAL_API_BASE_URL, customProfile.apiBaseUrl].sort()
   )
-  assert.ok(requests.every((request) => new URLSearchParams(request.body).get('method') === 'track.updatenowplaying'))
+  assert.ok(requests.every((request) => new URLSearchParams(request.body).get('method') === 'track.updateNowPlaying'))
 })
 
 test('playback queues scrobbles for every enabled profile', async (t) => {

@@ -1743,7 +1743,7 @@ export class LastFmService {
       }
     }
 
-    const normalizedMethod = method.trim().toLowerCase()
+    const normalizedMethod = method.trim()
     if (!normalizedMethod) {
       return {
         ok: false,
