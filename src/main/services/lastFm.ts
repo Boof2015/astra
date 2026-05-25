@@ -204,7 +204,7 @@ function isConnectedProfile(profile: LastFmProfileConfig): boolean {
 }
 
 function isProfileSubmittable(profile: LastFmProfileConfig, hasApiCredentials: boolean): boolean {
-  return isConnectedProfile(profile) && (!lastFmProfileRequiresApiCredentials(profile.protocol) || hasApiCredentials)
+  return isConnectedProfile(profile) && (!lastFmProfileRequiresApiCredentials(profile) || hasApiCredentials)
 }
 
 function getSecretLabelForProtocol(protocol: LastFmProfileConfig['protocol']): string {
@@ -473,7 +473,7 @@ export class LastFmService {
     const activeProfile = this.getPrimaryStatusProfile()
     const apiBaseUrl = activeProfile.apiBaseUrl
     const usingCustomEndpoint = enabledProfiles.some((profile) => profile.kind === 'custom')
-    const activeRequiresApiCredentials = lastFmProfileRequiresApiCredentials(activeProfile.protocol)
+    const activeRequiresApiCredentials = lastFmProfileRequiresApiCredentials(activeProfile)
     const activeProfileStatus = profileStatuses.find((profile) => profile.id === activeProfile.id) ?? profileStatuses[0]
     const errorCount = profileStatuses.filter((profile) => profile.lastError).length
 
@@ -986,7 +986,7 @@ export class LastFmService {
       active: enabled,
       pendingScrobbles: profile.pendingScrobbles.length,
       canDelete: profile.kind === 'custom',
-      requiresApiCredentials: lastFmProfileRequiresApiCredentials(profile.protocol),
+      requiresApiCredentials: lastFmProfileRequiresApiCredentials(profile),
       lastError: this.profileErrors.get(profile.id) ?? null
     }
   }
@@ -1735,7 +1735,7 @@ export class LastFmService {
     sessionKey?: string,
     profile: LastFmProfileConfig = this.getPrimaryStatusProfile()
   ): Promise<LastFmApiResult> {
-    if (!this.hasApiCredentials) {
+    if (lastFmProfileRequiresApiCredentials(profile) && !this.hasApiCredentials) {
       return {
         ok: false,
         kind: 'permanent',

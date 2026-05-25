@@ -537,6 +537,57 @@ test('signed requests use the active profile endpoint without changing the Last.
   assert.equal(customRequest.body, officialRequest.body)
 })
 
+test('custom Last.fm 2.0 scrobbles submit without official app credentials', async (t) => {
+  const originalFetch = globalThis.fetch
+  const requests: CapturedRequest[] = []
+  const customProfile = createCustomProfile({
+    sessionKey: 'custom-session',
+    username: 'custom-user'
+  })
+  const service = new LastFmService({
+    config: createConfig({
+      enabled: true,
+      activeProfileId: customProfile.id,
+      profiles: [createOfficialProfile(), customProfile]
+    }),
+    apiKey: '',
+    sharedSecret: '',
+    openExternal: async () => {}
+  })
+  t.after(() => {
+    service.stop()
+    globalThis.fetch = originalFetch
+  })
+
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>): Promise<Response> => {
+    const [input, init] = args
+    requests.push({
+      url: String(input),
+      method: init?.method,
+      headers: init?.headers,
+      body: typeof init?.body === 'string' ? init.body : String(init?.body ?? '')
+    })
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  }) as typeof fetch
+
+  const result = await (service as unknown as ProtocolCaller).submitScrobbleBatch(
+    [createPendingScrobble()],
+    customProfile
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].url, customProfile.apiBaseUrl)
+  assert.equal(requests[0].method, 'POST')
+  const body = new URLSearchParams(requests[0].body)
+  assert.equal(body.get('method'), 'track.scrobble')
+  assert.equal(body.get('sk'), 'custom-session')
+  assert.equal(body.get('track[0]'), 'Pending Track')
+})
+
 test('AudioScrobbler now-playing performs a standard auth handshake and posts legacy form fields', async (t) => {
   const originalFetch = globalThis.fetch
   const requests: CapturedRequest[] = []
@@ -853,7 +904,7 @@ test('ListenBrainz profile creation normalizes full submit-listens endpoint URLs
   assert.equal(status.activeProfile.apiBaseUrl, 'http://maloja.local/apis/listenbrainz')
 })
 
-test('missing Last.fm app credentials only block Last.fm 2.0 profiles', () => {
+test('missing Last.fm app credentials only block the official Last.fm profile', () => {
   const officialService = new LastFmService({
     config: createConfig({
       enabled: true,
@@ -868,17 +919,23 @@ test('missing Last.fm app credentials only block Last.fm 2.0 profiles', () => {
     sharedSecret: '',
     openExternal: async () => {}
   })
+  const customLastFmProfile = createCustomProfile({
+    id: 'custom-lastfm2',
+    username: 'custom-user',
+    sessionKey: 'custom-session'
+  })
   const audioProfile = createCustomProfile({
+    id: 'custom-audioscrobbler',
     protocol: 'audioscrobbler',
     apiBaseUrl: 'http://maloja.local/apis/audioscrobbler_legacy',
     username: 'legacy-user',
     sessionKey: 'legacy-key'
   })
-  const audioService = new LastFmService({
+  const customService = new LastFmService({
     config: createConfig({
       enabled: true,
-      activeProfileId: audioProfile.id,
-      profiles: [createOfficialProfile(), audioProfile]
+      activeProfileId: customLastFmProfile.id,
+      profiles: [createOfficialProfile(), customLastFmProfile, audioProfile]
     }),
     apiKey: '',
     sharedSecret: '',
@@ -891,14 +948,19 @@ test('missing Last.fm app credentials only block Last.fm 2.0 profiles', () => {
     assert.equal(officialStatus.enabled, true)
     assert.equal(officialStatus.profiles[0].enabled, false)
     assert.equal(officialStatus.activeProfileRequiresApiCredentials, true)
+    assert.equal(officialStatus.profiles[0].requiresApiCredentials, true)
 
-    const audioStatus = audioService.getStatus()
-    assert.equal(audioStatus.connected, true)
-    assert.equal(audioStatus.enabled, true)
-    assert.equal(audioStatus.profiles.find((profile) => profile.id === audioProfile.id)?.enabled, true)
-    assert.equal(audioStatus.activeProfileRequiresApiCredentials, false)
+    const customStatus = customService.getStatus()
+    assert.equal(customStatus.connected, true)
+    assert.equal(customStatus.enabled, true)
+    assert.equal(customStatus.activeProfile.id, customLastFmProfile.id)
+    assert.equal(customStatus.profiles.find((profile) => profile.id === customLastFmProfile.id)?.enabled, true)
+    assert.equal(customStatus.profiles.find((profile) => profile.id === customLastFmProfile.id)?.requiresApiCredentials, false)
+    assert.equal(customStatus.profiles.find((profile) => profile.id === audioProfile.id)?.enabled, true)
+    assert.equal(customStatus.profiles.find((profile) => profile.id === audioProfile.id)?.requiresApiCredentials, false)
+    assert.equal(customStatus.activeProfileRequiresApiCredentials, false)
   } finally {
     officialService.stop()
-    audioService.stop()
+    customService.stop()
   }
 })

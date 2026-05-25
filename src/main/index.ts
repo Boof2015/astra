@@ -1503,7 +1503,7 @@ async function loadLastFmConfigFromMeta(): Promise<LastFmServiceConfig> {
     const connected = profile.protocol === 'listenbrainz'
       ? Boolean(profile.sessionKey)
       : Boolean(profile.sessionKey && profile.username)
-    const hasRequiredApiCredentials = !lastFmProfileRequiresApiCredentials(profile.protocol) ||
+    const hasRequiredApiCredentials = !lastFmProfileRequiresApiCredentials(profile) ||
       (LASTFM_API_KEY.length > 0 && LASTFM_SHARED_SECRET.length > 0)
 
     return {

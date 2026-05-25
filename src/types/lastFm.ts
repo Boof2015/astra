@@ -121,8 +121,10 @@ export function getLastFmProtocolLabel(protocol: LastFmScrobbleProtocol, kind: L
   return 'Last.fm 2.0'
 }
 
-export function lastFmProfileRequiresApiCredentials(protocol: LastFmScrobbleProtocol): boolean {
-  return protocol === 'lastfm2'
+export function lastFmProfileRequiresApiCredentials(
+  profile: Pick<LastFmProfileConfig, 'kind' | 'protocol'>
+): boolean {
+  return profile.kind === 'official' && profile.protocol === 'lastfm2'
 }
 
 export function parseLastFmApiBaseUrl(value: unknown): string | null {
