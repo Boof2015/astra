@@ -1513,10 +1513,14 @@ export default function TrackList({
     setTrackContextMenu(null)
   }, [closePlaylistPopup])
 
+  const isCreatePlaylistModalOpen = createPlaylistTarget !== null
+
   useEffect(() => {
     if (!playlistPopup) return
 
     const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (isCreatePlaylistModalOpen) return
+
       const target = event.target as Node | null
       if (!target) return
       if (playlistPopupRef.current?.contains(target)) return
@@ -1525,6 +1529,8 @@ export default function TrackList({
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isCreatePlaylistModalOpen) return
+
       if (event.key === 'Escape') {
         event.preventDefault()
         closePlaylistPopup()
@@ -1564,7 +1570,7 @@ export default function TrackList({
       document.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('resize', handleResize)
     }
-  }, [closePlaylistPopup, playlistPopup])
+  }, [closePlaylistPopup, isCreatePlaylistModalOpen, playlistPopup])
 
   useEffect(() => {
     if (!trackContextMenu) return
