@@ -18,6 +18,13 @@ function toSafeTime(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0
 }
 
+function clampSeekTime(timeSeconds: number, durationSeconds: number): number | null {
+  if (!Number.isFinite(timeSeconds)) return null
+  const safeTime = Math.max(0, timeSeconds)
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return safeTime
+  return Math.min(durationSeconds, safeTime)
+}
+
 interface LyricsPopoutBridgeState {
   preferredExpanded: boolean
   playbackState: LyricsPopoutSnapshot['playbackState']
@@ -135,10 +142,21 @@ export function useLyricsPopoutBridge(): void {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.lyricsPopout.onCommand((command) => {
-      if (command.type !== 'refresh') return
-      const currentQuery = buildLyricsQuery(usePlayerStore.getState().currentTrack)
-      if (!currentQuery) return
-      void refreshLyricsForTrack(currentQuery)
+      const player = usePlayerStore.getState()
+      switch (command.type) {
+        case 'refresh': {
+          const currentQuery = buildLyricsQuery(player.currentTrack)
+          if (!currentQuery) return
+          void refreshLyricsForTrack(currentQuery)
+          break
+        }
+        case 'seek': {
+          const seekTimeSeconds = clampSeekTime(command.time, player.duration)
+          if (seekTimeSeconds === null) return
+          void player.seek(seekTimeSeconds)
+          break
+        }
+      }
     })
 
     return () => unsubscribe()

@@ -14,6 +14,9 @@ interface LyricsLineContentProps {
   currentTimeSeconds: number
   isActive: boolean
   settings: LyricsDisplaySettings
+  seekTimeSeconds?: number | null
+  seekTabIndex?: number
+  onSeek?: (timeSeconds: number) => void
 }
 
 function renderTextWithFurigana(
@@ -58,7 +61,10 @@ export default function LyricsLineContent({
   displayLine,
   currentTimeSeconds,
   isActive,
-  settings
+  settings,
+  seekTimeSeconds = null,
+  seekTabIndex,
+  onSeek
 }: LyricsLineContentProps) {
   if (displayLine.kind === 'gap') {
     const progress = getSyncedLyricsGapProgress(displayLine, currentTimeSeconds)
@@ -80,9 +86,16 @@ export default function LyricsLineContent({
     ? getPreferredLyricsTranslation(line, settings.translationLanguagePriority)
     : null
   const hasRichExtra = hasEnabledLyricsLineExtra(line, settings)
+  const contentClassName = [
+    'lyrics-line-content',
+    hasRichExtra ? 'has-rich-lyrics' : ''
+  ].join(' ').trim()
+  const normalizedSeekTime = typeof seekTimeSeconds === 'number' && Number.isFinite(seekTimeSeconds)
+    ? seekTimeSeconds
+    : null
 
-  return (
-    <span className={`lyrics-line-content ${hasRichExtra ? 'has-rich-lyrics' : ''}`.trim()}>
+  const content = (
+    <>
       <span className="lyrics-line-main">
         {settings.voiceLabelsEnabled && line.voice && (
           <span className="lyrics-line-voice">{line.voice}</span>
@@ -117,6 +130,25 @@ export default function LyricsLineContent({
       {translation && (
         <span className="lyrics-line-translation">{translation.text}</span>
       )}
+    </>
+  )
+
+  if (normalizedSeekTime !== null && onSeek) {
+    return (
+      <button
+        type="button"
+        className={`${contentClassName} lyrics-line-seek-button`}
+        onClick={() => onSeek(normalizedSeekTime)}
+        tabIndex={seekTabIndex}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return (
+    <span className={contentClassName}>
+      {content}
     </span>
   )
 }

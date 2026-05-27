@@ -17,6 +17,7 @@ import {
   getCompactSyncedLyricsLineHeights,
   getLyricsMetaChipText,
   getLyricsRequestKey,
+  getLyricsLineSeekTimeSeconds,
   getSyncedLyricsDisplayLines,
   resolveSyncedLyricsTiming,
   resolveLyricsBodyState
@@ -26,6 +27,7 @@ export default function TransportLyricsShelf() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
+  const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const showLyricsShelf = useUIStore((s) => s.showLyricsShelf)
   const lyricsShelfExpanded = useUIStore((s) => s.lyricsShelfExpanded)
@@ -103,6 +105,7 @@ export default function TransportLyricsShelf() {
     collapsedTrackStyle,
     effectiveSyncedLineIndex,
     expandedListRef,
+    setFollowPaused,
     setSyncedLineRef,
     pauseFollowFromManualScroll,
     handleRecenter
@@ -115,6 +118,11 @@ export default function TransportLyricsShelf() {
     contentKey: currentTrack?.path ?? null,
     collapsedLineHeightsPx: compactSyncedLineHeightsPx
   })
+
+  const handleLyricsLineSeek = useCallback((seekTimeSeconds: number) => {
+    setFollowPaused(false)
+    void seek(seekTimeSeconds)
+  }, [seek, setFollowPaused])
 
   const refreshLyrics = useCallback(() => {
     if (!lyricsQuery) return
@@ -169,6 +177,11 @@ export default function TransportLyricsShelf() {
                 currentTimeSeconds={compensatedTime}
                 isActive={displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex}
                 settings={lyricsDisplaySettings}
+                seekTimeSeconds={displayLine.kind === 'lyric'
+                  ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, duration, effectiveDelayMs)
+                  : null}
+                seekTabIndex={Math.abs(distance) <= 1 ? undefined : -1}
+                onSeek={handleLyricsLineSeek}
               />
             </p>
           )
@@ -233,6 +246,10 @@ export default function TransportLyricsShelf() {
                 currentTimeSeconds={compensatedTime}
                 isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
                 settings={lyricsDisplaySettings}
+                seekTimeSeconds={displayLine.kind === 'lyric'
+                  ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, duration, effectiveDelayMs)
+                  : null}
+                onSeek={handleLyricsLineSeek}
               />
             </p>
           ))}

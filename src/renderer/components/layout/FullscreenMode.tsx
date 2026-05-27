@@ -18,6 +18,7 @@ import {
   DEFAULT_LYRICS_BODY_COPY,
   getActiveLyricsResult,
   getCompensatedLyricsTime,
+  getLyricsLineSeekTimeSeconds,
   getLyricsMetaChipText,
   getLyricsRequestKey,
   getSyncedLyricsDisplayLines,
@@ -135,6 +136,7 @@ function FullscreenLyricsFocusBand({
 }): ReactElement {
   const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
+  const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
@@ -200,6 +202,7 @@ function FullscreenLyricsFocusBand({
   const {
     expandedListRef,
     effectiveSyncedLineIndex,
+    setFollowPaused,
     setSyncedLineRef,
     pauseFollowFromManualScroll,
     handleRecenter,
@@ -213,6 +216,11 @@ function FullscreenLyricsFocusBand({
     contentKey: currentTrack?.path ?? null,
     expandedActiveAnchorRatio: 0.43
   })
+
+  const handleLyricsLineSeek = useCallback((seekTimeSeconds: number) => {
+    setFollowPaused(false)
+    void seek(seekTimeSeconds)
+  }, [seek, setFollowPaused])
 
   useEffect(() => {
     if (!showLyrics) {
@@ -332,6 +340,10 @@ function FullscreenLyricsFocusBand({
                   currentTimeSeconds={compensatedTime}
                   isActive={isActiveLine}
                   settings={lyricsDisplaySettings}
+                  seekTimeSeconds={displayLine.kind === 'lyric'
+                    ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, duration, effectiveDelayMs)
+                    : null}
+                  onSeek={handleLyricsLineSeek}
                 />
               </p>
             )

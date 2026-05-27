@@ -165,6 +165,23 @@ export function getCompensatedLyricsTime(
   return Math.min(durationSeconds, compensatedTime)
 }
 
+export function getLyricsLineSeekTimeSeconds(
+  timestampMs: number,
+  durationSeconds: number | null | undefined,
+  effectiveDelayMs: number
+): number | null {
+  if (!Number.isFinite(timestampMs) || timestampMs < 0) return null
+
+  const normalizedDelaySeconds = Number.isFinite(effectiveDelayMs)
+    ? Math.max(0, effectiveDelayMs) / 1000
+    : 0
+  const seekTimeSeconds = Math.max(0, (timestampMs / 1000) + normalizedDelaySeconds)
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return seekTimeSeconds
+  }
+  return Math.min(durationSeconds, seekTimeSeconds)
+}
+
 export function isRenderableSyncedLine(line: LyricsLine): boolean {
   return line.kind !== 'silence' && line.text.trim().length > 0
 }

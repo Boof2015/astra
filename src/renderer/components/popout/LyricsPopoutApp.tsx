@@ -8,6 +8,7 @@ import {
   BASE_COMPACT_LYRICS_LINE_HEIGHT_PX,
   getCompactSyncedLyricsLineHeights,
   getCompensatedLyricsTime,
+  getLyricsLineSeekTimeSeconds,
   getLyricsMetaChipText,
   getSyncedLyricsDisplayLines,
   resolveSyncedLyricsTiming,
@@ -159,6 +160,7 @@ export default function LyricsPopoutApp() {
     collapsedTrackStyle,
     effectiveSyncedLineIndex,
     expandedListRef,
+    setFollowPaused,
     setSyncedLineRef,
     pauseFollowFromManualScroll,
     handleRecenter
@@ -171,6 +173,11 @@ export default function LyricsPopoutApp() {
     contentKey: snapshot.currentTrack?.path ?? null,
     collapsedLineHeightsPx: compactSyncedLineHeightsPx
   })
+
+  const handleLyricsLineSeek = useCallback((seekTimeSeconds: number) => {
+    setFollowPaused(false)
+    window.electronAPI.lyricsPopout.sendCommand({ type: 'seek', time: seekTimeSeconds })
+  }, [setFollowPaused])
 
   const renderCompactSyncedWindow = () => (
     <div
@@ -209,6 +216,11 @@ export default function LyricsPopoutApp() {
                 currentTimeSeconds={currentTime}
                 isActive={displayLine.kind === 'lyric' && displayIndex === activeSyncedLineIndex}
                 settings={lyricsDisplaySettings}
+                seekTimeSeconds={displayLine.kind === 'lyric'
+                  ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, snapshot.duration, snapshot.effectiveDelayMs)
+                  : null}
+                seekTabIndex={Math.abs(distance) <= 1 ? undefined : -1}
+                onSeek={handleLyricsLineSeek}
               />
             </p>
           )
@@ -264,6 +276,10 @@ export default function LyricsPopoutApp() {
                 currentTimeSeconds={currentTime}
                 isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
                 settings={lyricsDisplaySettings}
+                seekTimeSeconds={displayLine.kind === 'lyric'
+                  ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, snapshot.duration, snapshot.effectiveDelayMs)
+                  : null}
+                onSeek={handleLyricsLineSeek}
               />
             </p>
           ))}

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
+import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import { useLyricsStore } from '../../stores/lyricsStore'
@@ -14,6 +15,7 @@ import {
   buildLyricsQuery,
   getCompensatedLyricsTime,
   getActiveLyricsResult,
+  getLyricsLineSeekTimeSeconds,
   getSyncedLyricsDisplayLines,
   INFO_SIDEBAR_LYRICS_BODY_COPY,
   resolveSyncedLyricsTiming,
@@ -26,7 +28,7 @@ export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlaybackClock()
   const duration = usePlayerStore((s) => s.duration)
-  const playbackState = usePlayerStore((s) => s.playbackState)
+  const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
   const openArtistInLibrary = useOpenArtistInLibrary()
@@ -39,7 +41,6 @@ export default function InfoSidebar() {
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
   const lyricsDisplaySettings = useLyricsDisplaySettingsStore((s) => s.settings)
-  const syncedLineRefs = useRef<Map<number, HTMLParagraphElement>>(new Map())
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
   const activeLyricsResult = useMemo(() => (
@@ -67,32 +68,28 @@ export default function InfoSidebar() {
     [compensatedTime, duration, syncedLines]
   )
   const activeSyncedLineIndex = syncedLyricsTiming.activeLineIndex
+  const hasSyncedLyrics = displayedSyncedLines.some((line) => line.kind === 'lyric')
+
+  const {
+    followPaused,
+    expandedListRef,
+    setFollowPaused,
+    setSyncedLineRef,
+    pauseFollowFromManualScroll,
+    handleRecenter
+  } = useLyricsSyncedView({
+    isOpen: activeTab === 'lyrics',
+    isExpanded: true,
+    hasSyncedLyrics,
+    activeSyncedLineIndex,
+    focusedSyncedLineIndex: syncedLyricsTiming.focusLineIndex,
+    contentKey: currentTrack?.path ?? null
+  })
 
   useEffect(() => {
     if (activeTab !== 'lyrics') return
     void loadLyricsForTrack(lyricsQuery)
   }, [activeTab, lyricsQuery, loadLyricsForTrack])
-
-  useEffect(() => {
-    if (activeTab !== 'lyrics') return
-    if (playbackState !== 'playing') return
-    const targetLineIndex = activeSyncedLineIndex >= 0 ? activeSyncedLineIndex : syncedLyricsTiming.focusLineIndex
-    if (targetLineIndex < 0) return
-    const node = syncedLineRefs.current.get(targetLineIndex)
-    if (!node) return
-    node.scrollIntoView({
-      block: 'center',
-      behavior: 'smooth'
-    })
-  }, [activeSyncedLineIndex, activeTab, playbackState, syncedLyricsTiming.focusLineIndex])
-
-  const setSyncedLineRef = (index: number) => (node: HTMLParagraphElement | null) => {
-    if (node) {
-      syncedLineRefs.current.set(index, node)
-      return
-    }
-    syncedLineRefs.current.delete(index)
-  }
 
   const revealTrackInFolder = () => {
     if (!currentTrack) return
@@ -104,6 +101,11 @@ export default function InfoSidebar() {
     void refreshLyricsForTrack(lyricsQuery)
   }
 
+  const handleLyricsLineSeek = useCallback((seekTimeSeconds: number) => {
+    setFollowPaused(false)
+    void seek(seekTimeSeconds)
+  }, [seek, setFollowPaused])
+
   const renderLyricsContent = () => {
     if (bodyState.kind === 'hit_synced') {
       return (
@@ -114,7 +116,13 @@ export default function InfoSidebar() {
             {bodyState.cached ? ' (cached)' : ''}
           </p>
 
-          <div className="info-lyrics-lines">
+          <div
+            ref={expandedListRef}
+            className="info-lyrics-lines"
+            onWheel={pauseFollowFromManualScroll}
+            onTouchStart={pauseFollowFromManualScroll}
+            aria-live="polite"
+          >
             {displayedSyncedLines.map((displayLine) => (
               <p
                 key={displayLine.key}
@@ -131,6 +139,10 @@ export default function InfoSidebar() {
                   currentTimeSeconds={compensatedTime}
                   isActive={displayLine.kind === 'lyric' && displayLine.displayIndex === activeSyncedLineIndex}
                   settings={lyricsDisplaySettings}
+                  seekTimeSeconds={displayLine.kind === 'lyric'
+                    ? getLyricsLineSeekTimeSeconds(displayLine.timestampMs, duration, effectiveDelayMs)
+                    : null}
+                  onSeek={handleLyricsLineSeek}
                 />
               </p>
             ))}
@@ -205,6 +217,15 @@ export default function InfoSidebar() {
       {activeTab === 'lyrics' ? (
         <div className="info-lyrics-panel">
           <div className="info-sidebar-actions">
+            {followPaused && hasSyncedLyrics && (
+              <button
+                type="button"
+                className="info-lyrics-recenter-btn"
+                onClick={handleRecenter}
+              >
+                Recenter
+              </button>
+            )}
             <button
               type="button"
               className="info-lyrics-refresh-btn"

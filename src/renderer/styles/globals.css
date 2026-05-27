@@ -1375,6 +1375,7 @@ button, .titlebar {
 
 .info-sidebar-actions {
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
 }
 
@@ -1387,7 +1388,8 @@ button, .titlebar {
   overflow: hidden;
 }
 
-.info-lyrics-refresh-btn {
+.info-lyrics-refresh-btn,
+.info-lyrics-recenter-btn {
   min-height: 28px;
   padding: 0 10px;
   border: 1px solid var(--glass-border);
@@ -1402,7 +1404,8 @@ button, .titlebar {
   transition: all var(--transition-fast);
 }
 
-.info-lyrics-refresh-btn:hover:not(:disabled) {
+.info-lyrics-refresh-btn:hover:not(:disabled),
+.info-lyrics-recenter-btn:hover {
   color: var(--text-primary);
   border-color: rgba(var(--accent-rgb), 0.35);
   background: rgba(var(--accent-rgb), 0.1);
@@ -3347,6 +3350,30 @@ button, .titlebar {
   flex-direction: column;
   align-items: center;
   gap: 2px;
+}
+
+.lyrics-line-seek-button {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lyrics-line-seek-button:hover {
+  color: #fff;
+}
+
+.lyrics-line-seek-button:focus-visible {
+  outline: 1px solid rgba(var(--accent-rgb), 0.58);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 
 .lyrics-line-main {

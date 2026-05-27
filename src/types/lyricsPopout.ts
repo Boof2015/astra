@@ -36,6 +36,7 @@ export interface LyricsPopoutWindowPrefs {
 
 export type LyricsPopoutCommand =
   | { type: 'refresh' }
+  | { type: 'seek'; time: number }
 
 export const LYRICS_POPOUT_WINDOW_MIN_WIDTH = 360
 export const LYRICS_POPOUT_WINDOW_MIN_HEIGHT = 220

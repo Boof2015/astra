@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   findActiveSyncedLineIndex,
   getCompactSyncedLyricsLineHeights,
+  getLyricsLineSeekTimeSeconds,
   getPreferredLyricsTranslation,
   getLyricsSourceLabel,
   getRenderableSyncedLines,
@@ -25,6 +26,28 @@ const lines = [
   { timestampMs: 2_500, text: 'line 2' },
   { timestampMs: 4_000, text: 'line 3' },
 ]
+
+test('getLyricsLineSeekTimeSeconds converts lyric timestamps to seek seconds', () => {
+  assert.equal(getLyricsLineSeekTimeSeconds(42_500, 180, 0), 42.5)
+})
+
+test('getLyricsLineSeekTimeSeconds adds output delay compensation', () => {
+  assert.equal(getLyricsLineSeekTimeSeconds(42_500, 180, 250), 42.75)
+})
+
+test('getLyricsLineSeekTimeSeconds clamps to known track duration', () => {
+  assert.equal(getLyricsLineSeekTimeSeconds(179_900, 180, 250), 180)
+})
+
+test('getLyricsLineSeekTimeSeconds rejects invalid lyric timestamps', () => {
+  assert.equal(getLyricsLineSeekTimeSeconds(Number.NaN, 180, 0), null)
+  assert.equal(getLyricsLineSeekTimeSeconds(-1, 180, 0), null)
+})
+
+test('getLyricsLineSeekTimeSeconds ignores invalid or negative delay compensation', () => {
+  assert.equal(getLyricsLineSeekTimeSeconds(42_500, 180, Number.NaN), 42.5)
+  assert.equal(getLyricsLineSeekTimeSeconds(42_500, 180, -250), 42.5)
+})
 
 test('findActiveSyncedLineIndex returns -1 before the first synced line', () => {
   assert.equal(findActiveSyncedLineIndex(lines, 0.5), -1)
