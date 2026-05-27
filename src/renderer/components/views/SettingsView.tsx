@@ -29,6 +29,7 @@ import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore
 import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
+import { useParallaxStore } from '../../stores/parallaxStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
@@ -73,6 +74,11 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
+import {
+  PARALLAX_DEFAULT_PORT,
+  PARALLAX_MAX_PORT,
+  PARALLAX_MIN_PORT
+} from '../../../types/parallax'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 
@@ -263,6 +269,7 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
+  const [showParallaxHostQr, setShowParallaxHostQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
@@ -344,6 +351,20 @@ export default function SettingsView() {
     revokeAllPairedDevices: revokeAllPhoneRemotePairedDevices
   } = usePhoneRemoteSettingsStore()
   const {
+    status: parallaxStatus,
+    pairedSinks: parallaxPairedSinks,
+    activePairingPin: parallaxActivePairingPin,
+    errorMessage: parallaxErrorMessage,
+    setHostEnabled: setParallaxHostEnabled,
+    setHostPort: setParallaxHostPort,
+    createPairingPin: createParallaxPairingPin,
+    pairWithHost: pairParallaxWithHost,
+    connectSink: connectParallaxSink,
+    disconnectSink: disconnectParallaxSink,
+    revokePairedSink: revokeParallaxPairedSink,
+    revokeAllPairedSinks: revokeAllParallaxPairedSinks
+  } = useParallaxStore()
+  const {
     status: lastFmStatus,
     isAuthorizing: lastFmIsAuthorizing,
     errorMessage: lastFmErrorMessage,
@@ -395,6 +416,11 @@ export default function SettingsView() {
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
+  const [parallaxPortInput, setParallaxPortInput] = useState(String(PARALLAX_DEFAULT_PORT))
+  const [parallaxHostUrlInput, setParallaxHostUrlInput] = useState('')
+  const [parallaxPinInput, setParallaxPinInput] = useState('')
+  const [parallaxSinkNameInput, setParallaxSinkNameInput] = useState('Astra Sink')
+  const [parallaxPairedToken, setParallaxPairedToken] = useState<{ sinkId: string; token: string } | null>(null)
   const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
   const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
   const [lastFmProfileProtocolInput, setLastFmProfileProtocolInput] = useState<LastFmScrobbleProtocol>('lastfm2')
@@ -404,6 +430,7 @@ export default function SettingsView() {
   const [lastFmProfileSessionKeyInput, setLastFmProfileSessionKeyInput] = useState('')
   const [localApiFeedback, setLocalApiFeedback] = useState('')
   const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
+  const [parallaxFeedback, setParallaxFeedback] = useState('')
   const [lastFmProfileFeedback, setLastFmProfileFeedback] = useState('')
   const [infoFeedback, setInfoFeedback] = useState('')
   const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
@@ -511,6 +538,7 @@ export default function SettingsView() {
   useEffect(() => {
     void initLocalApi()
     void initPhoneRemote()
+    void useParallaxStore.getState().init()
   }, [initLocalApi, initPhoneRemote])
 
   useEffect(() => {
@@ -526,6 +554,11 @@ export default function SettingsView() {
     if (!phoneRemoteStatus) return
     setPhoneRemotePortInput(String(phoneRemoteStatus.port))
   }, [phoneRemoteStatus?.port])
+
+  useEffect(() => {
+    if (!parallaxStatus) return
+    setParallaxPortInput(String(parallaxStatus.host.port))
+  }, [parallaxStatus?.host.port])
 
   useEffect(() => {
     const lanUrls = phoneRemoteStatus?.lanUrls ?? []
@@ -554,6 +587,14 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [phoneRemoteFeedback])
+
+  useEffect(() => {
+    if (!parallaxFeedback) return
+    const timeoutId = window.setTimeout(() => {
+      setParallaxFeedback('')
+    }, 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [parallaxFeedback])
 
   useEffect(() => {
     if (!lastFmProfileFeedback) return
@@ -791,6 +832,20 @@ export default function SettingsView() {
     : phoneRemoteControllerUrls[0] ?? ''
   const phoneRemotePairedDeviceCount = phoneRemoteStatus?.pairedDeviceCount ?? phoneRemotePairedDevices.length
   const phoneRemotePendingPairingCount = phoneRemoteStatus?.pendingPairingCount ?? phoneRemotePendingPairingRequests.length
+  const parallaxHostEnabled = parallaxStatus?.host.enabled ?? false
+  const parallaxHostLanUrls = parallaxStatus?.host.lanUrls ?? []
+  const parallaxHostUrl = parallaxHostLanUrls[0] ?? `http://127.0.0.1:${PARALLAX_DEFAULT_PORT}`
+  const parallaxSinkConnected = parallaxStatus?.sink.connected ?? false
+  const parallaxActiveSinks = parallaxPairedSinks.filter((sink) => sink.revokedAt == null)
+  const parallaxSummary = parallaxSinkConnected
+    ? `Connected as a sink to ${parallaxStatus?.sink.baseUrl ?? 'host'}.`
+    : !parallaxHostEnabled
+      ? 'Parallax host is off.'
+      : parallaxHostLanUrls.length === 0
+        ? 'Parallax host is enabled, but Astra has not found a usable LAN address yet.'
+        : parallaxStatus?.host.connectedSinkCount
+          ? `${parallaxStatus.host.connectedSinkCount} sink${parallaxStatus.host.connectedSinkCount === 1 ? '' : 's'} connected.`
+          : 'Parallax host is waiting for paired sinks.'
   const localApiPhoneRemoteSummary = !phoneRemoteEnabled
     ? 'Phone remote is off. Turn it on when you want Astra to expose `/remote/` on your LAN.'
     : phoneRemoteLanUrls.length === 0
@@ -818,6 +873,10 @@ export default function SettingsView() {
     if (!localApiControllerUrl) return ''
     try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
   }, [localApiControllerUrl])
+  const parallaxHostQrSvg = useMemo(() => {
+    if (!parallaxHostUrl) return ''
+    try { return renderPairingQrSvg(parallaxHostUrl) } catch { return '' }
+  }, [parallaxHostUrl])
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
   const lastFmAuthPendingProfileId = lastFmStatus?.authPendingProfileId ?? null
@@ -1006,6 +1065,15 @@ export default function SettingsView() {
     }
   }
 
+  const copyParallaxToClipboard = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setParallaxFeedback(`${label} copied.`)
+    } catch {
+      setParallaxFeedback(`Failed to copy ${label.toLowerCase()}.`)
+    }
+  }
+
   const copyInfoToClipboard = async (value: string, label: string) => {
     try {
       await navigator.clipboard.writeText(value)
@@ -1047,6 +1115,49 @@ export default function SettingsView() {
     void setPhoneRemotePort(parsedPort).then((status) => {
       if (!status) return
       setPhoneRemoteFeedback(`Phone remote port set to ${status.port}.`)
+    })
+  }
+
+  const handleSaveParallaxPort = () => {
+    const parsedPort = Number(parallaxPortInput)
+    if (!Number.isInteger(parsedPort) || parsedPort < PARALLAX_MIN_PORT || parsedPort > PARALLAX_MAX_PORT) {
+      setParallaxFeedback(`Port must be an integer between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
+      return
+    }
+
+    void setParallaxHostPort(parsedPort).then((status) => {
+      if (!status) return
+      setParallaxFeedback(`Parallax port set to ${status.host.port}.`)
+    })
+  }
+
+  const handleCreateParallaxPin = () => {
+    void createParallaxPairingPin().then((pin) => {
+      if (!pin) return
+      setParallaxFeedback('Parallax pairing PIN generated.')
+    })
+  }
+
+  const handlePairParallaxSink = () => {
+    void pairParallaxWithHost(parallaxHostUrlInput, parallaxPinInput, parallaxSinkNameInput).then((pairing) => {
+      if (!pairing) return
+      setParallaxPairedToken({ sinkId: pairing.sinkId, token: pairing.token })
+      setParallaxFeedback('Sink paired. Connect when ready.')
+    })
+  }
+
+  const handleConnectParallaxSink = () => {
+    if (!parallaxPairedToken) {
+      setParallaxFeedback('Pair with a host first.')
+      return
+    }
+    void connectParallaxSink({
+      baseUrl: parallaxHostUrlInput,
+      sinkId: parallaxPairedToken.sinkId,
+      token: parallaxPairedToken.token
+    }).then((status) => {
+      if (!status) return
+      setParallaxFeedback('Connected as Parallax sink.')
     })
   }
 
@@ -2516,6 +2627,166 @@ export default function SettingsView() {
                           Revoke All
                         </button>
                       )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Parallax</h4>
+                  <p>Experimental LAN multi-zone sync for standard-mode local playback.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Host Mode</span>
+                    <button
+                      className={`settings-toggle ${parallaxHostEnabled ? 'active' : ''}`}
+                      onClick={() => void setParallaxHostEnabled(!parallaxHostEnabled)}
+                    >
+                      {parallaxHostEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Parallax Port</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={PARALLAX_MIN_PORT}
+                        max={PARALLAX_MAX_PORT}
+                        step={1}
+                        value={parallaxPortInput}
+                        onChange={(event) => setParallaxPortInput(event.target.value)}
+                        onBlur={handleSaveParallaxPort}
+                      />
+                      <button className="settings-btn" onClick={handleSaveParallaxPort}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Host URL</span>
+                    <div className="settings-inline-row">
+                      <span className="settings-chip settings-chip-mono settings-chip-grow">{parallaxHostUrl}</span>
+                      {parallaxHostQrSvg && (
+                        <button
+                          className={`settings-btn${showParallaxHostQr ? ' settings-btn-primary' : ''}`}
+                          disabled={!parallaxHostEnabled}
+                          onClick={() => setShowParallaxHostQr((prev) => !prev)}
+                        >
+                          {showParallaxHostQr ? 'Hide QR' : 'Show QR'}
+                        </button>
+                      )}
+                      <button
+                        className="settings-btn"
+                        disabled={!parallaxHostEnabled}
+                        onClick={() => void copyParallaxToClipboard(parallaxHostUrl, 'Parallax host URL')}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    {showParallaxHostQr && parallaxHostEnabled && parallaxHostQrSvg && (
+                      <div className="local-api-inline-qr">
+                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: parallaxHostQrSvg }} />
+                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan on the sink, then enter the current PIN.</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Pair a Sink</span>
+                    <div className="settings-inline-row">
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        disabled={!parallaxHostEnabled || !parallaxStatus?.host.active}
+                        onClick={handleCreateParallaxPin}
+                      >
+                        Generate PIN
+                      </button>
+                      <span className="settings-chip settings-chip-mono">
+                        {parallaxActivePairingPin ? parallaxActivePairingPin.pin : 'No PIN'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Connect This Astra as Sink</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input"
+                        value={parallaxHostUrlInput}
+                        placeholder="http://host-ip:38403"
+                        onChange={(event) => setParallaxHostUrlInput(event.target.value)}
+                      />
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        value={parallaxPinInput}
+                        placeholder="PIN"
+                        onChange={(event) => setParallaxPinInput(event.target.value)}
+                      />
+                    </div>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input"
+                        value={parallaxSinkNameInput}
+                        onChange={(event) => setParallaxSinkNameInput(event.target.value)}
+                      />
+                      <button className="settings-btn" onClick={handlePairParallaxSink}>
+                        Pair
+                      </button>
+                      <button
+                        className="settings-btn settings-btn-primary"
+                        disabled={!parallaxPairedToken || parallaxSinkConnected}
+                        onClick={handleConnectParallaxSink}
+                      >
+                        Connect
+                      </button>
+                      <button
+                        className="settings-btn settings-btn-danger"
+                        disabled={!parallaxSinkConnected}
+                        onClick={() => void disconnectParallaxSink()}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Status</span>
+                    <span className="settings-info-value">{parallaxSummary}</span>
+                  </div>
+                </div>
+                {parallaxFeedback && <p className="settings-note settings-note-success">{parallaxFeedback}</p>}
+                {parallaxErrorMessage && <p className="settings-note settings-note-error">{parallaxErrorMessage}</p>}
+                {parallaxActiveSinks.length > 0 && (
+                  <div className="local-api-inline-devices">
+                    <div className="local-api-inline-devices-header">
+                      <span className="local-api-inline-devices-count">
+                        {parallaxActiveSinks.length} paired sink{parallaxActiveSinks.length !== 1 ? 's' : ''}
+                      </span>
+                      {parallaxActiveSinks.length >= 2 && (
+                        <button
+                          className="settings-btn settings-btn-danger"
+                          onClick={() => void revokeAllParallaxPairedSinks()}
+                        >
+                          Revoke All
+                        </button>
+                      )}
+                    </div>
+                    <div className="local-api-inline-devices-list">
+                      {parallaxActiveSinks.map((sink) => (
+                        <div key={sink.id} className="local-api-inline-device">
+                          <div className="local-api-inline-device-info">
+                            <span className="local-api-inline-device-name">{sink.name}</span>
+                            <span className="local-api-inline-device-detail">
+                              Last seen {sink.lastSeenAt ? new Date(sink.lastSeenAt).toLocaleString() : 'Never'}
+                            </span>
+                          </div>
+                          <button
+                            className="settings-btn settings-btn-danger"
+                            onClick={() => void revokeParallaxPairedSink(sink.id)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

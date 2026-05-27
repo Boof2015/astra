@@ -28,6 +28,18 @@ import type {
   PhoneRemoteStatus
 } from '../types/phoneRemote'
 import type {
+  ParallaxAudioChunk,
+  ParallaxPairedSink,
+  ParallaxPairResponse,
+  ParallaxPairingPin,
+  ParallaxSinkConnectionConfig,
+  ParallaxSinkTelemetry,
+  ParallaxStatus,
+  ParallaxStreamInfo,
+  ParallaxTimelineEvent,
+  ParallaxTimelineState
+} from '../types/parallax'
+import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
   LastFmCustomProfileInput,
@@ -770,6 +782,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  parallax: {
+    getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
+    listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
+    setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setHostEnabled', enabled),
+    setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
+    createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
+    pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
+      ipcRenderer.invoke('parallax:pairWithHost', baseUrl, pin, sinkName),
+    connectSink: (config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:connectSink', config),
+    disconnectSink: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:disconnectSink'),
+    publishHostStreamStart: (
+      info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>
+    ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostStreamStart', info),
+    publishHostAudioChunk: (chunk: ParallaxAudioChunk): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostAudioChunk', chunk),
+    publishHostTimeline: (timeline: ParallaxTimelineState): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostTimeline', timeline),
+    stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
+    publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
+    revokePairedSink: (id: string): Promise<ParallaxPairedSink | null> =>
+      ipcRenderer.invoke('parallax:revokePairedSink', id),
+    revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
+    resetToDefaults: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:resetToDefaults'),
+    onStatus: (callback: (status: ParallaxStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: ParallaxStatus) => callback(status)
+      ipcRenderer.on('parallax:status', handler)
+      return () => ipcRenderer.removeListener('parallax:status', handler)
+    },
+    onEvent: (callback: (event: ParallaxTimelineEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, event: ParallaxTimelineEvent) => callback(event)
+      ipcRenderer.on('parallax:event', handler)
+      return () => ipcRenderer.removeListener('parallax:event', handler)
+    },
+    onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, chunk: ParallaxAudioChunk) => callback(chunk)
+      ipcRenderer.on('parallax:audioChunk', handler)
+      return () => ipcRenderer.removeListener('parallax:audioChunk', handler)
+    }
+  },
+
   lastFm: {
     getStatus: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:getStatus'),
     setEnabled: (enabled: boolean): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:setEnabled', enabled),
@@ -1200,6 +1255,29 @@ declare global {
         setPort: (port: number) => Promise<PhoneRemoteStatus>
         resetToDefaults: () => Promise<PhoneRemoteStatus>
         onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+      }
+      parallax: {
+        getStatus: () => Promise<ParallaxStatus>
+        listPairedSinks: () => Promise<ParallaxPairedSink[]>
+        setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+        setHostPort: (port: number) => Promise<ParallaxStatus>
+        createPairingPin: () => Promise<ParallaxPairingPin>
+        pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
+        connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
+        disconnectSink: () => Promise<ParallaxStatus>
+        publishHostStreamStart: (
+          info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>
+        ) => Promise<ParallaxTimelineState>
+        publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
+        publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
+        stopHostStream: () => Promise<void>
+        publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+        revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+        revokeAllPairedSinks: () => Promise<number>
+        resetToDefaults: () => Promise<ParallaxStatus>
+        onStatus: (callback: (status: ParallaxStatus) => void) => () => void
+        onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
+        onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void
       }
       lastFm: {
         getStatus: () => Promise<LastFmStatus>

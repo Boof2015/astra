@@ -19505,3 +19505,60 @@ body::after {
     grid-template-columns: 1fr;
   }
 }
+.parallax-sink-mode {
+  position: fixed;
+  left: calc(16px + env(safe-area-inset-left));
+  right: calc(16px + env(safe-area-inset-right));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(12, 14, 18, 0.94);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+}
+
+.parallax-sink-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.parallax-sink-kicker,
+.parallax-sink-meta,
+.parallax-sink-error {
+  font-size: 0.74rem;
+  line-height: 1.25;
+}
+
+.parallax-sink-kicker {
+  color: var(--accent-color, #38bdf8);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.parallax-sink-title {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parallax-sink-meta {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parallax-sink-error {
+  color: #fca5a5;
+}

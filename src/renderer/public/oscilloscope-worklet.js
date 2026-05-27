@@ -231,6 +231,200 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
 
 registerProcessor('remote-stream-player', RemoteStreamPlayerProcessor)
 
+class ParallaxSinkProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super()
+    const outputChannels = options && options.outputChannelCount && Array.isArray(options.outputChannelCount)
+      ? Number(options.outputChannelCount[0] || 2)
+      : 2
+    this.channelCount = Math.max(1, outputChannels)
+    this.reportIntervalFrames = 2048
+    this.maxRetainedChunks = 512
+    this.reset()
+    this.port.onmessage = (event) => {
+      if (!event || typeof event.data !== 'object' || event.data == null) return
+      const payload = event.data
+      switch (payload.type) {
+        case 'append-chunk':
+          this.appendChunk(payload.channelData, payload.startFrame, payload.frameCount)
+          break
+        case 'set-timeline':
+          this.setTimeline(payload)
+          break
+        case 'set-rate':
+          this.playbackRate = this.rateFromPpm(payload.playbackRatePpm)
+          break
+        case 'clear':
+          this.reset()
+          this.postPosition(true)
+          break
+      }
+    }
+  }
+
+  reset() {
+    this.chunks = []
+    this.currentFrame = 0
+    this.currentFrameFloat = 0
+    this.playing = false
+    this.playbackRate = 1
+    this.startAtSample = 0
+    this.framesSinceReport = 0
+    this.lastReportedFrame = -1
+    this.underruns = 0
+    this.lastUnderrunReportFrame = -1
+  }
+
+  rateFromPpm(value) {
+    const ppm = Number.isFinite(value) ? Math.max(-250, Math.min(250, Number(value))) : 0
+    return 1 + (ppm / 1000000)
+  }
+
+  appendChunk(channelData, startFrame, frameCount) {
+    if (!Array.isArray(channelData) || frameCount <= 0 || !Number.isFinite(startFrame)) return
+    this.chunks.push({
+      startFrame: Math.max(0, Math.floor(startFrame)),
+      frameCount: Math.max(0, Math.floor(frameCount)),
+      channels: channelData
+    })
+    this.chunks.sort((left, right) => left.startFrame - right.startFrame)
+    if (this.chunks.length > this.maxRetainedChunks) {
+      this.chunks.splice(0, this.chunks.length - this.maxRetainedChunks)
+    }
+  }
+
+  setTimeline(payload) {
+    const startFrame = Number.isFinite(payload.startFrame)
+      ? Math.max(0, Math.floor(payload.startFrame))
+      : Math.max(0, Math.floor(this.currentFrameFloat))
+    const startAtContextTime = Number.isFinite(payload.startAtContextTime)
+      ? Math.max(0, Number(payload.startAtContextTime))
+      : currentTime
+    this.currentFrame = startFrame
+    this.currentFrameFloat = startFrame
+    this.startAtSample = Math.max(currentFrame, Math.floor(startAtContextTime * sampleRate))
+    this.playbackRate = this.rateFromPpm(payload.playbackRatePpm)
+    this.playing = Boolean(payload.playing)
+    this.framesSinceReport = 0
+    this.postPosition(true)
+  }
+
+  findChunk(frame) {
+    for (let index = 0; index < this.chunks.length; index++) {
+      const chunk = this.chunks[index]
+      if (frame < chunk.startFrame) return null
+      if (frame < chunk.startFrame + chunk.frameCount) return chunk
+    }
+    return null
+  }
+
+  sampleAt(channel, frame) {
+    const chunk = this.findChunk(frame)
+    if (!chunk) return null
+    const offset = frame - chunk.startFrame
+    const sourceChannel = chunk.channels[channel] || chunk.channels[0]
+    if (!sourceChannel || offset < 0 || offset >= sourceChannel.length) return null
+    return sourceChannel[offset] || 0
+  }
+
+  readInterpolated(channel, frameFloat) {
+    const frame = Math.floor(frameFloat)
+    const frac = frameFloat - frame
+    const current = this.sampleAt(channel, frame)
+    if (current === null) return null
+    if (frac <= 0.000001) return current
+    const next = this.sampleAt(channel, frame + 1)
+    if (next === null) return current
+    return current + ((next - current) * frac)
+  }
+
+  pruneOldChunks() {
+    const retainAfterFrame = Math.max(0, Math.floor(this.currentFrameFloat) - sampleRate)
+    while (this.chunks.length > 0) {
+      const chunk = this.chunks[0]
+      if (chunk.startFrame + chunk.frameCount >= retainAfterFrame) break
+      this.chunks.shift()
+    }
+  }
+
+  postPosition(force = false) {
+    const frame = Math.max(0, Math.floor(this.currentFrameFloat))
+    if (!force && frame === this.lastReportedFrame) return
+    this.lastReportedFrame = frame
+    const bufferedEndFrame = this.chunks.reduce((maxFrame, chunk) => {
+      return Math.max(maxFrame, chunk.startFrame + chunk.frameCount)
+    }, 0)
+    this.port.postMessage({
+      type: 'position',
+      frame,
+      bufferedFrames: Math.max(0, bufferedEndFrame - frame),
+      underruns: this.underruns,
+      playbackRatePpm: Math.round((this.playbackRate - 1) * 1000000)
+    })
+  }
+
+  reportUnderrun(frame) {
+    this.underruns += 1
+    if (this.lastUnderrunReportFrame >= 0 && frame - this.lastUnderrunReportFrame < sampleRate / 4) return
+    this.lastUnderrunReportFrame = frame
+    this.port.postMessage({
+      type: 'underrun',
+      frame,
+      underruns: this.underruns
+    })
+  }
+
+  process(inputs, outputs) {
+    const output = outputs[0]
+    if (!output || output.length === 0) return true
+
+    for (let channel = 0; channel < output.length; channel++) {
+      output[channel].fill(0)
+    }
+
+    if (!this.playing) {
+      return true
+    }
+
+    const frameCount = output[0].length
+    for (let outputFrame = 0; outputFrame < frameCount; outputFrame++) {
+      if (currentFrame + outputFrame < this.startAtSample) {
+        continue
+      }
+
+      const sourceFrame = Math.max(0, Math.floor(this.currentFrameFloat))
+      let anyMissing = false
+      for (let channel = 0; channel < output.length; channel++) {
+        const sample = this.readInterpolated(channel, this.currentFrameFloat)
+        if (sample === null) {
+          anyMissing = true
+          output[channel][outputFrame] = 0
+        } else {
+          output[channel][outputFrame] = sample
+        }
+      }
+
+      if (anyMissing) {
+        this.reportUnderrun(sourceFrame)
+      }
+
+      this.currentFrameFloat += this.playbackRate
+      this.currentFrame = Math.floor(this.currentFrameFloat)
+      this.framesSinceReport += 1
+    }
+
+    if (this.framesSinceReport >= this.reportIntervalFrames) {
+      this.framesSinceReport = 0
+      this.postPosition()
+      this.pruneOldChunks()
+    }
+
+    return true
+  }
+}
+
+registerProcessor('parallax-sink-player', ParallaxSinkProcessor)
+
 class CalibrationCaptureProcessor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const input = inputs[0]

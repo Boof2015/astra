@@ -14,6 +14,7 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
+import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -26,6 +27,7 @@ import { useThemeStore } from './stores/themeStore'
 import { useUpdateStore } from './stores/updateStore'
 import { useLocalApiSettingsStore } from './stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from './stores/phoneRemoteSettingsStore'
+import { useParallaxStore } from './stores/parallaxStore'
 import { useLastFmSettingsStore } from './stores/lastFmSettingsStore'
 import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
@@ -190,6 +192,7 @@ function App() {
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
     void usePhoneRemoteSettingsStore.getState().init()
+    void useParallaxStore.getState().init()
     void useLastFmSettingsStore.getState().init()
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
@@ -314,6 +317,7 @@ function App() {
           </div>
         </div>
         <TransportBar />
+        <ParallaxSinkMode />
         <DecodeFallbackCue />
         <OutputDelayCue />
         <AssociatedOpenCue />

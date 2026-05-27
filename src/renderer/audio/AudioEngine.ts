@@ -1,6 +1,16 @@
 import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
+  ParallaxAudioChunk,
+  ParallaxStreamInfo,
+  ParallaxTimelineState
+} from '../../types/parallax'
+import {
+  PARALLAX_AUDIO_CHUNK_FRAMES,
+  clampParallaxPlaybackRatePpm,
+  mapHostTimeToSinkTimeMs
+} from '../../types/parallax'
+import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
   NativeAudioEvent,
@@ -176,6 +186,17 @@ interface RemoteStreamRuntimeState {
   normalization: ProgressiveNormalizationAccumulator | null
 }
 
+interface ParallaxSinkRuntimeState {
+  streamId: string
+  sampleRate: number
+  channels: number
+  durationSeconds: number
+  currentFrame: number
+  bufferedFrames: number
+  underruns: number
+  playbackRatePpm: number
+}
+
 export type OutputDelayCalibrationFailureCode =
   | 'not-supported'
   | 'mic-denied'
@@ -254,6 +275,7 @@ export class AudioEngine {
   private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private remoteStreamNode: AudioWorkletNode | null = null
+  private parallaxSinkNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
   private disableStandardAnalysisGraphDev: boolean = false
   private analysisDelayMs: number = 0
@@ -352,6 +374,7 @@ export class AudioEngine {
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
+  private parallaxSinkState: ParallaxSinkRuntimeState | null = null
   private remotePlayPromise: Promise<void> | null = null
   private remotePlayResolver: (() => void) | null = null
   private remotePlayRejecter: ((error: Error) => void) | null = null
@@ -1637,6 +1660,7 @@ export class AudioEngine {
     this.syncSourceAnalysisTapConnection(this.sourceNode, this.audioBuffer?.numberOfChannels)
     this.syncSourceAnalysisTapConnection(this.nextSourceNode, this.nextBuffer?.numberOfChannels)
     this.syncSourceAnalysisTapConnection(this.remoteStreamNode, this.remoteStreamState?.channels)
+    this.syncSourceAnalysisTapConnection(this.parallaxSinkNode, this.parallaxSinkState?.channels)
   }
 
   private getPostEQOutputNode(): AudioNode | null {
@@ -1765,6 +1789,18 @@ export class AudioEngine {
     this.remoteStreamNode = null
   }
 
+  private disconnectParallaxSinkNode(): void {
+    if (!this.parallaxSinkNode) return
+    this.parallaxSinkNode.port.onmessage = null
+    this.disconnectSourceRouting(this.parallaxSinkNode)
+    try {
+      this.parallaxSinkNode.disconnect()
+    } catch {
+      // Ignore disconnect races while replacing the Parallax sink node.
+    }
+    this.parallaxSinkNode = null
+  }
+
   private rebuildRemoteStreamRoutingIfActive(): boolean {
     if (!this.remoteStreamNode || !this.remoteStreamState || this.playbackOutputMode === 'bitperfect') {
       return false
@@ -1772,6 +1808,16 @@ export class AudioEngine {
 
     this.disconnectSourceRouting(this.remoteStreamNode)
     this.connectSourceWithRouting(this.remoteStreamNode, this.remoteStreamState.channels)
+    return true
+  }
+
+  private rebuildParallaxSinkRoutingIfActive(): boolean {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState || this.playbackOutputMode === 'bitperfect') {
+      return false
+    }
+
+    this.disconnectSourceRouting(this.parallaxSinkNode)
+    this.connectSourceWithRouting(this.parallaxSinkNode, this.parallaxSinkState.channels)
     return true
   }
 
@@ -1791,6 +1837,12 @@ export class AudioEngine {
         // Ignore cancellation failures while switching tracks or stopping playback.
       }
     }
+  }
+
+  private clearParallaxSinkState(): void {
+    this.parallaxSinkState = null
+    this.disconnectParallaxSinkNode()
+    this.stopTimeUpdate()
   }
 
   private createRemoteStreamNode(channelCount: number): AudioWorkletNode {
@@ -1833,6 +1885,49 @@ export class AudioEngine {
         this.stopTimeUpdate()
         void this.clearRemoteStreamState(false)
         this.emit('ended')
+      }
+    }
+
+    this.connectSourceWithRouting(node, channelCount)
+    this.connectSourceToAnalysisTap(node, channelCount)
+    return node
+  }
+
+  private createParallaxSinkNode(channelCount: number): AudioWorkletNode {
+    if (!this.context) {
+      throw new Error('AudioContext not initialized')
+    }
+
+    const node = new AudioWorkletNode(this.context, 'parallax-sink-player', {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [Math.max(1, channelCount)]
+    })
+
+    node.port.onmessage = (event: MessageEvent) => {
+      if (node !== this.parallaxSinkNode) return
+      const payload = event.data ?? {}
+      if (!payload || typeof payload !== 'object') return
+
+      if (payload.type === 'position' && this.parallaxSinkState) {
+        this.parallaxSinkState.currentFrame = Number.isFinite(payload.frame)
+          ? Math.max(0, Math.floor(payload.frame))
+          : this.parallaxSinkState.currentFrame
+        this.parallaxSinkState.bufferedFrames = Number.isFinite(payload.bufferedFrames)
+          ? Math.max(0, Math.floor(payload.bufferedFrames))
+          : this.parallaxSinkState.bufferedFrames
+        this.parallaxSinkState.underruns = Number.isFinite(payload.underruns)
+          ? Math.max(0, Math.floor(payload.underruns))
+          : this.parallaxSinkState.underruns
+        this.parallaxSinkState.playbackRatePpm = clampParallaxPlaybackRatePpm(Number(payload.playbackRatePpm))
+        this.emit('timeUpdate', this.currentTime)
+      }
+
+      if (payload.type === 'underrun' && this.parallaxSinkState) {
+        this.parallaxSinkState.underruns = Number.isFinite(payload.underruns)
+          ? Math.max(0, Math.floor(payload.underruns))
+          : this.parallaxSinkState.underruns + 1
+        this.emit('parallaxUnderrun', this.parallaxSinkState.underruns)
       }
     }
 
@@ -2051,6 +2146,7 @@ export class AudioEngine {
     this.stopSource()
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
+    this.clearParallaxSinkState()
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
     this.currentNormalizationAnalysis = null
@@ -2145,6 +2241,229 @@ export class AudioEngine {
     return info
   }
 
+  async loadParallaxSinkStream(stream: ParallaxStreamInfo): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax sink playback is only available in standard mode.')
+    }
+
+    const loadOperation = this.beginLoadOperation()
+    await this.initContext({ sampleRate: stream.sampleRate })
+    this.assertCurrentLoadOperation(loadOperation)
+    if (!this.context || !this.workletLoaded) {
+      throw new Error('Audio worklet could not be initialized for Parallax sink playback.')
+    }
+    if (Math.abs(this.context.sampleRate - stream.sampleRate) > 1) {
+      throw new Error(`Parallax sink requires ${stream.sampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
+    }
+
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
+    this.stopSource()
+    this.clearNextBuffer()
+    await this.clearRemoteStreamState(true)
+    this.clearParallaxSinkState()
+    this.assertCurrentLoadOperation(loadOperation)
+
+    this.audioBuffer = null
+    this.currentNormalizationAnalysis = null
+    this.currentBufferTrackPath = `parallax:${stream.streamId}`
+    this.pauseTime = 0
+    this.currentReplayGainDb = null
+    this.parallaxSinkNode = this.createParallaxSinkNode(stream.channels)
+    this.parallaxSinkState = {
+      streamId: stream.streamId,
+      sampleRate: stream.sampleRate,
+      channels: stream.channels,
+      durationSeconds: stream.durationSeconds,
+      currentFrame: 0,
+      bufferedFrames: 0,
+      underruns: 0,
+      playbackRatePpm: 0
+    }
+
+    this.applyChannelRoutingPreferences(stream.channels)
+    this.applyAnalysisRoutingPreferences(stream.channels)
+    this.applyGainState({
+      gainDb: 0,
+      linearGain: 1,
+      mode: 'off'
+    })
+    this._playbackState = 'paused'
+    this.emit('durationChange', stream.durationSeconds)
+    this.emit('stateChange', this._playbackState)
+    this.notifyTrackChange()
+  }
+
+  appendParallaxSinkAudioChunk(chunk: ParallaxAudioChunk): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode) return
+    if (chunk.streamId !== this.parallaxSinkState.streamId) return
+    const channelData = this.deinterleaveParallaxChunk(chunk)
+    this.parallaxSinkNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        startFrame: chunk.startFrame,
+        frameCount: chunk.frameCount,
+        channelData
+      },
+      channelData.map((channel) => channel.buffer)
+    )
+  }
+
+  applyParallaxTimeline(
+    timeline: ParallaxTimelineState,
+    options: { startAtContextTime: number; playbackRatePpm?: number }
+  ): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode || !this.context) return
+    if (timeline.streamId !== this.parallaxSinkState.streamId) return
+
+    const playbackRatePpm = clampParallaxPlaybackRatePpm(options.playbackRatePpm ?? 0)
+    this.parallaxSinkState.currentFrame = Math.max(0, Math.floor(timeline.startFrame))
+    this.parallaxSinkState.playbackRatePpm = playbackRatePpm
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame: this.parallaxSinkState.currentFrame,
+      startAtContextTime: Math.max(this.context.currentTime, options.startAtContextTime),
+      playing: timeline.playbackState === 'playing',
+      playbackRatePpm
+    })
+
+    this._playbackState = timeline.playbackState === 'playing' ? 'playing' : 'paused'
+    this.emit('stateChange', this._playbackState)
+    if (this._playbackState === 'playing') {
+      this.startTimeUpdate()
+    } else {
+      this.stopTimeUpdate()
+    }
+  }
+
+  applyParallaxTimelineFromHostClock(
+    timeline: ParallaxTimelineState,
+    hostMinusSinkOffsetMs: number | null | undefined,
+    playbackRatePpm: number = 0
+  ): void {
+    if (!this.context) return
+    const offsetMs = Number.isFinite(hostMinusSinkOffsetMs) ? Number(hostMinusSinkOffsetMs) : 0
+    const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
+    const delaySeconds = Math.max(0, (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000)
+    this.applyParallaxTimeline(timeline, {
+      startAtContextTime: this.context.currentTime + delaySeconds,
+      playbackRatePpm
+    })
+  }
+
+  setParallaxSinkPlaybackRate(playbackRatePpm: number): void {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState) return
+    const clamped = clampParallaxPlaybackRatePpm(playbackRatePpm)
+    this.parallaxSinkState.playbackRatePpm = clamped
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-rate',
+      playbackRatePpm: clamped
+    })
+  }
+
+  stopParallaxSinkPlayback(): void {
+    if (!this.parallaxSinkState && !this.parallaxSinkNode) return
+    this.parallaxSinkNode?.port.postMessage({ type: 'clear' })
+    this.clearParallaxSinkState()
+    this.currentBufferTrackPath = null
+    this.pauseTime = 0
+    this._playbackState = 'stopped'
+    this.emit('stateChange', this._playbackState)
+    this.emit('timeUpdate', 0)
+    this.notifyTrackChange()
+  }
+
+  getParallaxSinkSnapshot(): {
+    streamId: string | null
+    currentFrame: number
+    bufferedFrames: number
+    underruns: number
+    playbackRatePpm: number
+  } {
+    return {
+      streamId: this.parallaxSinkState?.streamId ?? null,
+      currentFrame: this.parallaxSinkState?.currentFrame ?? 0,
+      bufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
+      underruns: this.parallaxSinkState?.underruns ?? 0,
+      playbackRatePpm: this.parallaxSinkState?.playbackRatePpm ?? 0
+    }
+  }
+
+  async playCurrentBufferOnParallaxTimeline(timeline: ParallaxTimelineState): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax host playback is only available in standard mode.')
+    }
+    await this.initContext()
+    if (!this.audioBuffer || !this.context) return
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+    }
+
+    this.stopSource()
+    this.cancelScheduledNext()
+    this.clearParallaxSinkState()
+
+    const offset = Math.max(0, Math.min(this.audioBuffer.duration, timeline.startFrame / this.audioBuffer.sampleRate))
+    const startDelaySeconds = Math.max(0, (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000)
+    const startAtContextTime = this.context.currentTime + startDelaySeconds
+
+    this.sourceNode = this.context.createBufferSource()
+    this.sourceNode.buffer = this.audioBuffer
+    this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.sourceNode.onended = () => {
+      if (this._playbackState === 'playing') {
+        this.performGaplessTransition()
+      }
+    }
+    this.startTime = startAtContextTime - offset
+    this.pauseTime = offset
+    this.sourceNode.start(startAtContextTime, offset)
+    this._playbackState = 'playing'
+    this.emit('stateChange', this._playbackState)
+    this.startTimeUpdate()
+  }
+
+  async publishCurrentBufferToParallax(streamId: string): Promise<void> {
+    const buffer = this.audioBuffer
+    if (!buffer) {
+      throw new Error('No decoded local track is available for Parallax streaming.')
+    }
+    const channels = Math.max(1, Math.min(8, buffer.numberOfChannels))
+    const totalFrames = buffer.length
+    for (let startFrame = 0; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+      const frameCount = Math.min(PARALLAX_AUDIO_CHUNK_FRAMES, totalFrames - startFrame)
+      const interleaved = new Float32Array(frameCount * channels)
+      for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+        const source = buffer.getChannelData(channelIndex)
+        for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+          interleaved[(frameIndex * channels) + channelIndex] = source[startFrame + frameIndex] ?? 0
+        }
+      }
+      await window.electronAPI.parallax.publishHostAudioChunk({
+        streamId,
+        sampleRate: buffer.sampleRate,
+        channels,
+        startFrame,
+        frameCount,
+        pcmData: interleaved.buffer
+      })
+    }
+  }
+
+  private deinterleaveParallaxChunk(chunk: ParallaxAudioChunk): Float32Array[] {
+    const interleaved = new Float32Array(chunk.pcmData)
+    const channels = Math.max(1, Math.min(8, chunk.channels))
+    const channelData = Array.from({ length: channels }, () => new Float32Array(chunk.frameCount))
+    for (let frameIndex = 0; frameIndex < chunk.frameCount; frameIndex++) {
+      for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+        channelData[channelIndex][frameIndex] = interleaved[(frameIndex * channels) + channelIndex] ?? 0
+      }
+    }
+    return channelData
+  }
+
   async setChannelRoutingMap(map: number[] | null): Promise<void> {
     const normalized = map && map.length > 0
       ? map
@@ -2168,6 +2487,9 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this.multichannelEnabled && this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
@@ -2184,6 +2506,9 @@ export class AudioEngine {
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
       return
     }
 
@@ -2204,6 +2529,9 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
@@ -2222,15 +2550,23 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
     }
   }
 
-  private async initContext(): Promise<void> {
+  private async initContext(options: { sampleRate?: number } = {}): Promise<void> {
     if (!this.context) {
-      this.context = new AudioContext()
+      const requestedSampleRate = Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0
+        ? Math.max(8_000, Math.round(Number(options.sampleRate)))
+        : null
+      this.context = requestedSampleRate
+        ? new AudioContext({ sampleRate: requestedSampleRate })
+        : new AudioContext()
 
       // Create persistent nodes
       this.gainNode = this.context.createGain()
@@ -2309,6 +2645,11 @@ export class AudioEngine {
       // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
       this.applyAnalysisRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    } else if (Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0) {
+      const requestedSampleRate = Math.max(8_000, Math.round(Number(options.sampleRate)))
+      if (Math.abs(this.context.sampleRate - requestedSampleRate) > 1) {
+        throw new Error(`Parallax sink requires ${requestedSampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
+      }
     }
   }
 
@@ -2650,6 +2991,11 @@ export class AudioEngine {
         ? this.remoteStreamState.currentFrame / this.remoteStreamState.sampleRate
         : 0
     }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.sampleRate > 0
+        ? this.parallaxSinkState.currentFrame / this.parallaxSinkState.sampleRate
+        : 0
+    }
     if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
     return this.context.currentTime - this.startTime
@@ -2661,6 +3007,9 @@ export class AudioEngine {
     }
     if (this.remoteStreamState) {
       return this.remoteStreamState.durationSeconds
+    }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.durationSeconds
     }
     return this.audioBuffer?.duration ?? 0
   }
@@ -2694,6 +3043,9 @@ export class AudioEngine {
     if (this.remoteStreamState) {
       return this.remoteStreamState.channels
     }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.channels
+    }
     return this.audioBuffer?.numberOfChannels ?? null
   }
 
@@ -2726,6 +3078,10 @@ export class AudioEngine {
     remoteBufferedSeconds: number
     remoteBufferedFrames: number
     remoteAnalyzedFrames: number
+    parallaxSinkActive: boolean
+    parallaxSinkStreamId: string | null
+    parallaxSinkBufferedFrames: number
+    parallaxSinkUnderruns: number
     normalizationApproximate: boolean
     visualizerConsumerCount: number
     activeVisualizerScopes: ScopeKind[]
@@ -2783,6 +3139,10 @@ export class AudioEngine {
       remoteBufferedSeconds: this.getRemoteBufferedSeconds(),
       remoteBufferedFrames: this.remoteStreamState?.bufferedFrames ?? 0,
       remoteAnalyzedFrames: this.remoteStreamState?.analyzedFrames ?? 0,
+      parallaxSinkActive: this.parallaxSinkState !== null,
+      parallaxSinkStreamId: this.parallaxSinkState?.streamId ?? null,
+      parallaxSinkBufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
+      parallaxSinkUnderruns: this.parallaxSinkState?.underruns ?? 0,
       normalizationApproximate: this.normalizationApproximate,
       visualizerConsumerCount: this.visualizerConsumerDemand.size,
       activeVisualizerScopes,
@@ -4379,6 +4739,7 @@ export class AudioEngine {
       this.stopSource()
       this.clearNextBuffer()
       await this.clearRemoteStreamState(true)
+      this.clearParallaxSinkState()
       this.assertCurrentLoadOperation(loadOperation)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
@@ -4785,6 +5146,11 @@ export class AudioEngine {
       return
     }
 
+    if (this.parallaxSinkState) {
+      this.stopParallaxSinkPlayback()
+      return
+    }
+
     this.stopSource()
     this.cancelScheduledNext()
     this.pauseTime = 0
@@ -5116,6 +5482,8 @@ export class AudioEngine {
       this.workletNode = null
     }
     this.disconnectRemoteStreamNode()
+    this.disconnectParallaxSinkNode()
+    this.parallaxSinkState = null
     if (this.analysisTapSinkNode) {
       try { this.analysisTapSinkNode.disconnect() } catch { /* ignore */ }
       this.analysisTapSinkNode = null

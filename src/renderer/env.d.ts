@@ -28,6 +28,18 @@ import type {
   PhoneRemoteStatus
 } from '../types/phoneRemote'
 import type {
+  ParallaxAudioChunk,
+  ParallaxPairedSink,
+  ParallaxPairResponse,
+  ParallaxPairingPin,
+  ParallaxSinkConnectionConfig,
+  ParallaxSinkTelemetry,
+  ParallaxStatus,
+  ParallaxStreamInfo,
+  ParallaxTimelineEvent,
+  ParallaxTimelineState
+} from '../types/parallax'
+import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
     LastFmCustomProfileInput,
@@ -301,6 +313,29 @@ declare global {
                 setPort: (port: number) => Promise<PhoneRemoteStatus>
                 resetToDefaults: () => Promise<PhoneRemoteStatus>
                 onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+            }
+            parallax: {
+                getStatus: () => Promise<ParallaxStatus>
+                listPairedSinks: () => Promise<ParallaxPairedSink[]>
+                setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+                setHostPort: (port: number) => Promise<ParallaxStatus>
+                createPairingPin: () => Promise<ParallaxPairingPin>
+                pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
+                connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
+                disconnectSink: () => Promise<ParallaxStatus>
+                publishHostStreamStart: (
+                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>
+                ) => Promise<ParallaxTimelineState>
+                publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
+                publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
+                stopHostStream: () => Promise<void>
+                publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+                revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+                revokeAllPairedSinks: () => Promise<number>
+                resetToDefaults: () => Promise<ParallaxStatus>
+                onStatus: (callback: (status: ParallaxStatus) => void) => () => void
+                onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
+                onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void
             }
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>

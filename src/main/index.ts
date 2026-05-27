@@ -57,6 +57,7 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
+import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
@@ -121,6 +122,17 @@ import {
   PHONE_REMOTE_MIN_PORT,
   type PhoneRemoteServiceConfig
 } from '../types/phoneRemote'
+import {
+  PARALLAX_DEFAULT_PORT,
+  PARALLAX_MAX_PORT,
+  PARALLAX_MIN_PORT,
+  type ParallaxAudioChunk,
+  type ParallaxHostConfig,
+  type ParallaxSinkConnectionConfig,
+  type ParallaxSinkTelemetry,
+  type ParallaxStreamInfo,
+  type ParallaxTimelineState
+} from '../types/parallax'
 import {
   LASTFM_OFFICIAL_API_BASE_URL,
   LASTFM_OFFICIAL_PROFILE_ID,
@@ -395,6 +407,9 @@ const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
+const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
+const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
+const PARALLAX_PAIRED_SINKS_META_KEY = 'parallax_paired_sinks_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -451,6 +466,10 @@ let phoneRemoteConfig: PhoneRemoteServiceConfig = {
   controlsEnabled: false,
   port: PHONE_REMOTE_DEFAULT_PORT
 }
+let parallaxHostConfig: ParallaxHostConfig = {
+  enabled: false,
+  port: PARALLAX_DEFAULT_PORT
+}
 type PersistedPhoneRemotePairedDevice = {
   id: string
   name: string
@@ -462,6 +481,7 @@ type PersistedPhoneRemotePairedDevice = {
   revokedAt: number | null
 }
 let phoneRemotePairedDevices: PersistedPhoneRemotePairedDevice[] = []
+let parallaxPairedSinks: PersistedParallaxPairedSink[] = []
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -762,6 +782,42 @@ const phoneRemoteService = new PhoneRemoteService({
       pendingPairingCount: status.pendingPairingCount,
       lastError: status.lastError
     })
+  }
+})
+
+const parallaxService = new ParallaxService({
+  config: parallaxHostConfig,
+  pairedSinks: parallaxPairedSinks,
+  onPairedSinksChange: (sinks) => {
+    parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
+    void persistParallaxPairedSinks(parallaxPairedSinks).catch((error) => {
+      console.warn('Failed to persist Parallax paired sinks:', error)
+    })
+  },
+  onStatusChange: () => {
+    broadcastParallaxStatus()
+    const status = parallaxService.getStatus()
+    logMemoryDiagnosticsMainEvent('parallax_status_changed', {
+      role: status.role,
+      hostEnabled: status.host.enabled,
+      hostActive: status.host.active,
+      hostPort: status.host.port,
+      connectedSinkCount: status.host.connectedSinkCount,
+      sinkConnected: status.sink.connected,
+      activeStreamId: status.host.activeStream?.streamId ?? status.sink.activeStream?.streamId ?? null,
+      hostLastError: status.host.lastError,
+      sinkLastError: status.sink.lastError
+    })
+  },
+  onSinkEvent: (event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('parallax:event', event)
+    }
+  },
+  onSinkAudioChunk: (chunk) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('parallax:audioChunk', chunk)
+    }
   }
 })
 
@@ -1148,6 +1204,17 @@ function normalizePhoneRemotePort(rawPort: unknown): number {
   return parsed
 }
 
+function normalizeParallaxPort(rawPort: unknown): number {
+  const parsed = typeof rawPort === 'number' ? rawPort : Number(rawPort)
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Port must be an integer between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
+  }
+  if (parsed < PARALLAX_MIN_PORT || parsed > PARALLAX_MAX_PORT) {
+    throw new Error(`Port must be between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
+  }
+  return parsed
+}
+
 function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRemotePairedDevice[] {
   if (!Array.isArray(rawDevices)) return []
   const sanitized: PersistedPhoneRemotePairedDevice[] = []
@@ -1189,6 +1256,45 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
   return sanitized
 }
 
+function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPairedSink[] {
+  if (!Array.isArray(rawSinks)) return []
+  const sanitized: PersistedParallaxPairedSink[] = []
+
+  for (const candidate of rawSinks) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const value = candidate as Record<string, unknown>
+    const id = typeof value.id === 'string' ? value.id.trim() : ''
+    const name = typeof value.name === 'string' ? value.name.trim() : ''
+    const tokenHash = typeof value.tokenHash === 'string' ? value.tokenHash.trim() : ''
+    const tokenPrefix = typeof value.tokenPrefix === 'string' ? value.tokenPrefix.trim() : ''
+    const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+      ? Math.max(0, value.createdAt)
+      : 0
+    const lastSeenAt = typeof value.lastSeenAt === 'number' && Number.isFinite(value.lastSeenAt)
+      ? Math.max(0, value.lastSeenAt)
+      : null
+    const revokedAt = typeof value.revokedAt === 'number' && Number.isFinite(value.revokedAt)
+      ? Math.max(0, value.revokedAt)
+      : null
+
+    if (!id || !name || !tokenHash || !tokenPrefix || createdAt <= 0) {
+      continue
+    }
+
+    sanitized.push({
+      id,
+      name: name.slice(0, 80),
+      tokenHash,
+      tokenPrefix: tokenPrefix.slice(0, 16),
+      createdAt,
+      lastSeenAt,
+      revokedAt
+    })
+  }
+
+  return sanitized
+}
+
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
@@ -1201,9 +1307,19 @@ async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promi
   await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
 }
 
+async function persistParallaxHostConfig(config: ParallaxHostConfig): Promise<void> {
+  await library.setAppMeta(PARALLAX_HOST_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(PARALLAX_HOST_PORT_META_KEY, String(config.port))
+}
+
 async function persistPhoneRemotePairedDevices(devices: PersistedPhoneRemotePairedDevice[]): Promise<void> {
   phoneRemotePairedDevices = devices.map((device) => ({ ...device }))
   await library.setAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY, JSON.stringify(phoneRemotePairedDevices))
+}
+
+async function persistParallaxPairedSinks(sinks: PersistedParallaxPairedSink[]): Promise<void> {
+  parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
+  await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, JSON.stringify(parallaxPairedSinks))
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
@@ -1284,6 +1400,35 @@ async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<
   return normalized
 }
 
+async function loadParallaxHostConfigFromMeta(): Promise<ParallaxHostConfig> {
+  const enabled = parseMetaBoolean(library.getAppMeta(PARALLAX_HOST_ENABLED_META_KEY), false)
+
+  const rawPort = library.getAppMeta(PARALLAX_HOST_PORT_META_KEY)
+  let port = PARALLAX_DEFAULT_PORT
+  if (rawPort !== null) {
+    try {
+      port = normalizeParallaxPort(rawPort)
+    } catch {
+      port = PARALLAX_DEFAULT_PORT
+    }
+  }
+
+  const normalized: ParallaxHostConfig = { enabled, port }
+  const needsPersistence =
+    library.getAppMeta(PARALLAX_HOST_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(PARALLAX_HOST_PORT_META_KEY) !== String(normalized.port)
+
+  if (needsPersistence) {
+    try {
+      await persistParallaxHostConfig(normalized)
+    } catch (error) {
+      console.warn('Failed to persist normalized Parallax host settings:', error)
+    }
+  }
+
+  return normalized
+}
+
 async function loadPhoneRemotePairedDevicesFromMeta(): Promise<PersistedPhoneRemotePairedDevice[]> {
   let pairedDevices = sanitizePhoneRemotePairedDevices([])
   const rawPairedDevices = library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY)
@@ -1308,6 +1453,30 @@ async function loadPhoneRemotePairedDevicesFromMeta(): Promise<PersistedPhoneRem
   return pairedDevices
 }
 
+async function loadParallaxPairedSinksFromMeta(): Promise<PersistedParallaxPairedSink[]> {
+  let pairedSinks = sanitizeParallaxPairedSinks([])
+  const rawPairedSinks = library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY)
+  if (rawPairedSinks) {
+    try {
+      pairedSinks = sanitizeParallaxPairedSinks(JSON.parse(rawPairedSinks))
+    } catch {
+      pairedSinks = sanitizeParallaxPairedSinks([])
+    }
+  }
+
+  if (library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY) !== JSON.stringify(pairedSinks)) {
+    try {
+      await persistParallaxPairedSinks(pairedSinks)
+    } catch (error) {
+      console.warn('Failed to persist normalized Parallax paired sinks:', error)
+    }
+  } else {
+    parallaxPairedSinks = pairedSinks.map((sink) => ({ ...sink }))
+  }
+
+  return pairedSinks
+}
+
 async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<ReturnType<typeof localApiService.getStatus>> {
   localApiConfig = { ...config }
   await persistLocalApiConfig(localApiConfig)
@@ -1320,6 +1489,14 @@ async function applyPhoneRemoteConfig(
   phoneRemoteConfig = { ...config }
   await persistPhoneRemoteConfig(phoneRemoteConfig)
   return phoneRemoteService.applyConfig(phoneRemoteConfig)
+}
+
+async function applyParallaxHostConfig(
+  config: ParallaxHostConfig
+): Promise<ReturnType<typeof parallaxService.getStatus>> {
+  parallaxHostConfig = { ...config }
+  await persistParallaxHostConfig(parallaxHostConfig)
+  return parallaxService.applyHostConfig(parallaxHostConfig)
 }
 
 function normalizeOptionalMetaText(value: string | null): string | null {
@@ -1854,6 +2031,12 @@ function broadcastPhoneRemoteStatus(): void {
   if (isAppQuitting) return
   const payload = phoneRemoteService.getStatus()
   sendToWindow(mainWindow, 'phone-remote:status', payload)
+}
+
+function broadcastParallaxStatus(): void {
+  if (isAppQuitting) return
+  const payload = parallaxService.getStatus()
+  sendToWindow(mainWindow, 'parallax:status', payload)
 }
 
 function broadcastLastFmStatus(): void {
@@ -3556,10 +3739,14 @@ app.whenReady().then(async () => {
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
+  parallaxHostConfig = await loadParallaxHostConfigFromMeta()
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
+  parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
+  parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
   await phoneRemoteService.applyConfig(phoneRemoteConfig)
+  await parallaxService.applyHostConfig(parallaxHostConfig)
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
   lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
@@ -3655,6 +3842,7 @@ app.on('before-quit', () => {
   void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
   void phoneRemoteService.stop()
+  void parallaxService.stop()
   lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
@@ -4491,6 +4679,96 @@ ipcMain.handle('phone-remote:resetToDefaults', async () => {
   phoneRemoteService.replacePairedDevices([])
   await persistPhoneRemotePairedDevices([])
   return applyPhoneRemoteConfig(nextConfig)
+})
+
+// Parallax LAN sync
+ipcMain.handle('parallax:getStatus', () => {
+  return parallaxService.getStatus()
+})
+
+ipcMain.handle('parallax:listPairedSinks', () => {
+  return parallaxService.listPairedSinks()
+})
+
+ipcMain.handle('parallax:setHostEnabled', async (_event, enabled: unknown) => {
+  const nextConfig: ParallaxHostConfig = {
+    ...parallaxHostConfig,
+    enabled: Boolean(enabled)
+  }
+  return applyParallaxHostConfig(nextConfig)
+})
+
+ipcMain.handle('parallax:setHostPort', async (_event, rawPort: unknown) => {
+  const nextPort = normalizeParallaxPort(rawPort)
+  const nextConfig: ParallaxHostConfig = {
+    ...parallaxHostConfig,
+    port: nextPort
+  }
+  return applyParallaxHostConfig(nextConfig)
+})
+
+ipcMain.handle('parallax:createPairingPin', () => {
+  return parallaxService.createPairingPin()
+})
+
+ipcMain.handle('parallax:pairWithHost', async (_event, baseUrl: unknown, pin: unknown, sinkName: unknown) => {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    throw new Error('Parallax host URL is required.')
+  }
+  if (typeof pin !== 'string' || !pin.trim()) {
+    throw new Error('Parallax pairing PIN is required.')
+  }
+  return parallaxService.pairWithHost(baseUrl, pin, typeof sinkName === 'string' ? sinkName : 'Astra Sink')
+})
+
+ipcMain.handle('parallax:connectSink', async (_event, config: ParallaxSinkConnectionConfig) => {
+  return parallaxService.connectSink(config)
+})
+
+ipcMain.handle('parallax:disconnectSink', async () => {
+  return parallaxService.disconnectSink()
+})
+
+ipcMain.handle('parallax:publishHostStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>) => {
+  return parallaxService.publishHostStreamStart(info)
+})
+
+ipcMain.handle('parallax:publishHostAudioChunk', (_event, chunk: ParallaxAudioChunk) => {
+  parallaxService.publishHostAudioChunk(chunk)
+})
+
+ipcMain.handle('parallax:publishHostTimeline', (_event, timeline: ParallaxTimelineState) => {
+  parallaxService.publishHostTimeline(timeline)
+})
+
+ipcMain.handle('parallax:stopHostStream', () => {
+  parallaxService.stopHostStream()
+})
+
+ipcMain.handle('parallax:publishSinkTelemetry', async (_event, telemetry: ParallaxSinkTelemetry) => {
+  await parallaxService.publishSinkTelemetry(telemetry)
+})
+
+ipcMain.handle('parallax:revokePairedSink', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid Parallax sink id.')
+  }
+  return parallaxService.revokePairedSink(id.trim())
+})
+
+ipcMain.handle('parallax:revokeAllPairedSinks', () => {
+  return parallaxService.revokeAllPairedSinks()
+})
+
+ipcMain.handle('parallax:resetToDefaults', async () => {
+  const nextConfig: ParallaxHostConfig = {
+    enabled: false,
+    port: PARALLAX_DEFAULT_PORT
+  }
+  parallaxService.replacePairedSinks([])
+  await persistParallaxPairedSinks([])
+  await parallaxService.disconnectSink()
+  return applyParallaxHostConfig(nextConfig)
 })
 
 // ============================================

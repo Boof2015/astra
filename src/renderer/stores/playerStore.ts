@@ -5,6 +5,7 @@ import type { NativeAudioCapabilities } from '../../types/nativeAudio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
+import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 
 interface RemoteLoadProgress {
@@ -705,6 +706,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let prebufferInFlightTrackPath: string | null = null
   let prebufferAttemptedTrackPath: string | null = null
 
+  const isParallaxSinkModeActive = (): boolean => {
+    return Boolean(useParallaxStore.getState().status?.sink.connected)
+  }
+
+  const playWithParallaxIfNeeded = async (track: Track | null | undefined): Promise<void> => {
+    if (isParallaxSinkModeActive()) return
+    const timeline = track ? await useParallaxStore.getState().prepareHostPlayback(track) : null
+    if (timeline) {
+      await audioEngine.playCurrentBufferOnParallaxTimeline(timeline)
+      return
+    }
+    await audioEngine.play()
+  }
+
   const clearScheduledPrebufferTimer = (): void => {
     if (prebufferScheduleTimerId !== null) {
       globalThis.clearTimeout(prebufferScheduleTimerId)
@@ -738,6 +753,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     activeLoadRequestId += 1
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
+  }
+
+  const blockLocalPlaybackInParallaxSinkMode = (): boolean => {
+    if (!isParallaxSinkModeActive()) return false
+    invalidateLoadRequest()
+    pendingManualLoadCueTrack = null
+    recentPlaySession = null
+    return true
   }
 
   const isActiveLoadRequest = (requestId: number): boolean => {
@@ -1126,6 +1149,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       invalidatePrebufferRequest()
     }
 
+    if (isParallaxSinkModeActive()) {
+      clearBufferedNextTrack()
+      return
+    }
+
     const state = get()
     const expectedTrackPath = resolveExpectedPrebufferTrackPath(state)
 
@@ -1262,6 +1290,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     startIndex = 0,
     options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
   ): Promise<void> => {
+    if (blockLocalPlaybackInParallaxSinkMode()) return
+
     const state = get()
     const normalizedStartIndex = entries.length === 0
       ? -1
@@ -1345,6 +1375,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return false
+
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       pendingManualLoadCueTrack = null
@@ -1479,6 +1511,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Playback controls
     play: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (!state.currentTrack) {
         const candidate = findNextPlayableCandidate(state)
@@ -1513,7 +1547,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         showOutputDelayNotice(pendingManualLoadCueTrack)
         pendingManualLoadCueTrack = null
       }
-      await audioEngine.play()
+      await playWithParallaxIfNeeded(get().currentTrack)
       const currentTrack = get().currentTrack
       if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
         void useLibraryStore.getState().markTrackLatestSyncSeen(currentTrack.path)
@@ -1522,10 +1556,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     pause: () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       audioEngine.pause()
     },
 
     togglePlay: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (!state.currentTrack || state.playbackState === 'stopped') {
         await get().play()
@@ -1535,6 +1572,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     stop: () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       invalidateLoadRequest()
       pendingManualLoadCueTrack = null
       recentPlaySession = null
@@ -1546,6 +1584,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     seek: async (time: number) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
@@ -1576,10 +1616,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Queue actions
     startPlaybackContext: async (tracks: Track[], startIndex = 0, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       await startPlaybackContextEntries(createQueueEntriesFromTracks(tracks), startIndex, options)
     },
 
     startPlaybackContextByPaths: async (paths: string[], startIndex = 0, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       await startPlaybackContextEntries(await createQueueEntriesFromPathsWithFetch(paths), startIndex, options)
     },
 
@@ -1672,6 +1714,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playQueuedTrack: async (locator, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       const candidate: NextCandidate | null = locator.source === 'user'
         ? (() => {
@@ -1701,6 +1745,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playNext: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       const candidate = findNextPlayableCandidate(state)
       if (!candidate) return
@@ -1714,6 +1760,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playPrevious: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (!state.currentTrack) return
 
@@ -1915,6 +1963,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Internal: Load and play a track from queue
     _loadAndPlayTrack: async (track: Track, options = {}) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return 'superseded'
+
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
@@ -1963,7 +2013,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             showOutputDelayNotice(resolvedTrack)
           }
           throwIfSupersededLoad(loadRequestId)
-          await audioEngine.play()
+          await playWithParallaxIfNeeded(resolvedTrack)
           throwIfSupersededLoad(loadRequestId)
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
@@ -2007,7 +2057,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               showOutputDelayNotice(resolvedTrack)
             }
             throwIfSupersededLoad(loadRequestId)
-            await audioEngine.play()
+            await playWithParallaxIfNeeded(resolvedTrack)
             throwIfSupersededLoad(loadRequestId)
             void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
@@ -2132,7 +2182,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         throwIfSupersededLoad(loadRequestId)
-        await audioEngine.play()
+        await playWithParallaxIfNeeded(resolvedTrack)
         throwIfSupersededLoad(loadRequestId)
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
@@ -2183,6 +2233,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Pre-buffer the next track for gapless playback
     _preBufferNextTrack: async () => {
+      if (isParallaxSinkModeActive()) {
+        clearBufferedNextTrack()
+        return
+      }
+
       const bufferStart = performance.now()
       const prebufferRequestId = beginPrebufferRequest()
       const state = get()
@@ -2472,6 +2527,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
+        if (isParallaxSinkModeActive()) return
         commitRecentPlayNow()
         const state = get()
 
@@ -2534,6 +2590,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
+        if (isParallaxSinkModeActive()) return
         commitRecentPlayNow()
         recentPlaySession = null
         set({
