@@ -44,6 +44,10 @@ const CLOCK_SYNC_INTERVAL_MS = 2_000
 // slow 2s cadence. Without this, first play aligns from a single high-RTT sample.
 const CLOCK_PRIMING_PROBES = 8
 const CLOCK_PRIMING_INTERVAL_MS = 120
+// Bound short JSON requests (clock probe, join, pair) so a flaky/again-dropping link can't hang
+// them indefinitely. Long-lived event/audio streams are intentionally excluded. Without this, a
+// reconnect that awaits clock priming could stall forever on a hung probe instead of retrying.
+const SINK_JSON_FETCH_TIMEOUT_MS = 3_000
 const STATUS_RETRY_DELAY_MS = 1_000
 const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
 const SINK_AUTO_RECONNECT_ATTEMPTS = 3
@@ -140,6 +144,11 @@ function isAbortLikeError(error: unknown): boolean {
   const name = 'name' in error ? String(error.name) : ''
   const message = 'message' in error ? String(error.message) : ''
   return name === 'AbortError' || /aborted/i.test(message)
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  return ('name' in error ? String(error.name) : '') === 'TimeoutError'
 }
 
 function toJsonResponse(res: ServerResponse<IncomingMessage>, statusCode: number, body: unknown): void {
@@ -927,7 +936,7 @@ export class ParallaxService {
 
     const response = await fetch(`${connection.baseUrl}${path}`, {
       ...init,
-      signal: connection.abortController.signal,
+      signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${connection.token}`,
@@ -955,8 +964,11 @@ export class ParallaxService {
     for (let index = 0; index < CLOCK_PRIMING_PROBES; index += 1) {
       if (this.sinkConnection !== connection) return
       const isLast = index === CLOCK_PRIMING_PROBES - 1
-      await this.runClockProbe(isLast)
+      const ok = await this.runClockProbe(isLast)
       if (this.sinkConnection !== connection) return
+      // Network isn't ready (timeout/failure): stop priming so the caller's rejoin can fail fast
+      // and the normal reconnect retry takes over, rather than burning the whole burst.
+      if (!ok) break
       if (!isLast) {
         await new Promise<void>((resolve) => setTimeout(resolve, CLOCK_PRIMING_INTERVAL_MS))
       }
@@ -1063,16 +1075,16 @@ export class ParallaxService {
     }
   }
 
-  private async runClockProbe(emit = true): Promise<void> {
+  private async runClockProbe(emit = true): Promise<boolean> {
     const connection = this.sinkConnection
-    if (!connection) return
+    if (!connection) return false
     const sinkSentAtMs = parallaxNowMs()
     try {
       const response = await this.fetchSinkJson('/v1/parallax/clock', {
         method: 'POST',
         body: JSON.stringify({ sinkSentAtMs })
       })
-      if (this.sinkConnection !== connection) return
+      if (this.sinkConnection !== connection) return false
       const sample = buildParallaxClockSample(
         response as {
           sinkSentAtMs: number
@@ -1084,11 +1096,14 @@ export class ParallaxService {
       this.sinkClockSamples = [...this.sinkClockSamples, sample].slice(-PARALLAX_CLOCK_SAMPLE_LIMIT)
       this.sinkLastError = null
       if (emit) this.emitStatus()
+      return true
     } catch (error) {
-      if (this.sinkConnection !== connection) return
-      if (isAbortLikeError(error)) return
+      if (this.sinkConnection !== connection) return false
+      // Aborts (reader replacement/disconnect) and timeouts are expected transient failures.
+      if (isAbortLikeError(error) || isTimeoutError(error)) return false
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax clock sync failed.'
       this.emitStatus()
+      return false
     }
   }
 
