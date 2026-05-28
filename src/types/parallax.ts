@@ -10,13 +10,18 @@ export const PARALLAX_AUDIO_PACKET_VERSION = 2
 export const PARALLAX_AUDIO_PACKET_HEADER_BYTES = 40
 
 // Snapcast-style "snap-then-slew" sink correction tuning.
-// The ±250 ppm rate nudge (clampParallaxPlaybackRatePpm) is only strong enough to hold
-// steady-state crystal drift; it cannot correct a real offset in reasonable time. So when
-// drift grows past PARALLAX_HARD_SYNC_MS we snap the cursor to the live host position instead.
+// PARALLAX_MAX_SLEW_PPM bounds the playback-rate nudge used to hold/close small offsets.
+// 1000 ppm = 0.1% is musically inaudible (~1.7 cents) yet ~5-24x typical crystal drift, so the
+// slew can actually correct a 10-30 ms offset smoothly within seconds and keep drift inside the
+// deadzone — leaving the (audible) cursor snap only for genuine large discontinuities.
+export const PARALLAX_MAX_SLEW_PPM = 1000
 export const PARALLAX_HARD_SYNC_MS = 40
 export const PARALLAX_RESYNC_LEAD_MS = 60
 export const PARALLAX_RESYNC_MIN_INTERVAL_MS = 2500
 export const PARALLAX_SYNC_DEADZONE_FRAMES = 64
+// Snap only after drift stays past the threshold for this many consecutive 1s ticks, so a
+// single jittery clock/drift measurement can't cause a spurious gap.
+export const PARALLAX_SNAP_CONFIRM_TICKS = 2
 
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
@@ -223,7 +228,7 @@ export function mapHostTimeToSinkTimeMs(hostTimeMs: number, hostMinusSinkOffsetM
 
 export function clampParallaxPlaybackRatePpm(value: number): number {
   if (!Number.isFinite(value)) return 0
-  return Math.max(-250, Math.min(250, value))
+  return Math.max(-PARALLAX_MAX_SLEW_PPM, Math.min(PARALLAX_MAX_SLEW_PPM, value))
 }
 
 export type ParallaxSinkCorrectionMode = 'hold' | 'slew' | 'snap'

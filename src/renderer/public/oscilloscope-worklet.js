@@ -279,7 +279,8 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
   }
 
   rateFromPpm(value) {
-    const ppm = Number.isFinite(value) ? Math.max(-250, Math.min(250, Number(value))) : 0
+    // Keep in sync with PARALLAX_MAX_SLEW_PPM in src/types/parallax.ts.
+    const ppm = Number.isFinite(value) ? Math.max(-1000, Math.min(1000, Number(value))) : 0
     return (this.basePlaybackRate || 1) * (1 + (ppm / 1000000))
   }
 

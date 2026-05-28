@@ -16,7 +16,8 @@ import {
   clampParallaxPlaybackRatePpm,
   decideParallaxSinkCorrection,
   PARALLAX_RESYNC_LEAD_MS,
-  PARALLAX_RESYNC_MIN_INTERVAL_MS
+  PARALLAX_RESYNC_MIN_INTERVAL_MS,
+  PARALLAX_SNAP_CONFIRM_TICKS
 } from '../../types/parallax'
 import { useAudioSettingsStore } from './audioSettingsStore'
 
@@ -61,6 +62,7 @@ let audioChunkUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
 let lastHardSyncAtMs = 0
+let snapPendingTicks = 0
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -187,11 +189,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
       const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
       const now = performance.timeOrigin + performance.now()
+      const hasOffset = status.sink.clockOffsetMs !== null && status.sink.clockOffsetMs !== undefined
+      const wantsSnap = decision.mode === 'snap' && timeline.playbackState === 'playing' && hasOffset
+      snapPendingTicks = wantsSnap ? snapPendingTicks + 1 : 0
+
+      let appliedPpm = decision.playbackRatePpm
       if (
-        decision.mode === 'snap' &&
-        timeline.playbackState === 'playing' &&
-        status.sink.clockOffsetMs !== null &&
-        status.sink.clockOffsetMs !== undefined &&
+        wantsSnap &&
+        snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
         now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
       ) {
         const hostNowMs = resolveHostNowMs(status)
@@ -205,8 +210,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         )
         audioEngine.resyncParallaxSinkToHostFrame(targetFrame, PARALLAX_RESYNC_LEAD_MS / 1000)
         lastHardSyncAtMs = now
+        snapPendingTicks = 0
+        appliedPpm = 0
       } else {
-        audioEngine.setParallaxSinkPlaybackRate(decision.playbackRatePpm)
+        // Slew toward the host. During the pre-snap confirmation window we still apply the full
+        // rate correction so a real offset starts closing smoothly; if it was just measurement
+        // noise the next tick falls back into the deadzone and no gap is ever produced.
+        appliedPpm = wantsSnap
+          ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
+          : decision.playbackRatePpm
+        audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
       }
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
@@ -214,7 +227,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         driftFrames: correction.driftFrames,
         rttMs: status.sink.rttMs,
         underruns: snapshot.underruns,
-        playbackRatePpm: decision.playbackRatePpm,
+        playbackRatePpm: appliedPpm,
         reportedAtMs: Date.now()
       })
     }, 1000)

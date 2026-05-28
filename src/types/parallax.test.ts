@@ -63,9 +63,9 @@ test('Parallax sink correction snaps on large drift, holds in deadzone, slews be
   assert.deepEqual(decideParallaxSinkCorrection(-5000, 48000), { mode: 'snap', playbackRatePpm: 0 })
   assert.deepEqual(decideParallaxSinkCorrection(10, 48000), { mode: 'hold', playbackRatePpm: 0 })
 
-  // Slew band: ppm follows -drift * 2, clamped to ±250.
+  // Slew band: ppm follows -drift * 2, clamped to ±1000 (PARALLAX_MAX_SLEW_PPM).
   assert.deepEqual(decideParallaxSinkCorrection(-100, 48000), { mode: 'slew', playbackRatePpm: 200 })
-  assert.deepEqual(decideParallaxSinkCorrection(500, 48000), { mode: 'slew', playbackRatePpm: -250 })
+  assert.deepEqual(decideParallaxSinkCorrection(800, 48000), { mode: 'slew', playbackRatePpm: -1000 })
 
   // Non-finite drift is a no-op; bad sample rate falls back to 48kHz.
   assert.deepEqual(decideParallaxSinkCorrection(Number.NaN, 48000), { mode: 'hold', playbackRatePpm: 0 })
