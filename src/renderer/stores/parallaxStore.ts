@@ -44,6 +44,10 @@ interface ParallaxSettingsStore {
   resetToDefaults: () => Promise<ParallaxStatus | null>
   shouldDelayHostPlayback: (track: Track | null | undefined) => boolean
   prepareHostPlayback: (track: Track) => Promise<ParallaxTimelineState | null>
+  resumeHostPlayback: (track: Track | null | undefined) => Promise<ParallaxTimelineState | null>
+  prepareHostSeek: (timeSeconds: number, playing: boolean) => Promise<ParallaxTimelineState | null>
+  pauseHostPlayback: () => Promise<void>
+  stopHostPlayback: () => Promise<void>
 }
 
 let statusUnsubscribe: (() => void) | null = null
@@ -83,6 +87,27 @@ function buildParallaxStreamInfo(
 function resolveHostNowMs(status: ParallaxStatus | null): number {
   const offsetMs = status?.sink.clockOffsetMs ?? 0
   return performance.timeOrigin + performance.now() + offsetMs
+}
+
+function localNowMs(): number {
+  return performance.timeOrigin + performance.now()
+}
+
+function buildHostTimeline(
+  stream: ParallaxStreamInfo,
+  playbackState: ParallaxTimelineState['playbackState'],
+  startFrame: number,
+  delayMs: number = 0
+): ParallaxTimelineState {
+  const now = localNowMs()
+  return {
+    streamId: stream.streamId,
+    playbackState,
+    startFrame: Math.max(0, Math.min(stream.totalFrames, Math.floor(startFrame))),
+    startHostTimeMs: now + Math.max(0, delayMs),
+    updatedHostTimeMs: now,
+    groupLatencyMs: stream.groupLatencyMs
+  }
 }
 
 function computeRateCorrectionPpm(
@@ -125,6 +150,22 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   const refreshPairedSinks = async (): Promise<void> => {
     const pairedSinks = await window.electronAPI.parallax.listPairedSinks()
     set({ pairedSinks })
+  }
+
+  const getActiveHostStream = (): ParallaxStreamInfo | null => {
+    const status = get().status
+    if (!status?.host.active || status.host.connectedSinkCount <= 0) return null
+    return status.host.activeStream
+  }
+
+  const getHostFrameForTime = (stream: ParallaxStreamInfo, timeSeconds: number): number => {
+    if (!Number.isFinite(timeSeconds)) return 0
+    return Math.max(0, Math.min(stream.totalFrames, Math.round(timeSeconds * stream.sampleRate)))
+  }
+
+  const publishHostTimeline = async (timeline: ParallaxTimelineState): Promise<ParallaxTimelineState> => {
+    await window.electronAPI.parallax.publishHostTimeline(timeline)
+    return timeline
   }
 
   const ensureTelemetry = () => {
@@ -458,6 +499,77 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null
+      }
+    },
+
+    resumeHostPlayback: async (track) => {
+      const stream = getActiveHostStream()
+      if (!stream || !track || stream.trackPath !== track.path) return null
+      const timeline = buildHostTimeline(
+        stream,
+        'playing',
+        getHostFrameForTime(stream, audioEngine.currentTime),
+        stream.groupLatencyMs
+      )
+      try {
+        await publishHostTimeline(timeline)
+        void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {
+          set({ errorMessage: toErrorMessage(error) })
+        })
+        return timeline
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    prepareHostSeek: async (timeSeconds, playing) => {
+      const stream = getActiveHostStream()
+      if (!stream) return null
+      const timeline = buildHostTimeline(
+        stream,
+        playing ? 'playing' : 'paused',
+        getHostFrameForTime(stream, timeSeconds),
+        playing ? stream.groupLatencyMs : 0
+      )
+      try {
+        await publishHostTimeline(timeline)
+        if (playing) {
+          void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {
+            set({ errorMessage: toErrorMessage(error) })
+          })
+        } else {
+          audioEngine.cancelParallaxHostPublishing()
+        }
+        return timeline
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    pauseHostPlayback: async () => {
+      const stream = getActiveHostStream()
+      if (!stream) return
+      const timeline = buildHostTimeline(
+        stream,
+        'paused',
+        getHostFrameForTime(stream, audioEngine.currentTime)
+      )
+      audioEngine.cancelParallaxHostPublishing()
+      try {
+        await publishHostTimeline(timeline)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+      }
+    },
+
+    stopHostPlayback: async () => {
+      audioEngine.cancelParallaxHostPublishing()
+      try {
+        await window.electronAPI.parallax.stopHostStream()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
       }
     }
   }

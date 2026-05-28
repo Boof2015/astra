@@ -712,6 +712,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const playWithParallaxIfNeeded = async (track: Track | null | undefined): Promise<void> => {
     if (isParallaxSinkModeActive()) return
+    const parallaxStore = useParallaxStore.getState()
+    const resumeTimeline = await parallaxStore.resumeHostPlayback(track)
+    if (resumeTimeline) {
+      await audioEngine.playCurrentBufferOnParallaxTimeline(resumeTimeline)
+      return
+    }
     const timeline = track ? await useParallaxStore.getState().prepareHostPlayback(track) : null
     if (timeline) {
       await audioEngine.playCurrentBufferOnParallaxTimeline(timeline)
@@ -1558,6 +1564,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     pause: () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
       audioEngine.pause()
+      void useParallaxStore.getState().pauseHostPlayback()
     },
 
     togglePlay: async () => {
@@ -1568,11 +1575,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         await get().play()
         return
       }
-      await audioEngine.togglePlay()
+      if (state.playbackState === 'playing') {
+        get().pause()
+        return
+      }
+      await get().play()
     },
 
     stop: () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
+      void useParallaxStore.getState().stopHostPlayback()
       invalidateLoadRequest()
       pendingManualLoadCueTrack = null
       recentPlaySession = null
@@ -1590,6 +1602,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
+      const parallaxSeekTimeline = await useParallaxStore.getState().prepareHostSeek(
+        seekTime,
+        state.playbackState === 'playing'
+      )
+      if (parallaxSeekTimeline && state.playbackState === 'playing') {
+        await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
+        return
+      }
       await audioEngine.seek(seekTime)
     },
 

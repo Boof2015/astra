@@ -1170,7 +1170,7 @@ export class AudioEngine {
     this.cancelParallaxHostPublishing()
   }
 
-  private cancelParallaxHostPublishing(): void {
+  cancelParallaxHostPublishing(): void {
     this.parallaxHostPublishGeneration += 1
   }
 
