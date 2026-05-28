@@ -2255,6 +2255,10 @@ export class AudioEngine {
     if (Math.abs(this.context.sampleRate - stream.sampleRate) > 1) {
       throw new Error(`Parallax sink requires ${stream.sampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
     }
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+      this.assertCurrentLoadOperation(loadOperation)
+    }
 
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
@@ -2316,6 +2320,11 @@ export class AudioEngine {
   ): void {
     if (!this.parallaxSinkState || !this.parallaxSinkNode || !this.context) return
     if (timeline.streamId !== this.parallaxSinkState.streamId) return
+    if (timeline.playbackState === 'playing' && this.context.state === 'suspended') {
+      void this.context.resume().catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to resume Parallax sink AudioContext'))
+      })
+    }
 
     const playbackRatePpm = clampParallaxPlaybackRatePpm(options.playbackRatePpm ?? 0)
     this.parallaxSinkState.currentFrame = Math.max(0, Math.floor(timeline.startFrame))

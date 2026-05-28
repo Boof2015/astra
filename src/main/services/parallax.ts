@@ -425,6 +425,31 @@ export class ParallaxService {
     }
   }
 
+  private getTimelineForNewSink(now: number = parallaxNowMs()): ParallaxTimelineState | null {
+    if (!this.activeStream) return null
+
+    const { info, timeline } = this.activeStream
+    if (timeline.playbackState !== 'playing') {
+      return {
+        ...timeline,
+        groupLatencyMs: info.groupLatencyMs,
+        updatedHostTimeMs: now
+      }
+    }
+
+    const startHostTimeMs = now + info.groupLatencyMs
+    const elapsedFrames = Math.floor(
+      Math.max(0, startHostTimeMs - timeline.startHostTimeMs) * info.sampleRate / 1000
+    )
+    return {
+      ...timeline,
+      startFrame: Math.max(0, Math.min(info.totalFrames, timeline.startFrame + elapsedFrames)),
+      startHostTimeMs,
+      updatedHostTimeMs: now,
+      groupLatencyMs: info.groupLatencyMs
+    }
+  }
+
   stopHostStream(): void {
     const streamId = this.activeStream?.info.streamId ?? null
     this.activeStream = null
@@ -678,12 +703,13 @@ export class ParallaxService {
     }
 
     if (method === 'POST' && path === '/v1/parallax/join') {
+      const hostTimeMs = parallaxNowMs()
       toJsonResponse(res, 200, {
         sinkId: sink.id,
         groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
-        hostTimeMs: parallaxNowMs(),
+        hostTimeMs,
         stream: this.activeStream?.info ?? null,
-        timeline: this.activeStream?.timeline ?? null
+        timeline: this.getTimelineForNewSink(hostTimeMs)
       } satisfies ParallaxJoinResponse)
       return
     }
@@ -795,11 +821,12 @@ export class ParallaxService {
     this.sseClients.add(client)
 
     if (this.activeStream) {
+      const emittedAtHostTimeMs = parallaxNowMs()
       writeSseEvent(res, 'parallax', {
         type: 'stream-start',
         stream: this.activeStream.info,
-        timeline: this.activeStream.timeline,
-        emittedAtHostTimeMs: parallaxNowMs()
+        timeline: this.getTimelineForNewSink(emittedAtHostTimeMs) ?? this.activeStream.timeline,
+        emittedAtHostTimeMs
       } satisfies ParallaxTimelineEvent)
     }
 
