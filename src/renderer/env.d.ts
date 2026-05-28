@@ -29,6 +29,7 @@ import type {
 } from '../types/phoneRemote'
 import type {
   ParallaxAudioChunk,
+  ParallaxHostStreamStartOptions,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
@@ -324,7 +325,8 @@ declare global {
                 connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
                 disconnectSink: () => Promise<ParallaxStatus>
                 publishHostStreamStart: (
-                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>
+                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+                    options?: ParallaxHostStreamStartOptions
                 ) => Promise<ParallaxTimelineState>
                 publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
                 publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>

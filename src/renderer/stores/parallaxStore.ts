@@ -15,6 +15,7 @@ import type {
 import {
   clampParallaxPlaybackRatePpm,
   decideParallaxSinkCorrection,
+  PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_RESYNC_LEAD_MS,
   PARALLAX_RESYNC_MIN_INTERVAL_MS,
   PARALLAX_SNAP_CONFIRM_TICKS
@@ -50,6 +51,10 @@ interface ParallaxSettingsStore {
   resetToDefaults: () => Promise<ParallaxStatus | null>
   shouldDelayHostPlayback: (track: Track | null | undefined) => boolean
   prepareHostPlayback: (track: Track) => Promise<ParallaxTimelineState | null>
+  startHostStreamForCurrentPlayback: (
+    track: Track | null | undefined,
+    playing: boolean
+  ) => Promise<ParallaxTimelineState | null>
   resumeHostPlayback: (track: Track | null | undefined) => Promise<ParallaxTimelineState | null>
   prepareHostSeek: (timeSeconds: number, playing: boolean) => Promise<ParallaxTimelineState | null>
   pauseHostPlayback: () => Promise<void>
@@ -536,6 +541,40 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
           set({ errorMessage: toErrorMessage(error) })
         })
+        return timeline
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    startHostStreamForCurrentPlayback: async (track, playing) => {
+      // A sink joined while the host is already on a local track but no stream is published yet.
+      // Anchor a stream at the host's current position so the sink joins the in-progress song,
+      // WITHOUT rescheduling the host's own audio (no playCurrentBufferOnParallaxTimeline call).
+      if (!get().shouldDelayHostPlayback(track) || !track) return null
+      if (getActiveHostStream()) return null
+      const buffer = audioEngine.getAudioBuffer()
+      if (!buffer) return null
+      const streamId = createStreamId(track)
+      // While playing, anchor one group-latency ahead on the host's real timeline so the joining
+      // sink gets buffering headroom while the host keeps playing seamlessly. While paused, anchor
+      // at the current frame (a later resume republishes a fresh playing timeline + chunks).
+      const leadSeconds = playing ? PARALLAX_DEFAULT_GROUP_LATENCY_MS / 1000 : 0
+      const startFrame = Math.max(
+        0,
+        Math.min(buffer.length, Math.round((audioEngine.currentTime + leadSeconds) * buffer.sampleRate))
+      )
+      try {
+        const timeline = await window.electronAPI.parallax.publishHostStreamStart(
+          buildParallaxStreamInfo(track, streamId, buffer),
+          { startFrame, playbackState: playing ? 'playing' : 'paused' }
+        )
+        if (playing) {
+          void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
+            set({ errorMessage: toErrorMessage(error) })
+          })
+        }
         return timeline
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

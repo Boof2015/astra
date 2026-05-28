@@ -92,6 +92,14 @@ export interface ParallaxTimelineState {
   groupLatencyMs: number
 }
 
+// Options for publishHostStreamStart. Defaults reproduce a fresh play from the top.
+// A sink joining mid-playback passes the host's current (latency-adjusted) frame and state so the
+// stream is anchored to the in-progress song instead of restarting it.
+export interface ParallaxHostStreamStartOptions {
+  startFrame?: number
+  playbackState?: ParallaxPlaybackState
+}
+
 export type ParallaxTimelineEvent =
   | {
       type: 'stream-start'

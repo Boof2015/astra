@@ -128,6 +128,7 @@ import {
   PARALLAX_MIN_PORT,
   type ParallaxAudioChunk,
   type ParallaxHostConfig,
+  type ParallaxHostStreamStartOptions,
   type ParallaxSinkConnectionConfig,
   type ParallaxSinkTelemetry,
   type ParallaxStreamInfo,
@@ -4729,8 +4730,8 @@ ipcMain.handle('parallax:disconnectSink', async () => {
   return parallaxService.disconnectSink()
 })
 
-ipcMain.handle('parallax:publishHostStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>) => {
-  return parallaxService.publishHostStreamStart(info)
+ipcMain.handle('parallax:publishHostStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>, options?: ParallaxHostStreamStartOptions) => {
+  return parallaxService.publishHostStreamStart(info, options ?? {})
 })
 
 ipcMain.handle('parallax:publishHostAudioChunk', (_event, chunk: ParallaxAudioChunk) => {

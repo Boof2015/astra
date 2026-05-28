@@ -2664,6 +2664,30 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   playerState._schedulePreBufferNextTrack({ invalidatePending: true })
 })
 
+// When a sink joins while this instance is already a host playing/paused a local track, start a
+// Parallax stream anchored at the current position so the sink syncs to the in-progress song
+// instead of waiting (and forcing a restart on the next play). See parallaxStore for the anchor.
+let hostAutoStreamStartInFlight = false
+useParallaxStore.subscribe((nextState, prevState) => {
+  const nextCount = nextState.status?.host.connectedSinkCount ?? 0
+  const prevCount = prevState.status?.host.connectedSinkCount ?? 0
+  if (nextCount <= 0 || nextCount <= prevCount) return
+  if (hostAutoStreamStartInFlight) return
+
+  const playerState = usePlayerStore.getState()
+  const track = playerState.currentTrack
+  if (!track) return
+  const playbackState = playerState.playbackState
+  if (playbackState !== 'playing' && playbackState !== 'paused') return
+
+  hostAutoStreamStartInFlight = true
+  void nextState
+    .startHostStreamForCurrentPlayback(track, playbackState === 'playing')
+    .finally(() => {
+      hostAutoStreamStartInFlight = false
+    })
+})
+
 export function getPlayerDiagnosticsSnapshot(): {
   caches: {
     waveformEntries: number

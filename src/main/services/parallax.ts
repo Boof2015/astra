@@ -5,6 +5,7 @@ import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
   ParallaxHostConfig,
+  ParallaxHostStreamStartOptions,
   ParallaxJoinResponse,
   ParallaxPairedSink,
   ParallaxPairResponse,
@@ -371,7 +372,10 @@ export class ParallaxService {
     return revokedCount
   }
 
-  publishHostStreamStart(info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>): ParallaxTimelineState {
+  publishHostStreamStart(
+    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+    options: ParallaxHostStreamStartOptions = {}
+  ): ParallaxTimelineState {
     if (!this.config.enabled || !this.active) {
       throw new Error('Parallax host is not active.')
     }
@@ -389,8 +393,8 @@ export class ParallaxService {
     }
     const timeline: ParallaxTimelineState = {
       streamId: stream.streamId,
-      playbackState: 'playing',
-      startFrame: 0,
+      playbackState: options.playbackState ?? 'playing',
+      startFrame: Math.max(0, Math.min(stream.totalFrames, Math.floor(options.startFrame ?? 0))),
       startHostTimeMs: now + PARALLAX_DEFAULT_GROUP_LATENCY_MS,
       updatedHostTimeMs: now,
       groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS
