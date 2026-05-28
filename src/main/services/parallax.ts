@@ -1022,7 +1022,17 @@ export class ParallaxService {
     try { await audioReader?.cancel() } catch { /* ignore */ }
     if (this.sinkConnection !== connection) return
 
+    // Reflect the cleared clock (offset → null) before anything is re-applied.
+    this.emitStatus()
+
     try {
+      // Reconverge the clock BEFORE rejoining. The /join timeline is then computed and applied with
+      // an accurate, freshly-primed offset (and full group-latency headroom). Previously the rejoin
+      // applied immediately with the stale pre-drop offset, which left the sink badly out of sync
+      // until a manual pause/play/seek re-anchored it.
+      await this.primeClockSync(connection)
+      if (this.sinkConnection !== connection) return
+
       const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
         method: 'POST',
         body: JSON.stringify({ sinkId: connection.sinkId })
@@ -1032,7 +1042,6 @@ export class ParallaxService {
       this.sinkActiveStream = join.stream
       this.sinkLastError = null
       this.emitStatus()
-      void this.primeClockSync(connection)
       void this.consumeSinkEvents()
       if (join.stream && join.timeline) {
         const event: ParallaxTimelineEvent = {
