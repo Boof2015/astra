@@ -51,6 +51,8 @@ const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
 const REMOTE_NORMALIZATION_UPDATE_SECONDS = 5
 const REMOTE_NORMALIZATION_MIN_DELTA_DB = 1
 const REMOTE_NORMALIZATION_SLEW_MS = 250
+const PARALLAX_HOST_STREAM_LOOKAHEAD_MS = 3000
+const PARALLAX_HOST_STREAM_SLEEP_SLICE_MS = 250
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -381,6 +383,7 @@ export class AudioEngine {
   private normalizationApproximate: boolean = false
   private loadGeneration = 0
   private prebufferGeneration = 0
+  private parallaxHostPublishGeneration = 0
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -1157,12 +1160,18 @@ export class AudioEngine {
   private beginLoadOperation(): number {
     this.loadGeneration += 1
     this.prebufferGeneration += 1
+    this.cancelParallaxHostPublishing()
     return this.loadGeneration
   }
 
   private invalidateLoadOperations(): void {
     this.loadGeneration += 1
     this.prebufferGeneration += 1
+    this.cancelParallaxHostPublishing()
+  }
+
+  private cancelParallaxHostPublishing(): void {
+    this.parallaxHostPublishGeneration += 1
   }
 
   private beginPrebufferOperation(): number {
@@ -2434,14 +2443,30 @@ export class AudioEngine {
     this.startTimeUpdate()
   }
 
-  async publishCurrentBufferToParallax(streamId: string): Promise<void> {
+  async publishCurrentBufferToParallax(streamId: string, timeline?: ParallaxTimelineState): Promise<void> {
     const buffer = this.audioBuffer
     if (!buffer) {
       throw new Error('No decoded local track is available for Parallax streaming.')
     }
     const channels = Math.max(1, Math.min(8, buffer.numberOfChannels))
     const totalFrames = buffer.length
-    for (let startFrame = 0; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+    const publishGeneration = ++this.parallaxHostPublishGeneration
+    const initialFrame = timeline
+      ? Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+      : 0
+
+    for (let startFrame = initialFrame; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+      if (publishGeneration !== this.parallaxHostPublishGeneration) return
+      if (timeline) {
+        const chunkHostTimeMs = timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+        let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        while (delayMs > 0) {
+          await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+          if (publishGeneration !== this.parallaxHostPublishGeneration) return
+          delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        }
+      }
+
       const frameCount = Math.min(PARALLAX_AUDIO_CHUNK_FRAMES, totalFrames - startFrame)
       const interleaved = new Float32Array(frameCount * channels)
       for (let channelIndex = 0; channelIndex < channels; channelIndex++) {

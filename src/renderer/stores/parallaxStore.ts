@@ -189,11 +189,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     }
 
     const timeline = event.type === 'stream-start' ? event.timeline : event.timeline
-    if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
-      set({ pendingSinkEvent: event })
-      return
-    }
-
     if (event.type === 'stream-start') {
       if (audioEngine.getParallaxSinkSnapshot().streamId !== event.stream.streamId) {
         await audioEngine.loadParallaxSinkStream(event.stream)
@@ -203,6 +198,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       for (const chunk of bufferedChunks) {
         audioEngine.appendParallaxSinkAudioChunk(chunk)
       }
+    }
+
+    if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
+      set({ pendingSinkEvent: event })
+      return
     }
 
     set({ latestTimeline: timeline })
@@ -382,7 +382,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         const timeline = await window.electronAPI.parallax.publishHostStreamStart(
           buildParallaxStreamInfo(track, streamId, buffer)
         )
-        void audioEngine.publishCurrentBufferToParallax(streamId).catch((error) => {
+        void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
           set({ errorMessage: toErrorMessage(error) })
         })
         return timeline
