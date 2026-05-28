@@ -106,10 +106,11 @@ function computeRateCorrectionPpm(
 
 export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   const applyStatus = (status: ParallaxStatus): ParallaxStatus => {
+    const serviceError = status.sink.lastError ?? status.host.lastError ?? ''
     set({
       status,
       activePairingPin: status.host.activePairingPin,
-      errorMessage: ''
+      ...(serviceError ? { errorMessage: serviceError } : {})
     })
 
     const pending = get().pendingSinkEvent
@@ -184,7 +185,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     if (!eventUnsubscribe) {
       eventUnsubscribe = window.electronAPI.parallax.onEvent((event) => {
-        void handleSinkEvent(event)
+        void handleSinkEvent(event).catch((error) => {
+          set({ errorMessage: toErrorMessage(error) })
+        })
       })
     }
 
@@ -226,8 +229,18 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     const timeline = event.type === 'stream-start' ? event.timeline : event.timeline
     if (event.type === 'stream-start') {
-      if (audioEngine.getParallaxSinkSnapshot().streamId !== event.stream.streamId) {
-        await audioEngine.loadParallaxSinkStream(event.stream)
+      try {
+        if (audioEngine.getParallaxSinkSnapshot().streamId !== event.stream.streamId) {
+          await audioEngine.loadParallaxSinkStream(event.stream)
+        }
+      } catch (error) {
+        pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.stream.streamId)
+        set({
+          pendingSinkEvent: null,
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
+          errorMessage: toErrorMessage(error)
+        })
+        return
       }
       const bufferedChunks = pendingAudioChunks.filter((chunk) => chunk.streamId === event.stream.streamId)
       pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.stream.streamId)

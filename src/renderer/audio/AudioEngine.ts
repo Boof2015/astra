@@ -1902,7 +1902,7 @@ export class AudioEngine {
     return node
   }
 
-  private createParallaxSinkNode(channelCount: number): AudioWorkletNode {
+  private createParallaxSinkNode(channelCount: number, sourceSampleRate?: number): AudioWorkletNode {
     if (!this.context) {
       throw new Error('AudioContext not initialized')
     }
@@ -1910,7 +1910,12 @@ export class AudioEngine {
     const node = new AudioWorkletNode(this.context, 'parallax-sink-player', {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [Math.max(1, channelCount)]
+      outputChannelCount: [Math.max(1, channelCount)],
+      processorOptions: {
+        sourceSampleRate: Number.isFinite(sourceSampleRate) && Number(sourceSampleRate) > 0
+          ? Math.round(Number(sourceSampleRate))
+          : this.context.sampleRate
+      }
     })
 
     node.port.onmessage = (event: MessageEvent) => {
@@ -2256,13 +2261,10 @@ export class AudioEngine {
     }
 
     const loadOperation = this.beginLoadOperation()
-    await this.initContext({ sampleRate: stream.sampleRate })
+    await this.initContext({ sampleRate: stream.sampleRate, allowSampleRateMismatch: true })
     this.assertCurrentLoadOperation(loadOperation)
     if (!this.context || !this.workletLoaded) {
       throw new Error('Audio worklet could not be initialized for Parallax sink playback.')
-    }
-    if (Math.abs(this.context.sampleRate - stream.sampleRate) > 1) {
-      throw new Error(`Parallax sink requires ${stream.sampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
     }
     if (this.context.state === 'suspended') {
       await this.context.resume()
@@ -2283,7 +2285,7 @@ export class AudioEngine {
     this.currentBufferTrackPath = `parallax:${stream.streamId}`
     this.pauseTime = 0
     this.currentReplayGainDb = null
-    this.parallaxSinkNode = this.createParallaxSinkNode(stream.channels)
+    this.parallaxSinkNode = this.createParallaxSinkNode(stream.channels, stream.sampleRate)
     this.parallaxSinkState = {
       streamId: stream.streamId,
       sampleRate: stream.sampleRate,
@@ -2596,7 +2598,7 @@ export class AudioEngine {
     }
   }
 
-  private async initContext(options: { sampleRate?: number } = {}): Promise<void> {
+  private async initContext(options: { sampleRate?: number; allowSampleRateMismatch?: boolean } = {}): Promise<void> {
     if (!this.context) {
       const requestedSampleRate = Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0
         ? Math.max(8_000, Math.round(Number(options.sampleRate)))
@@ -2684,7 +2686,7 @@ export class AudioEngine {
       this.applyAnalysisRoutingPreferences(this.audioBuffer?.numberOfChannels)
     } else if (Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0) {
       const requestedSampleRate = Math.max(8_000, Math.round(Number(options.sampleRate)))
-      if (Math.abs(this.context.sampleRate - requestedSampleRate) > 1) {
+      if (!options.allowSampleRateMismatch && Math.abs(this.context.sampleRate - requestedSampleRate) > 1) {
         throw new Error(`Parallax sink requires ${requestedSampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
       }
     }

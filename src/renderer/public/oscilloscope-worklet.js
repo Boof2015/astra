@@ -237,7 +237,10 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     const outputChannels = options && options.outputChannelCount && Array.isArray(options.outputChannelCount)
       ? Number(options.outputChannelCount[0] || 2)
       : 2
+    const sourceSampleRate = Number(options && options.processorOptions && options.processorOptions.sourceSampleRate)
     this.channelCount = Math.max(1, outputChannels)
+    this.sourceSampleRate = Number.isFinite(sourceSampleRate) && sourceSampleRate > 0 ? sourceSampleRate : sampleRate
+    this.basePlaybackRate = this.sourceSampleRate / sampleRate
     this.reportIntervalFrames = 2048
     this.maxRetainedChunks = 512
     this.reset()
@@ -267,7 +270,7 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     this.currentFrame = 0
     this.currentFrameFloat = 0
     this.playing = false
-    this.playbackRate = 1
+    this.playbackRate = this.basePlaybackRate || 1
     this.startAtSample = 0
     this.framesSinceReport = 0
     this.lastReportedFrame = -1
@@ -277,7 +280,7 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
 
   rateFromPpm(value) {
     const ppm = Number.isFinite(value) ? Math.max(-250, Math.min(250, Number(value))) : 0
-    return 1 + (ppm / 1000000)
+    return (this.basePlaybackRate || 1) * (1 + (ppm / 1000000))
   }
 
   appendChunk(channelData, startFrame, frameCount) {
@@ -348,7 +351,7 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
   }
 
   pruneOldChunks() {
-    const retainAfterFrame = Math.max(0, Math.floor(this.currentFrameFloat) - sampleRate)
+    const retainAfterFrame = Math.max(0, Math.floor(this.currentFrameFloat) - this.sourceSampleRate)
     while (this.chunks.length > 0) {
       const chunk = this.chunks[0]
       if (chunk.startFrame + chunk.frameCount >= retainAfterFrame) break
@@ -368,13 +371,13 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
       frame,
       bufferedFrames: Math.max(0, bufferedEndFrame - frame),
       underruns: this.underruns,
-      playbackRatePpm: Math.round((this.playbackRate - 1) * 1000000)
+      playbackRatePpm: Math.round(((this.playbackRate / (this.basePlaybackRate || 1)) - 1) * 1000000)
     })
   }
 
   reportUnderrun(frame) {
     this.underruns += 1
-    if (this.lastUnderrunReportFrame >= 0 && frame - this.lastUnderrunReportFrame < sampleRate / 4) return
+    if (this.lastUnderrunReportFrame >= 0 && frame - this.lastUnderrunReportFrame < this.sourceSampleRate / 4) return
     this.lastUnderrunReportFrame = frame
     this.port.postMessage({
       type: 'underrun',
