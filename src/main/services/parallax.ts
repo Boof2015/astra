@@ -76,6 +76,7 @@ interface ParallaxSinkConnectionState {
   eventReader: ReadableStreamDefaultReader<Uint8Array> | null
   audioReader: ReadableStreamDefaultReader<Uint8Array> | null
   activeAudioStreamId: string | null
+  audioGeneration: number
 }
 
 interface ParallaxServiceOptions {
@@ -499,7 +500,8 @@ export class ParallaxService {
       abortController,
       eventReader: null,
       audioReader: null,
-      activeAudioStreamId: null
+      activeAudioStreamId: null,
+      audioGeneration: 0
     }
     this.sinkClockSamples = []
     this.sinkActiveStream = null
@@ -523,7 +525,7 @@ export class ParallaxService {
           emittedAtHostTimeMs: join.hostTimeMs
         }
         this.onSinkEvent?.(event)
-        void this.consumeSinkAudio(join.stream.streamId, join.timeline.startFrame)
+        void this.consumeSinkAudio(join.stream.streamId, join.timeline.startFrame, true)
       }
       return this.getStatus()
     } catch (error) {
@@ -545,6 +547,10 @@ export class ParallaxService {
       try { connection.abortController.abort() } catch { /* ignore */ }
       try { await connection.eventReader?.cancel() } catch { /* ignore */ }
       try { await connection.audioReader?.cancel() } catch { /* ignore */ }
+      connection.eventReader = null
+      connection.audioReader = null
+      connection.activeAudioStreamId = null
+      connection.audioGeneration += 1
     }
 
     this.emitStatus()
@@ -964,6 +970,8 @@ export class ParallaxService {
 
       const reader = response.body.getReader()
       connection.eventReader = reader
+      this.sinkLastError = null
+      this.emitStatus()
       const decoder = new TextDecoder()
       let buffer = ''
       while (this.sinkConnection === connection) {
@@ -1011,19 +1019,38 @@ export class ParallaxService {
     if (event.type === 'stream-start') {
       this.sinkActiveStream = event.stream
       this.emitStatus()
-      void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame)
+      void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
     } else if (event.type === 'stop') {
       this.sinkActiveStream = null
+      const connection = this.sinkConnection
+      if (connection) {
+        connection.audioGeneration += 1
+        connection.activeAudioStreamId = null
+        try { void connection.audioReader?.cancel() } catch { /* ignore */ }
+        connection.audioReader = null
+      }
       this.emitStatus()
     }
 
     this.onSinkEvent?.(event)
   }
 
-  private async consumeSinkAudio(streamId: string, fromFrame: number): Promise<void> {
+  private getSinkReconnectFrame(streamId: string, fallbackFrame: number): number {
+    const activeStream = this.sinkActiveStream
+    if (!activeStream || activeStream.streamId !== streamId) return Math.max(0, Math.floor(fallbackFrame))
+
+    // Keep reconnect frame selection centralized; the renderer still uses chunk
+    // timestamps for exact playback timing.
+    return Math.max(0, Math.floor(fallbackFrame))
+  }
+
+  private async consumeSinkAudio(streamId: string, fromFrame: number, replace: boolean = false): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
-    if (connection.activeAudioStreamId === streamId && connection.audioReader) return
+    if (!replace && connection.activeAudioStreamId === streamId && connection.audioReader) return
+
+    connection.audioGeneration += 1
+    const audioGeneration = connection.audioGeneration
     connection.activeAudioStreamId = streamId
 
     try {
@@ -1034,8 +1061,9 @@ export class ParallaxService {
     connection.audioReader = null
 
     try {
+      const requestFromFrame = this.getSinkReconnectFrame(streamId, fromFrame)
       const response = await fetch(
-        `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${Math.max(0, Math.floor(fromFrame))}`,
+        `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
         {
           method: 'GET',
           signal: connection.abortController.signal,
@@ -1049,9 +1077,19 @@ export class ParallaxService {
       }
 
       const reader = response.body.getReader()
+      if (this.sinkConnection !== connection || connection.activeAudioStreamId !== streamId || connection.audioGeneration !== audioGeneration) {
+        await reader.cancel().catch(() => undefined)
+        return
+      }
       connection.audioReader = reader
+      this.sinkLastError = null
+      this.emitStatus()
       let pending: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
-      while (this.sinkConnection === connection && connection.activeAudioStreamId === streamId) {
+      while (
+        this.sinkConnection === connection
+        && connection.activeAudioStreamId === streamId
+        && connection.audioGeneration === audioGeneration
+      ) {
         const { done, value } = await reader.read()
         if (done) break
         if (!value) continue
@@ -1068,26 +1106,34 @@ export class ParallaxService {
           })
         }
       }
-      if (this.sinkConnection === connection && connection.activeAudioStreamId === streamId) {
+      if (
+        this.sinkConnection === connection
+        && connection.activeAudioStreamId === streamId
+        && connection.audioGeneration === audioGeneration
+      ) {
         connection.audioReader = null
         connection.activeAudioStreamId = null
         this.sinkLastError = 'Parallax audio stream ended.'
         this.emitStatus()
         setTimeout(() => {
           if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
-            void this.consumeSinkAudio(streamId, fromFrame)
+            void this.consumeSinkAudio(streamId, fromFrame, true)
           }
         }, STATUS_RETRY_DELAY_MS)
       }
     } catch (error) {
-      if (this.sinkConnection !== connection || connection.activeAudioStreamId !== streamId) return
+      if (
+        this.sinkConnection !== connection
+        || connection.activeAudioStreamId !== streamId
+        || connection.audioGeneration !== audioGeneration
+      ) return
       connection.audioReader = null
       connection.activeAudioStreamId = null
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
       this.emitStatus()
       setTimeout(() => {
         if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
-          void this.consumeSinkAudio(streamId, fromFrame)
+          void this.consumeSinkAudio(streamId, fromFrame, true)
         }
       }, STATUS_RETRY_DELAY_MS)
     }
