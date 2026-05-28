@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer } from 'node:net'
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { ParallaxService } from './parallax.ts'
 import type { ParallaxHostConfig, ParallaxPairResponse } from '../../types/parallax.ts'
 import { decodeParallaxAudioPacket } from '../../types/parallax.ts'
 
 async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
-    const server = createServer()
+    const server = createNetServer()
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => {
       const address = server.address()
@@ -15,6 +16,38 @@ async function getFreePort(): Promise<number> {
       server.close(() => resolve(port))
     })
   })
+}
+
+async function listenHttpServer(server: HttpServer, port: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.off('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, '127.0.0.1')
+  })
+}
+
+async function closeHttpServer(server: HttpServer): Promise<void> {
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve())
+  })
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Promise<void> {
+  const startedAt = Date.now()
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('Timed out waiting for condition.')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 async function createStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string }> {
@@ -269,5 +302,74 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
     }
   } finally {
     await service.stop()
+  }
+})
+
+test('Parallax sink auto-rejoins after an event stream failure', async () => {
+  const port = await getFreePort()
+  const baseUrl = `http://127.0.0.1:${port}`
+  let joinCount = 0
+  let eventRequestCount = 0
+  const server = createHttpServer((req, res) => {
+    const url = new URL(req.url ?? '/', baseUrl)
+    if (req.method === 'POST' && url.pathname === '/v1/parallax/join') {
+      joinCount += 1
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        sinkId: 'sink-retry',
+        groupLatencyMs: 1000,
+        hostTimeMs: Date.now(),
+        stream: null,
+        timeline: null
+      }))
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/parallax/clock') {
+      const now = Date.now()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        sinkSentAtMs: now,
+        hostReceivedAtMs: now,
+        hostSentAtMs: now
+      }))
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/v1/parallax/events') {
+      eventRequestCount += 1
+      if (eventRequestCount === 1) {
+        res.writeHead(503, { 'Content-Type': 'text/plain' })
+        res.end('offline')
+        return
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache'
+      })
+      res.write(': connected\n\n')
+      return
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+  })
+  await listenHttpServer(server, port)
+
+  const originalSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    return originalSetTimeout(handler, timeout === 2_000 ? 0 : timeout, ...args)
+  }) as typeof setTimeout
+
+  const sinkService = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [] })
+  try {
+    await sinkService.connectSink({
+      baseUrl,
+      sinkId: 'sink-retry',
+      token: 'token'
+    })
+    await waitFor(() => joinCount >= 2 && eventRequestCount >= 2 && sinkService.getStatus().sink.lastError === null)
+    assert.equal(sinkService.getStatus().sink.connected, true)
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    await sinkService.stop()
+    await closeHttpServer(server)
   }
 })

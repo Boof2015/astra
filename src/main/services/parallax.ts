@@ -39,6 +39,8 @@ const TOKEN_PREFIX_LENGTH = 8
 const PAIRING_PIN_TTL_MS = 2 * 60_000
 const CLOCK_SYNC_INTERVAL_MS = 2_000
 const STATUS_RETRY_DELAY_MS = 1_000
+const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
+const SINK_AUTO_RECONNECT_ATTEMPTS = 3
 const MAX_BODY_BYTES = 8 * 1024
 const MAX_AUDIO_CHUNKS = 12_000
 
@@ -76,6 +78,7 @@ interface ParallaxSinkConnectionState {
   eventReader: ReadableStreamDefaultReader<Uint8Array> | null
   audioReader: ReadableStreamDefaultReader<Uint8Array> | null
   activeAudioStreamId: string | null
+  eventGeneration: number
   audioGeneration: number
 }
 
@@ -223,6 +226,8 @@ export class ParallaxService {
   private sinkConnection: ParallaxSinkConnectionState | null = null
   private sinkClockSamples: ParallaxClockSample[] = []
   private sinkClockTimer: ReturnType<typeof setInterval> | null = null
+  private sinkReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private sinkReconnectAttempts = 0
   private sinkActiveStream: ParallaxStreamInfo | null = null
   private sinkLastError: string | null = null
 
@@ -508,17 +513,20 @@ export class ParallaxService {
       eventReader: null,
       audioReader: null,
       activeAudioStreamId: null,
+      eventGeneration: 0,
       audioGeneration: 0
     }
     this.sinkClockSamples = []
     this.sinkActiveStream = null
     this.sinkLastError = null
+    this.sinkReconnectAttempts = 0
 
     try {
       const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
         method: 'POST',
         body: JSON.stringify({ sinkId: normalizedSinkId })
       })
+      this.sinkReconnectAttempts = 0
       this.sinkActiveStream = join.stream
       this.emitStatus()
       this.startClockSync()
@@ -544,11 +552,14 @@ export class ParallaxService {
   }
 
   async disconnectSink(): Promise<ParallaxStatus> {
+    this.clearSinkReconnectTimer()
+    this.sinkReconnectAttempts = 0
     this.stopClockSync()
     const connection = this.sinkConnection
     this.sinkConnection = null
     this.sinkActiveStream = null
     this.sinkClockSamples = []
+    this.sinkLastError = null
 
     if (connection) {
       try { connection.abortController.abort() } catch { /* ignore */ }
@@ -557,6 +568,7 @@ export class ParallaxService {
       connection.eventReader = null
       connection.audioReader = null
       connection.activeAudioStreamId = null
+      connection.eventGeneration += 1
       connection.audioGeneration += 1
     }
 
@@ -935,6 +947,89 @@ export class ParallaxService {
     }
   }
 
+  private clearSinkReconnectTimer(): void {
+    if (this.sinkReconnectTimer === null) return
+    clearTimeout(this.sinkReconnectTimer)
+    this.sinkReconnectTimer = null
+  }
+
+  private scheduleSinkReconnect(connection: ParallaxSinkConnectionState, reason: string): void {
+    if (this.sinkConnection !== connection) return
+    if (this.sinkReconnectTimer !== null) return
+
+    const normalizedReason = reason.trim().replace(/\.+$/, '') || 'Parallax connection interrupted'
+    if (this.sinkReconnectAttempts >= SINK_AUTO_RECONNECT_ATTEMPTS) {
+      this.sinkLastError = `${normalizedReason}. Parallax sink reconnect stopped after ${SINK_AUTO_RECONNECT_ATTEMPTS} attempts.`
+      this.emitStatus()
+      return
+    }
+
+    const attempt = this.sinkReconnectAttempts + 1
+    this.sinkReconnectAttempts = attempt
+    this.sinkLastError = `${normalizedReason}. Retrying Parallax connection (${attempt}/${SINK_AUTO_RECONNECT_ATTEMPTS})...`
+    this.emitStatus()
+
+    this.sinkReconnectTimer = setTimeout(() => {
+      this.sinkReconnectTimer = null
+      if (this.sinkConnection !== connection) return
+      void this.reconnectSink(connection)
+    }, SINK_AUTO_RECONNECT_DELAY_MS)
+  }
+
+  private async reconnectSink(connection: ParallaxSinkConnectionState): Promise<void> {
+    if (this.sinkConnection !== connection) return
+
+    this.stopClockSync()
+    this.sinkClockSamples = []
+    connection.eventGeneration += 1
+    connection.audioGeneration += 1
+    connection.activeAudioStreamId = null
+
+    const previousAbortController = connection.abortController
+    const eventReader = connection.eventReader
+    const audioReader = connection.audioReader
+    connection.eventReader = null
+    connection.audioReader = null
+    connection.abortController = new AbortController()
+
+    try { previousAbortController.abort() } catch { /* ignore */ }
+    try { await eventReader?.cancel() } catch { /* ignore */ }
+    try { await audioReader?.cancel() } catch { /* ignore */ }
+    if (this.sinkConnection !== connection) return
+
+    try {
+      const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
+        method: 'POST',
+        body: JSON.stringify({ sinkId: connection.sinkId })
+      })
+      if (this.sinkConnection !== connection) return
+      this.sinkReconnectAttempts = 0
+      this.sinkActiveStream = join.stream
+      this.sinkLastError = null
+      this.emitStatus()
+      this.startClockSync()
+      void this.runClockProbe()
+      void this.consumeSinkEvents()
+      if (join.stream && join.timeline) {
+        const event: ParallaxTimelineEvent = {
+          type: 'stream-start',
+          stream: join.stream,
+          timeline: join.timeline,
+          emittedAtHostTimeMs: join.hostTimeMs
+        }
+        this.onSinkEvent?.(event)
+        void this.consumeSinkAudio(join.stream.streamId, join.timeline.startFrame, true)
+      }
+    } catch (error) {
+      if (this.sinkConnection !== connection) return
+      if (isAbortLikeError(error)) return
+      const message = error instanceof Error ? error.message : 'Parallax reconnect failed.'
+      this.sinkLastError = `Parallax reconnect failed: ${message}`
+      this.emitStatus()
+      this.scheduleSinkReconnect(connection, this.sinkLastError)
+    }
+  }
+
   private async runClockProbe(): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
@@ -967,6 +1062,10 @@ export class ParallaxService {
   private async consumeSinkEvents(): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
+    if (connection.eventReader) return
+    connection.eventGeneration += 1
+    const eventGeneration = connection.eventGeneration
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
     try {
       const response = await fetch(`${connection.baseUrl}/v1/parallax/events`, {
         method: 'GET',
@@ -979,13 +1078,17 @@ export class ParallaxService {
         throw new Error(`Parallax event stream failed (${response.status}).`)
       }
 
-      const reader = response.body.getReader()
+      reader = response.body.getReader()
+      if (this.sinkConnection !== connection || connection.eventGeneration !== eventGeneration) {
+        await reader.cancel().catch(() => undefined)
+        return
+      }
       connection.eventReader = reader
       this.sinkLastError = null
       this.emitStatus()
       const decoder = new TextDecoder()
       let buffer = ''
-      while (this.sinkConnection === connection) {
+      while (this.sinkConnection === connection && connection.eventGeneration === eventGeneration) {
         const { done, value } = await reader.read()
         if (done) break
         if (!value) continue
@@ -998,24 +1101,35 @@ export class ParallaxService {
           boundary = buffer.indexOf('\n\n')
         }
       }
-      if (this.sinkConnection === connection) {
+      if (this.sinkConnection === connection && connection.eventGeneration === eventGeneration) {
+        if (connection.eventReader === reader) connection.eventReader = null
         setTimeout(() => {
-          if (this.sinkConnection === connection) void this.consumeSinkEvents()
+          if (
+            this.sinkConnection === connection
+            && connection.eventGeneration === eventGeneration
+            && connection.eventReader === null
+          ) {
+            void this.consumeSinkEvents()
+          }
         }, STATUS_RETRY_DELAY_MS)
       }
     } catch (error) {
-      if (this.sinkConnection !== connection) return
+      if (this.sinkConnection !== connection || connection.eventGeneration !== eventGeneration) return
+      if (connection.eventReader === reader) connection.eventReader = null
       if (isAbortLikeError(error)) {
         setTimeout(() => {
-          if (this.sinkConnection === connection) void this.consumeSinkEvents()
+          if (
+            this.sinkConnection === connection
+            && connection.eventGeneration === eventGeneration
+            && connection.eventReader === null
+          ) {
+            void this.consumeSinkEvents()
+          }
         }, STATUS_RETRY_DELAY_MS)
         return
       }
-      this.sinkLastError = error instanceof Error ? error.message : 'Parallax event stream disconnected.'
-      this.emitStatus()
-      setTimeout(() => {
-        if (this.sinkConnection === connection) void this.consumeSinkEvents()
-      }, STATUS_RETRY_DELAY_MS)
+      const message = error instanceof Error ? error.message : 'Parallax event stream disconnected.'
+      this.scheduleSinkReconnect(connection, message)
     }
   }
 
@@ -1151,12 +1265,7 @@ export class ParallaxService {
         return
       }
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
-      this.emitStatus()
-      setTimeout(() => {
-        if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
-          void this.consumeSinkAudio(streamId, fromFrame, true)
-        }
-      }, STATUS_RETRY_DELAY_MS)
+      this.scheduleSinkReconnect(connection, this.sinkLastError)
     }
   }
 }
