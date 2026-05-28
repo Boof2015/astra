@@ -39,6 +39,7 @@ test('Parallax audio packet round-trips chunk metadata and PCM bytes', () => {
     channels: 2,
     startFrame: 128,
     frameCount: 2,
+    hostTimeMs: 123456.75,
     pcmData: pcm.buffer
   }
 
@@ -51,6 +52,7 @@ test('Parallax audio packet round-trips chunk metadata and PCM bytes', () => {
   assert.equal(decoded.chunk.channels, 2)
   assert.equal(decoded.chunk.startFrame, 128)
   assert.equal(decoded.chunk.frameCount, 2)
+  assert.equal(decoded.chunk.hostTimeMs, 123456.75)
   assert.deepEqual(Array.from(new Float32Array(decoded.chunk.pcmData)), Array.from(pcm))
 })
 
@@ -62,6 +64,7 @@ test('Parallax audio packet waits for complete frame', () => {
     channels: 1,
     startFrame: 0,
     frameCount: 2,
+    hostTimeMs: 5000,
     pcmData: pcm.buffer
   }))
 

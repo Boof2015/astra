@@ -21,6 +21,13 @@ interface ParallaxSettingsStore {
   activePairingPin: ParallaxPairingPin | null
   pendingSinkEvent: ParallaxTimelineEvent | null
   latestTimeline: ParallaxTimelineState | null
+  sinkSnapshot: {
+    streamId: string | null
+    currentFrame: number
+    bufferedFrames: number
+    underruns: number
+    playbackRatePpm: number
+  }
   isLoading: boolean
   isInitialized: boolean
   errorMessage: string
@@ -128,6 +135,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (!status?.sink.connected || !stream || !timeline) return
 
       const snapshot = audioEngine.getParallaxSinkSnapshot()
+      set({ sinkSnapshot: snapshot })
       const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
       audioEngine.setParallaxSinkPlaybackRate(correction.playbackRatePpm)
       void window.electronAPI.parallax.publishSinkTelemetry({
@@ -140,6 +148,28 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         reportedAtMs: Date.now()
       })
     }, 1000)
+  }
+
+  const applyChunkTimelineIfNeeded = (chunk: ParallaxAudioChunk): void => {
+    const status = get().status
+    const stream = status?.sink.activeStream
+    if (!status?.sink.connected || !stream || stream.streamId !== chunk.streamId) return
+    if (status.sink.clockOffsetMs === null || status.sink.clockOffsetMs === undefined) return
+
+    const latestTimeline = get().latestTimeline
+    if (latestTimeline?.streamId === chunk.streamId) return
+    if (!Number.isFinite(chunk.hostTimeMs) || chunk.hostTimeMs <= 0) return
+
+    const timeline: ParallaxTimelineState = {
+      streamId: chunk.streamId,
+      playbackState: 'playing',
+      startFrame: Math.max(0, Math.floor(chunk.startFrame)),
+      startHostTimeMs: chunk.hostTimeMs,
+      updatedHostTimeMs: chunk.hostTimeMs,
+      groupLatencyMs: stream.groupLatencyMs
+    }
+    set({ latestTimeline: timeline })
+    audioEngine.applyParallaxTimelineFromHostClock(timeline, status.sink.clockOffsetMs, 0)
   }
 
   const ensureSubscriptions = () => {
@@ -165,6 +195,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           return
         }
         audioEngine.appendParallaxSinkAudioChunk(chunk)
+        applyChunkTimelineIfNeeded(chunk)
       })
     }
 
@@ -182,9 +213,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   const handleSinkEvent = async (event: ParallaxTimelineEvent): Promise<void> => {
     const status = get().status
     if (event.type === 'stop') {
-      set({ latestTimeline: null, pendingSinkEvent: null })
       pendingAudioChunks = []
       audioEngine.stopParallaxSinkPlayback()
+      set({
+        latestTimeline: null,
+        pendingSinkEvent: null,
+        sinkSnapshot: audioEngine.getParallaxSinkSnapshot()
+      })
       return
     }
 
@@ -215,6 +250,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     activePairingPin: null,
     pendingSinkEvent: null,
     latestTimeline: null,
+    sinkSnapshot: {
+      streamId: null,
+      currentFrame: 0,
+      bufferedFrames: 0,
+      underruns: 0,
+      playbackRatePpm: 0
+    },
     isLoading: false,
     isInitialized: false,
     errorMessage: '',
@@ -321,7 +363,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         await window.electronAPI.parallax.disconnectSink()
         pendingAudioChunks = []
         audioEngine.stopParallaxSinkPlayback()
-        set({ latestTimeline: null, pendingSinkEvent: null, errorMessage: '' })
+        set({
+          latestTimeline: null,
+          pendingSinkEvent: null,
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
+          errorMessage: ''
+        })
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -355,7 +402,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         const status = await window.electronAPI.parallax.resetToDefaults()
         pendingAudioChunks = []
         audioEngine.stopParallaxSinkPlayback()
-        set({ pairedSinks: [], latestTimeline: null, pendingSinkEvent: null })
+        set({
+          pairedSinks: [],
+          latestTimeline: null,
+          pendingSinkEvent: null,
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot()
+        })
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

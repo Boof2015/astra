@@ -2481,6 +2481,9 @@ export class AudioEngine {
         channels,
         startFrame,
         frameCount,
+        hostTimeMs: timeline
+          ? timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+          : performance.timeOrigin + performance.now(),
         pcmData: interleaved.buffer
       })
     }

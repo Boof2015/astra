@@ -2,6 +2,7 @@ import { useParallaxStore } from '../../stores/parallaxStore'
 
 export default function ParallaxSinkMode() {
   const status = useParallaxStore((s) => s.status)
+  const snapshot = useParallaxStore((s) => s.sinkSnapshot)
   const disconnectSink = useParallaxStore((s) => s.disconnectSink)
   const errorMessage = useParallaxStore((s) => s.errorMessage)
 
@@ -11,6 +12,9 @@ export default function ParallaxSinkMode() {
   const clockLabel = status.sink.rttMs !== null
     ? `${Math.round(status.sink.rttMs)} ms RTT`
     : 'Clock syncing'
+  const bufferLabel = stream && snapshot.streamId === stream.streamId
+    ? `Buffer ${Math.round((snapshot.bufferedFrames / stream.sampleRate) * 1000)} ms · Underruns ${snapshot.underruns}`
+    : 'Buffer waiting'
 
   return (
     <div className="parallax-sink-mode" role="status" aria-live="polite">
@@ -19,7 +23,7 @@ export default function ParallaxSinkMode() {
         <span className="parallax-sink-title">
           {stream ? `${stream.title} - ${stream.artist}` : 'Waiting for host playback'}
         </span>
-        <span className="parallax-sink-meta">{status.sink.baseUrl} · {clockLabel}</span>
+        <span className="parallax-sink-meta">{status.sink.baseUrl} · {clockLabel} · {bufferLabel}</span>
         {errorMessage && <span className="parallax-sink-error">{errorMessage}</span>}
       </div>
       <button

@@ -318,6 +318,15 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     return null
   }
 
+  findNextChunk(frame) {
+    for (let index = 0; index < this.chunks.length; index++) {
+      const chunk = this.chunks[index]
+      if (chunk.startFrame + chunk.frameCount <= frame) continue
+      if (chunk.startFrame >= frame) return chunk
+    }
+    return null
+  }
+
   sampleAt(channel, frame) {
     const chunk = this.findChunk(frame)
     if (!chunk) return null
@@ -394,18 +403,30 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
 
       const sourceFrame = Math.max(0, Math.floor(this.currentFrameFloat))
       let anyMissing = false
+      let anyReadable = false
       for (let channel = 0; channel < output.length; channel++) {
         const sample = this.readInterpolated(channel, this.currentFrameFloat)
         if (sample === null) {
           anyMissing = true
           output[channel][outputFrame] = 0
         } else {
+          anyReadable = true
           output[channel][outputFrame] = sample
         }
       }
 
       if (anyMissing) {
         this.reportUnderrun(sourceFrame)
+      }
+
+      if (!anyReadable) {
+        const nextChunk = this.findNextChunk(sourceFrame)
+        if (nextChunk && nextChunk.startFrame > sourceFrame) {
+          this.currentFrameFloat = nextChunk.startFrame
+          this.currentFrame = nextChunk.startFrame
+        }
+        this.framesSinceReport += 1
+        continue
       }
 
       this.currentFrameFloat += this.playbackRate

@@ -6,8 +6,8 @@ export const PARALLAX_DEFAULT_GROUP_LATENCY_MS = 1000
 export const PARALLAX_AUDIO_CHUNK_FRAMES = 4096
 export const PARALLAX_CLOCK_SAMPLE_LIMIT = 8
 export const PARALLAX_AUDIO_PACKET_MAGIC = 0x50584c58 // PXLX
-export const PARALLAX_AUDIO_PACKET_VERSION = 1
-export const PARALLAX_AUDIO_PACKET_HEADER_BYTES = 32
+export const PARALLAX_AUDIO_PACKET_VERSION = 2
+export const PARALLAX_AUDIO_PACKET_HEADER_BYTES = 40
 
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
@@ -102,6 +102,7 @@ export interface ParallaxAudioChunk {
   channels: number
   startFrame: number
   frameCount: number
+  hostTimeMs: number
   pcmData: ArrayBuffer
 }
 
@@ -111,6 +112,7 @@ export interface ParallaxAudioPacketHeader {
   channels: number
   startFrame: number
   frameCount: number
+  hostTimeMs: number
   payloadBytes: number
 }
 
@@ -230,7 +232,8 @@ export function encodeParallaxAudioPacket(chunk: ParallaxAudioChunk): ArrayBuffe
   view.setUint32(16, Math.max(0, Math.floor(chunk.startFrame)), true)
   view.setUint32(20, Math.max(0, Math.floor(chunk.frameCount)), true)
   view.setUint32(24, payloadBytes, true)
-  view.setUint32(28, 0, true)
+  view.setFloat64(28, Number.isFinite(chunk.hostTimeMs) ? chunk.hostTimeMs : 0, true)
+  view.setUint32(36, 0, true)
   new Uint8Array(packet, PARALLAX_AUDIO_PACKET_HEADER_BYTES).set(source)
 
   return packet
@@ -252,6 +255,7 @@ export function readParallaxAudioPacketHeader(
     channels: view.getUint16(12, true),
     startFrame: view.getUint32(16, true),
     frameCount: view.getUint32(20, true),
+    hostTimeMs: view.getFloat64(28, true),
     payloadBytes: view.getUint32(24, true)
   }
 }
@@ -273,6 +277,7 @@ export function decodeParallaxAudioPacket(
       channels: header.channels,
       startFrame: header.startFrame,
       frameCount: header.frameCount,
+      hostTimeMs: header.hostTimeMs,
       pcmData: payload.buffer
     },
     bytesRead: packetBytes
