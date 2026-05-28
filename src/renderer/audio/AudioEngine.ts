@@ -2382,6 +2382,29 @@ export class AudioEngine {
     })
   }
 
+  // Hard re-sync: jump the worklet cursor to a live host frame (the snap in snap-then-slew).
+  // Uses the same set-timeline primitive that pause/play relies on, so it re-anchors cleanly.
+  // The caller supplies the target frame already mapped to "now + leadSeconds" of host time.
+  resyncParallaxSinkToHostFrame(targetFrame: number, leadSeconds: number): void {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState || !this.context) return
+    if (this.context.state === 'suspended') {
+      void this.context.resume().catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to resume Parallax sink AudioContext'))
+      })
+    }
+    const startFrame = Math.max(0, Math.floor(targetFrame))
+    const startAtContextTime = this.context.currentTime + Math.max(0, leadSeconds)
+    this.parallaxSinkState.currentFrame = startFrame
+    this.parallaxSinkState.playbackRatePpm = 0
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame,
+      startAtContextTime,
+      playing: true,
+      playbackRatePpm: 0
+    })
+  }
+
   stopParallaxSinkPlayback(): void {
     if (!this.parallaxSinkState && !this.parallaxSinkNode) return
     this.parallaxSinkNode?.port.postMessage({ type: 'clear' })

@@ -12,7 +12,12 @@ import type {
   ParallaxTimelineEvent,
   ParallaxTimelineState
 } from '../../types/parallax'
-import { clampParallaxPlaybackRatePpm } from '../../types/parallax'
+import {
+  clampParallaxPlaybackRatePpm,
+  decideParallaxSinkCorrection,
+  PARALLAX_RESYNC_LEAD_MS,
+  PARALLAX_RESYNC_MIN_INTERVAL_MS
+} from '../../types/parallax'
 import { useAudioSettingsStore } from './audioSettingsStore'
 
 interface ParallaxSettingsStore {
@@ -55,6 +60,7 @@ let eventUnsubscribe: (() => void) | null = null
 let audioChunkUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
+let lastHardSyncAtMs = 0
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -179,14 +185,36 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (!status?.sink.connected || !stream || !timeline) return
 
       const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
-      audioEngine.setParallaxSinkPlaybackRate(correction.playbackRatePpm)
+      const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
+      const now = performance.timeOrigin + performance.now()
+      if (
+        decision.mode === 'snap' &&
+        timeline.playbackState === 'playing' &&
+        status.sink.clockOffsetMs !== null &&
+        status.sink.clockOffsetMs !== undefined &&
+        now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
+      ) {
+        const hostNowMs = resolveHostNowMs(status)
+        const targetFrame = Math.max(
+          0,
+          Math.min(
+            stream.totalFrames,
+            timeline.startFrame +
+              Math.floor(((hostNowMs + PARALLAX_RESYNC_LEAD_MS - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
+          )
+        )
+        audioEngine.resyncParallaxSinkToHostFrame(targetFrame, PARALLAX_RESYNC_LEAD_MS / 1000)
+        lastHardSyncAtMs = now
+      } else {
+        audioEngine.setParallaxSinkPlaybackRate(decision.playbackRatePpm)
+      }
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
         driftFrames: correction.driftFrames,
         rttMs: status.sink.rttMs,
         underruns: snapshot.underruns,
-        playbackRatePpm: correction.playbackRatePpm,
+        playbackRatePpm: decision.playbackRatePpm,
         reportedAtMs: Date.now()
       })
     }, 1000)

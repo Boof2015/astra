@@ -9,6 +9,15 @@ export const PARALLAX_AUDIO_PACKET_MAGIC = 0x50584c58 // PXLX
 export const PARALLAX_AUDIO_PACKET_VERSION = 2
 export const PARALLAX_AUDIO_PACKET_HEADER_BYTES = 40
 
+// Snapcast-style "snap-then-slew" sink correction tuning.
+// The ±250 ppm rate nudge (clampParallaxPlaybackRatePpm) is only strong enough to hold
+// steady-state crystal drift; it cannot correct a real offset in reasonable time. So when
+// drift grows past PARALLAX_HARD_SYNC_MS we snap the cursor to the live host position instead.
+export const PARALLAX_HARD_SYNC_MS = 40
+export const PARALLAX_RESYNC_LEAD_MS = 60
+export const PARALLAX_RESYNC_MIN_INTERVAL_MS = 2500
+export const PARALLAX_SYNC_DEADZONE_FRAMES = 64
+
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
 
@@ -215,6 +224,34 @@ export function mapHostTimeToSinkTimeMs(hostTimeMs: number, hostMinusSinkOffsetM
 export function clampParallaxPlaybackRatePpm(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(-250, Math.min(250, value))
+}
+
+export type ParallaxSinkCorrectionMode = 'hold' | 'slew' | 'snap'
+
+export interface ParallaxSinkCorrection {
+  mode: ParallaxSinkCorrectionMode
+  playbackRatePpm: number
+}
+
+// Decide how the sink should react to measured drift (currentFrame - expectedFrame):
+// - |drift| beyond PARALLAX_HARD_SYNC_MS  -> 'snap' the cursor (rate correction can't catch up)
+// - |drift| within PARALLAX_SYNC_DEADZONE_FRAMES -> 'hold' (avoid micro-hunting around zero)
+// - otherwise -> 'slew' the playback rate to counter ongoing drift.
+export function decideParallaxSinkCorrection(
+  driftFrames: number,
+  sampleRate: number
+): ParallaxSinkCorrection {
+  if (!Number.isFinite(driftFrames)) return { mode: 'hold', playbackRatePpm: 0 }
+  const safeSampleRate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000
+  const hardSyncFrames = (PARALLAX_HARD_SYNC_MS / 1000) * safeSampleRate
+  const magnitude = Math.abs(driftFrames)
+  if (magnitude > hardSyncFrames) {
+    return { mode: 'snap', playbackRatePpm: 0 }
+  }
+  if (magnitude < PARALLAX_SYNC_DEADZONE_FRAMES) {
+    return { mode: 'hold', playbackRatePpm: 0 }
+  }
+  return { mode: 'slew', playbackRatePpm: clampParallaxPlaybackRatePpm(-driftFrames * 2) }
 }
 
 export function encodeParallaxAudioPacket(chunk: ParallaxAudioChunk): ArrayBuffer {

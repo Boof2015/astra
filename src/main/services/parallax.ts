@@ -38,6 +38,11 @@ import {
 const TOKEN_PREFIX_LENGTH = 8
 const PAIRING_PIN_TTL_MS = 2 * 60_000
 const CLOCK_SYNC_INTERVAL_MS = 2_000
+// On connect/reconnect, fire a quick burst of clock probes so the host<->sink offset
+// converges (best-of-N lowest RTT) before first playback instead of after ~16s of the
+// slow 2s cadence. Without this, first play aligns from a single high-RTT sample.
+const CLOCK_PRIMING_PROBES = 8
+const CLOCK_PRIMING_INTERVAL_MS = 120
 const STATUS_RETRY_DELAY_MS = 1_000
 const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
 const SINK_AUTO_RECONNECT_ATTEMPTS = 3
@@ -529,8 +534,7 @@ export class ParallaxService {
       this.sinkReconnectAttempts = 0
       this.sinkActiveStream = join.stream
       this.emitStatus()
-      this.startClockSync()
-      void this.runClockProbe()
+      void this.primeClockSync(this.sinkConnection)
       void this.consumeSinkEvents()
       if (join.stream && join.timeline) {
         const event: ParallaxTimelineEvent = {
@@ -940,6 +944,23 @@ export class ParallaxService {
     }, CLOCK_SYNC_INTERVAL_MS)
   }
 
+  // Burst a series of probes back-to-back so the offset converges quickly, then hand off to
+  // the slow steady-state cadence. Status is emitted only by the final probe (see runClockProbe)
+  // so the renderer's first non-null clock offset already reflects the best-of-burst sample.
+  private async primeClockSync(connection: ParallaxSinkConnectionState): Promise<void> {
+    for (let index = 0; index < CLOCK_PRIMING_PROBES; index += 1) {
+      if (this.sinkConnection !== connection) return
+      const isLast = index === CLOCK_PRIMING_PROBES - 1
+      await this.runClockProbe(isLast)
+      if (this.sinkConnection !== connection) return
+      if (!isLast) {
+        await new Promise<void>((resolve) => setTimeout(resolve, CLOCK_PRIMING_INTERVAL_MS))
+      }
+    }
+    if (this.sinkConnection !== connection) return
+    this.startClockSync()
+  }
+
   private stopClockSync(): void {
     if (this.sinkClockTimer !== null) {
       clearInterval(this.sinkClockTimer)
@@ -1007,8 +1028,7 @@ export class ParallaxService {
       this.sinkActiveStream = join.stream
       this.sinkLastError = null
       this.emitStatus()
-      this.startClockSync()
-      void this.runClockProbe()
+      void this.primeClockSync(connection)
       void this.consumeSinkEvents()
       if (join.stream && join.timeline) {
         const event: ParallaxTimelineEvent = {
@@ -1030,7 +1050,7 @@ export class ParallaxService {
     }
   }
 
-  private async runClockProbe(): Promise<void> {
+  private async runClockProbe(emit = true): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
     const sinkSentAtMs = parallaxNowMs()
@@ -1050,7 +1070,7 @@ export class ParallaxService {
       )
       this.sinkClockSamples = [...this.sinkClockSamples, sample].slice(-PARALLAX_CLOCK_SAMPLE_LIMIT)
       this.sinkLastError = null
-      this.emitStatus()
+      if (emit) this.emitStatus()
     } catch (error) {
       if (this.sinkConnection !== connection) return
       if (isAbortLikeError(error)) return

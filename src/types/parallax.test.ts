@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildParallaxClockSample,
+  decideParallaxSinkCorrection,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
   mapHostTimeToSinkTimeMs,
@@ -54,6 +55,21 @@ test('Parallax audio packet round-trips chunk metadata and PCM bytes', () => {
   assert.equal(decoded.chunk.frameCount, 2)
   assert.equal(decoded.chunk.hostTimeMs, 123456.75)
   assert.deepEqual(Array.from(new Float32Array(decoded.chunk.pcmData)), Array.from(pcm))
+})
+
+test('Parallax sink correction snaps on large drift, holds in deadzone, slews between', () => {
+  // At 48kHz the hard-sync threshold is 0.04 * 48000 = 1920 frames; deadzone is 64 frames.
+  assert.deepEqual(decideParallaxSinkCorrection(5000, 48000), { mode: 'snap', playbackRatePpm: 0 })
+  assert.deepEqual(decideParallaxSinkCorrection(-5000, 48000), { mode: 'snap', playbackRatePpm: 0 })
+  assert.deepEqual(decideParallaxSinkCorrection(10, 48000), { mode: 'hold', playbackRatePpm: 0 })
+
+  // Slew band: ppm follows -drift * 2, clamped to ±250.
+  assert.deepEqual(decideParallaxSinkCorrection(-100, 48000), { mode: 'slew', playbackRatePpm: 200 })
+  assert.deepEqual(decideParallaxSinkCorrection(500, 48000), { mode: 'slew', playbackRatePpm: -250 })
+
+  // Non-finite drift is a no-op; bad sample rate falls back to 48kHz.
+  assert.deepEqual(decideParallaxSinkCorrection(Number.NaN, 48000), { mode: 'hold', playbackRatePpm: 0 })
+  assert.deepEqual(decideParallaxSinkCorrection(5000, 0), { mode: 'snap', playbackRatePpm: 0 })
 })
 
 test('Parallax audio packet waits for complete frame', () => {
