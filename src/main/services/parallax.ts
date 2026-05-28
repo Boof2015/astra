@@ -979,6 +979,13 @@ export class ParallaxService {
           boundary = buffer.indexOf('\n\n')
         }
       }
+      if (this.sinkConnection === connection) {
+        this.sinkLastError = 'Parallax event stream ended.'
+        this.emitStatus()
+        setTimeout(() => {
+          if (this.sinkConnection === connection) void this.consumeSinkEvents()
+        }, STATUS_RETRY_DELAY_MS)
+      }
     } catch (error) {
       if (this.sinkConnection !== connection) return
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax event stream disconnected.'
@@ -1016,7 +1023,7 @@ export class ParallaxService {
   private async consumeSinkAudio(streamId: string, fromFrame: number): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
-    if (connection.activeAudioStreamId === streamId) return
+    if (connection.activeAudioStreamId === streamId && connection.audioReader) return
     connection.activeAudioStreamId = streamId
 
     try {
@@ -1061,12 +1068,25 @@ export class ParallaxService {
           })
         }
       }
+      if (this.sinkConnection === connection && connection.activeAudioStreamId === streamId) {
+        connection.audioReader = null
+        connection.activeAudioStreamId = null
+        this.sinkLastError = 'Parallax audio stream ended.'
+        this.emitStatus()
+        setTimeout(() => {
+          if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
+            void this.consumeSinkAudio(streamId, fromFrame)
+          }
+        }, STATUS_RETRY_DELAY_MS)
+      }
     } catch (error) {
       if (this.sinkConnection !== connection || connection.activeAudioStreamId !== streamId) return
+      connection.audioReader = null
+      connection.activeAudioStreamId = null
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
       this.emitStatus()
       setTimeout(() => {
-        if (this.sinkConnection === connection && connection.activeAudioStreamId === streamId) {
+        if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
           void this.consumeSinkAudio(streamId, fromFrame)
         }
       }, STATUS_RETRY_DELAY_MS)

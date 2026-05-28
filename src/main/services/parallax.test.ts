@@ -40,6 +40,45 @@ async function tryCreateStartedParallaxService(): Promise<{ service: ParallaxSer
   }
 }
 
+async function pairSink(service: ParallaxService, baseUrl: string, sinkName: string = 'Desk'): Promise<ParallaxPairResponse> {
+  const pin = service.createPairingPin()
+  const pairedResponse = await fetch(`${baseUrl}/v1/parallax/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin: pin.pin, sinkName })
+  })
+  assert.equal(pairedResponse.status, 200)
+  return await pairedResponse.json() as ParallaxPairResponse
+}
+
+async function readParallaxSseEvents(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  count: number
+): Promise<Array<{ type: string; stream?: { streamId: string } }>> {
+  const decoder = new TextDecoder()
+  const events: Array<{ type: string; stream?: { streamId: string } }> = []
+  let buffer = ''
+
+  for (let attempt = 0; attempt < 16 && events.length < count; attempt += 1) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    buffer += decoder.decode(value, { stream: true })
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      const rawEvent = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      const dataLine = rawEvent.split(/\r?\n/).find((line) => line.startsWith('data: '))
+      if (dataLine) {
+        events.push(JSON.parse(dataLine.slice('data: '.length)) as { type: string; stream?: { streamId: string } })
+      }
+      boundary = buffer.indexOf('\n\n')
+    }
+  }
+
+  return events
+}
+
 test('Parallax host pairs sinks with an active PIN and requires bearer auth for join', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {
@@ -111,14 +150,7 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
   }
   const { service, baseUrl } = started
   try {
-    const pin = service.createPairingPin()
-    const pairedResponse = await fetch(`${baseUrl}/v1/parallax/pair`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin.pin, sinkName: 'Desk' })
-    })
-    assert.equal(pairedResponse.status, 200)
-    const paired = await pairedResponse.json() as ParallaxPairResponse
+    const paired = await pairSink(service, baseUrl)
 
     const timeline = service.publishHostStreamStart({
       streamId: 'stream-audio-test',
@@ -180,6 +212,61 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
     assert.equal(decoded.chunk.frameCount, 2)
     assert.equal(decoded.chunk.hostTimeMs, timeline.startHostTimeMs)
     assert.deepEqual(Array.from(new Float32Array(decoded.chunk.pcmData)), Array.from(pcm))
+  } finally {
+    await service.stop()
+  }
+})
+
+test('Parallax events endpoint delivers consecutive stream-start metadata updates', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    const paired = await pairSink(service, baseUrl)
+    const response = await fetch(`${baseUrl}/v1/parallax/events`, {
+      headers: { Authorization: `Bearer ${paired.token}` }
+    })
+    assert.equal(response.status, 200)
+    assert.ok(response.body)
+    const reader = response.body.getReader()
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      service.publishHostStreamStart({
+        streamId: 'stream-one',
+        trackId: 'track-one',
+        trackPath: '/tmp/one.flac',
+        title: 'One',
+        artist: 'Astra',
+        album: 'Parallax',
+        sampleRate: 48000,
+        channels: 2,
+        durationSeconds: 1,
+        totalFrames: 48000
+      })
+      service.publishHostStreamStart({
+        streamId: 'stream-two',
+        trackId: 'track-two',
+        trackPath: '/tmp/two.flac',
+        title: 'Two',
+        artist: 'Astra',
+        album: 'Parallax',
+        sampleRate: 48000,
+        channels: 2,
+        durationSeconds: 1,
+        totalFrames: 48000
+      })
+
+      const events = await readParallaxSseEvents(reader, 2)
+      assert.deepEqual(
+        events.filter((event) => event.type === 'stream-start').map((event) => event.stream?.streamId),
+        ['stream-one', 'stream-two']
+      )
+    } finally {
+      await reader.cancel().catch(() => undefined)
+    }
   } finally {
     await service.stop()
   }

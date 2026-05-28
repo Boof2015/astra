@@ -132,10 +132,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const status = get().status
       const stream = status?.sink.activeStream ?? null
       const timeline = get().latestTimeline
-      if (!status?.sink.connected || !stream || !timeline) return
-
       const snapshot = audioEngine.getParallaxSinkSnapshot()
       set({ sinkSnapshot: snapshot })
+      if (!status?.sink.connected || !stream || !timeline) return
+
       const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
       audioEngine.setParallaxSinkPlaybackRate(correction.playbackRatePpm)
       void window.electronAPI.parallax.publishSinkTelemetry({
@@ -195,6 +195,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           return
         }
         audioEngine.appendParallaxSinkAudioChunk(chunk)
+        set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
         applyChunkTimelineIfNeeded(chunk)
       })
     }
@@ -232,7 +233,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.stream.streamId)
       for (const chunk of bufferedChunks) {
         audioEngine.appendParallaxSinkAudioChunk(chunk)
+        applyChunkTimelineIfNeeded(chunk)
       }
+      set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
     }
 
     if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
@@ -346,6 +349,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
       set({ isLoading: true })
       try {
+        ensureSubscriptions()
         audioEngine.stop()
         const status = await window.electronAPI.parallax.connectSink(config)
         return applyStatus(status)
