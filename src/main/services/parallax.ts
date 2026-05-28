@@ -126,6 +126,13 @@ function sanitizePort(value: unknown, fallback: number): number {
   return parsed
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const name = 'name' in error ? String(error.name) : ''
+  const message = 'message' in error ? String(error.message) : ''
+  return name === 'AbortError' || /aborted/i.test(message)
+}
+
 function toJsonResponse(res: ServerResponse<IncomingMessage>, statusCode: number, body: unknown): void {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -563,6 +570,7 @@ export class ParallaxService {
       method: 'POST',
       body: JSON.stringify(telemetry)
     }).catch((error) => {
+      if (isAbortLikeError(error)) return
       this.sinkLastError = error instanceof Error ? error.message : 'Failed to publish Parallax telemetry.'
       this.emitStatus()
     })
@@ -928,13 +936,15 @@ export class ParallaxService {
   }
 
   private async runClockProbe(): Promise<void> {
-    if (!this.sinkConnection) return
+    const connection = this.sinkConnection
+    if (!connection) return
     const sinkSentAtMs = parallaxNowMs()
     try {
       const response = await this.fetchSinkJson('/v1/parallax/clock', {
         method: 'POST',
         body: JSON.stringify({ sinkSentAtMs })
       })
+      if (this.sinkConnection !== connection) return
       const sample = buildParallaxClockSample(
         response as {
           sinkSentAtMs: number
@@ -947,7 +957,8 @@ export class ParallaxService {
       this.sinkLastError = null
       this.emitStatus()
     } catch (error) {
-      if (!this.sinkConnection) return
+      if (this.sinkConnection !== connection) return
+      if (isAbortLikeError(error)) return
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax clock sync failed.'
       this.emitStatus()
     }
@@ -988,14 +999,18 @@ export class ParallaxService {
         }
       }
       if (this.sinkConnection === connection) {
-        this.sinkLastError = 'Parallax event stream ended.'
-        this.emitStatus()
         setTimeout(() => {
           if (this.sinkConnection === connection) void this.consumeSinkEvents()
         }, STATUS_RETRY_DELAY_MS)
       }
     } catch (error) {
       if (this.sinkConnection !== connection) return
+      if (isAbortLikeError(error)) {
+        setTimeout(() => {
+          if (this.sinkConnection === connection) void this.consumeSinkEvents()
+        }, STATUS_RETRY_DELAY_MS)
+        return
+      }
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax event stream disconnected.'
       this.emitStatus()
       setTimeout(() => {
@@ -1113,8 +1128,6 @@ export class ParallaxService {
       ) {
         connection.audioReader = null
         connection.activeAudioStreamId = null
-        this.sinkLastError = 'Parallax audio stream ended.'
-        this.emitStatus()
         setTimeout(() => {
           if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
             void this.consumeSinkAudio(streamId, fromFrame, true)
@@ -1129,6 +1142,14 @@ export class ParallaxService {
       ) return
       connection.audioReader = null
       connection.activeAudioStreamId = null
+      if (isAbortLikeError(error)) {
+        setTimeout(() => {
+          if (this.sinkConnection === connection && connection.activeAudioStreamId === null) {
+            void this.consumeSinkAudio(streamId, fromFrame, true)
+          }
+        }, STATUS_RETRY_DELAY_MS)
+        return
+      }
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
       this.emitStatus()
       setTimeout(() => {

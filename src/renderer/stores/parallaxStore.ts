@@ -135,7 +135,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     set({
       status,
       activePairingPin: status.host.activePairingPin,
-      ...(serviceError ? { errorMessage: serviceError } : {})
+      errorMessage: serviceError
     })
 
     const pending = get().pendingSinkEvent
