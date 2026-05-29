@@ -50,6 +50,16 @@ const CLOCK_PRIMING_INTERVAL_MS = 120
 // them indefinitely. Long-lived event/audio streams are intentionally excluded. Without this, a
 // reconnect that awaits clock priming could stall forever on a hung probe instead of retrying.
 const SINK_JSON_FETCH_TIMEOUT_MS = 3_000
+// Audio-stream stall watchdog. A WiFi blip can leave the long-lived audio stream half-open (no
+// FIN/RST), so `reader.read()` hangs forever with no error. If no chunk arrives for
+// PARALLAX_AUDIO_STALL_MS while playing, treat it as stalled and re-request the audio stream. Chunks
+// normally arrive every ~85 ms and the sink buffers ~3 s, so a ~1.2 s threshold detects the stall
+// well before the buffer drains — the buffer masks the gap and playback never cuts out.
+const PARALLAX_AUDIO_STALL_MS = 1_200
+const PARALLAX_AUDIO_STALL_CHECK_MS = 400
+// On reconnect, resume from the live frame minus this backfill so the host replays only a short
+// recent backlog (not the whole track) — keeps recovery fast enough to stay inside the buffer.
+const PARALLAX_AUDIO_RECONNECT_BACKFILL_MS = 1_000
 const STATUS_RETRY_DELAY_MS = 1_000
 const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
 const SINK_AUTO_RECONNECT_ATTEMPTS = 3
@@ -299,7 +309,10 @@ export class ParallaxService {
   private sinkReconnectTimer: ReturnType<typeof setTimeout> | null = null
   private sinkReconnectAttempts = 0
   private sinkActiveStream: ParallaxStreamInfo | null = null
+  private sinkTimeline: ParallaxTimelineState | null = null
   private sinkLastError: string | null = null
+  private lastAudioChunkAtMs = 0
+  private audioStallTimer: ReturnType<typeof setInterval> | null = null
   // Phase 0 diagnostics: latest output-latency signals reported by the host renderer (this machine).
   private lastHostLatencyMetrics: ParallaxOutputLatencyMetrics | null = null
 
@@ -610,6 +623,7 @@ export class ParallaxService {
       void this.primeClockSync(this.sinkConnection)
       void this.consumeSinkEvents()
       if (join.stream && join.timeline) {
+        this.sinkTimeline = join.timeline
         const event: ParallaxTimelineEvent = {
           type: 'stream-start',
           stream: join.stream,
@@ -635,6 +649,7 @@ export class ParallaxService {
     const connection = this.sinkConnection
     this.sinkConnection = null
     this.sinkActiveStream = null
+    this.sinkTimeline = null
     this.sinkClockSamples = []
     this.sinkLastError = null
 
@@ -1031,6 +1046,38 @@ export class ParallaxService {
     this.sinkClockTimer = setInterval(() => {
       void this.runClockProbe()
     }, CLOCK_SYNC_INTERVAL_MS)
+    this.startAudioStallWatchdog()
+  }
+
+  // Detect a half-open (silently stalled) audio stream and re-request it from the live frame before
+  // the sink's buffer drains, so playback is masked rather than cutting out. See PARALLAX_AUDIO_STALL_MS.
+  private startAudioStallWatchdog(): void {
+    this.stopAudioStallWatchdog()
+    this.lastAudioChunkAtMs = Date.now()
+    this.audioStallTimer = setInterval(() => {
+      this.checkAudioStall()
+    }, PARALLAX_AUDIO_STALL_CHECK_MS)
+  }
+
+  private stopAudioStallWatchdog(): void {
+    if (this.audioStallTimer !== null) {
+      clearInterval(this.audioStallTimer)
+      this.audioStallTimer = null
+    }
+  }
+
+  private checkAudioStall(): void {
+    const connection = this.sinkConnection
+    const stream = this.sinkActiveStream
+    if (!connection || !stream || !connection.activeAudioStreamId) return
+    // Only expect a steady chunk flow while playing; a paused host legitimately stops sending.
+    if (this.sinkTimeline?.playbackState !== 'playing') return
+    if (Date.now() - this.lastAudioChunkAtMs <= PARALLAX_AUDIO_STALL_MS) return
+    // Stalled: bump the timestamp so we don't re-fire on every check while the re-request is in
+    // flight, then re-request the audio stream from the live frame (consumeSinkAudio cancels the
+    // hung reader and re-fetches; the host flushes a short recent backlog and resumes).
+    this.lastAudioChunkAtMs = Date.now()
+    void this.consumeSinkAudio(stream.streamId, this.sinkTimeline?.startFrame ?? 0, true)
   }
 
   // Burst a series of probes back-to-back so the offset converges quickly, then hand off to
@@ -1058,6 +1105,7 @@ export class ParallaxService {
       clearInterval(this.sinkClockTimer)
       this.sinkClockTimer = null
     }
+    this.stopAudioStallWatchdog()
   }
 
   private clearSinkReconnectTimer(): void {
@@ -1132,6 +1180,7 @@ export class ParallaxService {
       this.emitStatus()
       void this.consumeSinkEvents()
       if (join.stream && join.timeline) {
+        this.sinkTimeline = join.timeline
         const event: ParallaxTimelineEvent = {
           type: 'stream-start',
           stream: join.stream,
@@ -1271,10 +1320,17 @@ export class ParallaxService {
 
     if (event.type === 'stream-start') {
       this.sinkActiveStream = event.stream
+      this.sinkTimeline = event.timeline
       this.emitStatus()
       void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
+    } else if (event.type === 'timeline') {
+      this.sinkTimeline = event.timeline
+      // Give a fresh grace window after a state change (resume/seek) so the stall watchdog doesn't
+      // fire before the host's chunk flow picks back up.
+      this.lastAudioChunkAtMs = Date.now()
     } else if (event.type === 'stop') {
       this.sinkActiveStream = null
+      this.sinkTimeline = null
       const connection = this.sinkConnection
       if (connection) {
         connection.audioGeneration += 1
@@ -1290,11 +1346,22 @@ export class ParallaxService {
 
   private getSinkReconnectFrame(streamId: string, fallbackFrame: number): number {
     const activeStream = this.sinkActiveStream
-    if (!activeStream || activeStream.streamId !== streamId) return Math.max(0, Math.floor(fallbackFrame))
-
-    // Keep reconnect frame selection centralized; the renderer still uses chunk
-    // timestamps for exact playback timing.
-    return Math.max(0, Math.floor(fallbackFrame))
+    const timeline = this.sinkTimeline
+    if (!activeStream || activeStream.streamId !== streamId || !timeline || timeline.streamId !== streamId) {
+      return Math.max(0, Math.floor(fallbackFrame))
+    }
+    // Paused: resume from the paused position (don't advance past it).
+    if (timeline.playbackState !== 'playing') {
+      return Math.max(0, Math.min(activeStream.totalFrames, Math.floor(timeline.startFrame)))
+    }
+    // Playing: resume from the live host frame minus a short backfill, so the host replays only a
+    // small recent backlog (not the whole track). The renderer still re-anchors via chunk timestamps.
+    const offsetMs = selectBestParallaxClockSample(this.sinkClockSamples)?.offsetMs ?? 0
+    const hostNowMs = parallaxNowMs() + offsetMs
+    const elapsedMs = Math.max(0, hostNowMs - timeline.startHostTimeMs)
+    const liveFrame = timeline.startFrame + Math.floor((elapsedMs * activeStream.sampleRate) / 1000)
+    const backfillFrames = Math.floor((PARALLAX_AUDIO_RECONNECT_BACKFILL_MS * activeStream.sampleRate) / 1000)
+    return Math.max(0, Math.min(activeStream.totalFrames, liveFrame - backfillFrames))
   }
 
   private async consumeSinkAudio(streamId: string, fromFrame: number, replace: boolean = false): Promise<void> {
@@ -1336,6 +1403,7 @@ export class ParallaxService {
       }
       connection.audioReader = reader
       this.sinkLastError = null
+      this.lastAudioChunkAtMs = Date.now()
       this.emitStatus()
       let pending: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
       while (
@@ -1346,6 +1414,7 @@ export class ParallaxService {
         const { done, value } = await reader.read()
         if (done) break
         if (!value) continue
+        this.lastAudioChunkAtMs = Date.now()
         const received = new Uint8Array(value.byteLength)
         received.set(value)
         pending = mergeBytes(pending, received)
