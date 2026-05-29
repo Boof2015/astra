@@ -23,6 +23,14 @@ export const PARALLAX_SYNC_DEADZONE_FRAMES = 64
 // single jittery clock/drift measurement can't cause a spurious gap.
 export const PARALLAX_SNAP_CONFIRM_TICKS = 2
 
+// Underrun recovery: if the sink buffer drains while still connected, the worklet self-pauses into
+// "rebuffering" after ~PARALLAX_STARVE_TRIGGER_MS of continuous starvation (mirrored as
+// starveTriggerFrames in the worklet). The renderer then waits until the buffer covers the live
+// host frame by at least PARALLAX_REBUFFER_MARGIN_MS before re-anchoring to live and resuming, so
+// the cursor never free-runs into empty data. The host streams ~3 s ahead, so the margin refills fast.
+export const PARALLAX_STARVE_TRIGGER_MS = 250
+export const PARALLAX_REBUFFER_MARGIN_MS = 500
+
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
 
@@ -159,6 +167,9 @@ export interface ParallaxSinkTelemetry {
   outputLatencyMs?: number | null
   baseLatencyMs?: number | null
   timestampLatencyMs?: number | null
+  // Underrun-recovery diagnostics.
+  rebuffering?: boolean
+  starvedFrames?: number
 }
 
 export interface ParallaxHostStatus {

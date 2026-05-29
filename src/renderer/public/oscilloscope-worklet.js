@@ -243,6 +243,10 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     this.basePlaybackRate = this.sourceSampleRate / sampleRate
     this.reportIntervalFrames = 2048
     this.maxRetainedChunks = 512
+    // Self-pause into "rebuffering" after this many consecutive starved output frames (~250 ms),
+    // so a drained buffer can refill instead of free-running the cursor into empty data.
+    // Keep ~in sync with PARALLAX_STARVE_TRIGGER_MS in src/types/parallax.ts.
+    this.starveTriggerFrames = Math.max(1, Math.floor(0.25 * sampleRate))
     this.reset()
     this.port.onmessage = (event) => {
       if (!event || typeof event.data !== 'object' || event.data == null) return
@@ -276,6 +280,8 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     this.lastReportedFrame = -1
     this.underruns = 0
     this.lastUnderrunReportFrame = -1
+    this.starvedFrames = 0
+    this.rebuffering = false
   }
 
   rateFromPpm(value) {
@@ -310,6 +316,9 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     this.playbackRate = this.rateFromPpm(payload.playbackRatePpm)
     this.playing = Boolean(payload.playing)
     this.framesSinceReport = 0
+    // A fresh timeline is a clean (re-)anchor — leave any rebuffering state behind.
+    this.starvedFrames = 0
+    this.rebuffering = false
     this.postPosition(true)
   }
 
@@ -371,7 +380,10 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
       type: 'position',
       frame,
       bufferedFrames: Math.max(0, bufferedEndFrame - frame),
+      bufferedEndFrame,
       underruns: this.underruns,
+      starvedFrames: this.starvedFrames,
+      rebuffering: this.rebuffering,
       playbackRatePpm: Math.round(((this.playbackRate / (this.basePlaybackRate || 1)) - 1) * 1000000)
     })
   }
@@ -396,6 +408,15 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     }
 
     if (!this.playing) {
+      // While rebuffering we are intentionally paused, but keep reporting so the renderer can see
+      // the buffer refill (bufferedEndFrame) and decide when to re-anchor to the live host frame.
+      if (this.rebuffering) {
+        this.framesSinceReport += output[0].length
+        if (this.framesSinceReport >= this.reportIntervalFrames) {
+          this.framesSinceReport = 0
+          this.postPosition(true)
+        }
+      }
       return true
     }
 
@@ -426,16 +447,32 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
       if (!anyReadable) {
         const nextChunk = this.findNextChunk(sourceFrame)
         if (nextChunk && nextChunk.startFrame > sourceFrame) {
+          // Data exists ahead (a gap, not a drained buffer): skip to it, not a starvation.
           this.currentFrameFloat = nextChunk.startFrame
           this.currentFrame = nextChunk.startFrame
+          this.starvedFrames = 0
+        } else {
+          // Nothing buffered ahead: the cursor is frozen and we are truly starved.
+          this.starvedFrames += 1
         }
         this.framesSinceReport += 1
         continue
       }
 
+      this.starvedFrames = 0
       this.currentFrameFloat += this.playbackRate
       this.currentFrame = Math.floor(this.currentFrameFloat)
       this.framesSinceReport += 1
+    }
+
+    // Sustained starvation while connected: self-pause into rebuffering instead of free-running the
+    // cursor into empty data. The renderer re-anchors to the live host frame once the buffer refills.
+    if (this.playing && !this.rebuffering && this.starvedFrames >= this.starveTriggerFrames) {
+      this.rebuffering = true
+      this.playing = false
+      this.framesSinceReport = 0
+      this.postPosition(true)
+      return true
     }
 
     if (this.framesSinceReport >= this.reportIntervalFrames) {

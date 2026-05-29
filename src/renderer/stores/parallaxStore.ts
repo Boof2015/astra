@@ -16,6 +16,7 @@ import {
   clampParallaxPlaybackRatePpm,
   decideParallaxSinkCorrection,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
+  PARALLAX_REBUFFER_MARGIN_MS,
   PARALLAX_RESYNC_LEAD_MS,
   PARALLAX_RESYNC_MIN_INTERVAL_MS,
   PARALLAX_SNAP_CONFIRM_TICKS
@@ -32,8 +33,11 @@ interface ParallaxSettingsStore {
     streamId: string | null
     currentFrame: number
     bufferedFrames: number
+    bufferedEndFrame: number
     underruns: number
     playbackRatePpm: number
+    starvedFrames: number
+    rebuffering: boolean
   }
   isLoading: boolean
   isInitialized: boolean
@@ -196,40 +200,59 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       set({ sinkSnapshot: snapshot })
       if (!status?.sink.connected || !stream || !timeline) return
 
-      const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
-      const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
       const now = performance.timeOrigin + performance.now()
       const hasOffset = status.sink.clockOffsetMs !== null && status.sink.clockOffsetMs !== undefined
-      const wantsSnap = decision.mode === 'snap' && timeline.playbackState === 'playing' && hasOffset
-      snapPendingTicks = wantsSnap ? snapPendingTicks + 1 : 0
-
-      let appliedPpm = decision.playbackRatePpm
-      if (
-        wantsSnap &&
-        snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
-        now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
-      ) {
-        const hostNowMs = resolveHostNowMs(status)
-        const targetFrame = Math.max(
+      const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
+      // Live host frame (+ lead), the cursor target for both a hard snap and a rebuffer resume.
+      const liveTargetFrame = (): number =>
+        Math.max(
           0,
           Math.min(
             stream.totalFrames,
             timeline.startFrame +
-              Math.floor(((hostNowMs + PARALLAX_RESYNC_LEAD_MS - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
+              Math.floor(((resolveHostNowMs(status) + PARALLAX_RESYNC_LEAD_MS - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
           )
         )
-        audioEngine.resyncParallaxSinkToHostFrame(targetFrame, PARALLAX_RESYNC_LEAD_MS / 1000)
-        lastHardSyncAtMs = now
+
+      let appliedPpm = 0
+      if (snapshot.rebuffering) {
+        // The worklet self-paused after its buffer drained. Hold (no snap/slew) until the buffer
+        // covers the live host frame by a safe margin, then re-anchor to live and resume — so the
+        // cursor never free-runs into empty data (the underrun spiral that previously killed the sink).
         snapPendingTicks = 0
-        appliedPpm = 0
+        const marginFrames = Math.floor((PARALLAX_REBUFFER_MARGIN_MS * stream.sampleRate) / 1000)
+        const target = liveTargetFrame()
+        if (
+          timeline.playbackState === 'playing' &&
+          hasOffset &&
+          snapshot.bufferedEndFrame >= target + marginFrames
+        ) {
+          audioEngine.resyncParallaxSinkToHostFrame(target, PARALLAX_RESYNC_LEAD_MS / 1000)
+          lastHardSyncAtMs = now
+        }
       } else {
-        // Slew toward the host. During the pre-snap confirmation window we still apply the full
-        // rate correction so a real offset starts closing smoothly; if it was just measurement
-        // noise the next tick falls back into the deadzone and no gap is ever produced.
-        appliedPpm = wantsSnap
-          ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
-          : decision.playbackRatePpm
-        audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
+        const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
+        const wantsSnap = decision.mode === 'snap' && timeline.playbackState === 'playing' && hasOffset
+        snapPendingTicks = wantsSnap ? snapPendingTicks + 1 : 0
+        appliedPpm = decision.playbackRatePpm
+        if (
+          wantsSnap &&
+          snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
+          now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
+        ) {
+          audioEngine.resyncParallaxSinkToHostFrame(liveTargetFrame(), PARALLAX_RESYNC_LEAD_MS / 1000)
+          lastHardSyncAtMs = now
+          snapPendingTicks = 0
+          appliedPpm = 0
+        } else {
+          // Slew toward the host. During the pre-snap confirmation window we still apply the full
+          // rate correction so a real offset starts closing smoothly; if it was just measurement
+          // noise the next tick falls back into the deadzone and no gap is ever produced.
+          appliedPpm = wantsSnap
+            ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
+            : decision.playbackRatePpm
+          audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
+        }
       }
       const sinkLatency = audioEngine.getOutputLatencyMetrics()
       void window.electronAPI.parallax.publishSinkTelemetry({
@@ -242,7 +265,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         reportedAtMs: Date.now(),
         outputLatencyMs: sinkLatency.outputLatencyMs,
         baseLatencyMs: sinkLatency.baseLatencyMs,
-        timestampLatencyMs: sinkLatency.timestampLatencyMs
+        timestampLatencyMs: sinkLatency.timestampLatencyMs,
+        rebuffering: snapshot.rebuffering,
+        starvedFrames: snapshot.starvedFrames
       })
     }, 1000)
   }
@@ -366,8 +391,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       streamId: null,
       currentFrame: 0,
       bufferedFrames: 0,
+      bufferedEndFrame: 0,
       underruns: 0,
-      playbackRatePpm: 0
+      playbackRatePpm: 0,
+      starvedFrames: 0,
+      rebuffering: false
     },
     isLoading: false,
     isInitialized: false,

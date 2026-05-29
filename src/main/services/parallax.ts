@@ -188,7 +188,8 @@ function appendParallaxTelemetryLog(
         path,
         'host_recv_ms,reported_ms,drift_frames,rtt_ms,ppm,buffered_ms,underruns,' +
           'sink_out_lat_ms,sink_base_lat_ms,sink_ts_lat_ms,' +
-          'host_out_lat_ms,host_base_lat_ms,host_ts_lat_ms,acoustic_drift_frames\n'
+          'host_out_lat_ms,host_base_lat_ms,host_ts_lat_ms,acoustic_drift_frames,' +
+          'rebuffering,starved_frames\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -198,7 +199,7 @@ function appendParallaxTelemetryLog(
         `${csvNum(t.playbackRatePpm)},${csvNum(t.bufferedMs)},${csvNum(t.underruns)},` +
         `${csvNum(t.outputLatencyMs)},${csvNum(t.baseLatencyMs)},${csvNum(t.timestampLatencyMs)},` +
         `${csvNum(hostMetrics?.outputLatencyMs)},${csvNum(hostMetrics?.baseLatencyMs)},${csvNum(hostMetrics?.timestampLatencyMs)},` +
-        `${acousticDriftFrames}\n`
+        `${acousticDriftFrames},${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)}\n`
     )
   } catch {
     /* diagnostics best-effort */

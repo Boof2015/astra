@@ -196,8 +196,11 @@ interface ParallaxSinkRuntimeState {
   durationSeconds: number
   currentFrame: number
   bufferedFrames: number
+  bufferedEndFrame: number
   underruns: number
   playbackRatePpm: number
+  starvedFrames: number
+  rebuffering: boolean
 }
 
 export type OutputDelayCalibrationFailureCode =
@@ -1935,9 +1938,16 @@ export class AudioEngine {
         this.parallaxSinkState.bufferedFrames = Number.isFinite(payload.bufferedFrames)
           ? Math.max(0, Math.floor(payload.bufferedFrames))
           : this.parallaxSinkState.bufferedFrames
+        this.parallaxSinkState.bufferedEndFrame = Number.isFinite(payload.bufferedEndFrame)
+          ? Math.max(0, Math.floor(payload.bufferedEndFrame))
+          : this.parallaxSinkState.bufferedEndFrame
         this.parallaxSinkState.underruns = Number.isFinite(payload.underruns)
           ? Math.max(0, Math.floor(payload.underruns))
           : this.parallaxSinkState.underruns
+        this.parallaxSinkState.starvedFrames = Number.isFinite(payload.starvedFrames)
+          ? Math.max(0, Math.floor(payload.starvedFrames))
+          : this.parallaxSinkState.starvedFrames
+        this.parallaxSinkState.rebuffering = Boolean(payload.rebuffering)
         this.parallaxSinkState.playbackRatePpm = clampParallaxPlaybackRatePpm(Number(payload.playbackRatePpm))
         this.sampleParallaxTimestampLatency()
         this.emit('timeUpdate', this.currentTime)
@@ -2299,8 +2309,11 @@ export class AudioEngine {
       durationSeconds: stream.durationSeconds,
       currentFrame: 0,
       bufferedFrames: 0,
+      bufferedEndFrame: 0,
       underruns: 0,
-      playbackRatePpm: 0
+      playbackRatePpm: 0,
+      starvedFrames: 0,
+      rebuffering: false
     }
 
     this.applyChannelRoutingPreferences(stream.channels)
@@ -2427,15 +2440,21 @@ export class AudioEngine {
     streamId: string | null
     currentFrame: number
     bufferedFrames: number
+    bufferedEndFrame: number
     underruns: number
     playbackRatePpm: number
+    starvedFrames: number
+    rebuffering: boolean
   } {
     return {
       streamId: this.parallaxSinkState?.streamId ?? null,
       currentFrame: this.parallaxSinkState?.currentFrame ?? 0,
       bufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
+      bufferedEndFrame: this.parallaxSinkState?.bufferedEndFrame ?? 0,
       underruns: this.parallaxSinkState?.underruns ?? 0,
-      playbackRatePpm: this.parallaxSinkState?.playbackRatePpm ?? 0
+      playbackRatePpm: this.parallaxSinkState?.playbackRatePpm ?? 0,
+      starvedFrames: this.parallaxSinkState?.starvedFrames ?? 0,
+      rebuffering: this.parallaxSinkState?.rebuffering ?? false
     }
   }
 
