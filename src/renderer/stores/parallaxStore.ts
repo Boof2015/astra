@@ -185,6 +185,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (telemetryTimer !== null) return
     telemetryTimer = window.setInterval(() => {
       const status = get().status
+      // Phase 0 diagnostics: when acting as host with a connected sink, report our own output-latency
+      // signals to the main process so the host-side telemetry CSV can log both ends in one row.
+      if (status?.host.active && status.host.connectedSinkCount > 0) {
+        void window.electronAPI.parallax.reportHostLatency(audioEngine.getOutputLatencyMetrics())
+      }
       const stream = status?.sink.activeStream ?? null
       const timeline = get().latestTimeline
       const snapshot = audioEngine.getParallaxSinkSnapshot()
@@ -226,6 +231,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           : decision.playbackRatePpm
         audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
       }
+      const sinkLatency = audioEngine.getOutputLatencyMetrics()
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
@@ -233,7 +239,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         rttMs: status.sink.rttMs,
         underruns: snapshot.underruns,
         playbackRatePpm: appliedPpm,
-        reportedAtMs: Date.now()
+        reportedAtMs: Date.now(),
+        outputLatencyMs: sinkLatency.outputLatencyMs,
+        baseLatencyMs: sinkLatency.baseLatencyMs,
+        timestampLatencyMs: sinkLatency.timestampLatencyMs
       })
     }, 1000)
   }
@@ -531,6 +540,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     prepareHostPlayback: async (track) => {
       if (!get().shouldDelayHostPlayback(track)) return null
+      ensureTelemetry()
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
       const streamId = createStreamId(track)
@@ -554,6 +564,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // WITHOUT rescheduling the host's own audio (no playCurrentBufferOnParallaxTimeline call).
       if (!get().shouldDelayHostPlayback(track) || !track) return null
       if (getActiveHostStream()) return null
+      ensureTelemetry()
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
       const streamId = createStreamId(track)

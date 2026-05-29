@@ -1,3 +1,4 @@
+import { appendFileSync } from 'fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
 import { performance } from 'perf_hooks'
@@ -7,6 +8,7 @@ import type {
   ParallaxHostConfig,
   ParallaxHostStreamStartOptions,
   ParallaxJoinResponse,
+  ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
@@ -151,6 +153,58 @@ function isTimeoutError(error: unknown): boolean {
   return ('name' in error ? String(error.name) : '') === 'TimeoutError'
 }
 
+// Phase 0 diagnostics: when PARALLAX_TELEM_LOG=<path> is set on the HOST, append each received sink
+// telemetry report as a CSV row, joined with the host's own latency signals + a derived
+// acoustic-drift estimate, so we can correlate the sink's internal drift/RTT/ppm/latency against an
+// acoustic measurement (the chirp rig). No effect unless the env var is set.
+let parallaxTelemetryLogStarted = false
+function csvNum(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+}
+function appendParallaxTelemetryLog(
+  body: unknown,
+  hostMetrics: ParallaxOutputLatencyMetrics | null,
+  sampleRate: number | null
+): void {
+  const path = process.env.PARALLAX_TELEM_LOG
+  if (!path || !body || typeof body !== 'object') return
+  const t = body as Partial<ParallaxSinkTelemetry>
+  // acoustic drift (frames) = measured cursor drift minus the device output-latency difference,
+  // i.e. what the rig should see once per-device latency is compensated. Blank if data is missing.
+  let acousticDriftFrames = ''
+  if (
+    typeof t.driftFrames === 'number' && Number.isFinite(t.driftFrames) &&
+    typeof t.outputLatencyMs === 'number' && Number.isFinite(t.outputLatencyMs) &&
+    hostMetrics && typeof hostMetrics.outputLatencyMs === 'number' && Number.isFinite(hostMetrics.outputLatencyMs) &&
+    typeof sampleRate === 'number' && sampleRate > 0
+  ) {
+    acousticDriftFrames = String(
+      t.driftFrames - ((t.outputLatencyMs - hostMetrics.outputLatencyMs) * sampleRate) / 1000
+    )
+  }
+  try {
+    if (!parallaxTelemetryLogStarted) {
+      appendFileSync(
+        path,
+        'host_recv_ms,reported_ms,drift_frames,rtt_ms,ppm,buffered_ms,underruns,' +
+          'sink_out_lat_ms,sink_base_lat_ms,sink_ts_lat_ms,' +
+          'host_out_lat_ms,host_base_lat_ms,host_ts_lat_ms,acoustic_drift_frames\n'
+      )
+      parallaxTelemetryLogStarted = true
+    }
+    appendFileSync(
+      path,
+      `${Date.now()},${csvNum(t.reportedAtMs)},${csvNum(t.driftFrames)},${csvNum(t.rttMs)},` +
+        `${csvNum(t.playbackRatePpm)},${csvNum(t.bufferedMs)},${csvNum(t.underruns)},` +
+        `${csvNum(t.outputLatencyMs)},${csvNum(t.baseLatencyMs)},${csvNum(t.timestampLatencyMs)},` +
+        `${csvNum(hostMetrics?.outputLatencyMs)},${csvNum(hostMetrics?.baseLatencyMs)},${csvNum(hostMetrics?.timestampLatencyMs)},` +
+        `${acousticDriftFrames}\n`
+    )
+  } catch {
+    /* diagnostics best-effort */
+  }
+}
+
 function toJsonResponse(res: ServerResponse<IncomingMessage>, statusCode: number, body: unknown): void {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -245,6 +299,8 @@ export class ParallaxService {
   private sinkReconnectAttempts = 0
   private sinkActiveStream: ParallaxStreamInfo | null = null
   private sinkLastError: string | null = null
+  // Phase 0 diagnostics: latest output-latency signals reported by the host renderer (this machine).
+  private lastHostLatencyMetrics: ParallaxOutputLatencyMetrics | null = null
 
   constructor(options: ParallaxServiceOptions) {
     this.config = { ...options.config }
@@ -272,7 +328,10 @@ export class ParallaxService {
         pairedSinkCount: this.pairedSinks.filter((sink) => sink.revokedAt === null).length,
         connectedSinkCount: new Set(Array.from(this.sseClients, (client) => client.sinkId)).size,
         activeStream: this.activeStream?.info ?? null,
-        lastError: this.lastError
+        lastError: this.lastError,
+        outputLatencyMs: this.lastHostLatencyMetrics?.outputLatencyMs ?? null,
+        baseLatencyMs: this.lastHostLatencyMetrics?.baseLatencyMs ?? null,
+        timestampLatencyMs: this.lastHostLatencyMetrics?.timestampLatencyMs ?? null
       },
       sink: {
         connected: sinkConnected,
@@ -605,6 +664,17 @@ export class ParallaxService {
     })
   }
 
+  // Phase 0 diagnostics: the host renderer reports its own output-latency signals (~1 Hz) so the
+  // telemetry CSV can log both ends. Pure diagnostics; does not affect playback.
+  recordHostLatencyMetrics(metrics: ParallaxOutputLatencyMetrics | null | undefined): void {
+    if (!metrics || typeof metrics !== 'object') return
+    this.lastHostLatencyMetrics = {
+      outputLatencyMs: Number.isFinite(metrics.outputLatencyMs as number) ? Number(metrics.outputLatencyMs) : null,
+      baseLatencyMs: Number.isFinite(metrics.baseLatencyMs as number) ? Number(metrics.baseLatencyMs) : null,
+      timestampLatencyMs: Number.isFinite(metrics.timestampLatencyMs as number) ? Number(metrics.timestampLatencyMs) : null
+    }
+  }
+
   async stop(): Promise<void> {
     await this.disconnectSink()
     await this.stopHostServer()
@@ -791,7 +861,12 @@ export class ParallaxService {
 
     if (method === 'POST' && path === '/v1/parallax/telemetry') {
       try {
-        await readJsonBody(req)
+        const telemetryBody = await readJsonBody(req)
+        appendParallaxTelemetryLog(
+          telemetryBody,
+          this.lastHostLatencyMetrics,
+          this.activeStream?.info.sampleRate ?? null
+        )
       } catch {
         toJsonResponse(res, 400, { error: 'Invalid telemetry payload.' })
         return

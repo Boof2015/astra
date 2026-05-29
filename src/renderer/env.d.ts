@@ -30,6 +30,7 @@ import type {
 import type {
   ParallaxAudioChunk,
   ParallaxHostStreamStartOptions,
+  ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
@@ -332,6 +333,7 @@ declare global {
                 publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
                 stopHostStream: () => Promise<void>
                 publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+                reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
                 revokeAllPairedSinks: () => Promise<number>
                 resetToDefaults: () => Promise<ParallaxStatus>

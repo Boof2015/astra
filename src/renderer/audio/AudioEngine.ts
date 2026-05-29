@@ -2,6 +2,7 @@ import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
   ParallaxAudioChunk,
+  ParallaxOutputLatencyMetrics,
   ParallaxStreamInfo,
   ParallaxTimelineState
 } from '../../types/parallax'
@@ -384,6 +385,10 @@ export class AudioEngine {
   private loadGeneration = 0
   private prebufferGeneration = 0
   private parallaxHostPublishGeneration = 0
+  // Phase 0 diagnostics: rolling window of (currentTime - getOutputTimestamp().contextTime) in ms,
+  // median-filtered to a stable un-quantized output-latency estimate.
+  private parallaxTimestampLatencySamples: number[] = []
+  private readonly parallaxTimestampLatencyWindow = 31
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -1934,6 +1939,7 @@ export class AudioEngine {
           ? Math.max(0, Math.floor(payload.underruns))
           : this.parallaxSinkState.underruns
         this.parallaxSinkState.playbackRatePpm = clampParallaxPlaybackRatePpm(Number(payload.playbackRatePpm))
+        this.sampleParallaxTimestampLatency()
         this.emit('timeUpdate', this.currentTime)
       }
 
@@ -2430,6 +2436,44 @@ export class AudioEngine {
       bufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
       underruns: this.parallaxSinkState?.underruns ?? 0,
       playbackRatePpm: this.parallaxSinkState?.playbackRatePpm ?? 0
+    }
+  }
+
+  // Phase 0 diagnostics: push one (currentTime - getOutputTimestamp().contextTime) sample. Cheap;
+  // safe to call from the high-rate sink position handler and the 1 Hz telemetry/host tick.
+  private sampleParallaxTimestampLatency(): void {
+    const ctx = this.context
+    if (!ctx || ctx.state !== 'running') return
+    const snapshot = this.getContextClockSnapshot(ctx)
+    const latencyMs = (ctx.currentTime - snapshot.contextTime) * 1000
+    if (!Number.isFinite(latencyMs) || latencyMs < 0) return
+    const samples = this.parallaxTimestampLatencySamples
+    samples.push(latencyMs)
+    if (samples.length > this.parallaxTimestampLatencyWindow) {
+      samples.splice(0, samples.length - this.parallaxTimestampLatencyWindow)
+    }
+  }
+
+  private medianParallaxTimestampLatencyMs(): number | null {
+    const samples = this.parallaxTimestampLatencySamples
+    if (samples.length === 0) return null
+    const sorted = [...samples].sort((left, right) => left - right)
+    const mid = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+  }
+
+  // Phase 0 diagnostics: the three output-latency signals for this device's AudioContext.
+  getOutputLatencyMetrics(): ParallaxOutputLatencyMetrics {
+    this.sampleParallaxTimestampLatency()
+    const ctx = this.context
+    return {
+      outputLatencyMs: ctx
+        ? this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+        : null,
+      baseLatencyMs: ctx
+        ? this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+        : null,
+      timestampLatencyMs: this.medianParallaxTimestampLatencyMs()
     }
   }
 

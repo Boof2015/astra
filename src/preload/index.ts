@@ -29,6 +29,7 @@ import type {
 } from '../types/phoneRemote'
 import type {
   ParallaxAudioChunk,
+  ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxHostStreamStartOptions,
@@ -806,6 +807,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
     publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
       ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
+    reportHostLatency: (metrics: ParallaxOutputLatencyMetrics): Promise<void> =>
+      ipcRenderer.invoke('parallax:reportHostLatency', metrics),
     revokePairedSink: (id: string): Promise<ParallaxPairedSink | null> =>
       ipcRenderer.invoke('parallax:revokePairedSink', id),
     revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
@@ -1275,6 +1278,7 @@ declare global {
         publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
         stopHostStream: () => Promise<void>
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+        reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
         revokeAllPairedSinks: () => Promise<number>
         resetToDefaults: () => Promise<ParallaxStatus>

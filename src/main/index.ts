@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, session } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -129,6 +129,7 @@ import {
   type ParallaxAudioChunk,
   type ParallaxHostConfig,
   type ParallaxHostStreamStartOptions,
+  type ParallaxOutputLatencyMetrics,
   type ParallaxSinkConnectionConfig,
   type ParallaxSinkTelemetry,
   type ParallaxStreamInfo,
@@ -3697,6 +3698,16 @@ app.on('open-file', (event, filePath) => {
 queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(process.argv))
 
 app.whenReady().then(async () => {
+  // Grant audio-capture permission up front so Web Audio's AudioContext.outputLatency reports at
+  // 1ms precision instead of 8ms — Blink quantizes it coarsely until the document holds microphone
+  // permission, and Parallax output-latency compensation depends on accurate readings. This app
+  // only loads its own trusted bundled UI (and already uses getUserMedia for output calibration),
+  // so this is not a meaningful expansion of what the renderer could already do.
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(true)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => true)
+
   // Initialize library database
   await library.initDatabase()
   try {
@@ -4748,6 +4759,10 @@ ipcMain.handle('parallax:stopHostStream', () => {
 
 ipcMain.handle('parallax:publishSinkTelemetry', async (_event, telemetry: ParallaxSinkTelemetry) => {
   await parallaxService.publishSinkTelemetry(telemetry)
+})
+
+ipcMain.handle('parallax:reportHostLatency', (_event, metrics: ParallaxOutputLatencyMetrics) => {
+  parallaxService.recordHostLatencyMetrics(metrics)
 })
 
 ipcMain.handle('parallax:revokePairedSink', (_event, id: unknown) => {

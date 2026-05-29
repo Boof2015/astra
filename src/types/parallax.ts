@@ -138,6 +138,15 @@ export interface ParallaxAudioPacketHeader {
   payloadBytes: number
 }
 
+// Phase 0 diagnostics: a device's reported audio output-latency signals (all in ms).
+// outputLatencyMs/baseLatencyMs come from AudioContext; timestampLatencyMs is the median-filtered
+// (currentTime - getOutputTimestamp().contextTime), the un-quantized acoustic-output latency.
+export interface ParallaxOutputLatencyMetrics {
+  outputLatencyMs: number | null
+  baseLatencyMs: number | null
+  timestampLatencyMs: number | null
+}
+
 export interface ParallaxSinkTelemetry {
   streamId: string | null
   bufferedMs: number
@@ -146,6 +155,10 @@ export interface ParallaxSinkTelemetry {
   underruns: number
   playbackRatePpm: number
   reportedAtMs: number
+  // Phase 0 diagnostics: the sink's own reported output-latency signals (optional; absent on older sinks).
+  outputLatencyMs?: number | null
+  baseLatencyMs?: number | null
+  timestampLatencyMs?: number | null
 }
 
 export interface ParallaxHostStatus {
@@ -159,6 +172,10 @@ export interface ParallaxHostStatus {
   connectedSinkCount: number
   activeStream: ParallaxStreamInfo | null
   lastError: string | null
+  // Phase 0 diagnostics: the host's own reported output-latency signals (ms), reported by the host renderer.
+  outputLatencyMs?: number | null
+  baseLatencyMs?: number | null
+  timestampLatencyMs?: number | null
 }
 
 export interface ParallaxSinkStatus {
