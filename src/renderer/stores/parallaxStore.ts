@@ -32,6 +32,7 @@ interface ParallaxSettingsStore {
   sinkSnapshot: {
     streamId: string | null
     currentFrame: number
+    currentFrameAtWallMs: number
     bufferedFrames: number
     bufferedEndFrame: number
     underruns: number
@@ -130,16 +131,30 @@ function buildHostTimeline(
 function computeRateCorrectionPpm(
   timeline: ParallaxTimelineState,
   stream: ParallaxStreamInfo,
-  currentFrame: number,
+  snapshot: { currentFrame: number; currentFrameAtWallMs: number },
   status: ParallaxStatus | null
 ): { driftFrames: number; playbackRatePpm: number } {
   if (timeline.playbackState !== 'playing') {
     return { driftFrames: 0, playbackRatePpm: 0 }
   }
+  // Drift only makes sense once the worklet has reported at least one timestamped position. Before
+  // that the formula would compare a frame=0 cursor against a positive expected frame and produce a
+  // spurious large drift on the very first tick.
+  if (!Number.isFinite(snapshot.currentFrameAtWallMs) || snapshot.currentFrameAtWallMs <= 0) {
+    return { driftFrames: 0, playbackRatePpm: 0 }
+  }
 
-  const hostElapsedSeconds = Math.max(0, (resolveHostNowMs(status) - timeline.startHostTimeMs) / 1000)
-  const expectedFrame = timeline.startFrame + Math.floor(hostElapsedSeconds * stream.sampleRate)
-  const driftFrames = currentFrame - expectedFrame
+  // Compute drift at the wall instant the worklet reported the cursor, NOT at "now" — this is the
+  // step-3 cleanup that kills the ~1 s aliasing between the 1 Hz tick and the ~46 ms worklet
+  // report cadence. NOTE — step 3 deliberately omits any sink-output-latency term in expectedFrame.
+  // That belongs with auto-comp scheduling (step 5) and must ship paired with it; adding it here
+  // alone would make the loop chase a target that scheduling doesn't satisfy.
+  const offsetMs = status?.sink.clockOffsetMs ?? 0
+  const hostTimeAtReport = snapshot.currentFrameAtWallMs + offsetMs
+  const elapsedMs = Math.max(0, hostTimeAtReport - timeline.startHostTimeMs)
+  const expectedFrame = timeline.startFrame
+    + Math.floor((elapsedMs * stream.sampleRate) / 1000)
+  const driftFrames = snapshot.currentFrame - expectedFrame
   return {
     driftFrames,
     playbackRatePpm: clampParallaxPlaybackRatePpm(-driftFrames * 2)
@@ -202,7 +217,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
       const now = performance.timeOrigin + performance.now()
       const hasOffset = status.sink.clockOffsetMs !== null && status.sink.clockOffsetMs !== undefined
-      const correction = computeRateCorrectionPpm(timeline, stream, snapshot.currentFrame, status)
+      const correction = computeRateCorrectionPpm(timeline, stream, snapshot, status)
       // Live host frame (+ lead), the cursor target for both a hard snap and a rebuffer resume.
       const liveTargetFrame = (): number =>
         Math.max(
@@ -390,6 +405,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     sinkSnapshot: {
       streamId: null,
       currentFrame: 0,
+      currentFrameAtWallMs: 0,
       bufferedFrames: 0,
       bufferedEndFrame: 0,
       underruns: 0,

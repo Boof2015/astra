@@ -369,16 +369,26 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     }
   }
 
-  postPosition(force = false) {
+  postPosition(force = false, contextTimeOverride = null) {
     const frame = Math.max(0, Math.floor(this.currentFrameFloat))
     if (!force && frame === this.lastReportedFrame) return
     this.lastReportedFrame = frame
     const bufferedEndFrame = this.chunks.reduce((maxFrame, chunk) => {
       return Math.max(maxFrame, chunk.startFrame + chunk.frameCount)
     }, 0)
+    // Processing-context time corresponding to the reported `frame`. The renderer maps this
+    // through its own AudioContext.currentTime to derive the wall time the cursor was at `frame`,
+    // so drift is computed at the report's actual instant — kills the 1 Hz / 46 ms aliasing.
+    //
+    // The reported `frame` is the cursor AFTER process() advanced through the quantum, so callers
+    // inside process() pass end-of-block time (`currentTime + frameCount / sampleRate`). For force
+    // calls from the port-message handler (setTimeline / clear) there's no in-progress block, so
+    // the global `currentTime` (start of the next quantum) is the closest correct anchor.
+    const reportContextTime = Number.isFinite(contextTimeOverride) ? contextTimeOverride : currentTime
     this.port.postMessage({
       type: 'position',
       frame,
+      contextTime: reportContextTime,
       bufferedFrames: Math.max(0, bufferedEndFrame - frame),
       bufferedEndFrame,
       underruns: this.underruns,
@@ -414,13 +424,19 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
         this.framesSinceReport += output[0].length
         if (this.framesSinceReport >= this.reportIntervalFrames) {
           this.framesSinceReport = 0
-          this.postPosition(true)
+          // Cursor is frozen, but contextTime advances anyway — use end-of-this-block so the renderer
+          // sees a fresh wall-time stamp on each idle report.
+          this.postPosition(true, currentTime + output[0].length / sampleRate)
         }
       }
       return true
     }
 
     const frameCount = output[0].length
+    // contextTime corresponding to the cursor's position at the END of this render quantum — the
+    // moment the reported `frame` actually represents (cursor advances through the block before we
+    // read currentFrameFloat in postPosition).
+    const endOfBlockTime = currentTime + frameCount / sampleRate
     for (let outputFrame = 0; outputFrame < frameCount; outputFrame++) {
       if (currentFrame + outputFrame < this.startAtSample) {
         continue
@@ -471,13 +487,13 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
       this.rebuffering = true
       this.playing = false
       this.framesSinceReport = 0
-      this.postPosition(true)
+      this.postPosition(true, endOfBlockTime)
       return true
     }
 
     if (this.framesSinceReport >= this.reportIntervalFrames) {
       this.framesSinceReport = 0
-      this.postPosition()
+      this.postPosition(false, endOfBlockTime)
       this.pruneOldChunks()
     }
 

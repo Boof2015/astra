@@ -195,6 +195,11 @@ interface ParallaxSinkRuntimeState {
   channels: number
   durationSeconds: number
   currentFrame: number
+  // Wall time (performance.timeOrigin + performance.now() domain, ms) at which the worklet's
+  // currentFrame was reported — derived by mapping the worklet's contextTime through our own
+  // AudioContext.currentTime at receipt. Lets the renderer compute drift at the report's actual
+  // instant instead of the next 1 Hz tick. 0 until the first position message arrives.
+  currentFrameAtWallMs: number
   bufferedFrames: number
   bufferedEndFrame: number
   underruns: number
@@ -1935,6 +1940,16 @@ export class AudioEngine {
         this.parallaxSinkState.currentFrame = Number.isFinite(payload.frame)
           ? Math.max(0, Math.floor(payload.frame))
           : this.parallaxSinkState.currentFrame
+        // Map the worklet's processing-context time at the report instant back to wall time.
+        // ctxNow and payload.contextTime are the same audio clock viewed from two threads, so
+        // (ctxNow − payload.contextTime) is approximately the IPC delay since the message was
+        // posted. Subtracting that from perf.now()-at-receipt yields the wall time at the send
+        // instant — i.e. the wall time the worklet's currentFrame was actually at `frame`.
+        const ctxNow = this.context?.currentTime ?? 0
+        const ctxSent = Number(payload.contextTime)
+        const elapsedSec = Number.isFinite(ctxSent) ? Math.max(0, ctxNow - ctxSent) : 0
+        this.parallaxSinkState.currentFrameAtWallMs =
+          performance.timeOrigin + performance.now() - elapsedSec * 1000
         this.parallaxSinkState.bufferedFrames = Number.isFinite(payload.bufferedFrames)
           ? Math.max(0, Math.floor(payload.bufferedFrames))
           : this.parallaxSinkState.bufferedFrames
@@ -2308,6 +2323,7 @@ export class AudioEngine {
       channels: stream.channels,
       durationSeconds: stream.durationSeconds,
       currentFrame: 0,
+      currentFrameAtWallMs: 0,
       bufferedFrames: 0,
       bufferedEndFrame: 0,
       underruns: 0,
@@ -2439,6 +2455,7 @@ export class AudioEngine {
   getParallaxSinkSnapshot(): {
     streamId: string | null
     currentFrame: number
+    currentFrameAtWallMs: number
     bufferedFrames: number
     bufferedEndFrame: number
     underruns: number
@@ -2449,6 +2466,7 @@ export class AudioEngine {
     return {
       streamId: this.parallaxSinkState?.streamId ?? null,
       currentFrame: this.parallaxSinkState?.currentFrame ?? 0,
+      currentFrameAtWallMs: this.parallaxSinkState?.currentFrameAtWallMs ?? 0,
       bufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
       bufferedEndFrame: this.parallaxSinkState?.bufferedEndFrame ?? 0,
       underruns: this.parallaxSinkState?.underruns ?? 0,

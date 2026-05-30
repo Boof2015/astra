@@ -95,6 +95,17 @@ export interface ParallaxTimelineState {
   streamId: string
   playbackState: ParallaxPlaybackState
   startFrame: number
+  // `startHostTimeMs` is the timeline anchor in host-clock wall time.
+  //
+  // INTENDED INVARIANT (enforced after step 5 — auto output-latency compensation): this is the
+  // wall instant `startFrame` leaves *every endpoint's speaker* (host's and every sink's). Each
+  // endpoint compensates by subtracting its own output latency from its scheduled `when`, so
+  // `startHostTimeMs` is the shared acoustic anchor.
+  //
+  // CURRENT (pre-step-5): no output-latency compensation. This is the wall instant at which the
+  // renderer schedules `sourceNode.start(...)` / `set-timeline`, so the DAC actually emits roughly
+  // `outputLatency + baseLatency` later. The drift formula in `computeRateCorrectionPpm` does NOT
+  // include a `+sinkLatency` term yet; that ships paired with the scheduling change in step 5.
   startHostTimeMs: number
   updatedHostTimeMs: number
   groupLatencyMs: number
