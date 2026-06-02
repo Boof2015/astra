@@ -27,7 +27,8 @@ import {
   buildParallaxClockSample,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
-  selectBestParallaxClockSample
+  selectBestParallaxClockSample,
+  selectFilteredParallaxClockOffsetMs
 } from '../../types/parallax'
 import {
   createOpaqueSecret,
@@ -329,6 +330,10 @@ export class ParallaxService {
     this.cleanupExpiredPairingPin()
     const lanUrls = this.active ? getParallaxLanUrls(this.config.port) : []
     const bestClock = selectBestParallaxClockSample(this.sinkClockSamples)
+    // Robust offset for everything that *acts* on it (drift formula via resolveHostNowMs, reconnect
+    // frame math). bestClock still drives the rttMs display since that's a diagnostic for the best
+    // single probe, not a steady-state value.
+    const filteredOffsetMs = selectFilteredParallaxClockOffsetMs(this.sinkClockSamples)
     const sinkConnected = this.sinkConnection !== null
     return {
       role: sinkConnected ? 'sink' : this.config.enabled ? 'host' : 'idle',
@@ -352,7 +357,7 @@ export class ParallaxService {
         baseUrl: this.sinkConnection?.baseUrl ?? null,
         sinkId: this.sinkConnection?.sinkId ?? null,
         activeStream: this.sinkActiveStream,
-        clockOffsetMs: bestClock?.offsetMs ?? null,
+        clockOffsetMs: filteredOffsetMs ?? bestClock?.offsetMs ?? null,
         rttMs: bestClock?.rttMs ?? null,
         lastError: this.sinkLastError
       }
@@ -1356,7 +1361,8 @@ export class ParallaxService {
     }
     // Playing: resume from the live host frame minus a short backfill, so the host replays only a
     // small recent backlog (not the whole track). The renderer still re-anchors via chunk timestamps.
-    const offsetMs = selectBestParallaxClockSample(this.sinkClockSamples)?.offsetMs ?? 0
+    // Filtered offset (median over lower-RTT half) avoids a single bad probe biasing the resume frame.
+    const offsetMs = selectFilteredParallaxClockOffsetMs(this.sinkClockSamples) ?? 0
     const hostNowMs = parallaxNowMs() + offsetMs
     const elapsedMs = Math.max(0, hostNowMs - timeline.startHostTimeMs)
     const liveFrame = timeline.startFrame + Math.floor((elapsedMs * activeStream.sampleRate) / 1000)

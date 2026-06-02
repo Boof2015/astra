@@ -7,6 +7,7 @@ import {
   encodeParallaxAudioPacket,
   mapHostTimeToSinkTimeMs,
   selectBestParallaxClockSample,
+  selectFilteredParallaxClockOffsetMs,
   type ParallaxAudioChunk
 } from './parallax.ts'
 
@@ -70,6 +71,50 @@ test('Parallax sink correction snaps on large drift, holds in deadzone, slews be
   // Non-finite drift is a no-op; bad sample rate falls back to 48kHz.
   assert.deepEqual(decideParallaxSinkCorrection(Number.NaN, 48000), { mode: 'hold', playbackRatePpm: 0 })
   assert.deepEqual(decideParallaxSinkCorrection(5000, 0), { mode: 'snap', playbackRatePpm: 0 })
+})
+
+test('Parallax filtered clock offset medians the lower-RTT half', () => {
+  // 6 samples: lower-RTT half (rounded up) = 3 samples with RTTs 6, 8, 9
+  //   → their offsets are 100, 99, 110 → sorted 99, 100, 110 → median 100.
+  // High-RTT samples (rtt=20, 30, 50) and their offsets (130, 90, 175) are excluded.
+  const samples = [
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 50, hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 50, offsetMs: 175 },
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 30, hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 30, offsetMs: 90  },
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 6,  hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 6,  offsetMs: 100 },
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 9,  hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 9,  offsetMs: 110 },
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 8,  hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 8,  offsetMs: 99  },
+    { sinkSentAtMs: 0, sinkReceivedAtMs: 20, hostReceivedAtMs: 100, hostSentAtMs: 102, rttMs: 20, offsetMs: 130 }
+  ]
+  assert.equal(selectFilteredParallaxClockOffsetMs(samples), 100)
+
+  // Edge: empty list → null.
+  assert.equal(selectFilteredParallaxClockOffsetMs([]), null)
+
+  // Edge: single sample → that offset (even though we can't filter or median).
+  assert.equal(selectFilteredParallaxClockOffsetMs([samples[2]]), 100)
+
+  // Edge: two samples → lower-RTT half rounds up to 1, returns the lower-RTT one's offset (not the median of both).
+  assert.equal(selectFilteredParallaxClockOffsetMs([samples[2], samples[0]]), 100)
+
+  // Edge: even-count survivors average the two middles.
+  // 4 samples: lower-RTT half = 2 → offsets 99, 100 → average 99.5.
+  const four = [samples[2], samples[3], samples[4], samples[0]] // rtts 6, 9, 8, 50; lower 2 = rtt 6 (off 100), rtt 8 (off 99)
+  assert.equal(selectFilteredParallaxClockOffsetMs(four), 99.5)
+
+  // Edge: NaN/Infinity samples are filtered out before median.
+  const withBad = [
+    samples[2],
+    { ...samples[3], offsetMs: Number.NaN },
+    { ...samples[4], rttMs: Number.POSITIVE_INFINITY }
+  ]
+  assert.equal(selectFilteredParallaxClockOffsetMs(withBad), 100)
+
+  // Sign preserved: negative offsets pass through unchanged.
+  const negative = [
+    { ...samples[2], offsetMs: -50 },
+    { ...samples[3], offsetMs: -52 }
+  ]
+  assert.equal(selectFilteredParallaxClockOffsetMs(negative), -50) // lower-RTT half = 1 sample
 })
 
 test('Parallax audio packet waits for complete frame', () => {

@@ -273,6 +273,26 @@ export function mapHostTimeToSinkTimeMs(hostTimeMs: number, hostMinusSinkOffsetM
   return hostTimeMs - hostMinusSinkOffsetMs
 }
 
+// Robust host↔sink clock offset across recent probes. Takes the lower-RTT half (rounded up) and
+// medians those offsets. Asymmetric one-way times on a WiFi link skew the NTP-style per-sample
+// offset estimate, so restricting to low-RTT samples reduces that error; medianing the survivors
+// then makes the result robust to a single bad probe within the best-RTT set. Sign is preserved
+// (host − sink) at every step. Returns null when no usable samples are available.
+export function selectFilteredParallaxClockOffsetMs(
+  samples: readonly ParallaxClockSample[]
+): number | null {
+  const valid = samples.filter((sample) =>
+    Number.isFinite(sample.offsetMs) && Number.isFinite(sample.rttMs)
+  )
+  if (valid.length === 0) return null
+  if (valid.length === 1) return valid[0].offsetMs
+  const sortedByRtt = [...valid].sort((left, right) => left.rttMs - right.rttMs)
+  const half = Math.max(1, Math.ceil(sortedByRtt.length / 2))
+  const offsets = sortedByRtt.slice(0, half).map((sample) => sample.offsetMs).sort((a, b) => a - b)
+  const mid = Math.floor(offsets.length / 2)
+  return offsets.length % 2 === 1 ? offsets[mid] : (offsets[mid - 1] + offsets[mid]) / 2
+}
+
 export function clampParallaxPlaybackRatePpm(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(-PARALLAX_MAX_SLEW_PPM, Math.min(PARALLAX_MAX_SLEW_PPM, value))
