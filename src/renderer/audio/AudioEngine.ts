@@ -2398,11 +2398,40 @@ export class AudioEngine {
     playbackRatePpm: number = 0
   ): void {
     if (!this.context) return
+    // Paused timelines don't carry an emit deadline — `startHostTimeMs` is just "the wall instant
+    // the host stopped." There's nothing to align acoustically, so skip auto-comp and the
+    // fail-loud guard (which would otherwise warn on every pause) and let the worklet just park
+    // the cursor at startFrame and stay paused. Same for any non-playing state.
+    if (timeline.playbackState !== 'playing') {
+      this.applyParallaxTimeline(timeline, {
+        startAtContextTime: this.context.currentTime,
+        playbackRatePpm
+      })
+      return
+    }
+    // Acoustic-timeline scheduling (see ParallaxTimelineState.startHostTimeMs invariant). We want
+    // the sink's *speaker* to emit startFrame at `timeline.startHostTimeMs` (host clock). Mapping:
+    //   target sink-wall  = startHostTimeMs − offset
+    //   delayMs           = targetSinkWall − sinkNow
+    //   mappedStartCtx    = ctx.currentTime + delayMs/1000 − sinkLatency
+    // The −sinkLatency makes the worklet *write* startFrame `sinkLatency` seconds earlier in
+    // context time, so the DAC emits it at the target wall instant. applyParallaxTimeline clamps
+    // `Math.max(ctx.currentTime, …)` for safety; assertParallaxScheduledLead surfaces a loud warn
+    // before that clamp if the math went negative (stale anchor, bad offset).
     const offsetMs = Number.isFinite(hostMinusSinkOffsetMs) ? Number(hostMinusSinkOffsetMs) : 0
     const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
-    const delaySeconds = Math.max(0, (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000)
+    const delaySeconds = (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + delaySeconds - sinkLatencySec
+    const scheduledLeadMs = (mappedStartContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('applyParallaxTimelineFromHostClock', scheduledLeadMs, {
+      targetAcousticHostTimeMs: timeline.startHostTimeMs,
+      localLatencyMs: sinkLatencySec * 1000,
+      mappedStartContextTime,
+      ctxNow: this.context.currentTime
+    })
     this.applyParallaxTimeline(timeline, {
-      startAtContextTime: this.context.currentTime + delaySeconds,
+      startAtContextTime: mappedStartContextTime,
       playbackRatePpm
     })
   }
@@ -2417,9 +2446,12 @@ export class AudioEngine {
     })
   }
 
-  // Hard re-sync: jump the worklet cursor to a live host frame (the snap in snap-then-slew).
-  // Uses the same set-timeline primitive that pause/play relies on, so it re-anchors cleanly.
-  // The caller supplies the target frame already mapped to "now + leadSeconds" of host time.
+  // Hard re-sync: jump the worklet cursor to a live host frame (the snap in snap-then-slew). Uses
+  // the same set-timeline primitive that pause/play relies on, so it re-anchors cleanly. The caller
+  // supplies the target frame already mapped to "now + leadSeconds" of host time, where `now +
+  // leadSeconds` IS the target acoustic emit instant. Auto-comp subtracts sinkLatency from the
+  // scheduled context time so the DAC actually emits the frame at that wall instant; the worklet's
+  // set-timeline clamps `startAtSample ≥ currentFrame` if we ended up scheduling into the past.
   resyncParallaxSinkToHostFrame(targetFrame: number, leadSeconds: number): void {
     if (!this.parallaxSinkNode || !this.parallaxSinkState || !this.context) return
     if (this.context.state === 'suspended') {
@@ -2428,7 +2460,15 @@ export class AudioEngine {
       })
     }
     const startFrame = Math.max(0, Math.floor(targetFrame))
-    const startAtContextTime = this.context.currentTime + Math.max(0, leadSeconds)
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const lead = Math.max(0, leadSeconds)
+    const startAtContextTime = this.context.currentTime + lead - sinkLatencySec
+    const scheduledLeadMs = (startAtContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('resyncParallaxSinkToHostFrame', scheduledLeadMs, {
+      localLatencyMs: sinkLatencySec * 1000,
+      mappedStartContextTime: startAtContextTime,
+      ctxNow: this.context.currentTime
+    })
     this.parallaxSinkState.currentFrame = startFrame
     this.parallaxSinkState.playbackRatePpm = 0
     this.parallaxSinkNode.port.postMessage({
@@ -2528,9 +2568,25 @@ export class AudioEngine {
     this.cancelScheduledNext()
     this.clearParallaxSinkState()
 
+    // Acoustic-timeline scheduling on the host endpoint. The host is the timeline owner and its
+    // wall clock IS the host clock, so target sink-wall = target host-wall = startHostTimeMs.
+    // Subtract our own output latency so the host's *speaker* — not the DAC write — emits at the
+    // target wall instant. Symmetric with the sink (each endpoint compensates its own latency); the
+    // per-device latency difference cancels and both speakers emit startFrame at the same wall
+    // instant. We clamp Math.max(ctx.currentTime, …) here because sourceNode.start with a past
+    // time can throw; assertParallaxScheduledLead surfaces the negative-lead case before the clamp.
     const offset = Math.max(0, Math.min(this.audioBuffer.duration, timeline.startFrame / this.audioBuffer.sampleRate))
-    const startDelaySeconds = Math.max(0, (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000)
-    const startAtContextTime = this.context.currentTime + startDelaySeconds
+    const startDelaySeconds = (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const hostLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + startDelaySeconds - hostLatencySec
+    const scheduledLeadMs = (mappedStartContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('playCurrentBufferOnParallaxTimeline', scheduledLeadMs, {
+      targetAcousticHostTimeMs: timeline.startHostTimeMs,
+      localLatencyMs: hostLatencySec * 1000,
+      mappedStartContextTime,
+      ctxNow: this.context.currentTime
+    })
+    const startAtContextTime = Math.max(this.context.currentTime, mappedStartContextTime)
 
     this.sourceNode = this.context.createBufferSource()
     this.sourceNode.buffer = this.audioBuffer
@@ -4700,6 +4756,68 @@ export class AudioEngine {
     const ms = Number(seconds) * 1000
     if (!Number.isFinite(ms) || ms < 0) return null
     return Math.max(0, Math.min(5000, ms))
+  }
+
+  // Canonical per-endpoint output-latency estimator used by every Parallax scheduling site (host
+  // local playback, sink initial anchor, sink hard re-sync). Single estimator policy: outputLatency
+  // + baseLatency. They are *components* of the render→DAC path and sum (baseLatency = destination
+  // node to audio subsystem, outputLatency = audio subsystem to device). The alternative —
+  // (ctx.currentTime − getOutputTimestamp().contextTime) — measures the same total directly but is
+  // jittery without filtering and is kept only as a diagnostic in `getOutputLatencyMetrics()`. Do
+  // NOT add the two estimators together; that's the double-count trap.
+  //
+  // Manual per-endpoint advance trim hooks here (positive = play this endpoint earlier). Hardcoded
+  // to 0 for now; a hidden `PARALLAX_SINK_ADVANCE_MS` env knob and later a per-sink setting will
+  // flow in as `advanceMs` once we have a calibrated rig offset to compare against.
+  private getParallaxEndpointLatencySeconds(): number {
+    return this.getParallaxEndpointLatencyMs() / 1000
+  }
+
+  // Public canonical estimator — same value the three scheduling sites subtract. Consumers that
+  // need this for *consistency with scheduling* (the drift loop's target, host timeline anchors
+  // expressed in acoustic time) must use this method rather than re-summing `outputLatency +
+  // baseLatency` from `getOutputLatencyMetrics()`. Otherwise a future PARALLAX_SINK_ADVANCE_MS
+  // (or per-sink trim) would shift scheduling but not the drift target — the loop would slew to
+  // undo the trim.
+  getParallaxEndpointLatencyMs(): number {
+    const ctx = this.context
+    if (!ctx) return 0
+    const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+    const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+    const autoMs = (outMs ?? 0) + (baseMs ?? 0)
+    const advanceMs = 0
+    return autoMs + advanceMs
+  }
+
+  // Fail-loud guard at every Parallax scheduling site. After auto output-latency compensation
+  // `mappedStartContextTime` should sit at or after `ctx.currentTime`; if it drops noticeably
+  // negative, the acoustic-timeline invariant has been violated (stale anchor, bad clock offset,
+  // arithmetic error in the scheduling math). Previously such cases were silently clamped via
+  // `Math.max(ctx.currentTime, ...)`, which masked the -2543-frame sentinel that turned up in the
+  // CSV. We still clamp at the call site so playback keeps going, but a console.warn surfaces the
+  // context so the bug is impossible to miss in the next CSV trace.
+  private assertParallaxScheduledLead(
+    site: string,
+    scheduledLeadMs: number,
+    context: {
+      targetAcousticHostTimeMs?: number
+      localLatencyMs: number
+      mappedStartContextTime: number
+      ctxNow: number
+    }
+  ): void {
+    if (scheduledLeadMs >= -50) return
+    console.warn(
+      `[parallax] ${site}: scheduled lead is strongly negative (${scheduledLeadMs.toFixed(2)} ms) — `
+        + `acoustic-timeline invariant violated, clamping to ctx.currentTime. context:`,
+      {
+        scheduledLeadMs,
+        ctxNow: context.ctxNow,
+        mappedStartContextTime: context.mappedStartContextTime,
+        localLatencyMs: context.localLatencyMs,
+        targetAcousticHostTimeMs: context.targetAcousticHostTimeMs ?? null
+      }
+    )
   }
 
   private getContextClockSnapshot(ctx: AudioContext): { contextTime: number; performanceTime: number } {

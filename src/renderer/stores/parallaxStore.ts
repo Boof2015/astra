@@ -17,6 +17,7 @@ import {
   decideParallaxSinkCorrection,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_REBUFFER_MARGIN_MS,
+  PARALLAX_RESYNC_GUARD_MS,
   PARALLAX_RESYNC_LEAD_MS,
   PARALLAX_RESYNC_MIN_INTERVAL_MS,
   PARALLAX_SNAP_CONFIRM_TICKS
@@ -132,7 +133,8 @@ function computeRateCorrectionPpm(
   timeline: ParallaxTimelineState,
   stream: ParallaxStreamInfo,
   snapshot: { currentFrame: number; currentFrameAtWallMs: number },
-  status: ParallaxStatus | null
+  status: ParallaxStatus | null,
+  sinkLatencyMs: number
 ): { driftFrames: number; playbackRatePpm: number } {
   if (timeline.playbackState !== 'playing') {
     return { driftFrames: 0, playbackRatePpm: 0 }
@@ -144,14 +146,20 @@ function computeRateCorrectionPpm(
     return { driftFrames: 0, playbackRatePpm: 0 }
   }
 
-  // Compute drift at the wall instant the worklet reported the cursor, NOT at "now" — this is the
-  // step-3 cleanup that kills the ~1 s aliasing between the 1 Hz tick and the ~46 ms worklet
-  // report cadence. NOTE — step 3 deliberately omits any sink-output-latency term in expectedFrame.
-  // That belongs with auto-comp scheduling (step 5) and must ship paired with it; adding it here
-  // alone would make the loop chase a target that scheduling doesn't satisfy.
+  // Compute drift at the wall instant the worklet reported the cursor, not at "now" — this is the
+  // step-3 timing cleanup that kills the ~1 s aliasing between the 1 Hz tick and the ~46 ms worklet
+  // report cadence.
+  //
+  // Auto-comp scheduling (step 5) makes the worklet *write* startFrame at host time
+  // `writeAnchorMs = startHostTimeMs − sinkLatency` so the DAC emits it AT `startHostTimeMs`. The
+  // write cursor at any later host time `h` is therefore `startFrame + (h − writeAnchorMs)·sr/1000`,
+  // valid for the entire write window — including the pre-roll sinkLatency before `startHostTimeMs`
+  // where setTimeline's forced position report would otherwise produce a spurious negative drift
+  // of one output-latency window. Clamp on the *anchor*, not on (host − startHostTime) + latency.
   const offsetMs = status?.sink.clockOffsetMs ?? 0
   const hostTimeAtReport = snapshot.currentFrameAtWallMs + offsetMs
-  const elapsedMs = Math.max(0, hostTimeAtReport - timeline.startHostTimeMs)
+  const writeAnchorMs = timeline.startHostTimeMs - sinkLatencyMs
+  const elapsedMs = Math.max(0, hostTimeAtReport - writeAnchorMs)
   const expectedFrame = timeline.startFrame
     + Math.floor((elapsedMs * stream.sampleRate) / 1000)
   const driftFrames = snapshot.currentFrame - expectedFrame
@@ -195,6 +203,19 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     return Math.max(0, Math.min(stream.totalFrames, Math.round(timeSeconds * stream.sampleRate)))
   }
 
+  // `audioEngine.currentTime` is the host's *write* cursor position (returns context.currentTime −
+  // startTime, and startTime is set from the auto-comp-shifted scheduling instant). It leads what
+  // the host's speaker is actually emitting by `hostLatency`. Timeline anchors (startHostTimeMs) are
+  // acoustic time per the invariant on ParallaxTimelineState, so any code that translates "where is
+  // the host *now*" into a timeline frame must use the emit cursor — not the write cursor — or the
+  // resulting startFrame will be `hostLatency` frames ahead of where the host is actually playing,
+  // and joining sinks will start `hostLatency` ms ahead of the host.
+  const getHostAcousticCurrentTimeSeconds = (): number => {
+    const writeCursorSec = audioEngine.currentTime
+    if (!Number.isFinite(writeCursorSec)) return 0
+    return Math.max(0, writeCursorSec - audioEngine.getParallaxEndpointLatencyMs() / 1000)
+  }
+
   const publishHostTimeline = async (timeline: ParallaxTimelineState): Promise<ParallaxTimelineState> => {
     await window.electronAPI.parallax.publishHostTimeline(timeline)
     return timeline
@@ -217,17 +238,30 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
       const now = performance.timeOrigin + performance.now()
       const hasOffset = status.sink.clockOffsetMs !== null && status.sink.clockOffsetMs !== undefined
-      const correction = computeRateCorrectionPpm(timeline, stream, snapshot, status)
-      // Live host frame (+ lead), the cursor target for both a hard snap and a rebuffer resume.
-      const liveTargetFrame = (): number =>
-        Math.max(
+      // Canonical latency — the exact same value AudioEngine subtracts in its three scheduling
+      // sites. Using `audioEngine.getParallaxEndpointLatencyMs()` (not a fresh sum of components
+      // from getOutputLatencyMetrics) keeps scheduling and drift target in lockstep, so a future
+      // PARALLAX_SINK_ADVANCE_MS shifts both together and the loop doesn't slew to undo the trim.
+      const sinkLatencyMs = audioEngine.getParallaxEndpointLatencyMs()
+      const correction = computeRateCorrectionPpm(timeline, stream, snapshot, status, sinkLatencyMs)
+      // Live host frame + effective lead for hard snap / rebuffer resume. PARALLAX_RESYNC_LEAD_MS
+      // (60 ms) is too short for endpoints whose own latency exceeds it (Fedora ≈ 58 ms, Bluetooth
+      // can be 200 ms+): scheduling would land in the past and the snap would emit late even though
+      // the target frame was computed for the unextended lead. We raise the lead to at least
+      // `sinkLatency + GUARD` AND advance the target frame by the same delta, so the snap stays
+      // valid and the speaker emits the right frame at the right wall instant.
+      const liveSnapTarget = (): { targetFrame: number; leadSeconds: number } => {
+        const effectiveLeadMs = Math.max(PARALLAX_RESYNC_LEAD_MS, sinkLatencyMs + PARALLAX_RESYNC_GUARD_MS)
+        const targetFrame = Math.max(
           0,
           Math.min(
             stream.totalFrames,
             timeline.startFrame +
-              Math.floor(((resolveHostNowMs(status) + PARALLAX_RESYNC_LEAD_MS - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
+              Math.floor(((resolveHostNowMs(status) + effectiveLeadMs - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
           )
         )
+        return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
+      }
 
       let appliedPpm = 0
       if (snapshot.rebuffering) {
@@ -236,13 +270,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         // cursor never free-runs into empty data (the underrun spiral that previously killed the sink).
         snapPendingTicks = 0
         const marginFrames = Math.floor((PARALLAX_REBUFFER_MARGIN_MS * stream.sampleRate) / 1000)
-        const target = liveTargetFrame()
+        const snap = liveSnapTarget()
         if (
           timeline.playbackState === 'playing' &&
           hasOffset &&
-          snapshot.bufferedEndFrame >= target + marginFrames
+          snapshot.bufferedEndFrame >= snap.targetFrame + marginFrames
         ) {
-          audioEngine.resyncParallaxSinkToHostFrame(target, PARALLAX_RESYNC_LEAD_MS / 1000)
+          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
           lastHardSyncAtMs = now
         }
       } else {
@@ -255,7 +289,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
           now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
         ) {
-          audioEngine.resyncParallaxSinkToHostFrame(liveTargetFrame(), PARALLAX_RESYNC_LEAD_MS / 1000)
+          const snap = liveSnapTarget()
+          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
           lastHardSyncAtMs = now
           snapPendingTicks = 0
           appliedPpm = 0
@@ -616,9 +651,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // sink gets buffering headroom while the host keeps playing seamlessly. While paused, anchor
       // at the current frame (a later resume republishes a fresh playing timeline + chunks).
       const leadSeconds = playing ? PARALLAX_DEFAULT_GROUP_LATENCY_MS / 1000 : 0
+      // Anchor against the acoustic emit cursor — startHostTimeMs is acoustic time, so startFrame
+      // must be the frame the host's *speaker* will reach in `leadSeconds`, not the write cursor +
+      // leadSeconds (which would put the sink hostLatency ahead of the host).
       const startFrame = Math.max(
         0,
-        Math.min(buffer.length, Math.round((audioEngine.currentTime + leadSeconds) * buffer.sampleRate))
+        Math.min(buffer.length, Math.round((getHostAcousticCurrentTimeSeconds() + leadSeconds) * buffer.sampleRate))
       )
       try {
         const timeline = await window.electronAPI.parallax.publishHostStreamStart(
@@ -643,7 +681,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const timeline = buildHostTimeline(
         stream,
         'playing',
-        getHostFrameForTime(stream, audioEngine.currentTime),
+        getHostFrameForTime(stream, getHostAcousticCurrentTimeSeconds()),
         stream.groupLatencyMs
       )
       try {
@@ -689,7 +727,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const timeline = buildHostTimeline(
         stream,
         'paused',
-        getHostFrameForTime(stream, audioEngine.currentTime)
+        getHostFrameForTime(stream, getHostAcousticCurrentTimeSeconds())
       )
       audioEngine.cancelParallaxHostPublishing()
       try {

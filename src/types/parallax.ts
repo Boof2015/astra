@@ -22,6 +22,13 @@ export const PARALLAX_SYNC_DEADZONE_FRAMES = 64
 // Snap only after drift stays past the threshold for this many consecutive 1s ticks, so a
 // single jittery clock/drift measurement can't cause a spurious gap.
 export const PARALLAX_SNAP_CONFIRM_TICKS = 2
+// After auto output-latency compensation, scheduling subtracts the endpoint's own latency from the
+// requested lead time. If the configured PARALLAX_RESYNC_LEAD_MS is smaller than the endpoint's
+// latency, the resulting context-time `when` lands before `ctx.currentTime` and the snap silently
+// emits late (or, with the fail-loud guard, warns and clamps). The effective lead is therefore
+// raised to at least `sinkLatency + PARALLAX_RESYNC_GUARD_MS` so the DAC has positive headroom; the
+// target frame is recomputed to match the (possibly extended) emit time.
+export const PARALLAX_RESYNC_GUARD_MS = 20
 
 // Underrun recovery: if the sink buffer drains while still connected, the worklet self-pauses into
 // "rebuffering" after ~PARALLAX_STARVE_TRIGGER_MS of continuous starvation (mirrored as
@@ -95,17 +102,15 @@ export interface ParallaxTimelineState {
   streamId: string
   playbackState: ParallaxPlaybackState
   startFrame: number
-  // `startHostTimeMs` is the timeline anchor in host-clock wall time.
-  //
-  // INTENDED INVARIANT (enforced after step 5 — auto output-latency compensation): this is the
-  // wall instant `startFrame` leaves *every endpoint's speaker* (host's and every sink's). Each
-  // endpoint compensates by subtracting its own output latency from its scheduled `when`, so
-  // `startHostTimeMs` is the shared acoustic anchor.
-  //
-  // CURRENT (pre-step-5): no output-latency compensation. This is the wall instant at which the
-  // renderer schedules `sourceNode.start(...)` / `set-timeline`, so the DAC actually emits roughly
-  // `outputLatency + baseLatency` later. The drift formula in `computeRateCorrectionPpm` does NOT
-  // include a `+sinkLatency` term yet; that ships paired with the scheduling change in step 5.
+  // INVARIANT — acoustic time. The host-clock wall instant at which `startFrame` should *leave
+  // every endpoint's speaker* (host's and every sink's). Each endpoint compensates by subtracting
+  // its own output latency from its scheduled context-time `when`, so this is the shared acoustic
+  // anchor — both the host's local playback and every sink's worklet schedule are symmetric
+  // around it. Code paths that treat startHostTimeMs as "context start time", "DAC write time", or
+  // "host render time" are bugs; see `playCurrentBufferOnParallaxTimeline`,
+  // `applyParallaxTimelineFromHostClock`, and `resyncParallaxSinkToHostFrame` in AudioEngine.ts
+  // for the canonical scheduling math, and `computeRateCorrectionPpm` in parallaxStore.ts for the
+  // paired drift formula (which adds sinkLatencyMs to the expected write cursor).
   startHostTimeMs: number
   updatedHostTimeMs: number
   groupLatencyMs: number
