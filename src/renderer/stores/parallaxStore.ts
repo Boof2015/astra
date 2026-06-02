@@ -139,6 +139,17 @@ function computeRateCorrectionPpm(
   if (timeline.playbackState !== 'playing') {
     return { driftFrames: 0, playbackRatePpm: 0 }
   }
+  // `currentFrameAtWallMs` is in *sink* wall time; `timeline.startHostTimeMs` is in *host* wall
+  // time. Treating sink-wall as host-wall when the clock offset is unknown produces a drift error
+  // equal to the absolute clock delta between the two machines — typically hundreds of ms (at
+  // 44.1 k, a 1 s clock delta lights up as ~44 000 frames of phantom drift, which then snaps).
+  // The offset is null during the clock-priming window of every connect/reconnect; without this
+  // guard a watchdog-triggered reconnect mid-playback fires a spurious ~900 ms drift spike that
+  // the loop reacts to. Hold drift at 0 until the offset is back; the snap path's own hasOffset
+  // gate stops the snap from firing anyway, but the rate loop must stay quiet too.
+  if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
+    return { driftFrames: 0, playbackRatePpm: 0 }
+  }
   // Drift only makes sense once the worklet has reported at least one timestamped position. Before
   // that the formula would compare a frame=0 cursor against a positive expected frame and produce a
   // spurious large drift on the very first tick.
