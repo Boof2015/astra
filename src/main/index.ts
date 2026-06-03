@@ -4753,6 +4753,10 @@ ipcMain.handle('parallax:publishHostTimeline', (_event, timeline: ParallaxTimeli
   parallaxService.publishHostTimeline(timeline)
 })
 
+ipcMain.handle('parallax:publishHostEmitAnchor', (_event, anchor: Parameters<typeof parallaxService.publishHostEmitAnchor>[0]) => {
+  parallaxService.publishHostEmitAnchor(anchor)
+})
+
 ipcMain.handle('parallax:stopHostStream', () => {
   parallaxService.stopHostStream()
 })

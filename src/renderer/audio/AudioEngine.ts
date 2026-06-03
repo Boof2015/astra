@@ -1187,6 +1187,48 @@ export class AudioEngine {
     this.parallaxHostPublishGeneration += 1
   }
 
+  // Phase 2A — produce one host-emit-anchor's worth of state, derived from the live
+  // `getOutputTimestamp()`. Returns null when there's no active host playback (no audioBuffer,
+  // suspended/stopped context, source not started) — the store ignores nulls and waits for the
+  // next tick. The anchor lives entirely in the output clock domain: `sourceFrameAtHostOutput` is
+  // the frame the host's speaker is emitting at `hostWallTimeMs`, computed as
+  // `(ts.contextTime − this.startTime) * buffer.sampleRate`. `this.startTime` is already set in
+  // `playCurrentBufferOnParallaxTimeline` to `actualStartAtContextTime − offset` so seeks/non-zero
+  // startFrame are handled without reaching back through the timeline.
+  getHostEmitAnchor(): {
+    sourceFrameAtHostOutput: number
+    hostWallTimeMs: number
+    hostOutputLatencyMs: number
+    hostBaseLatencyMs: number
+    observedRatePpm: number | null
+  } | null {
+    const ctx = this.context
+    const buffer = this.audioBuffer
+    if (!ctx || !buffer || this.playbackOutputMode === 'bitperfect') return null
+    if (this._playbackState !== 'playing') return null
+    if (!Number.isFinite(this.startTime) || this.startTime <= 0) return null
+
+    const snapshot = this.getContextClockSnapshot(ctx)
+    if (!Number.isFinite(snapshot.contextTime) || !Number.isFinite(snapshot.performanceTime)) return null
+    // Before the source has started (startTime in the future relative to current OUTPUT time),
+    // there is nothing at the speaker yet — drop the anchor and let the next tick try.
+    if (snapshot.contextTime <= this.startTime) return null
+
+    const sourceFrameAtHostOutput = (snapshot.contextTime - this.startTime) * buffer.sampleRate
+    const hostWallTimeMs = performance.timeOrigin + snapshot.performanceTime
+    const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+    const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+    return {
+      sourceFrameAtHostOutput,
+      hostWallTimeMs,
+      hostOutputLatencyMs: outMs ?? 0,
+      hostBaseLatencyMs: baseMs ?? 0,
+      // Per share doc §3 this is diagnostic only; the sink's fit is authoritative. Leaving null
+      // until/unless we have a reason to spend cycles on a host-side estimate.
+      observedRatePpm: null
+    }
+  }
+
   private beginPrebufferOperation(): number {
     this.prebufferGeneration += 1
     return this.prebufferGeneration

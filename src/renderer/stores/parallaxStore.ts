@@ -15,7 +15,13 @@ import type {
 import {
   clampParallaxPlaybackRatePpm,
   decideParallaxSinkCorrection,
+  fitHostEmitAnchorLine,
+  hostEmitAnchorSlopeToPpm,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
+  PARALLAX_HOST_EMIT_ANCHOR_INTERVAL_MS,
+  PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM,
+  PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES,
+  PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS,
   PARALLAX_REBUFFER_MARGIN_MS,
   PARALLAX_RESYNC_GUARD_MS,
   PARALLAX_RESYNC_LEAD_MS,
@@ -74,6 +80,24 @@ let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
 let lastHardSyncAtMs = 0
 let snapPendingTicks = 0
+// Phase 2A — rolling window of host emit anchors and the fitted host-output predictor. The drift
+// loop does NOT consume these in 2A (logged-only); the telemetry tick reads `hostEmitPredictor`
+// and pushes its components to the CSV so we can calibrate the filter before 2B switches the loop.
+interface HostEmitAnchorSample {
+  hostWallTimeMs: number
+  sourceFrameAtHostOutput: number
+  sequence: number
+}
+let hostEmitAnchors: HostEmitAnchorSample[] = []
+let hostEmitAnchorStreamId: string | null = null
+let hostEmitLastSequence: number | null = null
+let hostEmitLastWallMs: number | null = null
+let hostEmitRawPairwisePpm: number | null = null
+let hostEmitPredictor: { slopeFramesPerMs: number; intercept: number } | null = null
+// Host-side: 5 Hz publish loop + per-stream sequence counter (resets on stream change).
+let hostEmitPublishTimer: number | null = null
+let hostEmitOutgoingSequence = 0
+let hostEmitOutgoingStreamId: string | null = null
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -203,6 +227,178 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     set({ pairedSinks })
   }
 
+  const resetHostEmitAnchors = (): void => {
+    hostEmitAnchors = []
+    hostEmitAnchorStreamId = null
+    hostEmitLastSequence = null
+    hostEmitLastWallMs = null
+    hostEmitRawPairwisePpm = null
+    hostEmitPredictor = null
+  }
+
+  // Host-side: publish one anchor (5 Hz timer body). Stops itself only when there's no active
+  // host stream at all. Does NOT use `getActiveHostStream()` because that gates on
+  // `connectedSinkCount > 0`, which would strand the timer if every sink transiently disconnected
+  // — a new sink joining later would then never receive anchors until host playback restarted.
+  const publishOneHostEmitAnchor = (): void => {
+    const hostStatus = get().status?.host
+    const hostStream = hostStatus?.active ? hostStatus.activeStream ?? null : null
+    if (!hostStream) {
+      stopHostEmitAnchorPublish()
+      return
+    }
+    if (hostEmitOutgoingStreamId !== hostStream.streamId) {
+      hostEmitOutgoingStreamId = hostStream.streamId
+      hostEmitOutgoingSequence = 0
+    }
+    const anchor = audioEngine.getHostEmitAnchor()
+    if (!anchor) return // no audio at the output yet — wait for next tick
+    hostEmitOutgoingSequence += 1
+    void window.electronAPI.parallax.publishHostEmitAnchor({
+      type: 'host-emit-anchor',
+      streamId: hostStream.streamId,
+      hostWallTimeMs: anchor.hostWallTimeMs,
+      sourceFrameAtHostOutput: anchor.sourceFrameAtHostOutput,
+      hostOutputLatencyMs: anchor.hostOutputLatencyMs,
+      hostBaseLatencyMs: anchor.hostBaseLatencyMs,
+      observedRatePpm: anchor.observedRatePpm,
+      sequence: hostEmitOutgoingSequence
+    })
+  }
+
+  const startHostEmitAnchorPublish = (): void => {
+    if (hostEmitPublishTimer !== null) return
+    hostEmitPublishTimer = window.setInterval(publishOneHostEmitAnchor, PARALLAX_HOST_EMIT_ANCHOR_INTERVAL_MS)
+  }
+
+  const stopHostEmitAnchorPublish = (): void => {
+    if (hostEmitPublishTimer !== null) {
+      window.clearInterval(hostEmitPublishTimer)
+      hostEmitPublishTimer = null
+    }
+    hostEmitOutgoingStreamId = null
+    hostEmitOutgoingSequence = 0
+  }
+
+  // Phase 2A — ingest one host-emit-anchor into the rolling window and refit the predictor.
+  // Sync, fast, runs at 5 Hz. Updates module state only; the telemetry tick reads it and ships the
+  // components to the CSV. The loop does NOT consume these in 2A — that switch is Phase 2B.
+  const ingestHostEmitAnchor = (event: Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>): void => {
+    // Stream change resets the window. Old anchors are meaningless for the new stream's frame
+    // origin, and including them would corrupt the fit until they fall out of the window.
+    if (hostEmitAnchorStreamId !== null && hostEmitAnchorStreamId !== event.streamId) {
+      resetHostEmitAnchors()
+    }
+    hostEmitAnchorStreamId = event.streamId
+
+    // Pre-filter rejections (per share doc §5). Monotonicity is compared against the *last
+    // accepted* anchor, not last seen — that way a rejected outlier doesn't block subsequent good
+    // anchors whose sequence is greater than the rejected one but less than the next one we'd
+    // have accepted.
+    //   - non-finite frame or wall time
+    //   - non-monotonic sequence (duplicate / out-of-order delivery)
+    //   - non-monotonic hostWallTimeMs (clock went backwards on host)
+    //   - pairwise slope vs previous accepted anchor exceeds ±MAX_DEVIATION_PPM of nominal
+    if (!Number.isFinite(event.hostWallTimeMs) || !Number.isFinite(event.sourceFrameAtHostOutput)) return
+    if (hostEmitLastSequence !== null && event.sequence <= hostEmitLastSequence) return
+    if (hostEmitLastWallMs !== null && event.hostWallTimeMs <= hostEmitLastWallMs) return
+
+    // Raw pairwise ppm vs the previous accepted anchor — used both for the sanity gate AND as a
+    // CSV column so we can see the filter doing its job (raw should be visibly noisier than
+    // filtered). Always update the CSV column, even if the resulting anchor is rejected — that's
+    // exactly when the raw vs filtered comparison is most informative.
+    const previous = hostEmitAnchors.length > 0 ? hostEmitAnchors[hostEmitAnchors.length - 1] : null
+    const stream = get().status?.sink.activeStream ?? null
+    let rawPpm: number | null = null
+    if (previous && stream) {
+      const dt = event.hostWallTimeMs - previous.hostWallTimeMs
+      if (dt > 0) {
+        const slope = (event.sourceFrameAtHostOutput - previous.sourceFrameAtHostOutput) / dt
+        rawPpm = hostEmitAnchorSlopeToPpm(slope, stream.sampleRate)
+        hostEmitRawPairwisePpm = rawPpm
+      }
+    }
+    if (rawPpm !== null && Math.abs(rawPpm) > PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM) {
+      // Outlier — likely a `getOutputTimestamp` jitter spike. Skip it; do NOT update the
+      // last-accepted markers so the next anchor is still compared against the previous good one.
+      return
+    }
+
+    hostEmitAnchors.push({
+      hostWallTimeMs: event.hostWallTimeMs,
+      sourceFrameAtHostOutput: event.sourceFrameAtHostOutput,
+      sequence: event.sequence
+    })
+    hostEmitLastSequence = event.sequence
+    hostEmitLastWallMs = event.hostWallTimeMs
+
+    // Drop anchors that have fallen out of the rolling window. We trim from the front (oldest)
+    // since anchors are appended in monotonic-time order.
+    const windowFloorMs = event.hostWallTimeMs - PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS
+    while (hostEmitAnchors.length > 0 && hostEmitAnchors[0].hostWallTimeMs < windowFloorMs) {
+      hostEmitAnchors.shift()
+    }
+
+    // Refit when we have enough samples. Theil-Sen is O(N²) — at 5 Hz × 20 s = 100 samples that's
+    // 4950 pairwise slopes. Cheap (sub-ms). Runs on every anchor (every 200 ms), not on the 1 Hz
+    // tick, so by the time telemetry publishes the predictor reflects the latest line.
+    if (hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES) {
+      hostEmitPredictor = fitHostEmitAnchorLine(hostEmitAnchors)
+    } else {
+      hostEmitPredictor = null
+    }
+  }
+
+  // Snapshot the predictor's state for telemetry/CSV. Computed lazily on each tick, never cached.
+  // `hostTimeAtReportMs` is the report instant expressed in host-wall time — the caller must map
+  // the sink-wall snapshot through `status.sink.clockOffsetMs` first, or pass null if the offset
+  // is unknown (priming window of any connect/reconnect). If we predicted against sink-wall the
+  // result would be off by the absolute machine clock delta — tens of thousands of frames.
+  const getHostEmitPredictorTelemetry = (
+    hostTimeAtReportMs: number | null,
+    streamSampleRate: number,
+    sinkLatencyMs: number,
+    sinkWriteCursorFrame: number
+  ): {
+    hostRefAgeMs: number | null
+    hostRefRatePpm: number | null
+    hostRefRateRawPpm: number | null
+    hostRefFrame: number | null
+    sinkAcousticFrame: number | null
+    hostAcousticFrame: number | null
+    phase2DriftFrames: number | null
+  } => {
+    const empty = {
+      hostRefAgeMs: null,
+      hostRefRatePpm: null,
+      hostRefRateRawPpm: hostEmitRawPairwisePpm,
+      hostRefFrame: null,
+      sinkAcousticFrame: null,
+      hostAcousticFrame: null,
+      phase2DriftFrames: null
+    }
+    if (hostTimeAtReportMs === null) return empty
+    if (!hostEmitPredictor || hostEmitLastWallMs === null) return empty
+    const ageMs = hostTimeAtReportMs - hostEmitLastWallMs
+    const hostRefRatePpm = hostEmitAnchorSlopeToPpm(hostEmitPredictor.slopeFramesPerMs, streamSampleRate)
+    // Predict host's source frame at the report instant in host-wall time.
+    const hostRefFrame = hostEmitPredictor.intercept + hostEmitPredictor.slopeFramesPerMs * hostTimeAtReportMs
+    // Acoustic frame on each side: host is by definition emit-time; sink write cursor leads emit by
+    // sinkLatency, so subtract to get the emit frame.
+    const sinkLatencyFrames = (sinkLatencyMs * streamSampleRate) / 1000
+    const sinkAcousticFrame = sinkWriteCursorFrame - sinkLatencyFrames
+    const phase2DriftFrames = sinkAcousticFrame - hostRefFrame
+    return {
+      hostRefAgeMs: ageMs,
+      hostRefRatePpm,
+      hostRefRateRawPpm: hostEmitRawPairwisePpm,
+      hostRefFrame,
+      sinkAcousticFrame,
+      hostAcousticFrame: hostRefFrame,
+      phase2DriftFrames
+    }
+  }
+
   const getActiveHostStream = (): ParallaxStreamInfo | null => {
     const status = get().status
     if (!status?.host.active || status.host.connectedSinkCount <= 0) return null
@@ -316,6 +512,21 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         }
       }
       const sinkLatency = audioEngine.getOutputLatencyMetrics()
+      // Phase 2A — predictor telemetry, computed at the same wall instant we just used for drift.
+      // Logged-only in 2A; 2B reads these and steers the loop against them when validation passes.
+      // Anchors live in host-wall, but `currentFrameAtWallMs` is in sink-wall — map through the
+      // clock offset (same conversion the drift formula does), and pass null when the offset is
+      // unknown so the predictor returns empty telemetry instead of predicting in the wrong domain.
+      const phase2ClockOffsetMs = status.sink.clockOffsetMs
+      const hostTimeAtReportMs = (phase2ClockOffsetMs !== null && phase2ClockOffsetMs !== undefined && snapshot.currentFrameAtWallMs > 0)
+        ? snapshot.currentFrameAtWallMs + phase2ClockOffsetMs
+        : null
+      const phase2 = getHostEmitPredictorTelemetry(
+        hostTimeAtReportMs,
+        stream.sampleRate,
+        sinkLatencyMs,
+        snapshot.currentFrame
+      )
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
@@ -328,7 +539,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         baseLatencyMs: sinkLatency.baseLatencyMs,
         timestampLatencyMs: sinkLatency.timestampLatencyMs,
         rebuffering: snapshot.rebuffering,
-        starvedFrames: snapshot.starvedFrames
+        starvedFrames: snapshot.starvedFrames,
+        hostRefAgeMs: phase2.hostRefAgeMs,
+        hostRefRatePpm: phase2.hostRefRatePpm,
+        hostRefRateRawPpm: phase2.hostRefRateRawPpm,
+        hostRefFrame: phase2.hostRefFrame,
+        sinkAcousticFrame: phase2.sinkAcousticFrame,
+        hostAcousticFrame: phase2.hostAcousticFrame,
+        phase2DriftFrames: phase2.phase2DriftFrames
       })
     }, 1000)
   }
@@ -367,6 +585,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     if (!eventUnsubscribe) {
       eventUnsubscribe = window.electronAPI.parallax.onEvent((event) => {
+        // Phase 2A — anchors take the fast sync path; stream-start/timeline/stop go through the
+        // async chunk-pending / stream-load flow.
+        if (event.type === 'host-emit-anchor') {
+          ingestHostEmitAnchor(event)
+          return
+        }
         void handleSinkEvent(event).catch((error) => {
           set({ errorMessage: toErrorMessage(error) })
         })
@@ -397,10 +621,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   }
 
   const handleSinkEvent = async (event: ParallaxTimelineEvent): Promise<void> => {
+    // Host emit anchors are handled by ingestHostEmitAnchor (sync, fast — 5 Hz). They never need
+    // the async stream-load / pending-chunk logic this function exists for.
+    if (event.type === 'host-emit-anchor') return
     const status = get().status
     if (event.type === 'stop') {
       pendingAudioChunks = []
       audioEngine.stopParallaxSinkPlayback()
+      resetHostEmitAnchors()
       set({
         latestTimeline: null,
         pendingSinkEvent: null,
@@ -631,6 +859,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     prepareHostPlayback: async (track) => {
       if (!get().shouldDelayHostPlayback(track)) return null
       ensureTelemetry()
+      startHostEmitAnchorPublish()
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
       const streamId = createStreamId(track)
@@ -655,6 +884,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (!get().shouldDelayHostPlayback(track) || !track) return null
       if (getActiveHostStream()) return null
       ensureTelemetry()
+      startHostEmitAnchorPublish()
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
       const streamId = createStreamId(track)
@@ -750,6 +980,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     stopHostPlayback: async () => {
       audioEngine.cancelParallaxHostPublishing()
+      stopHostEmitAnchorPublish()
       try {
         await window.electronAPI.parallax.stopHostStream()
       } catch (error) {

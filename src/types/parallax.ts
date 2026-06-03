@@ -30,6 +30,16 @@ export const PARALLAX_SNAP_CONFIRM_TICKS = 2
 // target frame is recomputed to match the (possibly extended) emit time.
 export const PARALLAX_RESYNC_GUARD_MS = 20
 
+// Phase 2A — host-output-clock reference. See `share` doc §§3, 5, 6.
+// Host publishes an emit anchor every 200 ms (5 Hz) while streaming. Sink keeps a rolling 20 s
+// window (~100 samples at 5 Hz) and Theil-Sen-fits a host-source-frame-vs-host-wall-time line.
+// Validation gates: ≥ 3 valid anchors, latest < 1 s old, filtered rate within ±2000 ppm of nominal.
+export const PARALLAX_HOST_EMIT_ANCHOR_INTERVAL_MS = 200
+export const PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS = 20_000
+export const PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES = 3
+export const PARALLAX_HOST_EMIT_ANCHOR_STALE_MS = 1_000
+export const PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM = 2_000
+
 // Underrun recovery: if the sink buffer drains while still connected, the worklet self-pauses into
 // "rebuffering" after ~PARALLAX_STARVE_TRIGGER_MS of continuous starvation (mirrored as
 // starveTriggerFrames in the worklet). The renderer then waits until the buffer covers the live
@@ -141,6 +151,22 @@ export type ParallaxTimelineEvent =
       streamId: string | null
       emittedAtHostTimeMs: number
     }
+  // Phase 2A — host periodically broadcasts the source frame currently leaving its speaker, in
+  // host-wall time. Sinks fit a robust host-output-frame predictor from a rolling window of these
+  // anchors. The acoustic timeline (startHostTimeMs/startFrame) stays as the static anchor; this
+  // is the live host-output-clock reference the sink can chase to absorb hardware-crystal drift
+  // between the two machines (invisible to the nominal-rate Phase-1 loop).
+  | {
+      type: 'host-emit-anchor'
+      streamId: string
+      hostWallTimeMs: number          // performance.timeOrigin + ts.performanceTime
+      sourceFrameAtHostOutput: number // frame the host's speaker emitted at hostWallTimeMs
+      hostOutputLatencyMs: number     // diagnostic
+      hostBaseLatencyMs: number       // diagnostic
+      observedRatePpm: number | null  // diagnostic host-side estimate; sink's fit is authoritative
+      sequence: number                // monotonic per stream
+      emittedAtHostTimeMs: number
+    }
 
 export interface ParallaxAudioChunk {
   streamId: string
@@ -186,6 +212,16 @@ export interface ParallaxSinkTelemetry {
   // Underrun-recovery diagnostics.
   rebuffering?: boolean
   starvedFrames?: number
+  // Phase 2A diagnostics — host-output-clock reference predictor on the sink. All optional so
+  // older sinks remain compatible. The loop ignores these in 2A (logged-only); 2B switches drift
+  // and snap to use them when validation gates pass.
+  hostRefAgeMs?: number | null         // age of most recent valid anchor (ms)
+  hostRefRatePpm?: number | null       // filtered rate from rolling-window fit, in ppm vs nominal
+  hostRefRateRawPpm?: number | null    // last pairwise Δframe/Δt rate, for filter validation
+  hostRefFrame?: number | null         // host source frame predicted at currentFrameAtWallMs
+  sinkAcousticFrame?: number | null    // sink write cursor − sinkLatency*sr in frames
+  hostAcousticFrame?: number | null    // same as hostRefFrame; renamed for symmetry in the CSV
+  phase2DriftFrames?: number | null    // sinkAcoustic − hostAcoustic; what 2B will steer against
 }
 
 export interface ParallaxHostStatus {
@@ -301,6 +337,59 @@ export function selectFilteredParallaxClockOffsetMs(
 export function clampParallaxPlaybackRatePpm(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(-PARALLAX_MAX_SLEW_PPM, Math.min(PARALLAX_MAX_SLEW_PPM, value))
+}
+
+// Phase 2A — Theil-Sen robust line fit over host-output anchors. See `share` doc §5.
+// Median of pairwise Δframe/Δtime, intercept from median residual. Theil-Sen tolerates up to ~29%
+// outliers in the median; a stray bad anchor produces N-1 bad pairwise slopes which the median
+// rejects. Returns null when fewer than 2 distinct-time points are available. Caller converts the
+// returned slope (frames per ms) to ppm against the stream's nominal sampleRate.
+export interface ParallaxHostEmitAnchorLine {
+  slopeFramesPerMs: number
+  intercept: number  // source frame at hostWallTimeMs = 0
+}
+
+export function fitHostEmitAnchorLine(
+  anchors: readonly { hostWallTimeMs: number; sourceFrameAtHostOutput: number }[]
+): ParallaxHostEmitAnchorLine | null {
+  const valid = anchors.filter((a) =>
+    Number.isFinite(a.hostWallTimeMs) && Number.isFinite(a.sourceFrameAtHostOutput)
+  )
+  if (valid.length < 2) return null
+
+  // All pairwise slopes; skip pairs with identical or non-increasing time to avoid divide-by-zero
+  // and to enforce monotonicity (the host publishes anchors in order; out-of-order arrivals are
+  // pre-filtered upstream, but be defensive).
+  const slopes: number[] = []
+  for (let i = 0; i < valid.length; i += 1) {
+    for (let j = i + 1; j < valid.length; j += 1) {
+      const dt = valid[j].hostWallTimeMs - valid[i].hostWallTimeMs
+      if (dt <= 0) continue
+      const df = valid[j].sourceFrameAtHostOutput - valid[i].sourceFrameAtHostOutput
+      slopes.push(df / dt)
+    }
+  }
+  if (slopes.length === 0) return null
+
+  const slopeFramesPerMs = parallaxMedian(slopes)
+  // Intercept: median of (frame_i − slope * time_i). Robust to the same outliers the slope was.
+  const intercepts = valid.map((a) => a.sourceFrameAtHostOutput - slopeFramesPerMs * a.hostWallTimeMs)
+  const intercept = parallaxMedian(intercepts)
+  return { slopeFramesPerMs, intercept }
+}
+
+function parallaxMedian(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+// Convert a fitted slope (frames per ms of wall time) into ppm deviation from a nominal sampleRate.
+// Nominal slope = sampleRate / 1000 frames per ms; ppm = (slope / nominalSlope − 1) × 1e6.
+export function hostEmitAnchorSlopeToPpm(slopeFramesPerMs: number, nominalSampleRate: number): number {
+  if (!Number.isFinite(slopeFramesPerMs) || !Number.isFinite(nominalSampleRate) || nominalSampleRate <= 0) return 0
+  const nominal = nominalSampleRate / 1000
+  return (slopeFramesPerMs / nominal - 1) * 1_000_000
 }
 
 export type ParallaxSinkCorrectionMode = 'hold' | 'slew' | 'snap'

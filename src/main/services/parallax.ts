@@ -175,32 +175,29 @@ function csvNum(value: unknown): string {
 function appendParallaxTelemetryLog(
   body: unknown,
   hostMetrics: ParallaxOutputLatencyMetrics | null,
-  sampleRate: number | null
+  _sampleRate: number | null
 ): void {
   const path = process.env.PARALLAX_TELEM_LOG
   if (!path || !body || typeof body !== 'object') return
   const t = body as Partial<ParallaxSinkTelemetry>
-  // acoustic drift (frames) = measured cursor drift minus the device output-latency difference,
-  // i.e. what the rig should see once per-device latency is compensated. Blank if data is missing.
-  let acousticDriftFrames = ''
-  if (
-    typeof t.driftFrames === 'number' && Number.isFinite(t.driftFrames) &&
-    typeof t.outputLatencyMs === 'number' && Number.isFinite(t.outputLatencyMs) &&
-    hostMetrics && typeof hostMetrics.outputLatencyMs === 'number' && Number.isFinite(hostMetrics.outputLatencyMs) &&
-    typeof sampleRate === 'number' && sampleRate > 0
-  ) {
-    acousticDriftFrames = String(
-      t.driftFrames - ((t.outputLatencyMs - hostMetrics.outputLatencyMs) * sampleRate) / 1000
-    )
-  }
+  // `acoustic_drift_frames` column was a Phase 0 prediction (write drift − output-latency difference)
+  // and became misleading once Phase 1 step 5 made the loop directly target acoustic sync. Dropped
+  // per share doc §8. Phase 2A columns are the new source of truth for acoustic-domain telemetry.
   try {
     if (!parallaxTelemetryLogStarted) {
       appendFileSync(
         path,
         'host_recv_ms,reported_ms,drift_frames,rtt_ms,ppm,buffered_ms,underruns,' +
           'sink_out_lat_ms,sink_base_lat_ms,sink_ts_lat_ms,' +
-          'host_out_lat_ms,host_base_lat_ms,host_ts_lat_ms,acoustic_drift_frames,' +
-          'rebuffering,starved_frames\n'
+          'host_out_lat_ms,host_base_lat_ms,host_ts_lat_ms,' +
+          'rebuffering,starved_frames,' +
+          // Phase 2A — host-output-clock reference predictor diagnostics. host_ref_age_ms is how
+          // stale the latest valid anchor was at the sink's report instant; host_ref_rate_ppm is
+          // the Theil-Sen-filtered slope; host_ref_rate_raw_ppm is the last pairwise Δframe/Δt, for
+          // validating that the filter is doing work. phase2_drift_frames is the candidate signal
+          // Phase 2B will steer against; logged-only here.
+          'host_ref_age_ms,host_ref_rate_ppm,host_ref_rate_raw_ppm,host_ref_frame,' +
+          'sink_acoustic_frame,host_acoustic_frame,phase2_drift_frames\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -210,7 +207,9 @@ function appendParallaxTelemetryLog(
         `${csvNum(t.playbackRatePpm)},${csvNum(t.bufferedMs)},${csvNum(t.underruns)},` +
         `${csvNum(t.outputLatencyMs)},${csvNum(t.baseLatencyMs)},${csvNum(t.timestampLatencyMs)},` +
         `${csvNum(hostMetrics?.outputLatencyMs)},${csvNum(hostMetrics?.baseLatencyMs)},${csvNum(hostMetrics?.timestampLatencyMs)},` +
-        `${acousticDriftFrames},${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)}\n`
+        `${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)},` +
+        `${csvNum(t.hostRefAgeMs)},${csvNum(t.hostRefRatePpm)},${csvNum(t.hostRefRateRawPpm)},${csvNum(t.hostRefFrame)},` +
+        `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)}\n`
     )
   } catch {
     /* diagnostics best-effort */
@@ -508,6 +507,33 @@ export class ParallaxService {
     this.broadcastTimelineEvent({
       type: 'timeline',
       timeline,
+      emittedAtHostTimeMs: parallaxNowMs()
+    })
+  }
+
+  // Phase 2A — forward a host-emit-anchor over the existing SSE channel. The renderer publishes at
+  // 5 Hz while a host stream is active; sinks fit a host-output-frame predictor from these. The
+  // service drops anchors that don't match the active stream so a stale publisher can't pollute a
+  // new stream's window.
+  publishHostEmitAnchor(anchor: {
+    streamId: string
+    hostWallTimeMs: number
+    sourceFrameAtHostOutput: number
+    hostOutputLatencyMs: number
+    hostBaseLatencyMs: number
+    observedRatePpm: number | null
+    sequence: number
+  }): void {
+    if (!this.activeStream || this.activeStream.info.streamId !== anchor.streamId) return
+    this.broadcastTimelineEvent({
+      type: 'host-emit-anchor',
+      streamId: anchor.streamId,
+      hostWallTimeMs: anchor.hostWallTimeMs,
+      sourceFrameAtHostOutput: anchor.sourceFrameAtHostOutput,
+      hostOutputLatencyMs: anchor.hostOutputLatencyMs,
+      hostBaseLatencyMs: anchor.hostBaseLatencyMs,
+      observedRatePpm: anchor.observedRatePpm,
+      sequence: anchor.sequence,
       emittedAtHostTimeMs: parallaxNowMs()
     })
   }

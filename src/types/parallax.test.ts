@@ -5,6 +5,8 @@ import {
   decideParallaxSinkCorrection,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
+  fitHostEmitAnchorLine,
+  hostEmitAnchorSlopeToPpm,
   mapHostTimeToSinkTimeMs,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs,
@@ -115,6 +117,47 @@ test('Parallax filtered clock offset medians the lower-RTT half', () => {
     { ...samples[3], offsetMs: -52 }
   ]
   assert.equal(selectFilteredParallaxClockOffsetMs(negative), -50) // lower-RTT half = 1 sample
+})
+
+test('Parallax host-emit-anchor Theil-Sen fit recovers slope and intercept under noise + outliers', () => {
+  // Synthetic data: host emits at 44100.5 Hz (+11.34 ppm vs 44100), starting at frame 1000 at t=0.
+  // slope (frames/ms) = 44100.5 / 1000 = 44.1005.
+  const trueSlope = 44.1005
+  const trueIntercept = 1000
+  const anchors: { hostWallTimeMs: number; sourceFrameAtHostOutput: number }[] = []
+  for (let i = 0; i < 50; i += 1) {
+    const t = i * 200 // 5 Hz cadence
+    const f = trueIntercept + trueSlope * t
+    // Tiny jitter on a handful of samples (well under 1 frame); leave the rest exact.
+    const noise = (i % 7 === 0) ? 0.3 : 0
+    anchors.push({ hostWallTimeMs: t, sourceFrameAtHostOutput: f + noise })
+  }
+  // Inject 5 outliers (~10%) — Theil-Sen tolerates these.
+  for (const idx of [3, 13, 27, 35, 42]) {
+    anchors[idx].sourceFrameAtHostOutput += 250
+  }
+  const line = fitHostEmitAnchorLine(anchors)
+  assert.ok(line, 'expected a fit')
+  assert.ok(Math.abs(line.slopeFramesPerMs - trueSlope) < 1e-3, `slope ${line.slopeFramesPerMs} vs ${trueSlope}`)
+  assert.ok(Math.abs(line.intercept - trueIntercept) < 30, `intercept ${line.intercept} vs ${trueIntercept}`)
+
+  // ppm conversion against nominal 44100.
+  const ppm = hostEmitAnchorSlopeToPpm(line.slopeFramesPerMs, 44100)
+  assert.ok(Math.abs(ppm - 11.34) < 0.5, `ppm ${ppm} vs ~11.34`)
+
+  // Edge: empty + single-point + non-monotonic times.
+  assert.equal(fitHostEmitAnchorLine([]), null)
+  assert.equal(fitHostEmitAnchorLine([{ hostWallTimeMs: 0, sourceFrameAtHostOutput: 0 }]), null)
+  const stalled = [
+    { hostWallTimeMs: 0, sourceFrameAtHostOutput: 0 },
+    { hostWallTimeMs: 0, sourceFrameAtHostOutput: 100 } // dt = 0 → pair skipped
+  ]
+  assert.equal(fitHostEmitAnchorLine(stalled), null)
+
+  // ppm sanity: invalid inputs.
+  assert.equal(hostEmitAnchorSlopeToPpm(Number.NaN, 48000), 0)
+  assert.equal(hostEmitAnchorSlopeToPpm(48, 0), 0)
+  assert.equal(hostEmitAnchorSlopeToPpm(48, 48000), 0) // exactly nominal
 })
 
 test('Parallax audio packet waits for complete frame', () => {

@@ -804,6 +804,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:publishHostAudioChunk', chunk),
     publishHostTimeline: (timeline: ParallaxTimelineState): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostTimeline', timeline),
+    publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostEmitAnchor', anchor),
     stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
     publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
       ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
@@ -1276,6 +1278,7 @@ declare global {
         ) => Promise<ParallaxTimelineState>
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
         publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
+        publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
         stopHostStream: () => Promise<void>
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
