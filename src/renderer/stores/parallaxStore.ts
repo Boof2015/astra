@@ -21,7 +21,9 @@ import {
   PARALLAX_HOST_EMIT_ANCHOR_INTERVAL_MS,
   PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM,
   PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES,
+  PARALLAX_HOST_EMIT_ANCHOR_STALE_MS,
   PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS,
+  PARALLAX_PHASE2_HANDOFF_SETTLE_MS,
   PARALLAX_REBUFFER_MARGIN_MS,
   PARALLAX_RESYNC_GUARD_MS,
   PARALLAX_RESYNC_LEAD_MS,
@@ -98,6 +100,17 @@ let hostEmitPredictor: { slopeFramesPerMs: number; intercept: number } | null = 
 let hostEmitPublishTimer: number | null = null
 let hostEmitOutgoingSequence = 0
 let hostEmitOutgoingStreamId: string | null = null
+// Phase 2B (§13.4) — handoff settle window. We need to suppress hard snaps for a short period after
+// the predictor's §6 gates first pass, because the loop's drift signal can jump by whatever bias
+// exists between the Phase-1 fallback and the predictor (~400 frames in the 2A CSV) — large enough
+// to look snap-eligible if the handoff lands on a tick already near the threshold. Rate slew is
+// unaffected; it smoothly discharges the bias instead.
+let hostEmitPredictorGatesPassed = false
+let hostEmitPredictorBecameValidAtMs: number | null = null
+// Phase 2B (§13.5) — read once at module load via preload. Default off so 2B ships safely; rig run
+// flips the env to A/B the predictor against the Phase-1 control loop.
+const PARALLAX_USE_HOST_PREDICTOR: boolean =
+  typeof window !== 'undefined' && Boolean(window.electronAPI?.parallax?.useHostPredictor)
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -153,15 +166,25 @@ function buildHostTimeline(
   }
 }
 
+// Phase 2B (§13.2). The drift signal the loop will steer against this tick, plus a marker for which
+// branch produced it. `loopSource: 'hold'` means no usable drift signal (the three pre-check holds
+// below); `'phase1'` means the nominal-timeline fallback formula ran; `'predictor'` is set by the
+// caller after upgrading a 'phase1' return value when the §6 gates pass.
+type ParallaxRateCorrection = {
+  driftFrames: number
+  playbackRatePpm: number
+  loopSource: 'predictor' | 'phase1' | 'hold'
+}
+
 function computeRateCorrectionPpm(
   timeline: ParallaxTimelineState,
   stream: ParallaxStreamInfo,
   snapshot: { currentFrame: number; currentFrameAtWallMs: number },
   status: ParallaxStatus | null,
   sinkLatencyMs: number
-): { driftFrames: number; playbackRatePpm: number } {
+): ParallaxRateCorrection {
   if (timeline.playbackState !== 'playing') {
-    return { driftFrames: 0, playbackRatePpm: 0 }
+    return { driftFrames: 0, playbackRatePpm: 0, loopSource: 'hold' }
   }
   // `currentFrameAtWallMs` is in *sink* wall time; `timeline.startHostTimeMs` is in *host* wall
   // time. Treating sink-wall as host-wall when the clock offset is unknown produces a drift error
@@ -172,13 +195,13 @@ function computeRateCorrectionPpm(
   // the loop reacts to. Hold drift at 0 until the offset is back; the snap path's own hasOffset
   // gate stops the snap from firing anyway, but the rate loop must stay quiet too.
   if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
-    return { driftFrames: 0, playbackRatePpm: 0 }
+    return { driftFrames: 0, playbackRatePpm: 0, loopSource: 'hold' }
   }
   // Drift only makes sense once the worklet has reported at least one timestamped position. Before
   // that the formula would compare a frame=0 cursor against a positive expected frame and produce a
   // spurious large drift on the very first tick.
   if (!Number.isFinite(snapshot.currentFrameAtWallMs) || snapshot.currentFrameAtWallMs <= 0) {
-    return { driftFrames: 0, playbackRatePpm: 0 }
+    return { driftFrames: 0, playbackRatePpm: 0, loopSource: 'hold' }
   }
 
   // Compute drift at the wall instant the worklet reported the cursor, not at "now" — this is the
@@ -200,7 +223,8 @@ function computeRateCorrectionPpm(
   const driftFrames = snapshot.currentFrame - expectedFrame
   return {
     driftFrames,
-    playbackRatePpm: clampParallaxPlaybackRatePpm(-driftFrames * 2)
+    playbackRatePpm: clampParallaxPlaybackRatePpm(-driftFrames * 2),
+    loopSource: 'phase1'
   }
 }
 
@@ -234,6 +258,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     hostEmitLastWallMs = null
     hostEmitRawPairwisePpm = null
     hostEmitPredictor = null
+    // Phase 2B — gate state and handoff timestamp travel with the predictor. A reset means the next
+    // gate-pass is a fresh handoff and triggers a new settle window.
+    hostEmitPredictorGatesPassed = false
+    hostEmitPredictorBecameValidAtMs = null
   }
 
   // Host-side: publish one anchor (5 Hz timer body). Stops itself only when there's no active
@@ -349,6 +377,32 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     }
   }
 
+  // Phase 2B (share §6). Evaluate the predictor-control gates. Telemetry is published regardless
+  // of whether these pass — `phase2_drift_frames` always reflects the predictor's view, so we can
+  // see in the CSV exactly when the gates flip. These gates are the decision *whether the control
+  // loop is allowed to consume that signal*, not whether to compute it.
+  //
+  // The existing `getHostEmitPredictorTelemetry` already enforces two of the five §6 conditions
+  // implicitly (returns empty when `hostTimeAtReportMs === null` covers "no valid clockOffsetMs",
+  // and when `hostEmitPredictor === null` covers "<3 anchors"). This helper checks the remaining
+  // three explicitly so the call site is self-documenting.
+  const hostEmitPredictorGatesPass = (
+    hostTimeAtReportMs: number | null,
+    activeStreamId: string | null,
+    hostRefRatePpm: number | null,
+    hostRefAgeMs: number | null
+  ): boolean => {
+    if (hostTimeAtReportMs === null) return false                  // no clockOffsetMs
+    if (!hostEmitPredictor) return false                            // <3 anchors / not fit
+    if (hostEmitAnchorStreamId === null) return false               // stream lifecycle
+    if (activeStreamId !== hostEmitAnchorStreamId) return false     // streamId match
+    if (hostRefAgeMs === null) return false
+    if (hostRefAgeMs > PARALLAX_HOST_EMIT_ANCHOR_STALE_MS) return false // <1s old
+    if (hostRefRatePpm === null) return false
+    if (Math.abs(hostRefRatePpm) > PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM) return false // ±2000 ppm
+    return true
+  }
+
   // Snapshot the predictor's state for telemetry/CSV. Computed lazily on each tick, never cached.
   // `hostTimeAtReportMs` is the report instant expressed in host-wall time — the caller must map
   // the sink-wall snapshot through `status.sink.clockOffsetMs` first, or pass null if the offset
@@ -450,73 +504,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // from getOutputLatencyMetrics) keeps scheduling and drift target in lockstep, so a future
       // PARALLAX_SINK_ADVANCE_MS shifts both together and the loop doesn't slew to undo the trim.
       const sinkLatencyMs = audioEngine.getParallaxEndpointLatencyMs()
-      const correction = computeRateCorrectionPpm(timeline, stream, snapshot, status, sinkLatencyMs)
-      // Live host frame + effective lead for hard snap / rebuffer resume. PARALLAX_RESYNC_LEAD_MS
-      // (60 ms) is too short for endpoints whose own latency exceeds it (Fedora ≈ 58 ms, Bluetooth
-      // can be 200 ms+): scheduling would land in the past and the snap would emit late even though
-      // the target frame was computed for the unextended lead. We raise the lead to at least
-      // `sinkLatency + GUARD` AND advance the target frame by the same delta, so the snap stays
-      // valid and the speaker emits the right frame at the right wall instant.
-      const liveSnapTarget = (): { targetFrame: number; leadSeconds: number } => {
-        const effectiveLeadMs = Math.max(PARALLAX_RESYNC_LEAD_MS, sinkLatencyMs + PARALLAX_RESYNC_GUARD_MS)
-        const targetFrame = Math.max(
-          0,
-          Math.min(
-            stream.totalFrames,
-            timeline.startFrame +
-              Math.floor(((resolveHostNowMs(status) + effectiveLeadMs - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
-          )
-        )
-        return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
-      }
+      const phase1Correction = computeRateCorrectionPpm(timeline, stream, snapshot, status, sinkLatencyMs)
 
-      let appliedPpm = 0
-      if (snapshot.rebuffering) {
-        // The worklet self-paused after its buffer drained. Hold (no snap/slew) until the buffer
-        // covers the live host frame by a safe margin, then re-anchor to live and resume — so the
-        // cursor never free-runs into empty data (the underrun spiral that previously killed the sink).
-        snapPendingTicks = 0
-        const marginFrames = Math.floor((PARALLAX_REBUFFER_MARGIN_MS * stream.sampleRate) / 1000)
-        const snap = liveSnapTarget()
-        if (
-          timeline.playbackState === 'playing' &&
-          hasOffset &&
-          snapshot.bufferedEndFrame >= snap.targetFrame + marginFrames
-        ) {
-          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
-          lastHardSyncAtMs = now
-        }
-      } else {
-        const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
-        const wantsSnap = decision.mode === 'snap' && timeline.playbackState === 'playing' && hasOffset
-        snapPendingTicks = wantsSnap ? snapPendingTicks + 1 : 0
-        appliedPpm = decision.playbackRatePpm
-        if (
-          wantsSnap &&
-          snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
-          now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
-        ) {
-          const snap = liveSnapTarget()
-          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
-          lastHardSyncAtMs = now
-          snapPendingTicks = 0
-          appliedPpm = 0
-        } else {
-          // Slew toward the host. During the pre-snap confirmation window we still apply the full
-          // rate correction so a real offset starts closing smoothly; if it was just measurement
-          // noise the next tick falls back into the deadzone and no gap is ever produced.
-          appliedPpm = wantsSnap
-            ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
-            : decision.playbackRatePpm
-          audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
-        }
-      }
-      const sinkLatency = audioEngine.getOutputLatencyMetrics()
-      // Phase 2A — predictor telemetry, computed at the same wall instant we just used for drift.
-      // Logged-only in 2A; 2B reads these and steers the loop against them when validation passes.
-      // Anchors live in host-wall, but `currentFrameAtWallMs` is in sink-wall — map through the
-      // clock offset (same conversion the drift formula does), and pass null when the offset is
-      // unknown so the predictor returns empty telemetry instead of predicting in the wrong domain.
+      // Phase 2A predictor telemetry — moved AHEAD of the snap decision so 2B can upgrade the
+      // correction with it. Anchors live in host-wall; `currentFrameAtWallMs` is sink-wall — map
+      // through the clock offset (same conversion the drift formula does). Null offset → empty
+      // telemetry, which the gate evaluator translates to "predictor unavailable" → Phase-1
+      // fallback for slew, and §13.1(b) no-snap.
       const phase2ClockOffsetMs = status.sink.clockOffsetMs
       const hostTimeAtReportMs = (phase2ClockOffsetMs !== null && phase2ClockOffsetMs !== undefined && snapshot.currentFrameAtWallMs > 0)
         ? snapshot.currentFrameAtWallMs + phase2ClockOffsetMs
@@ -527,6 +521,147 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         sinkLatencyMs,
         snapshot.currentFrame
       )
+
+      // §6 gate eval. Tracked regardless of `PARALLAX_USE_HOST_PREDICTOR` so the handoff-settle
+      // timestamp is meaningful the instant the flag becomes consulted (today: module load only;
+      // tomorrow potentially runtime-toggleable). Stamp the wall instant the gates *first* pass
+      // after being invalid; clear it when they fall back to invalid, so the next pass triggers a
+      // fresh settle window. Cheap; runs once per second on the existing tick.
+      const gatesPass = hostEmitPredictorGatesPass(
+        hostTimeAtReportMs,
+        stream.streamId,
+        phase2.hostRefRatePpm,
+        phase2.hostRefAgeMs
+      )
+      if (gatesPass && !hostEmitPredictorGatesPassed) {
+        hostEmitPredictorBecameValidAtMs = now
+      } else if (!gatesPass && hostEmitPredictorGatesPassed) {
+        hostEmitPredictorBecameValidAtMs = null
+      }
+      hostEmitPredictorGatesPassed = gatesPass
+
+      // Phase 2B upgrade (§13.1.a). Only when env flag is on, gates pass, and the Phase-1 path
+      // itself produced a real signal (not 'hold' — which covers clock-offset missing / pre-first-
+      // tick / stopped, all of which must continue to hold regardless of predictor state).
+      const correction: ParallaxRateCorrection = (
+        PARALLAX_USE_HOST_PREDICTOR
+        && gatesPass
+        && phase2.phase2DriftFrames !== null
+        && phase1Correction.loopSource === 'phase1'
+      )
+        ? {
+            driftFrames: phase2.phase2DriftFrames,
+            playbackRatePpm: clampParallaxPlaybackRatePpm(-phase2.phase2DriftFrames * 2),
+            loopSource: 'predictor'
+          }
+        : phase1Correction
+
+      // Live host frame + effective lead for hard snap / rebuffer resume. PARALLAX_RESYNC_LEAD_MS
+      // (60 ms) is too short for endpoints whose own latency exceeds it (Fedora ≈ 58 ms, Bluetooth
+      // can be 200 ms+): scheduling would land in the past and the snap would emit late even though
+      // the target frame was computed for the unextended lead. We raise the lead to at least
+      // `sinkLatency + GUARD` AND advance the target frame by the same delta, so the snap stays
+      // valid and the speaker emits the right frame at the right wall instant.
+      //
+      // Phase 2B has two modes here:
+      //   - Env OFF (§13.5 baseline): Phase-1 IS the loop, not a fallback. Use the original
+      //     nominal-timeline target unchanged so the env-on/env-off rig comparison is meaningful.
+      //   - Env ON (§13.1.b): predictor must be both the active drift source AND able to produce a
+      //     target wall-frame. Otherwise return null — Phase-1 fallback may slew, never snaps.
+      const liveSnapTarget = (): { targetFrame: number; leadSeconds: number } | null => {
+        const effectiveLeadMs = Math.max(PARALLAX_RESYNC_LEAD_MS, sinkLatencyMs + PARALLAX_RESYNC_GUARD_MS)
+        if (!PARALLAX_USE_HOST_PREDICTOR) {
+          const targetFrame = Math.max(
+            0,
+            Math.min(
+              stream.totalFrames,
+              timeline.startFrame +
+                Math.floor(((resolveHostNowMs(status) + effectiveLeadMs - timeline.startHostTimeMs) * stream.sampleRate) / 1000)
+            )
+          )
+          return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
+        }
+        if (correction.loopSource !== 'predictor') return null
+        if (!hostEmitPredictor) return null
+        // resolveHostNowMs() adds clockOffset, so targetWallMs is in host-wall — the same domain
+        // the predictor was fit in, so intercept+slope*targetWallMs returns a host source frame.
+        const targetWallMs = resolveHostNowMs(status) + effectiveLeadMs
+        const predicted = hostEmitPredictor.intercept + hostEmitPredictor.slopeFramesPerMs * targetWallMs
+        if (!Number.isFinite(predicted)) return null
+        const targetFrame = Math.max(0, Math.min(stream.totalFrames, Math.floor(predicted)))
+        return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
+      }
+
+      // Handoff suppression (§13.4 — A+C). Snap stays blocked for SETTLE_MS after the gates first
+      // pass; rate slew is unaffected, so the ~9 ms predictor/Phase-1 bias the 2A CSV exposed
+      // discharges smoothly via the ±1000 ppm clamp (~9 s to close 400 frames).
+      const handoffSettled = hostEmitPredictorBecameValidAtMs !== null
+        && (now - hostEmitPredictorBecameValidAtMs) >= PARALLAX_PHASE2_HANDOFF_SETTLE_MS
+
+      let appliedPpm = 0
+      if (snapshot.rebuffering) {
+        // The worklet self-paused after its buffer drained. Hold (no snap/slew) until the buffer
+        // covers the live host frame by a safe margin, then re-anchor to live and resume — so the
+        // cursor never free-runs into empty data (the underrun spiral that previously killed the sink).
+        // §13.1(b): rebuffer resume needs a snap; without a predictor target there's no snap, so
+        // hold — we're not playing anyway, and re-anchoring with nominal-timeline would defeat the
+        // predictor-only-snap rule.
+        snapPendingTicks = 0
+        const marginFrames = Math.floor((PARALLAX_REBUFFER_MARGIN_MS * stream.sampleRate) / 1000)
+        const snap = liveSnapTarget()
+        if (
+          snap !== null &&
+          timeline.playbackState === 'playing' &&
+          hasOffset &&
+          snapshot.bufferedEndFrame >= snap.targetFrame + marginFrames
+        ) {
+          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
+          lastHardSyncAtMs = now
+        }
+      } else {
+        const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
+        // Compute snap target up front so we can pivot on it without recomputing.
+        const snap = decision.mode === 'snap' ? liveSnapTarget() : null
+        // Distinguish "drift is snap-sized" (controls slew rate) from "snap is allowed to fire
+        // THIS tick" (controls actual hard-sync). decideParallaxSinkCorrection returns ppm=0 for
+        // snap mode on the assumption that we'll snap instead of slew — but when snap is
+        // suppressed (handoff settle, predictor unavailable, cooldown, confirm window), we must
+        // still slew at max so the known-large drift discharges instead of sitting at hold.
+        const isSnapSizedDrift = decision.mode === 'snap'
+        // Snap eligibility: env-off uses classic Phase-1 gates so the rig A/B baseline is
+        // preserved (§13.5). Env-on adds §13.1(b)+§13.4: must be on the predictor branch AND
+        // the handoff settle window must have elapsed. snap !== null covers both modes (env-off
+        // returns a nominal target; env-on returns null whenever predictor can't snap).
+        const canSnap = isSnapSizedDrift
+          && timeline.playbackState === 'playing'
+          && hasOffset
+          && snap !== null
+          && (
+            !PARALLAX_USE_HOST_PREDICTOR
+            || (correction.loopSource === 'predictor' && handoffSettled)
+          )
+        snapPendingTicks = canSnap ? snapPendingTicks + 1 : 0
+        // For snap-sized drift, always slew at max — covers confirm window, cooldown, handoff
+        // settle, and env-on-but-fallback. Otherwise the decision's slew/hold value is the right
+        // thing.
+        appliedPpm = isSnapSizedDrift
+          ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
+          : decision.playbackRatePpm
+        if (
+          canSnap &&
+          snap !== null &&
+          snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
+          now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
+        ) {
+          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
+          lastHardSyncAtMs = now
+          snapPendingTicks = 0
+          appliedPpm = 0
+        } else {
+          audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
+        }
+      }
+      const sinkLatency = audioEngine.getOutputLatencyMetrics()
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
@@ -546,7 +681,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         hostRefFrame: phase2.hostRefFrame,
         sinkAcousticFrame: phase2.sinkAcousticFrame,
         hostAcousticFrame: phase2.hostAcousticFrame,
-        phase2DriftFrames: phase2.phase2DriftFrames
+        phase2DriftFrames: phase2.phase2DriftFrames,
+        loopSource: correction.loopSource
       })
     }, 1000)
   }
@@ -639,6 +775,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     const timeline = event.type === 'stream-start' ? event.timeline : event.timeline
     if (event.type === 'stream-start') {
+      // Phase 2B carry-forward from 2A review (share §13.3.a). The 2A code only reset the anchor
+      // window on stop or implicitly on the first anchor of a new stream — leaving a one-tick gap
+      // where the predictor still held stale anchors from the previous stream. Reset explicitly here
+      // so the new stream starts with a clean window and a fresh handoff settle timer.
+      resetHostEmitAnchors()
       try {
         if (audioEngine.getParallaxSinkSnapshot().streamId !== event.stream.streamId) {
           await audioEngine.loadParallaxSinkStream(event.stream)

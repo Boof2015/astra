@@ -197,7 +197,11 @@ function appendParallaxTelemetryLog(
           // validating that the filter is doing work. phase2_drift_frames is the candidate signal
           // Phase 2B will steer against; logged-only here.
           'host_ref_age_ms,host_ref_rate_ppm,host_ref_rate_raw_ppm,host_ref_frame,' +
-          'sink_acoustic_frame,host_acoustic_frame,phase2_drift_frames\n'
+          'sink_acoustic_frame,host_acoustic_frame,phase2_drift_frames,' +
+          // Phase 2B (§13.2) — which branch produced the drift the loop steered against:
+          // 'predictor' (predictor active + gates passed), 'phase1' (nominal fallback),
+          // 'hold' (no usable signal: clock offset missing, stopped, or first tick).
+          'loop_source\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -209,7 +213,8 @@ function appendParallaxTelemetryLog(
         `${csvNum(hostMetrics?.outputLatencyMs)},${csvNum(hostMetrics?.baseLatencyMs)},${csvNum(hostMetrics?.timestampLatencyMs)},` +
         `${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)},` +
         `${csvNum(t.hostRefAgeMs)},${csvNum(t.hostRefRatePpm)},${csvNum(t.hostRefRateRawPpm)},${csvNum(t.hostRefFrame)},` +
-        `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)}\n`
+        `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)},` +
+        `${t.loopSource ?? ''}\n`
     )
   } catch {
     /* diagnostics best-effort */

@@ -785,6 +785,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   parallax: {
+    // Phase 2B (§13.5) — read once at preload init. Renderer cannot reach process.env directly with
+    // contextIsolation, so we expose the feature-flag as a frozen boolean. `'1'` and `'true'` both
+    // count as on for shell-friendliness; anything else (including unset) is off.
+    useHostPredictor: ((): boolean => {
+      const raw = process.env.PARALLAX_USE_HOST_PREDICTOR
+      return raw === '1' || raw === 'true'
+    })(),
     getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
     listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
     setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
@@ -1264,6 +1271,7 @@ declare global {
         onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
       parallax: {
+        useHostPredictor: boolean
         getStatus: () => Promise<ParallaxStatus>
         listPairedSinks: () => Promise<ParallaxPairedSink[]>
         setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>

@@ -317,6 +317,7 @@ declare global {
                 onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
             }
             parallax: {
+                useHostPredictor: boolean
                 getStatus: () => Promise<ParallaxStatus>
                 listPairedSinks: () => Promise<ParallaxPairedSink[]>
                 setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>

@@ -40,6 +40,14 @@ export const PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES = 3
 export const PARALLAX_HOST_EMIT_ANCHOR_STALE_MS = 1_000
 export const PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM = 2_000
 
+// Phase 2B (§13.4 in share doc). When the predictor transitions from unavailable to valid mid-
+// stream, the loop's drift signal can jump by whatever offset existed between the Phase-1 fallback
+// formula and the predictor (~400 frames / ~9 ms in the 2A CSV). Suppress hard snaps for this
+// many ms after gates first pass; rate-slew is unaffected and discharges the bias smoothly. At the
+// ±1000 ppm clamp, ~400 frames takes ~9 s to close, so 10 s suppresses handoff snaps without
+// hiding steady-state snaps.
+export const PARALLAX_PHASE2_HANDOFF_SETTLE_MS = 10_000
+
 // Underrun recovery: if the sink buffer drains while still connected, the worklet self-pauses into
 // "rebuffering" after ~PARALLAX_STARVE_TRIGGER_MS of continuous starvation (mirrored as
 // starveTriggerFrames in the worklet). The renderer then waits until the buffer covers the live
@@ -222,6 +230,11 @@ export interface ParallaxSinkTelemetry {
   sinkAcousticFrame?: number | null    // sink write cursor − sinkLatency*sr in frames
   hostAcousticFrame?: number | null    // same as hostRefFrame; renamed for symmetry in the CSV
   phase2DriftFrames?: number | null    // sinkAcoustic − hostAcoustic; what 2B will steer against
+  // Phase 2B (§13.2). Which branch produced the drift the loop is steering against this tick.
+  // 'predictor' = host-output-clock predictor (gates pass + env flag on).
+  // 'phase1'    = nominal-timeline fallback (predictor unavailable, or flag off).
+  // 'hold'      = no usable drift signal (clock offset missing / playback stopped / first tick).
+  loopSource?: 'predictor' | 'phase1' | 'hold' | null
 }
 
 export interface ParallaxHostStatus {
