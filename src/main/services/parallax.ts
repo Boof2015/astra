@@ -201,7 +201,12 @@ function appendParallaxTelemetryLog(
           // Phase 2B (§13.2) — which branch produced the drift the loop steered against:
           // 'predictor' (predictor active + gates passed), 'phase1' (nominal fallback),
           // 'hold' (no usable signal: clock offset missing, stopped, or first tick).
-          'loop_source\n'
+          'loop_source,' +
+          // Phase 2B §13.4 follow-up — explicit per-tick hard-sync marker, removes the need to
+          // infer snap firings from ppm=0 + snap-sized drift after the handoff settle removal.
+          // sync_event = 'snap' / 'rebuffer_snap' / '' ; hard_sync_count is monotonic over the
+          // sink session (resets on disconnect, not on stream-start).
+          'sync_event,hard_sync_count\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -214,7 +219,7 @@ function appendParallaxTelemetryLog(
         `${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)},` +
         `${csvNum(t.hostRefAgeMs)},${csvNum(t.hostRefRatePpm)},${csvNum(t.hostRefRateRawPpm)},${csvNum(t.hostRefFrame)},` +
         `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)},` +
-        `${t.loopSource ?? ''}\n`
+        `${t.loopSource ?? ''},${t.syncEvent ?? ''},${csvNum(t.hardSyncCount)}\n`
     )
   } catch {
     /* diagnostics best-effort */

@@ -40,13 +40,14 @@ export const PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES = 3
 export const PARALLAX_HOST_EMIT_ANCHOR_STALE_MS = 1_000
 export const PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM = 2_000
 
-// Phase 2B (§13.4 in share doc). When the predictor transitions from unavailable to valid mid-
-// stream, the loop's drift signal can jump by whatever offset existed between the Phase-1 fallback
-// formula and the predictor (~400 frames / ~9 ms in the 2A CSV). Suppress hard snaps for this
-// many ms after gates first pass; rate-slew is unaffected and discharges the bias smoothly. At the
-// ±1000 ppm clamp, ~400 frames takes ~9 s to close, so 10 s suppresses handoff snaps without
-// hiding steady-state snaps.
-export const PARALLAX_PHASE2_HANDOFF_SETTLE_MS = 10_000
+// (Phase 2B §13.4 originally added a `PARALLAX_PHASE2_HANDOFF_SETTLE_MS = 10_000` window to
+// suppress hard-sync for 10 s after the predictor's gates first passed. Removed 2026-06-04 — the
+// settle was sized for the ~400-frame predictor-handoff bias the 2A CSV exposed, but 400 frames is
+// well below the hard-sync threshold (40 ms ≈ 1764 frames), so the slew path was always going to
+// handle that case. The settle only kicked in when drift on handoff *exceeded* the snap threshold,
+// which is exactly the case we want to snap on — the startup-convergence path notably. Safety net
+// is now the §6 validity gates + min-samples + slope sanity, not a time delay after deciding the
+// predictor is valid. See share doc §13.4 for the full reasoning.)
 
 // Underrun recovery: if the sink buffer drains while still connected, the worklet self-pauses into
 // "rebuffering" after ~PARALLAX_STARVE_TRIGGER_MS of continuous starvation (mirrored as
@@ -235,6 +236,14 @@ export interface ParallaxSinkTelemetry {
   // 'phase1'    = nominal-timeline fallback (predictor unavailable, or flag off).
   // 'hold'      = no usable drift signal (clock offset missing / playback stopped / first tick).
   loopSource?: 'predictor' | 'phase1' | 'hold' | null
+  // Phase 2B §13.4 follow-up. Explicit per-tick marker for hard-sync events so the next debug pass
+  // doesn't have to infer them from `ppm=0` + snap-sized drift. 'snap' = playing-path rate
+  // corrector fired resyncParallaxSinkToHostFrame; 'rebuffer_snap' = same call but from the
+  // buffer-drain recovery path. null/absent means no hard sync this tick.
+  syncEvent?: 'snap' | 'rebuffer_snap' | null
+  // Running count of hard syncs since this sink session started. Lets the CSV reader compute
+  // rate/spacing without parsing the per-event column.
+  hardSyncCount?: number
 }
 
 export interface ParallaxHostStatus {

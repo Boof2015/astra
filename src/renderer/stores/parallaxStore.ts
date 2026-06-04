@@ -23,7 +23,6 @@ import {
   PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES,
   PARALLAX_HOST_EMIT_ANCHOR_STALE_MS,
   PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS,
-  PARALLAX_PHASE2_HANDOFF_SETTLE_MS,
   PARALLAX_REBUFFER_MARGIN_MS,
   PARALLAX_RESYNC_GUARD_MS,
   PARALLAX_RESYNC_LEAD_MS,
@@ -100,13 +99,12 @@ let hostEmitPredictor: { slopeFramesPerMs: number; intercept: number } | null = 
 let hostEmitPublishTimer: number | null = null
 let hostEmitOutgoingSequence = 0
 let hostEmitOutgoingStreamId: string | null = null
-// Phase 2B (§13.4) — handoff settle window. We need to suppress hard snaps for a short period after
-// the predictor's §6 gates first pass, because the loop's drift signal can jump by whatever bias
-// exists between the Phase-1 fallback and the predictor (~400 frames in the 2A CSV) — large enough
-// to look snap-eligible if the handoff lands on a tick already near the threshold. Rate slew is
-// unaffected; it smoothly discharges the bias instead.
-let hostEmitPredictorGatesPassed = false
-let hostEmitPredictorBecameValidAtMs: number | null = null
+// Phase 2B §13.4 follow-up — running count of hard syncs (both rate-corrector and rebuffer-resume)
+// since this sink session started. Per-tick `syncEvent` marker is built locally in the telemetry
+// tick; the count persists so each CSV row's `hard_sync_count` is monotonic over the session.
+// Reset only on sink-event 'stop' (full disconnect), not on stream-start — they accumulate across
+// track changes within a sink session, which is what the rig debug pass actually wants to see.
+let hostEmitHardSyncCount = 0
 // Phase 2B (§13.5) — read once at module load via preload. Default off so 2B ships safely; rig run
 // flips the env to A/B the predictor against the Phase-1 control loop.
 const PARALLAX_USE_HOST_PREDICTOR: boolean =
@@ -258,10 +256,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     hostEmitLastWallMs = null
     hostEmitRawPairwisePpm = null
     hostEmitPredictor = null
-    // Phase 2B — gate state and handoff timestamp travel with the predictor. A reset means the next
-    // gate-pass is a fresh handoff and triggers a new settle window.
-    hostEmitPredictorGatesPassed = false
-    hostEmitPredictorBecameValidAtMs = null
   }
 
   // Host-side: publish one anchor (5 Hz timer body). Stops itself only when there's no active
@@ -522,23 +516,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         snapshot.currentFrame
       )
 
-      // §6 gate eval. Tracked regardless of `PARALLAX_USE_HOST_PREDICTOR` so the handoff-settle
-      // timestamp is meaningful the instant the flag becomes consulted (today: module load only;
-      // tomorrow potentially runtime-toggleable). Stamp the wall instant the gates *first* pass
-      // after being invalid; clear it when they fall back to invalid, so the next pass triggers a
-      // fresh settle window. Cheap; runs once per second on the existing tick.
+      // §6 gate eval — does the predictor pass all gates this tick?
       const gatesPass = hostEmitPredictorGatesPass(
         hostTimeAtReportMs,
         stream.streamId,
         phase2.hostRefRatePpm,
         phase2.hostRefAgeMs
       )
-      if (gatesPass && !hostEmitPredictorGatesPassed) {
-        hostEmitPredictorBecameValidAtMs = now
-      } else if (!gatesPass && hostEmitPredictorGatesPassed) {
-        hostEmitPredictorBecameValidAtMs = null
-      }
-      hostEmitPredictorGatesPassed = gatesPass
 
       // Phase 2B upgrade (§13.1.a). Only when env flag is on, gates pass, and the Phase-1 path
       // itself produced a real signal (not 'hold' — which covers clock-offset missing / pre-first-
@@ -592,11 +576,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
       }
 
-      // Handoff suppression (§13.4 — A+C). Snap stays blocked for SETTLE_MS after the gates first
-      // pass; rate slew is unaffected, so the ~9 ms predictor/Phase-1 bias the 2A CSV exposed
-      // discharges smoothly via the ±1000 ppm clamp (~9 s to close 400 frames).
-      const handoffSettled = hostEmitPredictorBecameValidAtMs !== null
-        && (now - hostEmitPredictorBecameValidAtMs) >= PARALLAX_PHASE2_HANDOFF_SETTLE_MS
+      // §13.4 originally had a 10 s handoff-settle window here that blocked snap right after the
+      // predictor's gates first passed. Removed 2026-06-04 — see share doc §13.4 follow-up. The
+      // gates from §6 (min samples, slope sanity, staleness, streamId, clock offset) are the
+      // safety net; a time-delay-after-validity converted snap-sized startup drift into 12 s of
+      // audible mis-sync in the first sanity run.
+
+      // Per-tick hard-sync marker. Cleared each tick; set to 'snap' or 'rebuffer_snap' when the
+      // corresponding branch fires `resyncParallaxSinkToHostFrame` below. CSV consumers no longer
+      // have to infer hard-sync from ppm=0 + snap-sized drift.
+      let syncEvent: 'snap' | 'rebuffer_snap' | null = null
 
       let appliedPpm = 0
       if (snapshot.rebuffering) {
@@ -617,6 +606,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         ) {
           audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
           lastHardSyncAtMs = now
+          hostEmitHardSyncCount += 1
+          syncEvent = 'rebuffer_snap'
         }
       } else {
         const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
@@ -629,16 +620,18 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         // still slew at max so the known-large drift discharges instead of sitting at hold.
         const isSnapSizedDrift = decision.mode === 'snap'
         // Snap eligibility: env-off uses classic Phase-1 gates so the rig A/B baseline is
-        // preserved (§13.5). Env-on adds §13.1(b)+§13.4: must be on the predictor branch AND
-        // the handoff settle window must have elapsed. snap !== null covers both modes (env-off
-        // returns a nominal target; env-on returns null whenever predictor can't snap).
+        // preserved (§13.5). Env-on requires the predictor to actually be driving the loop
+        // (§13.1(b)) — Phase-1 fallback may slew but never snaps in env-on. snap !== null covers
+        // both modes (env-off returns a nominal target; env-on returns null whenever the predictor
+        // can't produce a target). No time-based settle: if §6 says the predictor is valid, the
+        // snap path is allowed to fire immediately.
         const canSnap = isSnapSizedDrift
           && timeline.playbackState === 'playing'
           && hasOffset
           && snap !== null
           && (
             !PARALLAX_USE_HOST_PREDICTOR
-            || (correction.loopSource === 'predictor' && handoffSettled)
+            || correction.loopSource === 'predictor'
           )
         snapPendingTicks = canSnap ? snapPendingTicks + 1 : 0
         // For snap-sized drift, always slew at max — covers confirm window, cooldown, handoff
@@ -657,6 +650,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           lastHardSyncAtMs = now
           snapPendingTicks = 0
           appliedPpm = 0
+          hostEmitHardSyncCount += 1
+          syncEvent = 'snap'
         } else {
           audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
         }
@@ -682,7 +677,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         sinkAcousticFrame: phase2.sinkAcousticFrame,
         hostAcousticFrame: phase2.hostAcousticFrame,
         phase2DriftFrames: phase2.phase2DriftFrames,
-        loopSource: correction.loopSource
+        loopSource: correction.loopSource,
+        syncEvent,
+        hardSyncCount: hostEmitHardSyncCount
       })
     }, 1000)
   }
@@ -765,6 +762,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       pendingAudioChunks = []
       audioEngine.stopParallaxSinkPlayback()
       resetHostEmitAnchors()
+      hostEmitHardSyncCount = 0
       set({
         latestTimeline: null,
         pendingSinkEvent: null,
