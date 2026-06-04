@@ -105,8 +105,10 @@ let hostEmitOutgoingStreamId: string | null = null
 // Reset only on sink-event 'stop' (full disconnect), not on stream-start — they accumulate across
 // track changes within a sink session, which is what the rig debug pass actually wants to see.
 let hostEmitHardSyncCount = 0
-// Phase 2B (§13.5) — read once at module load via preload. Default off so 2B ships safely; rig run
-// flips the env to A/B the predictor against the Phase-1 control loop.
+// Read once at module load via preload. Default ON since 2B validation (share §13.5 retired the
+// original opt-in flag); the kill switch is PARALLAX_DISABLE_HOST_PREDICTOR=1 on the sink, which
+// falls back to the Phase-1 nominal-timeline loop. Preload owns the env read + resolution; this
+// const is just the resolved boolean.
 const PARALLAX_USE_HOST_PREDICTOR: boolean =
   typeof window !== 'undefined' && Boolean(window.electronAPI?.parallax?.useHostPredictor)
 

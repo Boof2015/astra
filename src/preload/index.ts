@@ -785,12 +785,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   parallax: {
-    // Phase 2B (§13.5) — read once at preload init. Renderer cannot reach process.env directly with
-    // contextIsolation, so we expose the feature-flag as a frozen boolean. `'1'` and `'true'` both
-    // count as on for shell-friendliness; anything else (including unset) is off.
+    // Read once at preload init. Renderer cannot reach process.env directly with contextIsolation,
+    // so we expose the resolved boolean.
+    //
+    // History: Phase 2B (§13.5) shipped the predictor as an opt-in via PARALLAX_USE_HOST_PREDICTOR=1
+    // so the first env-on rig run could A/B against Phase-1. After 2B validation (rate +2.2 ppm vs
+    // env-off +4.1 ppm, jitter 0.4×, single early snap), the predictor became the default. The
+    // opt-in flag is retired; the kill switch is PARALLAX_DISABLE_HOST_PREDICTOR=1|true, which puts
+    // the loop back on the Phase-1 nominal-timeline path. CSV `loop_source` still distinguishes the
+    // two so default behavior is verifiable.
+    //
+    // The flag still lives on the SINK process — same gotcha as before
+    // (feedback_parallax-env-flag-machine-side memory). Setting it on the host has no effect.
     useHostPredictor: ((): boolean => {
-      const raw = process.env.PARALLAX_USE_HOST_PREDICTOR
-      return raw === '1' || raw === 'true'
+      const disable = process.env.PARALLAX_DISABLE_HOST_PREDICTOR
+      return !(disable === '1' || disable === 'true')
     })(),
     getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
     listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
