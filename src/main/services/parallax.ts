@@ -174,6 +174,19 @@ let parallaxTelemetryLogStarted = false
 function csvNum(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 }
+// §14.1.1 CSV writer escape — output device labels can contain commas, quotes, and newlines
+// ("External Headphones, MacBook Pro" is a real example). Wrap in double quotes and escape
+// embedded quotes per RFC 4180 only when needed; plain alphanumeric labels stay unquoted so
+// the CSV remains diff-friendly for the common case.
+function csvStr(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  const s = String(value)
+  if (!s) return ''
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
 function appendParallaxTelemetryLog(
   body: unknown,
   hostMetrics: ParallaxOutputLatencyMetrics | null,
@@ -208,7 +221,12 @@ function appendParallaxTelemetryLog(
           // infer snap firings from ppm=0 + snap-sized drift after the handoff settle removal.
           // sync_event = 'snap' / 'rebuffer_snap' / '' ; hard_sync_count is monotonic over the
           // sink session (resets on disconnect, not on stream-start).
-          'sync_event,hard_sync_count\n'
+          'sync_event,hard_sync_count,' +
+          // §14.1.1 — sink-side echo so the rig can verify "did the trim reach the sink's
+          // AudioEngine?" directly, instead of inferring from drift jumps. applied_advance_ms
+          // mirrors `audioEngine.getParallaxSinkAdvanceMs()`; output_device_id / _label show the
+          // sink's reported device identity so a 0 -> trim -> 0 toggle is unambiguous in the CSV.
+          'applied_advance_ms,output_device_id,output_device_label\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -221,7 +239,8 @@ function appendParallaxTelemetryLog(
         `${t.rebuffering ? 1 : 0},${csvNum(t.starvedFrames)},` +
         `${csvNum(t.hostRefAgeMs)},${csvNum(t.hostRefRatePpm)},${csvNum(t.hostRefRateRawPpm)},${csvNum(t.hostRefFrame)},` +
         `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)},` +
-        `${t.loopSource ?? ''},${t.syncEvent ?? ''},${csvNum(t.hardSyncCount)}\n`
+        `${t.loopSource ?? ''},${t.syncEvent ?? ''},${csvNum(t.hardSyncCount)},` +
+        `${csvNum(t.appliedAdvanceMs)},${csvStr(t.outputDeviceId)},${csvStr(t.outputDeviceLabel)}\n`
     )
   } catch {
     /* diagnostics best-effort */
