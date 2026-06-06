@@ -190,7 +190,12 @@ function csvStr(value: unknown): string {
 function appendParallaxTelemetryLog(
   body: unknown,
   hostMetrics: ParallaxOutputLatencyMetrics | null,
-  _sampleRate: number | null
+  _sampleRate: number | null,
+  // §14.1.1 follow-up. Host's persisted desired trim for the sink's currently-reported output
+  // device, looked up by the caller (route handler) since this helper is module-level and the
+  // pairedSinks store lives on the service instance. Null when the body has no outputDeviceId
+  // yet (first telemetry from a freshly-connected sink) or no paired sink matched.
+  desiredAdvanceMs: number | null = null
 ): void {
   const path = process.env.PARALLAX_TELEM_LOG
   if (!path || !body || typeof body !== 'object') return
@@ -226,7 +231,12 @@ function appendParallaxTelemetryLog(
           // AudioEngine?" directly, instead of inferring from drift jumps. applied_advance_ms
           // mirrors `audioEngine.getParallaxSinkAdvanceMs()`; output_device_id / _label show the
           // sink's reported device identity so a 0 -> trim -> 0 toggle is unambiguous in the CSV.
-          'applied_advance_ms,output_device_id,output_device_label\n'
+          // §14.1.1 follow-up (Codex round 3) — desired_advance_ms is the host's persisted
+          // intent for the sink's current device. A divergence between desired and applied is
+          // the visible footprint of the edge-trigger delivery bug we hit during the toggle
+          // test (host wanted 12, sink stuck at 5) and the marker the new self-healing
+          // resends should clear within a few seconds.
+          'applied_advance_ms,desired_advance_ms,output_device_id,output_device_label\n'
       )
       parallaxTelemetryLogStarted = true
     }
@@ -240,7 +250,7 @@ function appendParallaxTelemetryLog(
         `${csvNum(t.hostRefAgeMs)},${csvNum(t.hostRefRatePpm)},${csvNum(t.hostRefRateRawPpm)},${csvNum(t.hostRefFrame)},` +
         `${csvNum(t.sinkAcousticFrame)},${csvNum(t.hostAcousticFrame)},${csvNum(t.phase2DriftFrames)},` +
         `${t.loopSource ?? ''},${t.syncEvent ?? ''},${csvNum(t.hardSyncCount)},` +
-        `${csvNum(t.appliedAdvanceMs)},${csvStr(t.outputDeviceId)},${csvStr(t.outputDeviceLabel)}\n`
+        `${csvNum(t.appliedAdvanceMs)},${csvNum(desiredAdvanceMs)},${csvStr(t.outputDeviceId)},${csvStr(t.outputDeviceLabel)}\n`
     )
   } catch {
     /* diagnostics best-effort */
@@ -351,6 +361,15 @@ export class ParallaxService {
   // sseClients presence; the rest is mirrored from `publishSinkTelemetry` POSTs. Replaced on
   // reconnect; pruned when both SSE clients for a sink disconnect.
   private readonly connectedSinkStates = new Map<string, ParallaxConnectedSinkState>()
+  // §14.1.1 follow-up (Codex 2026-06-06): trim delivery is level-triggered, not edge-triggered.
+  // `ingestSinkTelemetry` checks `appliedAdvanceMs` against the persisted desired value and
+  // resends when they differ, so a missed SSE event or half-dead control stream self-heals on the
+  // next telemetry tick. Rate-limited to once per `TRIM_RESEND_MIN_INTERVAL_MS` per (sinkId,
+  // outputDeviceId) so a sink that's persistently stuck doesn't get hammered every second.
+  // Storage key: `${sinkId}|${outputDeviceId}`.
+  private readonly lastTrimResendAtMs = new Map<string, number>()
+  private readonly TRIM_RESEND_MIN_INTERVAL_MS = 3_000
+  private readonly TRIM_APPLIED_TOLERANCE_MS = 0.5
 
   constructor(options: ParallaxServiceOptions) {
     this.config = { ...options.config }
@@ -839,8 +858,24 @@ export class ParallaxService {
     // push the persisted trim for this (sinkId, outputDeviceId) tuple so the new device's
     // calibration takes effect. We push the persisted value even if it's the implicit 0 (no
     // trim yet) so the sink resets from any previous trim it might still be applying.
-    if (state.outputDeviceId && state.outputDeviceId !== previousOutputDeviceId) {
-      this.pushPersistedTrimForSink(sinkId, state.outputDeviceId)
+    const deviceChanged = !!state.outputDeviceId && state.outputDeviceId !== previousOutputDeviceId
+    if (deviceChanged) {
+      this.pushPersistedTrimForSink(sinkId, state.outputDeviceId!)
+    } else if (state.outputDeviceId) {
+      // §14.1.1 self-healing (Codex 2026-06-06). Device hasn't changed, so the device-change
+      // branch above didn't fire — but the sink's reported `appliedAdvanceMs` may still drift
+      // from the host's persisted intent (missed SSE event, half-dead control stream, sink
+      // restart that wiped the AudioEngine field). Compare and resend if mismatched, with a
+      // rate-limit so a persistently-stuck sink isn't hammered every telemetry tick.
+      const desiredAdvanceMs = this.desiredAdvanceMsFor(sinkId, state.outputDeviceId)
+      if (Math.abs(state.appliedAdvanceMs - desiredAdvanceMs) > this.TRIM_APPLIED_TOLERANCE_MS) {
+        const resendKey = `${sinkId}|${state.outputDeviceId}`
+        const lastResendAt = this.lastTrimResendAtMs.get(resendKey) ?? 0
+        if (Date.now() - lastResendAt >= this.TRIM_RESEND_MIN_INTERVAL_MS) {
+          this.lastTrimResendAtMs.set(resendKey, Date.now())
+          this.broadcastSinkTrimUpdate(sinkId, state.outputDeviceId, desiredAdvanceMs)
+        }
+      }
     }
 
     // Emit status only when something the UI actually displays changed. `lastSeenAt` updates
@@ -854,6 +889,14 @@ export class ParallaxService {
     ) {
       this.emitStatus()
     }
+  }
+
+  // §14.1.1. Single lookup point for the host's "desired" trim, used by the CSV writer and the
+  // self-healing path in `ingestSinkTelemetry`. Returns 0 if no entry is persisted yet.
+  desiredAdvanceMsFor(sinkId: string, outputDeviceId: string): number {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId)
+    const matching = sink?.trims?.find((trim) => trim.outputDeviceId === outputDeviceId)
+    return matching?.advanceMs ?? 0
   }
 
   private pushPersistedTrimForSink(sinkId: string, outputDeviceId: string): void {
@@ -1098,10 +1141,20 @@ export class ParallaxService {
     if (method === 'POST' && path === '/v1/parallax/telemetry') {
       try {
         const telemetryBody = await readJsonBody(req)
+        // §14.1.1 follow-up. Look up the host's desired trim for the sink's currently-reported
+        // device so the CSV writer can log it alongside the sink's `applied_advance_ms`. Done
+        // here (route handler) because `appendParallaxTelemetryLog` is module-level and the
+        // pairedSinks store lives on the service instance. Returns null when the body has no
+        // outputDeviceId yet — the writer collapses null → '' in the CSV cell.
+        const bodyOutputDeviceId = (telemetryBody as { outputDeviceId?: unknown } | null)?.outputDeviceId
+        const desiredAdvanceMs = typeof bodyOutputDeviceId === 'string' && bodyOutputDeviceId
+          ? this.desiredAdvanceMsFor(sink.id, bodyOutputDeviceId)
+          : null
         appendParallaxTelemetryLog(
           telemetryBody,
           this.lastHostLatencyMetrics,
-          this.activeStream?.info.sampleRate ?? null
+          this.activeStream?.info.sampleRate ?? null,
+          desiredAdvanceMs
         )
         // §14.1.1. Mirror the sink's reported output device + applied trim into the host's
         // connected-sink state. If the device id changed since last seen, push the matching
@@ -1180,6 +1233,17 @@ export class ParallaxService {
     // §14.1.1. Mark this sink online + ensure its connected-state row exists. Telemetry will
     // populate outputDevice + appliedAdvanceMs once it starts flowing.
     this.setSinkOnline(sinkId, true)
+    // §14.1.1 follow-up (Codex 2026-06-06). On SSE reconnect, if we already know this sink's
+    // output device from a prior session, re-push the persisted trim immediately. Without this
+    // the trim only flows on telemetry-triggered device-change (`ingestSinkTelemetry`), and a
+    // reconnect with the same device would leave the sink at its post-reconnect default (0)
+    // until self-healing kicks in on the next applied-vs-desired mismatch tick. Reset the
+    // resend rate-limit token so this fresh push isn't blocked by a recent self-heal attempt.
+    const reconnectState = this.connectedSinkStates.get(sinkId)
+    if (reconnectState?.outputDeviceId) {
+      this.lastTrimResendAtMs.delete(`${sinkId}|${reconnectState.outputDeviceId}`)
+      this.pushPersistedTrimForSink(sinkId, reconnectState.outputDeviceId)
+    }
 
     if (this.activeStream) {
       const emittedAtHostTimeMs = parallaxNowMs()

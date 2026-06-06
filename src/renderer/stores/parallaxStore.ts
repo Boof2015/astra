@@ -785,11 +785,20 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     // clock-priming still has to land), must NOT reach the timeline/pending-chunk branches below
     // (the variant has no `event.timeline`, the access downstream would crash). Same early-return
     // shape as host-emit-anchor.
+    //
+    // §14.1.1 follow-up (Codex round 3, 2026-06-06). Also drop trims targeted at a different
+    // output device than the sink is currently using — guards against the race where the user
+    // moves the slider, host pushes the new value keyed to device A, then the sink switches to
+    // device B before the SSE event arrives. Resolved the same way as outgoing telemetry:
+    // audioSettings.selectedDeviceId primary, AudioEngine.getOutputDeviceId() fallback.
     if (event.type === 'sink-trim-update') {
       const ownSinkId = get().status?.sink.sinkId
-      if (ownSinkId && ownSinkId === event.sinkId) {
-        audioEngine.setParallaxSinkAdvanceMs(event.advanceMs)
-      }
+      if (!ownSinkId || ownSinkId !== event.sinkId) return
+      const audioSettings = useAudioSettingsStore.getState()
+      const selectedDeviceId = audioSettings.selectedDeviceId.trim()
+      const currentOutputDeviceId = selectedDeviceId || audioEngine.getOutputDeviceId() || 'default'
+      if (event.outputDeviceId !== currentOutputDeviceId) return
+      audioEngine.setParallaxSinkAdvanceMs(event.advanceMs)
       return
     }
     const status = get().status
