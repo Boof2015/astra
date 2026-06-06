@@ -395,7 +395,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (hostEmitAnchorStreamId === null) return false               // stream lifecycle
     if (activeStreamId !== hostEmitAnchorStreamId) return false     // streamId match
     if (hostRefAgeMs === null) return false
-    if (hostRefAgeMs > PARALLAX_HOST_EMIT_ANCHOR_STALE_MS) return false // <1s old
+    // §14.1.1 follow-up (Codex 2026-06-06). Symmetric ±STALE_MS bound. Same reasoning either
+    // direction: anchors arrive every 200 ms, so an age outside ±1 s implies either the host
+    // stopped emitting (positive) or the clock-offset mapping is fundamentally wrong (negative).
+    // Small negative ages (single-digit to tens of ms) are normal clock-noise from the sink-wall
+    // → host-wall mapping; the prior bound `> STALE_MS` admitted arbitrarily-large negative ages,
+    // and the §14.1.1 acceptance run had a benign −13.8 ms tick that confirmed the noise floor.
+    // Earlier debug sessions saw larger negative ages fire bogus predictor ticks.
+    if (Math.abs(hostRefAgeMs) > PARALLAX_HOST_EMIT_ANCHOR_STALE_MS) return false
     if (hostRefRatePpm === null) return false
     if (Math.abs(hostRefRatePpm) > PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM) return false // ±2000 ppm
     return true
