@@ -60,6 +60,19 @@ export const PARALLAX_REBUFFER_MARGIN_MS = 500
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
 
+// §15.5 — per-output-device manual trim, persisted alongside the paired sink. `outputDeviceId` is
+// the storage key resolution from §15.4: prefers `audioSettingsStore.selectedDeviceId` on the sink,
+// falls back to a normalized `AudioContext.sinkId` ('' → 'default'). `advanceMs` is positive =
+// emit earlier; flows into `getParallaxEndpointLatencyMs()` on the sink. `source` is future-
+// proofing for the mic calibration UX in §14; manual entries are the only kind today.
+export interface ParallaxSinkTrim {
+  outputDeviceId: string
+  outputDeviceLabel: string | null
+  advanceMs: number
+  updatedAtMs: number
+  source: 'manual' | 'calibration'
+}
+
 export interface ParallaxPairedSink {
   id: string
   name: string
@@ -67,6 +80,9 @@ export interface ParallaxPairedSink {
   createdAt: number
   lastSeenAt: number | null
   revokedAt: number | null
+  // §14.1.1. Empty array on existing rows; one entry per output device the user has trimmed for
+  // this sink. Host stores; pushed to sink via §15.3 `sink-trim-update` events on connect + change.
+  trims?: ParallaxSinkTrim[]
 }
 
 export interface ParallaxPairingPin {
@@ -176,6 +192,17 @@ export type ParallaxTimelineEvent =
       sequence: number                // monotonic per stream
       emittedAtHostTimeMs: number
     }
+  // §14.1.1 / §15.3 — host pushes a per-sink trim. Targeted by `sinkId` (other sinks ignore). MUST
+  // be handled in `handleSinkEvent` via an early-return branch BEFORE the clock-offset-pending
+  // fallback, so a push that arrives mid clock-priming still applies. The variant has no timeline
+  // payload — do not let it reach the `latestTimeline` set or `event.timeline` access.
+  | {
+      type: 'sink-trim-update'
+      sinkId: string
+      advanceMs: number
+      outputDeviceId: string          // 'default' for the system route
+      emittedAtHostTimeMs: number
+    }
 
 export interface ParallaxAudioChunk {
   streamId: string
@@ -244,6 +271,16 @@ export interface ParallaxSinkTelemetry {
   // Running count of hard syncs since this sink session started. Lets the CSV reader compute
   // rate/spacing without parsing the per-event column.
   hardSyncCount?: number
+  // §14.1.1 / §15.4 — sink's current output device identity, sourced from
+  // audioSettingsStore.selectedDeviceId (preferred) or normalized AudioContext.sinkId (fallback).
+  // Host uses this to look up the matching trim from the paired-sink store and push it back.
+  outputDeviceId?: string | null
+  outputDeviceLabel?: string | null
+  // §14.1.1. The trim the sink's AudioEngine currently has applied (echoed from
+  // `audioEngine.getParallaxSinkAdvanceMs()`). Reported by the sink so the host's
+  // `ParallaxConnectedSinkState.appliedAdvanceMs` reflects observed truth — not the host's
+  // most-recent push, which can briefly diverge from "applied" during a sink-trim-update flight.
+  appliedAdvanceMs?: number
 }
 
 export interface ParallaxHostStatus {
@@ -271,6 +308,16 @@ export interface ParallaxSinkStatus {
   clockOffsetMs: number | null
   rttMs: number | null
   lastError: string | null
+  // §14.1.1. Local sink-mode status: this app instance's own output device identity, resolved by
+  // the sink renderer the same way it sources the value for outgoing telemetry — settings-store
+  // primary, AudioContext.sinkId fallback. UI reads this for the "I am a sink running on …" view.
+  outputDeviceId?: string | null
+  outputDeviceLabel?: string | null
+  // §14.1.1. The trim the local sink's AudioEngine has applied (echoed from
+  // `audioEngine.getParallaxSinkAdvanceMs()`). This is the sink-side observed truth — distinct
+  // from `ParallaxConnectedSinkState.appliedAdvanceMs` (the host's view of a remote sink, which
+  // mirrors this value via telemetry). Not derived from any host paired-sink lookup.
+  appliedAdvanceMs?: number
 }
 
 export interface ParallaxStatus {

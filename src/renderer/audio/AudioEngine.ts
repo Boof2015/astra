@@ -397,6 +397,10 @@ export class AudioEngine {
   // median-filtered to a stable un-quantized output-latency estimate.
   private parallaxTimestampLatencySamples: number[] = []
   private readonly parallaxTimestampLatencyWindow = 31
+  // §14.1.1 — per-sink manual trim. Positive = emit earlier. Flows into
+  // `getParallaxEndpointLatencyMs()` so all three scheduling sites + the drift loop + the predictor
+  // snap target see it on the next tick. Pushed by the host via `sink-trim-update` events.
+  private parallaxSinkAdvanceMs = 0
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -4808,9 +4812,9 @@ export class AudioEngine {
   // jittery without filtering and is kept only as a diagnostic in `getOutputLatencyMetrics()`. Do
   // NOT add the two estimators together; that's the double-count trap.
   //
-  // Manual per-endpoint advance trim hooks here (positive = play this endpoint earlier). Hardcoded
-  // to 0 for now; a hidden `PARALLAX_SINK_ADVANCE_MS` env knob and later a per-sink setting will
-  // flow in as `advanceMs` once we have a calibrated rig offset to compare against.
+  // Manual per-endpoint advance trim hooks here (positive = play this endpoint earlier). §14.1.1
+  // wires `parallaxSinkAdvanceMs` to the host-pushed per-sink trim; the field defaults to 0 so
+  // unset trims behave exactly like before this feature landed.
   private getParallaxEndpointLatencySeconds(): number {
     return this.getParallaxEndpointLatencyMs() / 1000
   }
@@ -4818,17 +4822,44 @@ export class AudioEngine {
   // Public canonical estimator — same value the three scheduling sites subtract. Consumers that
   // need this for *consistency with scheduling* (the drift loop's target, host timeline anchors
   // expressed in acoustic time) must use this method rather than re-summing `outputLatency +
-  // baseLatency` from `getOutputLatencyMetrics()`. Otherwise a future PARALLAX_SINK_ADVANCE_MS
-  // (or per-sink trim) would shift scheduling but not the drift target — the loop would slew to
-  // undo the trim.
+  // baseLatency` from `getOutputLatencyMetrics()`. Otherwise the per-sink trim would shift
+  // scheduling but not the drift target — the loop would slew to undo the trim.
   getParallaxEndpointLatencyMs(): number {
     const ctx = this.context
     if (!ctx) return 0
     const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
     const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
     const autoMs = (outMs ?? 0) + (baseMs ?? 0)
-    const advanceMs = 0
-    return autoMs + advanceMs
+    return autoMs + this.parallaxSinkAdvanceMs
+  }
+
+  // §14.1.1 — host pushes per-sink trim via `sink-trim-update` events. The drift loop and snap
+  // target both consume `getParallaxEndpointLatencyMs()` so they see the new value on the next
+  // 1 Hz tick; small changes discharge via slew, larger changes may produce one snap.
+  setParallaxSinkAdvanceMs(ms: number): void {
+    if (!Number.isFinite(ms)) return
+    this.parallaxSinkAdvanceMs = ms
+  }
+
+  // §14.1.1 — public getter so the sink renderer can echo the currently-applied trim back into the
+  // periodic telemetry payload, letting the host UI display the live-effective value (and detect
+  // any mismatch between what it pushed and what the sink is actually running).
+  getParallaxSinkAdvanceMs(): number {
+    return this.parallaxSinkAdvanceMs
+  }
+
+  // §14.1.1 / §15.4 fallback path — Chromium's AudioContext.sinkId is the *device id currently
+  // assigned via setSinkId*, which returns `''` for the system default route and may be empty
+  // during context initialization. The renderer normalizes `''` → `'default'` so the storage key
+  // is stable; pre-context returns `''` to let callers know to wait. Codex's constraint (b) says
+  // the *primary* identity source is `audioSettingsStore.selectedDeviceId` (user intent), so this
+  // is only consulted when settings are unset.
+  getOutputDeviceId(): string {
+    const ctx = this.context as (AudioContext & { sinkId?: string }) | null
+    if (!ctx) return ''
+    const raw = (ctx.sinkId ?? '').trim()
+    if (!raw) return 'default'
+    return raw
   }
 
   // Fail-loud guard at every Parallax scheduling site. After auto output-latency compensation

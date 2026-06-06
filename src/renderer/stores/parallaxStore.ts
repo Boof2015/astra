@@ -659,6 +659,22 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         }
       }
       const sinkLatency = audioEngine.getOutputLatencyMetrics()
+      // §14.1.1 / §15.4 / §15.11(b). Output device identity resolution: audio settings primary,
+      // AudioContext.sinkId fallback. Settings reflect user intent and survive context restarts;
+      // sinkId is brittle for the default route ('') and pre-context initialization. We report
+      // both id and label so the host UI can render "Trim for <label>" without re-resolving.
+      const audioSettings = useAudioSettingsStore.getState()
+      const selectedDeviceId = audioSettings.selectedDeviceId.trim()
+      let outputDeviceId: string | null
+      let outputDeviceLabel: string | null
+      if (selectedDeviceId) {
+        outputDeviceId = selectedDeviceId
+        outputDeviceLabel = audioSettings.availableDevices.find((d) => d.deviceId === selectedDeviceId)?.label ?? null
+      } else {
+        const fallback = audioEngine.getOutputDeviceId()
+        outputDeviceId = fallback || null
+        outputDeviceLabel = null
+      }
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
@@ -681,7 +697,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         phase2DriftFrames: phase2.phase2DriftFrames,
         loopSource: correction.loopSource,
         syncEvent,
-        hardSyncCount: hostEmitHardSyncCount
+        hardSyncCount: hostEmitHardSyncCount,
+        outputDeviceId,
+        outputDeviceLabel,
+        appliedAdvanceMs: audioEngine.getParallaxSinkAdvanceMs()
       })
     }, 1000)
   }
@@ -759,6 +778,18 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     // Host emit anchors are handled by ingestHostEmitAnchor (sync, fast — 5 Hz). They never need
     // the async stream-load / pending-chunk logic this function exists for.
     if (event.type === 'host-emit-anchor') return
+    // §14.1.1 / §15.11(a). Trim updates are targeted by sinkId — a sink ignores trims meant for
+    // other sinks. Apply unconditionally: must NOT wait on clockOffsetMs (a push that arrives mid
+    // clock-priming still has to land), must NOT reach the timeline/pending-chunk branches below
+    // (the variant has no `event.timeline`, the access downstream would crash). Same early-return
+    // shape as host-emit-anchor.
+    if (event.type === 'sink-trim-update') {
+      const ownSinkId = get().status?.sink.sinkId
+      if (ownSinkId && ownSinkId === event.sinkId) {
+        audioEngine.setParallaxSinkAdvanceMs(event.advanceMs)
+      }
+      return
+    }
     const status = get().status
     if (event.type === 'stop') {
       pendingAudioChunks = []
