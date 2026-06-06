@@ -129,6 +129,15 @@ let hostEmitHardSyncCount = 0
 // see flag=true and trigger a spurious republish-timeline that the predictor would treat as a
 // timeline discontinuity reset. Only the no-sink transitions arm this.
 let hostPublishingCanceledForActiveStream = false
+// §17 round 4 (Codex). Serialization chain for non-anchor sink events so a fresh `timeline`
+// arriving while a preceding `stream-start` is mid `loadParallaxSinkStream(...)` can't apply
+// first. Before this chain: stream-start's await yielded the microtask, the next timeline
+// event's handler ran straight through, applied to a non-loaded sink (no-op), advanced
+// `latestTimeline`; then stream-start's await resolved and its (stale) timeline overwrote.
+// Symptom was mid-join misalignment that pause/play later "corrected" by sending a fresh
+// timeline post-load. Anchors stay on the sync fast path — they're 5 Hz and have their own
+// rolling-window semantics, ordering against stream-start doesn't matter.
+let sinkEventChain: Promise<void> = Promise.resolve()
 // §17.2(c). Snap fail-closed trust-gate state. `predictorSnapTrusted` is the latch — false until
 // both the sample-count condition (≥TRUSTED_SAMPLES anchors in window) AND the stability
 // condition (≥TRUST_TICKS consecutive ticks of |phase2_drift| under snap threshold) are met.
@@ -826,9 +835,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           ingestHostEmitAnchor(event)
           return
         }
-        void handleSinkEvent(event).catch((error) => {
-          set({ errorMessage: toErrorMessage(error) })
-        })
+        // §17 round 4 (Codex). Chain non-anchor events so a fresh `timeline` arriving while a
+        // preceding `stream-start` is mid-async-load can't slip past and apply first. See the
+        // `sinkEventChain` declaration for the race description. `.catch()` returns void so the
+        // chain progresses through errors — losing one event's error surface is better than
+        // jamming all subsequent events.
+        sinkEventChain = sinkEventChain
+          .then(() => handleSinkEvent(event))
+          .catch((error) => {
+            set({ errorMessage: toErrorMessage(error) })
+          })
       })
     }
 
