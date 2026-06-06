@@ -40,6 +40,25 @@ export const PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES = 3
 export const PARALLAX_HOST_EMIT_ANCHOR_STALE_MS = 1_000
 export const PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM = 2_000
 
+// §17.2(c). After any anchor-window reset (new stream, mid-stream timeline discontinuity), the
+// predictor must "prove itself" before hard-snap eligibility returns. Distinct from the slew
+// path which engages immediately on §6 gate pass — slew is bounded by the ±1000 ppm clamp and
+// can't move cursor far enough to do damage on a single tick, but a snap can yank cursor by
+// thousands of frames if the fit is still settling. Two-part stability gate:
+//
+//   1. Anchor window has at least TRUSTED_SAMPLES anchors (3 s at 5 Hz). Beyond the §6 MIN of 3
+//      which is enough for Theil-Sen to compute *something*, this is "enough samples to trust
+//      the fit's intercept is stable, not just its slope."
+//   2. |phase2_drift_frames| under the snap threshold for TRUST_TICKS consecutive telemetry
+//      ticks. Phase2 drift below the snap threshold means the predictor's intercept is within
+//      ~40 ms of where the cursor actually is — i.e. the fit has converged. Two ticks confirms
+//      it wasn't a fluke.
+//
+// Once both conditions are met, the trust latch flips and snaps are allowed. The latch is
+// cleared on every anchor reset so each warm-up has to re-earn snap eligibility.
+export const PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES = 15
+export const PARALLAX_PREDICTOR_TRUST_TICKS = 2
+
 // (Phase 2B §13.4 originally added a `PARALLAX_PHASE2_HANDOFF_SETTLE_MS = 10_000` window to
 // suppress hard-sync for 10 s after the predictor's gates first passed. Removed 2026-06-04 — the
 // settle was sized for the ~400-frame predictor-handoff bias the 2A CSV exposed, but 400 frames is

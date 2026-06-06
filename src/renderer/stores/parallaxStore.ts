@@ -19,9 +19,12 @@ import {
   hostEmitAnchorSlopeToPpm,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_HOST_EMIT_ANCHOR_INTERVAL_MS,
+  PARALLAX_HARD_SYNC_MS,
   PARALLAX_HOST_EMIT_ANCHOR_MAX_DEVIATION_PPM,
   PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES,
   PARALLAX_HOST_EMIT_ANCHOR_STALE_MS,
+  PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES,
+  PARALLAX_PREDICTOR_TRUST_TICKS,
   PARALLAX_HOST_EMIT_ANCHOR_WINDOW_MS,
   PARALLAX_REBUFFER_MARGIN_MS,
   PARALLAX_RESYNC_GUARD_MS,
@@ -112,6 +115,28 @@ let hostEmitOutgoingStreamId: string | null = null
 // Reset only on sink-event 'stop' (full disconnect), not on stream-start — they accumulate across
 // track changes within a sink session, which is what the rig debug pass actually wants to see.
 let hostEmitHardSyncCount = 0
+// §17 round 2 (Codex finding 1). True when `cancelParallaxHostPublishing()` was called while
+// `activeStream` was still in main's cache AND no sinks were connected — i.e. the host went
+// from "publishing to sinks" to "tracking only" because all sinks left. On the next sink-connect
+// we need to restart publishing for the existing stream instead of early-returning. Set true in
+// the no-sink tracking paths (resumeHostPlayback / prepareHostSeek / pauseHostPlayback when
+// `connectedSinkCount === 0`) and false whenever publishCurrentBufferToParallax fires. Reset on
+// stream lifecycle events (new stream, stop).
+//
+// §17 round 3 (Codex correctness cleanup). The pause-with-sinks case must NOT latch this —
+// paused-with-sinks cancels chunk flow legitimately (host stopped emitting) but doesn't need
+// "restart publishing" until the user resumes, and a second sink joining the paused host would
+// see flag=true and trigger a spurious republish-timeline that the predictor would treat as a
+// timeline discontinuity reset. Only the no-sink transitions arm this.
+let hostPublishingCanceledForActiveStream = false
+// §17.2(c). Snap fail-closed trust-gate state. `predictorSnapTrusted` is the latch — false until
+// both the sample-count condition (≥TRUSTED_SAMPLES anchors in window) AND the stability
+// condition (≥TRUST_TICKS consecutive ticks of |phase2_drift| under snap threshold) are met.
+// `predictorTrustTickCount` is the consecutive-tick counter; reset to 0 whenever a tick fails
+// the stability condition. Both reset to false/0 on every anchor reset (new stream OR same-
+// stream timeline discontinuity) so each warm-up has to re-earn snap eligibility.
+let predictorSnapTrusted = false
+let predictorTrustTickCount = 0
 // Read once at module load via preload. Default ON since 2B validation (share §13.5 retired the
 // original opt-in flag); the kill switch is PARALLAX_DISABLE_HOST_PREDICTOR=1 on the sink, which
 // falls back to the Phase-1 nominal-timeline loop. Preload owns the env read + resolution; this
@@ -265,6 +290,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     hostEmitLastWallMs = null
     hostEmitRawPairwisePpm = null
     hostEmitPredictor = null
+    // §17.2(c). Each warm-up has to re-earn snap eligibility. Slew is unaffected — only the
+    // snap path is fail-closed, so the loop still tracks but won't yank cursor by thousands
+    // of frames on a settling fit.
+    predictorSnapTrusted = false
+    predictorTrustTickCount = 0
   }
 
   // Host-side: publish one anchor (5 Hz timer body). Stops itself only when there's no active
@@ -463,9 +493,25 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     }
   }
 
+  // §17 — broadcast-side getter: "are there sinks we need to broadcast to right now?". Use for
+  // anything that *publishes* (chunks, anchors, latency reports) — those legitimately need an
+  // active receiver. Pause/seek/resume must NOT use this — see `getActiveHostStreamForControl`.
   const getActiveHostStream = (): ParallaxStreamInfo | null => {
     const status = get().status
     if (!status?.host.active || status.host.connectedSinkCount <= 0) return null
+    return status.host.activeStream
+  }
+
+  // §17 — control-side getter: "does the host have an active Parallax stream whose timeline
+  // needs to track local playback?" NO connected-sink gate. Use for prepareHostSeek /
+  // pauseHostPlayback / resumeHostPlayback so the cached timeline keeps tracking local state
+  // even when zero sinks are listening. Otherwise a sink that disconnects, then host pauses /
+  // seeks / resumes, then sink reconnects → `/join` extrapolates the stale frozen timeline
+  // forward by wall delta and the rejoining sink lands ~5.7 s ahead of host's true emit
+  // (the staircase-snap bug surfaced 2026-06-06). See share §17.1 for the CSV diagnosis.
+  const getActiveHostStreamForControl = (): ParallaxStreamInfo | null => {
+    const status = get().status
+    if (!status?.host.active) return null
     return status.host.activeStream
   }
 
@@ -635,19 +681,40 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         // suppressed (handoff settle, predictor unavailable, cooldown, confirm window), we must
         // still slew at max so the known-large drift discharges instead of sitting at hold.
         const isSnapSizedDrift = decision.mode === 'snap'
+        // §17.2(c). Update the predictor trust latch BEFORE evaluating canSnap. Stability
+        // condition: |phase2_drift| under the snap threshold (≈1764 frames at 44.1k) for
+        // TRUST_TICKS consecutive ticks while on the predictor branch. Sample-count condition:
+        // anchor window has ≥TRUSTED_SAMPLES entries. Once both hit, the latch flips and stays
+        // true until the next anchor reset. Slew is unaffected — only the snap path consults
+        // the latch. This is the safety net against the staircase-snap bug from §17.1: a
+        // settling fit reports huge phase2_drift, the loop tries to snap, but the latch is
+        // still false so the snap is suppressed and slew handles the drift down instead.
+        const hardSyncFrames = (PARALLAX_HARD_SYNC_MS / 1000) * stream.sampleRate
+        const phase2DriftAbs = phase2.phase2DriftFrames !== null ? Math.abs(phase2.phase2DriftFrames) : Infinity
+        const stabilityTickOk = correction.loopSource === 'predictor' && phase2DriftAbs < hardSyncFrames
+        predictorTrustTickCount = stabilityTickOk ? predictorTrustTickCount + 1 : 0
+        if (!predictorSnapTrusted) {
+          if (
+            hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES &&
+            predictorTrustTickCount >= PARALLAX_PREDICTOR_TRUST_TICKS
+          ) {
+            predictorSnapTrusted = true
+          }
+        }
+
         // Snap eligibility: env-off uses classic Phase-1 gates so the rig A/B baseline is
         // preserved (§13.5). Env-on requires the predictor to actually be driving the loop
         // (§13.1(b)) — Phase-1 fallback may slew but never snaps in env-on. snap !== null covers
         // both modes (env-off returns a nominal target; env-on returns null whenever the predictor
-        // can't produce a target). No time-based settle: if §6 says the predictor is valid, the
-        // snap path is allowed to fire immediately.
+        // can't produce a target). §17 adds the trust latch: env-on snaps require the fit to
+        // have proven itself per §17.2(c).
         const canSnap = isSnapSizedDrift
           && timeline.playbackState === 'playing'
           && hasOffset
           && snap !== null
           && (
             !PARALLAX_USE_HOST_PREDICTOR
-            || correction.loopSource === 'predictor'
+            || (correction.loopSource === 'predictor' && predictorSnapTrusted)
           )
         snapPendingTicks = canSnap ? snapPendingTicks + 1 : 0
         // For snap-sized drift, always slew at max — covers confirm window, cooldown, handoff
@@ -859,6 +926,26 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (status?.sink.clockOffsetMs === null || status?.sink.clockOffsetMs === undefined) {
       set({ pendingSinkEvent: event })
       return
+    }
+
+    // §17.2(b). Timeline discontinuity (same stream, but the host moved the anchor — seek,
+    // pause, resume) invalidates every anchor currently in the predictor's rolling window.
+    // The anchors were fit against the OLD host startTime; after the discontinuity, host's
+    // getOutputTimestamp() reports source-frames relative to a NEW startTime. Theil-Sen with a
+    // mix of old + new anchors produces a coherent slope but an intercept that's off by the
+    // wall delta — exactly the staircase-snap bug. Reset BEFORE applying the new timeline so
+    // the next anchor enters a clean window.
+    const previousTimeline = get().latestTimeline
+    if (
+      event.type === 'timeline' &&
+      previousTimeline !== null &&
+      (
+        previousTimeline.startHostTimeMs !== timeline.startHostTimeMs ||
+        previousTimeline.startFrame !== timeline.startFrame ||
+        previousTimeline.playbackState !== timeline.playbackState
+      )
+    ) {
+      resetHostEmitAnchors()
     }
 
     set({ latestTimeline: timeline })
@@ -1113,6 +1200,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         const timeline = await window.electronAPI.parallax.publishHostStreamStart(
           buildParallaxStreamInfo(track, streamId, buffer)
         )
+        hostPublishingCanceledForActiveStream = false
         void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
           set({ errorMessage: toErrorMessage(error) })
         })
@@ -1128,15 +1216,23 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // Anchor a stream at the host's current position so the sink joins the in-progress song,
       // WITHOUT rescheduling the host's own audio (no playCurrentBufferOnParallaxTimeline call).
       if (!get().shouldDelayHostPlayback(track) || !track) return null
-      if (getActiveHostStream()) return null
-      ensureTelemetry()
-      startHostEmitAnchorPublish()
+      // §17 round 2 (Codex finding 1). The original early-return on `getActiveHostStream()`
+      // skipped restarting publication even when the no-sink tracking path had explicitly
+      // canceled it — sinks rejoining would land on a "live" stream identity with no live audio
+      // flow. Three cases:
+      //   - No existing stream → fresh start (existing path).
+      //   - Existing stream for THIS track + publishing was canceled while tracking → restart
+      //     publication on the same streamId; sink rejoins seamlessly.
+      //   - Existing stream for THIS track + publishing already active → another sink joining
+      //     an already-broadcasting host. No-op; the sink's own /join handles it.
+      //   - Existing stream for a DIFFERENT track → fresh start replaces (publishHostStreamStart
+      //     overwrites main's activeStream slot).
+      const existing = getActiveHostStream()
+      if (existing && existing.trackPath === track.path && !hostPublishingCanceledForActiveStream) {
+        return null
+      }
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
-      const streamId = createStreamId(track)
-      // While playing, anchor one group-latency ahead on the host's real timeline so the joining
-      // sink gets buffering headroom while the host keeps playing seamlessly. While paused, anchor
-      // at the current frame (a later resume republishes a fresh playing timeline + chunks).
       const leadSeconds = playing ? PARALLAX_DEFAULT_GROUP_LATENCY_MS / 1000 : 0
       // Anchor against the acoustic emit cursor — startHostTimeMs is acoustic time, so startFrame
       // must be the frame the host's *speaker* will reach in `leadSeconds`, not the write cursor +
@@ -1145,12 +1241,32 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         0,
         Math.min(buffer.length, Math.round((getHostAcousticCurrentTimeSeconds() + leadSeconds) * buffer.sampleRate))
       )
+      // Rejoin-same-track path: reuse the existing streamId so the sink doesn't see a spurious
+      // "new stream" event — publish a fresh mid-join timeline aligned to current acoustic
+      // position + group lead. Fresh-start path: createStreamId for a brand-new identity.
+      const isRejoinRestart = existing !== null && existing.trackPath === track.path
+      const streamId = isRejoinRestart ? existing.streamId : createStreamId(track)
+      ensureTelemetry()
+      startHostEmitAnchorPublish()
       try {
-        const timeline = await window.electronAPI.parallax.publishHostStreamStart(
-          buildParallaxStreamInfo(track, streamId, buffer),
-          { startFrame, playbackState: playing ? 'playing' : 'paused' }
-        )
+        let timeline: ParallaxTimelineState
+        if (isRejoinRestart) {
+          // Republish the timeline (keeps streamId, updates startFrame/startHostTimeMs/state).
+          timeline = buildHostTimeline(
+            existing,
+            playing ? 'playing' : 'paused',
+            startFrame,
+            playing ? existing.groupLatencyMs : 0
+          )
+          await publishHostTimeline(timeline)
+        } else {
+          timeline = await window.electronAPI.parallax.publishHostStreamStart(
+            buildParallaxStreamInfo(track, streamId, buffer),
+            { startFrame, playbackState: playing ? 'playing' : 'paused' }
+          )
+        }
         if (playing) {
+          hostPublishingCanceledForActiveStream = false
           void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
             set({ errorMessage: toErrorMessage(error) })
           })
@@ -1163,20 +1279,45 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     resumeHostPlayback: async (track) => {
-      const stream = getActiveHostStream()
+      // §17 control-side: timeline tracking must run even with zero connected sinks, so a sink
+      // reconnecting later doesn't get a stale-extrapolated timeline. But Codex round 1 review
+      // of §17 caught a regression here: returning the timeline to playerStore unconditionally
+      // makes it call `playCurrentBufferOnParallaxTimeline()` with group-latency delay even
+      // when nobody's listening, adding 1 s of delay to the user's own playback. Fix shape:
+      //   - When sinks ARE connected: group-latency timeline (host waits for sinks), return it
+      //     so playerStore schedules local playback through Parallax. Existing behavior.
+      //   - When sinks are NOT connected: host-output-latency timeline (host plays normally,
+      //     timeline reflects acoustic emit truth for the eventual joiner). Publish so future
+      //     joiners see correct state, but return null so playerStore plays via audioEngine.play.
+      const stream = getActiveHostStreamForControl()
       if (!stream || !track || stream.trackPath !== track.path) return null
-      const timeline = buildHostTimeline(
-        stream,
-        'playing',
-        getHostFrameForTime(stream, getHostAcousticCurrentTimeSeconds()),
-        stream.groupLatencyMs
-      )
+      const hasSinks = (get().status?.host.connectedSinkCount ?? 0) > 0
+      const hostLatencyMs = audioEngine.getParallaxEndpointLatencyMs()
+      // §17 round 2 (Codex MEDIUM). When this returns null (no sinks), playerStore calls
+      // `audioEngine.play()`, which resumes from the write cursor (`audioEngine.currentTime`).
+      // That frame leaves the speaker at `now + hostLatency`. So the tracking timeline must
+      // pair (startFrame = write-cursor frame, startHostTimeMs = now + hostLatency). The
+      // previous combo (acoustic-emit frame + now + hostLatency wall) put the timeline one
+      // host-latency behind acoustic truth. When sinks ARE connected, host playback gets
+      // scheduled through Parallax with group-latency lead — startFrame stays acoustic-emit
+      // and delayMs = groupLatencyMs.
+      const startFrame = hasSinks
+        ? getHostFrameForTime(stream, getHostAcousticCurrentTimeSeconds())
+        : Math.max(0, Math.min(stream.totalFrames, Math.round(audioEngine.currentTime * stream.sampleRate)))
+      const delayMs = hasSinks ? stream.groupLatencyMs : hostLatencyMs
+      const timeline = buildHostTimeline(stream, 'playing', startFrame, delayMs)
       try {
         await publishHostTimeline(timeline)
-        void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {
-          set({ errorMessage: toErrorMessage(error) })
-        })
-        return timeline
+        if (hasSinks) {
+          hostPublishingCanceledForActiveStream = false
+          void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {
+            set({ errorMessage: toErrorMessage(error) })
+          })
+        } else {
+          audioEngine.cancelParallaxHostPublishing()
+          hostPublishingCanceledForActiveStream = true
+        }
+        return hasSinks ? timeline : null
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null
@@ -1184,24 +1325,44 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     prepareHostSeek: async (timeSeconds, playing) => {
-      const stream = getActiveHostStream()
+      // §17 control-side: same hasSinks-gated return shape as resumeHostPlayback. See that
+      // function's comment for the full rationale on tracking-only vs schedule-host.
+      const stream = getActiveHostStreamForControl()
       if (!stream) return null
+      const hasSinks = (get().status?.host.connectedSinkCount ?? 0) > 0
+      const delayMs = playing
+        ? (hasSinks ? stream.groupLatencyMs : audioEngine.getParallaxEndpointLatencyMs())
+        : 0
+      // Seeks set the cursor explicitly to `timeSeconds`. The frame at the speaker at
+      // `now + delayMs` matches that requested seek position. For both sinks-present and
+      // tracking-only cases, anchor at the requested frame; the delayMs handles the wall
+      // mapping.
       const timeline = buildHostTimeline(
         stream,
         playing ? 'playing' : 'paused',
         getHostFrameForTime(stream, timeSeconds),
-        playing ? stream.groupLatencyMs : 0
+        delayMs
       )
       try {
         await publishHostTimeline(timeline)
-        if (playing) {
+        if (playing && hasSinks) {
+          hostPublishingCanceledForActiveStream = false
           void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {
             set({ errorMessage: toErrorMessage(error) })
           })
         } else {
+          // §17 round 3 (Codex). Only latch the rejoin flag in the no-sink branch; a paused
+          // seek with sinks present is the same shape as `pauseHostPlayback` — legitimate
+          // publishing pause, resume re-publishes naturally.
           audioEngine.cancelParallaxHostPublishing()
+          if (!hasSinks) {
+            hostPublishingCanceledForActiveStream = true
+          }
         }
-        return timeline
+        // Only return when playerStore should switch to Parallax scheduling — playing AND
+        // sinks present. Pause and no-sink cases publish for tracking but return null so the
+        // user's local playback continues without group-latency delay.
+        return (playing && hasSinks) ? timeline : null
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null
@@ -1209,14 +1370,27 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     pauseHostPlayback: async () => {
-      const stream = getActiveHostStream()
+      // §17 control-side: pause is void-returning, so the playerStore regression that hit
+      // resume/seek doesn't apply here — pauseHostPlayback never made playerStore use
+      // Parallax scheduling. Publishing the paused timeline regardless of sink count is the
+      // correct fix; future joiners now see the actual paused state instead of a frozen
+      // extrapolating `playing` timeline.
+      const stream = getActiveHostStreamForControl()
       if (!stream) return
       const timeline = buildHostTimeline(
         stream,
         'paused',
         getHostFrameForTime(stream, getHostAcousticCurrentTimeSeconds())
       )
+      // §17 round 2 + round 3 correctness (Codex). Pause cancels publishing (chunks stop
+      // flowing because host stopped emitting), but only latch the rejoin flag if there are
+      // no sinks. With sinks connected, pause is a legitimate publishing pause — the next
+      // resume re-publishes the playing timeline + chunk flow naturally, no rejoin restart
+      // needed.
       audioEngine.cancelParallaxHostPublishing()
+      if ((get().status?.host.connectedSinkCount ?? 0) === 0) {
+        hostPublishingCanceledForActiveStream = true
+      }
       try {
         await publishHostTimeline(timeline)
       } catch (error) {
@@ -1227,6 +1401,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     stopHostPlayback: async () => {
       audioEngine.cancelParallaxHostPublishing()
       stopHostEmitAnchorPublish()
+      // §17 round 2. Stream lifecycle reset — there's no activeStream to rejoin into, so the
+      // "canceled while existing" flag must clear too, otherwise a stale `true` survives across
+      // streams and the next stream's first sink-connect tries to restart publishing it has
+      // never started.
+      hostPublishingCanceledForActiveStream = false
       try {
         await window.electronAPI.parallax.stopHostStream()
       } catch (error) {
