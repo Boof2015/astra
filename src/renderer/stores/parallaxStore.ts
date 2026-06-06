@@ -1281,8 +1281,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
             { startFrame, playbackState: playing ? 'playing' : 'paused' }
           )
         }
+        // A connected sink has now been serviced for this active stream. Clear the no-sink
+        // restart latch even for paused joins; resume will start chunk publishing later.
+        hostPublishingCanceledForActiveStream = false
         if (playing) {
-          hostPublishingCanceledForActiveStream = false
           void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
             set({ errorMessage: toErrorMessage(error) })
           })
