@@ -1258,6 +1258,28 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
   return sanitized
 }
 
+// §14.1.1. Per-trim sanitizer with the same ±500 ms clamp the service applies on the live path
+// (defense in depth — a hand-edited meta file shouldn't be able to push a 30s offset). Drops
+// entries with non-string device id or non-finite advanceMs; unknown `source` collapses to
+// 'manual' so a future calibration source string doesn't kill the row.
+function sanitizeParallaxSinkTrim(candidate: unknown): import('../types/parallax').ParallaxSinkTrim | null {
+  if (!candidate || typeof candidate !== 'object') return null
+  const value = candidate as Record<string, unknown>
+  const outputDeviceId = typeof value.outputDeviceId === 'string' ? value.outputDeviceId.trim() : ''
+  if (!outputDeviceId) return null
+  const rawAdvance = Number(value.advanceMs)
+  if (!Number.isFinite(rawAdvance)) return null
+  const advanceMs = Math.max(-500, Math.min(500, rawAdvance))
+  const outputDeviceLabel = typeof value.outputDeviceLabel === 'string'
+    ? value.outputDeviceLabel.slice(0, 200)
+    : null
+  const updatedAtMs = typeof value.updatedAtMs === 'number' && Number.isFinite(value.updatedAtMs)
+    ? Math.max(0, value.updatedAtMs)
+    : 0
+  const source = value.source === 'calibration' ? 'calibration' : 'manual'
+  return { outputDeviceId, outputDeviceLabel, advanceMs, updatedAtMs, source }
+}
+
 function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPairedSink[] {
   if (!Array.isArray(rawSinks)) return []
   const sanitized: PersistedParallaxPairedSink[] = []
@@ -1283,6 +1305,23 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
       continue
     }
 
+    // §14.1.1. Round-trip trims through the per-trim sanitizer. Dedupe by `outputDeviceId`
+    // keeping the last (most-recent) entry, since the live service does upsert-by-deviceId; if
+    // duplicates ever slipped into the meta file we want the same semantic on read.
+    const rawTrims = Array.isArray(value.trims) ? value.trims : []
+    const sanitizedTrims: import('../types/parallax').ParallaxSinkTrim[] = []
+    const seenDevices = new Map<string, number>()
+    for (const rawTrim of rawTrims) {
+      const trim = sanitizeParallaxSinkTrim(rawTrim)
+      if (!trim) continue
+      const existingIdx = seenDevices.get(trim.outputDeviceId)
+      if (existingIdx !== undefined) {
+        sanitizedTrims[existingIdx] = trim
+      } else {
+        seenDevices.set(trim.outputDeviceId, sanitizedTrims.push(trim) - 1)
+      }
+    }
+
     sanitized.push({
       id,
       name: name.slice(0, 80),
@@ -1290,7 +1329,8 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
       tokenPrefix: tokenPrefix.slice(0, 16),
       createdAt,
       lastSeenAt,
-      revokedAt
+      revokedAt,
+      trims: sanitizedTrims
     })
   }
 
@@ -4790,6 +4830,32 @@ ipcMain.handle('parallax:resetToDefaults', async () => {
   await parallaxService.disconnectSink()
   return applyParallaxHostConfig(nextConfig)
 })
+
+// §14.1.1. Persist per-sink trim + broadcast to the sink. Renderer validates the basic shape; the
+// service guards on `Number.isFinite` and clamps to ±500 ms (§15.1) before persisting.
+ipcMain.handle(
+  'parallax:setSinkTrim',
+  (
+    _event,
+    sinkId: unknown,
+    outputDeviceId: unknown,
+    outputDeviceLabel: unknown,
+    advanceMs: unknown
+  ) => {
+    if (typeof sinkId !== 'string' || !sinkId.trim()) {
+      throw new Error('Invalid Parallax sink id.')
+    }
+    if (typeof outputDeviceId !== 'string' || !outputDeviceId.trim()) {
+      throw new Error('Invalid Parallax output device id.')
+    }
+    const label = typeof outputDeviceLabel === 'string' ? outputDeviceLabel : null
+    const ms = Number(advanceMs)
+    if (!Number.isFinite(ms)) {
+      throw new Error('Invalid Parallax trim value.')
+    }
+    return parallaxService.setSinkTrim(sinkId.trim(), outputDeviceId.trim(), label, ms)
+  }
+)
 
 // ============================================
 // File dialog IPC handlers

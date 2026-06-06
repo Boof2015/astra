@@ -5,6 +5,7 @@ import { performance } from 'perf_hooks'
 import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
+  ParallaxConnectedSinkState,
   ParallaxHostConfig,
   ParallaxHostStreamStartOptions,
   ParallaxJoinResponse,
@@ -14,6 +15,7 @@ import type {
   ParallaxPairingPin,
   ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
+  ParallaxSinkTrim,
   ParallaxStatus,
   ParallaxStreamInfo,
   ParallaxTimelineEvent,
@@ -326,6 +328,11 @@ export class ParallaxService {
   // Phase 0 diagnostics: latest output-latency signals reported by the host renderer (this machine).
   private lastHostLatencyMetrics: ParallaxOutputLatencyMetrics | null = null
 
+  // §14.1.1 / §15 — per-connected-sink ephemeral state. Keyed by sinkId. Online state mirrors
+  // sseClients presence; the rest is mirrored from `publishSinkTelemetry` POSTs. Replaced on
+  // reconnect; pruned when both SSE clients for a sink disconnect.
+  private readonly connectedSinkStates = new Map<string, ParallaxConnectedSinkState>()
+
   constructor(options: ParallaxServiceOptions) {
     this.config = { ...options.config }
     this.pairedSinks = [...(options.pairedSinks ?? [])]
@@ -357,6 +364,8 @@ export class ParallaxService {
         connectedSinkCount: new Set(Array.from(this.sseClients, (client) => client.sinkId)).size,
         activeStream: this.activeStream?.info ?? null,
         lastError: this.lastError,
+        // §14.1.1. Snapshot copies so the renderer never mutates internal state.
+        connectedSinks: Array.from(this.connectedSinkStates.values()).map((state) => ({ ...state })),
         outputLatencyMs: this.lastHostLatencyMetrics?.outputLatencyMs ?? null,
         baseLatencyMs: this.lastHostLatencyMetrics?.baseLatencyMs ?? null,
         timestampLatencyMs: this.lastHostLatencyMetrics?.timestampLatencyMs ?? null
@@ -383,7 +392,10 @@ export class ParallaxService {
         tokenPrefix: sink.tokenPrefix,
         createdAt: sink.createdAt,
         lastSeenAt: sink.lastSeenAt,
-        revokedAt: sink.revokedAt
+        revokedAt: sink.revokedAt,
+        // §14.1.1. Trim list passes through so the renderer can preload existing values into the
+        // stepper for any sink/device the user has already trimmed.
+        trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : []
       }))
   }
 
@@ -721,6 +733,137 @@ export class ParallaxService {
     })
   }
 
+  // §14.1.1 — public IPC entry. Host renderer (Settings UI) calls this when the user moves the
+  // per-sink trim stepper. Persists the new value keyed by (sinkId, outputDeviceId) and broadcasts
+  // `sink-trim-update` to that sink's SSE clients. Caps at ±500 ms (§15.1) to keep stale UI input
+  // from producing absurd scheduling shifts.
+  setSinkTrim(
+    sinkId: string,
+    outputDeviceId: string,
+    outputDeviceLabel: string | null,
+    advanceMs: number,
+    source: 'manual' | 'calibration' = 'manual'
+  ): ParallaxStatus {
+    if (!Number.isFinite(advanceMs)) return this.getStatus()
+    if (!sinkId || !outputDeviceId) return this.getStatus()
+    const clamped = Math.max(-500, Math.min(500, advanceMs))
+    const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId)
+    if (!sink) return this.getStatus()
+    const existingTrims = sink.trims ?? []
+    const nextEntry: ParallaxSinkTrim = {
+      outputDeviceId,
+      outputDeviceLabel,
+      advanceMs: clamped,
+      updatedAtMs: Date.now(),
+      source
+    }
+    const matchIdx = existingTrims.findIndex((trim) => trim.outputDeviceId === outputDeviceId)
+    sink.trims = matchIdx >= 0
+      ? existingTrims.map((trim, i) => (i === matchIdx ? nextEntry : trim))
+      : [...existingTrims, nextEntry]
+    this.emitPairedSinksChange()
+    this.broadcastSinkTrimUpdate(sinkId, outputDeviceId, clamped)
+    this.emitStatus()
+    return this.getStatus()
+  }
+
+  // §14.1.1 internals. Ensure a connected-sink state row exists, toggle online, ingest telemetry,
+  // and push the persisted trim for the (sinkId, outputDeviceId) pair whenever the device id is
+  // first known or changes mid-session.
+  private ensureConnectedSinkState(sinkId: string): ParallaxConnectedSinkState {
+    const existing = this.connectedSinkStates.get(sinkId)
+    if (existing) return existing
+    const paired = this.pairedSinks.find((candidate) => candidate.id === sinkId)
+    const fresh: ParallaxConnectedSinkState = {
+      sinkId,
+      name: paired?.name ?? sinkId,
+      online: false,
+      outputDeviceId: null,
+      outputDeviceLabel: null,
+      appliedAdvanceMs: 0,
+      lastSeenAt: null
+    }
+    this.connectedSinkStates.set(sinkId, fresh)
+    return fresh
+  }
+
+  private setSinkOnline(sinkId: string, online: boolean): void {
+    const state = this.ensureConnectedSinkState(sinkId)
+    state.online = online
+    if (online) state.lastSeenAt = Date.now()
+  }
+
+  private ingestSinkTelemetry(sinkId: string, body: Partial<ParallaxSinkTelemetry>): void {
+    if (!body || typeof body !== 'object') return
+    const state = this.ensureConnectedSinkState(sinkId)
+    state.lastSeenAt = Date.now()
+
+    const previousOutputDeviceId = state.outputDeviceId
+    const previousOutputDeviceLabel = state.outputDeviceLabel
+    const previousAppliedAdvanceMs = state.appliedAdvanceMs
+
+    if (typeof body.outputDeviceId === 'string') {
+      state.outputDeviceId = body.outputDeviceId
+    } else if (body.outputDeviceId === null) {
+      state.outputDeviceId = null
+    }
+    if (typeof body.outputDeviceLabel === 'string') {
+      state.outputDeviceLabel = body.outputDeviceLabel
+    } else if (body.outputDeviceLabel === null) {
+      state.outputDeviceLabel = null
+    }
+    if (Number.isFinite(body.appliedAdvanceMs)) {
+      state.appliedAdvanceMs = Number(body.appliedAdvanceMs)
+    }
+
+    // First learning of the sink's device, or a switch (e.g. user moved sink to Bluetooth) →
+    // push the persisted trim for this (sinkId, outputDeviceId) tuple so the new device's
+    // calibration takes effect. We push the persisted value even if it's the implicit 0 (no
+    // trim yet) so the sink resets from any previous trim it might still be applying.
+    if (state.outputDeviceId && state.outputDeviceId !== previousOutputDeviceId) {
+      this.pushPersistedTrimForSink(sinkId, state.outputDeviceId)
+    }
+
+    // Emit status only when something the UI actually displays changed. `lastSeenAt` updates
+    // every telemetry tick (1 Hz) and isn't worth a renderer re-render; the three fields the UI
+    // reads from `connectedSinks` are these. Otherwise the renderer would only see device/trim
+    // changes when some unrelated event fired emitStatus.
+    if (
+      state.outputDeviceId !== previousOutputDeviceId ||
+      state.outputDeviceLabel !== previousOutputDeviceLabel ||
+      state.appliedAdvanceMs !== previousAppliedAdvanceMs
+    ) {
+      this.emitStatus()
+    }
+  }
+
+  private pushPersistedTrimForSink(sinkId: string, outputDeviceId: string): void {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId)
+    const matching = sink?.trims?.find((trim) => trim.outputDeviceId === outputDeviceId)
+    this.broadcastSinkTrimUpdate(sinkId, outputDeviceId, matching?.advanceMs ?? 0)
+  }
+
+  private broadcastSinkTrimUpdate(sinkId: string, outputDeviceId: string, advanceMs: number): void {
+    const event: ParallaxTimelineEvent = {
+      type: 'sink-trim-update',
+      sinkId,
+      advanceMs,
+      outputDeviceId,
+      emittedAtHostTimeMs: parallaxNowMs()
+    }
+    // Same try/delete shape as `broadcastTimelineEvent`. A half-closed SSE response throws on
+    // write; without this guard the exception would bubble out of `setSinkTrim` (breaking the
+    // IPC reply) or `ingestSinkTelemetry` (poisoning the telemetry POST handler).
+    for (const client of this.sseClients) {
+      if (client.sinkId !== sinkId) continue
+      try {
+        writeSseEvent(client.response, 'parallax', event)
+      } catch {
+        this.sseClients.delete(client)
+      }
+    }
+  }
+
   // Phase 0 diagnostics: the host renderer reports its own output-latency signals (~1 Hz) so the
   // telemetry CSV can log both ends. Pure diagnostics; does not affect playback.
   recordHostLatencyMetrics(metrics: ParallaxOutputLatencyMetrics | null | undefined): void {
@@ -752,20 +895,33 @@ export class ParallaxService {
   }
 
   private closeSseClientsForSink(sinkId: string): void {
+    let removed = false
     for (const client of this.sseClients) {
       if (client.sinkId !== sinkId) continue
       try { client.response.end() } catch { /* ignore */ }
       this.sseClients.delete(client)
+      removed = true
     }
     for (const client of this.audioClients) {
       if (client.sinkId !== sinkId) continue
       try { client.response.end() } catch { /* ignore */ }
       this.audioClients.delete(client)
     }
+    // §14.1.1. Without this the connectedSinks row would still report online: true for a revoked
+    // sink, since the on-close cleanup hook only fires for direct disconnects, not forced closes.
+    if (removed) {
+      this.setSinkOnline(sinkId, false)
+      this.emitStatus()
+    }
   }
 
   private closeAllHostClients(): void {
+    // §14.1.1. Walk the client set first to collect the unique sinkIds we'll mark offline once
+    // they're closed. Doing this before clear() lets host-stop and the revoke-all path leave the
+    // connectedSinks list in a consistent state.
+    const affectedSinks = new Set<string>()
     for (const client of this.sseClients) {
+      affectedSinks.add(client.sinkId)
       try { client.response.end() } catch { /* ignore */ }
     }
     for (const client of this.audioClients) {
@@ -773,6 +929,10 @@ export class ParallaxService {
     }
     this.sseClients.clear()
     this.audioClients.clear()
+    if (affectedSinks.size > 0) {
+      for (const sinkId of affectedSinks) this.setSinkOnline(sinkId, false)
+      this.emitStatus()
+    }
   }
 
   private async startHostServer(): Promise<void> {
@@ -924,6 +1084,10 @@ export class ParallaxService {
           this.lastHostLatencyMetrics,
           this.activeStream?.info.sampleRate ?? null
         )
+        // §14.1.1. Mirror the sink's reported output device + applied trim into the host's
+        // connected-sink state. If the device id changed since last seen, push the matching
+        // persisted trim back to that sink so the new device's calibration takes effect.
+        this.ingestSinkTelemetry(sink.id, telemetryBody as Partial<ParallaxSinkTelemetry>)
       } catch {
         toJsonResponse(res, 400, { error: 'Invalid telemetry payload.' })
         return
@@ -994,6 +1158,9 @@ export class ParallaxService {
 
     const client: ParallaxSseClient = { response: res, sinkId }
     this.sseClients.add(client)
+    // §14.1.1. Mark this sink online + ensure its connected-state row exists. Telemetry will
+    // populate outputDevice + appliedAdvanceMs once it starts flowing.
+    this.setSinkOnline(sinkId, true)
 
     if (this.activeStream) {
       const emittedAtHostTimeMs = parallaxNowMs()
@@ -1008,7 +1175,14 @@ export class ParallaxService {
     this.emitStatus()
     const cleanup = () => {
       const removed = this.sseClients.delete(client)
-      if (removed) this.emitStatus()
+      if (removed) {
+        // §14.1.1. If no other SSE clients are still tracking this sink, mark it offline. State
+        // row is kept for last-known display (output device + previous applied trim); we only
+        // toggle the `online` flag so the UI can grey it.
+        const stillConnected = Array.from(this.sseClients).some((c) => c.sinkId === sinkId)
+        if (!stillConnected) this.setSinkOnline(sinkId, false)
+        this.emitStatus()
+      }
     }
     req.on('close', cleanup)
     req.on('aborted', cleanup)

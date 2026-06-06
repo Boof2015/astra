@@ -339,6 +339,12 @@ declare global {
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
                 revokeAllPairedSinks: () => Promise<number>
                 resetToDefaults: () => Promise<ParallaxStatus>
+                setSinkTrim: (
+                    sinkId: string,
+                    outputDeviceId: string,
+                    outputDeviceLabel: string | null,
+                    advanceMs: number
+                ) => Promise<ParallaxStatus>
                 onStatus: (callback: (status: ParallaxStatus) => void) => () => void
                 onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
                 onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void

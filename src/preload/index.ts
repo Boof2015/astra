@@ -831,6 +831,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:revokePairedSink', id),
     revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
     resetToDefaults: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:resetToDefaults'),
+    // §14.1.1. Host UI calls this when the user moves a per-sink trim stepper. Main process
+    // persists to pairedSink.trims and broadcasts `sink-trim-update` to that sink's SSE clients.
+    setSinkTrim: (
+      sinkId: string,
+      outputDeviceId: string,
+      outputDeviceLabel: string | null,
+      advanceMs: number
+    ): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setSinkTrim', sinkId, outputDeviceId, outputDeviceLabel, advanceMs),
     onStatus: (callback: (status: ParallaxStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: ParallaxStatus) => callback(status)
       ipcRenderer.on('parallax:status', handler)
@@ -1302,6 +1311,12 @@ declare global {
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
         revokeAllPairedSinks: () => Promise<number>
         resetToDefaults: () => Promise<ParallaxStatus>
+        setSinkTrim: (
+          sinkId: string,
+          outputDeviceId: string,
+          outputDeviceLabel: string | null,
+          advanceMs: number
+        ) => Promise<ParallaxStatus>
         onStatus: (callback: (status: ParallaxStatus) => void) => () => void
         onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
         onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void

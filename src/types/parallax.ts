@@ -283,6 +283,21 @@ export interface ParallaxSinkTelemetry {
   appliedAdvanceMs?: number
 }
 
+// §14.1.1 / §15 (Codex P1 shape, 2026-06-06). Per-connected-sink ephemeral state as seen by the
+// host. Combines persistent pairing identity (`sinkId`, `name`) with telemetry-reported truth
+// (`outputDevice*`, `appliedAdvanceMs`, `lastSeenAt`). `appliedAdvanceMs` is the sink's *echoed*
+// value (mirror of `ParallaxSinkTelemetry.appliedAdvanceMs`), not the host's pushed intent — so
+// the UI can detect in-flight or unapplied pushes.
+export interface ParallaxConnectedSinkState {
+  sinkId: string
+  name: string
+  online: boolean
+  outputDeviceId: string | null
+  outputDeviceLabel: string | null
+  appliedAdvanceMs: number
+  lastSeenAt: number | null
+}
+
 export interface ParallaxHostStatus {
   enabled: boolean
   active: boolean
@@ -294,6 +309,10 @@ export interface ParallaxHostStatus {
   connectedSinkCount: number
   activeStream: ParallaxStreamInfo | null
   lastError: string | null
+  // §14.1.1. Per-sink connected-state list. Empty when no sinks are connected. Renderer reads to
+  // render per-sink rows (output device + trim stepper) and to know which `(sinkId, outputDeviceId)`
+  // tuple the slider edits live-update.
+  connectedSinks: ParallaxConnectedSinkState[]
   // Phase 0 diagnostics: the host's own reported output-latency signals (ms), reported by the host renderer.
   outputLatencyMs?: number | null
   baseLatencyMs?: number | null

@@ -60,6 +60,8 @@ interface ParallaxSettingsStore {
   connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus | null>
   disconnectSink: () => Promise<void>
   revokePairedSink: (id: string) => Promise<void>
+  // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
+  setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<void>
   revokeAllPairedSinks: () => Promise<number>
   resetToDefaults: () => Promise<ParallaxStatus | null>
   shouldDelayHostPlayback: (track: Track | null | undefined) => boolean
@@ -982,6 +984,19 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     revokePairedSink: async (id) => {
       try {
         await window.electronAPI.parallax.revokePairedSink(id)
+        await refreshPairedSinks()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+      }
+    },
+
+    setSinkTrim: async (sinkId, outputDeviceId, outputDeviceLabel, advanceMs) => {
+      try {
+        const status = await window.electronAPI.parallax.setSinkTrim(sinkId, outputDeviceId, outputDeviceLabel, advanceMs)
+        if (status) applyStatus(status)
+        // Refresh paired-sinks so the UI's persisted-trims snapshot picks up the new value
+        // (lastSeenAt + trims array). The status update handles connectedSinks; this catches
+        // the persisted side.
         await refreshPairedSinks()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

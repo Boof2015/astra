@@ -362,7 +362,8 @@ export default function SettingsView() {
     connectSink: connectParallaxSink,
     disconnectSink: disconnectParallaxSink,
     revokePairedSink: revokeParallaxPairedSink,
-    revokeAllPairedSinks: revokeAllParallaxPairedSinks
+    revokeAllPairedSinks: revokeAllParallaxPairedSinks,
+    setSinkTrim: setParallaxSinkTrim
   } = useParallaxStore()
   const {
     status: lastFmStatus,
@@ -2771,22 +2772,85 @@ export default function SettingsView() {
                       )}
                     </div>
                     <div className="local-api-inline-devices-list">
-                      {parallaxActiveSinks.map((sink) => (
-                        <div key={sink.id} className="local-api-inline-device">
-                          <div className="local-api-inline-device-info">
-                            <span className="local-api-inline-device-name">{sink.name}</span>
-                            <span className="local-api-inline-device-detail">
-                              Last seen {sink.lastSeenAt ? new Date(sink.lastSeenAt).toLocaleString() : 'Never'}
-                            </span>
+                      {parallaxActiveSinks.map((sink) => {
+                        // §14.1.1. Match the connected-sink state (ephemeral: online + currently-
+                        // reported output device + applied trim) with the persisted paired-sink row
+                        // (durable: id + name + trims array).
+                        //
+                        // Codex finding (medium, 2026-06-06): the stepper's edit base must be the
+                        // PERSISTED trim — the host's intent — not the sink's `appliedAdvanceMs`
+                        // echo. Echo lags push by ~1 telemetry tick, so basing the edit on echo
+                        // means quick repeat clicks land on the same target (last push hasn't been
+                        // echoed yet) and the user's persisted intent is hidden by stale state.
+                        // Sink echo is shown as a small diagnostic when it disagrees with the
+                        // persisted value (in-flight push or sink-side override).
+                        const connected = parallaxStatus?.host.connectedSinks?.find((c) => c.sinkId === sink.id)
+                        const outputDeviceId = connected?.outputDeviceId ?? null
+                        const outputDeviceLabel = connected?.outputDeviceLabel ?? null
+                        const persistedTrim = outputDeviceId
+                          ? (sink.trims ?? []).find((t) => t.outputDeviceId === outputDeviceId)
+                          : undefined
+                        const persistedAdvanceMs = persistedTrim?.advanceMs ?? 0
+                        const sinkAppliedAdvanceMs = connected?.appliedAdvanceMs
+                        const canEditTrim = Boolean(outputDeviceId)
+                        const handleTrimAdjust = (deltaMs: number) => {
+                          if (!outputDeviceId) return
+                          const next = Math.max(-500, Math.min(500, persistedAdvanceMs + deltaMs))
+                          if (next === persistedAdvanceMs) return
+                          void setParallaxSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, next)
+                        }
+                        // Show a small "sink applied: X ms" diagnostic only when echo differs from
+                        // persisted, so steady-state UI stays clean.
+                        const echoMismatch = canEditTrim
+                          && typeof sinkAppliedAdvanceMs === 'number'
+                          && Math.abs(sinkAppliedAdvanceMs - persistedAdvanceMs) > 0.5
+                        return (
+                          <div key={sink.id} className="local-api-inline-device">
+                            <div className="local-api-inline-device-info">
+                              <span className="local-api-inline-device-name">
+                                {sink.name}
+                                {connected?.online ? '' : ' (offline)'}
+                              </span>
+                              <span className="local-api-inline-device-detail">
+                                Last seen {sink.lastSeenAt ? new Date(sink.lastSeenAt).toLocaleString() : 'Never'}
+                              </span>
+                              <span className="local-api-inline-device-detail">
+                                {canEditTrim
+                                  ? <>Output: {outputDeviceLabel ?? outputDeviceId} &middot; Trim: <strong>{persistedAdvanceMs.toFixed(0)} ms</strong></>
+                                  : 'Output unknown (sink not reporting yet)'}
+                              </span>
+                              {echoMismatch && (
+                                <span className="local-api-inline-device-detail" style={{ opacity: 0.6 }}>
+                                  Sink applied: {(sinkAppliedAdvanceMs as number).toFixed(0)} ms
+                                </span>
+                              )}
+                              {canEditTrim && (
+                                <div className="parallax-trim-stepper" style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title="Trim −5 ms">-5</button>
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title="Trim −1 ms">-1</button>
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(+1)} title="Trim +1 ms">+1</button>
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(+5)} title="Trim +5 ms">+5</button>
+                                  {persistedAdvanceMs !== 0 && (
+                                    <button
+                                      className="settings-btn"
+                                      onClick={() => outputDeviceId && void setParallaxSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, 0)}
+                                      title="Reset trim to 0"
+                                    >
+                                      Reset
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              className="settings-btn settings-btn-danger"
+                              onClick={() => void revokeParallaxPairedSink(sink.id)}
+                            >
+                              Revoke
+                            </button>
                           </div>
-                          <button
-                            className="settings-btn settings-btn-danger"
-                            onClick={() => void revokeParallaxPairedSink(sink.id)}
-                          >
-                            Revoke
-                          </button>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 )}
