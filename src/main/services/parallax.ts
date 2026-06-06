@@ -26,6 +26,7 @@ import {
   PARALLAX_CLOCK_SAMPLE_LIMIT,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_LAN_HOST,
+  ParallaxAuthError,
   buildParallaxClockSample,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
@@ -114,6 +115,14 @@ interface ParallaxServiceOptions {
   onStatusChange?: (status: ParallaxStatus) => void
   onSinkEvent?: (event: ParallaxTimelineEvent) => void
   onSinkAudioChunk?: (chunk: ParallaxAudioChunk) => void
+  // §14.1.2 follow-up (Codex round 1, finding 1). Fired when an authenticated request to the
+  // host returns 401 — main wires this to clearParallaxSinkConnection + cancel auto-reconnect.
+  // Covers both initial-connect and in-session paths (event stream, audio stream, clock probe).
+  onSinkAuthRevoked?: () => void
+  // §14.1.2 follow-up (Codex round 1, finding 3). Read each getStatus() call so the status
+  // payload's `sink.hasPersistedConnection` / `sink.persistedHostName` reflect the live
+  // app-meta state without the service needing its own copy.
+  getSinkConnectionInfo?: () => { hasPersistedConnection: boolean; persistedHostName: string | null }
 }
 
 function parallaxNowMs(): number {
@@ -336,6 +345,12 @@ export class ParallaxService {
   private readonly onStatusChange?: (status: ParallaxStatus) => void
   private readonly onSinkEvent?: (event: ParallaxTimelineEvent) => void
   private readonly onSinkAudioChunk?: (chunk: ParallaxAudioChunk) => void
+  private readonly onSinkAuthRevoked?: () => void
+  private readonly getSinkConnectionInfo?: () => { hasPersistedConnection: boolean; persistedHostName: string | null }
+  // §14.1.2 follow-up. Latched true when handleSinkAuthRevoked() fires; cleared on next
+  // successful connect (initial or reconnect). Surfaced via `getStatus().sink.removedByHost`
+  // so the UI can show "Removed by host" instead of generic auth-error text.
+  private sinkRemovedByHost = false
 
   private server: Server | null = null
   private active = false
@@ -378,6 +393,8 @@ export class ParallaxService {
     this.onStatusChange = options.onStatusChange
     this.onSinkEvent = options.onSinkEvent
     this.onSinkAudioChunk = options.onSinkAudioChunk
+    this.onSinkAuthRevoked = options.onSinkAuthRevoked
+    this.getSinkConnectionInfo = options.getSinkConnectionInfo
   }
 
   getStatus(): ParallaxStatus {
@@ -415,9 +432,33 @@ export class ParallaxService {
         activeStream: this.sinkActiveStream,
         clockOffsetMs: filteredOffsetMs ?? bestClock?.offsetMs ?? null,
         rttMs: bestClock?.rttMs ?? null,
-        lastError: this.sinkLastError
+        lastError: this.sinkLastError,
+        // §14.1.2 follow-up. Live mirror of the sink-side credential — never the token itself,
+        // just enough for the UI to gate Connect/Forget visibility + display the paired host's
+        // name. Pulled per-call via the constructor-supplied getter so the service stays
+        // ignorant of the app-meta storage layer.
+        hasPersistedConnection: this.getSinkConnectionInfo?.().hasPersistedConnection ?? false,
+        persistedHostName: this.getSinkConnectionInfo?.().persistedHostName ?? null,
+        removedByHost: this.sinkRemovedByHost
       }
     }
+  }
+
+  // §14.1.2 follow-up (Codex round 1, finding 1). Single funnel for "credential is dead";
+  // disconnects, latches the UI flag, fires the callback, emits status. The callers (event
+  // stream, audio stream, clock probe, scheduled reconnect, initial connect) just need to
+  // surface ParallaxAuthError up to their catch and call this.
+  //
+  // §14.1.2 follow-up (Codex round 2, finding 3). Ordering matters: `disconnectSink()` clears
+  // `sinkLastError`, so set it AFTER disconnect. `sinkRemovedByHost` is its own latch and is
+  // preserved across disconnect (only cleared on next successful connect), so the headline
+  // status survived the bug — but the detail error string didn't.
+  private handleSinkAuthRevoked(): void {
+    this.sinkRemovedByHost = true
+    void this.disconnectSink()
+    this.sinkLastError = 'Removed by host. Re-pair to reconnect.'
+    this.onSinkAuthRevoked?.()
+    this.emitStatus()
   }
 
   listPairedSinks(): ParallaxPairedSink[] {
@@ -677,6 +718,12 @@ export class ParallaxService {
     return payload as ParallaxPairResponse
   }
 
+  // §14.1.2 follow-up (Codex 2026-06-06). The `connectSink()` catch block at the bottom of this
+  // method ONLY handles failures DURING the initial connect attempt; the established-connection
+  // backoff (`sinkReconnectTimer`, `sinkReconnectAttempts`) only kicks in for SSE/audio drops
+  // mid-session. So "sink boots while host is down" needs its own retry loop, owned by the
+  // auto-reconnect path in main/index.ts — not bolted into this method.
+
   async connectSink(config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> {
     await this.disconnectSink()
     const normalizedBaseUrl = sanitizeBaseUrl(config.baseUrl)
@@ -710,6 +757,9 @@ export class ParallaxService {
       })
       this.sinkReconnectAttempts = 0
       this.sinkActiveStream = join.stream
+      // §14.1.2 follow-up. Successful connect clears the "removed by host" latch — covers the
+      // re-pair-after-revoke path (user pairs again with a fresh token).
+      this.sinkRemovedByHost = false
       this.emitStatus()
       void this.primeClockSync(this.sinkConnection)
       void this.consumeSinkEvents()
@@ -726,6 +776,13 @@ export class ParallaxService {
       }
       return this.getStatus()
     } catch (error) {
+      // §14.1.2 follow-up. 401 at initial connect = host has revoked us; same R-clear path the
+      // boot loop already takes. The auth-revoked dispatcher itself calls disconnectSink + emits
+      // status + fires the credential-clearing callback, so we just delegate and re-throw.
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
+        throw error
+      }
       await this.disconnectSink()
       this.sinkLastError = error instanceof Error ? error.message : 'Failed to connect Parallax sink.'
       this.emitStatus()
@@ -1334,7 +1391,15 @@ export class ParallaxService {
     })
     const payload = await response.json().catch(() => null)
     if (!response.ok) {
-      throw new Error(toSafeOptionalString((payload as { error?: unknown } | null)?.error) ?? `Parallax host request failed (${response.status}).`)
+      const message = toSafeOptionalString((payload as { error?: unknown } | null)?.error) ?? `Parallax host request failed (${response.status}).`
+      // §14.1.2 / §16.12(c). 401 is the unambiguous "your credential is no longer valid"
+      // signal — boot-path auto-reconnect treats it as host-side revocation (R-clear per §16.7)
+      // by checking `instanceof ParallaxAuthError`. Other failures stay as generic Error so the
+      // backoff-retry path can handle them uniformly. Do NOT message-parse downstream.
+      if (response.status === 401) {
+        throw new ParallaxAuthError(401, message)
+      }
+      throw new Error(message)
     }
     return payload as T
   }
@@ -1491,6 +1556,13 @@ export class ParallaxService {
     } catch (error) {
       if (this.sinkConnection !== connection) return
       if (isAbortLikeError(error)) return
+      // §14.1.2 follow-up. 401 in the scheduled reconnect path = host revoked us between the
+      // last successful session and now. Fall into R-clear instead of looping the backoff
+      // schedule — handleSinkAuthRevoked disconnects, fires the callback, emits status.
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
+        return
+      }
       const message = error instanceof Error ? error.message : 'Parallax reconnect failed.'
       this.sinkLastError = `Parallax reconnect failed: ${message}`
       this.emitStatus()
@@ -1546,6 +1618,12 @@ export class ParallaxService {
         }
       })
       if (!response.ok || !response.body) {
+        // §14.1.2 follow-up. 401 here = host revoked the sink mid-session; bubble a status-bearing
+        // error so consumeSinkEvents' catch can fire handleSinkAuthRevoked instead of scheduling
+        // another reconnect attempt with the dead credential.
+        if (response.status === 401) {
+          throw new ParallaxAuthError(401, 'Parallax event stream unauthorized.')
+        }
         throw new Error(`Parallax event stream failed (${response.status}).`)
       }
 
@@ -1597,6 +1675,12 @@ export class ParallaxService {
             void this.consumeSinkEvents()
           }
         }, STATUS_RETRY_DELAY_MS)
+        return
+      }
+      // §14.1.2 follow-up. 401 on event stream = host revoked us in-session. Trip R-clear
+      // instead of scheduling more reconnect attempts the dead credential will fail too.
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
         return
       }
       const message = error instanceof Error ? error.message : 'Parallax event stream disconnected.'
@@ -1692,6 +1776,10 @@ export class ParallaxService {
         }
       )
       if (!response.ok || !response.body) {
+        // §14.1.2 follow-up. Same auth-revoked detection as the event stream.
+        if (response.status === 401) {
+          throw new ParallaxAuthError(401, 'Parallax audio stream unauthorized.')
+        }
         throw new Error(`Parallax audio stream failed (${response.status}).`)
       }
 
@@ -1754,6 +1842,11 @@ export class ParallaxService {
             void this.consumeSinkAudio(streamId, fromFrame, true)
           }
         }, STATUS_RETRY_DELAY_MS)
+        return
+      }
+      // §14.1.2 follow-up. Same 401 → R-clear branch as the event stream + scheduled reconnect.
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
         return
       }
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'

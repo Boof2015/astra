@@ -102,6 +102,34 @@ export interface ParallaxSinkConnectionConfig {
   token: string
 }
 
+// §14.1.2 / §16.2 — durable sink-side credential. Persisted on the sink machine via
+// `library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify(...))`, same mechanism
+// as the existing PARALLAX_HOST_* persisted settings. Token is the raw bearer credential the
+// host's `tokenHash` was derived from at pair time; sensitivity equivalent to `LOCAL_API_TOKEN`
+// which is also persisted in app-meta. Single slot today; multi-host belongs with the future
+// sink-mode UI per share §16.5.
+export interface PersistedParallaxSinkConnection {
+  baseUrl: string
+  sinkId: string
+  token: string
+  hostName: string | null
+  pairedAt: number
+  lastConnectedAt: number | null
+}
+
+// §14.1.2 / §16.12(c) — status-bearing error thrown by `fetchSinkJson` so the boot-path retry
+// loop can distinguish 401 (treat as revoked, R-clear per §16.7) from other failures
+// (timeout/network/5xx — keep retrying with backoff). Do not parse error messages; check this
+// type via `instanceof ParallaxAuthError`.
+export class ParallaxAuthError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ParallaxAuthError'
+    this.status = status
+  }
+}
+
 export interface ParallaxClockSyncResponse {
   sinkSentAtMs: number
   hostReceivedAtMs: number
@@ -337,6 +365,17 @@ export interface ParallaxSinkStatus {
   // from `ParallaxConnectedSinkState.appliedAdvanceMs` (the host's view of a remote sink, which
   // mirrors this value via telemetry). Not derived from any host paired-sink lookup.
   appliedAdvanceMs?: number
+  // §14.1.2 follow-up (Codex round 1, finding 3). Renderer-visible mirror of the sink-side
+  // durable credential. UI gates Connect/Forget visibility on `hasPersistedConnection` instead of
+  // a local-component token cache — so when main wipes creds on R-clear (host revoke), the
+  // already-open Settings panel updates via the existing onStatus subscription. The actual token
+  // never leaves main; renderer reuses the credential via the `reconnectFromPersisted` IPC.
+  hasPersistedConnection?: boolean
+  persistedHostName?: string | null
+  // §14.1.2 follow-up. True after an in-session 401 surfaced the host's revocation. Lets the UI
+  // show an explicit "Removed by host" state instead of the generic "Unauthorized" lastError.
+  // Cleared on successful re-pair.
+  removedByHost?: boolean
 }
 
 export interface ParallaxStatus {

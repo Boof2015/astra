@@ -130,10 +130,12 @@ import {
   type ParallaxHostConfig,
   type ParallaxHostStreamStartOptions,
   type ParallaxOutputLatencyMetrics,
+  ParallaxAuthError,
   type ParallaxSinkConnectionConfig,
   type ParallaxSinkTelemetry,
   type ParallaxStreamInfo,
-  type ParallaxTimelineState
+  type ParallaxTimelineState,
+  type PersistedParallaxSinkConnection
 } from '../types/parallax'
 import {
   LASTFM_OFFICIAL_API_BASE_URL,
@@ -412,6 +414,9 @@ const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
 const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
 const PARALLAX_PAIRED_SINKS_META_KEY = 'parallax_paired_sinks_v1'
+// §14.1.2 / §16.2. Sink-side durable credential. Single slot (one paired host); re-pairing
+// replaces it. Schema-versioned suffix matches sibling keys.
+const PARALLAX_SINK_CONNECTION_META_KEY = 'parallax_sink_connection_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -820,7 +825,25 @@ const parallaxService = new ParallaxService({
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('parallax:audioChunk', chunk)
     }
-  }
+  },
+  // §14.1.2 / §16.7 follow-up (Codex round 1, finding 1). R-clear sink: host explicitly
+  // revoked our credential (initial-connect 401, in-session SSE/audio 401, scheduled-reconnect
+  // 401). Wipe the persisted credential + stop any in-flight auto-reconnect attempts. The
+  // service has already disconnected and set sinkRemovedByHost=true before this fires, so the
+  // status push reaches the renderer in the same tick.
+  onSinkAuthRevoked: () => {
+    cancelParallaxAutoReconnect()
+    void clearParallaxSinkConnection().catch((error) => {
+      console.warn('Failed to clear Parallax sink connection after auth-revoked:', error)
+    })
+  },
+  // §14.1.2 follow-up (Codex round 1, finding 3). Service reads on every getStatus() so the
+  // status payload mirrors the live app-meta state without the service holding its own copy.
+  // Token is intentionally never returned — only the boolean and host name reach the renderer.
+  getSinkConnectionInfo: () => ({
+    hasPersistedConnection: parallaxSinkConnection !== null,
+    persistedHostName: parallaxSinkConnection?.hostName ?? parallaxSinkConnection?.baseUrl ?? null
+  })
 })
 
 const lastFmService = new LastFmService({
@@ -1362,6 +1385,112 @@ async function persistPhoneRemotePairedDevices(devices: PersistedPhoneRemotePair
 async function persistParallaxPairedSinks(sinks: PersistedParallaxPairedSink[]): Promise<void> {
   parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
   await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, JSON.stringify(parallaxPairedSinks))
+}
+
+// §14.1.2 / §16. Sink-side durable credential. In-memory cache mirrors the persisted value so
+// host-vs-sink precedence checks on boot (and any sync renderer reads) don't go through SQL on
+// the hot path. Always written via `persistParallaxSinkConnection` / cleared via
+// `clearParallaxSinkConnection` — never mutated directly.
+let parallaxSinkConnection: PersistedParallaxSinkConnection | null = null
+
+function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConnection | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : ''
+  const sinkId = typeof value.sinkId === 'string' ? value.sinkId.trim() : ''
+  const token = typeof value.token === 'string' ? value.token.trim() : ''
+  if (!baseUrl || !sinkId || !token) return null
+  const hostName = typeof value.hostName === 'string' ? value.hostName.slice(0, 80) : null
+  const pairedAt = typeof value.pairedAt === 'number' && Number.isFinite(value.pairedAt)
+    ? Math.max(0, value.pairedAt)
+    : 0
+  const lastConnectedAt = typeof value.lastConnectedAt === 'number' && Number.isFinite(value.lastConnectedAt)
+    ? Math.max(0, value.lastConnectedAt)
+    : null
+  return { baseUrl, sinkId, token, hostName, pairedAt, lastConnectedAt }
+}
+
+function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection | null {
+  const raw = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
+  if (!raw) return null
+  try {
+    return sanitizeParallaxSinkConnection(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+async function persistParallaxSinkConnection(next: PersistedParallaxSinkConnection): Promise<void> {
+  parallaxSinkConnection = { ...next }
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify(parallaxSinkConnection))
+}
+
+async function clearParallaxSinkConnection(): Promise<void> {
+  parallaxSinkConnection = null
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+}
+
+// §14.1.2 / §16.4 / §16.12(a). Boot-path auto-reconnect retry loop. The service's existing
+// `sinkReconnectTimer` ONLY covers in-session SSE/audio drops, not initial-connect failure
+// (verified at parallax.ts:728-733). So this owns the "sink boots while host is down, host
+// comes up later" case. Exponential backoff bounded at 60 s, indefinite retries — the sink
+// is supposed to be appliance-like and just reconnect when the host comes back. 401 is the
+// R-clear branch (§16.7 + §16.12(c)): the host explicitly revoked us, give up + clear creds.
+let parallaxAutoReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let parallaxAutoReconnectAttempt = 0
+let parallaxAutoReconnectGeneration = 0
+
+function cancelParallaxAutoReconnect(): void {
+  if (parallaxAutoReconnectTimer !== null) {
+    clearTimeout(parallaxAutoReconnectTimer)
+    parallaxAutoReconnectTimer = null
+  }
+  parallaxAutoReconnectAttempt = 0
+  parallaxAutoReconnectGeneration += 1
+}
+
+async function attemptParallaxAutoReconnect(
+  connection: PersistedParallaxSinkConnection,
+  generation: number
+): Promise<void> {
+  if (generation !== parallaxAutoReconnectGeneration) return
+  // §16.12(b) host-vs-sink precedence: never silently turn a host instance into a sink. If
+  // host mode flipped on between scheduling and firing, abandon this attempt; the user can
+  // press Connect manually after disabling host.
+  if (parallaxHostConfig.enabled) {
+    cancelParallaxAutoReconnect()
+    return
+  }
+  try {
+    await parallaxService.connectSink({
+      baseUrl: connection.baseUrl,
+      sinkId: connection.sinkId,
+      token: connection.token
+    })
+    if (generation !== parallaxAutoReconnectGeneration) return
+    parallaxAutoReconnectAttempt = 0
+    const updated: PersistedParallaxSinkConnection = { ...connection, lastConnectedAt: Date.now() }
+    await persistParallaxSinkConnection(updated)
+  } catch (error) {
+    if (generation !== parallaxAutoReconnectGeneration) return
+    if (error instanceof ParallaxAuthError && error.status === 401) {
+      // R-clear per §16.7 — host explicitly revoked us. Wipe the credential, stop retrying.
+      await clearParallaxSinkConnection()
+      cancelParallaxAutoReconnect()
+      return
+    }
+    parallaxAutoReconnectAttempt += 1
+    const delayMs = Math.min(60_000, 1_000 * Math.pow(2, Math.min(parallaxAutoReconnectAttempt - 1, 6)))
+    parallaxAutoReconnectTimer = setTimeout(() => {
+      void attemptParallaxAutoReconnect(connection, generation)
+    }, delayMs)
+  }
+}
+
+function startParallaxAutoReconnect(connection: PersistedParallaxSinkConnection): void {
+  cancelParallaxAutoReconnect()
+  const generation = parallaxAutoReconnectGeneration
+  void attemptParallaxAutoReconnect(connection, generation)
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
@@ -3794,11 +3923,18 @@ app.whenReady().then(async () => {
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
   parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
+  parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
   parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
   await phoneRemoteService.applyConfig(phoneRemoteConfig)
   await parallaxService.applyHostConfig(parallaxHostConfig)
+  // §14.1.2 follow-up (Codex round 2, finding 1). Auto-reconnect used to kick off here, BEFORE
+  // createWindow(). But `onSinkEvent` / `onSinkAudioChunk` only forward to mainWindow if it
+  // exists — a successful pre-window /join would drop the one-shot `stream-start` event and
+  // early audio chunks on the floor. The renderer-side `parallaxStore.init()` now calls
+  // `parallax:startAutoReconnect` after subscriptions + AudioEngine are ready; main just stages
+  // the saved connection in memory here and waits.
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
   lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
@@ -4774,7 +4910,41 @@ ipcMain.handle('parallax:pairWithHost', async (_event, baseUrl: unknown, pin: un
 })
 
 ipcMain.handle('parallax:connectSink', async (_event, config: ParallaxSinkConnectionConfig) => {
+  // §14.1.2 follow-up (Codex round 1, finding 2). The user clicked Connect manually — abandon
+  // any in-flight boot retry timer so it can't fire later with a stale connection reference
+  // and force a disconnect mid-session.
+  cancelParallaxAutoReconnect()
   return parallaxService.connectSink(config)
+})
+
+// §14.1.2 follow-up (Codex round 1, finding 3). Renderer-facing manual-reconnect that reuses
+// the credential main already holds — eliminates the need for SettingsView to keep the raw
+// token in component state just so it can drive a Connect button.
+ipcMain.handle('parallax:reconnectFromPersisted', async () => {
+  if (!parallaxSinkConnection) {
+    throw new Error('No persisted Parallax sink connection.')
+  }
+  cancelParallaxAutoReconnect()
+  return parallaxService.connectSink({
+    baseUrl: parallaxSinkConnection.baseUrl,
+    sinkId: parallaxSinkConnection.sinkId,
+    token: parallaxSinkConnection.token
+  })
+})
+
+// §14.1.2 follow-up (Codex round 2, finding 1). Renderer calls this from parallaxStore.init()
+// once the audio engine + event subscriptions are wired. Boot-path auto-reconnect previously
+// fired from main during initialize() — but `onSinkEvent` / `onSinkAudioChunk` need mainWindow
+// to exist + the renderer store to be subscribed, otherwise the join's `stream-start` event
+// and early audio chunks are silently dropped. Moving the trigger to the renderer guarantees
+// the host data path is alive before any /join completes. Returns `{ scheduled: boolean }` so
+// the renderer knows whether it should monitor reconnect progress via status, or whether
+// nothing was scheduled (no persisted creds, or host mode wins per §16.12(b) precedence).
+ipcMain.handle('parallax:startAutoReconnect', () => {
+  if (!parallaxSinkConnection) return { scheduled: false, reason: 'no-persisted-connection' as const }
+  if (parallaxHostConfig.enabled) return { scheduled: false, reason: 'host-mode-active' as const }
+  startParallaxAutoReconnect(parallaxSinkConnection)
+  return { scheduled: true as const }
 })
 
 ipcMain.handle('parallax:disconnectSink', async () => {
@@ -4828,7 +4998,45 @@ ipcMain.handle('parallax:resetToDefaults', async () => {
   parallaxService.replacePairedSinks([])
   await persistParallaxPairedSinks([])
   await parallaxService.disconnectSink()
+  // §14.1.2. Full reset wipes the sink-side credential too so the next launch starts clean.
+  cancelParallaxAutoReconnect()
+  await clearParallaxSinkConnection()
   return applyParallaxHostConfig(nextConfig)
+})
+
+// §14.1.2 / §16.8. Persist sink-side credential after successful pair. The renderer calls this
+// immediately after `/v1/parallax/pair` returns + before calling `connectSink`, so the durable
+// state lands before any reconnect could be attempted. Cancel any in-flight auto-reconnect
+// loop bound to the previous credential — the new one will get a fresh loop on next boot, or
+// the renderer drives connect directly this session.
+ipcMain.handle(
+  'parallax:setSinkConnection',
+  async (_event, raw: unknown) => {
+    const sanitized = sanitizeParallaxSinkConnection(raw)
+    if (!sanitized) {
+      throw new Error('Invalid Parallax sink connection payload.')
+    }
+    cancelParallaxAutoReconnect()
+    await persistParallaxSinkConnection(sanitized)
+    return parallaxSinkConnection
+  }
+)
+
+// §14.1.2 / §16.8. Renderer reads this to populate the "paired with <host>" display in
+// settings; null when not yet paired. Returns a snapshot copy so the renderer can never mutate
+// the in-memory cache.
+ipcMain.handle('parallax:getSinkConnection', () => {
+  return parallaxSinkConnection ? { ...parallaxSinkConnection } : null
+})
+
+// §14.1.2 / §16.6 / §16.8. "Forget host" path. Stops any in-flight reconnect, disconnects an
+// established connection if any, and wipes the persisted credential. After this the sink is
+// back to the initial unpaired state — the only path forward is re-pair via PIN.
+ipcMain.handle('parallax:forgetSinkConnection', async () => {
+  cancelParallaxAutoReconnect()
+  await parallaxService.disconnectSink()
+  await clearParallaxSinkConnection()
+  return parallaxService.getStatus()
 })
 
 // §14.1.1. Persist per-sink trim + broadcast to the sink. Renderer validates the basic shape; the

@@ -39,7 +39,8 @@ import type {
   ParallaxStatus,
   ParallaxStreamInfo,
   ParallaxTimelineEvent,
-  ParallaxTimelineState
+  ParallaxTimelineState,
+  PersistedParallaxSinkConnection
 } from '../types/parallax'
 import type {
   LastFmAuthFinishResult,
@@ -840,6 +841,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       advanceMs: number
     ): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:setSinkTrim', sinkId, outputDeviceId, outputDeviceLabel, advanceMs),
+    // §14.1.2. Sink-side durable pairing. `setSinkConnection` persists creds after a successful
+    // pair; `getSinkConnection` populates the "paired with X" UI; `forgetSinkConnection` is the
+    // sink-side symmetric of the host's "Revoke" — wipes creds and stops auto-reconnect.
+    setSinkConnection: (config: PersistedParallaxSinkConnection): Promise<PersistedParallaxSinkConnection | null> =>
+      ipcRenderer.invoke('parallax:setSinkConnection', config),
+    getSinkConnection: (): Promise<PersistedParallaxSinkConnection | null> =>
+      ipcRenderer.invoke('parallax:getSinkConnection'),
+    forgetSinkConnection: (): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:forgetSinkConnection'),
+    reconnectFromPersisted: (): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:reconnectFromPersisted'),
+    startAutoReconnect: (): Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }> =>
+      ipcRenderer.invoke('parallax:startAutoReconnect'),
     onStatus: (callback: (status: ParallaxStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: ParallaxStatus) => callback(status)
       ipcRenderer.on('parallax:status', handler)
@@ -1317,6 +1331,11 @@ declare global {
           outputDeviceLabel: string | null,
           advanceMs: number
         ) => Promise<ParallaxStatus>
+        setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
+        getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
+        forgetSinkConnection: () => Promise<ParallaxStatus>
+        reconnectFromPersisted: () => Promise<ParallaxStatus>
+        startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
         onStatus: (callback: (status: ParallaxStatus) => void) => () => void
         onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
         onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void

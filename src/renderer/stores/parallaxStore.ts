@@ -58,6 +58,11 @@ interface ParallaxSettingsStore {
   createPairingPin: () => Promise<ParallaxPairingPin | null>
   pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse | null>
   connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus | null>
+  // §14.1.2 follow-up (Codex round 2, finding 2). Manual reconnect path that goes through the
+  // same renderer-side prep as `connectSink()` (Standard-mode check, ensureSubscriptions,
+  // audioEngine.stop), but reuses the credential main already holds rather than receiving it
+  // from the renderer. SettingsView's Connect button + the auto-reconnect bootstrap call this.
+  reconnectFromPersisted: () => Promise<ParallaxStatus | null>
   disconnectSink: () => Promise<void>
   revokePairedSink: (id: string) => Promise<void>
   // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
@@ -885,7 +890,20 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (get().isInitialized) return
       set({ isLoading: true })
       try {
+        // fetchAll calls ensureSubscriptions(), so by the time it resolves the renderer is
+        // subscribed to host events / audio chunks and the AudioEngine is reachable.
         await fetchAll()
+        // §14.1.2 follow-up (Codex round 2, finding 1+2). NOW main can safely start its retry
+        // loop — the stream-start event and early audio chunks from a successful /join will
+        // reach the renderer instead of being dropped on the floor. Main short-circuits if
+        // there are no persisted creds or host mode is enabled (§16.12(b) precedence). We also
+        // honor bitperfect mode here so auto-reconnect inherits the same Standard-only
+        // precondition as the manual `connectSink` / `reconnectFromPersisted` actions —
+        // otherwise a user who left Parallax sink mode active and then switched to bitperfect
+        // would get a silent reconnect attempt that fails downstream.
+        if (useAudioSettingsStore.getState().playbackOutputMode !== 'bitperfect') {
+          await window.electronAPI.parallax.startAutoReconnect()
+        }
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -969,6 +987,31 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         ensureSubscriptions()
         audioEngine.stop()
         const status = await window.electronAPI.parallax.connectSink(config)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      } finally {
+        set({ isLoading: false })
+      }
+    },
+
+    // §14.1.2 follow-up (Codex round 2, finding 2). Mirrors connectSink's prep — Standard-mode
+    // gate, ensureSubscriptions, audioEngine.stop — then triggers main to connect with the
+    // credential it already holds. Used by the SettingsView Connect button and by the init()
+    // auto-reconnect bootstrap. Bitperfect rejection mirrors connectSink so the user gets the
+    // same error message either way.
+    reconnectFromPersisted: async () => {
+      if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') {
+        set({ errorMessage: 'Parallax sink mode is only available in Standard output mode.' })
+        return null
+      }
+
+      set({ isLoading: true })
+      try {
+        ensureSubscriptions()
+        audioEngine.stop()
+        const status = await window.electronAPI.parallax.reconnectFromPersisted()
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

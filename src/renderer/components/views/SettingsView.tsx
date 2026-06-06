@@ -363,7 +363,8 @@ export default function SettingsView() {
     disconnectSink: disconnectParallaxSink,
     revokePairedSink: revokeParallaxPairedSink,
     revokeAllPairedSinks: revokeAllParallaxPairedSinks,
-    setSinkTrim: setParallaxSinkTrim
+    setSinkTrim: setParallaxSinkTrim,
+    reconnectFromPersisted: reconnectParallaxFromPersisted
   } = useParallaxStore()
   const {
     status: lastFmStatus,
@@ -421,7 +422,20 @@ export default function SettingsView() {
   const [parallaxHostUrlInput, setParallaxHostUrlInput] = useState('')
   const [parallaxPinInput, setParallaxPinInput] = useState('')
   const [parallaxSinkNameInput, setParallaxSinkNameInput] = useState('Astra Sink')
-  const [parallaxPairedToken, setParallaxPairedToken] = useState<{ sinkId: string; token: string } | null>(null)
+  // §14.1.2 / §16.3. Bootstrap pre-fills the host URL field on mount for visual continuity —
+  // button visibility comes from `parallaxStatus.sink.hasPersistedConnection` (round 1 fix
+  // finding 3), so we no longer cache the credential in component state. URL is non-secret.
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.parallax.getSinkConnection().then((persisted) => {
+      if (cancelled || !persisted) return
+      if (persisted.baseUrl && !parallaxHostUrlInput) {
+        setParallaxHostUrlInput(persisted.baseUrl)
+      }
+    }).catch(() => { /* main process handles its own errors */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
   const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
   const [lastFmProfileProtocolInput, setLastFmProfileProtocolInput] = useState<LastFmScrobbleProtocol>('lastfm2')
@@ -837,16 +851,22 @@ export default function SettingsView() {
   const parallaxHostLanUrls = parallaxStatus?.host.lanUrls ?? []
   const parallaxHostUrl = parallaxHostLanUrls[0] ?? `http://127.0.0.1:${PARALLAX_DEFAULT_PORT}`
   const parallaxSinkConnected = parallaxStatus?.sink.connected ?? false
+  const parallaxSinkRemovedByHost = parallaxStatus?.sink.removedByHost ?? false
   const parallaxActiveSinks = parallaxPairedSinks.filter((sink) => sink.revokedAt == null)
-  const parallaxSummary = parallaxSinkConnected
-    ? `Connected as a sink to ${parallaxStatus?.sink.baseUrl ?? 'host'}.`
-    : !parallaxHostEnabled
-      ? 'Parallax host is off.'
-      : parallaxHostLanUrls.length === 0
-        ? 'Parallax host is enabled, but Astra has not found a usable LAN address yet.'
-        : parallaxStatus?.host.connectedSinkCount
-          ? `${parallaxStatus.host.connectedSinkCount} sink${parallaxStatus.host.connectedSinkCount === 1 ? '' : 's'} connected.`
-          : 'Parallax host is waiting for paired sinks.'
+  // §14.1.2 follow-up (Codex round 1, finding 3). "Removed by host" overrides the normal summary
+  // — the user just hit a wall and the next step is re-pairing, not interpreting connection
+  // state. lastError already carries the explanation; the summary line is the headline.
+  const parallaxSummary = parallaxSinkRemovedByHost
+    ? 'Removed by host. Re-pair to reconnect.'
+    : parallaxSinkConnected
+      ? `Connected as a sink to ${parallaxStatus?.sink.persistedHostName ?? parallaxStatus?.sink.baseUrl ?? 'host'}.`
+      : !parallaxHostEnabled
+        ? 'Parallax host is off.'
+        : parallaxHostLanUrls.length === 0
+          ? 'Parallax host is enabled, but Astra has not found a usable LAN address yet.'
+          : parallaxStatus?.host.connectedSinkCount
+            ? `${parallaxStatus.host.connectedSinkCount} sink${parallaxStatus.host.connectedSinkCount === 1 ? '' : 's'} connected.`
+            : 'Parallax host is waiting for paired sinks.'
   const localApiPhoneRemoteSummary = !phoneRemoteEnabled
     ? 'Phone remote is off. Turn it on when you want Astra to expose `/remote/` on your LAN.'
     : phoneRemoteLanUrls.length === 0
@@ -1139,26 +1159,55 @@ export default function SettingsView() {
     })
   }
 
-  const handlePairParallaxSink = () => {
-    void pairParallaxWithHost(parallaxHostUrlInput, parallaxPinInput, parallaxSinkNameInput).then((pairing) => {
-      if (!pairing) return
-      setParallaxPairedToken({ sinkId: pairing.sinkId, token: pairing.token })
-      setParallaxFeedback('Sink paired. Connect when ready.')
+  // §14.1.2 / §16.3. Pair, persist, connect — one user action. Previously this only set the
+  // ephemeral `parallaxPairedToken` and required a second click on "Connect". After §14.1.2
+  // landed, the durable credential goes to main-process app-meta first so a crash or window
+  // close between pair and connect still leaves the sink paired; the second action then runs
+  // a normal connect.
+  const handlePairParallaxSink = async () => {
+    const pairing = await pairParallaxWithHost(parallaxHostUrlInput, parallaxPinInput, parallaxSinkNameInput)
+    if (!pairing) return
+    try {
+      await window.electronAPI.parallax.setSinkConnection({
+        baseUrl: parallaxHostUrlInput.trim(),
+        sinkId: pairing.sinkId,
+        token: pairing.token,
+        hostName: parallaxHostUrlInput.trim() || null,
+        pairedAt: Date.now(),
+        lastConnectedAt: null
+      })
+      const status = await connectParallaxSink({
+        baseUrl: parallaxHostUrlInput,
+        sinkId: pairing.sinkId,
+        token: pairing.token
+      })
+      setParallaxFeedback(status ? 'Paired and connected.' : 'Paired. Connect failed; will retry automatically.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to persist Parallax pairing.'
+      setParallaxFeedback(`Paired locally but persistence failed: ${message}`)
+    }
+  }
+
+  // §14.1.2 follow-up (Codex round 2, finding 2). Manual reconnect goes through the store
+  // action so it inherits the same renderer-side prep as `connectSink()` — Standard-mode
+  // gate, ensureSubscriptions, audioEngine.stop. The previous direct-IPC call bypassed all of
+  // that and could leave local playback running or ignore bitperfect mode.
+  const handleConnectParallaxSink = () => {
+    void reconnectParallaxFromPersisted().then((status) => {
+      if (status) setParallaxFeedback('Connected as Parallax sink.')
     })
   }
 
-  const handleConnectParallaxSink = () => {
-    if (!parallaxPairedToken) {
-      setParallaxFeedback('Pair with a host first.')
-      return
-    }
-    void connectParallaxSink({
-      baseUrl: parallaxHostUrlInput,
-      sinkId: parallaxPairedToken.sinkId,
-      token: parallaxPairedToken.token
-    }).then((status) => {
-      if (!status) return
-      setParallaxFeedback('Connected as Parallax sink.')
+  // §14.1.2 / §16.6. Sink-side "Forget host" — symmetric to host's "Revoke". Wipes durable
+  // credential + cancels any in-flight auto-reconnect. Recoverable: user re-pairs from scratch.
+  // Single-click `window.confirm` for the destructive-but-recoverable action per §16.6 lean.
+  const handleForgetParallaxHost = () => {
+    if (!window.confirm('Forget this host? You will need to re-pair to reconnect.')) return
+    void window.electronAPI.parallax.forgetSinkConnection().then(() => {
+      setParallaxFeedback('Forgot host. Pair again to reconnect.')
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to forget host.'
+      setParallaxFeedback(message)
     })
   }
 
@@ -2735,7 +2784,7 @@ export default function SettingsView() {
                       </button>
                       <button
                         className="settings-btn settings-btn-primary"
-                        disabled={!parallaxPairedToken || parallaxSinkConnected}
+                        disabled={!(parallaxStatus?.sink.hasPersistedConnection ?? false) || parallaxSinkConnected}
                         onClick={handleConnectParallaxSink}
                       >
                         Connect
@@ -2747,6 +2796,20 @@ export default function SettingsView() {
                       >
                         Disconnect
                       </button>
+                      {/* §14.1.2 / §16.6. Sink-side symmetric of host's Revoke. Visible whenever
+                          a persisted credential exists (whether currently connected or not), so
+                          the user can clear stale creds even when the host is unreachable.
+                          §14.1.2 follow-up (Codex round 1, finding 3): driven by status, not the
+                          local-component token cache — survives R-clear pushes from main. */}
+                      {(parallaxStatus?.sink.hasPersistedConnection ?? false) && (
+                        <button
+                          className="settings-btn settings-btn-danger"
+                          onClick={handleForgetParallaxHost}
+                          title="Forget paired host"
+                        >
+                          Forget Host
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="settings-field">
