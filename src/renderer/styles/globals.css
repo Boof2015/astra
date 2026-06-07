@@ -374,6 +374,161 @@ button, .titlebar {
   box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.75);
 }
 
+/* §18 Parallax presence pill — mirrors .titlebar-api-pill shape so the trio reads as a group.
+   `position: relative` anchors the absolute-positioned popover; cursor + focus styling reflect
+   the pill being clickable, unlike the API/PWA tooltips. */
+.titlebar-parallax-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.22), rgba(var(--accent-rgb), 0.08));
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.titlebar-parallax-pill:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.85);
+  outline-offset: 2px;
+}
+
+.titlebar-parallax-pill-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.75);
+}
+
+/* Popover defaults to hidden; reveals on hover/focus-within. Commit 2's warning/transient
+   notification machine will pin it open programmatically via a state-driven className. */
+.titlebar-parallax-pill-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--surface-elevated, rgba(20, 22, 28, 0.96));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms ease-out, visibility 120ms;
+  z-index: 100;
+  font-family: var(--font-system, system-ui);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: 1.4;
+  color: var(--text-primary, rgba(255, 255, 255, 0.92));
+}
+
+.titlebar-parallax-pill:hover .titlebar-parallax-pill-popover,
+.titlebar-parallax-pill:focus-within .titlebar-parallax-pill-popover {
+  opacity: 1;
+  visibility: visible;
+}
+
+.titlebar-parallax-pill-popover-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.titlebar-parallax-pill-popover-header {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--accent-text-strong);
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.titlebar-parallax-pill-popover-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.titlebar-parallax-pill-popover-label {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.titlebar-parallax-pill-popover-value {
+  color: rgba(255, 255, 255, 0.92);
+  text-align: right;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-parallax-pill-popover-sinks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.titlebar-parallax-pill-popover-sink {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.titlebar-parallax-pill-popover-sink-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.titlebar-parallax-pill-popover-sink-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.titlebar-parallax-pill-popover-sink-dot.online {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+
+.titlebar-parallax-pill-popover-sink-dot.offline {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.titlebar-parallax-pill-popover-sink-name {
+  font-weight: 500;
+}
+
+.titlebar-parallax-pill-popover-sink-detail {
+  color: rgba(255, 255, 255, 0.55);
+  padding-left: 12px;
+  font-size: 10px;
+}
+
+.titlebar-parallax-pill-popover-footer {
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+}
+
 .titlebar-stats-shell {
   position: relative;
   display: flex;
@@ -9542,13 +9697,15 @@ body::after {
   gap: 6px;
 }
 
-.titlebar-api-pill {
+.titlebar-api-pill,
+.titlebar-parallax-pill {
   height: 17px;
   padding: 0 7px;
   font-size: 8px;
 }
 
-.titlebar-api-pill-dot {
+.titlebar-api-pill-dot,
+.titlebar-parallax-pill-dot {
   width: 4px;
   height: 4px;
 }
