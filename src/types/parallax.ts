@@ -201,9 +201,14 @@ export interface ParallaxTimelineState {
 // Options for publishHostStreamStart. Defaults reproduce a fresh play from the top.
 // A sink joining mid-playback passes the host's current (latency-adjusted) frame and state so the
 // stream is anchored to the in-progress song instead of restarting it.
+//
+// `artworkHash` is OFF-WIRE — never reaches sinks via `ParallaxStreamInfo` (Codex §19.18(e):
+// schema unchanged). Main uses it to pre-resolve artwork bytes for this stream and cache by
+// streamId, served at `GET /v1/parallax/artwork/current?streamId=<id>`. §14.1.4 Zone Display.
 export interface ParallaxHostStreamStartOptions {
   startFrame?: number
   playbackState?: ParallaxPlaybackState
+  artworkHash?: string
 }
 
 // Options for publishing a same-stream timeline update. `resetAudio` marks a source-position

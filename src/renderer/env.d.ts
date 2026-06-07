@@ -323,6 +323,7 @@ declare global {
                 launchInZoneMode: boolean
                 getStatus: () => Promise<ParallaxStatus>
                 getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
+                fetchSinkArtwork: (streamId: string) => Promise<string | null>
                 listPairedSinks: () => Promise<ParallaxPairedSink[]>
                 setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
                 setHostPort: (port: number) => Promise<ParallaxStatus>

@@ -124,10 +124,36 @@ interface ParallaxServiceOptions {
   // payload's `sink.hasPersistedConnection` / `sink.persistedHostName` reflect the live
   // app-meta state without the service needing its own copy.
   getSinkConnectionInfo?: () => { hasPersistedConnection: boolean; persistedHostName: string | null }
+  // §14.1.4 / §19.18(e) — resolve a track's artwork bytes (as a data URL string) by hash. Wired
+  // in main/index.ts to the same `getArtworkThumbnailDataUrlByHash` resolver
+  // `playbackHttpCore` / `phoneRemote` use. Service caches the parsed bytes by streamId and
+  // serves them at `GET /v1/parallax/artwork/current?streamId=<id>` for the sink Zone Display.
+  resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
 }
 
 function parallaxNowMs(): number {
   return performance.timeOrigin + performance.now()
+}
+
+// §14.1.4 / §19.18(e). Local parser; intentionally not imported from playbackHttpCore (the helper
+// there is module-private and we want zero coupling between unrelated services). Caps payload to
+// keep an oversized artwork from inflating SSE/HTTP traffic.
+const PARALLAX_ARTWORK_MAX_BYTES = 4 * 1024 * 1024
+function parseParallaxArtworkDataUrl(
+  artworkData: string | null | undefined
+): { mimeType: string; bytes: Buffer } | null {
+  if (typeof artworkData !== 'string') return null
+  const normalized = artworkData.trim()
+  const match = /^data:([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(normalized)
+  if (!match) return null
+  const mimeType = match[1].toLowerCase()
+  const base64Payload = match[2].replace(/\s+/g, '')
+  if (base64Payload.length === 0 || base64Payload.length % 4 !== 0) return null
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64Payload)) return null
+  const bytes = Buffer.from(base64Payload, 'base64')
+  if (bytes.length === 0 || bytes.length > PARALLAX_ARTWORK_MAX_BYTES) return null
+  if (bytes.toString('base64') !== base64Payload) return null
+  return { mimeType, bytes }
 }
 
 function getParallaxLanUrls(port: number): string[] {
@@ -348,6 +374,11 @@ export class ParallaxService {
   private readonly onSinkAudioChunk?: (chunk: ParallaxAudioChunk) => void
   private readonly onSinkAuthRevoked?: () => void
   private readonly getSinkConnectionInfo?: () => { hasPersistedConnection: boolean; persistedHostName: string | null }
+  // §14.1.4 / §19.18(e) — artwork-resolver callback + per-stream parsed-bytes cache. Filled on
+  // publishHostStreamStart when an artworkHash is provided. Cleared on stream stop or when a new
+  // streamId arrives. Served binary at `GET /v1/parallax/artwork/current?streamId=<id>`.
+  private readonly resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
+  private currentStreamArtwork: { streamId: string; mimeType: string; bytes: Buffer } | null = null
   // §14.1.2 follow-up. Latched true when handleSinkAuthRevoked() fires; cleared on next
   // successful connect (initial or reconnect). Surfaced via `getStatus().sink.removedByHost`
   // so the UI can show "Removed by host" instead of generic auth-error text.
@@ -396,6 +427,7 @@ export class ParallaxService {
     this.onSinkAudioChunk = options.onSinkAudioChunk
     this.onSinkAuthRevoked = options.onSinkAuthRevoked
     this.getSinkConnectionInfo = options.getSinkConnectionInfo
+    this.resolveArtworkDataUrl = options.resolveArtworkDataUrl
   }
 
   getStatus(): ParallaxStatus {
@@ -593,6 +625,28 @@ export class ParallaxService {
       timeline,
       packets: []
     }
+    // §14.1.4 — pre-resolve artwork bytes for sinks. Off-wire: never reaches `stream` payload.
+    // Cleared first so the previous stream's image doesn't briefly serve under the new streamId.
+    this.currentStreamArtwork = null
+    if (options.artworkHash && this.resolveArtworkDataUrl) {
+      const hash = options.artworkHash
+      const streamIdAtRequest = stream.streamId
+      void this.resolveArtworkDataUrl(hash)
+        .then((dataUrl) => {
+          // Stale guard — a newer stream-start may have replaced us mid-resolve.
+          if (!this.activeStream || this.activeStream.info.streamId !== streamIdAtRequest) return
+          const parsed = parseParallaxArtworkDataUrl(dataUrl)
+          if (!parsed) return
+          this.currentStreamArtwork = {
+            streamId: streamIdAtRequest,
+            mimeType: parsed.mimeType,
+            bytes: parsed.bytes
+          }
+        })
+        .catch(() => {
+          // Resolver failure is non-fatal; sink falls back to its placeholder glyph.
+        })
+    }
     this.broadcastTimelineEvent({
       type: 'stream-start',
       stream,
@@ -706,6 +760,7 @@ export class ParallaxService {
   stopHostStream(): void {
     const streamId = this.activeStream?.info.streamId ?? null
     this.activeStream = null
+    this.currentStreamArtwork = null
     this.broadcastTimelineEvent({
       type: 'stop',
       streamId,
@@ -1190,6 +1245,29 @@ export class ParallaxService {
       return
     }
 
+    if (method === 'GET' && path === '/v1/parallax/artwork/current') {
+      // §14.1.4 / §19.18(e) — sink Zone Display fetches once per stream-start, keyed by streamId.
+      // Auth already enforced upstream via sink.id resolution. 404 if no cache, 404 if streamId
+      // mismatch (stale fetch landing after a stream swap).
+      const requestedStreamId = requestUrl.searchParams.get('streamId')?.trim() || null
+      const cached = this.currentStreamArtwork
+      if (!cached) {
+        toJsonResponse(res, 404, { error: 'Artwork not available.' })
+        return
+      }
+      if (requestedStreamId && requestedStreamId !== cached.streamId) {
+        toJsonResponse(res, 404, { error: 'Artwork not available for requested stream.' })
+        return
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', cached.mimeType)
+      res.setHeader('Content-Length', cached.bytes.length.toString())
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.end(cached.bytes)
+      return
+    }
+
     if (method === 'POST' && path === '/v1/parallax/clock') {
       const hostReceivedAtMs = parallaxNowMs()
       let body: unknown
@@ -1419,6 +1497,34 @@ export class ParallaxService {
       throw new Error(message)
     }
     return payload as T
+  }
+
+  // §14.1.4 / §19.18(e) — sink-side fetch for the active stream's artwork from the connected host.
+  // Returns a base64 data URL so the renderer can drop it directly into an <img src>. Returns null
+  // on any failure (no auth, 404, network) — the Zone Display falls back to the placeholder glyph.
+  // Main holds the token; renderer never sees it (§14.1.2 invariant).
+  async fetchSinkArtworkDataUrl(streamId: string): Promise<string | null> {
+    const connection = this.sinkConnection
+    if (!connection) return null
+    const trimmedStreamId = streamId.trim()
+    if (!trimmedStreamId) return null
+    try {
+      const response = await fetch(
+        `${connection.baseUrl}/v1/parallax/artwork/current?streamId=${encodeURIComponent(trimmedStreamId)}`,
+        {
+          signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
+          headers: { Authorization: `Bearer ${connection.token}` }
+        }
+      )
+      if (!response.ok) return null
+      const contentType = response.headers.get('content-type')?.trim() || 'image/jpeg'
+      const arrayBuffer = await response.arrayBuffer()
+      if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > PARALLAX_ARTWORK_MAX_BYTES) return null
+      const base64 = Buffer.from(arrayBuffer).toString('base64')
+      return `data:${contentType};base64,${base64}`
+    } catch {
+      return null
+    }
   }
 
   private startClockSync(): void {

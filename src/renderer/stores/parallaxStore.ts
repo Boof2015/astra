@@ -55,6 +55,9 @@ interface ParallaxSettingsStore {
   isLoading: boolean
   isInitialized: boolean
   errorMessage: string
+  // §14.1.4 — base64 data URL of artwork for the active sink stream (hero image on Zone
+  // Display). Null when no stream, no artwork available, or fetch hasn't completed yet.
+  sinkActiveArtworkUrl: string | null
   init: () => Promise<void>
   refresh: () => Promise<void>
   setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
@@ -90,6 +93,12 @@ let eventUnsubscribe: (() => void) | null = null
 let audioChunkUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
+// §14.1.4 — sink Zone Display artwork cache. Keyed by trackId so cross-stream re-resolves of
+// the same track don't re-hit the host. Module-level so it survives ZoneDisplay remounts (the
+// Library escape unmounts and remounts the surface). Cap loosely to avoid unbounded growth.
+const SINK_ARTWORK_CACHE_CAP = 64
+const sinkArtworkByTrackId = new Map<string, string>()
+let sinkArtworkInFlightStreamId: string | null = null
 let lastHardSyncAtMs = 0
 let snapPendingTicks = 0
 // Phase 2A — rolling window of host emit anchors and the fitted host-output predictor. The drift
@@ -906,10 +915,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       audioEngine.stopParallaxSinkPlayback()
       resetHostEmitAnchors()
       hostEmitHardSyncCount = 0
+      sinkArtworkInFlightStreamId = null
       set({
         latestTimeline: null,
         pendingSinkEvent: null,
-        sinkSnapshot: audioEngine.getParallaxSinkSnapshot()
+        sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
+        sinkActiveArtworkUrl: null
       })
       return
     }
@@ -940,7 +951,48 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         audioEngine.appendParallaxSinkAudioChunk(chunk)
         applyChunkTimelineIfNeeded(chunk)
       }
-      set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
+
+      // §14.1.4 / §19.18(e) — artwork resolution. Cache-hit by trackId is instant; otherwise
+      // fire a main-side fetch. Stale-fetch guard: only apply the result if the stream that
+      // requested it is still the active one. Failures are silent (Zone Display placeholder).
+      const trackId = event.stream.trackId
+      const streamIdAtRequest = event.stream.streamId
+      const cachedArtwork = trackId ? sinkArtworkByTrackId.get(trackId) ?? null : null
+      if (cachedArtwork) {
+        set({
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
+          sinkActiveArtworkUrl: cachedArtwork
+        })
+      } else {
+        set({
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
+          sinkActiveArtworkUrl: null
+        })
+        sinkArtworkInFlightStreamId = streamIdAtRequest
+        void window.electronAPI.parallax.fetchSinkArtwork(streamIdAtRequest)
+          .then((dataUrl) => {
+            if (sinkArtworkInFlightStreamId !== streamIdAtRequest) return
+            sinkArtworkInFlightStreamId = null
+            if (!dataUrl) return
+            if (trackId) {
+              if (sinkArtworkByTrackId.size >= SINK_ARTWORK_CACHE_CAP) {
+                const firstKey = sinkArtworkByTrackId.keys().next().value
+                if (firstKey !== undefined) sinkArtworkByTrackId.delete(firstKey)
+              }
+              sinkArtworkByTrackId.set(trackId, dataUrl)
+            }
+            // Only update store if the active stream still matches.
+            const currentStream = get().status?.sink.activeStream
+            if (currentStream?.streamId === streamIdAtRequest) {
+              set({ sinkActiveArtworkUrl: dataUrl })
+            }
+          })
+          .catch(() => {
+            if (sinkArtworkInFlightStreamId === streamIdAtRequest) {
+              sinkArtworkInFlightStreamId = null
+            }
+          })
+      }
     }
 
     if (event.type === 'timeline' && event.resetAudio) {
@@ -1002,6 +1054,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     isLoading: false,
     isInitialized: false,
     errorMessage: '',
+    sinkActiveArtworkUrl: null,
 
     init: async () => {
       if (get().isInitialized) return
@@ -1144,11 +1197,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         await window.electronAPI.parallax.disconnectSink()
         pendingAudioChunks = []
         audioEngine.stopParallaxSinkPlayback()
+        sinkArtworkInFlightStreamId = null
         set({
           latestTimeline: null,
           pendingSinkEvent: null,
           sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
-          errorMessage: ''
+          errorMessage: '',
+          sinkActiveArtworkUrl: null
         })
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
@@ -1228,7 +1283,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const streamId = createStreamId(track)
       try {
         const timeline = await window.electronAPI.parallax.publishHostStreamStart(
-          buildParallaxStreamInfo(track, streamId, buffer)
+          buildParallaxStreamInfo(track, streamId, buffer),
+          { artworkHash: track.artworkHash }
         )
         hostPublishingCanceledForActiveStream = false
         void audioEngine.publishCurrentBufferToParallax(streamId, timeline).catch((error) => {
@@ -1292,7 +1348,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         } else {
           timeline = await window.electronAPI.parallax.publishHostStreamStart(
             buildParallaxStreamInfo(track, streamId, buffer),
-            { startFrame, playbackState: playing ? 'playing' : 'paused' }
+            { startFrame, playbackState: playing ? 'playing' : 'paused', artworkHash: track.artworkHash }
           )
         }
         // A connected sink has now been serviced for this active stream. Clear the no-sink

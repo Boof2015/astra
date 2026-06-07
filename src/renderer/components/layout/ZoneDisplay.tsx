@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
+import ZoneSettingsOverlay from './ZoneSettingsOverlay'
 
 type SyncPillState = 'ready' | 'stabilizing' | 'locked' | 'no-signal' | 'disconnected'
 
@@ -56,7 +57,9 @@ export default function ZoneDisplay() {
   const exitForSession = useUIStore((s) => s.exitZoneDisplayForSession)
   const status = useParallaxStore((s) => s.status)
   const sinkSnapshot = useParallaxStore((s) => s.sinkSnapshot)
+  const artworkUrl = useParallaxStore((s) => s.sinkActiveArtworkUrl)
   const identity = useEndpointIdentity()
+  const [overlayOpen, setOverlayOpen] = useState(false)
 
   const hasPersistedConnection = status?.sink.hasPersistedConnection ?? false
   const persistedHostName = status?.sink.persistedHostName ?? null
@@ -131,18 +134,42 @@ export default function ZoneDisplay() {
         </button>
         <div className="zone-display-chrome-end">
           {outputLabel && (
-            <span className="zone-display-output-chip" title="Output device">
+            <button
+              type="button"
+              className="zone-display-output-chip"
+              title="Open zone settings"
+              onClick={() => setOverlayOpen(true)}
+            >
               {outputLabel}
-            </span>
+            </button>
           )}
+          <button
+            type="button"
+            className="zone-display-settings-btn"
+            title="Zone settings"
+            aria-label="Zone settings"
+            onClick={() => setOverlayOpen(true)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
         </div>
       </div>
 
       <div className="zone-display-body">
         {stream ? (
           <>
-            {/* Step 4 replaces this placeholder with hero artwork via /v1/parallax/artwork/current. */}
-            <div className="zone-display-artwork-placeholder" aria-hidden="true">&#9835;</div>
+            {artworkUrl ? (
+              <img
+                className="zone-display-artwork"
+                src={artworkUrl}
+                alt={`Album art for ${stream.title}`}
+              />
+            ) : (
+              <div className="zone-display-artwork-placeholder" aria-hidden="true">&#9835;</div>
+            )}
             <div className="zone-display-track-info">
               <div className="zone-display-title">{stream.title || '—'}</div>
               <div className="zone-display-subtitle">
@@ -168,6 +195,8 @@ export default function ZoneDisplay() {
           {syncPillCopy(syncState)}
         </span>
       </div>
+
+      {overlayOpen && <ZoneSettingsOverlay onClose={() => setOverlayOpen(false)} />}
     </div>
   )
 }

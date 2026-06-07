@@ -844,6 +844,10 @@ const parallaxService = new ParallaxService({
   getSinkConnectionInfo: () => ({
     hasPersistedConnection: parallaxSinkConnection !== null,
     persistedHostName: parallaxSinkConnection?.hostName ?? parallaxSinkConnection?.baseUrl ?? null
+  }),
+  // §14.1.4 / §19.18(e) — same resolver used by playbackHttpCore + phoneRemote.
+  resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
+    maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX
   })
 })
 
@@ -4881,6 +4885,14 @@ ipcMain.handle('phone-remote:resetToDefaults', async () => {
 // Parallax LAN sync
 ipcMain.handle('parallax:getStatus', () => {
   return parallaxService.getStatus()
+})
+
+// §14.1.4 / §19.18(e) — sink-side artwork fetch. Main holds the token; renderer never sees it
+// (§14.1.2 invariant). Returns a base64 data URL on success, null on any failure — Zone Display
+// falls back to placeholder.
+ipcMain.handle('parallax:fetchSinkArtwork', async (_event, streamId: unknown) => {
+  if (typeof streamId !== 'string' || streamId.length === 0) return null
+  return parallaxService.fetchSinkArtworkDataUrl(streamId)
 })
 
 // §14.1.4 — device-identity for the Zone Display identity card. Returns this machine's OS hostname

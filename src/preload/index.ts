@@ -813,6 +813,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
     getEndpointIdentity: (): Promise<{ hostname: string; lanIps: string[] }> =>
       ipcRenderer.invoke('parallax:getEndpointIdentity'),
+    fetchSinkArtwork: (streamId: string): Promise<string | null> =>
+      ipcRenderer.invoke('parallax:fetchSinkArtwork', streamId),
     listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
     setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:setHostEnabled', enabled),
@@ -1317,6 +1319,7 @@ declare global {
         launchInZoneMode: boolean
         getStatus: () => Promise<ParallaxStatus>
         getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
+        fetchSinkArtwork: (streamId: string) => Promise<string | null>
         listPairedSinks: () => Promise<ParallaxPairedSink[]>
         setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
         setHostPort: (port: number) => Promise<ParallaxStatus>
