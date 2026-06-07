@@ -70,48 +70,7 @@ export default function ZoneDisplay() {
     ?? status?.sink.outputDeviceId
     ?? null
 
-  // Unpaired or host revoked → identity card. Per user direction, this stays visible when zone
-  // display is the active surface and helps locate the physical device across the room. No PIN,
-  // no URL, no implied pairing flow — pairing lives in Settings / §14.1.5.
   const showIdentityCard = !hasPersistedConnection || removedByHost
-
-  if (showIdentityCard) {
-    return (
-      <div className="zone-display" role="main">
-        <button
-          type="button"
-          className="zone-display-exit"
-          onClick={exitForSession}
-          title="Return to library (this session only)"
-        >
-          ← Library
-        </button>
-        <div className="zone-display-body zone-display-body-identity">
-          <div className="zone-display-kicker">This endpoint</div>
-          {removedByHost && (
-            <div className="zone-display-revoke-note">Host revoked pairing.</div>
-          )}
-          <div className="zone-display-identity-rows">
-            <div className="zone-display-identity-row">
-              <span className="zone-display-identity-label">Hostname</span>
-              <span className="zone-display-identity-value">
-                {identity?.hostname || '—'}
-              </span>
-            </div>
-            <div className="zone-display-identity-row">
-              <span className="zone-display-identity-label">LAN</span>
-              <span className="zone-display-identity-value">
-                {identity && identity.lanIps.length > 0
-                  ? identity.lanIps.join(' · ')
-                  : '—'}
-              </span>
-            </div>
-          </div>
-          <p className="zone-display-note">Use this to identify the device.</p>
-        </div>
-      </div>
-    )
-  }
 
   const syncState = pickSyncPillState({
     connected,
@@ -121,75 +80,136 @@ export default function ZoneDisplay() {
     rebuffering: sinkSnapshot.rebuffering,
   })
 
+  // Resolve the kicker label in the hero topbar. Mirrors FullscreenMode's "Now Playing / Paused
+  // / Ready" pattern but in sink-side vocabulary.
+  const kickerLabel = showIdentityCard
+    ? 'This endpoint'
+    : !connected
+      ? 'Disconnected'
+      : !stream
+        ? 'Ready'
+        : 'Parallax Sink'
+
   return (
-    <div className="zone-display" role="main">
-      <div className="zone-display-chrome zone-display-chrome-top">
-        <button
-          type="button"
-          className="zone-display-exit"
-          onClick={exitForSession}
-          title="Return to library (this session only)"
-        >
-          ← Library
-        </button>
-        <div className="zone-display-chrome-end">
-          {outputLabel && (
-            <button
-              type="button"
-              className="zone-display-output-chip"
-              title="Open zone settings"
-              onClick={() => setOverlayOpen(true)}
-            >
-              {outputLabel}
-            </button>
+    <div className="zone-display fullscreen-overlay" role="main">
+      {/* Reuse fullscreen's backdrop machinery — art-bathed blurred image, color wash, scrim. */}
+      <div className="fullscreen-backdrop" aria-hidden="true">
+        <div className="fullscreen-backdrop-layer fullscreen-backdrop-layer-current">
+          {artworkUrl ? (
+            <img className="fullscreen-backdrop-image" src={artworkUrl} alt="" />
+          ) : (
+            <div className="fullscreen-backdrop-fallback" />
           )}
-          <button
-            type="button"
-            className="zone-display-settings-btn"
-            title="Zone settings"
-            aria-label="Zone settings"
-            onClick={() => setOverlayOpen(true)}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
         </div>
+        <div className="fullscreen-backdrop-colorwash" />
+        <div className="fullscreen-backdrop-scrim" />
       </div>
 
-      <div className="zone-display-body">
-        {stream ? (
-          <>
-            {artworkUrl ? (
-              <img
-                className="zone-display-artwork"
-                src={artworkUrl}
-                alt={`Album art for ${stream.title}`}
-              />
-            ) : (
-              <div className="zone-display-artwork-placeholder" aria-hidden="true">&#9835;</div>
-            )}
-            <div className="zone-display-track-info">
-              <div className="zone-display-title">{stream.title || '—'}</div>
-              <div className="zone-display-subtitle">
-                {[stream.artist, stream.album].filter(Boolean).join(' · ') || '—'}
-              </div>
+      <button
+        type="button"
+        className="zone-display-exit"
+        onClick={exitForSession}
+        title="Return to library (this session only)"
+      >
+        ← Library
+      </button>
+
+      {!showIdentityCard && (
+        <button
+          type="button"
+          className="zone-display-settings-btn"
+          title="Zone settings"
+          aria-label="Zone settings"
+          onClick={() => setOverlayOpen(true)}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      )}
+
+      <div className="fullscreen-content">
+        <div className="fullscreen-stage">
+          <div className="fullscreen-hero fullscreen-hero-steady">
+            <div className="fullscreen-hero-topbar">
+              <span className="fullscreen-status-label">{kickerLabel}</span>
+              {!showIdentityCard && outputLabel && (
+                <button
+                  type="button"
+                  className="zone-display-output-chip"
+                  title="Open zone settings"
+                  onClick={() => setOverlayOpen(true)}
+                >
+                  {outputLabel}
+                </button>
+              )}
             </div>
-          </>
-        ) : (
-          <div className="zone-display-idle">
-            <div className="zone-display-kicker">{connected ? 'Ready' : 'Disconnected'}</div>
-            {persistedHostName && (
-              <div className="zone-display-host-line">
-                {connected ? 'Connected to ' : 'Reconnecting to '}<strong>{persistedHostName}</strong>
+
+            {showIdentityCard ? (
+              <div className="zone-display-identity-body">
+                {removedByHost && (
+                  <div className="zone-display-revoke-note">Host revoked pairing.</div>
+                )}
+                <div className="zone-display-identity-rows">
+                  <div className="zone-display-identity-row">
+                    <span className="zone-display-identity-label">Hostname</span>
+                    <span className="zone-display-identity-value">
+                      {identity?.hostname || '—'}
+                    </span>
+                  </div>
+                  <div className="zone-display-identity-row">
+                    <span className="zone-display-identity-label">LAN</span>
+                    <span className="zone-display-identity-value">
+                      {identity && identity.lanIps.length > 0
+                        ? identity.lanIps.join(' · ')
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+                <p className="zone-display-note">Use this to identify the device.</p>
+              </div>
+            ) : (
+              <div className="fullscreen-main-row">
+                <div className="fullscreen-artwork">
+                  {artworkUrl ? (
+                    <img src={artworkUrl} alt={stream ? `Album art for ${stream.title}` : ''} />
+                  ) : (
+                    <div className="fullscreen-artwork-placeholder">&#9835;</div>
+                  )}
+                </div>
+
+                <div className="fullscreen-track-info">
+                  {stream ? (
+                    <>
+                      <h1 className="fullscreen-title">
+                        <span className="fullscreen-title-inner">{stream.title || '—'}</span>
+                      </h1>
+                      <p className="fullscreen-artist">{stream.artist || '—'}</p>
+                      <p className="fullscreen-album">{stream.album || '—'}</p>
+                    </>
+                  ) : (
+                    <>
+                      <h1 className="fullscreen-title">
+                        <span className="fullscreen-title-inner">
+                          {connected ? 'Awaiting playback' : 'Disconnected'}
+                        </span>
+                      </h1>
+                      <p className="fullscreen-artist">
+                        {persistedHostName
+                          ? (connected ? `Connected to ${persistedHostName}` : `Reconnecting to ${persistedHostName}`)
+                          : '—'}
+                      </p>
+                    </>
+                  )}
+                </div>
               </div>
             )}
           </div>
-        )}
+        </div>
       </div>
 
-      <div className="zone-display-chrome zone-display-chrome-bottom">
+      <div className="zone-display-status-rail">
         <span className={`zone-display-sync-pill is-state-${syncState}`}>
           <span className="zone-display-sync-pill-dot" aria-hidden="true" />
           {syncPillCopy(syncState)}

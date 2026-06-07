@@ -1,10 +1,12 @@
 import { useParallaxStore } from '../../stores/parallaxStore'
+import { useUIStore } from '../../stores/uiStore'
 
 export default function ParallaxSinkMode() {
   const status = useParallaxStore((s) => s.status)
   const snapshot = useParallaxStore((s) => s.sinkSnapshot)
   const disconnectSink = useParallaxStore((s) => s.disconnectSink)
   const errorMessage = useParallaxStore((s) => s.errorMessage)
+  const enterZoneDisplay = useUIStore((s) => s.enterZoneDisplay)
 
   if (!status?.sink.connected) return null
 
@@ -26,13 +28,23 @@ export default function ParallaxSinkMode() {
         <span className="parallax-sink-meta">{status.sink.baseUrl} · {clockLabel} · {bufferLabel}</span>
         {errorMessage && <span className="parallax-sink-error">{errorMessage}</span>}
       </div>
-      <button
-        type="button"
-        className="settings-btn settings-btn-danger"
-        onClick={() => void disconnectSink()}
-      >
-        Disconnect
-      </button>
+      <div className="parallax-sink-actions">
+        <button
+          type="button"
+          className="settings-btn"
+          onClick={enterZoneDisplay}
+          title="Open Zone Display"
+        >
+          Zone Display
+        </button>
+        <button
+          type="button"
+          className="settings-btn settings-btn-danger"
+          onClick={() => void disconnectSink()}
+        >
+          Disconnect
+        </button>
+      </div>
     </div>
   )
 }

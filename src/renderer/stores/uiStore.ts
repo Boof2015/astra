@@ -353,6 +353,7 @@ interface UIStore {
   setFullscreen: (fs: boolean) => void
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
   exitZoneDisplayForSession: () => void
+  enterZoneDisplay: () => void
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
@@ -469,6 +470,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set({ openZoneDisplayOnLaunch: enabled })
   },
   exitZoneDisplayForSession: () => set({ isZoneDisplayActive: false }),
+  enterZoneDisplay: () => set({ isZoneDisplayActive: true }),
   setAnalyzerHeightPx: (heightPx) => {
     const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
     persistAnalyzerHeightPreference(nextHeightPx)

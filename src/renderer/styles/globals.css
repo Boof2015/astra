@@ -19778,138 +19778,127 @@ body::after {
   color: #fca5a5;
 }
 
-/* §14.1.4 — Zone Display takes over the full window when isZoneDisplayActive. Reuses the
- * fullscreen aesthetic (deep background, subtle hero card) without copying the transport
- * controls — sink can't drive playback. */
+.parallax-sink-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* §14.1.4 — Zone Display reuses fullscreen-overlay design language directly. This file holds only
+ * the zone-specific chrome (Library escape, settings gear, output chip, identity card body, sync
+ * pill at the bottom). The hero card, backdrop, typography all come from the `.fullscreen-*`
+ * classes so the two surfaces share a visual language by construction. */
 .zone-display {
-  position: fixed;
-  inset: 0;
   z-index: 90;
-  display: flex;
-  flex-direction: column;
-  background:
-    radial-gradient(circle at 30% 20%, rgba(56, 189, 248, 0.10), transparent 60%),
-    radial-gradient(circle at 70% 80%, rgba(168, 85, 247, 0.08), transparent 60%),
-    #07090d;
-  color: var(--text-primary);
-  padding: 28px 36px;
-  gap: 24px;
-}
-
-.zone-display-chrome {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.zone-display-chrome-top {
-  justify-content: space-between;
-}
-
-.zone-display-chrome-end {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.zone-display-chrome-bottom {
-  justify-content: center;
 }
 
 .zone-display-exit {
-  background: transparent;
+  position: absolute;
+  /* macOS traffic lights occupy the top-left corner (~12–32px from top). Drop the Library escape
+   * below them so it stays in the natural back-button corner on every platform — pushing it
+   * sideways looks fine on macOS but reads as a random inset on Windows/Linux. */
+  top: 56px;
+  left: 24px;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.32);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: rgba(255, 255, 255, 0.78);
   padding: 6px 12px;
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
   cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .zone-display-exit:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.5);
   border-color: rgba(255, 255, 255, 0.32);
-}
-
-.zone-display-output-chip {
-  font-size: 0.74rem;
-  color: rgba(255, 255, 255, 0.72);
-  padding: 5px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.04);
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease;
-}
-
-.zone-display-output-chip:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
 }
 
 .zone-display-settings-btn {
+  position: absolute;
+  top: 28px;
+  right: 28px;
+  z-index: 10;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.32);
+  color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .zone-display-settings-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.32);
   color: #fff;
 }
 
-.zone-display-body {
-  flex: 1;
+/* Output-device chip in the hero card topbar — matches the .fullscreen-lyrics-toggle pattern. */
+.zone-display-output-chip {
+  min-height: 28px;
+  max-width: 260px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.72);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.zone-display-output-chip:hover {
+  color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Identity-card body sits inside the .fullscreen-hero shell — same glass card, different content. */
+.zone-display-identity-body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  text-align: center;
-  gap: 22px;
-  min-height: 0;
-}
-
-.zone-display-body-identity {
-  gap: 14px;
-}
-
-.zone-display-kicker {
-  color: var(--accent-color, #38bdf8);
-  font-weight: 700;
-  font-size: 0.78rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  gap: 18px;
+  padding: 8px 0 12px;
 }
 
 .zone-display-revoke-note {
-  font-size: 0.84rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: #fbbf24;
 }
 
 .zone-display-identity-rows {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  padding: 20px 28px;
-  border-radius: 16px;
+  gap: 10px;
+  padding: 18px 28px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.28);
   min-width: min(420px, 80vw);
 }
 
@@ -19921,8 +19910,9 @@ body::after {
 }
 
 .zone-display-identity-label {
-  font-size: 0.74rem;
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.56);
 }
@@ -19931,7 +19921,7 @@ body::after {
   font-size: 1.05rem;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.94);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .zone-display-note {
@@ -19940,72 +19930,34 @@ body::after {
   margin: 0;
 }
 
-.zone-display-artwork-placeholder {
-  width: clamp(180px, 28vw, 320px);
-  height: clamp(180px, 28vw, 320px);
-  border-radius: 16px;
+/* Sync pill sits at the bottom of the viewport — same chrome style as the Library/settings chips. */
+.zone-display-status-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 28px;
   display: flex;
-  align-items: center;
   justify-content: center;
-  font-size: 96px;
-  color: rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-}
-
-.zone-display-artwork {
-  width: clamp(180px, 28vw, 320px);
-  height: clamp(180px, 28vw, 320px);
-  object-fit: cover;
-  border-radius: 16px;
-  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.5);
-}
-
-.zone-display-track-info {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: min(720px, 90vw);
-}
-
-.zone-display-title {
-  font-size: clamp(28px, 4.2vw, 48px);
-  font-weight: 700;
-  line-height: 1.08;
-  color: #fff;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.zone-display-subtitle {
-  font-size: clamp(15px, 1.8vw, 20px);
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.zone-display-idle {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-
-.zone-display-host-line {
-  font-size: 0.92rem;
-  color: rgba(255, 255, 255, 0.72);
+  z-index: 10;
+  pointer-events: none;
 }
 
 .zone-display-sync-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 6px 14px;
   border-radius: 999px;
-  font-size: 0.76rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(0, 0, 0, 0.35);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.42);
   color: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: auto;
 }
 
 .zone-display-sync-pill-dot {
