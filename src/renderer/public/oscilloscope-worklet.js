@@ -255,6 +255,9 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
         case 'append-chunk':
           this.appendChunk(payload.channelData, payload.startFrame, payload.frameCount)
           break
+        case 'clear-buffer':
+          this.clearBufferedChunks()
+          break
         case 'set-timeline':
           this.setTimeline(payload)
           break
@@ -301,6 +304,12 @@ class ParallaxSinkProcessor extends AudioWorkletProcessor {
     if (this.chunks.length > this.maxRetainedChunks) {
       this.chunks.splice(0, this.chunks.length - this.maxRetainedChunks)
     }
+  }
+
+  clearBufferedChunks() {
+    this.chunks = []
+    this.starvedFrames = 0
+    this.rebuffering = false
   }
 
   setTimeline(payload) {

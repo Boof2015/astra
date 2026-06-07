@@ -129,6 +129,7 @@ import {
   type ParallaxAudioChunk,
   type ParallaxHostConfig,
   type ParallaxHostStreamStartOptions,
+  type ParallaxHostTimelinePublishOptions,
   type ParallaxOutputLatencyMetrics,
   ParallaxAuthError,
   type ParallaxSinkConnectionConfig,
@@ -4959,8 +4960,8 @@ ipcMain.handle('parallax:publishHostAudioChunk', (_event, chunk: ParallaxAudioCh
   parallaxService.publishHostAudioChunk(chunk)
 })
 
-ipcMain.handle('parallax:publishHostTimeline', (_event, timeline: ParallaxTimelineState) => {
-  parallaxService.publishHostTimeline(timeline)
+ipcMain.handle('parallax:publishHostTimeline', (_event, timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => {
+  parallaxService.publishHostTimeline(timeline, options ?? {})
 })
 
 ipcMain.handle('parallax:publishHostEmitAnchor', (_event, anchor: Parameters<typeof parallaxService.publishHostEmitAnchor>[0]) => {

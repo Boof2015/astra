@@ -6,6 +6,7 @@ import type {
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
+  ParallaxHostTimelinePublishOptions,
   ParallaxSinkConnectionConfig,
   ParallaxStatus,
   ParallaxStreamInfo,
@@ -542,8 +543,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     return Math.max(0, writeCursorSec - audioEngine.getParallaxEndpointLatencyMs() / 1000)
   }
 
-  const publishHostTimeline = async (timeline: ParallaxTimelineState): Promise<ParallaxTimelineState> => {
-    await window.electronAPI.parallax.publishHostTimeline(timeline)
+  const publishHostTimeline = async (
+    timeline: ParallaxTimelineState,
+    options?: ParallaxHostTimelinePublishOptions
+  ): Promise<ParallaxTimelineState> => {
+    await window.electronAPI.parallax.publishHostTimeline(timeline, options)
     return timeline
   }
 
@@ -936,6 +940,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         audioEngine.appendParallaxSinkAudioChunk(chunk)
         applyChunkTimelineIfNeeded(chunk)
       }
+      set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
+    }
+
+    if (event.type === 'timeline' && event.resetAudio) {
+      // Seek/scrub is a same-stream audio epoch reset. Drop retained chunks from the previous
+      // timeline before applying the new anchor; otherwise old future chunks can make the worklet
+      // jump across a hole and play from the pre-seek position.
+      pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== timeline.streamId)
+      audioEngine.clearParallaxSinkAudioChunks()
+      resetHostEmitAnchors()
       set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
     }
 
@@ -1362,7 +1376,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         delayMs
       )
       try {
-        await publishHostTimeline(timeline)
+        await publishHostTimeline(timeline, { resetAudio: true })
         if (playing && hasSinks) {
           hostPublishingCanceledForActiveStream = false
           void audioEngine.publishCurrentBufferToParallax(stream.streamId, timeline).catch((error) => {

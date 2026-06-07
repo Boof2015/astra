@@ -8,6 +8,7 @@ import type {
   ParallaxConnectedSinkState,
   ParallaxHostConfig,
   ParallaxHostStreamStartOptions,
+  ParallaxHostTimelinePublishOptions,
   ParallaxJoinResponse,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
@@ -602,14 +603,22 @@ export class ParallaxService {
     return timeline
   }
 
-  publishHostTimeline(timeline: ParallaxTimelineState): void {
+  publishHostTimeline(timeline: ParallaxTimelineState, options: ParallaxHostTimelinePublishOptions = {}): void {
     if (!this.activeStream || this.activeStream.info.streamId !== timeline.streamId) return
+    const resetAudio = Boolean(options.resetAudio)
+    if (resetAudio) {
+      this.activeStream.packets = []
+    }
     this.activeStream.timeline = { ...timeline }
     this.broadcastTimelineEvent({
       type: 'timeline',
       timeline,
+      resetAudio: resetAudio || undefined,
       emittedAtHostTimeMs: parallaxNowMs()
     })
+    if (resetAudio) {
+      this.closeAudioClientsForStream(timeline.streamId)
+    }
   }
 
   // Phase 2A — forward a host-emit-anchor over the existing SSE channel. The renderer publishes at
@@ -683,6 +692,14 @@ export class ParallaxService {
       startHostTimeMs,
       updatedHostTimeMs: now,
       groupLatencyMs: info.groupLatencyMs
+    }
+  }
+
+  private closeAudioClientsForStream(streamId: string): void {
+    for (const client of Array.from(this.audioClients)) {
+      if (client.streamId !== streamId) continue
+      this.audioClients.delete(client)
+      try { client.response.end() } catch { /* ignore */ }
     }
   }
 
@@ -1710,6 +1727,9 @@ export class ParallaxService {
       // Give a fresh grace window after a state change (resume/seek) so the stall watchdog doesn't
       // fire before the host's chunk flow picks back up.
       this.lastAudioChunkAtMs = Date.now()
+      if (event.resetAudio && this.sinkActiveStream?.streamId === event.timeline.streamId) {
+        void this.consumeSinkAudio(event.timeline.streamId, event.timeline.startFrame, true)
+      }
     } else if (event.type === 'stop') {
       this.sinkActiveStream = null
       this.sinkTimeline = null
@@ -1799,6 +1819,13 @@ export class ParallaxService {
         && connection.audioGeneration === audioGeneration
       ) {
         const { done, value } = await reader.read()
+        if (
+          this.sinkConnection !== connection
+          || connection.activeAudioStreamId !== streamId
+          || connection.audioGeneration !== audioGeneration
+        ) {
+          return
+        }
         if (done) break
         if (!value) continue
         this.lastAudioChunkAtMs = Date.now()

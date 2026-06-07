@@ -2406,6 +2406,15 @@ export class AudioEngine {
     )
   }
 
+  clearParallaxSinkAudioChunks(): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode) return
+    this.parallaxSinkState.bufferedFrames = 0
+    this.parallaxSinkState.bufferedEndFrame = this.parallaxSinkState.currentFrame
+    this.parallaxSinkState.starvedFrames = 0
+    this.parallaxSinkState.rebuffering = false
+    this.parallaxSinkNode.port.postMessage({ type: 'clear-buffer' })
+  }
+
   applyParallaxTimeline(
     timeline: ParallaxTimelineState,
     options: { startAtContextTime: number; playbackRatePpm?: number }

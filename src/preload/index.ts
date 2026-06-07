@@ -33,6 +33,7 @@ import type {
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxHostStreamStartOptions,
+  ParallaxHostTimelinePublishOptions,
   ParallaxPairingPin,
   ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
@@ -819,8 +820,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostStreamStart', info, options),
     publishHostAudioChunk: (chunk: ParallaxAudioChunk): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostAudioChunk', chunk),
-    publishHostTimeline: (timeline: ParallaxTimelineState): Promise<void> =>
-      ipcRenderer.invoke('parallax:publishHostTimeline', timeline),
+    publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostTimeline', timeline, options),
     publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostEmitAnchor', anchor),
     stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
@@ -1317,7 +1318,7 @@ declare global {
           options?: ParallaxHostStreamStartOptions
         ) => Promise<ParallaxTimelineState>
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
-        publishHostTimeline: (timeline: ParallaxTimelineState) => Promise<void>
+        publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
         publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
         stopHostStream: () => Promise<void>
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>

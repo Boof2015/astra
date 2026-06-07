@@ -206,6 +206,13 @@ export interface ParallaxHostStreamStartOptions {
   playbackState?: ParallaxPlaybackState
 }
 
+// Options for publishing a same-stream timeline update. `resetAudio` marks a source-position
+// discontinuity such as seek/scrub: receivers must drop buffered audio from the previous epoch and
+// reconnect/backfill from the new timeline frame. Pause/resume timeline updates leave this false.
+export interface ParallaxHostTimelinePublishOptions {
+  resetAudio?: boolean
+}
+
 export type ParallaxTimelineEvent =
   | {
       type: 'stream-start'
@@ -216,6 +223,7 @@ export type ParallaxTimelineEvent =
   | {
       type: 'timeline'
       timeline: ParallaxTimelineState
+      resetAudio?: boolean
       emittedAtHostTimeMs: number
     }
   | {
