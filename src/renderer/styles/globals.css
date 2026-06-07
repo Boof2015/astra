@@ -529,6 +529,64 @@ button, .titlebar {
   font-style: italic;
 }
 
+/* §18 commit 2 — warning + transient state. Amber variant overrides accent color when the
+   pill is in warning state; popover force-open class keeps the popover visible without
+   requiring hover (used for auto-open after a drop). */
+.titlebar-parallax-pill.is-warning {
+  border-color: rgba(251, 191, 36, 0.6);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.28), rgba(251, 191, 36, 0.1));
+  color: rgba(255, 230, 170, 0.95);
+}
+
+.titlebar-parallax-pill.is-warning .titlebar-parallax-pill-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.7);
+  animation: titlebar-parallax-pill-warning-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes titlebar-parallax-pill-warning-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.titlebar-parallax-pill.is-popover-open .titlebar-parallax-pill-popover {
+  opacity: 1;
+  visibility: visible;
+}
+
+.titlebar-parallax-pill-popover-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  margin-top: 4px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 6px;
+}
+
+.titlebar-parallax-pill-popover-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 230, 170, 0.95);
+  font-weight: 500;
+}
+
+.titlebar-parallax-pill-popover-warning-icon {
+  font-size: 12px;
+}
+
+.titlebar-parallax-pill-popover-toast {
+  padding: 5px 8px;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.6);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.78);
+  border-radius: 3px;
+}
+
 .titlebar-stats-shell {
   position: relative;
   display: flex;
