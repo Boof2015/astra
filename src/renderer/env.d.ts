@@ -320,7 +320,9 @@ declare global {
             }
             parallax: {
                 useHostPredictor: boolean
+                launchInZoneMode: boolean
                 getStatus: () => Promise<ParallaxStatus>
+                getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
                 listPairedSinks: () => Promise<ParallaxPairedSink[]>
                 setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
                 setHostPort: (port: number) => Promise<ParallaxStatus>

@@ -8,6 +8,7 @@ import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
+import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import KeyboardShortcutsModal from './components/layout/KeyboardShortcutsModal'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
@@ -95,6 +96,7 @@ function App() {
   const showAnalyzerRack = useUIStore((s) => s.showAnalyzerRack)
   const hideAnalyzerRack = useUIStore((s) => s.hideAnalyzerRack)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
+  const isZoneDisplayActive = useUIStore((s) => s.isZoneDisplayActive)
   const analyzerHeightPx = useUIStore((s) => s.analyzerHeightPx)
   const uiScalePercent = useUIStore((s) => s.uiScalePercent)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
@@ -248,6 +250,17 @@ function App() {
       unsubscribeAssociatedOpenFiles()
     }
   }, [])
+
+  // §14.1.4 — Zone Display takes over the entire window when active. Normal shell suppressed.
+  // Init effects above still run (theme, library, parallax, etc) so the store/IPC plumbing is
+  // identical between the two modes. UI-scale wrapper kept so zone display obeys --ui-scale.
+  if (isZoneDisplayActive) {
+    return (
+      <div className="app-scale-host" style={appStyle}>
+        <ZoneDisplay />
+      </div>
+    )
+  }
 
   return (
     <div className="app-scale-host" style={appStyle}>

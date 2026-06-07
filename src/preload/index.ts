@@ -803,7 +803,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const disable = process.env.PARALLAX_DISABLE_HOST_PREDICTOR
       return !(disable === '1' || disable === 'true')
     })(),
+    // §14.1.4 — `--zone` launch flag (or PARALLAX_LAUNCH_ZONE=1 env). Read once at preload init.
+    // Main process translates the argv flag into the env var before this script runs. Renderer's
+    // uiStore seeds `isZoneDisplayActive` from this OR the persisted preference.
+    launchInZoneMode: ((): boolean => {
+      const raw = process.env.PARALLAX_LAUNCH_ZONE
+      return raw === '1' || raw === 'true'
+    })(),
     getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
+    getEndpointIdentity: (): Promise<{ hostname: string; lanIps: string[] }> =>
+      ipcRenderer.invoke('parallax:getEndpointIdentity'),
     listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
     setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:setHostEnabled', enabled),
@@ -1305,7 +1314,9 @@ declare global {
       }
       parallax: {
         useHostPredictor: boolean
+        launchInZoneMode: boolean
         getStatus: () => Promise<ParallaxStatus>
+        getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
         listPairedSinks: () => Promise<ParallaxPairedSink[]>
         setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
         setHostPort: (port: number) => Promise<ParallaxStatus>

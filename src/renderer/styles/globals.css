@@ -19777,3 +19777,222 @@ body::after {
 .parallax-sink-error {
   color: #fca5a5;
 }
+
+/* §14.1.4 — Zone Display takes over the full window when isZoneDisplayActive. Reuses the
+ * fullscreen aesthetic (deep background, subtle hero card) without copying the transport
+ * controls — sink can't drive playback. */
+.zone-display {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(56, 189, 248, 0.10), transparent 60%),
+    radial-gradient(circle at 70% 80%, rgba(168, 85, 247, 0.08), transparent 60%),
+    #07090d;
+  color: var(--text-primary);
+  padding: 28px 36px;
+  gap: 24px;
+}
+
+.zone-display-chrome {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.zone-display-chrome-top {
+  justify-content: space-between;
+}
+
+.zone-display-chrome-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.zone-display-chrome-bottom {
+  justify-content: center;
+}
+
+.zone-display-exit {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.78);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.zone-display-exit:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.zone-display-output-chip {
+  font-size: 0.74rem;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zone-display-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 22px;
+  min-height: 0;
+}
+
+.zone-display-body-identity {
+  gap: 14px;
+}
+
+.zone-display-kicker {
+  color: var(--accent-color, #38bdf8);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.zone-display-revoke-note {
+  font-size: 0.84rem;
+  color: #fbbf24;
+}
+
+.zone-display-identity-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 20px 28px;
+  border-radius: 16px;
+  min-width: min(420px, 80vw);
+}
+
+.zone-display-identity-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.zone-display-identity-label {
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.zone-display-identity-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.94);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.zone-display-note {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.56);
+  margin: 0;
+}
+
+.zone-display-artwork-placeholder {
+  width: clamp(180px, 28vw, 320px);
+  height: clamp(180px, 28vw, 320px);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 96px;
+  color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.zone-display-track-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(720px, 90vw);
+}
+
+.zone-display-title {
+  font-size: clamp(28px, 4.2vw, 48px);
+  font-weight: 700;
+  line-height: 1.08;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zone-display-subtitle {
+  font-size: clamp(15px, 1.8vw, 20px);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.zone-display-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.zone-display-host-line {
+  font-size: 0.92rem;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.zone-display-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.zone-display-sync-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.zone-display-sync-pill.is-state-ready { color: rgba(148, 163, 184, 0.92); }
+.zone-display-sync-pill.is-state-stabilizing { color: #fbbf24; }
+.zone-display-sync-pill.is-state-locked { color: #34d399; }
+.zone-display-sync-pill.is-state-no-signal { color: #fbbf24; }
+.zone-display-sync-pill.is-state-disconnected { color: #fca5a5; }
+
+.zone-display-sync-pill.is-state-stabilizing .zone-display-sync-pill-dot,
+.zone-display-sync-pill.is-state-no-signal .zone-display-sync-pill-dot {
+  animation: zone-display-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes zone-display-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+

@@ -477,6 +477,8 @@ export default function SettingsView() {
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
   const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
   const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
+  const openZoneDisplayOnLaunch = useUIStore((state) => state.openZoneDisplayOnLaunch)
+  const setOpenZoneDisplayOnLaunch = useUIStore((state) => state.setOpenZoneDisplayOnLaunch)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -2812,6 +2814,22 @@ export default function SettingsView() {
                       )}
                     </div>
                   </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Zone Display on Launch</span>
+                    <button
+                      className={`settings-toggle ${openZoneDisplayOnLaunch ? 'active' : ''}`}
+                      onClick={() => setOpenZoneDisplayOnLaunch(!openZoneDisplayOnLaunch)}
+                    >
+                      {openZoneDisplayOnLaunch ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    When on, Astra opens the dedicated Zone Display surface at launch — full-screen now-playing
+                    for paired sinks, identity card (hostname + LAN IPs) when unpaired or revoked. Use the
+                    Library affordance in Zone Display to return to the normal shell for this session.
+                    Pass <code>--zone</code> on the command line to force Zone Display for a single launch
+                    without changing this preference.
+                  </p>
                   <div className="settings-field">
                     <span className="settings-field-label">Status</span>
                     <span className="settings-info-value">{parallaxSummary}</span>

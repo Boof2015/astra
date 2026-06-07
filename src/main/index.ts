@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeSt
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { tmpdir, hostname, networkInterfaces } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
@@ -3867,6 +3867,14 @@ app.on('open-file', (event, filePath) => {
 
 queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(process.argv))
 
+// §14.1.4 — `--zone` CLI flag forces the renderer into Zone Display layout for this launch
+// without mutating the persisted `openZoneDisplayOnLaunch` preference. Translated to an env var
+// here so the preload (which can't reach argv with contextIsolation) reads a single signal.
+// PARALLAX_LAUNCH_ZONE=1 set externally works too — same code path on the preload side.
+if (process.argv.includes('--zone')) {
+  process.env.PARALLAX_LAUNCH_ZONE = '1'
+}
+
 app.whenReady().then(async () => {
   // Grant audio-capture permission up front so Web Audio's AudioContext.outputLatency reports at
   // 1ms precision instead of 8ms — Blink quantizes it coarsely until the document holds microphone
@@ -4873,6 +4881,28 @@ ipcMain.handle('phone-remote:resetToDefaults', async () => {
 // Parallax LAN sync
 ipcMain.handle('parallax:getStatus', () => {
   return parallaxService.getStatus()
+})
+
+// §14.1.4 — device-identity for the Zone Display identity card. Returns this machine's OS hostname
+// and LAN IPv4 addresses regardless of whether the Parallax host is currently enabled, so the
+// unpaired/revoked surface ("This endpoint") can identify the device even when host mode is off.
+ipcMain.handle('parallax:getEndpointIdentity', () => {
+  const lanIps: string[] = []
+  const interfaces = networkInterfaces()
+  for (const addresses of Object.values(interfaces)) {
+    for (const addressInfo of addresses ?? []) {
+      if (addressInfo.internal) continue
+      if (addressInfo.family !== 'IPv4') continue
+      const address = addressInfo.address.trim()
+      if (address) lanIps.push(address)
+    }
+  }
+  lanIps.sort((left, right) => left.localeCompare(right))
+  const preferred192 = lanIps.filter((ip) => /^192\.168\./.test(ip))
+  return {
+    hostname: hostname(),
+    lanIps: preferred192.length > 0 ? preferred192 : lanIps,
+  }
 })
 
 ipcMain.handle('parallax:listPairedSinks', () => {

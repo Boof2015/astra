@@ -28,6 +28,10 @@ export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
+// §14.1.4 — persisted preference: open the Zone Display layout at launch. The session-state
+// `isZoneDisplayActive` derives its initial value from this OR the `--zone` launch flag, and
+// "Library" clears the session flag without touching the persisted preference.
+export const OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY = 'astra-open-zone-display-on-launch-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -264,6 +268,32 @@ function persistJumpToPlayingDestinationPreference(destination: JumpToPlayingDes
   }
 }
 
+function readOpenZoneDisplayOnLaunchPreference(): boolean {
+  try {
+    return localStorage.getItem(OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistOpenZoneDisplayOnLaunchPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readLaunchInZoneModeFlag(): boolean {
+  // §14.1.4 — `--zone` launch flag (forwarded by main as `electronAPI.parallax.launchInZoneMode`).
+  // Single-launch override; does NOT mutate the persisted preference.
+  try {
+    return window.electronAPI?.parallax?.launchInZoneMode === true
+  } catch {
+    return false
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
@@ -271,6 +301,11 @@ const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
+const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
+const initialZoneDisplayLaunchFlag = readLaunchInZoneModeFlag()
+// Session state: zone display is active at startup if the preference is on OR `--zone` was passed.
+// "Library" escape sets this back to false without touching the preference.
+const initialIsZoneDisplayActive = initialOpenZoneDisplayOnLaunch || initialZoneDisplayLaunchFlag
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
@@ -285,6 +320,8 @@ interface UIStore {
   isAnalyzerEditMode: boolean
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
+  openZoneDisplayOnLaunch: boolean
+  isZoneDisplayActive: boolean
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
@@ -314,6 +351,8 @@ interface UIStore {
   hideAnalyzerRack: () => void
   toggleAnalyzerRack: () => void
   setFullscreen: (fs: boolean) => void
+  setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
+  exitZoneDisplayForSession: () => void
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
@@ -360,6 +399,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerEditMode: false,
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
+  openZoneDisplayOnLaunch: initialOpenZoneDisplayOnLaunch,
+  isZoneDisplayActive: initialIsZoneDisplayActive,
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
@@ -423,6 +464,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
   }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
+  setOpenZoneDisplayOnLaunch: (enabled) => {
+    persistOpenZoneDisplayOnLaunchPreference(enabled)
+    set({ openZoneDisplayOnLaunch: enabled })
+  },
+  exitZoneDisplayForSession: () => set({ isZoneDisplayActive: false }),
   setAnalyzerHeightPx: (heightPx) => {
     const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
     persistAnalyzerHeightPreference(nextHeightPx)
