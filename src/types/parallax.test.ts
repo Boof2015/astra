@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildParallaxClockSample,
   decideParallaxSinkCorrection,
+  decideParallaxSinkEnabledFromMeta,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
   fitHostEmitAnchorLine,
@@ -173,4 +174,33 @@ test('Parallax audio packet waits for complete frame', () => {
   }))
 
   assert.equal(decodeParallaxAudioPacket(packet.slice(0, packet.byteLength - 1)), null)
+})
+
+// §20.19(d) migration. Existing persisted sink connection should migrate `parallaxSinkEnabled`
+// to true on first read so paired sinks from §14.1.2 keep auto-reconnecting transparently.
+test('§20.19(d) migration: existing persisted sink connection → sinkEnabled = true', () => {
+  const decision = decideParallaxSinkEnabledFromMeta(null, true)
+  assert.equal(decision.enabled, true)
+  assert.equal(decision.needsPersist, true, 'first-read migration must persist the new value')
+})
+
+test('§20.19(d) migration: no persisted sink connection → sinkEnabled = false', () => {
+  const decision = decideParallaxSinkEnabledFromMeta(null, false)
+  assert.equal(decision.enabled, false)
+  assert.equal(decision.needsPersist, true, 'first read still persists the default so subsequent reads are stable')
+})
+
+test('§20.19(d) migration: meta "1" wins regardless of persisted-connection state', () => {
+  assert.deepEqual(decideParallaxSinkEnabledFromMeta('1', false), { enabled: true, needsPersist: false })
+  assert.deepEqual(decideParallaxSinkEnabledFromMeta('1', true), { enabled: true, needsPersist: false })
+})
+
+test('§20.19(d) migration: meta "0" pins false even when a credential exists', () => {
+  // User explicitly disabled sink — must NOT auto-re-enable just because a credential exists.
+  assert.deepEqual(decideParallaxSinkEnabledFromMeta('0', true), { enabled: false, needsPersist: false })
+})
+
+test('§20.19(d) migration: malformed meta collapses to false without persisting', () => {
+  // Defensive: unknown values shouldn't trigger the first-read migration write path.
+  assert.deepEqual(decideParallaxSinkEnabledFromMeta('garbage', true), { enabled: false, needsPersist: false })
 })

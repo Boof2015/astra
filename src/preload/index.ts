@@ -839,6 +839,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('parallax:discoveryEvent', handler)
       return () => ipcRenderer.removeListener('parallax:discoveryEvent', handler)
     },
+    // §20 Commit 3 pair flow. Wizard calls initiate → user reads sink PIN → wizard calls
+    // submitPin. Cancel discards the host-side candidate; the sink expires its pending state
+    // independently via TTL. Errors bubble through the IPC reject channel.
+    initiatePair: (sinkBaseUrl: string): Promise<{
+      pairingId: string
+      sinkParallaxEndpointUuid: string | null
+      sinkName: string
+      expiresInSeconds: number
+    }> => ipcRenderer.invoke('parallax:initiatePair', sinkBaseUrl),
+    submitPairPin: (
+      pairingId: string,
+      pin: string,
+      sinkName?: string
+    ): Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }> =>
+      ipcRenderer.invoke('parallax:submitPairPin', pairingId, pin, sinkName),
+    cancelPair: (pairingId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('parallax:cancelPair', pairingId),
+    cancelIncomingPair: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:cancelIncomingPair'),
     setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
     createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
     pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
@@ -1352,6 +1371,19 @@ declare global {
         startDiscoveryBrowse: () => Promise<{ ok: true }>
         stopDiscoveryBrowse: () => Promise<{ ok: true }>
         onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => () => void
+        initiatePair: (sinkBaseUrl: string) => Promise<{
+          pairingId: string
+          sinkParallaxEndpointUuid: string | null
+          sinkName: string
+          expiresInSeconds: number
+        }>
+        submitPairPin: (
+          pairingId: string,
+          pin: string,
+          sinkName?: string
+        ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
+        cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
+        cancelIncomingPair: () => Promise<{ ok: true }>
         setHostPort: (port: number) => Promise<ParallaxStatus>
         createPairingPin: () => Promise<ParallaxPairingPin>
         pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>

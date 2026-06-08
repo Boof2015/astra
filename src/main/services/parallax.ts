@@ -10,7 +10,12 @@ import type {
   ParallaxHostStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxJoinResponse,
+  ParallaxIncomingPairRequest,
   ParallaxOutputLatencyMetrics,
+  ParallaxPairConfirmBody,
+  ParallaxPairConfirmResponse,
+  ParallaxPairRequestBody,
+  ParallaxPairRequestResponse,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
@@ -27,6 +32,7 @@ import {
   PARALLAX_CLOCK_SAMPLE_LIMIT,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_LAN_HOST,
+  PARALLAX_PAIR_CANDIDATE_TTL_MS,
   ParallaxAuthError,
   buildParallaxClockSample,
   decodeParallaxAudioPacket,
@@ -134,10 +140,23 @@ interface ParallaxServiceOptions {
   getSinkEnabled?: () => boolean
   // §20.19(c). Role-neutral persisted endpoint UUID. Empty string when not yet generated.
   getEndpointUuid?: () => string
+  // §20 Commit 3 host-side pair flow. Wizard's pair-request carries this as `hostName` so the
+  // sink can display "Studio MacBook wants to pair" on its PIN card. Falls back to a default.
+  getHostDisplayName?: () => string
+  // §20 Commit 3 sink side. Lets the service include the live incoming-pair state in the status
+  // payload without owning the listener — main holds the listener instance, the service just
+  // reads its current state every getStatus(). Mirror pattern of `getSinkConnectionInfo`.
+  getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
 }
 
 function parallaxNowMs(): number {
   return performance.timeOrigin + performance.now()
+}
+
+// §20 Commit 3. Trim-and-string helper for pair-confirm/pair-request response parsing where
+// fields may be undefined / non-string / whitespace.
+function pickStringTrim(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 // §14.1.4 / §19.18(e). Local parser; intentionally not imported from playbackHttpCore (the helper
@@ -385,6 +404,21 @@ export class ParallaxService {
   private readonly resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   private readonly getSinkEnabled?: () => boolean
   private readonly getEndpointUuid?: () => string
+  private readonly getHostDisplayName?: () => string
+  private readonly getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
+  // §20 Commit 3. Host-side pre-staged candidates from `initiatePair`. Keyed by pairingId.
+  // Cleared on activation, explicit cancel, or TTL expiry. Tokens here are raw — they move
+  // into `pairedSinks` as tokenHash + tokenPrefix only on successful `submitPairPin`.
+  private readonly pendingPairs = new Map<string, {
+    sinkId: string
+    token: string
+    sinkBaseUrl: string
+    sinkParallaxEndpointUuid: string | null
+    sinkName: string
+    createdAtMs: number
+    expiresAtMs: number
+    expiryTimer: ReturnType<typeof setTimeout>
+  }>()
   private currentStreamArtwork: { streamId: string; mimeType: string; bytes: Buffer } | null = null
   // Codex finding 1 (high): the sink fetches artwork immediately when stream-start arrives, but
   // the host's hash→bytes resolve is async — a race could have the endpoint return 404 before the
@@ -444,6 +478,8 @@ export class ParallaxService {
     this.resolveArtworkDataUrl = options.resolveArtworkDataUrl
     this.getSinkEnabled = options.getSinkEnabled
     this.getEndpointUuid = options.getEndpointUuid
+    this.getHostDisplayName = options.getHostDisplayName
+    this.getIncomingPairRequest = options.getIncomingPairRequest
   }
 
   getStatus(): ParallaxStatus {
@@ -491,7 +527,10 @@ export class ParallaxService {
         removedByHost: this.sinkRemovedByHost,
         // §20 Commit 1. Surfaced to the renderer so the Settings toggle, ZoneDisplay copy, and
         // wizard host-opt-in prompt can subscribe through the existing status push.
-        sinkEnabled: this.getSinkEnabled?.() ?? false
+        sinkEnabled: this.getSinkEnabled?.() ?? false,
+        // §20 Commit 3. Sink listener's live pending pair-request, pushed into the renderer for
+        // the PIN card (Commit 4). Null when idle.
+        incomingPairRequest: this.getIncomingPairRequest?.() ?? null
       },
       identity: {
         endpointUuid: this.getEndpointUuid?.() ?? ''
@@ -529,7 +568,11 @@ export class ParallaxService {
         revokedAt: sink.revokedAt,
         // §14.1.1. Trim list passes through so the renderer can preload existing values into the
         // stepper for any sink/device the user has already trimmed.
-        trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : []
+        trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : [],
+        // §20.19(g) / Codex round 1 finding (medium): without forwarding this, Commit 4's
+        // "Already paired" badge cannot match a discovered TXT UUID against the host's paired
+        // sinks even though the schema persists it.
+        ...(sink.remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid: sink.remoteParallaxEndpointUuid } : {})
       }))
   }
 
@@ -796,6 +839,152 @@ export class ParallaxService {
     }
     this.audioClients.clear()
     this.emitStatus()
+  }
+
+  // §20 Commit 3 host-side pair flow. Pre-stages the candidate (sinkId, token) LOCALLY and POSTs
+  // a credential-free pair-request to the sink. Only on `submitPairPin` success does the
+  // candidate move into `pairedSinks` — so a pair-request intercepted on the wire never harvests
+  // credentials (Codex round 1 amendment §20.19(a)).
+  async initiatePair(sinkBaseUrl: string): Promise<{
+    pairingId: string
+    sinkParallaxEndpointUuid: string | null
+    sinkName: string
+    expiresInSeconds: number
+  }> {
+    const normalizedBaseUrl = sanitizeBaseUrl(sinkBaseUrl)
+    const pairingId = createOpaqueSecret(16)
+    const sinkId = createOpaqueSecret(16)
+    const token = createOpaqueSecret(32)
+    const requestBody: ParallaxPairRequestBody = {
+      pairingId,
+      hostName: this.getHostDisplayName?.() ?? 'Astra Host',
+      hostPort: this.config.port,
+      parallaxEndpointUuid: this.getEndpointUuid?.() ?? ''
+    }
+    const response = await fetch(`${normalizedBaseUrl}/v1/parallax/pair-request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    })
+    const payload = await response.json().catch(() => null) as ParallaxPairRequestResponse | { error?: string } | null
+    if (!response.ok) {
+      const errorMessage = (payload && 'error' in payload && payload.error) ? String(payload.error) : `Pair-request failed (${response.status}).`
+      throw new Error(errorMessage)
+    }
+    const ok = payload as ParallaxPairRequestResponse
+    const now = Date.now()
+    const expiresInSeconds = Math.min(
+      Math.max(Number(ok.expiresInSeconds) || PARALLAX_PAIR_CANDIDATE_TTL_MS / 1000, 1),
+      PARALLAX_PAIR_CANDIDATE_TTL_MS / 1000
+    )
+    const expiryTimer = setTimeout(() => this.pendingPairs.delete(pairingId), expiresInSeconds * 1000)
+    this.pendingPairs.set(pairingId, {
+      sinkId,
+      token,
+      sinkBaseUrl: normalizedBaseUrl,
+      sinkParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || null,
+      sinkName: pickStringTrim(ok.sinkName) || normalizedBaseUrl,
+      createdAtMs: now,
+      expiresAtMs: now + expiresInSeconds * 1000,
+      expiryTimer
+    })
+    return {
+      pairingId,
+      sinkParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || null,
+      sinkName: pickStringTrim(ok.sinkName) || normalizedBaseUrl,
+      expiresInSeconds
+    }
+  }
+
+  async submitPairPin(pairingId: string, pin: string, sinkName?: string): Promise<{
+    sinkId: string
+    sinkName: string
+    sinkParallaxEndpointUuid: string | null
+  }> {
+    const candidate = this.pendingPairs.get(pairingId)
+    if (!candidate) throw new Error('Pair candidate not found.')
+
+    const body: ParallaxPairConfirmBody = {
+      pairingId,
+      pin: pin.trim(),
+      sinkId: candidate.sinkId,
+      token: candidate.token,
+      sinkName: sinkName?.trim() || candidate.sinkName
+    }
+    const response = await fetch(`${candidate.sinkBaseUrl}/v1/parallax/pair-confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const payload = await response.json().catch(() => null) as ParallaxPairConfirmResponse | { error?: string } | null
+
+    if (response.status === 401) {
+      throw new ParallaxAuthError(401, 'Wrong PIN.')
+    }
+    if (response.status === 410) {
+      this.deletePendingPair(pairingId)
+      throw new Error('Pairing expired. Start again on the host.')
+    }
+    if (response.status === 404) {
+      this.deletePendingPair(pairingId)
+      throw new Error('Sink has no record of this pairing.')
+    }
+    if (!response.ok) {
+      const errorMessage = (payload && 'error' in payload && payload.error) ? String(payload.error) : `Pair-confirm failed (${response.status}).`
+      throw new Error(errorMessage)
+    }
+
+    const ok = payload as ParallaxPairConfirmResponse
+    const now = Date.now()
+    const finalName = sinkName?.trim() || pickStringTrim(ok.sinkName) || candidate.sinkName
+    const sink: PersistedParallaxPairedSink = {
+      id: candidate.sinkId,
+      name: normalizeDeviceLabel(finalName, 'Astra Sink'),
+      tokenHash: hashToken(candidate.token),
+      tokenPrefix: candidate.token.slice(0, TOKEN_PREFIX_LENGTH),
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null,
+      remoteParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || candidate.sinkParallaxEndpointUuid || undefined
+    }
+    this.pairedSinks = [sink, ...this.pairedSinks]
+    this.deletePendingPair(pairingId)
+    this.emitPairedSinksChange()
+    this.emitStatus()
+    return {
+      sinkId: sink.id,
+      sinkName: sink.name,
+      sinkParallaxEndpointUuid: sink.remoteParallaxEndpointUuid ?? null
+    }
+  }
+
+  cancelPair(pairingId: string): void {
+    this.deletePendingPair(pairingId)
+  }
+
+  // Codex round 1 finding (medium): pending-pair timers must be drained on stop() and on
+  // host-disable, otherwise the 90s candidate TTL setTimeout keeps the event loop alive
+  // (parallax service tests held the process open for ~91s for exactly this reason).
+  private clearAllPendingPairs(): void {
+    for (const [, candidate] of this.pendingPairs) {
+      clearTimeout(candidate.expiryTimer)
+    }
+    this.pendingPairs.clear()
+  }
+
+  // Test hook + internals — exposed read-only so service tests can verify pending state without
+  // poking the private map. Returns shallow snapshots (no expiryTimer leakage to the test).
+  getPendingPairSnapshot(pairingId: string): { sinkId: string; sinkBaseUrl: string; expiresAtMs: number } | null {
+    const candidate = this.pendingPairs.get(pairingId)
+    if (!candidate) return null
+    return { sinkId: candidate.sinkId, sinkBaseUrl: candidate.sinkBaseUrl, expiresAtMs: candidate.expiresAtMs }
+  }
+
+  private deletePendingPair(pairingId: string): void {
+    const existing = this.pendingPairs.get(pairingId)
+    if (!existing) return
+    clearTimeout(existing.expiryTimer)
+    this.pendingPairs.delete(pairingId)
   }
 
   async pairWithHost(baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> {
@@ -1092,6 +1281,7 @@ export class ParallaxService {
   }
 
   async stop(): Promise<void> {
+    this.clearAllPendingPairs()
     await this.disconnectSink()
     await this.stopHostServer()
   }
@@ -1194,6 +1384,9 @@ export class ParallaxService {
     this.closeAllHostClients()
     this.activeStream = null
     this.activePairingPin = null
+    // Host going offline must also abandon any in-flight pair candidates — the wizard's
+    // pair-confirm POST will fail anyway, and we don't want their TTL timers keeping us alive.
+    this.clearAllPendingPairs()
 
     if (!this.server) {
       this.active = false

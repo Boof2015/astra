@@ -59,6 +59,7 @@ import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
+import { ParallaxSinkListener } from './services/parallaxSinkListener'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
@@ -128,6 +129,7 @@ import {
   PARALLAX_MAX_PORT,
   PARALLAX_MIN_PORT,
   PARALLAX_SINK_DEFAULT_PORT,
+  decideParallaxSinkEnabledFromMeta,
   type ParallaxAudioChunk,
   type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
@@ -515,6 +517,41 @@ let parallaxEndpointUuid = ''
 // Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
 // sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
 const parallaxDiscoveryService = new ParallaxDiscoveryService()
+// §20 Commit 3. Sink HTTP listener — only the pre-pair endpoints (sink-identity, pair-request,
+// pair-confirm). Started/stopped in lockstep with `parallaxSinkEnabled`. PIN state lives on the
+// listener itself; this top-level mirror just feeds the renderer via status push.
+let parallaxIncomingPairRequest: import('../types/parallax').ParallaxIncomingPairRequest | null = null
+const parallaxSinkListener = new ParallaxSinkListener({
+  getEndpointUuid: () => parallaxEndpointUuid,
+  getSinkName: () => hostname() || 'Astra Sink',
+  getHasPersistedConnection: () => parallaxSinkConnection !== null,
+  onPaired: async (info) => {
+    // Persist through the existing §14.1.2 path so the sink-side credential lands in the same
+    // schema auto-reconnect already consumes. The cleared/persisted sequence mirrors what
+    // `parallax:setSinkConnection` IPC does for the legacy "Connect This Astra as Sink" flow.
+    await clearParallaxSinkConnection().catch((error) => {
+      console.warn('Failed to clear stale Parallax sink connection during pair-commit:', error)
+    })
+    const persisted = {
+      baseUrl: info.hostUrl,
+      sinkId: info.sinkId,
+      token: info.token,
+      hostName: info.hostName,
+      pairedAt: info.pairedAt,
+      lastConnectedAt: null,
+      hostParallaxEndpointUuid: info.hostParallaxEndpointUuid ?? undefined
+    }
+    const sanitized = sanitizeParallaxSinkConnection(persisted)
+    if (sanitized) await persistParallaxSinkConnection(sanitized)
+  },
+  onIncomingPairChange: (state) => {
+    parallaxIncomingPairRequest = state
+    broadcastParallaxStatus()
+  }
+})
+parallaxSinkListener.on('error', (error) => {
+  console.warn('Parallax sink listener error:', error)
+})
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -876,7 +913,13 @@ const parallaxService = new ParallaxService({
   }),
   // §20 Commit 1. Read each status call so the service stays ignorant of meta-key storage.
   getSinkEnabled: () => parallaxSinkEnabled,
-  getEndpointUuid: () => parallaxEndpointUuid
+  getEndpointUuid: () => parallaxEndpointUuid,
+  // §20 Commit 3. Sink's PIN card shows "<this> wants to pair" — fall back to the OS hostname
+  // (same source the §14.1.4 identity card uses) when no better label exists.
+  getHostDisplayName: () => hostname() || 'Astra Host',
+  // §20 Commit 3 sink side. Reads the listener's live pending-pair so it lands in
+  // ParallaxStatus.sink.incomingPairRequest on every status push.
+  getIncomingPairRequest: () => parallaxIncomingPairRequest
 })
 
 const lastFmService = new LastFmService({
@@ -1378,6 +1421,12 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
       }
     }
 
+    // §20.19(g). Round-trip the remote endpoint UUID so it survives disk reads. Pre-§20 rows
+    // simply leave it undefined; the wizard renders the "Already paired" badge only when the
+    // discovered TXT carries a UUID that matches a paired row.
+    const remoteParallaxEndpointUuid = typeof value.remoteParallaxEndpointUuid === 'string' && value.remoteParallaxEndpointUuid.trim()
+      ? (value.remoteParallaxEndpointUuid as string).trim()
+      : undefined
     sanitized.push({
       id,
       name: name.slice(0, 80),
@@ -1386,7 +1435,8 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
       createdAt,
       lastSeenAt,
       revokedAt,
-      trims: sanitizedTrims
+      trims: sanitizedTrims,
+      ...(remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid } : {})
     })
   }
 
@@ -1410,26 +1460,23 @@ async function persistParallaxHostConfig(config: ParallaxHostConfig): Promise<vo
   await library.setAppMeta(PARALLAX_HOST_PORT_META_KEY, String(config.port))
 }
 
-// §20.19(d). Load `parallaxSinkEnabled`. Migration: if the meta-key has never been written but a
-// persisted sink connection from §14.1.2 already exists, flip true so existing paired sinks
-// continue auto-reconnecting. Otherwise default false.
+// §20.19(d). Load `parallaxSinkEnabled`. Decision logic lives in
+// `decideParallaxSinkEnabledFromMeta` (pure, in `types/parallax.ts` — tested without sqlite);
+// this wrapper just does the IO: read meta, ask the helper, persist on first-read migration.
 //
-// Codex round 1 finding (low): use the already-sanitized `parallaxSinkConnection` instead of raw
-// app-meta. Caller orders this *after* `loadParallaxSinkConnectionFromMeta` for that reason.
-// Reading the sanitized value avoids migrating to true when the persisted JSON is corrupt and
-// the actual usable credential is null.
+// Codex round 1 finding (low): pass the already-sanitized `parallaxSinkConnection` so corrupt
+// JSON that sanitizes to null can't false-migrate sinkEnabled to true.
 async function loadParallaxSinkEnabledFromMeta(): Promise<boolean> {
   const raw = library.getAppMeta(PARALLAX_SINK_ENABLED_META_KEY)
-  if (raw === null) {
-    const migrated = parallaxSinkConnection !== null
+  const decision = decideParallaxSinkEnabledFromMeta(raw, parallaxSinkConnection !== null)
+  if (decision.needsPersist) {
     try {
-      await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, migrated ? '1' : '0')
+      await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, decision.enabled ? '1' : '0')
     } catch (error) {
       console.warn('Failed to persist initial Parallax sink-enabled flag:', error)
     }
-    return migrated
   }
-  return parseMetaBoolean(raw, false)
+  return decision.enabled
 }
 
 async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
@@ -1483,7 +1530,21 @@ function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConn
   const lastConnectedAt = typeof value.lastConnectedAt === 'number' && Number.isFinite(value.lastConnectedAt)
     ? Math.max(0, value.lastConnectedAt)
     : null
-  return { baseUrl, sinkId, token, hostName, pairedAt, lastConnectedAt }
+  // §20.19(g). Round-trip the host's endpoint UUID (committed at pair time) so the sink
+  // remembers "I was paired with this host before" symmetric to the sink-UUID-on-host pattern.
+  // Pre-§20 connections leave it undefined.
+  const hostParallaxEndpointUuid = typeof value.hostParallaxEndpointUuid === 'string' && value.hostParallaxEndpointUuid.trim()
+    ? value.hostParallaxEndpointUuid.trim()
+    : undefined
+  return {
+    baseUrl,
+    sinkId,
+    token,
+    hostName,
+    pairedAt,
+    lastConnectedAt,
+    ...(hostParallaxEndpointUuid ? { hostParallaxEndpointUuid } : {})
+  }
 }
 
 function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection | null {
@@ -4013,11 +4074,12 @@ app.whenReady().then(async () => {
   // Endpoint UUID is lazy-generated regardless of role and persisted on first launch.
   parallaxSinkEnabled = await loadParallaxSinkEnabledFromMeta()
   parallaxEndpointUuid = await loadParallaxEndpointUuidFromMeta()
-  // §20 Commit 2. Kick advertisement at boot if sink is already enabled from a previous launch
-  // (either user-toggled or migrated per §20.19(d)). Safe to call before mainWindow exists —
-  // mDNS is independent of the renderer.
+  // §20 Commit 2 + 3. Kick the sink surface at boot if sink is already enabled from a previous
+  // launch (either user-toggled or migrated per §20.19(d)). Safe to call before mainWindow
+  // exists — mDNS + listener don't need the renderer. `startParallaxSinkSurface` enforces the
+  // listener-before-advertise ordering per Codex round 1 finding (medium).
   if (parallaxSinkEnabled) {
-    startParallaxDiscoveryAdvertisement()
+    await startParallaxSinkSurface()
   }
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
   parallaxService.replacePairedSinks(parallaxPairedSinks)
@@ -4129,6 +4191,11 @@ app.on('before-quit', () => {
   // §20 Commit 2. Release the mDNS socket on quit so a relaunched Astra doesn't fight the
   // prior instance for the multicast group. Idempotent — safe even when no advert was running.
   parallaxDiscoveryService.destroy()
+  // §20 Commit 3. Close the sink listener port. Fire-and-forget — the listen socket will close
+  // when the process exits regardless, this just keeps the quit log clean.
+  void parallaxSinkListener.stop().catch((error) => {
+    console.warn('Failed to stop Parallax sink listener on quit:', error)
+  })
   lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
@@ -5120,9 +5187,9 @@ ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
   if (!parallaxSinkEnabled) {
     cancelParallaxAutoReconnect()
     await parallaxService.disconnectSink()
-    stopParallaxDiscoveryAdvertisement()
+    await stopParallaxSinkSurface()
   } else {
-    startParallaxDiscoveryAdvertisement()
+    await startParallaxSinkSurface()
   }
   // On-enable reconnect is renderer-driven; main intentionally does nothing else here.
   return parallaxService.getStatus()
@@ -5155,6 +5222,48 @@ function stopParallaxDiscoveryAdvertisement(): void {
   }
 }
 
+// §20 Commit 3. Sink HTTP listener lifecycle. Started when sink-enabled at boot or via toggle,
+// stopped on disable. Bind failures (port in use) leave the sink not pairable; the wizard pair
+// flow just won't reach this device until the port frees. Returns true on successful bind so
+// callers (boot path, setSinkEnabled IPC) can decide whether to advertise — Codex round 1
+// finding (medium): no point advertising an endpoint we can't actually serve.
+async function startParallaxSinkListener(): Promise<boolean> {
+  if (!parallaxSinkEnabled) return false
+  try {
+    await parallaxSinkListener.start(PARALLAX_SINK_DEFAULT_PORT)
+    return true
+  } catch (error) {
+    console.warn('Failed to start Parallax sink listener:', error)
+    return false
+  }
+}
+
+async function stopParallaxSinkListener(): Promise<void> {
+  try {
+    await parallaxSinkListener.stop()
+  } catch (error) {
+    console.warn('Failed to stop Parallax sink listener:', error)
+  }
+}
+
+// §20 Commit 3 Codex round 1 finding (medium): pair "start sink, then advertise" / "stop
+// advertise, then stop sink" into one helper so both the boot path and the toggle path are
+// guaranteed to honor the ordering invariant.
+async function startParallaxSinkSurface(): Promise<void> {
+  const bound = await startParallaxSinkListener()
+  if (!bound) {
+    // Listener didn't bind — don't advertise a dead endpoint.
+    stopParallaxDiscoveryAdvertisement()
+    return
+  }
+  startParallaxDiscoveryAdvertisement()
+}
+
+async function stopParallaxSinkSurface(): Promise<void> {
+  stopParallaxDiscoveryAdvertisement()
+  await stopParallaxSinkListener()
+}
+
 // Forward bonjour 'added' / 'removed' events to the renderer. Renderer keeps its own map keyed
 // by endpointUuid || `${address}:${port}` and reconciles. Subscribed once at construction —
 // no add/remove required because the wrapper itself starts/stops the underlying browser based
@@ -5172,6 +5281,38 @@ ipcMain.handle('parallax:startDiscoveryBrowse', () => {
 
 ipcMain.handle('parallax:stopDiscoveryBrowse', () => {
   parallaxDiscoveryService.stopBrowse()
+  return { ok: true as const }
+})
+
+// §20 Commit 3 host-side pair flow IPCs. Wizard calls `initiate` with the sink's base URL (from
+// discovery or manual entry), waits for the user to read the sink's PIN, then calls `submitPin`.
+// `cancel` discards the candidate locally — the sink will time out on its own per §20.7.
+ipcMain.handle('parallax:initiatePair', async (_event, sinkBaseUrl: unknown) => {
+  if (typeof sinkBaseUrl !== 'string' || sinkBaseUrl.length === 0) {
+    throw new Error('sinkBaseUrl is required.')
+  }
+  return parallaxService.initiatePair(sinkBaseUrl)
+})
+
+ipcMain.handle('parallax:submitPairPin', async (_event, pairingId: unknown, pin: unknown, sinkName: unknown) => {
+  if (typeof pairingId !== 'string' || typeof pin !== 'string') {
+    throw new Error('pairingId and pin are required.')
+  }
+  const name = typeof sinkName === 'string' ? sinkName : undefined
+  return parallaxService.submitPairPin(pairingId, pin, name)
+})
+
+ipcMain.handle('parallax:cancelPair', (_event, pairingId: unknown) => {
+  if (typeof pairingId !== 'string') return { ok: false as const }
+  parallaxService.cancelPair(pairingId)
+  return { ok: true as const }
+})
+
+// §20 Commit 3 sink-side cancel. Renderer's PIN card "Reject" button (Commit 4 may or may not
+// expose this; the spec deferred a UI for v1) calls this to force-clear pending state without
+// waiting for expiry. Toggling sink-enabled off also clears via the listener stop path.
+ipcMain.handle('parallax:cancelIncomingPair', () => {
+  parallaxSinkListener.cancelPending()
   return { ok: true as const }
 })
 

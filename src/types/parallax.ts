@@ -102,6 +102,10 @@ export interface ParallaxPairedSink {
   // §14.1.1. Empty array on existing rows; one entry per output device the user has trimmed for
   // this sink. Host stores; pushed to sink via §15.3 `sink-trim-update` events on connect + change.
   trims?: ParallaxSinkTrim[]
+  // §20.19(g). Remote endpoint's role-neutral UUID (the sink's persisted UUID at pair time).
+  // Discovery memory only — host UI matches against the wizard's discovery list to render
+  // "Already paired" / "Renamed device" badges. Absent on pre-§20 pairings.
+  remoteParallaxEndpointUuid?: string
 }
 
 export interface ParallaxPairingPin {
@@ -134,6 +138,9 @@ export interface PersistedParallaxSinkConnection {
   hostName: string | null
   pairedAt: number
   lastConnectedAt: number | null
+  // §20.19(g). Host's role-neutral UUID at pair time. Lets the sink remember "I was paired with
+  // this host before" symmetric to the sink-UUID-on-host pattern. Absent on pre-§20 pairings.
+  hostParallaxEndpointUuid?: string
 }
 
 // §14.1.2 / §16.12(c) — status-bearing error thrown by `fetchSinkJson` so the boot-path retry
@@ -412,6 +419,20 @@ export interface ParallaxSinkStatus {
   // HTTP listener, and auto-reconnect. Off by default for new installs; migrated to true for
   // installs that already had a persisted sink connection from §14.1.2.
   sinkEnabled?: boolean
+  // §20 Commit 3. Live pending pair-request on this sink, set by the sink HTTP listener when a
+  // host POSTs `pair-request` and shows the PIN. Null when idle. Renderer (Commit 4) renders
+  // the PIN card from this. Cleared on confirm success / 3-fail lockout / expiry / sink toggle
+  // off / explicit cancellation.
+  incomingPairRequest?: ParallaxIncomingPairRequest | null
+}
+
+export interface ParallaxIncomingPairRequest {
+  pairingId: string
+  pin: string
+  hostName: string
+  hostParallaxEndpointUuid: string | null
+  hostUrl: string
+  expiresAtMs: number
 }
 
 export interface ParallaxIdentity {
@@ -451,12 +472,62 @@ export interface ParallaxStatus {
   identity?: ParallaxIdentity
 }
 
+// §20.19(d) migration. Pure decision: given the persisted `parallax_sink_enabled_v1` meta value
+// (or `null` for never-written) and whether a sanitized §14.1.2 sink credential already exists,
+// return the boolean to apply + whether the result still needs to be written to disk (first-read
+// migration path). Exposed for tests without spinning up sqlite — see parallax.test.ts.
+export function decideParallaxSinkEnabledFromMeta(
+  rawMeta: string | null,
+  hasPersistedSinkConnection: boolean
+): { enabled: boolean; needsPersist: boolean } {
+  if (rawMeta === null) {
+    return { enabled: hasPersistedSinkConnection, needsPersist: true }
+  }
+  if (rawMeta === '1') return { enabled: true, needsPersist: false }
+  return { enabled: false, needsPersist: false }
+}
+
 // §20 / §14.1.5 constants. PIN flow + listener.
 export const PARALLAX_SINK_DEFAULT_PORT = 38404
 export const PARALLAX_PAIR_PIN_TTL_MS = 90_000
 export const PARALLAX_PAIR_CANDIDATE_TTL_MS = 90_000
 export const PARALLAX_PAIR_PIN_MAX_FAILS = 3
 export const PARALLAX_PAIR_RATE_LIMIT_MS = 10_000
+
+// §20.6 wire shapes. `pair-request` carries no credentials (Codex round 1 correction);
+// `pair-confirm` carries the candidate `(sinkId, token)` only after the user has read the PIN
+// from the sink screen, so the wire flow only after physical presence is established.
+export interface ParallaxPairRequestBody {
+  pairingId: string
+  hostName: string
+  hostPort: number
+  parallaxEndpointUuid: string
+}
+
+export interface ParallaxPairRequestResponse {
+  expiresInSeconds: number
+  parallaxEndpointUuid: string
+  sinkName: string
+}
+
+export interface ParallaxPairConfirmBody {
+  pairingId: string
+  pin: string
+  sinkId: string
+  token: string
+  sinkName?: string
+}
+
+export interface ParallaxPairConfirmResponse {
+  parallaxEndpointUuid: string
+  sinkName: string
+}
+
+export interface ParallaxSinkIdentityResponse {
+  name: string
+  endpoint_uuid: string
+  paired: boolean
+}
 
 export interface ParallaxPairResponse {
   sinkId: string

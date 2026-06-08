@@ -373,3 +373,252 @@ test('Parallax sink auto-rejoins after an event stream failure', async () => {
     await closeHttpServer(server)
   }
 })
+
+// ============================================================================================
+// §20 Commit 3 — sink listener + host-side pair flow. Codex 'tests early' list:
+//   1. pair-request creates PIN; no token persisted yet.
+//   2. wrong PIN never activates host candidate.
+//   3. success persists sink credential AND activates host paired sink.
+//   4. busy: second pair-request returns 409 while pending.
+//   5. expiry: pair-confirm after TTL returns 410.
+//   6. 3-fail lockout: 3 wrong PINs → next pair-confirm returns 404 (pending cleared).
+// ============================================================================================
+
+import { ParallaxSinkListener, type ParallaxSinkListenerPairedInfo } from './parallaxSinkListener.ts'
+
+interface PairFixture {
+  listener: ParallaxSinkListener
+  port: number
+  sinkBaseUrl: string
+  host: ParallaxService
+  hostPort: number
+  paired: ParallaxSinkListenerPairedInfo[]
+  incoming: Array<unknown>
+  endpointUuid: string
+}
+
+async function createPairFixture(overrides: { sinkName?: string; hasPersisted?: boolean; pinTtlMs?: number } = {}): Promise<PairFixture> {
+  const sinkPort = await getFreePort()
+  const hostPort = await getFreePort()
+  const paired: ParallaxSinkListenerPairedInfo[] = []
+  const incoming: Array<unknown> = []
+  const endpointUuid = '11111111-2222-3333-4444-555555555555'
+  const listener = new ParallaxSinkListener({
+    getEndpointUuid: () => endpointUuid,
+    getSinkName: () => overrides.sinkName ?? 'Test Sink',
+    getHasPersistedConnection: () => overrides.hasPersisted ?? false,
+    onPaired: async (info) => { paired.push(info) },
+    onIncomingPairChange: (state) => { incoming.push(state) }
+  }, { pinTtlMs: overrides.pinTtlMs })
+  await listener.start(sinkPort)
+
+  const host = new ParallaxService({
+    config: { enabled: true, port: hostPort },
+    pairedSinks: [],
+    getHostDisplayName: () => 'Test Host',
+    getEndpointUuid: () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  })
+  await host.applyHostConfig({ enabled: true, port: hostPort })
+
+  return {
+    listener,
+    port: sinkPort,
+    sinkBaseUrl: `http://127.0.0.1:${sinkPort}`,
+    host,
+    hostPort,
+    paired,
+    incoming,
+    endpointUuid
+  }
+}
+
+async function destroyPairFixture(fixture: PairFixture): Promise<void> {
+  await fixture.listener.stop()
+  await fixture.host.stop()
+}
+
+async function postJson(url: string, body: unknown): Promise<{ status: number; payload: any }> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const payload = await response.json().catch(() => null)
+  return { status: response.status, payload }
+}
+
+test('§20 pair-request creates PIN on sink; no token stored', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    assert.equal(typeof initiate.pairingId, 'string')
+    assert.equal(initiate.expiresInSeconds > 0, true)
+
+    // Host has staged a candidate but it is NOT yet in pairedSinks.
+    const status = fixture.host.getStatus()
+    assert.equal(status.host.pairedSinkCount, 0)
+    const pending = fixture.host.getPendingPairSnapshot(initiate.pairingId)
+    assert.ok(pending)
+
+    // Sink has shown a PIN and the incoming-pair callback has fired.
+    const lastIncoming = fixture.incoming.at(-1) as { pin?: string } | null
+    assert.ok(lastIncoming, 'sink should have emitted an incoming-pair state')
+    assert.equal(typeof lastIncoming!.pin, 'string')
+    assert.equal((lastIncoming!.pin as string).length, 6)
+
+    // Sink did NOT receive a token in the pair-request.
+    assert.equal(fixture.paired.length, 0, 'pair-request must not persist credentials')
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 pair-confirm wrong PIN never activates host candidate', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    await assert.rejects(
+      fixture.host.submitPairPin(initiate.pairingId, '000000'),
+      (error: any) => error?.status === 401
+    )
+    assert.equal(fixture.paired.length, 0, 'sink must not persist on wrong PIN')
+    const status = fixture.host.getStatus()
+    assert.equal(status.host.pairedSinkCount, 0, 'host must not activate candidate on wrong PIN')
+    // Candidate still present (only 1 of 3 fails consumed).
+    const pending = fixture.host.getPendingPairSnapshot(initiate.pairingId)
+    assert.ok(pending)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 pair-confirm success persists sink credential AND activates host paired sink', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const lastIncoming = fixture.incoming.at(-1) as { pin: string }
+    const submitted = await fixture.host.submitPairPin(initiate.pairingId, lastIncoming.pin, 'Studio Desk')
+    assert.equal(typeof submitted.sinkId, 'string')
+    assert.equal(submitted.sinkName, 'Studio Desk')
+
+    // Sink persisted via onPaired callback.
+    assert.equal(fixture.paired.length, 1)
+    const persistedInfo = fixture.paired[0]
+    assert.equal(persistedInfo.sinkId, submitted.sinkId)
+    assert.equal(typeof persistedInfo.token, 'string')
+    assert.equal(persistedInfo.token.length > 0, true)
+    assert.equal(persistedInfo.hostName, 'Test Host')
+    // Host URL derived from socket remote address — must be 127.0.0.1, NOT 0.0.0.0.
+    assert.match(persistedInfo.hostUrl, /^http:\/\/127\.0\.0\.1:\d+$/)
+
+    // Host activated the candidate into pairedSinks.
+    const status = fixture.host.getStatus()
+    assert.equal(status.host.pairedSinkCount, 1)
+    assert.equal(fixture.host.getPendingPairSnapshot(initiate.pairingId), null)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 second pair-request while a PIN is showing returns 409 busy', async () => {
+  const fixture = await createPairFixture()
+  try {
+    await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const second = await postJson(`${fixture.sinkBaseUrl}/v1/parallax/pair-request`, {
+      pairingId: 'second',
+      hostName: 'Other Host',
+      hostPort: fixture.hostPort,
+      parallaxEndpointUuid: 'second-uuid'
+    })
+    assert.equal(second.status, 409)
+    assert.equal(second.payload?.error, 'busy')
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 pair-confirm after expiry returns 410 via the tombstone', async () => {
+  // Short PIN TTL so the listener's own expiry timer fires inside the test window. The
+  // tombstone (Codex round 1 finding, low) lets the confirm POST-expiry still resolve as 410
+  // instead of degrading to a generic 404.
+  const fixture = await createPairFixture({ pinTtlMs: 60 })
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const lastIncoming = fixture.incoming.at(-1) as { pin: string; pairingId: string }
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    const confirmAttempt = await postJson(`${fixture.sinkBaseUrl}/v1/parallax/pair-confirm`, {
+      pairingId: lastIncoming.pairingId,
+      pin: lastIncoming.pin,
+      sinkId: 'spoof-sink-id',
+      token: 'spoof-token'
+    })
+    assert.equal(confirmAttempt.status, 410, 'post-expiry confirm should be 410, not 404')
+    assert.equal(confirmAttempt.payload?.error, 'expired')
+
+    // Host candidate stays pending until TTL or explicit cancel.
+    const status = fixture.host.getStatus()
+    assert.equal(status.host.pairedSinkCount, 0)
+    fixture.host.cancelPair(initiate.pairingId)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 confirm for a pairingId that never existed still returns 404', async () => {
+  // Negative case for the tombstone — without a matching pending OR tombstone, the generic
+  // "no pending" path is correct.
+  const fixture = await createPairFixture()
+  try {
+    const confirmAttempt = await postJson(`${fixture.sinkBaseUrl}/v1/parallax/pair-confirm`, {
+      pairingId: 'never-existed',
+      pin: '000000',
+      sinkId: 'spoof-sink-id',
+      token: 'spoof-token'
+    })
+    assert.equal(confirmAttempt.status, 404)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('§20 stop() drains pending pair timers (Codex round 1, medium)', async () => {
+  // The 90s candidate TTL setTimeout used to keep the event loop alive after stop(); the test
+  // process took ~91s to exit. clearAllPendingPairs() in stop() fixes that.
+  const fixture = await createPairFixture()
+  await fixture.host.initiatePair(fixture.sinkBaseUrl)
+  // Stop both ends.
+  await destroyPairFixture(fixture)
+  // If stop() did not drain the candidate timers, the suite would hang here for ~90s. The
+  // fact that this test returns immediately is the real assertion; the explicit check below
+  // just confirms the host's view of pendingPairs is consistent post-stop.
+  const stopped = fixture.host.getPendingPairSnapshot('any-id')
+  assert.equal(stopped, null)
+})
+
+test('§20 3 wrong PINs lock out further attempts', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const lastIncoming = fixture.incoming.at(-1) as { pin: string; pairingId: string }
+    const wrongPin = lastIncoming.pin === '000000' ? '111111' : '000000'
+
+    // Drain three wrong-PIN attempts; pending state clears after the 3rd.
+    for (let i = 0; i < 3; i += 1) {
+      await assert.rejects(
+        fixture.host.submitPairPin(initiate.pairingId, wrongPin),
+        (error: any) => error?.status === 401
+      )
+    }
+
+    // 4th attempt — with the correct PIN, even — must NOT activate because pending was cleared.
+    await assert.rejects(
+      fixture.host.submitPairPin(initiate.pairingId, lastIncoming.pin),
+      (error: any) => /Sink has no record|Pair candidate not found/.test(String(error?.message ?? ''))
+    )
+    const status = fixture.host.getStatus()
+    assert.equal(status.host.pairedSinkCount, 0)
+    assert.equal(fixture.paired.length, 0)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})

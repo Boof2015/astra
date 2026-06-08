@@ -336,6 +336,19 @@ declare global {
                 startDiscoveryBrowse: () => Promise<{ ok: true }>
                 stopDiscoveryBrowse: () => Promise<{ ok: true }>
                 onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => () => void
+                initiatePair: (sinkBaseUrl: string) => Promise<{
+                    pairingId: string
+                    sinkParallaxEndpointUuid: string | null
+                    sinkName: string
+                    expiresInSeconds: number
+                }>
+                submitPairPin: (
+                    pairingId: string,
+                    pin: string,
+                    sinkName?: string
+                ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
+                cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
+                cancelIncomingPair: () => Promise<{ ok: true }>
                 setHostPort: (port: number) => Promise<ParallaxStatus>
                 createPairingPin: () => Promise<ParallaxPairingPin>
                 pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
