@@ -20081,3 +20081,12 @@ body::after {
   color: rgba(255, 255, 255, 0.6);
 }
 
+.zone-settings-overlay-note-error {
+  color: #fca5a5;
+}
+
+.zone-settings-overlay-stepper {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}

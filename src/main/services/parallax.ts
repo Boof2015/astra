@@ -379,6 +379,13 @@ export class ParallaxService {
   // streamId arrives. Served binary at `GET /v1/parallax/artwork/current?streamId=<id>`.
   private readonly resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   private currentStreamArtwork: { streamId: string; mimeType: string; bytes: Buffer } | null = null
+  // Codex finding 1 (high): the sink fetches artwork immediately when stream-start arrives, but
+  // the host's hash→bytes resolve is async — a race could have the endpoint return 404 before the
+  // resolve filled the cache. Store the in-flight promise per streamId so the route handler can
+  // await it before answering. Bounded by PARALLAX_ARTWORK_FETCH_WAIT_TIMEOUT_MS so a slow/stuck
+  // resolver can't hold an HTTP connection open indefinitely.
+  private pendingStreamArtwork: { streamId: string; promise: Promise<void> } | null = null
+  private readonly PARALLAX_ARTWORK_FETCH_WAIT_TIMEOUT_MS = 3_000
   // §14.1.2 follow-up. Latched true when handleSinkAuthRevoked() fires; cleared on next
   // successful connect (initial or reconnect). Surfaced via `getStatus().sink.removedByHost`
   // so the UI can show "Removed by host" instead of generic auth-error text.
@@ -628,10 +635,11 @@ export class ParallaxService {
     // §14.1.4 — pre-resolve artwork bytes for sinks. Off-wire: never reaches `stream` payload.
     // Cleared first so the previous stream's image doesn't briefly serve under the new streamId.
     this.currentStreamArtwork = null
+    this.pendingStreamArtwork = null
     if (options.artworkHash && this.resolveArtworkDataUrl) {
       const hash = options.artworkHash
       const streamIdAtRequest = stream.streamId
-      void this.resolveArtworkDataUrl(hash)
+      const resolvePromise = this.resolveArtworkDataUrl(hash)
         .then((dataUrl) => {
           // Stale guard — a newer stream-start may have replaced us mid-resolve.
           if (!this.activeStream || this.activeStream.info.streamId !== streamIdAtRequest) return
@@ -646,6 +654,7 @@ export class ParallaxService {
         .catch(() => {
           // Resolver failure is non-fatal; sink falls back to its placeholder glyph.
         })
+      this.pendingStreamArtwork = { streamId: streamIdAtRequest, promise: resolvePromise }
     }
     this.broadcastTimelineEvent({
       type: 'stream-start',
@@ -761,6 +770,7 @@ export class ParallaxService {
     const streamId = this.activeStream?.info.streamId ?? null
     this.activeStream = null
     this.currentStreamArtwork = null
+    this.pendingStreamArtwork = null
     this.broadcastTimelineEvent({
       type: 'stop',
       streamId,
@@ -1247,9 +1257,18 @@ export class ParallaxService {
 
     if (method === 'GET' && path === '/v1/parallax/artwork/current') {
       // §14.1.4 / §19.18(e) — sink Zone Display fetches once per stream-start, keyed by streamId.
-      // Auth already enforced upstream via sink.id resolution. 404 if no cache, 404 if streamId
-      // mismatch (stale fetch landing after a stream swap).
+      // Auth already enforced upstream via sink.id resolution. Codex finding 1 (high): if the
+      // sink's fetch arrives before the host's async hash→bytes resolve completes, await the
+      // pending promise (capped) instead of returning 404 immediately. Otherwise a fast sink
+      // permanently sees no artwork for the stream.
       const requestedStreamId = requestUrl.searchParams.get('streamId')?.trim() || null
+      const pending = this.pendingStreamArtwork
+      if (pending && requestedStreamId && pending.streamId === requestedStreamId && !this.currentStreamArtwork) {
+        await Promise.race([
+          pending.promise,
+          new Promise<void>((resolve) => setTimeout(resolve, this.PARALLAX_ARTWORK_FETCH_WAIT_TIMEOUT_MS))
+        ])
+      }
       const cached = this.currentStreamArtwork
       if (!cached) {
         toJsonResponse(res, 404, { error: 'Artwork not available.' })
@@ -1317,6 +1336,41 @@ export class ParallaxService {
         return
       }
       toJsonResponse(res, 200, { ok: true })
+      return
+    }
+
+    // §14.1.4 / Codex finding 2 (high). Sink → host trim push. The Zone Display overlay lets the
+    // user nudge trim from the sink side; this endpoint applies the requested value through the
+    // normal setSinkTrim path (which persists, clamps, broadcasts back via SSE, and keeps host
+    // state-of-truth intact per §15.2). The sink is identified by the existing token-auth
+    // resolution (`sink.id`) — it cannot write trim for any other sink.
+    if (method === 'POST' && path === '/v1/parallax/sink/trim') {
+      let body: unknown
+      try {
+        body = await readJsonBody(req)
+      } catch {
+        toJsonResponse(res, 400, { error: 'Invalid trim payload.' })
+        return
+      }
+      const outputDeviceId = toSafeOptionalString((body as { outputDeviceId?: unknown } | null)?.outputDeviceId)
+      const outputDeviceLabel = toSafeOptionalString((body as { outputDeviceLabel?: unknown } | null)?.outputDeviceLabel) ?? null
+      const rawAdvanceMs = Number((body as { advanceMs?: unknown } | null)?.advanceMs)
+      if (!outputDeviceId) {
+        toJsonResponse(res, 400, { error: 'outputDeviceId is required.' })
+        return
+      }
+      if (!Number.isFinite(rawAdvanceMs)) {
+        toJsonResponse(res, 400, { error: 'advanceMs must be a finite number.' })
+        return
+      }
+      this.setSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, rawAdvanceMs)
+      const persisted = (this.pairedSinks.find((candidate) => candidate.id === sink.id)?.trims ?? [])
+        .find((trim) => trim.outputDeviceId === outputDeviceId)
+      toJsonResponse(res, 200, {
+        ok: true,
+        outputDeviceId,
+        advanceMs: persisted?.advanceMs ?? 0
+      })
       return
     }
 
@@ -1497,6 +1551,42 @@ export class ParallaxService {
       throw new Error(message)
     }
     return payload as T
+  }
+
+  // §14.1.4 / Codex finding 2 (high). Sink → host trim push. Authenticated POST to the connected
+  // host's `/v1/parallax/sink/trim` route. Host validates the body, applies via its own
+  // setSinkTrim path (clamps, persists, broadcasts back), keeping host-state-of-truth intact.
+  // Caller does NOT need to optimistically update the local AudioEngine advance — the host's
+  // SSE rebroadcast (`sink-trim-update`) will arrive within a tick and the existing sink event
+  // handler applies it. Token stays in main; renderer never sees it.
+  async pushSinkTrimUpdate(
+    outputDeviceId: string,
+    outputDeviceLabel: string | null,
+    advanceMs: number
+  ): Promise<boolean> {
+    const connection = this.sinkConnection
+    if (!connection) return false
+    if (!outputDeviceId.trim() || !Number.isFinite(advanceMs)) return false
+    try {
+      await this.fetchSinkJson('/v1/parallax/sink/trim', {
+        method: 'POST',
+        body: JSON.stringify({
+          outputDeviceId: outputDeviceId.trim(),
+          outputDeviceLabel,
+          advanceMs
+        })
+      })
+      return true
+    } catch (error) {
+      // Codex finding 2 (low, round 2): if this POST is the first channel to see a host
+      // revocation, route through the same R-clear path the event/audio/clock channels use.
+      // Other channels will probably catch it within a tick, but this keeps the auth-revoked
+      // dispatch consistent across every authenticated sink path.
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
+      }
+      return false
+    }
   }
 
   // §14.1.4 / §19.18(e) — sink-side fetch for the active stream's artwork from the connected host.

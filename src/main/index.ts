@@ -4895,10 +4895,24 @@ ipcMain.handle('parallax:fetchSinkArtwork', async (_event, streamId: unknown) =>
   return parallaxService.fetchSinkArtworkDataUrl(streamId)
 })
 
+// §14.1.4 / Codex finding 2 (high). Sink → host trim push from the Zone Display overlay.
+ipcMain.handle(
+  'parallax:requestSinkTrimUpdate',
+  async (_event, outputDeviceId: unknown, outputDeviceLabel: unknown, advanceMs: unknown) => {
+    if (typeof outputDeviceId !== 'string' || outputDeviceId.length === 0) return false
+    if (typeof advanceMs !== 'number' || !Number.isFinite(advanceMs)) return false
+    const label = typeof outputDeviceLabel === 'string' ? outputDeviceLabel : null
+    return parallaxService.pushSinkTrimUpdate(outputDeviceId, label, advanceMs)
+  }
+)
+
 // §14.1.4 — device-identity for the Zone Display identity card. Returns this machine's OS hostname
 // and LAN IPv4 addresses regardless of whether the Parallax host is currently enabled, so the
 // unpaired/revoked surface ("This endpoint") can identify the device even when host mode is off.
 ipcMain.handle('parallax:getEndpointIdentity', () => {
+  // Codex finding 4 (low): return ALL non-internal IPv4s, sorted with common LAN ranges first.
+  // The prior implementation filtered to 192.168.* if any existed, hiding 10.* / 172.16.* on
+  // multi-interface machines (corporate LANs, mesh routers, container hosts).
   const lanIps: string[] = []
   const interfaces = networkInterfaces()
   for (const addresses of Object.values(interfaces)) {
@@ -4909,12 +4923,18 @@ ipcMain.handle('parallax:getEndpointIdentity', () => {
       if (address) lanIps.push(address)
     }
   }
-  lanIps.sort((left, right) => left.localeCompare(right))
-  const preferred192 = lanIps.filter((ip) => /^192\.168\./.test(ip))
-  return {
-    hostname: hostname(),
-    lanIps: preferred192.length > 0 ? preferred192 : lanIps,
+  const rankLanIp = (ip: string): number => {
+    if (/^192\.168\./.test(ip)) return 0
+    if (/^10\./.test(ip)) return 1
+    if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) return 2
+    return 3
   }
+  lanIps.sort((left, right) => {
+    const rankDelta = rankLanIp(left) - rankLanIp(right)
+    if (rankDelta !== 0) return rankDelta
+    return left.localeCompare(right)
+  })
+  return { hostname: hostname(), lanIps }
 })
 
 ipcMain.handle('parallax:listPairedSinks', () => {

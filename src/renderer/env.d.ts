@@ -324,6 +324,11 @@ declare global {
                 getStatus: () => Promise<ParallaxStatus>
                 getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
                 fetchSinkArtwork: (streamId: string) => Promise<string | null>
+                requestSinkTrimUpdate: (
+                    outputDeviceId: string,
+                    outputDeviceLabel: string | null,
+                    advanceMs: number
+                ) => Promise<boolean>
                 listPairedSinks: () => Promise<ParallaxPairedSink[]>
                 setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
                 setHostPort: (port: number) => Promise<ParallaxStatus>

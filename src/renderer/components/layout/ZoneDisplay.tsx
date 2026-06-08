@@ -209,12 +209,16 @@ export default function ZoneDisplay() {
         </div>
       </div>
 
-      <div className="zone-display-status-rail">
-        <span className={`zone-display-sync-pill is-state-${syncState}`}>
-          <span className="zone-display-sync-pill-dot" aria-hidden="true" />
-          {syncPillCopy(syncState)}
-        </span>
-      </div>
+      {/* Codex finding 3 (medium): identity-card mode hides the sync pill — there is no stream
+          to sync against and the surface is "introduce this device", not "sync status". */}
+      {!showIdentityCard && (
+        <div className="zone-display-status-rail">
+          <span className={`zone-display-sync-pill is-state-${syncState}`}>
+            <span className="zone-display-sync-pill-dot" aria-hidden="true" />
+            {syncPillCopy(syncState)}
+          </span>
+        </div>
+      )}
 
       {overlayOpen && <ZoneSettingsOverlay onClose={() => setOverlayOpen(false)} />}
     </div>
