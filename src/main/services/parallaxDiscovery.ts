@@ -93,7 +93,11 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
   }
 
   startBrowse(): void {
-    if (this.browser) return
+    if (this.browser) {
+      this.refreshBrowse()
+      this.replayKnownServices()
+      return
+    }
     const bonjour = this.ensureBonjour()
     this.browser = bonjour.find({
       type: PARALLAX_DISCOVERY_SERVICE_TYPE,
@@ -103,6 +107,8 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
     this.browser.on('down', (service) => this.handleServiceRemoved(service))
     this.browser.on('txt-update', (next) => this.handleServiceAdded(next))
     this.browser.on('srv-update', (next) => this.handleServiceAdded(next))
+    this.refreshBrowse()
+    this.replayKnownServices()
   }
 
   stopBrowse(): void {
@@ -149,6 +155,25 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
       address,
       port: service.port
     })
+  }
+
+  private refreshBrowse(): void {
+    if (!this.browser) return
+    try {
+      // Constructor-time start() already sends one PTR query, but explicit refresh keeps each
+      // wizard open/reopen honest and covers the "sink was already advertising before browse
+      // started" timing edge reported in manual testing.
+      this.browser.update()
+    } catch (error) {
+      console.warn('Failed to refresh Parallax discovery browser:', error)
+    }
+  }
+
+  private replayKnownServices(): void {
+    if (!this.browser) return
+    for (const service of this.browser.services) {
+      this.handleServiceAdded(service)
+    }
   }
 }
 

@@ -542,7 +542,21 @@ const parallaxSinkListener = new ParallaxSinkListener({
       hostParallaxEndpointUuid: info.hostParallaxEndpointUuid ?? undefined
     }
     const sanitized = sanitizeParallaxSinkConnection(persisted)
-    if (sanitized) await persistParallaxSinkConnection(sanitized)
+    if (sanitized) {
+      await persistParallaxSinkConnection(sanitized)
+      broadcastParallaxStatus()
+      // Pair-confirm happens in the sink HTTP listener, but the actual sink connection must be
+      // renderer-driven so the Standard-output gate, subscriptions, and audioEngine.stop() prep
+      // from reconnectFromPersisted() still run. This event is the "new durable credential is
+      // ready" edge that lets the renderer connect immediately without requiring an app restart.
+      //
+      // The host promotes its pending candidate only after it receives this pair-confirm
+      // response. Defer the reconnect edge briefly so the sink doesn't race the host activation
+      // and turn a successful pair into an immediate 401/revocation.
+      setTimeout(() => {
+        sendToWindow(mainWindow, 'parallax:sinkPaired')
+      }, 500)
+    }
   },
   onIncomingPairChange: (state) => {
     parallaxIncomingPairRequest = state
@@ -893,12 +907,16 @@ const parallaxService = new ParallaxService({
   // revoked our credential (initial-connect 401, in-session SSE/audio 401, scheduled-reconnect
   // 401). Wipe the persisted credential + stop any in-flight auto-reconnect attempts. The
   // service has already disconnected and set sinkRemovedByHost=true before this fires, so the
-  // status push reaches the renderer in the same tick.
+  // status push reaches the renderer after the persisted credential cache has been cleared.
   onSinkAuthRevoked: () => {
     cancelParallaxAutoReconnect()
-    void clearParallaxSinkConnection().catch((error) => {
-      console.warn('Failed to clear Parallax sink connection after auth-revoked:', error)
-    })
+    void clearParallaxSinkConnection()
+      .then(() => {
+        broadcastParallaxStatus()
+      })
+      .catch((error) => {
+        console.warn('Failed to clear Parallax sink connection after auth-revoked:', error)
+      })
   },
   // §14.1.2 follow-up (Codex round 1, finding 3). Service reads on every getStatus() so the
   // status payload mirrors the live app-meta state without the service holding its own copy.
@@ -5405,6 +5423,7 @@ ipcMain.handle('parallax:forgetSinkConnection', async () => {
   cancelParallaxAutoReconnect()
   await parallaxService.disconnectSink()
   await clearParallaxSinkConnection()
+  broadcastParallaxStatus()
   return parallaxService.getStatus()
 })
 

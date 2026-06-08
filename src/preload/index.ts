@@ -906,6 +906,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:reconnectFromPersisted'),
     startAutoReconnect: (): Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }> =>
       ipcRenderer.invoke('parallax:startAutoReconnect'),
+    onSinkPaired: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('parallax:sinkPaired', handler)
+      return () => ipcRenderer.removeListener('parallax:sinkPaired', handler)
+    },
     onStatus: (callback: (status: ParallaxStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: ParallaxStatus) => callback(status)
       ipcRenderer.on('parallax:status', handler)
@@ -1413,6 +1418,7 @@ declare global {
         forgetSinkConnection: () => Promise<ParallaxStatus>
         reconnectFromPersisted: () => Promise<ParallaxStatus>
         startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
+        onSinkPaired: (callback: () => void) => () => void
         onStatus: (callback: (status: ParallaxStatus) => void) => () => void
         onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
         onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void

@@ -92,6 +92,7 @@ interface ParallaxSettingsStore {
 let statusUnsubscribe: (() => void) | null = null
 let eventUnsubscribe: (() => void) | null = null
 let audioChunkUnsubscribe: (() => void) | null = null
+let sinkPairedUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
 // §14.1.4 — sink Zone Display artwork cache. Keyed by trackId so cross-stream re-resolves of
@@ -871,6 +872,15 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         audioEngine.appendParallaxSinkAudioChunk(chunk)
         set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
         applyChunkTimelineIfNeeded(chunk)
+      })
+    }
+
+    if (!sinkPairedUnsubscribe) {
+      sinkPairedUnsubscribe = window.electronAPI.parallax.onSinkPaired(() => {
+        if (get().status?.sink.connected) return
+        void get().reconnectFromPersisted().catch((error) => {
+          set({ errorMessage: toErrorMessage(error) })
+        })
       })
     }
 

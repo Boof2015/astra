@@ -378,6 +378,7 @@ declare global {
                 forgetSinkConnection: () => Promise<ParallaxStatus>
                 reconnectFromPersisted: () => Promise<ParallaxStatus>
                 startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
+                onSinkPaired: (callback: () => void) => () => void
                 onStatus: (callback: (status: ParallaxStatus) => void) => () => void
                 onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
                 onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void
