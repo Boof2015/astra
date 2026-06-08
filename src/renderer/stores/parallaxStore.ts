@@ -61,6 +61,7 @@ interface ParallaxSettingsStore {
   init: () => Promise<void>
   refresh: () => Promise<void>
   setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
+  setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
   setHostPort: (port: number) => Promise<ParallaxStatus | null>
   createPairingPin: () => Promise<ParallaxPairingPin | null>
   pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse | null>
@@ -1097,6 +1098,32 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       try {
         const status = await window.electronAPI.parallax.setHostEnabled(enabled)
         return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      } finally {
+        set({ isLoading: false })
+      }
+    },
+
+    // §20 Commit 1. Sink-role toggle. Codex round 1 finding (high): main intentionally only
+    // persists the toggle — the on-enable reconnect goes through `reconnectFromPersisted()` so
+    // the Standard-output gate and audioEngine.stop() prep run before any sink stream lands.
+    // Starting auto-reconnect from main would bypass that prep and could collide with local
+    // playback or bitperfect mode.
+    setSinkEnabled: async (enabled) => {
+      set({ isLoading: true })
+      try {
+        const status = await window.electronAPI.parallax.setSinkEnabled(enabled)
+        applyStatus(status)
+        // Off path is fully handled in main (cancel reconnect + disconnect). On path follows up
+        // here, but only if a persisted credential actually exists — otherwise there's nothing
+        // to reconnect to and the user has to pair first via Settings or the Commit-4 wizard.
+        if (enabled && status?.sink.hasPersistedConnection) {
+          set({ isLoading: false })
+          return await get().reconnectFromPersisted()
+        }
+        return status
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null

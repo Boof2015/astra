@@ -129,6 +129,11 @@ interface ParallaxServiceOptions {
   // `playbackHttpCore` / `phoneRemote` use. Service caches the parsed bytes by streamId and
   // serves them at `GET /v1/parallax/artwork/current?streamId=<id>` for the sink Zone Display.
   resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
+  // §20 / §14.1.5. Sink-role enablement gate, read per status. Service stays ignorant of the
+  // meta-key storage layer (mirrors `getSinkConnectionInfo`). Defaults false if not provided.
+  getSinkEnabled?: () => boolean
+  // §20.19(c). Role-neutral persisted endpoint UUID. Empty string when not yet generated.
+  getEndpointUuid?: () => string
 }
 
 function parallaxNowMs(): number {
@@ -378,6 +383,8 @@ export class ParallaxService {
   // publishHostStreamStart when an artworkHash is provided. Cleared on stream stop or when a new
   // streamId arrives. Served binary at `GET /v1/parallax/artwork/current?streamId=<id>`.
   private readonly resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
+  private readonly getSinkEnabled?: () => boolean
+  private readonly getEndpointUuid?: () => string
   private currentStreamArtwork: { streamId: string; mimeType: string; bytes: Buffer } | null = null
   // Codex finding 1 (high): the sink fetches artwork immediately when stream-start arrives, but
   // the host's hash→bytes resolve is async — a race could have the endpoint return 404 before the
@@ -435,6 +442,8 @@ export class ParallaxService {
     this.onSinkAuthRevoked = options.onSinkAuthRevoked
     this.getSinkConnectionInfo = options.getSinkConnectionInfo
     this.resolveArtworkDataUrl = options.resolveArtworkDataUrl
+    this.getSinkEnabled = options.getSinkEnabled
+    this.getEndpointUuid = options.getEndpointUuid
   }
 
   getStatus(): ParallaxStatus {
@@ -479,7 +488,13 @@ export class ParallaxService {
         // ignorant of the app-meta storage layer.
         hasPersistedConnection: this.getSinkConnectionInfo?.().hasPersistedConnection ?? false,
         persistedHostName: this.getSinkConnectionInfo?.().persistedHostName ?? null,
-        removedByHost: this.sinkRemovedByHost
+        removedByHost: this.sinkRemovedByHost,
+        // §20 Commit 1. Surfaced to the renderer so the Settings toggle, ZoneDisplay copy, and
+        // wizard host-opt-in prompt can subscribe through the existing status push.
+        sinkEnabled: this.getSinkEnabled?.() ?? false
+      },
+      identity: {
+        endpointUuid: this.getEndpointUuid?.() ?? ''
       }
     }
   }

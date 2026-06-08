@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir, hostname, networkInterfaces } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import {
@@ -418,6 +418,16 @@ const PARALLAX_PAIRED_SINKS_META_KEY = 'parallax_paired_sinks_v1'
 // §14.1.2 / §16.2. Sink-side durable credential. Single slot (one paired host); re-pairing
 // replaces it. Schema-versioned suffix matches sibling keys.
 const PARALLAX_SINK_CONNECTION_META_KEY = 'parallax_sink_connection_v1'
+// §20 / §14.1.5. Persisted sink-role toggle. Independent from `parallax_host_enabled_v1`; off
+// by default for new installs. Migration in `migrateParallaxSinkEnabledOnFirstRead`: if a
+// persisted sink connection from §14.1.2 already exists (the user paired this device pre-§20),
+// we flip this true on first read so auto-reconnect doesn't silently break for them.
+const PARALLAX_SINK_ENABLED_META_KEY = 'parallax_sink_enabled_v1'
+// §20.19(c). One role-neutral UUID per Astra install, generated at first launch in any role.
+// Advertised over mDNS when sink-enabled; sent in pair-request when acting as host. Auth still
+// uses host-issued `sinkId` — this is discovery memory only ("seen before / renamed / already
+// paired"). Never a secret.
+const PARALLAX_ENDPOINT_UUID_META_KEY = 'parallax_endpoint_uuid_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -490,6 +500,14 @@ type PersistedPhoneRemotePairedDevice = {
 }
 let phoneRemotePairedDevices: PersistedPhoneRemotePairedDevice[] = []
 let parallaxPairedSinks: PersistedParallaxPairedSink[] = []
+// §20 / §14.1.5. Sink-role enablement, gates mDNS advertisement, the sink HTTP listener, and
+// auto-reconnect. Off by default for new installs; migrated to true on first read when a
+// persisted sink connection from §14.1.2 already exists (so existing paired sinks survive the
+// §20 cutover transparently — §20.19(d)).
+let parallaxSinkEnabled = false
+// §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
+// Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
+let parallaxEndpointUuid = ''
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -848,7 +866,10 @@ const parallaxService = new ParallaxService({
   // §14.1.4 / §19.18(e) — same resolver used by playbackHttpCore + phoneRemote.
   resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
     maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX
-  })
+  }),
+  // §20 Commit 1. Read each status call so the service stays ignorant of meta-key storage.
+  getSinkEnabled: () => parallaxSinkEnabled,
+  getEndpointUuid: () => parallaxEndpointUuid
 })
 
 const lastFmService = new LastFmService({
@@ -1380,6 +1401,49 @@ async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promi
 async function persistParallaxHostConfig(config: ParallaxHostConfig): Promise<void> {
   await library.setAppMeta(PARALLAX_HOST_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(PARALLAX_HOST_PORT_META_KEY, String(config.port))
+}
+
+// §20.19(d). Load `parallaxSinkEnabled`. Migration: if the meta-key has never been written but a
+// persisted sink connection from §14.1.2 already exists, flip true so existing paired sinks
+// continue auto-reconnecting. Otherwise default false.
+//
+// Codex round 1 finding (low): use the already-sanitized `parallaxSinkConnection` instead of raw
+// app-meta. Caller orders this *after* `loadParallaxSinkConnectionFromMeta` for that reason.
+// Reading the sanitized value avoids migrating to true when the persisted JSON is corrupt and
+// the actual usable credential is null.
+async function loadParallaxSinkEnabledFromMeta(): Promise<boolean> {
+  const raw = library.getAppMeta(PARALLAX_SINK_ENABLED_META_KEY)
+  if (raw === null) {
+    const migrated = parallaxSinkConnection !== null
+    try {
+      await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, migrated ? '1' : '0')
+    } catch (error) {
+      console.warn('Failed to persist initial Parallax sink-enabled flag:', error)
+    }
+    return migrated
+  }
+  return parseMetaBoolean(raw, false)
+}
+
+async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
+  await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, enabled ? '1' : '0')
+}
+
+// §20.19(c). Lazy load — generate and persist on first read. Validated as a v4-ish UUID; if a
+// persisted value is malformed (manual edit, schema mismatch), regenerate.
+async function loadParallaxEndpointUuidFromMeta(): Promise<string> {
+  const PARALLAX_ENDPOINT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const raw = library.getAppMeta(PARALLAX_ENDPOINT_UUID_META_KEY)
+  if (raw && PARALLAX_ENDPOINT_UUID_PATTERN.test(raw)) {
+    return raw
+  }
+  const fresh = randomUUID()
+  try {
+    await library.setAppMeta(PARALLAX_ENDPOINT_UUID_META_KEY, fresh)
+  } catch (error) {
+    console.warn('Failed to persist Parallax endpoint UUID:', error)
+  }
+  return fresh
 }
 
 async function persistPhoneRemotePairedDevices(devices: PersistedPhoneRemotePairedDevice[]): Promise<void> {
@@ -3937,6 +4001,11 @@ app.whenReady().then(async () => {
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
   parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
   parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
+  // §20 Commit 1. Sink-enabled migration MUST read after `parallaxSinkConnection` is loaded —
+  // the migration condition checks "did this user have a persisted sink connection pre-§20."
+  // Endpoint UUID is lazy-generated regardless of role and persisted on first launch.
+  parallaxSinkEnabled = await loadParallaxSinkEnabledFromMeta()
+  parallaxEndpointUuid = await loadParallaxEndpointUuidFromMeta()
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
   parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
@@ -5006,8 +5075,35 @@ ipcMain.handle('parallax:reconnectFromPersisted', async () => {
 ipcMain.handle('parallax:startAutoReconnect', () => {
   if (!parallaxSinkConnection) return { scheduled: false, reason: 'no-persisted-connection' as const }
   if (parallaxHostConfig.enabled) return { scheduled: false, reason: 'host-mode-active' as const }
+  // §20 Commit 1. Auto-reconnect honors the sink-role toggle — turning the sink off must not
+  // leave a background reconnect loop running. Persisted credentials are preserved (use
+  // "Forget Host" for explicit credential wipe per §14.1.2).
+  if (!parallaxSinkEnabled) return { scheduled: false, reason: 'sink-disabled' as const }
   startParallaxAutoReconnect(parallaxSinkConnection)
   return { scheduled: true as const }
+})
+
+// §20 Commit 1. Sink-role enablement toggle. Off → cancel in-flight reconnect, disconnect any
+// live session, persist; existing credentials stay (use "Forget Host" to clear). On → persist
+// only; the renderer follows up through `reconnectFromPersisted` so the Standard-output gate
+// and audioEngine.stop() prep run before reconnect (Codex round 1 finding, high). Starting the
+// reconnect loop from main here would bypass that prep and could collide with local playback
+// or bitperfect mode.
+ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
+  const nextEnabled = Boolean(enabled)
+  if (nextEnabled === parallaxSinkEnabled) return parallaxService.getStatus()
+  parallaxSinkEnabled = nextEnabled
+  try {
+    await persistParallaxSinkEnabled(parallaxSinkEnabled)
+  } catch (error) {
+    console.warn('Failed to persist Parallax sink-enabled flag:', error)
+  }
+  if (!parallaxSinkEnabled) {
+    cancelParallaxAutoReconnect()
+    await parallaxService.disconnectSink()
+  }
+  // On-enable reconnect is renderer-driven; main intentionally does nothing else here.
+  return parallaxService.getStatus()
 })
 
 ipcMain.handle('parallax:disconnectSink', async () => {

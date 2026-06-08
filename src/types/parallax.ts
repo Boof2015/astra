@@ -408,13 +408,33 @@ export interface ParallaxSinkStatus {
   // show an explicit "Removed by host" state instead of the generic "Unauthorized" lastError.
   // Cleared on successful re-pair.
   removedByHost?: boolean
+  // §20 / §14.1.5. Sink-role toggle (persisted in main). Gates mDNS advertisement, the sink
+  // HTTP listener, and auto-reconnect. Off by default for new installs; migrated to true for
+  // installs that already had a persisted sink connection from §14.1.2.
+  sinkEnabled?: boolean
+}
+
+export interface ParallaxIdentity {
+  // §20.19(c). Role-neutral persisted UUID per Astra install. Advertised over mDNS when sink
+  // is enabled; sent in pair-request when acting as host. Discovery memory only — auth
+  // identity is still the host-issued `sinkId`.
+  endpointUuid: string
 }
 
 export interface ParallaxStatus {
   role: ParallaxRole
   host: ParallaxHostStatus
   sink: ParallaxSinkStatus
+  // §20.19(c). Same UUID surfaces in either role.
+  identity?: ParallaxIdentity
 }
+
+// §20 / §14.1.5 constants. PIN flow + listener.
+export const PARALLAX_SINK_DEFAULT_PORT = 38404
+export const PARALLAX_PAIR_PIN_TTL_MS = 90_000
+export const PARALLAX_PAIR_CANDIDATE_TTL_MS = 90_000
+export const PARALLAX_PAIR_PIN_MAX_FAILS = 3
+export const PARALLAX_PAIR_RATE_LIMIT_MS = 10_000
 
 export interface ParallaxPairResponse {
   sinkId: string

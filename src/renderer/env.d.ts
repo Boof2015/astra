@@ -331,6 +331,7 @@ declare global {
                 ) => Promise<boolean>
                 listPairedSinks: () => Promise<ParallaxPairedSink[]>
                 setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+                setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus>
                 setHostPort: (port: number) => Promise<ParallaxStatus>
                 createPairingPin: () => Promise<ParallaxPairingPin>
                 pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>

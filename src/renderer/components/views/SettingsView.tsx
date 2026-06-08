@@ -356,6 +356,7 @@ export default function SettingsView() {
     activePairingPin: parallaxActivePairingPin,
     errorMessage: parallaxErrorMessage,
     setHostEnabled: setParallaxHostEnabled,
+    setSinkEnabled: setParallaxSinkEnabled,
     setHostPort: setParallaxHostPort,
     createPairingPin: createParallaxPairingPin,
     pairWithHost: pairParallaxWithHost,
@@ -2690,12 +2691,26 @@ export default function SettingsView() {
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Host Mode</span>
+                    <span className="settings-field-label">Enable Parallax Host</span>
                     <button
                       className={`settings-toggle ${parallaxHostEnabled ? 'active' : ''}`}
                       onClick={() => void setParallaxHostEnabled(!parallaxHostEnabled)}
                     >
                       {parallaxHostEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  {/* §20 Commit 1. Sink-role toggle. Off by default for new installs; auto-enabled
+                      on first launch for installs that already had a persisted sink connection
+                      from §14.1.2 (so existing pairings survive transparently). Off here stops
+                      mDNS, the sink HTTP listener (when those land in Commits 2 + 3), and
+                      auto-reconnect. Existing credentials persist — use "Forget Host" to wipe. */}
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Enable Parallax Sink</span>
+                    <button
+                      className={`settings-toggle ${(parallaxStatus?.sink.sinkEnabled ?? false) ? 'active' : ''}`}
+                      onClick={() => void setParallaxSinkEnabled(!(parallaxStatus?.sink.sinkEnabled ?? false))}
+                    >
+                      {(parallaxStatus?.sink.sinkEnabled ?? false) ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
                   <div className="settings-field">

@@ -824,6 +824,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
     setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:setHostEnabled', enabled),
+    // §20 Commit 1. Sink-role toggle.
+    setSinkEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setSinkEnabled', enabled),
     setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
     createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
     pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
@@ -1333,6 +1336,7 @@ declare global {
         ) => Promise<boolean>
         listPairedSinks: () => Promise<ParallaxPairedSink[]>
         setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+        setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus>
         setHostPort: (port: number) => Promise<ParallaxStatus>
         createPairingPin: () => Promise<ParallaxPairingPin>
         pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
