@@ -1,6 +1,6 @@
 {
   "name": "astra",
-  "version": "0.6.0-beta",
+  "version": "0.6.1-beta",
   "description": "Audiophile music player with advanced visualization",
   "main": "./out/main/index.js",
   "scripts": {
