@@ -59,6 +59,7 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "better-sqlite3": "^12.10.0",
+    "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "music-metadata": "^11.12.3",

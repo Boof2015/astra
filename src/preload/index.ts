@@ -29,6 +29,7 @@ import type {
 } from '../types/phoneRemote'
 import type {
   ParallaxAudioChunk,
+  ParallaxDiscoveryEvent,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
   ParallaxPairResponse,
@@ -827,6 +828,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // §20 Commit 1. Sink-role toggle.
     setSinkEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:setSinkEnabled', enabled),
+    // §20 Commit 2. mDNS browse on/off + event subscription. Advertise lifecycle is owned by
+    // main (bound to sinkEnabled) — no IPC needed there.
+    startDiscoveryBrowse: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:startDiscoveryBrowse'),
+    stopDiscoveryBrowse: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:stopDiscoveryBrowse'),
+    onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, event: ParallaxDiscoveryEvent) => callback(event)
+      ipcRenderer.on('parallax:discoveryEvent', handler)
+      return () => ipcRenderer.removeListener('parallax:discoveryEvent', handler)
+    },
     setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
     createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
     pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
@@ -1337,6 +1349,9 @@ declare global {
         listPairedSinks: () => Promise<ParallaxPairedSink[]>
         setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
         setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+        startDiscoveryBrowse: () => Promise<{ ok: true }>
+        stopDiscoveryBrowse: () => Promise<{ ok: true }>
+        onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => () => void
         setHostPort: (port: number) => Promise<ParallaxStatus>
         createPairingPin: () => Promise<ParallaxPairingPin>
         pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>

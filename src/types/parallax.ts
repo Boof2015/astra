@@ -421,6 +421,28 @@ export interface ParallaxIdentity {
   endpointUuid: string
 }
 
+// §20 Commit 2. Discovery wire shape — the renderer wizard renders rows from this. Built from
+// bonjour-service's `Service` payload by the parallaxDiscovery wrapper, never carries
+// credentials. `endpointUuid` lets the host UI match against its `pairedSinks` to render
+// "Already paired" badges; absent uuid (older sink or non-Astra advert spoofing the type) is a
+// valid but degraded state — the row stays selectable, just without paired-status memory.
+export interface ParallaxDiscoveredSink {
+  endpointUuid: string | null
+  name: string
+  baseUrl: string
+  address: string
+  port: number
+  version: number | null
+  lastSeenAt: number
+}
+
+// IPC event variant for discovery push notifications. `added` covers both first-seen and
+// txt-update / srv-update (latest state replaces prior). `removed` fires on goodbye / TTL
+// expiry. Renderer keeps a Map keyed by endpointUuid || `${address}:${port}` and reconciles.
+export type ParallaxDiscoveryEvent =
+  | { type: 'added'; sink: ParallaxDiscoveredSink }
+  | { type: 'removed'; endpointUuid: string | null; address: string; port: number }
+
 export interface ParallaxStatus {
   role: ParallaxRole
   host: ParallaxHostStatus

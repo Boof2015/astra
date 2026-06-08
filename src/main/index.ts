@@ -58,6 +58,7 @@ import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
+import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
@@ -126,7 +127,9 @@ import {
   PARALLAX_DEFAULT_PORT,
   PARALLAX_MAX_PORT,
   PARALLAX_MIN_PORT,
+  PARALLAX_SINK_DEFAULT_PORT,
   type ParallaxAudioChunk,
+  type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
   type ParallaxHostStreamStartOptions,
   type ParallaxHostTimelinePublishOptions,
@@ -508,6 +511,10 @@ let parallaxSinkEnabled = false
 // §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
 // Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
 let parallaxEndpointUuid = ''
+// §20 Commit 2. mDNS wrapper. Owns one bonjour-service instance for both advertise + browse.
+// Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
+// sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
+const parallaxDiscoveryService = new ParallaxDiscoveryService()
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -4006,6 +4013,12 @@ app.whenReady().then(async () => {
   // Endpoint UUID is lazy-generated regardless of role and persisted on first launch.
   parallaxSinkEnabled = await loadParallaxSinkEnabledFromMeta()
   parallaxEndpointUuid = await loadParallaxEndpointUuidFromMeta()
+  // §20 Commit 2. Kick advertisement at boot if sink is already enabled from a previous launch
+  // (either user-toggled or migrated per §20.19(d)). Safe to call before mainWindow exists —
+  // mDNS is independent of the renderer.
+  if (parallaxSinkEnabled) {
+    startParallaxDiscoveryAdvertisement()
+  }
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
   parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
@@ -4113,6 +4126,9 @@ app.on('before-quit', () => {
   void localApiService.stop()
   void phoneRemoteService.stop()
   void parallaxService.stop()
+  // §20 Commit 2. Release the mDNS socket on quit so a relaunched Astra doesn't fight the
+  // prior instance for the multicast group. Idempotent — safe even when no advert was running.
+  parallaxDiscoveryService.destroy()
   lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
@@ -5089,6 +5105,9 @@ ipcMain.handle('parallax:startAutoReconnect', () => {
 // and audioEngine.stop() prep run before reconnect (Codex round 1 finding, high). Starting the
 // reconnect loop from main here would bypass that prep and could collide with local playback
 // or bitperfect mode.
+//
+// §20 Commit 2. Sink-role also gates mDNS advertisement. Advertise starts on enable + at boot
+// when the persisted flag is already on; stops on disable + at app quit (see destroy hook below).
 ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
   const nextEnabled = Boolean(enabled)
   if (nextEnabled === parallaxSinkEnabled) return parallaxService.getStatus()
@@ -5101,9 +5120,59 @@ ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
   if (!parallaxSinkEnabled) {
     cancelParallaxAutoReconnect()
     await parallaxService.disconnectSink()
+    stopParallaxDiscoveryAdvertisement()
+  } else {
+    startParallaxDiscoveryAdvertisement()
   }
   // On-enable reconnect is renderer-driven; main intentionally does nothing else here.
   return parallaxService.getStatus()
+})
+
+// §20 Commit 2. mDNS lifecycle helpers + IPC handlers for the host-side wizard's browse.
+//
+// Advertisement port matches the (Commit 3) sink listener. Idempotent — calling start again
+// stops any prior advertisement first (see ParallaxDiscoveryService.startAdvertising).
+function startParallaxDiscoveryAdvertisement(): void {
+  if (!parallaxSinkEnabled) return
+  if (!parallaxEndpointUuid) return
+  const name = hostname() || 'Astra Sink'
+  try {
+    parallaxDiscoveryService.startAdvertising({
+      name,
+      port: PARALLAX_SINK_DEFAULT_PORT,
+      endpointUuid: parallaxEndpointUuid
+    })
+  } catch (error) {
+    console.warn('Failed to start Parallax discovery advertisement:', error)
+  }
+}
+
+function stopParallaxDiscoveryAdvertisement(): void {
+  try {
+    parallaxDiscoveryService.stopAdvertising()
+  } catch (error) {
+    console.warn('Failed to stop Parallax discovery advertisement:', error)
+  }
+}
+
+// Forward bonjour 'added' / 'removed' events to the renderer. Renderer keeps its own map keyed
+// by endpointUuid || `${address}:${port}` and reconciles. Subscribed once at construction —
+// no add/remove required because the wrapper itself starts/stops the underlying browser based
+// on the IPCs below.
+parallaxDiscoveryService.on('event', (event: ParallaxDiscoveryEvent) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('parallax:discoveryEvent', event)
+  }
+})
+
+ipcMain.handle('parallax:startDiscoveryBrowse', () => {
+  parallaxDiscoveryService.startBrowse()
+  return { ok: true as const }
+})
+
+ipcMain.handle('parallax:stopDiscoveryBrowse', () => {
+  parallaxDiscoveryService.stopBrowse()
+  return { ok: true as const }
 })
 
 ipcMain.handle('parallax:disconnectSink', async () => {
