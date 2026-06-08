@@ -362,6 +362,7 @@ export default function SettingsView() {
     revokeAllPairedSinks: revokeAllParallaxPairedSinks,
     reconnectFromPersisted: reconnectParallaxFromPersisted,
     disconnectSink: disconnectParallaxSink,
+    clearHostPresenceCache: clearParallaxHostPresenceCache,
     setSinkTrim: setParallaxSinkTrim
   } = useParallaxStore()
   const {
@@ -850,6 +851,7 @@ export default function SettingsView() {
   const parallaxSinkConnected = parallaxStatus?.sink.connected ?? false
   const parallaxSinkRemovedByHost = parallaxStatus?.sink.removedByHost ?? false
   const parallaxActiveSinks = parallaxPairedSinks.filter((sink) => sink.revokedAt == null)
+  const parallaxPresenceRows = parallaxStatus?.host.connectedSinks ?? []
   // §14.1.2 follow-up (Codex round 1, finding 3). "Removed by host" overrides the normal summary
   // — the user just hit a wall and the next step is re-pairing, not interpreting connection
   // state. lastError already carries the explanation; the summary line is the headline.
@@ -1177,6 +1179,19 @@ export default function SettingsView() {
       setParallaxFeedback('Disconnected from host.')
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : 'Failed to disconnect from host.'
+      setParallaxFeedback(message)
+    })
+  }
+
+  const handleClearParallaxPresenceCache = (sinkId?: string) => {
+    if (!sinkId && !window.confirm('Clear all cached Parallax host presence rows? Pairing credentials are preserved.')) {
+      return
+    }
+    void clearParallaxHostPresenceCache(sinkId).then((status) => {
+      if (!status) return
+      setParallaxFeedback(sinkId ? 'Cleared cached Parallax presence row.' : 'Cleared cached Parallax presence rows.')
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to clear Parallax presence cache.'
       setParallaxFeedback(message)
     })
   }
@@ -3164,6 +3179,51 @@ export default function SettingsView() {
                       Production builds keep these toggles off and ignore their stored values.
                     </p>
                   </>
+                )}
+              </div>
+              <div className="settings-info-panel">
+                <h4>Parallax Presence Cache</h4>
+                <p>
+                  Clears host-side cached sink presence rows used by title-bar Parallax surfaces.
+                  Pairing credentials, trims, and tokens are preserved.
+                </p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
+                    className="settings-btn settings-link-btn"
+                    onClick={() => handleClearParallaxPresenceCache()}
+                    disabled={parallaxPresenceRows.length === 0}
+                  >
+                    Clear All Presence Rows
+                  </button>
+                </div>
+                {parallaxPresenceRows.length > 0 ? (
+                  <div className="local-api-inline-devices-list">
+                    {parallaxPresenceRows.map((sink) => (
+                      <div key={sink.sinkId} className="local-api-inline-device">
+                        <div className="local-api-inline-device-info">
+                          <span className="local-api-inline-device-name">
+                            {sink.name}{sink.online ? '' : ' (offline)'}
+                          </span>
+                          <span className="local-api-inline-device-detail">
+                            {sink.sinkId}
+                          </span>
+                          <span className="local-api-inline-device-detail">
+                            {sink.outputDeviceLabel ?? 'Output unknown'} · Trim {sink.appliedAdvanceMs >= 0 ? '+' : ''}{sink.appliedAdvanceMs.toFixed(0)} ms
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="settings-btn"
+                          onClick={() => handleClearParallaxPresenceCache(sink.sinkId)}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="settings-note">No cached Parallax host presence rows.</p>
                 )}
               </div>
             </div>

@@ -366,6 +366,7 @@ declare global {
                 reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
                 revokeAllPairedSinks: () => Promise<number>
+                clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
                 resetToDefaults: () => Promise<ParallaxStatus>
                 setSinkTrim: (
                     sinkId: string,

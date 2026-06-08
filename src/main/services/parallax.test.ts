@@ -152,6 +152,77 @@ test('Parallax host pairs sinks with an active PIN and requires bearer auth for 
   }
 })
 
+test('Parallax sink forget revokes host pairing and removes connected presence', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  const eventsAbort = new AbortController()
+  let eventsResponse: Response | null = null
+  try {
+    const paired = await pairSink(service, baseUrl, 'Office')
+    eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+      headers: { Authorization: `Bearer ${paired.token}` },
+      signal: eventsAbort.signal
+    })
+    assert.equal(eventsResponse.status, 200)
+    await waitFor(() => {
+      const status = service.getStatus()
+      return status.host.connectedSinkCount === 1
+        && status.host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId && sink.online)
+    })
+
+    const forgot = await fetch(`${baseUrl}/v1/parallax/sink/forget`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${paired.token}` }
+    })
+    assert.equal(forgot.status, 200)
+
+    await waitFor(() => {
+      const status = service.getStatus()
+      return status.host.pairedSinkCount === 0
+        && status.host.connectedSinkCount === 0
+        && !status.host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId)
+    })
+    const hostRow = service.listPairedSinks().find((sink) => sink.id === paired.sinkId)
+    assert.ok(hostRow?.revokedAt, 'host-side row should be retired by sink forget')
+  } finally {
+    eventsAbort.abort()
+    await eventsResponse?.body?.cancel().catch(() => undefined)
+    await service.stop()
+  }
+})
+
+test('Parallax host presence cache can be cleared without removing pairing credentials', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  const eventsAbort = new AbortController()
+  let eventsResponse: Response | null = null
+  try {
+    const paired = await pairSink(service, baseUrl, 'Office')
+    eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+      headers: { Authorization: `Bearer ${paired.token}` },
+      signal: eventsAbort.signal
+    })
+    assert.equal(eventsResponse.status, 200)
+    await waitFor(() => service.getStatus().host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId))
+
+    const cleared = service.clearHostPresenceCache(paired.sinkId)
+    assert.equal(cleared.host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId), false)
+    assert.equal(service.listPairedSinks().some((sink) => sink.id === paired.sinkId && sink.revokedAt === null), true)
+  } finally {
+    eventsAbort.abort()
+    await eventsResponse?.body?.cancel().catch(() => undefined)
+    await service.stop()
+  }
+})
+
 test('Parallax pairing PIN expires', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {

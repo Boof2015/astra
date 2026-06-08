@@ -5377,6 +5377,11 @@ ipcMain.handle('parallax:revokeAllPairedSinks', () => {
   return parallaxService.revokeAllPairedSinks()
 })
 
+ipcMain.handle('parallax:clearHostPresenceCache', (_event, sinkId: unknown) => {
+  const normalizedSinkId = typeof sinkId === 'string' && sinkId.trim() ? sinkId.trim() : undefined
+  return parallaxService.clearHostPresenceCache(normalizedSinkId)
+})
+
 ipcMain.handle('parallax:resetToDefaults', async () => {
   const nextConfig: ParallaxHostConfig = {
     enabled: false,
@@ -5421,6 +5426,14 @@ ipcMain.handle('parallax:getSinkConnection', () => {
 // back to the initial unpaired state — the only path forward is re-pair via PIN.
 ipcMain.handle('parallax:forgetSinkConnection', async () => {
   cancelParallaxAutoReconnect()
+  const connectionToForget = parallaxSinkConnection ? { ...parallaxSinkConnection } : null
+  if (connectionToForget) {
+    await parallaxService.forgetSinkOnHost(connectionToForget).catch((error) => {
+      // Best-effort host cleanup. The local forget action must still work when the host is
+      // offline, revoked us already, or is an older build without /sink/forget.
+      console.warn('Failed to notify Parallax host about sink forget:', error)
+    })
+  }
   await parallaxService.disconnectSink()
   await clearParallaxSinkConnection()
   broadcastParallaxStatus()

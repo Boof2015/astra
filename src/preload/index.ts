@@ -883,6 +883,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revokePairedSink: (id: string): Promise<ParallaxPairedSink | null> =>
       ipcRenderer.invoke('parallax:revokePairedSink', id),
     revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
+    clearHostPresenceCache: (sinkId?: string): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:clearHostPresenceCache', sinkId),
     resetToDefaults: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:resetToDefaults'),
     // §14.1.1. Host UI calls this when the user moves a per-sink trim stepper. Main process
     // persists to pairedSink.trims and broadcasts `sink-trim-update` to that sink's SSE clients.
@@ -1406,6 +1408,7 @@ declare global {
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
         revokeAllPairedSinks: () => Promise<number>
+        clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
         resetToDefaults: () => Promise<ParallaxStatus>
         setSinkTrim: (
           sinkId: string,

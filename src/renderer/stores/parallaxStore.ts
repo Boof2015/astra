@@ -76,6 +76,7 @@ interface ParallaxSettingsStore {
   // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
   setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<void>
   revokeAllPairedSinks: () => Promise<number>
+  clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus | null>
   resetToDefaults: () => Promise<ParallaxStatus | null>
   shouldDelayHostPlayback: (track: Track | null | undefined) => boolean
   prepareHostPlayback: (track: Track) => Promise<ParallaxTimelineState | null>
@@ -1279,6 +1280,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return 0
+      }
+    },
+
+    clearHostPresenceCache: async (sinkId) => {
+      try {
+        const status = await window.electronAPI.parallax.clearHostPresenceCache(sinkId)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
       }
     },
 

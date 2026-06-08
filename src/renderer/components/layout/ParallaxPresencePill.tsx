@@ -367,7 +367,7 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
 
   // Host modes — idle or active.
   const host = status.host
-  const sinks = host.connectedSinks ?? []
+  const sinks = (host.connectedSinks ?? []).filter((sink) => sink.online)
   const count = host.connectedSinkCount
 
   return (

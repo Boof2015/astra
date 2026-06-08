@@ -486,6 +486,11 @@ export class ParallaxService {
     this.cleanupExpiredPairingPin()
     const lanUrls = this.active ? getParallaxLanUrls(this.config.port) : []
     const bestClock = selectBestParallaxClockSample(this.sinkClockSamples)
+    const activePairedSinkIds = new Set(
+      this.pairedSinks
+        .filter((sink) => sink.revokedAt === null)
+        .map((sink) => sink.id)
+    )
     // Robust offset for everything that *acts* on it (drift formula via resolveHostNowMs, reconnect
     // frame math). bestClock still drives the rttMs display since that's a diagnostic for the best
     // single probe, not a steady-state value.
@@ -504,8 +509,12 @@ export class ParallaxService {
         connectedSinkCount: new Set(Array.from(this.sseClients, (client) => client.sinkId)).size,
         activeStream: this.activeStream?.info ?? null,
         lastError: this.lastError,
-        // §14.1.1. Snapshot copies so the renderer never mutates internal state.
-        connectedSinks: Array.from(this.connectedSinkStates.values()).map((state) => ({ ...state })),
+        // §14.1.1. Snapshot copies so the renderer never mutates internal state. Revoked pairings
+        // are filtered out defensively; their last connected-state row is historical noise, not
+        // a current host-side presence item.
+        connectedSinks: Array.from(this.connectedSinkStates.values())
+          .filter((state) => activePairedSinkIds.has(state.sinkId))
+          .map((state) => ({ ...state })),
         outputLatencyMs: this.lastHostLatencyMetrics?.outputLatencyMs ?? null,
         baseLatencyMs: this.lastHostLatencyMetrics?.baseLatencyMs ?? null,
         timestampLatencyMs: this.lastHostLatencyMetrics?.timestampLatencyMs ?? null
@@ -630,6 +639,7 @@ export class ParallaxService {
     if (!sink || sink.revokedAt !== null) return null
     sink.revokedAt = Date.now()
     this.closeSseClientsForSink(id)
+    this.connectedSinkStates.delete(id)
     this.emitPairedSinksChange()
     this.emitStatus()
     return {
@@ -645,16 +655,30 @@ export class ParallaxService {
   revokeAllPairedSinks(): number {
     const now = Date.now()
     let revokedCount = 0
+    const revokedSinkIds: string[] = []
     for (const sink of this.pairedSinks) {
       if (sink.revokedAt !== null) continue
       sink.revokedAt = now
+      revokedSinkIds.push(sink.id)
       revokedCount += 1
     }
     if (revokedCount === 0) return 0
     this.closeAllHostClients()
+    for (const sinkId of revokedSinkIds) this.connectedSinkStates.delete(sinkId)
     this.emitPairedSinksChange()
     this.emitStatus()
     return revokedCount
+  }
+
+  clearHostPresenceCache(sinkId?: string): ParallaxStatus {
+    const normalizedSinkId = sinkId?.trim()
+    if (normalizedSinkId) {
+      this.connectedSinkStates.delete(normalizedSinkId)
+    } else {
+      this.connectedSinkStates.clear()
+    }
+    this.emitStatus()
+    return this.getStatus()
   }
 
   publishHostStreamStart(
@@ -1100,6 +1124,26 @@ export class ParallaxService {
 
     this.emitStatus()
     return this.getStatus()
+  }
+
+  async forgetSinkOnHost(connection: Pick<ParallaxSinkConnectionConfig, 'baseUrl' | 'token'>): Promise<void> {
+    const response = await fetch(`${connection.baseUrl}/v1/parallax/sink/forget`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${connection.token}`
+      }
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      const message = toSafeOptionalString((payload as { error?: unknown } | null)?.error)
+        ?? `Parallax host forget request failed (${response.status}).`
+      if (response.status === 401) {
+        throw new ParallaxAuthError(401, message)
+      }
+      throw new Error(message)
+    }
   }
 
   async publishSinkTelemetry(telemetry: ParallaxSinkTelemetry): Promise<void> {
@@ -1579,6 +1623,16 @@ export class ParallaxService {
         outputDeviceId,
         advanceMs: persisted?.advanceMs ?? 0
       })
+      return
+    }
+
+    // Sink-side "Forget Host" notification. The request is already authenticated as `sink`, so
+    // the sink can only retire its own host-side pairing. Local forget still succeeds if this
+    // request fails; this endpoint just prevents old sink ids from lingering on reachable hosts
+    // when the user intentionally unpairs from the sink.
+    if (method === 'POST' && path === '/v1/parallax/sink/forget') {
+      this.revokePairedSink(sink.id)
+      toJsonResponse(res, 200, { ok: true })
       return
     }
 
