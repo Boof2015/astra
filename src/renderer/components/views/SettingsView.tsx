@@ -360,6 +360,8 @@ export default function SettingsView() {
     setHostPort: setParallaxHostPort,
     revokePairedSink: revokeParallaxPairedSink,
     revokeAllPairedSinks: revokeAllParallaxPairedSinks,
+    reconnectFromPersisted: reconnectParallaxFromPersisted,
+    disconnectSink: disconnectParallaxSink,
     setSinkTrim: setParallaxSinkTrim
   } = useParallaxStore()
   const {
@@ -1158,6 +1160,25 @@ export default function SettingsView() {
       }
     }
     setShowPairingWizard(true)
+  }
+
+  const handleReconnectParallaxHost = () => {
+    void reconnectParallaxFromPersisted().then((status) => {
+      if (!status) return
+      setParallaxFeedback(status.sink.connected ? 'Reconnected to host.' : 'Reconnect started.')
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to reconnect to host.'
+      setParallaxFeedback(message)
+    })
+  }
+
+  const handleDisconnectParallaxHost = () => {
+    void disconnectParallaxSink().then(() => {
+      setParallaxFeedback('Disconnected from host.')
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to disconnect from host.'
+      setParallaxFeedback(message)
+    })
   }
 
   // §14.1.2 / §16.6. Sink-side "Forget host" — symmetric to host's "Revoke". Wipes durable
@@ -2730,6 +2751,26 @@ export default function SettingsView() {
                         <span className="settings-info-value">
                           {parallaxStatus?.sink.persistedHostName ?? '—'}
                         </span>
+                        {parallaxSinkConnected ? (
+                          <button
+                            className="settings-btn"
+                            onClick={handleDisconnectParallaxHost}
+                            title="Disconnect from paired host"
+                          >
+                            Disconnect
+                          </button>
+                        ) : (
+                          <button
+                            className="settings-btn settings-btn-primary"
+                            disabled={!(parallaxStatus?.sink.sinkEnabled ?? false)}
+                            onClick={handleReconnectParallaxHost}
+                            title={(parallaxStatus?.sink.sinkEnabled ?? false)
+                              ? 'Reconnect to paired host'
+                              : 'Enable Parallax Sink before reconnecting'}
+                          >
+                            Reconnect
+                          </button>
+                        )}
                         <button
                           className="settings-btn settings-btn-danger"
                           onClick={handleForgetParallaxHost}
