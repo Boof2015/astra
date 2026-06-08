@@ -16,6 +16,7 @@ import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
+import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -331,6 +332,7 @@ function App() {
         </div>
         <TransportBar />
         <ParallaxSinkMode />
+        <ParallaxIncomingPairCard />
         <DecodeFallbackCue />
         <OutputDelayCue />
         <AssociatedOpenCue />

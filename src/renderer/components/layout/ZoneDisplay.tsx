@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import ZoneSettingsOverlay from './ZoneSettingsOverlay'
+import ParallaxIncomingPairCard from './ParallaxIncomingPairCard'
 
 type SyncPillState = 'ready' | 'stabilizing' | 'locked' | 'no-signal' | 'disconnected'
 
@@ -221,6 +222,7 @@ export default function ZoneDisplay() {
       )}
 
       {overlayOpen && <ZoneSettingsOverlay onClose={() => setOverlayOpen(false)} />}
+      <ParallaxIncomingPairCard variant="zone-display" />
     </div>
   )
 }

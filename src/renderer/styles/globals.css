@@ -20090,3 +20090,381 @@ body::after {
   gap: 6px;
   flex-wrap: wrap;
 }
+
+/* §20 Commit 4 — sink-side PIN card + host-side pairing wizard. Two render contexts for the
+ * PIN card: a modal over the normal Astra shell, and a zone-display overlay that sits on top
+ * of the hero card while a pair-request is pending. */
+
+.parallax-pair-card-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.parallax-pair-card-zone-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 28px;
+}
+
+.parallax-pair-card {
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 32px 36px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(12, 14, 18, 0.94);
+  box-shadow: 0 26px 64px rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+
+.parallax-pair-card-kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-color, #38bdf8);
+}
+
+.parallax-pair-card-host {
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.92);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+}
+
+.parallax-pair-card-host strong {
+  font-size: 1.2rem;
+  color: #fff;
+}
+
+.parallax-pair-card-host-suffix {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.parallax-pair-card-pin {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0;
+}
+
+.parallax-pair-card-pin-digit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 70px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.parallax-pair-card-instructions {
+  font-size: 0.92rem;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.parallax-pair-card-countdown {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.parallax-pair-card-footnote {
+  font-size: 0.76rem;
+  color: rgba(255, 255, 255, 0.48);
+  margin-top: 2px;
+}
+
+/* Host-side Add Sink wizard. Modal over the normal shell; never appears in Zone Display because
+ * Zone Display is sink-role and the wizard is host-role. */
+
+.parallax-pairing-wizard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 24px;
+}
+
+.parallax-pairing-wizard-card {
+  width: min(540px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(12, 14, 18, 0.94);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.parallax-pairing-wizard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.parallax-pairing-wizard-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.parallax-pairing-wizard-close {
+  background: transparent;
+  border: 0;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.parallax-pairing-wizard-close:hover {
+  color: #fff;
+}
+
+.parallax-pairing-wizard-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.parallax-pairing-wizard-section-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.parallax-pairing-wizard-section-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.parallax-pairing-wizard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px;
+}
+
+.parallax-pairing-wizard-empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.parallax-pairing-wizard-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.parallax-pairing-wizard-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.parallax-pairing-wizard-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.parallax-pairing-wizard-row-name {
+  font-size: 0.94rem;
+  font-weight: 600;
+}
+
+.parallax-pairing-wizard-row-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.parallax-pairing-wizard-row-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(52, 211, 153, 0.92);
+  padding: 4px 8px;
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.parallax-pairing-wizard-divider {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.parallax-pairing-wizard-manual {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.parallax-pairing-wizard-manual-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.parallax-pairing-wizard-manual-row {
+  display: flex;
+  gap: 8px;
+}
+
+.parallax-pairing-wizard-manual-input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+}
+
+.parallax-pairing-wizard-loading {
+  text-align: center;
+  font-size: 0.92rem;
+  color: rgba(255, 255, 255, 0.78);
+  padding: 28px 8px;
+}
+
+.parallax-pairing-wizard-pin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 4px;
+}
+
+.parallax-pairing-wizard-pin-prompt {
+  text-align: center;
+  font-size: 0.96rem;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.parallax-pairing-wizard-pin-input {
+  width: 220px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+
+.parallax-pairing-wizard-pin-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.parallax-pairing-wizard-pin-attempts {
+  color: #fca5a5;
+}
+
+.parallax-pairing-wizard-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.parallax-pairing-wizard-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 8px;
+}
+
+.parallax-pairing-wizard-success-kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #34d399;
+}
+
+.parallax-pairing-wizard-success-name {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.parallax-pairing-wizard-error {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.parallax-pairing-wizard-error-message {
+  font-size: 0.92rem;
+  color: #fca5a5;
+}

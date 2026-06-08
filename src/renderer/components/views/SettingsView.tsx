@@ -81,6 +81,7 @@ import {
 } from '../../../types/parallax'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
+import ParallaxPairingWizard from '../layout/ParallaxPairingWizard'
 
 type ResetActionId =
   | 'reset-theme'
@@ -269,7 +270,7 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
-  const [showParallaxHostQr, setShowParallaxHostQr] = useState(false)
+  const [showPairingWizard, setShowPairingWizard] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
@@ -353,19 +354,13 @@ export default function SettingsView() {
   const {
     status: parallaxStatus,
     pairedSinks: parallaxPairedSinks,
-    activePairingPin: parallaxActivePairingPin,
     errorMessage: parallaxErrorMessage,
     setHostEnabled: setParallaxHostEnabled,
     setSinkEnabled: setParallaxSinkEnabled,
     setHostPort: setParallaxHostPort,
-    createPairingPin: createParallaxPairingPin,
-    pairWithHost: pairParallaxWithHost,
-    connectSink: connectParallaxSink,
-    disconnectSink: disconnectParallaxSink,
     revokePairedSink: revokeParallaxPairedSink,
     revokeAllPairedSinks: revokeAllParallaxPairedSinks,
-    setSinkTrim: setParallaxSinkTrim,
-    reconnectFromPersisted: reconnectParallaxFromPersisted
+    setSinkTrim: setParallaxSinkTrim
   } = useParallaxStore()
   const {
     status: lastFmStatus,
@@ -420,12 +415,9 @@ export default function SettingsView() {
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
   const [parallaxPortInput, setParallaxPortInput] = useState(String(PARALLAX_DEFAULT_PORT))
+  // §20 Commit 4. Legacy host-URL pre-fill is dropped — the wizard does discovery + manual URL
+  // entry inline. Keeping the state and bootstrap for now would just be dead code.
   const [parallaxHostUrlInput, setParallaxHostUrlInput] = useState('')
-  const [parallaxPinInput, setParallaxPinInput] = useState('')
-  const [parallaxSinkNameInput, setParallaxSinkNameInput] = useState('Astra Sink')
-  // §14.1.2 / §16.3. Bootstrap pre-fills the host URL field on mount for visual continuity —
-  // button visibility comes from `parallaxStatus.sink.hasPersistedConnection` (round 1 fix
-  // finding 3), so we no longer cache the credential in component state. URL is non-secret.
   useEffect(() => {
     let cancelled = false
     void window.electronAPI.parallax.getSinkConnection().then((persisted) => {
@@ -897,10 +889,8 @@ export default function SettingsView() {
     if (!localApiControllerUrl) return ''
     try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
   }, [localApiControllerUrl])
-  const parallaxHostQrSvg = useMemo(() => {
-    if (!parallaxHostUrl) return ''
-    try { return renderPairingQrSvg(parallaxHostUrl) } catch { return '' }
-  }, [parallaxHostUrl])
+  // §20 Commit 4 — Codex round 1 finding (medium): the Parallax host QR was for the legacy
+  // sink-types-PIN flow which is gone. Removed.
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
   const lastFmAuthPendingProfileId = lastFmStatus?.authPendingProfileId ?? null
@@ -1155,50 +1145,19 @@ export default function SettingsView() {
     })
   }
 
-  const handleCreateParallaxPin = () => {
-    void createParallaxPairingPin().then((pin) => {
-      if (!pin) return
-      setParallaxFeedback('Parallax pairing PIN generated.')
-    })
-  }
-
-  // §14.1.2 / §16.3. Pair, persist, connect — one user action. Previously this only set the
-  // ephemeral `parallaxPairedToken` and required a second click on "Connect". After §14.1.2
-  // landed, the durable credential goes to main-process app-meta first so a crash or window
-  // close between pair and connect still leaves the sink paired; the second action then runs
-  // a normal connect.
-  const handlePairParallaxSink = async () => {
-    const pairing = await pairParallaxWithHost(parallaxHostUrlInput, parallaxPinInput, parallaxSinkNameInput)
-    if (!pairing) return
-    try {
-      await window.electronAPI.parallax.setSinkConnection({
-        baseUrl: parallaxHostUrlInput.trim(),
-        sinkId: pairing.sinkId,
-        token: pairing.token,
-        hostName: parallaxHostUrlInput.trim() || null,
-        pairedAt: Date.now(),
-        lastConnectedAt: null
-      })
-      const status = await connectParallaxSink({
-        baseUrl: parallaxHostUrlInput,
-        sinkId: pairing.sinkId,
-        token: pairing.token
-      })
-      setParallaxFeedback(status ? 'Paired and connected.' : 'Paired. Connect failed; will retry automatically.')
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to persist Parallax pairing.'
-      setParallaxFeedback(`Paired locally but persistence failed: ${message}`)
+  // §20 Commit 4. "Add Sink" handler. If host networking is off, ask the user to enable it
+  // first (Codex §20.19(e) — don't silently start host networking). On confirm, enable + open
+  // the wizard. On cancel, do nothing. Wizard mount handles the rest.
+  const handleOpenPairingWizard = async () => {
+    if (!parallaxHostEnabled) {
+      if (!window.confirm('Adding sinks needs Parallax Host enabled. Turn it on now?')) return
+      const status = await setParallaxHostEnabled(true)
+      if (!status?.host.enabled) {
+        setParallaxFeedback('Could not enable Parallax Host.')
+        return
+      }
     }
-  }
-
-  // §14.1.2 follow-up (Codex round 2, finding 2). Manual reconnect goes through the store
-  // action so it inherits the same renderer-side prep as `connectSink()` — Standard-mode
-  // gate, ensureSubscriptions, audioEngine.stop. The previous direct-IPC call bypassed all of
-  // that and could leave local playback running or ignore bitperfect mode.
-  const handleConnectParallaxSink = () => {
-    void reconnectParallaxFromPersisted().then((status) => {
-      if (status) setParallaxFeedback('Connected as Parallax sink.')
-    })
+    setShowPairingWizard(true)
   }
 
   // §14.1.2 / §16.6. Sink-side "Forget host" — symmetric to host's "Revoke". Wipes durable
@@ -2731,19 +2690,14 @@ export default function SettingsView() {
                       </button>
                     </div>
                   </div>
+                  {/* §20 Commit 4 — Codex round 1 finding (medium): the QR + "Scan on the
+                      sink" copy was for the legacy host-issues-PIN flow, which is gone. Host
+                      address stays here as a debug/info readout — discovery handles the actual
+                      pair flow now via Add Sink below. */}
                   <div className="settings-field">
-                    <span className="settings-field-label">Host URL</span>
+                    <span className="settings-field-label">Host Address</span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">{parallaxHostUrl}</span>
-                      {parallaxHostQrSvg && (
-                        <button
-                          className={`settings-btn${showParallaxHostQr ? ' settings-btn-primary' : ''}`}
-                          disabled={!parallaxHostEnabled}
-                          onClick={() => setShowParallaxHostQr((prev) => !prev)}
-                        >
-                          {showParallaxHostQr ? 'Hide QR' : 'Show QR'}
-                        </button>
-                      )}
                       <button
                         className="settings-btn"
                         disabled={!parallaxHostEnabled}
@@ -2752,73 +2706,30 @@ export default function SettingsView() {
                         Copy
                       </button>
                     </div>
-                    {showParallaxHostQr && parallaxHostEnabled && parallaxHostQrSvg && (
-                      <div className="local-api-inline-qr">
-                        <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: parallaxHostQrSvg }} />
-                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan on the sink, then enter the current PIN.</p>
-                      </div>
-                    )}
                   </div>
+                  {/* §20 Commit 4. "Add Sink" replaces the legacy "Generate PIN" + "Connect
+                      This Astra as Sink" UI. Wizard handles mDNS discovery + sink-generated PIN
+                      flow. Host-opt-in prompt: if host is off, ask before opening so users
+                      don't silently start host networking. */}
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Pair a Sink</span>
-                    <div className="settings-inline-row">
-                      <button
-                        className="settings-btn settings-btn-primary"
-                        disabled={!parallaxHostEnabled || !parallaxStatus?.host.active}
-                        onClick={handleCreateParallaxPin}
-                      >
-                        Generate PIN
-                      </button>
-                      <span className="settings-chip settings-chip-mono">
-                        {parallaxActivePairingPin ? parallaxActivePairingPin.pin : 'No PIN'}
-                      </span>
-                    </div>
+                    <span className="settings-field-label">Add Sink</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      onClick={handleOpenPairingWizard}
+                    >
+                      Add Sink
+                    </button>
                   </div>
-                  <div className="settings-field">
-                    <span className="settings-field-label">Connect This Astra as Sink</span>
-                    <div className="settings-inline-row">
-                      <input
-                        className="settings-select settings-inline-input"
-                        value={parallaxHostUrlInput}
-                        placeholder="http://host-ip:38403"
-                        onChange={(event) => setParallaxHostUrlInput(event.target.value)}
-                      />
-                      <input
-                        className="settings-select settings-inline-input settings-inline-input-compact"
-                        value={parallaxPinInput}
-                        placeholder="PIN"
-                        onChange={(event) => setParallaxPinInput(event.target.value)}
-                      />
-                    </div>
-                    <div className="settings-inline-row">
-                      <input
-                        className="settings-select settings-inline-input"
-                        value={parallaxSinkNameInput}
-                        onChange={(event) => setParallaxSinkNameInput(event.target.value)}
-                      />
-                      <button className="settings-btn" onClick={handlePairParallaxSink}>
-                        Pair
-                      </button>
-                      <button
-                        className="settings-btn settings-btn-primary"
-                        disabled={!(parallaxStatus?.sink.hasPersistedConnection ?? false) || parallaxSinkConnected}
-                        onClick={handleConnectParallaxSink}
-                      >
-                        Connect
-                      </button>
-                      <button
-                        className="settings-btn settings-btn-danger"
-                        disabled={!parallaxSinkConnected}
-                        onClick={() => void disconnectParallaxSink()}
-                      >
-                        Disconnect
-                      </button>
-                      {/* §14.1.2 / §16.6. Sink-side symmetric of host's Revoke. Visible whenever
-                          a persisted credential exists (whether currently connected or not), so
-                          the user can clear stale creds even when the host is unreachable.
-                          §14.1.2 follow-up (Codex round 1, finding 3): driven by status, not the
-                          local-component token cache — survives R-clear pushes from main. */}
-                      {(parallaxStatus?.sink.hasPersistedConnection ?? false) && (
+                  {/* §14.1.2 / §16.6 Forget Host — sink-side symmetric of host's Revoke. Still
+                      lives here so the user can wipe stale credentials when the host is
+                      unreachable. Visible whenever a persisted credential exists. */}
+                  {(parallaxStatus?.sink.hasPersistedConnection ?? false) && (
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Paired Host</span>
+                      <div className="settings-inline-row">
+                        <span className="settings-info-value">
+                          {parallaxStatus?.sink.persistedHostName ?? '—'}
+                        </span>
                         <button
                           className="settings-btn settings-btn-danger"
                           onClick={handleForgetParallaxHost}
@@ -2826,9 +2737,9 @@ export default function SettingsView() {
                         >
                           Forget Host
                         </button>
-                      )}
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Open Zone Display on Launch</span>
                     <button
@@ -3405,6 +3316,9 @@ export default function SettingsView() {
           onRevokeDevice={handleRevokePhoneRemotePairedDevice}
           onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
         />
+      )}
+      {showPairingWizard && (
+        <ParallaxPairingWizard onClose={() => setShowPairingWizard(false)} />
       )}
     </div>
   )
