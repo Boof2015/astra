@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { networkInterfaces } from 'os'
 import Bonjour from 'bonjour-service'
 // `bonjour-service` uses `export =` so type-only inner imports go through the dist path. The
 // Service class is the shape of every event payload from the Browser; Browser is what `find()`
@@ -34,6 +35,60 @@ const PARALLAX_DISCOVERY_TXT_VERSION = 1
 // "t=0"; we add explicit re-queries at the offsets below. Numbers picked to (a) double each step
 // per RFC 6762 §5.2 and (b) get the user a result inside ~1 s on a healthy LAN.
 const DISCOVERY_QUERY_RETRY_DELAYS_MS = [250, 1000, 2500, 5000] as const
+
+// Diagnosed via Windows-side PARALLAX_DISCOVERY_DEBUG: multicast-dns's `defaultInterface()`
+// returns `'0.0.0.0'` on non-darwin and the Windows kernel was picking a VMware/Hyper-V virtual
+// adapter (172.16.188.1) for outbound multicast. Inbound mDNS worked (addMembership runs on all
+// interfaces) so other devices' responses arrived fine — but Windows's responses to mac's
+// queries went out the virtual NIC and never reached the LAN. Fix: pick a primary LAN IPv4
+// ourselves and pin Bonjour to it. `PARALLAX_DISCOVERY_INTERFACE` is the manual override for
+// when the heuristic guesses wrong (multi-LAN host, weird VLAN setup, etc.).
+const DISCOVERY_INTERFACE_OVERRIDE = process.env.PARALLAX_DISCOVERY_INTERFACE?.trim() || null
+
+// Interface names we never want for mDNS — virtual adapters (Hyper-V vEthernet, VMware vmnet,
+// VirtualBox host-only, Docker, WSL2), tunnels (utun, tun, tap, tunnel, vpn), and a couple of
+// Apple internal radios (awdl = Apple Wireless Direct Link, llw = low-latency WLAN, bridge =
+// Internet-Sharing bridge). Match is case-insensitive substring.
+const DISCOVERY_VIRTUAL_NAME_PATTERN =
+  /vethernet|vmnet|virtualbox|hyper-v|wsl|pseudo|tunnel|vpn|docker|virbr|awdl|llw|utun|^tap|^tun|bridge|bluetooth|loopback/i
+
+// Lower priority value = preferred. RFC 1918 home LANs are overwhelmingly 192.168/16. 10/8 is
+// next-most-common. 172.16/12 is real RFC 1918 space but is also where most consumer
+// virtualization (VMware vmnet, Docker Desktop, some VPNs) lives — so we rank it last and
+// strongly prefer the other two. Anything outside RFC 1918 is "weird/public" and worse still.
+function ipPriority(ip: string): number {
+  if (ip.startsWith('192.168.')) return 0
+  if (ip.startsWith('10.')) return 1
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return 3
+  return 2
+}
+
+interface DiscoveryInterfacePick {
+  ip: string
+  name: string
+}
+
+function pickDiscoveryInterface(): DiscoveryInterfacePick | null {
+  if (DISCOVERY_INTERFACE_OVERRIDE) {
+    return { ip: DISCOVERY_INTERFACE_OVERRIDE, name: '(env override)' }
+  }
+  const candidates: Array<{ name: string; ip: string; priority: number }> = []
+  const ifaces = networkInterfaces()
+  for (const [name, list] of Object.entries(ifaces)) {
+    if (!list) continue
+    if (DISCOVERY_VIRTUAL_NAME_PATTERN.test(name)) continue
+    for (const iface of list) {
+      if (iface.family !== 'IPv4') continue
+      if (iface.internal) continue
+      // Link-local APIPA (169.254/16) means the adapter never got a DHCP lease — useless for LAN.
+      if (iface.address.startsWith('169.254.')) continue
+      candidates.push({ name, ip: iface.address, priority: ipPriority(iface.address) })
+    }
+  }
+  if (candidates.length === 0) return null
+  candidates.sort((a, b) => a.priority - b.priority)
+  return { ip: candidates[0].ip, name: candidates[0].name }
+}
 
 // Diagnostic logging for the "sink already advertising before host opens wizard → never appears"
 // bug. Off by default — set `PARALLAX_DISCOVERY_DEBUG=1` to see every PTR query send, every raw
@@ -77,8 +132,28 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
   // double the UDP traffic.
   private ensureBonjour(): Bonjour {
     if (!this.bonjour) {
+      // Pin Bonjour to the LAN interface we picked instead of letting multicast-dns fall back
+      // to '0.0.0.0' (which on Windows means "kernel picks" — and the kernel picks a virtual
+      // adapter). If we couldn't find a candidate, fall through with no `interface` and let the
+      // library default win; that's still useful on macOS where its default already chose en0.
+      const picked = pickDiscoveryInterface()
+      if (picked) {
+        console.log(
+          `[parallax-discovery] using interface ${picked.ip} (${picked.name}) for mDNS`
+        )
+      } else {
+        console.warn(
+          '[parallax-discovery] could not pick a LAN interface — falling back to OS default. Multi-NIC hosts (especially Windows with virtual adapters) may need PARALLAX_DISCOVERY_INTERFACE=<ip>.'
+        )
+      }
       dbg('ensureBonjour: creating new Bonjour instance')
-      this.bonjour = new Bonjour({}, (error: unknown) => {
+      // bonjour-service's options shape is `Partial<ServiceConfig>`; `interface` isn't in that
+      // type but is read by the underlying multicast-dns layer. Cast through unknown.
+      const bonjourOpts = (picked ? { interface: picked.ip } : {}) as unknown as Record<
+        string,
+        unknown
+      >
+      this.bonjour = new Bonjour(bonjourOpts, (error: unknown) => {
         if (error) console.warn('Parallax discovery transport error:', error)
       })
       this.installDebugTap()
@@ -101,10 +176,14 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
         dbg('installDebugTap: could not reach internal mdns instance')
         return
       }
-      mdns.on('query', (packet: unknown) => {
+      mdns.on('query', (packet: unknown, rinfo: unknown) => {
         const q = packet as { questions?: Array<{ name?: string; type?: string }> } | undefined
+        const info = rinfo as { address?: string; port?: number } | undefined
         const questions = q?.questions?.map((qq) => `${qq.type ?? '?'} ${qq.name ?? '?'}`) ?? []
-        dbg('mdns query received:', questions.join(' | '))
+        dbg(
+          `mdns query from ${info?.address ?? '?'}:${info?.port ?? '?'} —`,
+          questions.join(' | ')
+        )
       })
       mdns.on('response', (packet: unknown, rinfo: unknown) => {
         const r = packet as {
