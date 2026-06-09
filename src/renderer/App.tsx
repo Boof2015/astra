@@ -196,7 +196,11 @@ function App() {
   // bias because every WebAudio context on a device shares the same downstream mixer path.
   useEffect(() => {
     const w = window as unknown as {
-      parallaxCalibration?: { run: () => Promise<unknown>; help: () => void }
+      parallaxCalibration?: {
+        run: () => Promise<unknown>
+        loopbackDiag: (durationMs?: number) => Promise<unknown>
+        help: () => void
+      }
     }
     w.parallaxCalibration = {
       run: async () => {
@@ -209,6 +213,49 @@ function App() {
         } finally {
           void ctx.close().catch(() => undefined)
         }
+      },
+      // Diagnostic: opens loopback, waits, scans captured PCM for real audio vs NaN vs silence.
+      // Caller plays music in Astra manually between start() and the resolution of this Promise.
+      loopbackDiag: async (durationMs = 3000) => {
+        const api = window.parallaxLoopbackAPI
+        if (!api) {
+          console.log('[loopbackDiag] no parallaxLoopbackAPI')
+          return null
+        }
+        const startResult = api.start()
+        console.log('[loopbackDiag] start:', startResult)
+        console.log(`[loopbackDiag] capturing for ${durationMs} ms — PLAY MUSIC IN ASTRA NOW`)
+        await new Promise((r) => setTimeout(r, durationMs))
+        const segs = api.drain()
+        let nonZero = 0
+        let nan = 0
+        let zero = 0
+        let firstNonZero: number | null = null
+        for (const seg of segs) {
+          for (let i = 0; i < seg.pcm.length; i += 1) {
+            const v = seg.pcm[i]
+            if (Number.isNaN(v)) {
+              nan += 1
+            } else if (v === 0) {
+              zero += 1
+            } else {
+              nonZero += 1
+              if (firstNonZero === null) firstNonZero = v
+            }
+          }
+        }
+        const result = {
+          segments: segs.length,
+          totalSamples: nonZero + nan + zero,
+          nonZero,
+          nan,
+          zero,
+          firstNonZero,
+          first10Samples: Array.from(segs[0]?.pcm.slice(0, 10) ?? [])
+        }
+        console.log('[loopbackDiag] result:', result)
+        api.stop()
+        return result
       },
       help: () => {
         console.log(
