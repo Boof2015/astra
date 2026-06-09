@@ -20,7 +20,7 @@
 const CHIRP_DURATION_MS = 50
 const CHIRP_START_HZ = 200
 const CHIRP_END_HZ = 8000
-const CHIRP_AMPLITUDE = 0.1               // ≈ −20 dBFS linear
+const CHIRP_AMPLITUDE = 0.178             // ≈ −15 dBFS linear — bumped from -20 for SNR margin
 const CHIRP_FADE_MS = 5                    // edge fade per Codex
 const CHIRP_REPEAT_COUNT = 3
 const CHIRP_REPEAT_INTERVAL_MS = 150
@@ -42,6 +42,12 @@ export interface SingleChirpMeasurement {
   peakLagSamples: number | null
   rejected: boolean
   rejectReason?: string
+  // Diagnostics (Commit 2 debugging): visibility into the capture buffer itself, so a "no peak"
+  // result can be distinguished between "loopback empty" and "loopback has audio but correlator
+  // failed."
+  captureFrames: number
+  captureRms: number            // RMS amplitude across the capture window (≈0 means silent)
+  captureMaxAbs: number         // max(|sample|) across the capture window
 }
 
 export interface CalibrationResult {
@@ -212,7 +218,10 @@ async function runSingleChirp(args: RunSingleChirpArgs): Promise<SingleChirpMeas
       confidence: 0,
       peakLagSamples: null,
       rejected: true,
-      rejectReason: 'no captured segments'
+      rejectReason: 'no captured segments',
+      captureFrames: 0,
+      captureRms: 0,
+      captureMaxAbs: 0
     }
   }
 
@@ -231,6 +240,18 @@ async function runSingleChirp(args: RunSingleChirpArgs): Promise<SingleChirpMeas
     writeOffset += seg.frameCount
   }
 
+  // Diagnostic energy probes (added Commit 2 debug pass). Distinguishes "loopback returned a
+  // silent buffer" from "loopback returned audio but correlator missed it."
+  let energySum = 0
+  let maxAbs = 0
+  for (let i = 0; i < captureMono.length; i += 1) {
+    const v = captureMono[i]
+    energySum += v * v
+    const a = v < 0 ? -v : v
+    if (a > maxAbs) maxAbs = a
+  }
+  const captureRms = captureMono.length > 0 ? Math.sqrt(energySum / captureMono.length) : 0
+
   // Cross-correlate the reference chirp against the captured mono signal.
   const corr = crossCorrelate(referenceChirp, captureMono)
   if (corr.peakLagSamples === null || corr.peakConfidence < 1e-6) {
@@ -241,7 +262,12 @@ async function runSingleChirp(args: RunSingleChirpArgs): Promise<SingleChirpMeas
       confidence: 0,
       peakLagSamples: null,
       rejected: true,
-      rejectReason: 'correlator returned no peak'
+      rejectReason: corr.peakLagSamples === null
+        ? `correlator returned no peak (capture frames=${captureMono.length}, rms=${captureRms.toExponential(2)}, maxAbs=${maxAbs.toExponential(2)})`
+        : 'correlator peak below floor',
+      captureFrames: captureMono.length,
+      captureRms,
+      captureMaxAbs: maxAbs
     }
   }
 
@@ -266,7 +292,10 @@ async function runSingleChirp(args: RunSingleChirpArgs): Promise<SingleChirpMeas
     observedLatencyMs: observedWallMs - scheduledWallMs,
     confidence: corr.peakConfidence,
     peakLagSamples: corr.peakLagSamples,
-    rejected: false
+    rejected: false,
+    captureFrames: captureMono.length,
+    captureRms,
+    captureMaxAbs: maxAbs
   }
 }
 
@@ -336,8 +365,11 @@ function crossCorrelate(ref: Float32Array, obs: Float32Array): CorrelationResult
   if (refEnergy <= 1e-12) return { peakLagSamples: null, peakConfidence: 0 }
   const sqrtRefEnergy = Math.sqrt(refEnergy)
 
+  // Track the peak by absolute value — handles polarity-inverted audio paths (some Windows
+  // drivers / USB interfaces deliver a 180°-flipped copy on loopback). Confidence is the
+  // absolute normalized correlation.
   let peakLag = -1
-  let peakNormalized = 0
+  let peakNormalizedAbs = 0
   const maxLag = obs.length - ref.length
   for (let lag = 0; lag <= maxLag; lag += 1) {
     let dot = 0
@@ -350,14 +382,15 @@ function crossCorrelate(ref: Float32Array, obs: Float32Array): CorrelationResult
     }
     if (obsEnergy <= 1e-12) continue
     const normalized = dot / (sqrtRefEnergy * Math.sqrt(obsEnergy))
-    if (normalized > peakNormalized) {
-      peakNormalized = normalized
+    const absNormalized = normalized < 0 ? -normalized : normalized
+    if (absNormalized > peakNormalizedAbs) {
+      peakNormalizedAbs = absNormalized
       peakLag = lag
     }
   }
   return {
     peakLagSamples: peakLag >= 0 ? peakLag : null,
-    peakConfidence: peakNormalized
+    peakConfidence: peakNormalizedAbs
   }
 }
 
