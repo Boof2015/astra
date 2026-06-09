@@ -147,12 +147,18 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
         )
       }
       dbg('ensureBonjour: creating new Bonjour instance')
-      // bonjour-service's options shape is `Partial<ServiceConfig>`; `interface` isn't in that
-      // type but is read by the underlying multicast-dns layer. Cast through unknown.
-      const bonjourOpts = (picked ? { interface: picked.ip } : {}) as unknown as Record<
-        string,
-        unknown
-      >
+      // bonjour-service's options shape is `Partial<ServiceConfig>`; `bind` / `interface` aren't
+      // in that type but are read by the underlying multicast-dns layer. Cast through unknown.
+      //
+      // Key trick (revealed by Windows-side testing where pinning `interface` alone broke
+      // receive): on Windows, binding a UDP socket to a specific unicast IP makes the OS only
+      // deliver packets explicitly addressed to that IP — multicast (224.0.0.251) gets dropped.
+      // We instead bind to 0.0.0.0 so any interface can receive, and use `interface` *only* to
+      // direct `addMembership` + `setMulticastInterface` (i.e., the multicast group join and the
+      // outbound NIC choice). Linux/macOS are tolerant of either pattern; Windows isn't.
+      const bonjourOpts = (picked
+        ? { bind: '0.0.0.0', interface: picked.ip }
+        : {}) as unknown as Record<string, unknown>
       this.bonjour = new Bonjour(bonjourOpts, (error: unknown) => {
         if (error) console.warn('Parallax discovery transport error:', error)
       })
