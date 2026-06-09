@@ -1243,12 +1243,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
 contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioController)
-// §22 Commit 1 — Parallax loopback (Windows-only WASAPI, stubbed elsewhere). Exposed directly
-// rather than via ipcRenderer.invoke so `wallNowMs()` doesn't pay the IPC jitter that would
-// undermine the clock-domain anchor Codex flagged in §22.11(a).
+// §22 Commit 1 — Parallax loopback (Windows-only WASAPI, stubbed elsewhere). Wrapped in plain
+// JS thunks rather than exposing the native sub-object directly — contextBridge handles
+// `visualizerDSP` at top level via Electron's special path but does NOT fully forward arbitrary
+// nested native objects, so a sub-object extraction (which is what we want here) returns
+// proxies that don't invoke cleanly. The wrappers are cheap, stay in the preload process (no
+// IPC), and preserve the no-jitter property `wallNowMs()` needs for the §22.11(a) clock anchor.
+const parallaxLoopbackNative = (visualizerDSP as {
+  parallaxLoopback?: {
+    isSupported: () => { supported: boolean; reason?: string }
+    wallNowMs: () => number
+    start: () => { ok: boolean; endpoint?: unknown; error?: string }
+    stop: () => void
+    drain: () => Array<unknown>
+    isRunning: () => boolean
+  }
+} | null)?.parallaxLoopback ?? null
 contextBridge.exposeInMainWorld(
   'parallaxLoopbackAPI',
-  (visualizerDSP as { parallaxLoopback?: unknown } | null)?.parallaxLoopback ?? null
+  parallaxLoopbackNative
+    ? {
+        isSupported: () => parallaxLoopbackNative.isSupported(),
+        wallNowMs: () => parallaxLoopbackNative.wallNowMs(),
+        start: () => parallaxLoopbackNative.start(),
+        stop: () => parallaxLoopbackNative.stop(),
+        drain: () => parallaxLoopbackNative.drain(),
+        isRunning: () => parallaxLoopbackNative.isRunning()
+      }
+    : null
 )
 
 // Type declarations for renderer
