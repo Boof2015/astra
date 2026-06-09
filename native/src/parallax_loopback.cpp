@@ -24,6 +24,9 @@
 #include <Functiondiscoverykeys_devpkey.h>
 #include <propidl.h>
 #include <wrl/client.h>
+#include <ks.h>
+#include <ksmedia.h>
+#include <mmreg.h>
 #endif
 
 namespace ParallaxLoopback {
@@ -77,7 +80,99 @@ struct EndpointInfo {
     std::string deviceName;
     uint32_t sampleRate = 0;
     uint32_t channelCount = 0;
+    // Format details — surfaced so the renderer's diagnostic readout can confirm we're reading
+    // the right format. WASAPI shared-mode mix is "usually" IEEE float32 but some pro audio
+    // interfaces (Focusrite, RME, etc.) present integer PCM in shared mode. The capture loop
+    // converts to float32 internally regardless.
+    std::string mixFormat;        // "float32", "pcm16", "pcm24", "pcm32" or "unknown"
+    uint32_t bitsPerSample = 0;
 };
+
+enum class CaptureSampleFormat {
+    Unknown,
+    Float32,
+    Pcm16,
+    Pcm24,
+    Pcm32
+};
+
+// Returns the format the WASAPI mix is actually delivering. Handles WAVE_FORMAT_EXTENSIBLE
+// (the common case for shared-mode mixes on modern Windows) by checking the SubFormat GUID.
+// Returns Unknown for anything we don't understand; the caller logs and treats samples as zero.
+CaptureSampleFormat detectFormat(const WAVEFORMATEX* fmt, const char** descOut) {
+    if (fmt == nullptr) { *descOut = "unknown"; return CaptureSampleFormat::Unknown; }
+    const WORD bits = fmt->wBitsPerSample;
+    auto matchFloat = [&](const GUID& sub) { return IsEqualGUID(sub, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT); };
+    auto matchPcm = [&](const GUID& sub) { return IsEqualGUID(sub, KSDATAFORMAT_SUBTYPE_PCM); };
+    if (fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT && bits == 32) {
+        *descOut = "float32";
+        return CaptureSampleFormat::Float32;
+    }
+    if (fmt->wFormatTag == WAVE_FORMAT_PCM) {
+        if (bits == 16) { *descOut = "pcm16"; return CaptureSampleFormat::Pcm16; }
+        if (bits == 24) { *descOut = "pcm24"; return CaptureSampleFormat::Pcm24; }
+        if (bits == 32) { *descOut = "pcm32"; return CaptureSampleFormat::Pcm32; }
+    }
+    if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && fmt->cbSize >= 22) {
+        const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(fmt);
+        if (matchFloat(ext->SubFormat) && bits == 32) {
+            *descOut = "float32"; return CaptureSampleFormat::Float32;
+        }
+        if (matchPcm(ext->SubFormat)) {
+            if (bits == 16) { *descOut = "pcm16"; return CaptureSampleFormat::Pcm16; }
+            if (bits == 24) { *descOut = "pcm24"; return CaptureSampleFormat::Pcm24; }
+            if (bits == 32) { *descOut = "pcm32"; return CaptureSampleFormat::Pcm32; }
+        }
+    }
+    *descOut = "unknown";
+    return CaptureSampleFormat::Unknown;
+}
+
+// Convert one frame of WASAPI samples (in whatever native format) into float32. Returns the
+// number of bytes consumed per source sample so the caller can advance the source pointer.
+size_t bytesPerSample(CaptureSampleFormat fmt) {
+    switch (fmt) {
+        case CaptureSampleFormat::Float32: return 4;
+        case CaptureSampleFormat::Pcm16:   return 2;
+        case CaptureSampleFormat::Pcm24:   return 3;
+        case CaptureSampleFormat::Pcm32:   return 4;
+        default: return 0;
+    }
+}
+
+void convertSamplesToFloat(const BYTE* src, float* dst, size_t totalSamples, CaptureSampleFormat fmt) {
+    switch (fmt) {
+        case CaptureSampleFormat::Float32:
+            std::memcpy(dst, src, totalSamples * sizeof(float));
+            break;
+        case CaptureSampleFormat::Pcm16: {
+            const int16_t* s = reinterpret_cast<const int16_t*>(src);
+            for (size_t i = 0; i < totalSamples; ++i) dst[i] = static_cast<float>(s[i]) / 32768.0f;
+            break;
+        }
+        case CaptureSampleFormat::Pcm24: {
+            // 24-bit little-endian, packed 3 bytes per sample.
+            for (size_t i = 0; i < totalSamples; ++i) {
+                const uint8_t b0 = src[i * 3 + 0];
+                const uint8_t b1 = src[i * 3 + 1];
+                const uint8_t b2 = src[i * 3 + 2];
+                int32_t v = static_cast<int32_t>(b0) | (static_cast<int32_t>(b1) << 8) | (static_cast<int32_t>(b2) << 16);
+                // Sign-extend 24→32.
+                if (v & 0x800000) v |= ~0xFFFFFF;
+                dst[i] = static_cast<float>(v) / 8388608.0f;
+            }
+            break;
+        }
+        case CaptureSampleFormat::Pcm32: {
+            const int32_t* s = reinterpret_cast<const int32_t*>(src);
+            for (size_t i = 0; i < totalSamples; ++i) dst[i] = static_cast<float>(s[i]) / 2147483648.0f;
+            break;
+        }
+        default:
+            std::memset(dst, 0, totalSamples * sizeof(float));
+            break;
+    }
+}
 
 class WasapiLoopback {
 public:
@@ -216,6 +311,10 @@ private:
         // We don't own mixFormatRaw — must CoTaskMemFree it; copy the bits we need first.
         endpointOut.sampleRate = mixFormatRaw->nSamplesPerSec;
         endpointOut.channelCount = mixFormatRaw->nChannels;
+        endpointOut.bitsPerSample = mixFormatRaw->wBitsPerSample;
+        const char* fmtDesc = "unknown";
+        captureFormat_ = detectFormat(mixFormatRaw, &fmtDesc);
+        endpointOut.mixFormat = fmtDesc;
 
         // 200 ms buffer — small enough to keep capture latency low, large enough to absorb
         // a few quanta of jitter from the audio thread.
@@ -282,13 +381,20 @@ private:
             seg.frameCount = numFrames;
             seg.channelCount = channelCount;
 
+            const size_t totalSamples = static_cast<size_t>(numFrames) * channelCount;
+            seg.pcm.resize(totalSamples);
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
-                seg.pcm.assign(static_cast<size_t>(numFrames) * channelCount, 0.0f);
+                std::fill(seg.pcm.begin(), seg.pcm.end(), 0.0f);
+            } else if (captureFormat_ == CaptureSampleFormat::Unknown) {
+                // Unknown format — leave as zero so we don't surface garbage. CSV diagnostics
+                // will show `mixFormat: "unknown"` and the user can report what device this is.
+                std::fill(seg.pcm.begin(), seg.pcm.end(), 0.0f);
             } else {
-                // WASAPI loopback under shared-mode mix delivers float32 by default (matches
-                // GetMixFormat which Chromium also uses). Copy directly.
-                seg.pcm.assign(reinterpret_cast<float*>(data),
-                              reinterpret_cast<float*>(data) + static_cast<size_t>(numFrames) * channelCount);
+                // Convert from whatever WASAPI is actually delivering (float32 / pcm16 / pcm24 /
+                // pcm32) into native float32. Fixes the "all NaN samples" symptom on devices
+                // whose shared-mode mix isn't IEEE float (some pro audio interfaces present
+                // integer PCM in shared mode).
+                convertSamplesToFloat(data, seg.pcm.data(), totalSamples, captureFormat_);
             }
 
             captureClient_->ReleaseBuffer(numFrames);
@@ -324,6 +430,7 @@ private:
     bool coInitialized_ = false;
     bool bootOffsetCaptured_ = false;
     double bootOffsetMs_ = 0.0;
+    CaptureSampleFormat captureFormat_ = CaptureSampleFormat::Unknown;
     ComPtr<IMMDevice> device_;
     ComPtr<IAudioClient> client_;
     ComPtr<IAudioCaptureClient> captureClient_;
@@ -375,6 +482,8 @@ Napi::Value Start(const Napi::CallbackInfo& info) {
     endpoint.Set("deviceName", Napi::String::New(env, ep.deviceName));
     endpoint.Set("sampleRate", Napi::Number::New(env, ep.sampleRate));
     endpoint.Set("channelCount", Napi::Number::New(env, ep.channelCount));
+    endpoint.Set("mixFormat", Napi::String::New(env, ep.mixFormat));
+    endpoint.Set("bitsPerSample", Napi::Number::New(env, ep.bitsPerSample));
     result.Set("endpoint", endpoint);
 #else
     (void)info;

@@ -175,6 +175,8 @@ declare global {
                     deviceName: string
                     sampleRate: number
                     channelCount: number
+                    mixFormat: string
+                    bitsPerSample: number
                 }
                 error?: string
             }
