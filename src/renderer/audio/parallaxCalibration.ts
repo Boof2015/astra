@@ -27,7 +27,11 @@ const CHIRP_REPEAT_INTERVAL_MS = 150
 const CAPTURE_WINDOW_MS = 400              // collect captures this long after scheduling
 const SCHEDULE_LEAD_MS = 30                // Web Audio scheduling lead — small but non-zero
 const CONFIDENCE_THRESHOLD = 0.7           // normalized correlation peak ≥ this counts as valid
-const RANGE_THRESHOLD_MS = 3.0             // reject cycle if median-of-3 range exceeds this
+const RANGE_THRESHOLD_MS = 10.0            // v1 data-collection threshold — Codex spec calls
+                                            // 2-3 ms the GOAL after we've seen real Windows
+                                            // hardware data. Loosened to capture restart-vs-
+                                            // restart stability data; tighten once validation
+                                            // shows what's achievable on typical Windows audio.
 const MIN_VALID_CHIRPS = 2                 // need ≥ this many valid chirps to produce a measurement
 
 // ============================================================================

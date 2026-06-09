@@ -208,6 +208,19 @@ function App() {
         try {
           if (ctx.state === 'suspended') await ctx.resume()
           const result = await runHostOutputCalibration(ctx)
+          // Compact one-line summary for restart-to-restart comparison without expanding.
+          const chirpsCast = result.chirps as Array<{ observedLatencyMs: number | null; confidence: number }>
+          const lats = chirpsCast.map((c) => c.observedLatencyMs).filter((v): v is number => v !== null).map((v) => v.toFixed(2))
+          const confs = chirpsCast.map((c) => c.confidence.toFixed(2))
+          console.log(
+            `[parallaxCalibration] measured=${result.measuredLatencyMs?.toFixed(2) ?? 'null'}ms` +
+            ` estimated=${result.estimatedLatencyMs.toFixed(2)}ms` +
+            ` range=${result.rangeMs?.toFixed(2) ?? 'null'}ms` +
+            ` chirps=[${lats.join(', ')}]` +
+            ` conf=[${confs.join(', ')}]` +
+            ` ok=${result.ok}` +
+            (result.rejectReason ? ` reject=${result.rejectReason}` : '')
+          )
           console.log('[parallaxCalibration] result:', result)
           return result
         } finally {
