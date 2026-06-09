@@ -163,6 +163,31 @@ interface LibraryTrackPage {
 
 declare global {
     interface Window {
+        // §22 Commit 1 — Parallax loopback (Windows-only WASAPI). See preload/index.ts for
+        // shape; null when the native module didn't load or platform isn't supported.
+        parallaxLoopbackAPI: {
+            isSupported(): { supported: boolean; reason?: string }
+            wallNowMs(): number
+            start(): {
+                ok: boolean
+                endpoint?: {
+                    deviceId: string
+                    deviceName: string
+                    sampleRate: number
+                    channelCount: number
+                }
+                error?: string
+            }
+            stop(): void
+            drain(): Array<{
+                firstFrameIndex: number
+                captureWallMs: number
+                frameCount: number
+                channelCount: number
+                pcm: Float32Array
+            }>
+            isRunning(): boolean
+        } | null
         visualizerAPI: VisualizerDSP | null
         nativeAudioAPI: {
             initialize: () => Promise<NativeAudioCapabilities>

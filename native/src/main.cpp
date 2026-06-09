@@ -6,6 +6,7 @@
 #include "spectrum.h"
 #include "vectorscope.h"
 #include "playback_engine.h"
+#include "parallax_loopback.h"
 
 // Global instances (we could make these per-instance if needed)
 static Visualizer::Oscilloscope oscilloscope;
@@ -713,6 +714,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("flushVectorscopeSamples", Napi::Function::New(env, PlaybackFlushVectorscopeSamples));
     playbackExports.Set("flushVUMeterSamples", Napi::Function::New(env, PlaybackFlushVUMeterSamples));
     exports.Set("playback", playbackExports);
+
+    // §22 Commit 1 — Parallax loopback capture. Windows-only behavior; stubbed on
+    // macOS/Linux so the JS surface is platform-uniform (renderer just sees `supported: false`).
+    exports.Set("parallaxLoopback", ParallaxLoopback::Register(env));
 
     return exports;
 }

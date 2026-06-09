@@ -791,18 +791,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Read once at preload init. Renderer cannot reach process.env directly with contextIsolation,
     // so we expose the resolved boolean.
     //
-    // History: Phase 2B (§13.5) shipped the predictor as an opt-in via PARALLAX_USE_HOST_PREDICTOR=1
-    // so the first env-on rig run could A/B against Phase-1. After 2B validation (rate +2.2 ppm vs
-    // env-off +4.1 ppm, jitter 0.4×, single early snap), the predictor became the default. The
-    // opt-in flag is retired; the kill switch is PARALLAX_DISABLE_HOST_PREDICTOR=1|true, which puts
-    // the loop back on the Phase-1 nominal-timeline path. CSV `loop_source` still distinguishes the
-    // two so default behavior is verifiable.
+    // History:
+    //   - Phase 2B (§13.5) shipped predictor as opt-in via PARALLAX_USE_HOST_PREDICTOR=1.
+    //   - After macOS rig validation (rate +2.2 ppm vs env-off +4.1 ppm, jitter 0.4×, single
+    //     early snap) §13.5.1 flipped it to default-on with PARALLAX_DISABLE_HOST_PREDICTOR=1
+    //     as the kill switch.
+    //   - 2026-06 Windows + complex-audio-path testing showed the predictor introduces a
+    //     session-dependent static bias (~5-6 ms shifts across restarts, occasionally
+    //     20-25 ms) that breaks the "calibrate manual trim once" path. Phase 1 nominal
+    //     timeline alone gives a stable (if biased) offset users can dial in once and trust.
+    //     Polarity flipped: predictor is now OPT-IN again, via PARALLAX_ENABLE_HOST_PREDICTOR=1.
+    //   - PARALLAX_DISABLE_HOST_PREDICTOR still honored as an explicit override — forces off
+    //     even if the enable flag is set, so users who already had the kill switch in their
+    //     env stay at off without breakage.
+    //
+    // CSV `loop_source` continues to distinguish predictor vs phase1 frames so the active path
+    // is verifiable per session.
     //
     // The flag still lives on the SINK process — same gotcha as before
     // (feedback_parallax-env-flag-machine-side memory). Setting it on the host has no effect.
     useHostPredictor: ((): boolean => {
-      const disable = process.env.PARALLAX_DISABLE_HOST_PREDICTOR
-      return !(disable === '1' || disable === 'true')
+      const explicitDisable = process.env.PARALLAX_DISABLE_HOST_PREDICTOR
+      if (explicitDisable === '1' || explicitDisable === 'true') return false
+      const explicitEnable = process.env.PARALLAX_ENABLE_HOST_PREDICTOR
+      return explicitEnable === '1' || explicitEnable === 'true'
     })(),
     // §14.1.4 — `--zone` launch flag (or PARALLAX_LAUNCH_ZONE=1 env). Read once at preload init.
     // Main process translates the argv flag into the env var before this script runs. Renderer's
@@ -1231,6 +1243,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
 contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioController)
+// §22 Commit 1 — Parallax loopback (Windows-only WASAPI, stubbed elsewhere). Exposed directly
+// rather than via ipcRenderer.invoke so `wallNowMs()` doesn't pay the IPC jitter that would
+// undermine the clock-domain anchor Codex flagged in §22.11(a).
+contextBridge.exposeInMainWorld(
+  'parallaxLoopbackAPI',
+  (visualizerDSP as { parallaxLoopback?: unknown } | null)?.parallaxLoopback ?? null
+)
 
 // Type declarations for renderer
 declare global {
@@ -1635,5 +1654,33 @@ declare global {
 
     // Native Visualizer API - exposed as visualizerAPI global
     visualizerAPI: VisualizerDSP | null
+
+    // §22 Commit 1 — Parallax loopback (Windows-only). Null on platforms / builds where the
+    // native module didn't load or the loopback exports aren't present.
+    parallaxLoopbackAPI: ParallaxLoopbackNative | null
   }
+}
+
+export interface ParallaxLoopbackCapturedSegment {
+  firstFrameIndex: number
+  captureWallMs: number
+  frameCount: number
+  channelCount: number
+  pcm: Float32Array
+}
+
+export interface ParallaxLoopbackEndpointInfo {
+  deviceId: string
+  deviceName: string
+  sampleRate: number
+  channelCount: number
+}
+
+export interface ParallaxLoopbackNative {
+  isSupported(): { supported: boolean; reason?: string }
+  wallNowMs(): number
+  start(): { ok: boolean; endpoint?: ParallaxLoopbackEndpointInfo; error?: string }
+  stop(): void
+  drain(): ParallaxLoopbackCapturedSegment[]
+  isRunning(): boolean
 }
