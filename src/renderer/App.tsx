@@ -17,6 +17,7 @@ import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
+import { runHostOutputCalibration } from './audio/parallaxCalibration'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -187,6 +188,45 @@ function App() {
       window.removeEventListener('blur', handleWindowBlur)
     }
   }, [isAnalyzerEditMode, isAnalyzerRackVisible])
+
+  // §22 Commit 2 — expose the calibration runner on `window.parallaxCalibration` so the
+  // Windows-side validation pass can invoke it from devtools without needing UI. Commit 3 will
+  // add the Settings dev-mode button. Dedicated AudioContext keeps calibration isolated from
+  // the main playback engine — the measurement still captures the same OS render-endpoint
+  // bias because every WebAudio context on a device shares the same downstream mixer path.
+  useEffect(() => {
+    const w = window as unknown as {
+      parallaxCalibration?: { run: () => Promise<unknown>; help: () => void }
+    }
+    w.parallaxCalibration = {
+      run: async () => {
+        const ctx = new AudioContext()
+        try {
+          if (ctx.state === 'suspended') await ctx.resume()
+          const result = await runHostOutputCalibration(ctx)
+          console.log('[parallaxCalibration] result:', result)
+          return result
+        } finally {
+          void ctx.close().catch(() => undefined)
+        }
+      },
+      help: () => {
+        console.log(
+          '[parallaxCalibration]\n' +
+          '  Call window.parallaxCalibration.run() to run a host-output calibration cycle.\n' +
+          '  Plays 3 short log chirps (50ms, ≈-20dBFS, with edge fades) ~150ms apart, captures via\n' +
+          '  WASAPI loopback, cross-correlates, returns:\n' +
+          '    measuredLatencyMs:    median Web Audio scheduling → loopback observation, ms\n' +
+          '    estimatedLatencyMs:   AudioContext.outputLatency + baseLatency (for comparison)\n' +
+          '    rangeMs:              max - min across chirps (gates ≤ 3 ms in v1)\n' +
+          '    meanConfidence:       mean normalized correlation peak (gates ≥ 0.7 in v1)\n' +
+          '    chirps[]:             per-chirp diagnostics\n' +
+          '  Validation goal: measuredLatencyMs stable across restarts where estimatedLatencyMs drifts.'
+        )
+      }
+    }
+    return () => { delete w.parallaxCalibration }
+  }, [])
 
   useEffect(() => {
     useThemeStore.getState().initFromSaved()
