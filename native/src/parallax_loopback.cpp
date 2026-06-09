@@ -226,7 +226,9 @@ public:
 
         running_.store(true);
         endpointOut = info;
-        endpointInfo_ = info;
+        // `endpointInfo_` was set by `workerInit` inside the worker thread before signaling
+        // startDone — no need to write here. The previous redundant write raced workerLoop's
+        // read; removing it eliminates the empty-segment bug.
         return true;
     }
 
@@ -341,6 +343,13 @@ private:
             errorOut = "IAudioClient::Start failed.";
             return false;
         }
+        // CRITICAL: set the shared member field here, from inside the worker thread, BEFORE
+        // workerLoop starts. The previous code set `endpointInfo_` on the main thread after
+        // signaling startDone — which raced workerLoop's read of `endpointInfo_.channelCount`.
+        // When the race lost, channelCount was 0, totalSamples was 0, every segment came out
+        // empty. workerLoop only reads endpointInfo_, never writes; no mutex needed since this
+        // write happens-before the workerLoop's read on the same thread.
+        endpointInfo_ = endpointOut;
         return true;
     }
 
