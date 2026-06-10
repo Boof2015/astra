@@ -194,6 +194,7 @@ const closeIcon = (
 export default function GraphView() {
   const trackPaths = useLibraryStore((state) => state.trackPaths)
   const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
+  const fullTracksStatus = useLibraryStore((state) => state.fullTracksStatus)
   const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
@@ -247,9 +248,11 @@ export default function GraphView() {
     () => resolveTrackPaths(trackPaths),
     [resolveTrackPaths, trackCacheVersion, trackPaths]
   )
+  // Wait for the full list before building the graph: partial reveals during
+  // progressive library loading would recompute the simulation per page.
   const fullTracks = useMemo(
-    () => resolveTrackPaths(fullTrackPaths),
-    [resolveTrackPaths, fullTrackPaths, trackCacheVersion]
+    () => (fullTracksStatus === 'complete' ? resolveTrackPaths(fullTrackPaths) : []),
+    [resolveTrackPaths, fullTrackPaths, fullTracksStatus, trackCacheVersion]
   )
   const graphTracks = fullTracks.length > 0
     ? fullTracks
@@ -257,8 +260,9 @@ export default function GraphView() {
 
   useEffect(() => {
     if (totalTrackCount <= 0 || graphTracks.length > 0 || isLibraryLoading) return
+    if (fullTracksStatus === 'loading') return
     void loadFullTracks('graph')
-  }, [graphTracks.length, isLibraryLoading, loadFullTracks, totalTrackCount])
+  }, [fullTracksStatus, graphTracks.length, isLibraryLoading, loadFullTracks, totalTrackCount])
 
   const setSurfaceRef = useCallback((node: HTMLDivElement | null) => {
     surfaceObserverRef.current?.disconnect()

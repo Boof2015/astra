@@ -284,6 +284,7 @@ export class AudioEngine {
   private pendingWaveformSamples: Float32Array[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
+  private static readonly EMPTY_SAMPLES = new Float32Array(0)
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
   private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
   private static readonly MAX_PENDING_VECTORSCOPE_CHUNKS = 20
@@ -697,6 +698,10 @@ export class AudioEngine {
     }
   }
 
+  // Queued chunks are shared by reference across queues and consumers:
+  // every source hands the engine exclusively owned arrays (structured-clone
+  // worklet messages, native flush results, normalization copies) and flush
+  // consumers treat chunks as read only, so per-queue copies are unnecessary.
   private queueCompatibilityVisualizerSamples(channels: Float32Array[]): void {
     const normalizedLeft = channels[0]
     const normalizedRight = channels[1] ?? normalizedLeft
@@ -725,8 +730,7 @@ export class AudioEngine {
     }
 
     if (oscilloscopeDemand) {
-      const leftChunk = new Float32Array(normalizedLeft)
-      this.enqueueOscilloscopeSamples(leftChunk)
+      this.enqueueOscilloscopeSamples(normalizedLeft)
     }
 
     if (spectrumDemand && mono) {
@@ -754,8 +758,8 @@ export class AudioEngine {
         )
       }
       this.pendingMiniVisualizerChunks.push({
-        left: miniOscilloscopeDemand ? new Float32Array(normalizedLeft) : new Float32Array(0),
-        mono: miniSpectrumDemand && mono ? mono : new Float32Array(0),
+        left: miniOscilloscopeDemand ? normalizedLeft : AudioEngine.EMPTY_SAMPLES,
+        mono: miniSpectrumDemand && mono ? mono : AudioEngine.EMPTY_SAMPLES,
       })
     }
 
@@ -766,8 +770,8 @@ export class AudioEngine {
         )
       }
       this.pendingVectorscopeSamples.push({
-        left: new Float32Array(normalizedLeft),
-        right: new Float32Array(normalizedRight)
+        left: normalizedLeft,
+        right: normalizedRight
       })
     }
 
@@ -778,8 +782,8 @@ export class AudioEngine {
         )
       }
       this.pendingLUFSMeterSamples.push({
-        left: new Float32Array(normalizedLeft),
-        right: new Float32Array(normalizedRight)
+        left: normalizedLeft,
+        right: normalizedRight
       })
     }
 
@@ -789,7 +793,7 @@ export class AudioEngine {
           -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
         )
       }
-      this.pendingWaveformSamples.push(new Float32Array(normalizedLeft))
+      this.pendingWaveformSamples.push(normalizedLeft)
     }
   }
 
@@ -802,9 +806,7 @@ export class AudioEngine {
       )
     }
 
-    this.pendingVUMeterSamples.push({
-      channels: channels.map((channel) => new Float32Array(channel)),
-    })
+    this.pendingVUMeterSamples.push({ channels })
   }
 
   private enqueueOscilloscopeSamples(chunk: Float32Array): void {

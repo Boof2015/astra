@@ -508,6 +508,7 @@ class LibrarySqliteDatabase {
   }
 
   run(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number | bigint } {
+    noteLibrarySqlMutation(sql)
     if (params.length > 0) {
       return this.database.prepare(sql).run(...params)
     }
@@ -517,6 +518,7 @@ class LibrarySqliteDatabase {
   }
 
   exec(sql: string): void {
+    noteLibrarySqlMutation(sql)
     this.database.exec(sql)
   }
 
@@ -907,9 +909,104 @@ function readAlbumIdentityRowsForTracks(tracks: readonly DbTrackRow[]): DbTrackR
   return readAlbumIdentityRowsByAlbumKeys(albumKeys)
 }
 
+// Cached, library-wide derived state for hot read paths. Album identity keys
+// depend on grouping context from the whole library, so computing them per
+// query forces full-table scans through the astra_normalize_album_key JS UDF;
+// the snapshot computes them once per write generation instead.
+interface LibraryTrackSnapshot {
+  generation: number
+  sortedPaths: string[]
+  identityKeysByPath: Map<string, string>
+  albumKeysByPath: Map<string, string>
+}
+
+let libraryWriteGeneration = 0
+let trackSnapshot: LibraryTrackSnapshot | null = null
+
+const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
+const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
+
+function invalidateLibraryTrackSnapshot(): void {
+  libraryWriteGeneration += 1
+  trackSnapshot = null
+}
+
+function noteLibrarySqlMutation(sql: string): void {
+  if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)) {
+    invalidateLibraryTrackSnapshot()
+    return
+  }
+  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
+    invalidateLibraryTrackSnapshot()
+  }
+}
+
+// The main process is single threaded and all library reads/writes are
+// synchronous, so a rebuild can never interleave with a write.
+function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
+  if (!db) return null
+  if (trackSnapshot && trackSnapshot.generation === libraryWriteGeneration) {
+    return trackSnapshot
+  }
+
+  return measureLibraryQuery('rebuildTrackSnapshot', () => {
+    const generation = libraryWriteGeneration
+    const rows = readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
+    `)
+    const identityKeysByPath = buildAlbumIdentityKeysByPath(rows)
+    const sortedPaths: string[] = new Array(rows.length)
+    const albumKeysByPath = new Map<string, string>()
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]
+      sortedPaths[index] = row.path
+      albumKeysByPath.set(row.path, normalizeSqliteAlbumKey(row.album))
+    }
+    trackSnapshot = { generation, sortedPaths, identityKeysByPath, albumKeysByPath }
+    return trackSnapshot
+  })
+}
+
+function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
+  if (!db || paths.length === 0) return []
+
+  const uniquePaths = Array.from(new Set(paths))
+  const rowsByPath = new Map<string, DbTrackRow>()
+  for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    for (const row of readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      WHERE t.path IN (${placeholders})
+    `, chunk)) {
+      rowsByPath.set(row.path, row)
+    }
+  }
+
+  const rows: DbTrackRow[] = []
+  for (const path of paths) {
+    const row = rowsByPath.get(path)
+    if (row) rows.push(row)
+  }
+  return rows
+}
+
 function readEffectiveTrackRowsByAlbumKey(albumKey: string): DbTrackRow[] {
   const normalizedAlbumKey = normalizeKey(albumKey)
   if (!normalizedAlbumKey) return []
+
+  const snapshot = getLibraryTrackSnapshot()
+  if (snapshot) {
+    const matchedPaths = snapshot.sortedPaths.filter((path) => (
+      snapshot.albumKeysByPath.get(path) === normalizedAlbumKey
+    ))
+    return readEffectiveTrackRowsByPaths(matchedPaths)
+  }
+
   return readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
@@ -924,8 +1021,24 @@ function attachAlbumIdentityKeys(
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
+  if (!libraryTracks) {
+    const snapshot = getLibraryTrackSnapshot()
+    if (snapshot) {
+      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath, latestSyncSummary)
+    }
+  }
+
   const effectiveLibraryTracks = libraryTracks ?? readAlbumIdentityRowsForTracks(tracks)
   const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
+  return attachAlbumIdentityKeysWithMap(tracks, albumIdentityKeysByPath, latestSyncSummary)
+}
+
+function attachAlbumIdentityKeysWithMap(
+  tracks: readonly DbTrackRow[],
+  albumIdentityKeysByPath: ReadonlyMap<string, string>,
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+): DbTrack[] {
+  if (tracks.length === 0) return []
 
   return tracks.map((track) => {
     const {
@@ -1553,6 +1666,7 @@ export async function initDatabase(): Promise<void> {
 
   await backupExistingSqlJsDatabase()
 
+  invalidateLibraryTrackSnapshot()
   db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
@@ -1968,6 +2082,7 @@ export function closeDatabase(): void {
     db.close()
     db = null
   }
+  invalidateLibraryTrackSnapshot()
 }
 
 export function setReplayGainScanEnabled(enabled: boolean): void {
@@ -3593,6 +3708,10 @@ export function getAllTracks(): DbTrack[] {
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
+    const snapshot = getLibraryTrackSnapshot()
+    if (snapshot) {
+      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath)
+    }
     return attachAlbumIdentityKeys(tracks, tracks)
   })
 }
@@ -3600,8 +3719,9 @@ export function getAllTracks(): DbTrack[] {
 export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryTrackPage {
   return measureLibraryQuery('getTrackPage', () => {
     const { offset, limit } = normalizeLibraryTrackPageRequest(request)
-    const total = getTrackCount()
-    if (!db || total === 0 || offset >= total) {
+    const snapshot = getLibraryTrackSnapshot()
+    const total = snapshot ? snapshot.sortedPaths.length : 0
+    if (!snapshot || total === 0 || offset >= total) {
       return {
         tracks: [],
         offset,
@@ -3612,14 +3732,10 @@ export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryT
       }
     }
 
-    const rows = readEffectiveTrackRows(`
-      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
-      ${ALL_TRACKS_ORDER_BY_CLAUSE}
-      LIMIT ? OFFSET ?
-    `, [limit, offset])
-    const tracks = attachAlbumIdentityKeys(rows)
-    const nextOffset = offset + rows.length
+    const pagePaths = snapshot.sortedPaths.slice(offset, offset + limit)
+    const rows = readEffectiveTrackRowsByPaths(pagePaths)
+    const tracks = attachAlbumIdentityKeysWithMap(rows, snapshot.identityKeysByPath)
+    const nextOffset = offset + pagePaths.length
 
     return {
       tracks,
@@ -3641,18 +3757,7 @@ export function getTracksByPaths(trackPaths: readonly string[] | null | undefine
     ))
     if (requestedPaths.length === 0) return []
 
-    const uniquePaths = Array.from(new Set(requestedPaths))
-    const rows: DbTrackRow[] = []
-    for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
-      const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
-      const placeholders = chunk.map(() => '?').join(', ')
-      rows.push(...readEffectiveTrackRows(`
-        SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-        ${EFFECTIVE_TRACK_FROM_CLAUSE}
-        WHERE t.path IN (${placeholders})
-      `, chunk))
-    }
-
+    const rows = readEffectiveTrackRowsByPaths(requestedPaths)
     const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
     const tracks: DbTrack[] = []
     for (const trackPath of requestedPaths) {
@@ -3707,10 +3812,7 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
       }
     }
 
-    return attachAlbumIdentityKeys(
-      matched.sort(compareTracksByAlbumDiscTrackTitle),
-      readAlbumIdentityRowsForTracks(matched)
-    )
+    return attachAlbumIdentityKeys(matched.sort(compareTracksByAlbumDiscTrackTitle))
   })
 }
 

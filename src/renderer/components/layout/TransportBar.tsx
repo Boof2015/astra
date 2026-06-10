@@ -41,7 +41,9 @@ function TransportWaveformSection({
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
   const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
   const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
-  const currentTime = usePlaybackClock()
+  // 30Hz keeps the waveform playhead visually smooth without re-rendering
+  // the transport section at display refresh rate.
+  const currentTime = usePlaybackClock(1 / 30)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const currentTrack = usePlayerStore((s) => s.currentTrack)

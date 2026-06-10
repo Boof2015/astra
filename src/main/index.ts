@@ -5985,6 +5985,7 @@ interface RemoteStreamSession {
   cancelled: boolean
   emittedStartedEvent: boolean
   stdinClosed: boolean
+  releaseSenderHooks: (() => void) | null
 }
 
 function resolveRemoteTrackDurationSeconds(filePath: string): number | null {
@@ -6114,6 +6115,9 @@ function finalizeRemoteStreamSession(
   session.failed = outcome === 'failed'
   session.cancelled = outcome === 'cancelled'
   remoteStreamSessions.delete(session.id)
+
+  session.releaseSenderHooks?.()
+  session.releaseSenderHooks = null
 
   try {
     session.abortController.abort()
@@ -6467,10 +6471,37 @@ async function startRemoteStreamSession(
       failed: false,
       cancelled: false,
       emittedStartedEvent: false,
-      stdinClosed: false
+      stdinClosed: false,
+      releaseSenderHooks: null
     }
 
     remoteStreamSessions.set(session.id, session)
+
+    // Tear the session down if the renderer goes away mid-stream (window
+    // closed or reloaded); otherwise ffmpeg keeps decoding for nothing.
+    const handleSenderDestroyed = (): void => {
+      finalizeRemoteStreamSession(session, 'cancelled')
+    }
+    const handleSenderNavigation = (
+      _event: Electron.Event,
+      _url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame || isInPlace) return
+      finalizeRemoteStreamSession(session, 'cancelled')
+    }
+    sender.once('destroyed', handleSenderDestroyed)
+    sender.on('did-start-navigation', handleSenderNavigation)
+    session.releaseSenderHooks = () => {
+      try {
+        sender.removeListener('destroyed', handleSenderDestroyed)
+        sender.removeListener('did-start-navigation', handleSenderNavigation)
+      } catch {
+        // Listener removal can race with sender teardown.
+      }
+    }
+
     safeSendRemoteLoadProgress(session, 'downloading', true)
 
     ffmpeg.stderr.setEncoding('utf8')

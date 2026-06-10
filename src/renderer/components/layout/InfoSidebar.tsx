@@ -26,7 +26,7 @@ type InfoSidebarTab = 'info' | 'lyrics'
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.1)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)

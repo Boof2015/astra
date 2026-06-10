@@ -272,6 +272,8 @@ export class Spectrogram {
 
   private fftRe: Float32Array
   private fftIm: Float32Array
+  // Reused per-FFT scratch; valid only until the next processFFT() call.
+  private fftMagnitudes: Float32Array = new Float32Array(0)
   private sampleBuffer: Float32Array
   private sampleBufferPos = 0
 
@@ -504,7 +506,10 @@ export class Spectrogram {
     fft(this.fftRe, this.fftIm)
 
     const numBins = paddedSize / 2
-    const magnitudes = new Float32Array(numBins)
+    if (this.fftMagnitudes.length !== numBins) {
+      this.fftMagnitudes = new Float32Array(numBins)
+    }
+    const magnitudes = this.fftMagnitudes
     const scale = 2 / windowSize  // normalize by window size, not padded size
 
     for (let index = 0; index < numBins; index += 1) {

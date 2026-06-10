@@ -135,6 +135,7 @@ interface LibraryStore {
   trackCacheVersion: number
   trackPaths: string[]
   fullTrackPaths: string[]
+  fullTracksStatus: 'idle' | 'loading' | 'complete'
   fullTrackConsumers: Set<LibraryFullTrackConsumer>
   totalTrackCount: number
   albums: Album[]
@@ -231,7 +232,8 @@ const MAX_FULL_ARTWORK_CACHE_ENTRIES = 4
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
-const FULL_TRACK_PAGE_LIMIT = 500
+const FULL_TRACK_PAGE_LIMIT = 2000
+const FULL_TRACK_REVEAL_INTERVAL_MS = 250
 export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
@@ -368,6 +370,7 @@ type TrackCachePatch = Partial<Pick<
   LibraryStore,
   | 'trackPaths'
   | 'fullTrackPaths'
+  | 'fullTracksStatus'
   | 'fullTrackConsumers'
   | 'searchQuery'
   | 'searchResultPaths'
@@ -750,6 +753,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   trackCacheVersion: 0,
   trackPaths: [],
   fullTrackPaths: [],
+  fullTracksStatus: 'idle',
   fullTrackConsumers: new Set<LibraryFullTrackConsumer>(),
   totalTrackCount: 0,
   albums: [],
@@ -868,55 +872,90 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const paths: string[] = []
     const seenPaths = new Set<string>()
     let offset = 0
+    let lastRevealAt = 0
+    let completed = false
 
-    while (true) {
-      const page = await window.electronAPI.library.getTracksPage({
-        offset,
-        limit: FULL_TRACK_PAGE_LIMIT
-      })
-      if (requestId !== fullTracksRequestId) {
-        return
-      }
-      if (get().fullTrackConsumers.size === 0) {
-        return
+    set((state) => (state.fullTracksStatus === 'loading' ? {} : { fullTracksStatus: 'loading' }))
+
+    try {
+      while (true) {
+        const page = await window.electronAPI.library.getTracksPage({
+          offset,
+          limit: FULL_TRACK_PAGE_LIMIT
+        })
+        if (requestId !== fullTracksRequestId) {
+          return
+        }
+        if (get().fullTrackConsumers.size === 0) {
+          return
+        }
+
+        for (const track of page.tracks) {
+          if (!track.path || seenPaths.has(track.path)) continue
+          seenPaths.add(track.path)
+          paths.push(track.path)
+        }
+
+        const isLastPage = !page.hasMore || page.tracks.length === 0
+
+        // Reveal pages as they arrive so large libraries display immediately,
+        // throttled because each reveal re-runs view-side sorting over the
+        // cumulative list. The final (pruning) publish happens after the loop.
+        const now = Date.now()
+        const shouldReveal = !isLastPage && (
+          lastRevealAt === 0 || now - lastRevealAt >= FULL_TRACK_REVEAL_INTERVAL_MS
+        )
+        if (shouldReveal) {
+          lastRevealAt = now
+        }
+
+        set((state) => {
+          if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+            return {}
+          }
+          const patch: Parameters<typeof ingestTracksForPatch>[2] = {}
+          if (shouldReveal) {
+            patch.fullTrackPaths = paths.slice()
+            const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && (
+              state.viewMode === 'tracks' || state.viewMode === 'folders'
+            )
+            if (shouldUseAsVisibleTracks) {
+              patch.trackPaths = paths.slice()
+            }
+          }
+          return ingestTracksForPatch(state, page.tracks, patch, { mutate: true, prune: false })
+        })
+
+        if (isLastPage) {
+          break
+        }
+
+        const nextOffset = Number(page.nextOffset)
+        offset = Number.isFinite(nextOffset) && nextOffset > offset
+          ? Math.trunc(nextOffset)
+          : offset + page.tracks.length
       }
 
-      for (const track of page.tracks) {
-        if (!track.path || seenPaths.has(track.path)) continue
-        seenPaths.add(track.path)
-        paths.push(track.path)
-      }
-
+      completed = true
       set((state) => {
         if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
           return {}
         }
-        return ingestTracksForPatch(state, page.tracks, {}, { mutate: true, prune: false })
+
+        const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && (
+          state.viewMode === 'tracks' || state.viewMode === 'folders'
+        )
+        return finalizeTrackCachePatch(state, {
+          fullTrackPaths: paths,
+          fullTracksStatus: 'complete',
+          ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
+        }, state.trackByPath, false)
       })
-
-      if (!page.hasMore || page.tracks.length === 0) {
-        break
+    } finally {
+      if (!completed && requestId === fullTracksRequestId) {
+        set((state) => (state.fullTracksStatus === 'loading' ? { fullTracksStatus: 'idle' } : {}))
       }
-
-      const nextOffset = Number(page.nextOffset)
-      offset = Number.isFinite(nextOffset) && nextOffset > offset
-        ? Math.trunc(nextOffset)
-        : offset + page.tracks.length
     }
-
-    set((state) => {
-      if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
-        return {}
-      }
-
-      const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && (
-        state.viewMode === 'tracks' || state.viewMode === 'folders'
-      )
-      return finalizeTrackCachePatch(state, {
-        fullTrackPaths: paths,
-        ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
-      }, state.trackByPath, false)
-    })
   },
 
   // Load full-library track count (independent of active selection/filter state)
@@ -1411,6 +1450,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       return finalizeTrackCachePatch(state, {
         fullTrackConsumers: nextConsumers.consumers,
         fullTrackPaths: [],
+        fullTracksStatus: 'idle',
         ...(!state.selectedAlbum && !state.selectedArtist ? { trackPaths: [] } : {})
       }, state.trackByPath, false)
     })

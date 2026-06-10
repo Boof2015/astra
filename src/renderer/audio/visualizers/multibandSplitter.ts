@@ -115,6 +115,28 @@ export class MultibandSplitter {
 
   private configuredSampleRate = 0
 
+  // Reused output/scratch buffers; the chunk returned by split() is only
+  // valid until the next split() call.
+  private scratchLength = -1
+  private outChunk: MultibandChunk | null = null
+  private midTmpL = new Float32Array(0)
+  private midTmpR = new Float32Array(0)
+
+  private ensureScratch(n: number): MultibandChunk {
+    if (this.outChunk && this.scratchLength === n) {
+      return this.outChunk
+    }
+    this.scratchLength = n
+    this.midTmpL = new Float32Array(n)
+    this.midTmpR = new Float32Array(n)
+    this.outChunk = {
+      low:  { left: new Float32Array(n), right: new Float32Array(n) },
+      mid:  { left: new Float32Array(n), right: new Float32Array(n) },
+      high: { left: new Float32Array(n), right: new Float32Array(n) },
+    }
+    return this.outChunk
+  }
+
   configure(sampleRate: number): void {
     if (sampleRate === this.configuredSampleRate) return
     this.configuredSampleRate = sampleRate
@@ -135,37 +157,23 @@ export class MultibandSplitter {
 
   split(left: Float32Array, right: Float32Array): MultibandChunk {
     const n = left.length
-
-    const lowL = new Float32Array(n)
-    const lowR = new Float32Array(n)
-    const midL = new Float32Array(n)
-    const midR = new Float32Array(n)
-    const highL = new Float32Array(n)
-    const highR = new Float32Array(n)
-
-    // Temp buffers for mid band (highpass then lowpass)
-    const midTmpL = new Float32Array(n)
-    const midTmpR = new Float32Array(n)
+    const out = this.ensureScratch(n)
 
     // Low band
-    this.lowLpL.process(left, lowL)
-    this.lowLpR.process(right, lowR)
+    this.lowLpL.process(left, out.low.left)
+    this.lowLpR.process(right, out.low.right)
 
     // Mid band (highpass → lowpass)
-    this.midHpL.process(left, midTmpL)
-    this.midHpR.process(right, midTmpR)
-    this.midLpL.process(midTmpL, midL)
-    this.midLpR.process(midTmpR, midR)
+    this.midHpL.process(left, this.midTmpL)
+    this.midHpR.process(right, this.midTmpR)
+    this.midLpL.process(this.midTmpL, out.mid.left)
+    this.midLpR.process(this.midTmpR, out.mid.right)
 
     // High band
-    this.highHpL.process(left, highL)
-    this.highHpR.process(right, highR)
+    this.highHpL.process(left, out.high.left)
+    this.highHpR.process(right, out.high.right)
 
-    return {
-      low:  { left: lowL, right: lowR },
-      mid:  { left: midL, right: midR },
-      high: { left: highL, right: highR },
-    }
+    return out
   }
 
   reset(): void {

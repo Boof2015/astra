@@ -78,7 +78,8 @@ function usePrefersReducedMotion(): boolean {
 function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
-  const currentTime = usePlaybackClock()
+  // 30Hz keeps the playhead visually smooth without frame-rate re-renders.
+  const currentTime = usePlaybackClock(1 / 30)
   const duration = usePlayerStore((s) => s.duration)
   const waveformData = usePlayerStore((s) => s.waveformData)
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
@@ -134,7 +135,7 @@ function FullscreenLyricsFocusBand({
   currentTrack: Track | null
   showLyrics: boolean
 }): ReactElement {
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.1)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
@@ -411,7 +412,7 @@ function FullscreenNextCueOverlay({
   repeat: 'none' | 'one' | 'all'
   setHeroPhase: Dispatch<SetStateAction<HeroPhase>>
 }): ReactElement | null {
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.25)
   const duration = usePlayerStore((s) => s.duration)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const [cueState, setCueState] = useState<CueState>('hidden')

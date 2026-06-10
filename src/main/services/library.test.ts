@@ -692,3 +692,82 @@ test('playlist export rejects unsupported file extensions', async (t) => {
     /Unsupported playlist export format/
   )
 })
+
+test('large library track pages stay fast and reflect writes', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Perf Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+
+  const ALBUM_COUNT = 2_500
+  const TRACKS_PER_ALBUM = 10
+  const seeded: library.SubsonicTrackUpsertInput[] = []
+  for (let albumIndex = 0; albumIndex < ALBUM_COUNT; albumIndex += 1) {
+    for (let trackNumber = 1; trackNumber <= TRACKS_PER_ALBUM; trackNumber += 1) {
+      seeded.push(createRemoteTrack({
+        path: `subsonic://perf/${albumIndex}/${trackNumber}`,
+        source_track_id: `perf-${albumIndex}-${trackNumber}`,
+        title: `Track ${String(trackNumber).padStart(2, '0')} of Album ${String(albumIndex).padStart(4, '0')}`,
+        artist: `Perf Artist ${albumIndex % 400}`,
+        album: `Perf Album ${String(albumIndex).padStart(4, '0')}`,
+        album_artist: `Perf Artist ${albumIndex % 400}`,
+        artwork_hash: `perf-art-${albumIndex}`,
+        track_number: trackNumber,
+        year: 2000 + (albumIndex % 25)
+      }))
+    }
+  }
+
+  library.beginLibraryWriteTransaction()
+  try {
+    await library.upsertSubsonicTracks(source.id, seeded)
+    library.commitLibraryWriteTransaction()
+  } catch (error) {
+    library.rollbackLibraryWriteTransaction()
+    throw error
+  }
+
+  const totalTracks = ALBUM_COUNT * TRACKS_PER_ALBUM
+
+  // First page pays the one-time snapshot rebuild.
+  const firstPage = library.getTrackPage({ offset: 0, limit: 2000 })
+  assert.equal(firstPage.total, totalTracks)
+  assert.equal(firstPage.tracks.length, 2000)
+
+  // Warm pages must not scale with library size.
+  const warmStartedAt = process.hrtime.bigint()
+  const midPage = library.getTrackPage({ offset: Math.floor(totalTracks / 2), limit: 2000 })
+  const warmMs = Number(process.hrtime.bigint() - warmStartedAt) / 1_000_000
+  assert.equal(midPage.tracks.length, 2000)
+  assert.ok(warmMs < 250, `warm getTrackPage took ${warmMs.toFixed(1)}ms`)
+
+  // Page contents must match the canonical full ordering.
+  const allTracks = library.getAllTracks()
+  assert.equal(allTracks.length, totalTracks)
+  assert.deepEqual(
+    midPage.tracks.map((track) => track.path),
+    allTracks.slice(Math.floor(totalTracks / 2), Math.floor(totalTracks / 2) + 2000).map((track) => track.path)
+  )
+  assert.ok(midPage.tracks.every((track) => typeof track.album_identity_key === 'string' && track.album_identity_key.length > 0))
+
+  // Writes must invalidate cached pages.
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({
+    path: 'subsonic://perf/0/1',
+    source_track_id: 'perf-0-1',
+    title: 'AAAA Renamed To Sort First',
+    artist: 'Perf Artist 0',
+    album: 'Perf Album 0000',
+    album_artist: 'Perf Artist 0',
+    artwork_hash: 'perf-art-0',
+    track_number: 1,
+    year: 2000
+  })])
+  const afterWritePage = library.getTrackPage({ offset: 0, limit: 10 })
+  assert.equal(afterWritePage.tracks[0]?.title, 'AAAA Renamed To Sort First')
+})
