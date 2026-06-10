@@ -12,6 +12,9 @@ export const TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS = 1000
 interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
+  privateMemoryExcludingCallerMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
 }
 
 export interface TitleBarPerformanceSample {
@@ -42,6 +45,9 @@ export function createEmptyTitleBarSample(): MemoryDiagnosticsTitleBarSampleSnap
     currentBufferMemoryMb: null,
     nextBufferMemoryMb: null,
     otherProcessMemoryMb: null,
+    mainProcessMemoryMb: null,
+    helperProcessesMemoryMb: null,
+    totalPrivateMb: null,
     totalWorkingSetMb: null,
     rendererHeapUsedMb: null,
     rendererExternalMb: null,
@@ -64,6 +70,9 @@ export function createEmptyTitleBarPeaks(): MemoryDiagnosticsTitleBarPeakSnapsho
     currentBufferMemoryMb: null,
     nextBufferMemoryMb: null,
     otherProcessMemoryMb: null,
+    mainProcessMemoryMb: null,
+    helperProcessesMemoryMb: null,
+    totalPrivateMb: null,
     totalWorkingSetMb: null,
     rendererHeapUsedMb: null,
     rendererExternalMb: null,
@@ -96,6 +105,9 @@ export function buildTitleBarSample(values: {
   mainHeapUsedBytes: number | null
   mainExternalBytes: number | null
   mainArrayBuffersBytes: number | null
+  privateMemoryExcludingRendererMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
   totalWorkingSetMb: number | null
   bufferMemoryMb: number | null
   currentBufferMemoryMb: number | null
@@ -103,6 +115,13 @@ export function buildTitleBarSample(values: {
 }): MemoryDiagnosticsTitleBarSampleSnapshot {
   const rendererPrivateMb = normalizeMb(values.rendererPrivateMb)
   const bufferMemoryMb = normalizeMb(values.bufferMemoryMb)
+  const privateExcludingRendererMb = normalizeMb(values.privateMemoryExcludingRendererMb)
+  // This renderer measures its own private memory; the main process supplies
+  // the private total for every other process. Both must be present for the
+  // combined figure to be meaningful.
+  const totalPrivateMb = privateExcludingRendererMb === null || rendererPrivateMb === null
+    ? null
+    : privateExcludingRendererMb + rendererPrivateMb
   const totalWorkingSetMb = normalizeMb(values.totalWorkingSetMb)
   const appMemoryMb = rendererPrivateMb === null || bufferMemoryMb === null
     ? null
@@ -119,6 +138,9 @@ export function buildTitleBarSample(values: {
     currentBufferMemoryMb: normalizeMb(values.currentBufferMemoryMb),
     nextBufferMemoryMb: normalizeMb(values.nextBufferMemoryMb),
     otherProcessMemoryMb,
+    mainProcessMemoryMb: normalizeMb(values.mainProcessMemoryMb),
+    helperProcessesMemoryMb: normalizeMb(values.helperProcessesMemoryMb),
+    totalPrivateMb,
     totalWorkingSetMb,
     rendererHeapUsedMb: bytesToMb(values.rendererHeapUsedBytes),
     rendererExternalMb: bytesToMb(values.rendererExternalBytes),
@@ -151,6 +173,9 @@ export function updateTitleBarPeaks(
     currentBufferMemoryMb: current.currentBufferMemoryMb,
     nextBufferMemoryMb: current.nextBufferMemoryMb,
     otherProcessMemoryMb: current.otherProcessMemoryMb,
+    mainProcessMemoryMb: current.mainProcessMemoryMb,
+    helperProcessesMemoryMb: current.helperProcessesMemoryMb,
+    totalPrivateMb: current.totalPrivateMb,
     totalWorkingSetMb: current.totalWorkingSetMb,
     rendererHeapUsedMb: current.rendererHeapUsedMb,
     rendererExternalMb: current.rendererExternalMb,
@@ -181,6 +206,9 @@ export function updateTitleBarPeaks(
   applyPeak('currentBufferMemoryMb', sample.currentBufferMemoryMb)
   applyPeak('nextBufferMemoryMb', sample.nextBufferMemoryMb)
   applyPeak('otherProcessMemoryMb', sample.otherProcessMemoryMb)
+  applyPeak('mainProcessMemoryMb', sample.mainProcessMemoryMb)
+  applyPeak('helperProcessesMemoryMb', sample.helperProcessesMemoryMb)
+  applyPeak('totalPrivateMb', sample.totalPrivateMb)
   applyPeak('totalWorkingSetMb', sample.totalWorkingSetMb)
   applyPeak('rendererHeapUsedMb', sample.rendererHeapUsedMb)
   applyPeak('rendererExternalMb', sample.rendererExternalMb)
@@ -210,6 +238,9 @@ export function createTitleBarPeaksFromSample(
     currentBufferMemoryMb: sample.currentBufferMemoryMb,
     nextBufferMemoryMb: sample.nextBufferMemoryMb,
     otherProcessMemoryMb: sample.otherProcessMemoryMb,
+    mainProcessMemoryMb: sample.mainProcessMemoryMb,
+    helperProcessesMemoryMb: sample.helperProcessesMemoryMb,
+    totalPrivateMb: sample.totalPrivateMb,
     totalWorkingSetMb: sample.totalWorkingSetMb,
     rendererHeapUsedMb: sample.rendererHeapUsedMb,
     rendererExternalMb: sample.rendererExternalMb,
@@ -249,6 +280,9 @@ export async function captureTitleBarPerformanceSample(): Promise<TitleBarPerfor
       : null,
     memory: buildTitleBarSample({
       sampledAt,
+      privateMemoryExcludingRendererMb: appStats?.privateMemoryExcludingCallerMb ?? null,
+      mainProcessMemoryMb: appStats?.mainProcessMemoryMb ?? null,
+      helperProcessesMemoryMb: appStats?.helperProcessesMemoryMb ?? null,
       totalWorkingSetMb: appStats?.workingSetMb ?? null,
       rendererPrivateMb: rendererMemory?.privateMb ?? null,
       rendererHeapUsedBytes: rendererMemory?.heapUsedBytes ?? null,

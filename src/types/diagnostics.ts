@@ -150,6 +150,9 @@ export interface MemoryDiagnosticsTitleBarSampleSnapshot {
   currentBufferMemoryMb: number | null
   nextBufferMemoryMb: number | null
   otherProcessMemoryMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
+  totalPrivateMb: number | null
   totalWorkingSetMb: number | null
   rendererHeapUsedMb: number | null
   rendererExternalMb: number | null
@@ -170,6 +173,9 @@ export interface MemoryDiagnosticsTitleBarPeakSnapshot {
   currentBufferMemoryMb: number | null
   nextBufferMemoryMb: number | null
   otherProcessMemoryMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
+  totalPrivateMb: number | null
   totalWorkingSetMb: number | null
   rendererHeapUsedMb: number | null
   rendererExternalMb: number | null

@@ -3843,14 +3843,64 @@ ipcMain.handle('app:getBuildInfo', () => {
   return getAppBuildInfo()
 })
 
-ipcMain.handle('app:getPerformanceStats', () => {
+ipcMain.handle('app:getPerformanceStats', async (event) => {
   const metrics = app.getAppMetrics()
   const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
   const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
 
+  // Working sets double-count framework pages shared between Electron
+  // processes, so their sum badly overstates what the app actually costs.
+  // Build a private-memory total instead: per-process privateBytes where the
+  // platform reports it (Windows), a direct measurement for the main process,
+  // and working set only for processes that can't be measured (GPU/utility
+  // on macOS). The calling renderer is excluded here because it adds its own
+  // directly measured private value to this sum.
+  let callerPid: number | null = null
+  try {
+    callerPid = event.sender.getOSProcessId()
+  } catch {
+    // Sender may be gone mid-call; fall through with no private total.
+  }
+  let mainPrivateKb: number | null = null
+  try {
+    mainPrivateKb = (await process.getProcessMemoryInfo()).private
+  } catch {
+    // Process metrics can be briefly unavailable; report null below.
+  }
+
+  let mainProcessKb: number | null = null
+  let helperProcessesKb: number | null = 0
+  if (callerPid === null) {
+    helperProcessesKb = null
+  } else {
+    for (const metric of metrics) {
+      if (metric.pid === callerPid) continue
+      const privateKb = metric.memory.privateBytes
+      const measuredKb = typeof privateKb === 'number' && Number.isFinite(privateKb) && privateKb > 0
+        ? privateKb
+        : metric.type === 'Browser' && mainPrivateKb !== null
+          ? mainPrivateKb
+          : metric.memory.workingSetSize
+      if (metric.type === 'Browser') {
+        mainProcessKb = measuredKb
+      } else {
+        helperProcessesKb += measuredKb
+      }
+    }
+  }
+
+  const privateExcludingCallerKb = helperProcessesKb === null
+    ? null
+    : helperProcessesKb + (mainProcessKb ?? 0)
+
   return {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
+    privateMemoryExcludingCallerMb: privateExcludingCallerKb === null
+      ? null
+      : privateExcludingCallerKb / 1024,
+    mainProcessMemoryMb: mainProcessKb === null ? null : mainProcessKb / 1024,
+    helperProcessesMemoryMb: helperProcessesKb === null ? null : helperProcessesKb / 1024,
   }
 })
 

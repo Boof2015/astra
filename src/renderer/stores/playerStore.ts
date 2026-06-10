@@ -1497,12 +1497,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
 
       const previousPlaybackState = state.playbackState
-      if (
-        state.currentTrack.sourceType
-        && state.currentTrack.sourceType !== 'local'
-        && previousPlaybackState === 'stopped'
-        && state.remoteStreamSessionId === null
-      ) {
+      // After a terminal stop the engine has released its decoded buffer
+      // (and any remote session), so restarting requires a full reload.
+      const needsReloadFromStopped = previousPlaybackState === 'stopped' && (
+        state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local'
+          ? state.remoteStreamSessionId === null
+          : audioEngine.getPlaybackOutputMode() === 'standard' && !audioEngine.hasDecodedAudioBuffer()
+      )
+      if (needsReloadFromStopped) {
         const reloaded = await get()._loadAndPlayTrack(state.currentTrack, { manualStart: true })
         if (reloaded === 'failed') {
           markTrackUnavailableInState(state.currentTrack.path)

@@ -366,6 +366,9 @@ export interface TrackOverrideSnapshot {
 export interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
+  privateMemoryExcludingCallerMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
 }
 
 export type MainProcessMemoryStats = MemoryDiagnosticsProcessMemoryStats

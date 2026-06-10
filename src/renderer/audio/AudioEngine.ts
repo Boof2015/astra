@@ -4501,6 +4501,8 @@ export class AudioEngine {
       if (this._playbackState === 'playing' && !this.isGaplessTransition) {
         this._playbackState = 'stopped'
         this.pauseTime = 0
+        this.stopSource()
+        this.releaseDecodedBuffers()
         this.emit('stateChange', this._playbackState)
         this.emit('ended')
         this.stopTimeUpdate()
@@ -4517,6 +4519,8 @@ export class AudioEngine {
       // No next track buffered, emit ended normally
       this._playbackState = 'stopped'
       this.pauseTime = 0
+      this.stopSource()
+      this.releaseDecodedBuffers()
       this.emit('stateChange', this._playbackState)
       this.emit('ended')
       this.stopTimeUpdate()
@@ -4579,6 +4583,10 @@ export class AudioEngine {
   }
 
   // Clear pre-buffered next track
+  hasDecodedAudioBuffer(): boolean {
+    return this.audioBuffer !== null
+  }
+
   clearNextBuffer(): void {
     this.invalidatePrebufferOperations()
     this.nextNormalizationAnalysis = null
@@ -4789,11 +4797,22 @@ export class AudioEngine {
 
     this.stopSource()
     this.cancelScheduledNext()
+    this.releaseDecodedBuffers()
     this.pauseTime = 0
     this._playbackState = 'stopped'
     this.emit('stateChange', this._playbackState)
     this.emit('timeUpdate', 0)
     this.stopTimeUpdate()
+  }
+
+  // Decoded PCM is large (~10MB/min at 44.1k stereo); once playback has
+  // terminally stopped nothing can use it, so drop it instead of letting it
+  // sit until the next load. Pause intentionally keeps buffers for instant
+  // resume; restart-after-stop goes through the store's full reload path.
+  private releaseDecodedBuffers(): void {
+    this.audioBuffer = null
+    this.currentBufferTrackPath = null
+    this.clearNextBuffer()
   }
 
   // Seek to time in seconds

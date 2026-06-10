@@ -214,7 +214,7 @@ declare global {
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppBuildInfo: () => Promise<AppBuildInfo>
-            getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number }>
+            getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number; privateMemoryExcludingCallerMb: number | null; mainProcessMemoryMb: number | null; helperProcessesMemoryMb: number | null }>
             getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
             getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
             diagnostics: {
