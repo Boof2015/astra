@@ -224,6 +224,7 @@ declare global {
                 revealPreviousLog: () => Promise<boolean>
                 captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
                 getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+                clearRendererCache: () => void
                 publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
                 logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
                 onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void

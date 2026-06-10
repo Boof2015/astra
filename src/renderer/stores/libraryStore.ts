@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { TrackSourceType } from '../../types/subsonic'
+import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import { useUIStore } from './uiStore'
 
 // Types matching preload
 export interface DbTrack {
@@ -100,9 +102,17 @@ export interface ArtworkRequestOptions {
   format?: ArtworkResponseFormat
 }
 
-interface ArtworkCacheEntry {
-  url: string
-  byteLength: number
+// Displayable artwork URLs are deterministic astra-artwork:// protocol URLs
+// served by the main process; Chromium owns image caching and eviction, so
+// the renderer keeps no artwork byte caches.
+const ARTWORK_PROTOCOL_VARIANT_SEGMENTS: Record<ArtworkVariant, string> = {
+  thumbnail: 'thumb',
+  card: 'card',
+  full: 'full'
+}
+
+function buildArtworkProtocolUrl(hash: string, variant: ArtworkVariant): string {
+  return `astra-artwork://art/${ARTWORK_PROTOCOL_VARIANT_SEGMENTS[variant]}/${encodeURIComponent(hash)}`
 }
 
 type ScanStage = 'scanning' | 'backfill' | 'cleanup'
@@ -158,7 +168,6 @@ interface LibraryStore {
   folderWarnings: Record<string, string[]>
   lastScanIssueLog: ScanIssueLog | null
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
-  artworkCache: Map<string, ArtworkCacheEntry>
   favorites: Set<string>
   favoriteTrackPaths: string[]
   recentlyPlayedPaths: string[]
@@ -225,10 +234,6 @@ interface LibraryStore {
   pruneFolderViewExpandedPaths: (validFolderPaths: ReadonlySet<string>) => void
 }
 
-// Artwork cache stored outside of zustand to avoid re-renders
-const MAX_THUMBNAIL_CACHE_ENTRIES = 128
-const MAX_CARD_ARTWORK_CACHE_ENTRIES = 64
-const MAX_FULL_ARTWORK_CACHE_ENTRIES = 4
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
@@ -237,19 +242,71 @@ const FULL_TRACK_REVEAL_INTERVAL_MS = 250
 export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
-const artworkCache = new Map<string, ArtworkCacheEntry>()
-const cardArtworkCache = new Map<string, ArtworkCacheEntry>()
-const thumbnailArtworkCache = new Map<string, ArtworkCacheEntry>()
+// Dedup for the remaining data-url IPC requests (consumers that ship
+// artwork outside this renderer, e.g. media session and remote controllers).
 const artworkRequestCache = new Map<string, Promise<string | null>>()
 let fullTracksRequestId = 0
 
-function estimateArtworkCacheBytes(cache: Map<string, ArtworkCacheEntry>): number {
-  let total = 0
-  for (const [key, entry] of cache.entries()) {
-    total += (key.length * 2) + (entry.url.length * 2) + entry.byteLength
-  }
-  return total
+// Blink's decoded-image cache accumulates while browsing artwork-heavy views
+// and is never released on its own. Once the user has been away from all of
+// them for a while, ask Blink to drop it — but only when the image cache is
+// actually holding enough to be worth clearing. A wasted clear is cheap
+// (artwork re-serves from the disk-backed astra-artwork protocol), so the
+// delay is just a debounce against quick bounce-backs.
+const BLINK_CACHE_CLEAR_DELAY_MS = 45_000
+const BLINK_CACHE_CLEAR_MIN_IMAGE_BYTES = 24 * 1024 * 1024
+// The fullscreen overlay covers the active view and shows a single backdrop,
+// so time spent there counts as "away" — long fullscreen listening sessions
+// are exactly when reclaiming browse artwork matters.
+const ARTWORK_HEAVY_VIEWS: ReadonlySet<string> = new Set(['home', 'library', 'playlist', 'graph'])
+let blinkCacheClearTimer: number | null = null
+
+function isArtworkHeavyUiState(state: { activeView: string; isFullscreen: boolean }): boolean {
+  return !state.isFullscreen && ARTWORK_HEAVY_VIEWS.has(state.activeView)
 }
+
+function cancelScheduledBlinkCacheClear(): void {
+  if (blinkCacheClearTimer !== null) {
+    window.clearTimeout(blinkCacheClearTimer)
+    blinkCacheClearTimer = null
+  }
+}
+
+function scheduleBlinkCacheClear(): void {
+  cancelScheduledBlinkCacheClear()
+  blinkCacheClearTimer = window.setTimeout(() => {
+    blinkCacheClearTimer = null
+    try {
+      if (isArtworkHeavyUiState(useUIStore.getState())) return
+
+      const imageCacheBytes = window.electronAPI.diagnostics.getBlinkResourceUsage()?.images?.size
+      if (typeof imageCacheBytes === 'number' && imageCacheBytes < BLINK_CACHE_CLEAR_MIN_IMAGE_BYTES) {
+        return
+      }
+
+      window.electronAPI.diagnostics.clearRendererCache()
+      logMemoryDiagnosticsEvent('renderer_blink_cache_cleared', {
+        reason: 'artwork_views_idle',
+        imageCacheMb: typeof imageCacheBytes === 'number'
+          ? Number((imageCacheBytes / (1024 * 1024)).toFixed(1))
+          : null
+      })
+    } catch {
+      // Cache clearing is best-effort.
+    }
+  }, BLINK_CACHE_CLEAR_DELAY_MS)
+}
+
+// Schedule on leaving the artwork-heavy views, cancel on returning to one.
+useUIStore.subscribe((state, prevState) => {
+  const heavy = isArtworkHeavyUiState(state)
+  if (heavy === isArtworkHeavyUiState(prevState)) return
+  if (heavy) {
+    cancelScheduledBlinkCacheClear()
+  } else {
+    scheduleBlinkCacheClear()
+  }
+})
 
 export function getUniqueTrackPaths(tracks: readonly DbTrack[]): string[] {
   const paths: string[] = []
@@ -626,91 +683,6 @@ function getArtworkRequestKey(cacheKey: string, format: ArtworkResponseFormat): 
   return `${format}:${cacheKey}`
 }
 
-function revokeArtworkCacheEntry(entry: ArtworkCacheEntry | undefined): void {
-  if (!entry?.url.startsWith('blob:')) return
-  URL.revokeObjectURL(entry.url)
-}
-
-function dataUrlToArtworkCacheEntry(dataUrl: string): ArtworkCacheEntry | null {
-  const commaIndex = dataUrl.indexOf(',')
-  if (commaIndex <= 0) return null
-
-  const header = dataUrl.slice(0, commaIndex)
-  const payload = dataUrl.slice(commaIndex + 1)
-  const mime = header.match(/^data:([^;,]+)/)?.[1] ?? 'image/jpeg'
-
-  try {
-    if (header.toLocaleLowerCase().includes(';base64')) {
-      const binary = atob(payload)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i)
-      }
-      const blob = new Blob([bytes], { type: mime })
-      return {
-        url: URL.createObjectURL(blob),
-        byteLength: blob.size
-      }
-    }
-
-    const decoded = decodeURIComponent(payload)
-    const blob = new Blob([decoded], { type: mime })
-    return {
-      url: URL.createObjectURL(blob),
-      byteLength: blob.size
-    }
-  } catch {
-    return null
-  }
-}
-
-function setLruCacheEntry(
-  cache: Map<string, ArtworkCacheEntry>,
-  cacheKey: string,
-  entry: ArtworkCacheEntry,
-  maxEntries: number
-): void {
-  const existing = cache.get(cacheKey)
-  if (existing) {
-    revokeArtworkCacheEntry(existing)
-  }
-  cache.delete(cacheKey)
-  cache.set(cacheKey, entry)
-
-  while (cache.size > maxEntries) {
-    const oldestKey = cache.keys().next().value
-    if (!oldestKey) return
-    revokeArtworkCacheEntry(cache.get(oldestKey))
-    cache.delete(oldestKey)
-  }
-}
-
-function getLruCacheEntry(cache: Map<string, ArtworkCacheEntry>, cacheKey: string): string | undefined {
-  const cached = cache.get(cacheKey)
-  if (!cached) return undefined
-  // Touch entry to keep LRU order.
-  cache.delete(cacheKey)
-  cache.set(cacheKey, cached)
-  return cached.url
-}
-
-function clearArtworkCache(cache: Map<string, ArtworkCacheEntry>): void {
-  for (const entry of cache.values()) {
-    revokeArtworkCacheEntry(entry)
-  }
-  cache.clear()
-}
-
-function clearAllArtworkCaches(): void {
-  clearArtworkCache(artworkCache)
-  clearArtworkCache(cardArtworkCache)
-  clearArtworkCache(thumbnailArtworkCache)
-}
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', clearAllArtworkCaches)
-}
-
 function normalizeScanIssueLog(scanIssueLog: ScanIssueLog | null | undefined): ScanIssueLog | null {
   if (!scanIssueLog || scanIssueLog.total <= 0) return null
 
@@ -776,7 +748,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   folderWarnings: {},
   lastScanIssueLog: null,
   folderSubfolderSummaries: {},
-  artworkCache,
   favorites: new Set<string>(),
   favoriteTrackPaths: [],
   recentlyPlayedPaths: [],
@@ -1567,22 +1538,17 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     if (!hash) return null
     const variant: ArtworkVariant = options?.variant ?? 'card'
     const format: ArtworkResponseFormat = options?.format ?? 'object-url'
-    const cacheKey = getArtworkCacheKey(hash, variant)
-    const requestKey = getArtworkRequestKey(cacheKey, format)
 
-    const cache = variant === 'thumbnail'
-      ? thumbnailArtworkCache
-      : variant === 'card'
-        ? cardArtworkCache
-        : artworkCache
+    // Displayable URLs are deterministic; the astra-artwork protocol serves
+    // the bytes and Chromium handles caching. May 404 for missing art, so
+    // consumers need an error fallback.
     if (format === 'object-url') {
-      const cached = getLruCacheEntry(cache, cacheKey)
-      if (cached) {
-        return cached
-      }
+      return buildArtworkProtocolUrl(hash, variant)
     }
 
-    // Deduplicate concurrent requests for the same artwork hash + variant.
+    // Data URLs still go over IPC for consumers that ship artwork outside
+    // this renderer (media session, remote controller snapshots).
+    const requestKey = getArtworkRequestKey(getArtworkCacheKey(hash, variant), format)
     if (artworkRequestCache.has(requestKey)) {
       return artworkRequestCache.get(requestKey)!
     }
@@ -1594,22 +1560,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           ? window.electronAPI.library.getArtworkCardDataUrl(hash)
           : window.electronAPI.library.getArtworkDataUrl(hash)
     )
-      .then((dataUrl) => {
-        if (!dataUrl) return null
-        if (format === 'data-url') return dataUrl
-
-        const entry = dataUrlToArtworkCacheEntry(dataUrl)
-        if (!entry) return dataUrl
-
-        if (variant === 'thumbnail') {
-          setLruCacheEntry(thumbnailArtworkCache, cacheKey, entry, MAX_THUMBNAIL_CACHE_ENTRIES)
-        } else if (variant === 'card') {
-          setLruCacheEntry(cardArtworkCache, cacheKey, entry, MAX_CARD_ARTWORK_CACHE_ENTRIES)
-        } else {
-          setLruCacheEntry(artworkCache, cacheKey, entry, MAX_FULL_ARTWORK_CACHE_ENTRIES)
-        }
-        return entry.url
-      })
+      .then((dataUrl) => dataUrl ?? null)
       .catch(() => null)
       .finally(() => {
         artworkRequestCache.delete(requestKey)
@@ -1840,12 +1791,15 @@ export function getLibraryDiagnosticsSnapshot(): {
     selectedDetailTrackCount: state.selectedAlbum || state.selectedArtist ? state.trackPaths.length : 0,
     scanInProgress: state.isScanning,
     caches: {
-      artworkFullEntries: artworkCache.size,
-      artworkFullBytes: estimateArtworkCacheBytes(artworkCache),
-      artworkThumbnailEntries: thumbnailArtworkCache.size,
-      artworkThumbnailBytes: estimateArtworkCacheBytes(thumbnailArtworkCache),
-      artworkCardEntries: cardArtworkCache.size,
-      artworkCardBytes: estimateArtworkCacheBytes(cardArtworkCache),
+      // Renderer artwork byte caches were removed with the astra-artwork
+      // protocol migration; Chromium owns image caching now. Shape kept for
+      // the memory diagnostics CSV.
+      artworkFullEntries: 0,
+      artworkFullBytes: 0,
+      artworkThumbnailEntries: 0,
+      artworkThumbnailBytes: 0,
+      artworkCardEntries: 0,
+      artworkCardBytes: 0,
       artworkRequests: artworkRequestCache.size
     }
   }

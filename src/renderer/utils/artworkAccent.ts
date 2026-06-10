@@ -316,6 +316,10 @@ function loadImage(source: string): Promise<HTMLImageElement> {
     }
 
     image.decoding = 'async'
+    // astra-artwork:// responses are cross-origin to the page; without CORS
+    // the canvas would taint and getImageData would throw. Harmless for the
+    // data: URLs used by remote-source artwork.
+    image.crossOrigin = 'anonymous'
     image.onload = () => finish(() => resolve(image))
     image.onerror = () => finish(() => reject(new Error('Failed to decode artwork image')))
     image.src = source

@@ -92,7 +92,16 @@ function ResultThumbnail({ hash, fallback }: { hash: string | null | undefined; 
   }, [hash, getArtwork])
 
   if (url) {
-    return <img src={url} className="ql-thumb" alt="" loading="lazy" decoding="async" />
+    return (
+      <img
+        src={url}
+        className="ql-thumb"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        onError={() => setUrl(null)}
+      />
+    )
   }
   return <div className="ql-thumb ql-thumb-placeholder">{fallback}</div>
 }

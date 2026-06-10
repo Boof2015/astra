@@ -688,6 +688,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
       ipcRenderer.invoke('diagnostics:captureMemoryBundle', tag),
     getBlinkResourceUsage: (): MemoryDiagnosticsBlinkResourceUsageSnapshot => getBlinkResourceUsage(),
+    clearRendererCache: (): void => webFrame.clearCache(),
     publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
       ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
     logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
@@ -1158,6 +1159,7 @@ declare global {
         revealPreviousLog: () => Promise<boolean>
         captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
         getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+        clearRendererCache: () => void
         publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
         logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -422,8 +422,28 @@ const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
 const REMOTE_STREAM_CHUNK_FRAMES = 4096
 const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
+// Artwork is served to renderers over a custom protocol instead of base64
+// data URLs over IPC: bytes go through Chromium's network pipeline, images
+// get short stable URL keys with real cache semantics, and the renderer
+// needs no blob bookkeeping. Must be registered before app ready.
+const ARTWORK_PROTOCOL_SCHEME = 'astra-artwork'
+protocol.registerSchemesAsPrivileged([{
+  scheme: ARTWORK_PROTOCOL_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+    corsEnabled: true
+  }
+}])
+
 let artworkThumbnailCacheDir = ''
-const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
+interface ArtworkBytes {
+  bytes: Buffer
+  mimeType: string
+}
+const artworkThumbnailRequestCache = new Map<string, Promise<ArtworkBytes | null>>()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -3427,36 +3447,35 @@ function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: n
   })
 }
 
-async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
+async function getArtworkBytesByHash(hash: string): Promise<ArtworkBytes | null> {
   if (!hash) return null
   try {
     const artworkPath = library.getArtworkPath(hash)
     const data = await readFile(artworkPath)
-    return toDataUrl(detectArtworkMimeType(hash, data), data)
+    return { bytes: data, mimeType: detectArtworkMimeType(hash, data) }
   } catch {
     return null
   }
 }
 
-async function getArtworkThumbnailDataUrlByHash(
-  hash: string,
-  options?: {
-    maxEdgePx?: number
-    jpegQuality?: number
-  }
-): Promise<string | null> {
-  if (!hash) return null
+async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
+  const artwork = await getArtworkBytesByHash(hash)
+  return artwork ? toDataUrl(artwork.mimeType, artwork.bytes) : null
+}
 
+async function resolveArtworkThumbnailBytesByHash(
+  hash: string,
+  maxEdgePx: number,
+  jpegQuality: number
+): Promise<ArtworkBytes | null> {
   try {
     await ensureArtworkThumbnailCacheDirectory()
-    const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
-    const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
     const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
       if (cached.length > 0) {
-        return toDataUrl('image/jpeg', cached)
+        return { bytes: cached, mimeType: 'image/jpeg' }
       }
     } catch {
       // Cache miss: generate and persist below.
@@ -3466,13 +3485,13 @@ async function getArtworkThumbnailDataUrlByHash(
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkBytesByHash(hash)
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkBytesByHash(hash)
     }
 
     try {
@@ -3483,11 +3502,109 @@ async function getArtworkThumbnailDataUrlByHash(
       }
     }
 
-    return toDataUrl('image/jpeg', thumbnailBuffer)
+    return { bytes: thumbnailBuffer, mimeType: 'image/jpeg' }
   } catch (error) {
-    console.warn('Failed to resolve artwork thumbnail data URL:', hash, error)
-    return getArtworkDataUrlByHash(hash)
+    console.warn('Failed to resolve artwork thumbnail:', hash, error)
+    return getArtworkBytesByHash(hash)
   }
+}
+
+function getArtworkThumbnailBytesByHash(
+  hash: string,
+  options?: {
+    maxEdgePx?: number
+    jpegQuality?: number
+  }
+): Promise<ArtworkBytes | null> {
+  if (!hash) return Promise.resolve(null)
+
+  const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
+  const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
+
+  // Deduplicate concurrent generation per hash+size across all entry points
+  // (IPC, custom protocol, remote controller services).
+  const requestKey = getArtworkThumbnailCacheKey(hash, maxEdgePx)
+  const pending = artworkThumbnailRequestCache.get(requestKey)
+  if (pending) return pending
+
+  const request = resolveArtworkThumbnailBytesByHash(hash, maxEdgePx, jpegQuality)
+    .finally(() => {
+      artworkThumbnailRequestCache.delete(requestKey)
+    })
+  artworkThumbnailRequestCache.set(requestKey, request)
+  return request
+}
+
+async function getArtworkThumbnailDataUrlByHash(
+  hash: string,
+  options?: {
+    maxEdgePx?: number
+    jpegQuality?: number
+  }
+): Promise<string | null> {
+  const artwork = await getArtworkThumbnailBytesByHash(hash, options)
+  return artwork ? toDataUrl(artwork.mimeType, artwork.bytes) : null
+}
+
+// URL shape: astra-artwork://art/<thumb|card|full>/<encodeURIComponent(hash)>
+// Hashes are md5 hex with an optional extension, optionally prefixed with
+// "plc:" (playlist covers) or "ari:" (artist images).
+const ARTWORK_PROTOCOL_HASH_PATTERN = /^(?:plc:|ari:)?[A-Za-z0-9][A-Za-z0-9._ -]*$/
+
+function artworkProtocolNotFound(): Response {
+  return new Response(null, { status: 404 })
+}
+
+function registerArtworkProtocolHandler(): void {
+  protocol.handle(ARTWORK_PROTOCOL_SCHEME, async (request) => {
+    let variant: string
+    let hash: string
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'art') return artworkProtocolNotFound()
+      const segments = url.pathname.split('/').filter((segment) => segment.length > 0)
+      if (segments.length !== 2) return artworkProtocolNotFound()
+      variant = segments[0]
+      hash = decodeURIComponent(segments[1])
+    } catch {
+      return artworkProtocolNotFound()
+    }
+
+    // library.getArtworkPath joins the hash into a path, so reject anything
+    // that could traverse outside the artwork directories.
+    if (!ARTWORK_PROTOCOL_HASH_PATTERN.test(hash) || hash.includes('..')) {
+      return artworkProtocolNotFound()
+    }
+
+    let artwork: ArtworkBytes | null = null
+    if (variant === 'thumb') {
+      artwork = await getArtworkThumbnailBytesByHash(hash, {
+        maxEdgePx: TRACKLIST_THUMB_MAX_EDGE_PX,
+        jpegQuality: TRACKLIST_THUMB_JPEG_QUALITY
+      })
+    } else if (variant === 'card') {
+      artwork = await getArtworkThumbnailBytesByHash(hash, {
+        maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX,
+        jpegQuality: CARD_ARTWORK_JPEG_QUALITY
+      })
+    } else if (variant === 'full') {
+      artwork = await getArtworkBytesByHash(hash)
+    } else {
+      return artworkProtocolNotFound()
+    }
+
+    if (!artwork) return artworkProtocolNotFound()
+
+    return new Response(new Uint8Array(artwork.bytes), {
+      headers: {
+        'Content-Type': artwork.mimeType,
+        // Hash-addressed and versioned via the on-disk thumb cache key, so
+        // responses never change for a given URL.
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Access-Control-Allow-Origin': '*'
+      }
+    })
+  })
 }
 
 app.on('second-instance', (_event, commandLine) => {
@@ -3529,6 +3646,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('Failed to initialize artwork thumbnail cache directory:', error)
   }
+  registerArtworkProtocolHandler()
   const memoryDiagnosticsEnabled = await loadMemoryDiagnosticsEnabledFromMeta()
   memoryDiagnosticsService = new MemoryDiagnosticsService({
     userDataPath: app.getPath('userData'),
@@ -5825,44 +5943,18 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
 
 // Get tracklist-sized artwork thumbnail as data URL
 ipcMain.handle('library:getArtworkThumbnailDataUrl', async (_event, hash: string) => {
-  if (!hash) return null
-
-  const requestKey = getArtworkThumbnailCacheKey(hash, TRACKLIST_THUMB_MAX_EDGE_PX)
-  if (artworkThumbnailRequestCache.has(requestKey)) {
-    return artworkThumbnailRequestCache.get(requestKey)!
-  }
-
-  const request = getArtworkThumbnailDataUrlByHash(hash, {
+  return getArtworkThumbnailDataUrlByHash(hash, {
     maxEdgePx: TRACKLIST_THUMB_MAX_EDGE_PX,
     jpegQuality: TRACKLIST_THUMB_JPEG_QUALITY
   })
-    .finally(() => {
-      artworkThumbnailRequestCache.delete(requestKey)
-    })
-
-  artworkThumbnailRequestCache.set(requestKey, request)
-  return request
 })
 
 // Get card-sized artwork thumbnail as data URL
 ipcMain.handle('library:getArtworkCardDataUrl', async (_event, hash: string) => {
-  if (!hash) return null
-
-  const requestKey = getArtworkThumbnailCacheKey(hash, CARD_ARTWORK_MAX_EDGE_PX)
-  if (artworkThumbnailRequestCache.has(requestKey)) {
-    return artworkThumbnailRequestCache.get(requestKey)!
-  }
-
-  const request = getArtworkThumbnailDataUrlByHash(hash, {
+  return getArtworkThumbnailDataUrlByHash(hash, {
     maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX,
     jpegQuality: CARD_ARTWORK_JPEG_QUALITY
   })
-    .finally(() => {
-      artworkThumbnailRequestCache.delete(requestKey)
-    })
-
-  artworkThumbnailRequestCache.set(requestKey, request)
-  return request
 })
 
 // ============================================
