@@ -299,6 +299,14 @@ function isTrackSelectionModifierActive(event: Pick<MouseEvent | PointerEvent | 
   return event.ctrlKey || event.metaKey
 }
 
+function isTrackSelectionPreservingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+
+  return Boolean(target.closest(
+    '.track-row, .track-context-menu, .track-playlist-popup, .modal-overlay, .modal-content'
+  ))
+}
+
 function areTrackPathSetsEqual(left: Set<string>, right: Set<string>): boolean {
   if (left === right) return true
   if (left.size !== right.size) return false
@@ -948,6 +956,11 @@ export default function TrackList({
   useEffect(() => {
     if (selectedTrackPaths.size === 0) return
 
+    const handlePointerDown = (event: PointerEvent) => {
+      if (isTrackSelectionPreservingTarget(event.target)) return
+      setSelectedTrackPaths(new Set())
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       setSelectedTrackPaths(new Set())
@@ -961,8 +974,10 @@ export default function TrackList({
       }
     }
 
+    document.addEventListener('pointerdown', handlePointerDown, true)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [clearQueueInsertPointerListeners, clearTrackDrag, selectedTrackPaths.size])

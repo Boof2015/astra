@@ -4584,11 +4584,48 @@ button, .titlebar {
 }
 
 .track-row-queue-selected {
-  background: rgba(var(--accent-rgb), 0.07);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.18) 0%,
+    rgba(var(--accent-rgb), 0.11) 42%,
+    rgba(var(--accent-rgb), 0.075) 100%
+  );
+  box-shadow:
+    inset 3px 0 0 rgba(var(--accent-rgb), 0.9),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.28);
 }
 
 .track-row-queue-selected:hover {
-  background: rgba(var(--accent-rgb), 0.09);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.24) 0%,
+    rgba(var(--accent-rgb), 0.14) 42%,
+    rgba(var(--accent-rgb), 0.09) 100%
+  );
+  box-shadow:
+    inset 3px 0 0 rgba(var(--accent-rgb), 1),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.38);
+}
+
+.track-row-active.track-row-queue-selected {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.27) 0%,
+    rgba(var(--accent-rgb), 0.16) 42%,
+    rgba(var(--accent-rgb), 0.1) 100%
+  );
+  box-shadow:
+    inset 3px 0 0 rgba(var(--accent-rgb), 1),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.44);
+}
+
+.track-row-active.track-row-queue-selected:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.31) 0%,
+    rgba(var(--accent-rgb), 0.18) 42%,
+    rgba(var(--accent-rgb), 0.12) 100%
+  );
 }
 
 .track-row-queue-armed {
@@ -12617,6 +12654,34 @@ body::after {
 
 .track-row-active:hover {
   background: rgba(var(--accent-rgb), 0.14);
+}
+
+.track-row.track-row-queue-selected:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.24) 0%,
+    rgba(var(--accent-rgb), 0.14) 42%,
+    rgba(var(--accent-rgb), 0.09) 100%
+  );
+  box-shadow:
+    inset 3px 0 0 rgba(var(--accent-rgb), 1),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.38);
+}
+
+.track-row.track-row-active.track-row-queue-selected:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.31) 0%,
+    rgba(var(--accent-rgb), 0.18) 42%,
+    rgba(var(--accent-rgb), 0.12) 100%
+  );
+  box-shadow:
+    inset 3px 0 0 rgba(var(--accent-rgb), 1),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.44);
+}
+
+.track-row.track-row-queue-armed:hover {
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 .track-col-title {
