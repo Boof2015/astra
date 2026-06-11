@@ -1,6 +1,6 @@
 import { type WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
-import { usePlayerStore } from '../../stores/playerStore'
+import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
@@ -275,6 +275,20 @@ export default function LibraryView() {
       return `artist:${selectedArtist.trim().toLocaleLowerCase()}`
     }
     return 'library-root'
+  }, [selectedAlbum, selectedArtist])
+  const playbackSourceContext = useMemo<PlaybackSourceContext | null>(() => {
+    if (selectedAlbum) {
+      return {
+        type: 'album',
+        album: selectedAlbum.album,
+        albumArtist: selectedAlbum.artist || undefined,
+        identityKey: selectedAlbum.identity_key
+      }
+    }
+    if (selectedArtist) {
+      return { type: 'artist', artist: selectedArtist }
+    }
+    return null
   }, [selectedAlbum, selectedArtist])
   const sourceFilterOptions = useMemo(() => {
     return [
@@ -602,7 +616,8 @@ export default function LibraryView() {
       const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
       await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
-        contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library'
+        contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library',
+        sourceContext: playbackSourceContext
       })
       if (!shuffle) {
         toggleShuffle()
@@ -613,7 +628,7 @@ export default function LibraryView() {
       shufflePlayPendingRef.current = false
       setIsShufflePlayPending(false)
     }
-  }, [queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [playbackSourceContext, queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContextByPaths, toggleShuffle])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
@@ -1136,6 +1151,7 @@ export default function LibraryView() {
             tracks={displayTracks}
             queueSeedTracks={queueSeedSortedTracks}
             queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+            sourceContext={playbackSourceContext}
             showArtist={false}
             showAlbum={!selectedAlbum}
             showAddedDate={showTracklistAddedDate}
@@ -1160,6 +1176,7 @@ export default function LibraryView() {
         tracks={displayTracks}
         queueSeedTracks={queueSeedSortedTracks}
         queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+        sourceContext={playbackSourceContext}
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
         showAddedDate={showTracklistAddedDate}

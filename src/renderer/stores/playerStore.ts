@@ -51,6 +51,17 @@ export interface ResolvedQueueTrack {
   index: number
 }
 
+export type PlaybackSourceContext =
+  | { type: 'playlist'; playlistId: number }
+  | { type: 'artist'; artist: string }
+  | { type: 'album'; album: string; albumArtist?: string; identityKey?: string }
+
+export interface PlaybackContextOptions {
+  sourcePlaylistId?: number | null
+  contextLabel?: string | null
+  sourceContext?: PlaybackSourceContext | null
+}
+
 interface PlayerStore {
   // State
   currentTrack: Track | null
@@ -93,6 +104,7 @@ interface PlayerStore {
   autoQueue: QueueTrackEntry[]
   autoQueueIndex: number
   autoQueueSourcePlaylistId: number | null
+  autoQueueSourceContext: PlaybackSourceContext | null
   autoQueueContextLabel: string | null
   shuffle: boolean
   repeat: 'none' | 'one' | 'all'
@@ -115,12 +127,12 @@ interface PlayerStore {
   startPlaybackContext: (
     tracks: Track[],
     startIndex?: number,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ) => Promise<void>
   startPlaybackContextByPaths: (
     paths: string[],
     startIndex?: number,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ) => Promise<void>
   enqueueUserTrack: (track: Track, position?: number | 'next' | 'end') => void
   enqueueUserTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
@@ -154,7 +166,7 @@ interface PlayerStore {
   clearAssociatedOpenNotice: () => void
 
   // Compatibility wrappers during queue migration
-  setQueue: (tracks: Track[], startIndex?: number, options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }) => void
+  setQueue: (tracks: Track[], startIndex?: number, options?: PlaybackContextOptions) => void
   addToQueue: (track: Track) => void
   addToQueueNext: (track: Track) => void
   removeFromQueue: (index: number) => void
@@ -526,6 +538,14 @@ function normalizeContextLabel(value: string | null | undefined): string | null 
   if (typeof value !== 'string') return null
   const normalized = value.trim()
   return normalized.length > 0 ? normalized : null
+}
+
+function resolvePlaybackSourceContext(options?: PlaybackContextOptions): PlaybackSourceContext | null {
+  if (options?.sourceContext) return options.sourceContext
+  if (typeof options?.sourcePlaylistId === 'number') {
+    return { type: 'playlist', playlistId: options.sourcePlaylistId }
+  }
+  return null
 }
 
 function buildAutoShuffleOrder(queueLength: number, currentAutoQueueIndex: number): number[] {
@@ -1260,7 +1280,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const startPlaybackContextEntries = async (
     entries: QueueTrackEntry[],
     startIndex = 0,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ): Promise<void> => {
     const state = get()
     const normalizedStartIndex = entries.length === 0
@@ -1272,6 +1292,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       autoQueue: entries,
       autoQueueIndex: normalizedStartIndex,
       autoQueueSourcePlaylistId: options?.sourcePlaylistId ?? null,
+      autoQueueSourceContext: resolvePlaybackSourceContext(options),
       autoQueueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
       shuffledAutoIndices: state.shuffle && normalizedStartIndex >= 0
         ? buildAutoShuffleOrder(entries.length, normalizedStartIndex)
@@ -1336,6 +1357,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     autoQueue: [],
     autoQueueIndex: -1,
     autoQueueSourcePlaylistId: null,
+    autoQueueSourceContext: null,
     autoQueueContextLabel: null,
     shuffle: false,
     repeat: 'none',
@@ -1635,6 +1657,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         autoQueue: [],
         autoQueueIndex: -1,
         autoQueueSourcePlaylistId: null,
+        autoQueueSourceContext: null,
         autoQueueContextLabel: null,
         shuffledAutoIndices: [],
         playbackHistory: [],
@@ -1845,6 +1868,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         autoQueue: entries,
         autoQueueIndex: normalizedStartIndex,
         autoQueueSourcePlaylistId: options?.sourcePlaylistId ?? null,
+        autoQueueSourceContext: resolvePlaybackSourceContext(options),
         autoQueueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
         shuffledAutoIndices: state.shuffle && normalizedStartIndex >= 0
           ? buildAutoShuffleOrder(entries.length, normalizedStartIndex)

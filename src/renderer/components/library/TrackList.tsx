@@ -1,6 +1,6 @@
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
-import { usePlayerStore } from '../../stores/playerStore'
+import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
@@ -73,6 +73,7 @@ interface TrackListProps {
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
   externalScroll?: boolean
   playlistSourceId?: number | null
+  sourceContext?: PlaybackSourceContext | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | PlaylistTrackRevealRequest | null
   onJumpToTrackRequestConsumed?: (requestId: number) => void
   enableColumnSorting?: boolean
@@ -685,6 +686,7 @@ export default function TrackList({
   contextTrackNumbersByPath,
   externalScroll = false,
   playlistSourceId = null,
+  sourceContext = null,
   jumpToTrackRequest = null,
   onJumpToTrackRequestConsumed,
   enableColumnSorting = false,
@@ -1029,6 +1031,7 @@ export default function TrackList({
     if (queueSeedIndex === undefined) {
       await startPlaybackContextByPaths(renderedQueueTrackPaths, index, {
         sourcePlaylistId: playlistSourceId,
+        sourceContext,
         contextLabel: queueContextLabel
       })
       return
@@ -1041,6 +1044,7 @@ export default function TrackList({
     if (!queueMatchesSeed) {
       await startPlaybackContextByPaths(queueSeedTrackPaths, queueSeedIndex, {
         sourcePlaylistId: playlistSourceId,
+        sourceContext,
         contextLabel: queueContextLabel
       })
       return
@@ -1050,6 +1054,7 @@ export default function TrackList({
     autoQueue,
     autoQueueSourcePlaylistId,
     playlistSourceId,
+    sourceContext,
     queueSeedTrackPaths,
     queueSeedTrackPathToIndex,
     queueContextLabel,
