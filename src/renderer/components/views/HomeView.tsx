@@ -1,9 +1,10 @@
-import { type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { TrackSourceType } from '../../../types/subsonic'
+import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
@@ -813,8 +814,13 @@ export default function HomeView() {
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const recentRowRef = useRef<HTMLDivElement | null>(null)
+  const playlistRowRef = useRef<HTMLDivElement | null>(null)
   const hasLibraryContent = totalTrackCount > 0 || albums.length > 0 || artists.length > 0
   const recentLimits = useMemo(() => getHomeRecentLimits(viewportWidth), [viewportWidth])
+
+  useHorizontalWheelScroll(recentRowRef)
+  useHorizontalWheelScroll(playlistRowRef)
 
   useEffect(() => {
     void loadPlaylists()
@@ -1095,28 +1101,6 @@ export default function HomeView() {
     })
   }
 
-  const handleRecentRowWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
-    const element = event.currentTarget
-    const maxScrollLeft = element.scrollWidth - element.clientWidth
-
-    if (maxScrollLeft <= 0) return
-    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
-
-    const isAtStart = element.scrollLeft <= 0
-    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
-
-    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
-
-    const deltaY = event.deltaMode === 1
-      ? event.deltaY * 16
-      : event.deltaMode === 2
-        ? event.deltaY * element.clientWidth
-        : event.deltaY
-
-    event.preventDefault()
-    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
-  }, [])
-
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
     await selectPlaylist(playlist.id)
@@ -1228,7 +1212,7 @@ export default function HomeView() {
             <h2>RECENTLY PLAYED</h2>
           </div>
           {recentTracks.length > 0 ? (
-            <div className="home-recent-row" onWheel={handleRecentRowWheel}>
+            <div className="home-recent-row" ref={recentRowRef}>
               {recentTracks.map((track, index) => (
                 <article
                   key={track.path}
@@ -1364,7 +1348,7 @@ export default function HomeView() {
           )}
 
           {homePlaylists.length > 0 ? (
-            <div className="home-playlist-row">
+            <div className="home-playlist-row" ref={playlistRowRef}>
               {homePlaylists.map((playlist) => (
                 <article
                   key={playlist.id}
