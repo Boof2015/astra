@@ -303,7 +303,7 @@ function isTrackSelectionPreservingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
 
   return Boolean(target.closest(
-    '.track-row, .track-context-menu, .track-playlist-popup, .modal-overlay, .modal-content'
+    '.track-row, .track-context-menu, .track-playlist-popup, .metadata-editor-panel, .lyrics-editor-panel, .modal-overlay, .modal-content'
   ))
 }
 
