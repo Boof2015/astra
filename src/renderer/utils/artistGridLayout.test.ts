@@ -54,6 +54,19 @@ test('artist grid layout accounts for a partial final row', () => {
   })
 })
 
+test('artist grid layout preserves card width for sparse filtered results', () => {
+  assert.deepEqual(resolveArtistGridLayout({
+    containerWidth: 600,
+    itemCount: 1,
+    minColumnWidth: 124,
+    gap: 12
+  }), {
+    columnCount: 4,
+    rowCount: 1,
+    columnWidth: 150
+  })
+})
+
 test('artist grid layout returns no rows for empty data', () => {
   assert.deepEqual(resolveArtistGridLayout({
     containerWidth: 600,
