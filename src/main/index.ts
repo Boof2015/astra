@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol } from 'electron'
 import { join, basename, extname } from 'path'
-import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
+import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
@@ -4717,6 +4717,15 @@ ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
 })
 
+// Loudness for playback normalization: stored value or a fresh ffmpeg ebur128 pass.
+ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) => {
+  return analyzeTrackLoudness(filePath)
+})
+
+ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payload: RendererTrackLoudnessPayload) => {
+  return storeRendererTrackLoudness(filePath, payload)
+})
+
 ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, outputSampleRate: number, expectedChannels?: number | null) => {
   return startRemoteStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
 })
@@ -7438,6 +7447,180 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+interface TrackLoudnessAnalysisResult {
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+}
+
+interface RendererTrackLoudnessPayload {
+  loudnessLufs: number
+  peakLinear?: number | null
+  method?: string
+}
+
+const LOUDNESS_FFMPEG_TIMEOUT_MS = 180_000
+// The ebur128 filter logs a running line per 100ms of audio, so stderr for an
+// hour-long track runs to a few MB.
+const LOUDNESS_FFMPEG_MAX_STDERR_BYTES = 32 * 1024 * 1024
+
+const loudnessAnalysisInFlight = new Map<string, Promise<TrackLoudnessAnalysisResult | null>>()
+let loudnessAnalysisQueueTail: Promise<unknown> = Promise.resolve()
+
+function execFileCaptureStderr(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        ...options,
+        encoding: 'utf8',
+        windowsHide: true
+      },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(stderr ?? '')
+      }
+    )
+  })
+}
+
+async function statForLoudness(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+  try {
+    const stats = await stat(filePath)
+    return { size: stats.size, mtimeMs: Math.round(stats.mtimeMs) }
+  } catch {
+    return null
+  }
+}
+
+// Parse the summary block ffmpeg's ebur128 filter prints at the end of stderr.
+// Only summary lines start with the bare "I:"/"Peak:" labels; the per-frame
+// progress lines embed them mid-line. Use the last match to be safe.
+function parseEbur128Summary(stderr: string): { loudnessLufs: number; peakLinear: number | null } | null {
+  const integratedMatches = [...stderr.matchAll(/^\s+I:\s+(-?[\d.]+)\s+LUFS\s*$/gm)]
+  const lastIntegrated = integratedMatches[integratedMatches.length - 1]
+  if (!lastIntegrated) return null
+  const loudnessLufs = Number(lastIntegrated[1])
+  if (!Number.isFinite(loudnessLufs)) return null
+
+  const peakMatches = [...stderr.matchAll(/^\s+Peak:\s+(-?[\d.]+|-?inf)\s+dBFS\s*$/gm)]
+  const lastPeak = peakMatches[peakMatches.length - 1]
+  let peakLinear: number | null = null
+  if (lastPeak) {
+    if (lastPeak[1] === '-inf') {
+      peakLinear = 0
+    } else {
+      const peakDb = Number(lastPeak[1])
+      if (Number.isFinite(peakDb)) {
+        peakLinear = Math.pow(10, peakDb / 20)
+      }
+    }
+  }
+
+  return { loudnessLufs, peakLinear }
+}
+
+// Resolve a track's integrated loudness for playback normalization: stored DB
+// value when fresh, otherwise a single queued ffmpeg ebur128 pass (native
+// decode+analysis in a separate process, parallel to the renderer's decode).
+async function analyzeTrackLoudness(filePath: string): Promise<TrackLoudnessAnalysisResult | null> {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+
+  const fileStat = await statForLoudness(filePath)
+  if (!fileStat) return null
+
+  const stored = library.getTrackLoudness(filePath)
+  if (stored) {
+    const matchesFile = (stored.fileSize == null || stored.fileSize === fileStat.size)
+      && (stored.fileMtimeMs == null || stored.fileMtimeMs === fileStat.mtimeMs)
+    if (matchesFile) {
+      return {
+        loudnessLufs: stored.loudnessLufs,
+        peakLinear: stored.peakLinear,
+        method: stored.method
+      }
+    }
+    await library.deleteTrackLoudness(filePath)
+  }
+
+  const inFlight = loudnessAnalysisInFlight.get(filePath)
+  if (inFlight) return inFlight
+
+  const runAnalysis = async (): Promise<TrackLoudnessAnalysisResult | null> => {
+    const ffmpegPath = await resolveBinary('ffmpeg')
+    if (!ffmpegPath) return null
+
+    const startMs = Date.now()
+    try {
+      const stderr = await execFileCaptureStderr(
+        ffmpegPath,
+        [
+          '-hide_banner',
+          '-nostats',
+          '-i', filePath,
+          '-map', '0:a:0',
+          '-vn',
+          '-af', 'ebur128=peak=sample',
+          '-f', 'null', '-'
+        ],
+        { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES }
+      )
+      const parsed = parseEbur128Summary(stderr)
+      if (!parsed) {
+        console.warn(`Loudness analysis produced no summary for ${filePath}`)
+        return null
+      }
+
+      await library.setTrackLoudness({
+        trackPath: filePath,
+        loudnessLufs: parsed.loudnessLufs,
+        peakLinear: parsed.peakLinear,
+        method: 'ebur128',
+        fileSize: fileStat.size,
+        fileMtimeMs: fileStat.mtimeMs
+      })
+      if (isDev) {
+        console.log(`[loudness] ebur128 analysis (${Date.now() - startMs}ms): ${parsed.loudnessLufs} LUFS`, filePath)
+      }
+      return { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' }
+    } catch (error) {
+      console.warn(`Loudness analysis failed for ${filePath}:`, error)
+      return null
+    }
+  }
+
+  // Serialize spawns (FIFO, concurrency 1) so play + prebuffer requests cannot
+  // pile up ffmpeg processes; same-path callers share the in-flight promise.
+  const scheduled = loudnessAnalysisQueueTail.catch(() => undefined).then(runAnalysis)
+  loudnessAnalysisQueueTail = scheduled.catch(() => undefined)
+  loudnessAnalysisInFlight.set(filePath, scheduled)
+  void scheduled.finally(() => {
+    loudnessAnalysisInFlight.delete(filePath)
+  })
+  return scheduled
+}
+
+// Persist a loudness value the renderer computed via its JS fallback analyzer.
+async function storeRendererTrackLoudness(filePath: string, payload: RendererTrackLoudnessPayload): Promise<boolean> {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return false
+  if (typeof payload?.loudnessLufs !== 'number' || !Number.isFinite(payload.loudnessLufs)) return false
+
+  const fileStat = await statForLoudness(filePath)
+  await library.setTrackLoudness({
+    trackPath: filePath,
+    loudnessLufs: payload.loudnessLufs,
+    peakLinear: typeof payload.peakLinear === 'number' && Number.isFinite(payload.peakLinear) ? payload.peakLinear : null,
+    method: typeof payload.method === 'string' && payload.method.length > 0 ? payload.method : 'kweight-ungated',
+    fileSize: fileStat?.size ?? null,
+    fileMtimeMs: fileStat?.mtimeMs ?? null
+  })
+  return true
 }
 
 async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {

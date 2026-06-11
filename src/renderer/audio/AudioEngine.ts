@@ -137,9 +137,22 @@ export interface VisualizerConsumerDemand {
   miniOscilloscope?: boolean
 }
 
+export interface ExternalLoudnessResult {
+  loudnessLufs: number
+  peakLinear: number | null
+}
+
+export interface AudioLoadTimings {
+  decodeMs: number
+  analysisMs: number
+}
+
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
   trackPath?: string | null
+  // Pre-resolved loudness (DB lookup or main-process ffmpeg pass) so the
+  // load path can skip the in-renderer full-buffer analysis.
+  loudnessAnalysis?: Promise<ExternalLoudnessResult | null> | null
 }
 
 interface RemoteStreamLoadOptions {
@@ -295,6 +308,8 @@ export class AudioEngine {
   private nextBufferTrackPath: string | null = null
   private currentNormalizationAnalysis: LoudnessAnalysis | null = null
   private nextNormalizationAnalysis: LoudnessAnalysis | null = null
+  private pendingCurrentLoudnessTrackPath: string | null = null
+  private lastLoadTimings: AudioLoadTimings | null = null
   private startTime: number = 0
   private pauseTime: number = 0
   private _playbackState: PlaybackState = 'stopped'
@@ -2326,8 +2341,88 @@ export class AudioEngine {
     return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
-  private async analyzeNormalizationForBuffer(buffer: AudioBuffer): Promise<LoudnessAnalysis> {
-    return analyzeAudioBufferLoudness(buffer)
+  // Loudness analysis is only worth computing when the resolved gain could
+  // actually depend on it (normalization on, no ReplayGain tag overriding it).
+  private shouldAnalyzeLoudnessForLoad(replayGainDb: number | null): boolean {
+    if (!this._normalizationEnabled) return false
+    if (this._replayGainEnabled && replayGainDb != null) return false
+    return true
+  }
+
+  private async resolveLoudnessAnalysisForLoad(
+    buffer: AudioBuffer,
+    options: AudioLoadDataOptions,
+    replayGainDb: number | null
+  ): Promise<LoudnessAnalysis | null> {
+    if (!this.shouldAnalyzeLoudnessForLoad(replayGainDb)) return null
+
+    if (options.loudnessAnalysis) {
+      try {
+        const external = await options.loudnessAnalysis
+        if (external && Number.isFinite(external.loudnessLufs)) {
+          return {
+            loudnessLufs: external.loudnessLufs,
+            peakLinear: external.peakLinear ?? 0,
+            sampleRate: buffer.sampleRate,
+            frameCount: buffer.length
+          }
+        }
+      } catch {
+        // Fall back to the in-renderer analyzer below.
+      }
+    }
+
+    const analysis = await analyzeAudioBufferLoudness(buffer)
+    if (options.trackPath && Number.isFinite(analysis.loudnessLufs)) {
+      void window.electronAPI.storeTrackLoudness(options.trackPath, {
+        loudnessLufs: analysis.loudnessLufs,
+        peakLinear: Number.isFinite(analysis.peakLinear) ? analysis.peakLinear : null,
+        method: 'kweight-ungated'
+      }).catch(() => false)
+    }
+    return analysis
+  }
+
+  // Fill in the current track's loudness after the fact when a settings toggle
+  // makes normalization need it (e.g. enabling normalization mid-track after
+  // the load-time analysis was skipped).
+  private ensureCurrentLoudnessAnalysis(): void {
+    if (this.playbackOutputMode === 'bitperfect' || this.remoteStreamState) return
+    if (!this._normalizationEnabled || this.currentNormalizationAnalysis) return
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) return
+    const trackPath = this.currentBufferTrackPath
+    if (!trackPath || !this.audioBuffer) return
+    if (this.pendingCurrentLoudnessTrackPath === trackPath) return
+
+    this.pendingCurrentLoudnessTrackPath = trackPath
+    void window.electronAPI.analyzeTrackLoudness(trackPath)
+      .catch(() => null)
+      .then((result) => {
+        if (this.pendingCurrentLoudnessTrackPath === trackPath) {
+          this.pendingCurrentLoudnessTrackPath = null
+        }
+        if (!result || !Number.isFinite(result.loudnessLufs)) return
+        if (this.currentBufferTrackPath !== trackPath || !this.audioBuffer) return
+        if (this.currentNormalizationAnalysis) return
+        this.currentNormalizationAnalysis = {
+          loudnessLufs: result.loudnessLufs,
+          peakLinear: result.peakLinear ?? 0,
+          sampleRate: this.audioBuffer.sampleRate,
+          frameCount: this.audioBuffer.length
+        }
+        this.applyNormalization()
+      })
+  }
+
+  getLastLoadTimings(): AudioLoadTimings | null {
+    return this.lastLoadTimings ? { ...this.lastLoadTimings } : null
+  }
+
+  // Whether loading a track with this ReplayGain candidate would need a
+  // loudness analysis; lets callers pre-resolve one in parallel with decode.
+  needsLoudnessAnalysisForLoad(replayGainDb: number | null | undefined): boolean {
+    if (this.playbackOutputMode === 'bitperfect') return false
+    return this.shouldAnalyzeLoudnessForLoad(this.normalizeReplayGainCandidate(replayGainDb))
   }
 
   private computeNormalizationForAnalysis(
@@ -2494,6 +2589,7 @@ export class AudioEngine {
       })
     } else if (enabled && this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else {
       this.applyGainState({
         gainDb: 0,
@@ -2526,6 +2622,7 @@ export class AudioEngine {
     }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     }
 
     this.updateNextNormalizationCache()
@@ -2561,6 +2658,7 @@ export class AudioEngine {
 
     if (this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -2597,6 +2695,7 @@ export class AudioEngine {
 
     if (this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -4390,9 +4489,13 @@ export class AudioEngine {
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
       // Decode audio data
+      const decodeStart = performance.now()
       const decodedBuffer = await this.context.decodeAudioData(arrayBuffer)
+      const decodeMs = Math.round(performance.now() - decodeStart)
       this.assertCurrentLoadOperation(loadOperation)
-      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      const analysisStart = performance.now()
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, this.currentReplayGainDb)
+      this.lastLoadTimings = { decodeMs, analysisMs: Math.round(performance.now() - analysisStart) }
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
       this.currentNormalizationAnalysis = normalizationAnalysis
@@ -4441,9 +4544,10 @@ export class AudioEngine {
       const clonedBuffer = arrayBuffer.slice(0)
       const decodedBuffer = await this.context.decodeAudioData(clonedBuffer)
       this.assertCurrentPrebufferOperation(prebufferOperation)
-      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, nextReplayGainDb)
       this.assertCurrentPrebufferOperation(prebufferOperation)
-      this.nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+      this.nextReplayGainDb = nextReplayGainDb
       this.nextBuffer = decodedBuffer
       this.nextNormalizationAnalysis = normalizationAnalysis
       this.nextBufferTrackPath = options.trackPath ?? null

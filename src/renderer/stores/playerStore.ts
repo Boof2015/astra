@@ -631,6 +631,26 @@ function logSlowPath(label: string, startTime: number, details: Record<string, u
   console.warn(`[perf] ${label} slow path (${Math.round(elapsed)}ms)`, details)
 }
 
+// Kick off the main-process loudness lookup/analysis (DB hit or ffmpeg ebur128
+// pass) so it runs in parallel with the file read + decode. Returns null when
+// the load would never consume the result.
+function requestTrackLoudnessAnalysis(
+  track: Track,
+  replayGainDb: number | null
+): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null {
+  if (track.sourceType && track.sourceType !== 'local') return null
+  if (!audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)) return null
+  return window.electronAPI.analyzeTrackLoudness(track.path).catch(() => null)
+}
+
+function scheduleDeferredWaveformExtraction(callback: () => void): void {
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => callback(), { timeout: 1000 })
+    return
+  }
+  setTimeout(callback, 0)
+}
+
 function toReplayGainDb(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -1406,8 +1426,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
+        const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
         try {
-          await audioEngine.loadAudioData(audioData, { replayGainDb, trackPath: track.path })
+          await audioEngine.loadAudioData(audioData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
           throwIfSupersededLoad(loadRequestId)
         } catch (primaryDecodeError) {
           if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
@@ -1421,7 +1442,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
           throwIfSupersededLoad(loadRequestId)
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
@@ -1451,10 +1472,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         // Schedule next-track prebuffering for the gapless handoff window.
         schedulePreBufferNextTrack()
+        const engineTimings = audioEngine.getLastLoadTimings()
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
           usedFfmpegFallback,
-          decodeMs
+          decodeMs,
+          decodeOnlyMs: engineTimings?.decodeMs ?? null,
+          loudnessAnalysisMs: engineTimings?.analysisMs ?? null
         })
         return true
       } catch (error) {
@@ -2055,6 +2079,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         const fileLoadStart = performance.now()
+        // Resolve loudness (stored value or main-process ffmpeg pass) in
+        // parallel with the file read + decode below.
+        const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
         // Load audio file from path
         const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
         throwIfSupersededLoad(loadRequestId)
@@ -2078,7 +2105,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path })
+          await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path, loudnessAnalysis })
           throwIfSupersededLoad(loadRequestId)
         } catch (primaryDecodeError) {
           if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
@@ -2092,7 +2119,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           usedFfmpegFallback = true
           console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path })
+          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
           throwIfSupersededLoad(loadRequestId)
         }
         const decodeMs = Math.round(performance.now() - decodeStart)
@@ -2138,12 +2165,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         throwIfSupersededLoad(loadRequestId)
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
+        const engineTimings = audioEngine.getLastLoadTimings()
         logMemoryDiagnosticsEvent('track_load_success', {
           trackPath: track.path,
           sourceType: resolvedTrack.sourceType ?? 'local',
           loadPath: usedFfmpegFallback ? 'file_ffmpeg_fallback' : 'file_decode',
           fileLoadMs,
           decodeMs,
+          decodeOnlyMs: engineTimings?.decodeMs ?? null,
+          loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
           usedFfmpegFallback
         })
 
@@ -2153,6 +2183,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           trackPath: track.path,
           fileLoadMs,
           decodeMs,
+          decodeOnlyMs: engineTimings?.decodeMs ?? null,
+          loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
           usedFfmpegFallback
         })
         return 'loaded'
@@ -2265,14 +2297,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               return
             }
 
+            const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+            // Resolve loudness in parallel with the prebuffer file read + decode.
+            const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
             const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
             if (!canApplyPrebufferResult(nextTrack)) {
               return
             }
             if (result) {
               await audioEngine.preBufferNext(result.data, {
-                replayGainDb: getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode),
-                trackPath: nextTrack.path
+                replayGainDb: nextReplayGainDb,
+                trackPath: nextTrack.path,
+                loudnessAnalysis: nextLoudnessAnalysis
               })
               if (!canApplyPrebufferResult(nextTrack)) {
                 audioEngine.clearNextBuffer()
@@ -2461,14 +2497,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
-        const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-        if (shouldUseWaveformCache(track)) {
-          setWaveformCacheEntry(track.path, peaks)
-        }
-        set({
-          waveformData: peaks,
-          waveformBufferedRatio: 1,
-          waveformAnalyzedRatio: 1
+        // bufferReady fires synchronously inside loadAudioData (before play())
+        // and at gapless transitions; extraction is a full pass over the
+        // decoded samples, so keep it off the playback-start critical path.
+        const trackPath = track.path
+        scheduleDeferredWaveformExtraction(() => {
+          if (get().currentTrack?.path !== trackPath) return
+          const extractStart = performance.now()
+          const peaks = extractWaveformPeaks(buffer as AudioBuffer)
+          logSlowPath('extractWaveformPeaks', extractStart, { trackPath })
+          if (shouldUseWaveformCache(track)) {
+            setWaveformCacheEntry(trackPath, peaks)
+          }
+          set({
+            waveformData: peaks,
+            waveformBufferedRatio: 1,
+            waveformAnalyzedRatio: 1
+          })
         })
       })
 

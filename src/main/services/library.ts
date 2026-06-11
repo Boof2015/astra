@@ -1787,6 +1787,29 @@ export async function initDatabase(): Promise<void> {
     END;
   `)
 
+  // Per-track loudness analysis results. Deliberately a separate table from
+  // tracks: per-play writes here must not invalidate the library track snapshot.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_loudness (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      loudness_lufs REAL NOT NULL,
+      peak_linear REAL,
+      method TEXT NOT NULL,
+      file_size INTEGER,
+      file_mtime_ms INTEGER,
+      analyzed_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_track_loudness_cleanup
+    AFTER DELETE ON tracks
+    FOR EACH ROW
+    BEGIN
+      DELETE FROM track_loudness WHERE track_path = OLD.path;
+    END;
+  `)
+
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
@@ -3497,6 +3520,99 @@ export async function deleteLyricsCache(trackPath: string): Promise<void> {
 export async function clearLyricsCache(): Promise<void> {
   if (!db) return
   db.run('DELETE FROM lyrics_cache')
+  await saveDatabase()
+}
+
+export interface TrackLoudnessEntry {
+  trackPath: string
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+  fileSize: number | null
+  fileMtimeMs: number | null
+  analyzedAt: number
+}
+
+export interface TrackLoudnessUpsertInput {
+  trackPath: string
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+  fileSize: number | null
+  fileMtimeMs: number | null
+}
+
+export function getTrackLoudness(trackPath: string): TrackLoudnessEntry | null {
+  if (!db) return null
+
+  const row = db.get<Record<string, unknown>>(`
+    SELECT
+      track_path,
+      loudness_lufs,
+      peak_linear,
+      method,
+      file_size,
+      file_mtime_ms,
+      analyzed_at
+    FROM track_loudness
+    WHERE track_path = ?
+    LIMIT 1
+  `, [trackPath])
+  if (!row) return null
+
+  const resolvedPath = toText(row.track_path)
+  const loudnessLufs = toNumber(row.loudness_lufs)
+  const method = toText(row.method)
+  if (!resolvedPath || loudnessLufs == null || !method) return null
+
+  return {
+    trackPath: resolvedPath,
+    loudnessLufs,
+    peakLinear: toNumber(row.peak_linear),
+    method,
+    fileSize: toNumber(row.file_size),
+    fileMtimeMs: toNumber(row.file_mtime_ms),
+    analyzedAt: toNumber(row.analyzed_at) ?? 0
+  }
+}
+
+export async function setTrackLoudness(entry: TrackLoudnessUpsertInput): Promise<void> {
+  if (!db) return
+  if (!entry.trackPath || !Number.isFinite(entry.loudnessLufs)) return
+
+  db.run(
+    `INSERT INTO track_loudness (
+      track_path,
+      loudness_lufs,
+      peak_linear,
+      method,
+      file_size,
+      file_mtime_ms,
+      analyzed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(track_path) DO UPDATE SET
+      loudness_lufs = excluded.loudness_lufs,
+      peak_linear = excluded.peak_linear,
+      method = excluded.method,
+      file_size = excluded.file_size,
+      file_mtime_ms = excluded.file_mtime_ms,
+      analyzed_at = excluded.analyzed_at`,
+    [
+      entry.trackPath,
+      entry.loudnessLufs,
+      entry.peakLinear,
+      entry.method,
+      entry.fileSize,
+      entry.fileMtimeMs,
+      Date.now()
+    ]
+  )
+  await saveDatabase()
+}
+
+export async function deleteTrackLoudness(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM track_loudness WHERE track_path = ?', [trackPath])
   await saveDatabase()
 }
 

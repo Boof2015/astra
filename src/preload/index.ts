@@ -136,6 +136,18 @@ export interface AudioLoadOptions {
   metadataMode?: 'full' | 'none'
 }
 
+export interface TrackLoudnessResult {
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+}
+
+export interface TrackLoudnessStorePayload {
+  loudnessLufs: number
+  peakLinear?: number | null
+  method?: string
+}
+
 // Library types
 export interface DbTrack {
   id: number
@@ -867,6 +879,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  analyzeTrackLoudness: (filePath: string) =>
+    ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
+    ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
   cancelRemoteStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelRemoteStream', sessionId) as Promise<void>,
@@ -1262,6 +1278,8 @@ declare global {
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>
       getReplayGainScanEnabled: () => Promise<boolean>

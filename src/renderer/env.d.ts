@@ -427,6 +427,15 @@ declare global {
                 artwork?: string
             } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+            analyzeTrackLoudness: (filePath: string) => Promise<{
+                loudnessLufs: number
+                peakLinear: number | null
+                method: string
+            } | null>
+            storeTrackLoudness: (
+                filePath: string,
+                payload: { loudnessLufs: number; peakLinear?: number | null; method?: string }
+            ) => Promise<boolean>
             startRemoteStream: (
                 filePath: string,
                 outputSampleRate: number,

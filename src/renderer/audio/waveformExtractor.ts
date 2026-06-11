@@ -3,10 +3,16 @@
  * Returns a normalized Float32Array that the renderer downsamples
  * adaptively based on the display width.
  */
+// Beyond a few thousand sampled frames per bin the binned RMS no longer
+// changes visibly, so long tracks are stride-sampled instead of reading
+// every frame.
+const MAX_SAMPLED_FRAMES_PER_BIN = 4096
+
 export function extractWaveformPeaks(buffer: AudioBuffer, resolution: number = 512): Float32Array {
   const length = buffer.length
   const channelCount = buffer.numberOfChannels
   const samplesPerBin = Math.floor(length / resolution)
+  const stride = Math.max(1, Math.floor(samplesPerBin / MAX_SAMPLED_FRAMES_PER_BIN))
   const peaks = new Float32Array(resolution)
 
   const channels: Float32Array[] = []
@@ -24,7 +30,7 @@ export function extractWaveformPeaks(buffer: AudioBuffer, resolution: number = 5
 
     for (let c = 0; c < channelCount; c++) {
       const data = channels[c]
-      for (let s = start; s < end; s++) {
+      for (let s = start; s < end; s += stride) {
         sumSquares += data[s] * data[s]
         count++
       }
