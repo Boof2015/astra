@@ -1,5 +1,6 @@
 import { CSSProperties, memo, ReactElement, Ref, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, List, type CellComponentProps, type GridImperativeAPI, type ListImperativeAPI, type RowComponentProps } from 'react-window'
+import type { ArtworkVariant } from '../../stores/libraryStore'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
 import AlbumArtwork from './AlbumArtwork'
 
@@ -35,9 +36,9 @@ interface ArtistGridCellSharedProps {
 
 const ARTIST_ROW_HEIGHT_FALLBACK_PX = 64
 const ARTIST_LIST_OVERSCAN_COUNT = 8
-const ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX = 150
-const ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 132
-const ARTIST_GRID_GAP_FALLBACK_PX = 14
+const ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX = 168
+const ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 124
+const ARTIST_GRID_GAP_FALLBACK_PX = 12
 const ARTIST_GRID_OVERSCAN_COUNT = 3
 
 function resolveCssPx(element: HTMLElement | null, propertyName: string, fallback: number): number {
@@ -63,11 +64,13 @@ function getArtistInitial(artist: string): string {
 function ArtistAvatar({
   artist,
   className,
-  artworkClassName
+  artworkClassName,
+  artworkVariant = 'thumbnail'
 }: {
   artist: ArtistRecord
   className: string
   artworkClassName: string
+  artworkVariant?: ArtworkVariant
 }): ReactElement {
   return (
     <div className={className}>
@@ -76,7 +79,7 @@ function ArtistAvatar({
           hash={artist.artwork_hash}
           alt={`${artist.artist} artwork`}
           className={artworkClassName}
-          variant="thumbnail"
+          variant={artworkVariant}
         />
       ) : (
         getArtistInitial(artist.artist)
@@ -149,6 +152,7 @@ function ArtistGridCellRenderer({
           artist={artist}
           className="artist-grid-avatar"
           artworkClassName="artist-grid-avatar-artwork"
+          artworkVariant="card"
         />
         <div className="artist-grid-info">
           <div className="artist-grid-name">{artist.artist}</div>

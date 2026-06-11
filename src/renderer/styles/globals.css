@@ -6110,9 +6110,9 @@ button, .titlebar {
    ============================================ */
 .artist-list {
   --artist-row-height: 64px;
-  --artist-grid-min-column-width: 132px;
-  --artist-grid-row-height: 150px;
-  --artist-grid-gap: 14px;
+  --artist-grid-min-column-width: 124px;
+  --artist-grid-row-height: 168px;
+  --artist-grid-gap: 12px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -6206,16 +6206,16 @@ button, .titlebar {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
   margin: 0;
-  padding: 12px 10px;
+  padding: 10px;
   background: rgba(255, 255, 255, 0.02);
   color: inherit;
-  text-align: center;
+  text-align: left;
   cursor: pointer;
   transition:
     border-color var(--transition-fast),
@@ -6223,12 +6223,12 @@ button, .titlebar {
     transform var(--transition-fast);
   content-visibility: auto;
   contain: layout paint style;
-  contain-intrinsic-size: 132px 150px;
+  contain-intrinsic-size: 124px 168px;
 }
 
 .artist-grid-card:hover {
   border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   transform: translateY(-2px);
 }
 
@@ -6238,19 +6238,19 @@ button, .titlebar {
 }
 
 .artist-grid-avatar {
-  width: 58px;
-  height: 58px;
-  border-radius: 999px;
+  width: 100%;
+  height: 96px;
+  border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent);
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
   overflow: hidden;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 18px;
+  font-size: 30px;
   font-weight: 600;
 }
 
@@ -6259,6 +6259,10 @@ button, .titlebar {
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+.artist-grid-avatar .album-artwork-placeholder {
+  font-size: 28px;
 }
 
 .artist-grid-info {
@@ -6277,10 +6281,8 @@ button, .titlebar {
 }
 
 .artist-grid-track-count {
-  margin-top: 3px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.05em;
+  margin-top: 2px;
+  font-size: 11px;
   color: var(--text-tertiary);
   white-space: nowrap;
   overflow: hidden;
@@ -13791,15 +13793,19 @@ body::after {
   }
 
   .artist-list {
-    --artist-grid-min-column-width: 118px;
-    --artist-grid-row-height: 138px;
+    --artist-grid-min-column-width: 112px;
+    --artist-grid-row-height: 154px;
     --artist-grid-gap: 10px;
   }
 
+  .artist-grid-card {
+    gap: 6px;
+    padding: 8px;
+  }
+
   .artist-grid-avatar {
-    width: 52px;
-    height: 52px;
-    font-size: 16px;
+    height: 88px;
+    font-size: 26px;
   }
 
   .library-header-right .icon-btn {
