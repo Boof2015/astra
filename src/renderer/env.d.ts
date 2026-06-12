@@ -250,7 +250,7 @@ declare global {
                 onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
             }
             discord: {
-                configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
+                configure: (options: { enabled: boolean; coverArtEnabled: boolean; smallIconEnabled?: boolean; compactStatusMode?: 'title' | 'artist'; expandedInfoMode?: 'file-info' | 'album'; linkDestination?: 'off' | 'ytmusic' | 'lastfm'; pauseClearMinutes?: number }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {
                     playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
                     currentTimeSeconds?: number

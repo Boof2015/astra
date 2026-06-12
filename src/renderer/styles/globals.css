@@ -6608,9 +6608,10 @@ button, .titlebar {
 }
 
 .library-segmented-toggle {
+  --segment-count: 2;
   position: relative;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--segment-count), minmax(0, 1fr));
   align-items: center;
   width: 170px;
   height: 32px;
@@ -6626,7 +6627,7 @@ button, .titlebar {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: calc((100% - 4px) / 2);
+  width: calc((100% - 4px) / var(--segment-count));
   height: calc(100% - 4px);
   border-radius: 6px;
   border: 1px solid rgba(var(--accent-rgb), 0.38);
@@ -6669,6 +6670,16 @@ button, .titlebar {
 
 .settings-discord-segmented {
   width: 178px;
+}
+
+.library-segmented-toggle.settings-discord-links {
+  --segment-count: 3;
+  width: 240px;
+}
+
+.library-segmented-toggle.settings-discord-pause {
+  --segment-count: 5;
+  width: 240px;
 }
 
 .library-artist-view-toggle {

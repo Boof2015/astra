@@ -397,12 +397,16 @@ export interface DiscordPresenceUpdate {
 
 export type DiscordRpcCompactStatusMode = 'title' | 'artist'
 export type DiscordRpcExpandedInfoMode = 'file-info' | 'album'
+export type DiscordRpcLinkDestination = 'off' | 'ytmusic' | 'lastfm'
 
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled: boolean
+  smallIconEnabled?: boolean
   compactStatusMode?: DiscordRpcCompactStatusMode
   expandedInfoMode?: DiscordRpcExpandedInfoMode
+  linkDestination?: DiscordRpcLinkDestination
+  pauseClearMinutes?: number
 }
 
 export interface DiscordRpcConfigureResult {

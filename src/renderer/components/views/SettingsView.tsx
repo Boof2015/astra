@@ -26,7 +26,7 @@ import {
   type ReplayGainMode
 } from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
-import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
+import { DISCORD_PAUSE_CLEAR_MINUTE_PRESETS, useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
@@ -310,13 +310,19 @@ export default function SettingsView() {
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
+    smallIconEnabled: discordSmallIconEnabled,
     compactStatusMode: discordCompactStatusMode,
     expandedInfoMode: discordExpandedInfoMode,
+    linkDestination: discordLinkDestination,
+    pauseClearMinutes: discordPauseClearMinutes,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
     setCoverArtEnabled: setDiscordCoverArtEnabled,
+    setSmallIconEnabled: setDiscordSmallIconEnabled,
     setCompactStatusMode: setDiscordCompactStatusMode,
     setExpandedInfoMode: setDiscordExpandedInfoMode,
+    setLinkDestination: setDiscordLinkDestination,
+    setPauseClearMinutes: setDiscordPauseClearMinutes,
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
@@ -2180,6 +2186,16 @@ export default function SettingsView() {
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Astra Icon on Cover Art</span>
+                    <button
+                      className={`settings-toggle ${discordSmallIconEnabled ? 'active' : ''}`}
+                      onClick={() => void setDiscordSmallIconEnabled(!discordSmallIconEnabled)}
+                      disabled={!discordEnabled || !discordCoverArtEnabled}
+                    >
+                      {discordSmallIconEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Compact Status</span>
                     <div
                       className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
@@ -2235,6 +2251,78 @@ export default function SettingsView() {
                       >
                         Album
                       </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Title & Artist Links</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-links ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord title and artist links"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{
+                          transform: discordLinkDestination === 'lastfm'
+                            ? 'translateX(100%)'
+                            : discordLinkDestination === 'off'
+                              ? 'translateX(200%)'
+                              : 'translateX(0)'
+                        }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'ytmusic' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('ytmusic')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'ytmusic'}
+                      >
+                        YT Music
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'lastfm' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('lastfm')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'lastfm'}
+                      >
+                        Last.fm
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'off' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('off')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'off'}
+                      >
+                        Off
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Clear When Paused</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-pause ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord clear presence when paused"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{
+                          transform: `translateX(${Math.max(
+                            0,
+                            (DISCORD_PAUSE_CLEAR_MINUTE_PRESETS as readonly number[]).indexOf(discordPauseClearMinutes)
+                          ) * 100}%)`
+                        }}
+                      />
+                      {DISCORD_PAUSE_CLEAR_MINUTE_PRESETS.map((minutes) => (
+                        <button
+                          key={minutes}
+                          className={`library-segmented-btn ${discordPauseClearMinutes === minutes ? 'active' : ''}`}
+                          onClick={() => void setDiscordPauseClearMinutes(minutes)}
+                          disabled={!discordEnabled}
+                          aria-pressed={discordPauseClearMinutes === minutes}
+                        >
+                          {minutes === 0 ? 'Off' : `${minutes}m`}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
