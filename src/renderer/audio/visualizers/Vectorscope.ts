@@ -4,6 +4,7 @@ import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualize
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
@@ -251,7 +252,7 @@ export class Vectorscope {
     }
 
     if (options.showGrid) {
-      const dpr = window.devicePixelRatio || 1
+      const dpr = getCanvasBackingPixelRatio(canvas)
       drawVectorscopeGridForMode(this.staticLayerCtx, canvas.width, canvas.height, options.gridColor, options.mode, dpr)
     }
 
@@ -269,7 +270,7 @@ export class Vectorscope {
   ): void {
     const { options } = this
     const mode = options.mode
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(this.canvas)
     const dotSize = options.lineWidth * dpr
 
     // Draw dots with age-based opacity: oldest dimmer, newest brighter
@@ -311,7 +312,7 @@ export class Vectorscope {
 
     const { options } = this
     const mode = options.mode
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(this.canvas)
     const dotSize = options.lineWidth * dpr
 
     ctx.fillStyle = options.lineColor
@@ -339,7 +340,7 @@ export class Vectorscope {
   ): void {
     const { options } = this
     const mode = options.mode
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(this.canvas)
     const dotSize = options.lineWidth * dpr
 
     // Ensure splitter is configured

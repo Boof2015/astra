@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useRef, type MutableRefObject, type RefObject } from 'react'
+import { measureCanvasResizeState, type CanvasResizeState } from '../utils/canvasSizing'
 
-export interface CanvasResizeState {
-  cssWidth: number
-  cssHeight: number
-  pixelWidth: number
-  pixelHeight: number
-  dpr: number
-}
+export type { CanvasResizeState }
 
 interface CanvasSize {
   width: number
@@ -21,21 +16,6 @@ interface UseBufferedCanvasResizeOptions {
 interface BufferedCanvasResizeControls {
   applyResizeNow: () => void
   sizeRef: MutableRefObject<CanvasSize>
-}
-
-function measureCanvasResizeState(container: HTMLElement): CanvasResizeState {
-  const rect = container.getBoundingClientRect()
-  const cssWidth = Math.max(1, Math.floor(rect.width))
-  const cssHeight = Math.max(1, Math.floor(rect.height))
-  const dpr = window.devicePixelRatio || 1
-
-  return {
-    cssWidth,
-    cssHeight,
-    pixelWidth: Math.max(1, Math.floor(cssWidth * dpr)),
-    pixelHeight: Math.max(1, Math.floor(cssHeight * dpr)),
-    dpr,
-  }
 }
 
 function isSameCanvasResizeState(

@@ -13898,7 +13898,7 @@ body::after {
   }
 
   .analyzer-deck {
-    height: 136px;
+    height: min(var(--analyzer-height), 136px);
   }
 
   .transport-info {

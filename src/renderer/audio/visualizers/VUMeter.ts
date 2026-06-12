@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import { createMultichannelSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { getSourceChannelId } from '../../utils/sourceChannelLayout'
 import { resolveColorToRgb } from '../../utils/color'
 import { FrameScheduler } from './frameScheduler'
@@ -953,7 +954,7 @@ export class VUMeter {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
     const cssWidth = width / dpr
     const cssHeight = height / dpr
 

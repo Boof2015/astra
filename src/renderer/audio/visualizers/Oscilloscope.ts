@@ -7,6 +7,7 @@ import {
 } from '../native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
 import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
@@ -198,7 +199,7 @@ export class Oscilloscope {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
 
     if (width <= 0 || height <= 0) return
 
@@ -360,7 +361,7 @@ export class Oscilloscope {
     const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
 
     ctx.strokeStyle = options.gridColor
     ctx.lineWidth = dpr
