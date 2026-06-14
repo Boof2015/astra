@@ -115,6 +115,7 @@ export default function TransportBar() {
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
   const remoteLoadProgress = usePlayerStore((s) => s.remoteLoadProgress)
+  const loadingStatus = usePlayerStore((s) => s.loadingStatus)
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const {
@@ -222,14 +223,16 @@ export default function TransportBar() {
     : null
   const loadingLabel = (() => {
     if (!isLoadingTrack || !currentTrack) return null
-    if (!currentTrack.sourceType || currentTrack.sourceType === 'local') return null
+    if (loadingStatus) return loadingStatus
+    if (!activeRemoteLoadProgress) return null
     if (activeRemoteLoadProgress?.stage === 'streaming') {
       const readySeconds = Math.max(0, activeRemoteLoadProgress.bufferedSeconds)
       const readyLabel = formatTime(readySeconds)
+      const streamingLabel = currentTrack.sourceType && currentTrack.sourceType !== 'local' ? 'Streaming' : 'Buffering'
       if (loadingPercent !== null) {
-        return `Streaming • ${readyLabel} ready • ${Math.round(loadingPercent * 100)}% downloaded`
+        return `${streamingLabel} • ${readyLabel} ready • ${Math.round(loadingPercent * 100)}% downloaded`
       }
-      return `Streaming • ${readyLabel} ready`
+      return `${streamingLabel} • ${readyLabel} ready`
     }
     if (loadingPercent !== null) {
       return `Buffering ${Math.round(loadingPercent * 100)}% • ${activeRemoteLoadProgress?.chunkCount ?? 0} chunks`
@@ -237,7 +240,9 @@ export default function TransportBar() {
     if ((activeRemoteLoadProgress?.chunkCount ?? 0) > 0) {
       return `Buffering ${activeRemoteLoadProgress!.chunkCount} chunks`
     }
-    return 'Buffering remote track...'
+    return currentTrack.sourceType && currentTrack.sourceType !== 'local'
+      ? 'Buffering remote track...'
+      : 'Buffering track...'
   })()
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2

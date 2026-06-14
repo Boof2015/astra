@@ -9,7 +9,7 @@ import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 
 interface RemoteLoadProgress {
   path: string
-  sourceType: 'subsonic' | 'jellyfin'
+  sourceType: 'local' | 'subsonic' | 'jellyfin'
   stage: 'downloading' | 'streaming' | 'complete' | 'failed'
   loadedBytes: number
   totalBytes: number | null
@@ -64,6 +64,7 @@ interface PlayerStore {
   waveformBufferedRatio: number
   waveformAnalyzedRatio: number
   remoteLoadProgress: RemoteLoadProgress | null
+  loadingStatus: string | null
   remoteBufferedSeconds: number
   remoteStreamSessionId: number | null
   ffmpegFallbackNotice: {
@@ -102,6 +103,7 @@ interface PlayerStore {
 
   // Actions
   loadTrack: (track: Track, audioData: ArrayBuffer) => Promise<boolean>
+  loadTrackFromPath: (track: Track) => Promise<boolean>
   play: () => Promise<void>
   pause: () => void
   togglePlay: () => Promise<void>
@@ -183,8 +185,11 @@ const RECENT_PLAY_MIN_SECONDS = 10
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
 const BYTES_PER_FLOAT32_SAMPLE = 4
+const LARGE_LOCAL_FILE_BYTES = 128 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
+const LOCAL_PROGRESSIVE_DECODED_BYTES = MAX_STANDARD_PREBUFFER_TRACK_BYTES
+const LOUDNESS_WARMUP_UPCOMING_TRACKS = 2
 export const GAPLESS_PREBUFFER_LEAD_SECONDS = 15
 const GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS = 250
 const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
@@ -459,10 +464,15 @@ function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 
 }
 
 function createInitialRemoteLoadProgress(track: Track): RemoteLoadProgress {
+  const sourceType = track.sourceType === 'jellyfin'
+    ? 'jellyfin'
+    : track.sourceType === 'subsonic'
+      ? 'subsonic'
+      : 'local'
   return {
     path: track.path,
-    sourceType: track.sourceType === 'jellyfin' ? 'jellyfin' : 'subsonic',
-    stage: 'downloading',
+    sourceType,
+    stage: sourceType === 'local' ? 'streaming' : 'downloading',
     loadedBytes: 0,
     totalBytes: null,
     chunkCount: 0,
@@ -636,11 +646,28 @@ function logSlowPath(label: string, startTime: number, details: Record<string, u
 // the load would never consume the result.
 function requestTrackLoudnessAnalysis(
   track: Track,
-  replayGainDb: number | null
+  replayGainDb: number | null,
+  priority: 'interactive' | 'background' = 'interactive'
 ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null {
   if (track.sourceType && track.sourceType !== 'local') return null
   if (!audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)) return null
-  return window.electronAPI.analyzeTrackLoudness(track.path).catch(() => null)
+  const request = priority === 'background'
+    ? window.electronAPI.warmupTrackLoudness(track.path)
+    : window.electronAPI.analyzeTrackLoudness(track.path)
+  return request.catch(() => null)
+}
+
+async function shouldUseLocalProgressivePath(track: Track): Promise<boolean> {
+  if ((track.sourceType ?? 'local') !== 'local') return false
+  if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return false
+
+  const estimatedDecodedBytes = estimateDecodedTrackBytes(track)
+  if (estimatedDecodedBytes !== null && estimatedDecodedBytes >= LOCAL_PROGRESSIVE_DECODED_BYTES) {
+    return true
+  }
+
+  const fileStat = await window.electronAPI.getAudioFileStat(track.path).catch(() => null)
+  return Boolean(fileStat && fileStat.size >= LARGE_LOCAL_FILE_BYTES)
 }
 
 function scheduleDeferredWaveformExtraction(callback: () => void): void {
@@ -774,6 +801,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return error instanceof SupersededPlaybackLoadError
       || isSupersededAudioLoadError(error)
       || !isActiveLoadRequest(requestId)
+  }
+
+  const resolveInteractiveLoudnessForProgressiveLoad = async (
+    track: Track,
+    replayGainDb: number | null,
+    loadRequestId: number
+  ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> => {
+    const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'interactive')
+    if (!request) return null
+
+    set({ loadingStatus: 'Analyzing loudness' })
+    try {
+      const result = await request
+      throwIfSupersededLoad(loadRequestId)
+      return result
+    } finally {
+      if (isActiveLoadRequest(loadRequestId)) {
+        set({ loadingStatus: null })
+      }
+    }
   }
 
   // Run _loadAndPlayTrack while serializing rapid presses against any in-flight load.
@@ -1140,6 +1187,25 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return null
   }
 
+  const warmupUpcomingLoudness = (): void => {
+    const audioSettings = useAudioSettingsStore.getState()
+    if (!audioSettings.normalizationEnabled || audioSettings.playbackOutputMode !== 'standard') return
+
+    const warmed = new Set<string>()
+    for (const candidate of collectNextCandidates(get())) {
+      if (warmed.size >= LOUDNESS_WARMUP_UPCOMING_TRACKS) break
+      const track = candidate.track
+      if (!track || (track.sourceType && track.sourceType !== 'local')) continue
+      if (isUnavailableRemoteTrack(track) || warmed.has(track.path)) continue
+
+      const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
+      const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'background')
+      if (!request) continue
+      warmed.add(track.path)
+      void request
+    }
+  }
+
   const schedulePreBufferNextTrack = (options: { invalidatePending?: boolean } = {}): void => {
     if (options.invalidatePending) {
       clearScheduledPrebufferTimer()
@@ -1345,6 +1411,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     waveformBufferedRatio: 1,
     waveformAnalyzedRatio: 1,
     remoteLoadProgress: null,
+    loadingStatus: null,
     remoteBufferedSeconds: 0,
     remoteStreamSessionId: null,
     ffmpegFallbackNotice: null,
@@ -1381,6 +1448,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         waveformBufferedRatio: 1,
         waveformAnalyzedRatio: 1,
         remoteLoadProgress: null,
+        loadingStatus: null,
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
@@ -1408,6 +1476,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             currentTrack: resolvedTrack,
             currentTrackSource: 'manual',
             remoteLoadProgress: null,
+            loadingStatus: null,
             remoteBufferedSeconds: 0,
             remoteStreamSessionId: null,
             waveformBufferedRatio: 1,
@@ -1417,6 +1486,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           pendingManualLoadCueTrack = resolvedTrack
           schedulePreBufferNextTrack()
+          warmupUpcomingLoudness()
           logSlowPath('loadTrack', loadStart, {
             trackPath: track.path,
             usedNativeBitPerfect: true,
@@ -1458,6 +1528,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           currentTrack: resolvedTrack,
           currentTrackSource: 'manual',
           remoteLoadProgress: null,
+          loadingStatus: null,
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
@@ -1472,6 +1543,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         // Schedule next-track prebuffering for the gapless handoff window.
         schedulePreBufferNextTrack()
+        warmupUpcomingLoudness()
         const engineTimings = audioEngine.getLastLoadTimings()
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
@@ -1493,12 +1565,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           playbackState: 'stopped',
           remoteLoadProgress: null,
+          loadingStatus: null,
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null
         })
         pendingManualLoadCueTrack = null
         return false
       }
+    },
+
+    loadTrackFromPath: async (track: Track) => {
+      set({ currentTrackSource: 'manual' })
+      const outcome = await get()._loadAndPlayTrack(track, { manualStart: true })
+      return outcome === 'loaded'
     },
 
     // Playback controls
@@ -1566,6 +1645,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       recentPlaySession = null
       set({
         remoteBufferedSeconds: 0,
+        loadingStatus: null,
         remoteStreamSessionId: null
       })
       audioEngine.stop()
@@ -1959,6 +2039,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
           ? createInitialRemoteLoadProgress(track)
           : null,
+        loadingStatus: null,
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
@@ -1982,6 +2063,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
             currentTrack: resolvedTrack,
             remoteLoadProgress: null,
+            loadingStatus: null,
             currentTime: 0
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
@@ -1994,6 +2076,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
           schedulePreBufferNextTrack()
+          warmupUpcomingLoudness()
           logMemoryDiagnosticsEvent('track_load_success', {
             trackPath: track.path,
             sourceType: track.sourceType ?? 'local',
@@ -2024,6 +2107,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               waveformBufferedRatio: 0,
               waveformAnalyzedRatio: 0,
               remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              loadingStatus: null,
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
               currentTime: 0
@@ -2037,6 +2121,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             throwIfSupersededLoad(loadRequestId)
             void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
+            warmupUpcomingLoudness()
             logMemoryDiagnosticsEvent('remote_stream_started', {
               trackPath: track.path,
               sourceType: resolvedTrack.sourceType ?? 'local',
@@ -2078,6 +2163,92 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
+        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        throwIfSupersededLoad(loadRequestId)
+        if (useLocalProgressive) {
+          const needsFixedLoudness = audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
+          const fixedLoudness = needsFixedLoudness
+            ? await resolveInteractiveLoudnessForProgressiveLoad(track, replayGainDb, loadRequestId)
+            : null
+          throwIfSupersededLoad(loadRequestId)
+
+          if (!needsFixedLoudness || fixedLoudness) {
+            try {
+              const streamInfo = await audioEngine.loadProgressiveStream(track, {
+                replayGainDb,
+                loudnessAnalysis: fixedLoudness
+              })
+              throwIfSupersededLoad(loadRequestId)
+              const resolvedTrack: Track = {
+                ...track,
+                duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
+                channels: streamInfo.channels ?? track.channels
+              }
+              set({
+                duration: resolvedTrack.duration,
+                currentTrack: resolvedTrack,
+                waveformData: null,
+                waveformBufferedRatio: 0,
+                waveformAnalyzedRatio: 0,
+                remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+                loadingStatus: null,
+                remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
+                remoteStreamSessionId: streamInfo.sessionId,
+                currentTime: 0
+              })
+              hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+              if (manualStart) {
+                showOutputDelayNotice(resolvedTrack)
+              }
+              throwIfSupersededLoad(loadRequestId)
+              await audioEngine.play()
+              throwIfSupersededLoad(loadRequestId)
+              void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
+              startRecentPlaySession(resolvedTrack.path)
+              schedulePreBufferNextTrack()
+              warmupUpcomingLoudness()
+              logMemoryDiagnosticsEvent('track_load_success', {
+                trackPath: track.path,
+                sourceType: 'local',
+                loadPath: 'local_progressive_stream',
+                sessionId: streamInfo.sessionId,
+                durationSeconds: resolvedTrack.duration,
+                channels: streamInfo.channels,
+                usedReplayGain: replayGainDb != null,
+                usedStoredLoudness: Boolean(fixedLoudness)
+              })
+              logSlowPath('queueLoadAndPlayTrack', loadStart, {
+                trackPath: track.path,
+                usedLocalProgressiveStream: true
+              })
+              return 'loaded'
+            } catch (streamError) {
+              if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
+                throw streamError
+              }
+              console.warn(`Local progressive stream setup failed for ${track.path}; falling back to full decode.`, streamError)
+              logMemoryDiagnosticsEvent('local_progressive_stream_fallback', {
+                trackPath: track.path,
+                message: streamError instanceof Error ? streamError.message : 'Local progressive stream setup failed.'
+              })
+              set({
+                loadingStatus: null,
+                remoteLoadProgress: null,
+                remoteBufferedSeconds: 0,
+                remoteStreamSessionId: null,
+                waveformData: null,
+                waveformBufferedRatio: 1,
+                waveformAnalyzedRatio: 1
+              })
+            }
+          } else {
+            logMemoryDiagnosticsEvent('local_progressive_loudness_fallback', {
+              trackPath: track.path
+            })
+            set({ loadingStatus: null })
+          }
+        }
+
         const fileLoadStart = performance.now()
         // Resolve loudness (stored value or main-process ffmpeg pass) in
         // parallel with the file read + decode below.
@@ -2096,10 +2267,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           set({
             playbackState: 'stopped',
             remoteLoadProgress: null,
+            loadingStatus: null,
             remoteBufferedSeconds: 0,
             remoteStreamSessionId: null
           })
           return 'failed'
+        }
+        if (!result.data) {
+          throw new Error('Audio file data missing from full decode load.')
         }
 
         let usedFfmpegFallback = false
@@ -2147,6 +2322,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           duration: resolvedDuration,
           currentTrack: resolvedTrack,
           remoteLoadProgress: null,
+          loadingStatus: null,
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
@@ -2179,6 +2355,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
         // Schedule next-track prebuffering for the gapless handoff window.
         schedulePreBufferNextTrack()
+        warmupUpcomingLoudness()
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           fileLoadMs,
@@ -2208,6 +2385,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           playbackState: 'stopped',
           remoteLoadProgress: null,
+          loadingStatus: null,
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null
         })
@@ -2250,6 +2428,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             continue
           }
           if (isUnavailableRemoteTrack(nextTrack)) continue
+          if (await shouldUseLocalProgressivePath(nextTrack)) {
+            logMemoryDiagnosticsEvent('prebuffer_skipped_local_progressive', {
+              trackPath: nextTrack.path
+            })
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              skippedLocalProgressive: true
+            })
+            return
+          }
 
           try {
             if (!canApplyPrebufferResult(nextTrack)) return
@@ -2304,7 +2492,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (!canApplyPrebufferResult(nextTrack)) {
               return
             }
-            if (result) {
+            if (result?.data) {
               await audioEngine.preBufferNext(result.data, {
                 replayGainDb: nextReplayGainDb,
                 trackPath: nextTrack.path,
@@ -2355,7 +2543,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       listenersInitialized = true
 
       remoteLoadProgressUnsubscribe?.()
-      remoteLoadProgressUnsubscribe = window.electronAPI.onRemoteLoadProgress((progress) => {
+      remoteLoadProgressUnsubscribe = window.electronAPI.onProgressiveLoadProgress((progress) => {
         set((state) => {
           const activeTrackPath = state.currentTrack?.path
           if (!activeTrackPath || activeTrackPath !== progress.path) {
@@ -2463,7 +2651,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           bufferedSeconds: number
         }
         const track = get().currentTrack
-        if (!track || !track.sourceType || track.sourceType === 'local') {
+        if (!track || get().remoteStreamSessionId === null) {
           return
         }
 

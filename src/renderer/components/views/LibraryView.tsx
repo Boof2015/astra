@@ -217,6 +217,7 @@ export default function LibraryView() {
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
+  const loadTrackFromPath = usePlayerStore((s) => s.loadTrackFromPath)
   const autoQueue = usePlayerStore((s) => s.autoQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
@@ -854,7 +855,11 @@ export default function LibraryView() {
         replayGainTrackDb: result.metadata?.replayGainTrackDb,
         replayGainAlbumDb: result.metadata?.replayGainAlbumDb,
       }
-      await loadTrack(track, result.data)
+      if (result.data) {
+        await loadTrack(track, result.data)
+      } else {
+        await loadTrackFromPath(track)
+      }
     }
   }
 

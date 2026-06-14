@@ -70,6 +70,16 @@ import type {
     NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 import type {
+    ProgressiveAudioLoadProgress,
+    ProgressiveStreamChunk,
+    ProgressiveStreamEvent,
+    ProgressiveStreamInfo,
+    RemoteAudioLoadProgress,
+    RemoteStreamChunk,
+    RemoteStreamEvent,
+    RemoteStreamInfo
+} from '../types/remoteStream'
+import type {
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
@@ -355,7 +365,7 @@ declare global {
             openAudioFile: () => Promise<{
                 path: string
                 name: string
-                data: ArrayBuffer
+                data?: ArrayBuffer
                 metadata?: {
                     title?: string
                     artist?: string
@@ -426,8 +436,17 @@ declare global {
                 replayGainAlbumDb?: number
                 artwork?: string
             } | null>
+            getAudioFileStat: (filePath: string) => Promise<{
+                size: number
+                mtimeMs: number
+            } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
             analyzeTrackLoudness: (filePath: string) => Promise<{
+                loudnessLufs: number
+                peakLinear: number | null
+                method: string
+            } | null>
+            warmupTrackLoudness: (filePath: string) => Promise<{
                 loudnessLufs: number
                 peakLinear: number | null
                 method: string
@@ -436,87 +455,27 @@ declare global {
                 filePath: string,
                 payload: { loudnessLufs: number; peakLinear?: number | null; method?: string }
             ) => Promise<boolean>
+            startProgressiveStream: (
+                filePath: string,
+                outputSampleRate: number,
+                expectedChannels?: number | null,
+                options?: { startTimeSeconds?: number | null }
+            ) => Promise<ProgressiveStreamInfo>
+            cancelProgressiveStream: (sessionId: number) => Promise<void>
             startRemoteStream: (
                 filePath: string,
                 outputSampleRate: number,
                 expectedChannels?: number | null
-            ) => Promise<{
-                sessionId: number
-                path: string
-                sourceType: 'subsonic' | 'jellyfin'
-                sampleRate: number
-                channels: number
-                durationSeconds: number | null
-                initialChunk?: {
-                    sessionId: number
-                    path: string
-                    sourceType: 'subsonic' | 'jellyfin'
-                    sampleRate: number
-                    channels: number
-                    frameCount: number
-                    pcmData: ArrayBuffer
-                    decodedFrames: number
-                    decodedSeconds: number
-                } | null
-            }>
+            ) => Promise<RemoteStreamInfo>
             cancelRemoteStream: (sessionId: number) => Promise<void>
             getReplayGainScanEnabled: () => Promise<boolean>
             setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
-            onRemoteLoadProgress: (callback: (progress: {
-                path: string
-                sourceType: 'subsonic' | 'jellyfin'
-                stage: 'downloading' | 'streaming' | 'complete' | 'failed'
-                loadedBytes: number
-                totalBytes: number | null
-                chunkCount: number
-                percent: number | null
-                done: boolean
-                failed: boolean
-                bufferedSeconds: number
-                bufferedPercent: number | null
-                analyzedSeconds: number
-                analyzedPercent: number | null
-                playable: boolean
-            }) => void) => () => void
-            onRemoteStreamChunk: (callback: (chunk: {
-                sessionId: number
-                path: string
-                sourceType: 'subsonic' | 'jellyfin'
-                sampleRate: number
-                channels: number
-                frameCount: number
-                pcmData: ArrayBuffer
-                decodedFrames: number
-                decodedSeconds: number
-            }) => void) => () => void
-            onRemoteStreamEvent: (callback: (payload:
-                | {
-                    sessionId: number
-                    path: string
-                    sourceType: 'subsonic' | 'jellyfin'
-                    type: 'started'
-                    sampleRate: number
-                    channels: number
-                    durationSeconds: number | null
-                }
-                | {
-                    sessionId: number
-                    path: string
-                    sourceType: 'subsonic' | 'jellyfin'
-                    type: 'complete' | 'cancelled'
-                    decodedFrames: number
-                    decodedSeconds: number
-                }
-                | {
-                    sessionId: number
-                    path: string
-                    sourceType: 'subsonic' | 'jellyfin'
-                    type: 'failed'
-                    message: string
-                    decodedFrames: number
-                    decodedSeconds: number
-                }
-            ) => void) => () => void
+            onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => () => void
+            onProgressiveLoadProgress: (callback: (progress: ProgressiveAudioLoadProgress) => void) => () => void
+            onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => () => void
+            onProgressiveStreamChunk: (callback: (chunk: ProgressiveStreamChunk) => void) => () => void
+            onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => () => void
+            onProgressiveStreamEvent: (callback: (payload: ProgressiveStreamEvent) => void) => () => void
             showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
             openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
             readTextFile: (filePath: string) => Promise<string>

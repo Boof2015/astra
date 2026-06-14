@@ -420,6 +420,9 @@ const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
 const SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 80
 const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
 const REMOTE_STREAM_CHUNK_FRAMES = 4096
+const LOCAL_STREAM_STARTUP_CHUNK_FRAMES = 8192
+const LOCAL_STREAM_STEADY_CHUNK_FRAMES = 65_536
+const LOCAL_STREAM_STEADY_AFTER_SECONDS = 1
 const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
 // Artwork is served to renderers over a custom protocol instead of base64
@@ -459,6 +462,10 @@ const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgres
 const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
+
+interface ProgressiveStreamStartOptions {
+  startTimeSeconds?: number | null
+}
 
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
@@ -4680,7 +4687,12 @@ ipcMain.handle('dialog:openAudioFile', async () => {
   }
 
   const filePath = result.filePaths[0]
-  return loadAudioFile(filePath)
+  const metadata = await loadAudioMetadata(filePath)
+  return {
+    path: filePath,
+    name: basename(filePath),
+    metadata: metadata ?? undefined
+  }
 })
 
 // Open folder dialog
@@ -4703,6 +4715,7 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 ipcMain.handle('audio:loadFile', async (event, filePath: string, options?: LoadAudioFileOptions) => {
   return loadAudioFile(filePath, options, {
     onRemoteLoadProgress: (progress) => {
+      event.sender.send('audio:progressiveLoadProgress', progress)
       event.sender.send('audio:remoteLoadProgress', progress)
     }
   })
@@ -4712,6 +4725,19 @@ ipcMain.handle('audio:getMetadata', async (_event, filePath: string) => {
   return loadAudioMetadata(filePath)
 })
 
+ipcMain.handle('audio:getFileStat', async (_event, filePath: string) => {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+  try {
+    const fileStat = await stat(filePath)
+    return {
+      size: fileStat.size,
+      mtimeMs: Math.round(fileStat.mtimeMs)
+    }
+  } catch {
+    return null
+  }
+})
+
 // Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
 ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
@@ -4719,7 +4745,11 @@ ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
 
 // Loudness for playback normalization: stored value or a fresh ffmpeg ebur128 pass.
 ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) => {
-  return analyzeTrackLoudness(filePath)
+  return analyzeTrackLoudness(filePath, 'interactive')
+})
+
+ipcMain.handle('audio:warmupTrackLoudness', async (_event, filePath: string) => {
+  return analyzeTrackLoudness(filePath, 'background')
 })
 
 ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payload: RendererTrackLoudnessPayload) => {
@@ -4727,11 +4757,25 @@ ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payl
 })
 
 ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, outputSampleRate: number, expectedChannels?: number | null) => {
-  return startRemoteStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
+  return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
 })
 
 ipcMain.handle('audio:cancelRemoteStream', async (_event, sessionId: number) => {
-  await cancelRemoteStreamSession(sessionId)
+  await cancelProgressiveStreamSession(sessionId)
+})
+
+ipcMain.handle('audio:startProgressiveStream', async (
+  event,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels?: number | null,
+  options?: ProgressiveStreamStartOptions
+) => {
+  return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels, options)
+})
+
+ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number) => {
+  await cancelProgressiveStreamSession(sessionId)
 })
 
 ipcMain.handle('audio:getReplayGainScanEnabled', () => {
@@ -6114,6 +6158,7 @@ interface RemoteStreamSession {
   sender: Electron.WebContents
   filePath: string
   sourceType: RemoteStreamSourceType
+  startTimeSeconds: number
   sampleRate: number
   channels: number
   durationSeconds: number | null
@@ -6147,17 +6192,32 @@ function resolveRemoteTrackDurationSeconds(filePath: string): number | null {
     : null
 }
 
+function resolveProgressiveStreamSourceType(filePath: string): RemoteStreamSourceType {
+  if (isSubsonicPath(filePath)) return 'subsonic'
+  if (isJellyfinPath(filePath)) return 'jellyfin'
+  return 'local'
+}
+
+function normalizeProgressiveStartTimeSeconds(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0
+  return numeric
+}
+
 function buildRemoteLoadProgress(
   session: Pick<
     RemoteStreamSession,
-    'filePath' | 'sourceType' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
+    'filePath' | 'sourceType' | 'startTimeSeconds' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
   >,
   stage: RemoteAudioLoadProgress['stage']
 ): RemoteAudioLoadProgress {
   const percent = session.totalBytes && session.totalBytes > 0
     ? Math.max(0, Math.min(1, session.loadedBytes / session.totalBytes))
     : null
-  const bufferedSeconds = session.sampleRate > 0 ? session.decodedFrames / session.sampleRate : 0
+  const decodedSeconds = session.sampleRate > 0 ? session.decodedFrames / session.sampleRate : 0
+  const bufferedSeconds = session.sourceType === 'local'
+    ? session.startTimeSeconds + decodedSeconds
+    : decodedSeconds
   const bufferedPercent = session.durationSeconds && session.durationSeconds > 0
     ? Math.max(0, Math.min(1, bufferedSeconds / session.durationSeconds))
     : null
@@ -6187,12 +6247,19 @@ function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteA
     return
   }
   session.lastProgressEmitAt = now
-  session.sender.send('audio:remoteLoadProgress', buildRemoteLoadProgress(session, stage))
+  const progress = buildRemoteLoadProgress(session, stage)
+  session.sender.send('audio:progressiveLoadProgress', progress)
+  if (session.sourceType !== 'local') {
+    session.sender.send('audio:remoteLoadProgress', progress)
+  }
 }
 
 function safeSendRemoteStreamEvent(session: RemoteStreamSession, payload: RemoteStreamEvent): void {
   if (session.sender.isDestroyed()) return
-  session.sender.send('audio:remoteStreamEvent', payload)
+  session.sender.send('audio:progressiveStreamEvent', payload)
+  if (session.sourceType !== 'local') {
+    session.sender.send('audio:remoteStreamEvent', payload)
+  }
 }
 
 function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: true } | { ok: false; error: Error }): void {
@@ -6206,6 +6273,7 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
       sampleRate: session.sampleRate,
       channels: session.channels,
       durationSeconds: session.durationSeconds,
+      startTimeSeconds: session.startTimeSeconds,
       initialChunk: session.startupChunk
     })
   } else {
@@ -6223,6 +6291,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
   if (frameCount <= 0) return
 
   session.decodedFrames += frameCount
+  session.chunkCount += 1
   const payload: RemoteStreamChunk = {
     sessionId: session.id,
     path: session.filePath,
@@ -6245,11 +6314,15 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
       type: 'started',
       sampleRate: session.sampleRate,
       channels: session.channels,
-      durationSeconds: session.durationSeconds
+      durationSeconds: session.durationSeconds,
+      startTimeSeconds: session.startTimeSeconds
     })
     settleRemoteStreamStartup(session, { ok: true })
   } else {
-    session.sender.send('audio:remoteStreamChunk', payload)
+    session.sender.send('audio:progressiveStreamChunk', payload)
+    if (session.sourceType !== 'local') {
+      session.sender.send('audio:remoteStreamChunk', payload)
+    }
   }
 
   safeSendRemoteLoadProgress(session, 'streaming')
@@ -6305,7 +6378,7 @@ function finalizeRemoteStreamSession(
     if (!session.emittedStartedEvent) {
       settleRemoteStreamStartup(session, {
         ok: false,
-        error: new Error('Remote stream produced no decodable audio.')
+        error: new Error('Progressive stream produced no decodable audio.')
       })
     }
     safeSendRemoteLoadProgress(session, 'complete', true)
@@ -6320,7 +6393,7 @@ function finalizeRemoteStreamSession(
     return
   }
 
-  const failure = error ?? new Error(outcome === 'cancelled' ? 'Remote stream was cancelled.' : 'Remote stream failed.')
+  const failure = error ?? new Error(outcome === 'cancelled' ? 'Progressive stream was cancelled.' : 'Progressive stream failed.')
   settleRemoteStreamStartup(session, { ok: false, error: failure })
   safeSendRemoteLoadProgress(session, 'failed', true)
   safeSendRemoteStreamEvent(session, outcome === 'cancelled'
@@ -6522,8 +6595,15 @@ function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): vo
     ? Buffer.concat([session.stdoutRemainder, chunk])
     : chunk
 
-  const chunkSizeBytes = REMOTE_STREAM_CHUNK_FRAMES * frameSizeBytes
-  while (session.stdoutRemainder.length >= chunkSizeBytes) {
+  while (true) {
+    const chunkFrames = session.sourceType === 'local'
+      ? session.decodedFrames >= Math.floor(session.sampleRate * LOCAL_STREAM_STEADY_AFTER_SECONDS)
+        ? LOCAL_STREAM_STEADY_CHUNK_FRAMES
+        : LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+      : REMOTE_STREAM_CHUNK_FRAMES
+    const chunkSizeBytes = chunkFrames * frameSizeBytes
+    if (session.stdoutRemainder.length < chunkSizeBytes) break
+
     const nextChunk = session.stdoutRemainder.subarray(0, chunkSizeBytes)
     session.stdoutRemainder = session.stdoutRemainder.subarray(chunkSizeBytes)
     emitRemoteStreamChunk(session, nextChunk)
@@ -6544,17 +6624,22 @@ function flushRemoteStreamOutput(session: RemoteStreamSession): void {
   session.stdoutRemainder = Buffer.alloc(0)
 }
 
-async function startRemoteStreamSession(
+async function startProgressiveStreamSession(
   sender: Electron.WebContents,
   filePath: string,
   outputSampleRate: number,
-  expectedChannels?: number | null
+  expectedChannels?: number | null,
+  options: ProgressiveStreamStartOptions = {}
 ): Promise<RemoteStreamInfo> {
   const ffmpegPath = await resolveBinary('ffmpeg')
   if (!ffmpegPath) {
-    throw new Error('FFmpeg could not be resolved for remote streaming.')
+    throw new Error('FFmpeg could not be resolved for progressive streaming.')
   }
 
+  const sourceType = resolveProgressiveStreamSourceType(filePath)
+  const requestedStartTimeSeconds = sourceType === 'local'
+    ? normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
+    : 0
   const normalizedSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0
     ? Math.max(8_000, Math.round(outputSampleRate))
     : 48_000
@@ -6563,21 +6648,35 @@ async function startRemoteStreamSession(
     ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
     : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
   const abortController = new AbortController()
-  const { response, sourceType } = await openRemoteStreamResponse(filePath, abortController.signal)
-  const reader = response.body?.getReader()
-  if (!reader) {
-    throw new Error('Remote stream response body was not readable.')
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let totalBytes: number | null = null
+  if (sourceType === 'local') {
+    totalBytes = null
+  } else {
+    const { response } = await openRemoteStreamResponse(filePath, abortController.signal)
+    reader = response.body?.getReader() ?? null
+    if (!reader) {
+      throw new Error('Remote stream response body was not readable.')
+    }
+
+    const contentLengthHeader = response.headers.get('content-length')
+    const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
+    totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
   }
 
-  const contentLengthHeader = response.headers.get('content-length')
-  const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
-  const totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
+  const ffmpegInputArgs = sourceType === 'local'
+    ? [
+        ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
+        '-i', filePath
+      ]
+    : ['-i', 'pipe:0']
   const ffmpeg = spawn(
     ffmpegPath,
     [
       '-v', 'error',
       '-nostdin',
-      '-i', 'pipe:0',
+      ...ffmpegInputArgs,
       '-map', '0:a:0',
       '-vn',
       '-acodec', 'pcm_f32le',
@@ -6601,6 +6700,7 @@ async function startRemoteStreamSession(
       sender,
       filePath,
       sourceType,
+      startTimeSeconds: requestedStartTimeSeconds,
       sampleRate: normalizedSampleRate,
       channels: normalizedChannels,
       durationSeconds: resolveRemoteTrackDurationSeconds(filePath),
@@ -6653,7 +6753,7 @@ async function startRemoteStreamSession(
       }
     }
 
-    safeSendRemoteLoadProgress(session, 'downloading', true)
+    safeSendRemoteLoadProgress(session, sourceType === 'local' ? 'streaming' : 'downloading', true)
 
     ffmpeg.stderr.setEncoding('utf8')
     ffmpeg.stderr.on('data', (data: string | Buffer) => {
@@ -6680,7 +6780,7 @@ async function startRemoteStreamSession(
       finalizeRemoteStreamSession(
         session,
         'failed',
-        error instanceof Error ? error : new Error('Remote FFmpeg input pipe failed.')
+        error instanceof Error ? error : new Error('Progressive FFmpeg input pipe failed.')
       )
     })
 
@@ -6693,7 +6793,7 @@ async function startRemoteStreamSession(
     })
 
     ffmpeg.on('error', (error) => {
-      finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote FFmpeg process failed.'))
+      finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Progressive FFmpeg process failed.'))
     })
 
     ffmpeg.on('close', (code) => {
@@ -6711,39 +6811,48 @@ async function startRemoteStreamSession(
       const stderr = session.stderrChunks.join(' ').trim()
       finalizeRemoteStreamSession(session, 'failed', new Error(
         stderr.length > 0
-          ? `Remote stream decode failed: ${stderr}`
-          : `Remote stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
+          ? `Progressive stream decode failed: ${stderr}`
+          : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
       ))
     })
 
-    void (async () => {
+    if (sourceType === 'local') {
       try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (!value || value.byteLength === 0) continue
-
-          session.loadedBytes += value.byteLength
-          session.chunkCount += 1
-          safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
-          await writeRemoteStreamInput(session, value)
-        }
-
         if (!ffmpeg.stdin.destroyed) {
           ffmpeg.stdin.end()
         }
-      } catch (error) {
-        if (session.done || session.cancelled) return
-        if (isRemoteStreamPipeTeardownError(error)) return
-        finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+      } catch {
+        // FFmpeg reads local files directly; stdin is intentionally unused.
       }
-    })()
+    } else if (reader) {
+      void (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value || value.byteLength === 0) continue
+
+            session.loadedBytes += value.byteLength
+            safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
+            await writeRemoteStreamInput(session, value)
+          }
+
+          if (!ffmpeg.stdin.destroyed) {
+            ffmpeg.stdin.end()
+          }
+        } catch (error) {
+          if (session.done || session.cancelled) return
+          if (isRemoteStreamPipeTeardownError(error)) return
+          finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+        }
+      })()
+    }
   })
 
   return infoPromise
 }
 
-async function cancelRemoteStreamSession(sessionId: number): Promise<void> {
+async function cancelProgressiveStreamSession(sessionId: number): Promise<void> {
   const session = remoteStreamSessions.get(sessionId)
   if (!session) return
   session.cancelled = true
@@ -7466,16 +7575,34 @@ const LOUDNESS_FFMPEG_TIMEOUT_MS = 180_000
 // hour-long track runs to a few MB.
 const LOUDNESS_FFMPEG_MAX_STDERR_BYTES = 32 * 1024 * 1024
 
-const loudnessAnalysisInFlight = new Map<string, Promise<TrackLoudnessAnalysisResult | null>>()
-let loudnessAnalysisQueueTail: Promise<unknown> = Promise.resolve()
+type LoudnessAnalysisPriority = 'interactive' | 'background'
 
-function execFileCaptureStderr(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
+interface LoudnessAnalysisJob {
+  filePath: string
+  fileStat: { size: number; mtimeMs: number }
+  priority: LoudnessAnalysisPriority
+  abortController: AbortController
+  resolve: (result: TrackLoudnessAnalysisResult | null) => void
+  reject: (error: unknown) => void
+}
+
+const loudnessAnalysisInFlight = new Map<string, Promise<TrackLoudnessAnalysisResult | null>>()
+const loudnessAnalysisQueue: LoudnessAnalysisJob[] = []
+let activeLoudnessAnalysisJob: LoudnessAnalysisJob | null = null
+
+function execFileCaptureStderr(
+  command: string,
+  args: string[],
+  options: ExecFileOptions = {},
+  signal?: AbortSignal
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       command,
       args,
       {
         ...options,
+        ...(signal ? { signal } : {}),
         encoding: 'utf8',
         windowsHide: true
       },
@@ -7488,6 +7615,12 @@ function execFileCaptureStderr(command: string, args: string[], options: ExecFil
       }
     )
   })
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const maybeError = error as { name?: unknown; code?: unknown }
+  return maybeError.name === 'AbortError' || maybeError.code === 'ABORT_ERR'
 }
 
 async function statForLoudness(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
@@ -7529,7 +7662,114 @@ function parseEbur128Summary(stderr: string): { loudnessLufs: number; peakLinear
 // Resolve a track's integrated loudness for playback normalization: stored DB
 // value when fresh, otherwise a single queued ffmpeg ebur128 pass (native
 // decode+analysis in a separate process, parallel to the renderer's decode).
-async function analyzeTrackLoudness(filePath: string): Promise<TrackLoudnessAnalysisResult | null> {
+async function runLoudnessAnalysisJob(job: LoudnessAnalysisJob): Promise<TrackLoudnessAnalysisResult | null> {
+  const ffmpegPath = await resolveBinary('ffmpeg')
+  if (!ffmpegPath || job.abortController.signal.aborted) return null
+
+  const startMs = Date.now()
+  try {
+    const stderr = await execFileCaptureStderr(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-nostats',
+        '-i', job.filePath,
+        '-map', '0:a:0',
+        '-vn',
+        '-af', 'ebur128=peak=sample',
+        '-f', 'null', '-'
+      ],
+      { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
+      job.abortController.signal
+    )
+    const parsed = parseEbur128Summary(stderr)
+    if (!parsed) {
+      console.warn(`Loudness analysis produced no summary for ${job.filePath}`)
+      return null
+    }
+
+    await library.setTrackLoudness({
+      trackPath: job.filePath,
+      loudnessLufs: parsed.loudnessLufs,
+      peakLinear: parsed.peakLinear,
+      method: 'ebur128',
+      fileSize: job.fileStat.size,
+      fileMtimeMs: job.fileStat.mtimeMs
+    })
+    if (isDev) {
+      console.log(`[loudness] ebur128 analysis (${Date.now() - startMs}ms): ${parsed.loudnessLufs} LUFS`, job.filePath)
+    }
+    return { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' }
+  } catch (error) {
+    if (isAbortError(error) || job.abortController.signal.aborted) {
+      return null
+    }
+    console.warn(`Loudness analysis failed for ${job.filePath}:`, error)
+    return null
+  }
+}
+
+function pumpLoudnessAnalysisQueue(): void {
+  if (activeLoudnessAnalysisJob) return
+  const job = loudnessAnalysisQueue.shift()
+  if (!job) return
+
+  activeLoudnessAnalysisJob = job
+  void runLoudnessAnalysisJob(job)
+    .then(job.resolve, job.reject)
+    .finally(() => {
+      if (activeLoudnessAnalysisJob === job) {
+        activeLoudnessAnalysisJob = null
+      }
+      pumpLoudnessAnalysisQueue()
+    })
+}
+
+function enqueueLoudnessAnalysisJob(
+  filePath: string,
+  fileStat: { size: number; mtimeMs: number },
+  priority: LoudnessAnalysisPriority
+): Promise<TrackLoudnessAnalysisResult | null> {
+  const existing = loudnessAnalysisInFlight.get(filePath)
+  if (existing) return existing
+
+  const abortController = new AbortController()
+  const promise = new Promise<TrackLoudnessAnalysisResult | null>((resolve, reject) => {
+    const job: LoudnessAnalysisJob = {
+      filePath,
+      fileStat,
+      priority,
+      abortController,
+      resolve,
+      reject
+    }
+
+    if (priority === 'interactive') {
+      loudnessAnalysisQueue.unshift(job)
+      if (
+        activeLoudnessAnalysisJob
+        && activeLoudnessAnalysisJob.priority === 'background'
+        && activeLoudnessAnalysisJob.filePath !== filePath
+      ) {
+        activeLoudnessAnalysisJob.abortController.abort()
+      }
+    } else {
+      loudnessAnalysisQueue.push(job)
+    }
+
+    pumpLoudnessAnalysisQueue()
+  }).finally(() => {
+    loudnessAnalysisInFlight.delete(filePath)
+  })
+
+  loudnessAnalysisInFlight.set(filePath, promise)
+  return promise
+}
+
+async function analyzeTrackLoudness(
+  filePath: string,
+  priority: LoudnessAnalysisPriority = 'interactive'
+): Promise<TrackLoudnessAnalysisResult | null> {
   if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
 
   const fileStat = await statForLoudness(filePath)
@@ -7551,59 +7791,7 @@ async function analyzeTrackLoudness(filePath: string): Promise<TrackLoudnessAnal
 
   const inFlight = loudnessAnalysisInFlight.get(filePath)
   if (inFlight) return inFlight
-
-  const runAnalysis = async (): Promise<TrackLoudnessAnalysisResult | null> => {
-    const ffmpegPath = await resolveBinary('ffmpeg')
-    if (!ffmpegPath) return null
-
-    const startMs = Date.now()
-    try {
-      const stderr = await execFileCaptureStderr(
-        ffmpegPath,
-        [
-          '-hide_banner',
-          '-nostats',
-          '-i', filePath,
-          '-map', '0:a:0',
-          '-vn',
-          '-af', 'ebur128=peak=sample',
-          '-f', 'null', '-'
-        ],
-        { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES }
-      )
-      const parsed = parseEbur128Summary(stderr)
-      if (!parsed) {
-        console.warn(`Loudness analysis produced no summary for ${filePath}`)
-        return null
-      }
-
-      await library.setTrackLoudness({
-        trackPath: filePath,
-        loudnessLufs: parsed.loudnessLufs,
-        peakLinear: parsed.peakLinear,
-        method: 'ebur128',
-        fileSize: fileStat.size,
-        fileMtimeMs: fileStat.mtimeMs
-      })
-      if (isDev) {
-        console.log(`[loudness] ebur128 analysis (${Date.now() - startMs}ms): ${parsed.loudnessLufs} LUFS`, filePath)
-      }
-      return { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' }
-    } catch (error) {
-      console.warn(`Loudness analysis failed for ${filePath}:`, error)
-      return null
-    }
-  }
-
-  // Serialize spawns (FIFO, concurrency 1) so play + prebuffer requests cannot
-  // pile up ffmpeg processes; same-path callers share the in-flight promise.
-  const scheduled = loudnessAnalysisQueueTail.catch(() => undefined).then(runAnalysis)
-  loudnessAnalysisQueueTail = scheduled.catch(() => undefined)
-  loudnessAnalysisInFlight.set(filePath, scheduled)
-  void scheduled.finally(() => {
-    loudnessAnalysisInFlight.delete(filePath)
-  })
-  return scheduled
+  return enqueueLoudnessAnalysisJob(filePath, fileStat, priority)
 }
 
 // Persist a loudness value the renderer computed via its JS fallback analyzer.

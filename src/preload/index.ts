@@ -70,6 +70,10 @@ import type {
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 import type {
+  ProgressiveAudioLoadProgress,
+  ProgressiveStreamChunk,
+  ProgressiveStreamEvent,
+  ProgressiveStreamInfo,
   RemoteAudioLoadProgress,
   RemoteStreamChunk,
   RemoteStreamEvent,
@@ -128,7 +132,7 @@ export interface AudioFileMetadata {
 export interface AudioFileResult {
   path: string
   name: string
-  data: ArrayBuffer
+  data?: ArrayBuffer
   metadata?: AudioFileMetadata
 }
 
@@ -146,6 +150,15 @@ export interface TrackLoudnessStorePayload {
   loudnessLufs: number
   peakLinear?: number | null
   method?: string
+}
+
+export interface AudioFileStatResult {
+  size: number
+  mtimeMs: number
+}
+
+export interface ProgressiveStreamStartOptions {
+  startTimeSeconds?: number | null
 }
 
 // Library types
@@ -878,11 +891,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
+  getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
   analyzeTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  warmupTrackLoudness: (filePath: string) =>
+    ipcRenderer.invoke('audio:warmupTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
+  startProgressiveStream: (
+    filePath: string,
+    outputSampleRate: number,
+    expectedChannels?: number | null,
+    options?: ProgressiveStreamStartOptions
+  ) =>
+    ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
+  cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
   cancelRemoteStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelRemoteStream', sessionId) as Promise<void>,
@@ -893,15 +917,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('audio:remoteLoadProgress', handler)
     return () => ipcRenderer.removeListener('audio:remoteLoadProgress', handler)
   },
+  onProgressiveLoadProgress: (callback: (progress: ProgressiveAudioLoadProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ProgressiveAudioLoadProgress) => callback(progress)
+    ipcRenderer.on('audio:progressiveLoadProgress', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveLoadProgress', handler)
+  },
   onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, chunk: RemoteStreamChunk) => callback(chunk)
     ipcRenderer.on('audio:remoteStreamChunk', handler)
     return () => ipcRenderer.removeListener('audio:remoteStreamChunk', handler)
   },
+  onProgressiveStreamChunk: (callback: (chunk: ProgressiveStreamChunk) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, chunk: ProgressiveStreamChunk) => callback(chunk)
+    ipcRenderer.on('audio:progressiveStreamChunk', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveStreamChunk', handler)
+  },
   onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: RemoteStreamEvent) => callback(payload)
     ipcRenderer.on('audio:remoteStreamEvent', handler)
     return () => ipcRenderer.removeListener('audio:remoteStreamEvent', handler)
+  },
+  onProgressiveStreamEvent: (callback: (payload: ProgressiveStreamEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ProgressiveStreamEvent) => callback(payload)
+    ipcRenderer.on('audio:progressiveStreamEvent', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveStreamEvent', handler)
   },
 
   // Generic file dialogs & I/O
@@ -1277,16 +1316,28 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
+      getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
+      startProgressiveStream: (
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels?: number | null,
+        options?: ProgressiveStreamStartOptions
+      ) => Promise<ProgressiveStreamInfo>
+      cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>
       getReplayGainScanEnabled: () => Promise<boolean>
       setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
       onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => () => void
+      onProgressiveLoadProgress: (callback: (progress: ProgressiveAudioLoadProgress) => void) => () => void
       onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => () => void
+      onProgressiveStreamChunk: (callback: (chunk: ProgressiveStreamChunk) => void) => () => void
       onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => () => void
+      onProgressiveStreamEvent: (callback: (payload: ProgressiveStreamEvent) => void) => () => void
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
