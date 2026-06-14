@@ -48,6 +48,10 @@ const LOCAL_PROGRESSIVE_WAVEFORM_SAMPLE_BUDGET = 4096
 const PLAYBACK_FADE_MS = 150
 // Extra delay before tearing down a faded-out source, so the audio-thread ramp fully reaches 0.
 const FADE_STOP_EPSILON_MS = 20
+// Sub-perceptual fade-node dip used when an instant manual skip promotes the prebuffered next
+// track immediately: the outgoing source is stopped at the bottom of the dip so its mid-sample
+// cutoff lands in silence (no click), while the incoming source's onset rides the dip back up.
+const SKIP_DECLICK_MS = 12
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -4827,6 +4831,98 @@ export class AudioEngine {
     this.emit('durationChange', this.audioBuffer.duration)
     this.emit('gaplessTransition')
     this.emit('bufferReady', this.audioBuffer)
+  }
+
+  // Promote the already-decoded prebuffered next track to "current" immediately, so a manual
+  // "Next" press is gapless instead of cold-loading from disk. Mirrors performGaplessTransition
+  // but starts the new source now (rather than at scheduledEndTime). Returns false when the
+  // prebuffer is unusable, so the caller can fall back to the cold-load path.
+  skipToPreBuffered(): boolean {
+    // Bit-perfect/remote backends manage their own next-track promotion elsewhere.
+    if (this.playbackOutputMode !== 'standard') return false
+    if (this.remoteStreamState) return false
+    if (this._playbackState !== 'playing') return false
+    if (!this.context || !this.nextBuffer || !this.audioBuffer || !this.sourceNode) return false
+
+    // A lingering pause fade-out timer would tear down the new source after we start it.
+    this.clearPauseFadeTimer()
+    this.isGaplessTransition = true
+
+    // Snapshot next-track state before cancelScheduledNext / the swap clears it.
+    const nextBuffer = this.nextBuffer
+    const nextBufferTrackPath = this.nextBufferTrackPath
+    const nextReplayGainDb = this.nextReplayGainDb
+    const nextNormalizationAnalysis = this.nextNormalizationAnalysis
+    const pendingNextNormalization = this.getPendingNextNormalization()
+    const oldSource = this.sourceNode
+
+    // Discard the future-scheduled gapless source (if any) and reset its normalization ramp.
+    this.cancelScheduledNext()
+
+    // Build and immediately start the new current source from the prebuffered buffer.
+    const newSource = this.context.createBufferSource()
+    newSource.buffer = nextBuffer
+    this.connectSourceWithRouting(newSource, nextBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(newSource, nextBuffer.numberOfChannels)
+    newSource.onended = () => {
+      if (this._playbackState === 'playing') {
+        this.performGaplessTransition()
+      }
+    }
+
+    const now = this.context.currentTime
+    newSource.start(now, 0)
+
+    // Dip the shared fade node to silence and back; stop the outgoing source at the dip bottom.
+    const declickSec = SKIP_DECLICK_MS / 1000
+    const stopAt = this.fadeGainNode ? now + declickSec : now
+    if (this.fadeGainNode) {
+      const fade = this.fadeGainNode.gain
+      fade.cancelScheduledValues(now)
+      fade.setValueAtTime(fade.value, now)
+      fade.linearRampToValueAtTime(0, now + declickSec)
+      fade.linearRampToValueAtTime(1, now + declickSec * 2)
+    }
+    oldSource.onended = () => {
+      this.disconnectSourceRouting(oldSource)
+      try {
+        oldSource.buffer = null
+        oldSource.disconnect()
+      } catch { /* ignore */ }
+    }
+    try {
+      oldSource.stop(stopAt)
+    } catch { /* ignore */ }
+
+    // Swap buffers/bookkeeping (mirrors performGaplessTransition).
+    this.audioBuffer = nextBuffer
+    this.nextBuffer = null
+    this.currentNormalizationAnalysis = nextNormalizationAnalysis
+    this.nextNormalizationAnalysis = null
+    this.currentBufferTrackPath = nextBufferTrackPath
+    this.nextBufferTrackPath = null
+    this.currentReplayGainDb = nextReplayGainDb
+    this.nextReplayGainDb = null
+
+    this.sourceNode = newSource
+    this.nextSourceNode = null
+
+    // The new track starts at "now" from offset 0.
+    this.startTime = now
+    this.pauseTime = 0
+    this.applyGainState(pendingNextNormalization)
+    this.clearNextNormalizationCache()
+    this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
+
+    this.isGaplessTransition = false
+
+    // Reset visualizers and notify consumers exactly like the natural transition.
+    this.notifyTrackChange()
+    this.emit('durationChange', this.audioBuffer.duration)
+    this.emit('gaplessTransition')
+    this.emit('bufferReady', this.audioBuffer)
+
+    return true
   }
 
   // Clear pre-buffered next track

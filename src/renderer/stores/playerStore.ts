@@ -1811,6 +1811,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const candidate = findNextPlayableCandidate(state)
       if (!candidate) return
 
+      // Fast path: the track we're skipping to is already decoded as the prebuffered next
+      // track. Promote it instantly in the engine (gapless) instead of cold-loading from disk.
+      // The synchronous 'gaplessTransition' listener then advances the queue and re-prebuffers,
+      // so we must NOT pre-apply applyCandidateTransition here (it would double-advance).
+      if (
+        state.playbackState === 'playing' &&
+        candidate.kind !== 'current' &&
+        candidate.track?.path != null &&
+        audioEngine.nextBufferedTrackPath === candidate.track.path
+      ) {
+        invalidateLoadRequest()
+        if (audioEngine.skipToPreBuffered()) return
+        // Fell through (buffer vanished): fall back to the cold-load path below.
+      }
+
       set(applyCandidateTransition(state, candidate, {
         pushCurrentToHistory: true,
         clearFuture: true
