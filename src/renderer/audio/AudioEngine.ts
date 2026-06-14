@@ -44,6 +44,11 @@ const REMOTE_NORMALIZATION_SLEW_MS = 250
 const REMOTE_WAVEFORM_UPDATE_INTERVAL_MS = 250
 const LOCAL_PROGRESSIVE_WAVEFORM_SAMPLE_BUDGET = 4096
 
+// Short fade applied to standard Web Audio playback so play/pause/skip transitions are not abrupt.
+const PLAYBACK_FADE_MS = 150
+// Extra delay before tearing down a faded-out source, so the audio-thread ramp fully reaches 0.
+const FADE_STOP_EPSILON_MS = 20
+
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
 const NORMALIZATION_PEAK_CEILING_LINEAR = 0.98
@@ -269,6 +274,10 @@ export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
+  // Final-stage gain used only for play/pause/skip fades, independent of volume/mute and normalization.
+  private fadeGainNode: GainNode | null = null
+  // Pending teardown of a faded-out source after pause(); cleared if play/stop/seek/load takes over.
+  private pauseFadeTimer: ReturnType<typeof setTimeout> | null = null
   private normalizationGainNode: GainNode | null = null
   private analysisNormalizationGainNode: GainNode | null = null
   private analysisDelayNode: DelayNode | null = null
@@ -1157,6 +1166,8 @@ export class AudioEngine {
   }
 
   private beginLoadOperation(): number {
+    // A new load supersedes any pending pause-fade teardown (its stopSource runs in the load flow).
+    this.clearPauseFadeTimer()
     this.loadGeneration += 1
     this.prebufferGeneration += 1
     return this.loadGeneration
@@ -1690,8 +1701,14 @@ export class AudioEngine {
     try { this.workletNode?.disconnect() } catch { /* ignore */ }
     try { this.analysisTapSinkNode?.disconnect() } catch { /* ignore */ }
     try { this.gainNode.disconnect() } catch { /* ignore */ }
+    try { this.fadeGainNode?.disconnect() } catch { /* ignore */ }
 
-    this.gainNode.connect(this.context.destination)
+    if (this.fadeGainNode) {
+      this.gainNode.connect(this.fadeGainNode)
+      this.fadeGainNode.connect(this.context.destination)
+    } else {
+      this.gainNode.connect(this.context.destination)
+    }
 
     if (!this.shouldBypassStandardAnalysisGraph()) {
       if (this.eqAnalyserNode) {
@@ -2372,6 +2389,10 @@ export class AudioEngine {
       // Create persistent nodes
       this.gainNode = this.context.createGain()
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
+
+      // Fade node (after volume, last stage before destination) for play/pause/skip fades
+      this.fadeGainNode = this.context.createGain()
+      this.fadeGainNode.gain.value = 1.0
 
       // Normalization gain node (applied before volume)
       this.normalizationGainNode = this.context.createGain()
@@ -4900,8 +4921,25 @@ export class AudioEngine {
       this.assertCurrentLoadOperation(playLoadGeneration)
     }
 
+    // Rapid resume: a pause fade-out is still in flight and the source is still playing.
+    // Cancel the teardown and ramp back up instead of restarting — gapless and click-free.
+    if (this.pauseFadeTimer != null && this.sourceNode) {
+      this.clearPauseFadeTimer()
+      this._playbackState = 'playing'
+      this.emit('stateChange', this._playbackState)
+      this.startTimeUpdate()
+      this.rampFadeGain(1, PLAYBACK_FADE_MS)
+      if (this.nextBuffer) {
+        this.scheduleGaplessTransition()
+      }
+      return
+    }
+
     // If already playing, do nothing
     if (this._playbackState === 'playing') return
+
+    // A completed pause fade may have left a stale timer reference; clear before a fresh start.
+    this.clearPauseFadeTimer()
 
     // Stop existing source if any
     this.stopSource()
@@ -4919,9 +4957,15 @@ export class AudioEngine {
       }
     }
 
-    // Start from pause position
+    // Start from pause position, fading in from silence so the start is not abrupt.
     const offset = this.pauseTime
     this.startTime = this.context.currentTime - offset
+    if (this.fadeGainNode) {
+      const fadeStart = this.context.currentTime
+      this.fadeGainNode.gain.cancelScheduledValues(fadeStart)
+      this.fadeGainNode.gain.setValueAtTime(0, fadeStart)
+      this.fadeGainNode.gain.linearRampToValueAtTime(1, fadeStart + PLAYBACK_FADE_MS / 1000)
+    }
     this.sourceNode.start(0, offset)
 
     this._playbackState = 'playing'
@@ -4931,6 +4975,28 @@ export class AudioEngine {
     // If we have a next buffer, schedule the gapless transition
     if (this.nextBuffer) {
       this.scheduleGaplessTransition()
+    }
+  }
+
+  // Ramp the fade node toward `target` over `durationMs`, holding the live value first so a
+  // mid-fade reversal (rapid pause/play) stays smooth. No-op for bit-perfect/remote (no fade node).
+  private rampFadeGain(target: number, durationMs: number): void {
+    if (!this.context || !this.fadeGainNode) return
+    const now = this.context.currentTime
+    const gain = this.fadeGainNode.gain
+    // Read the live (possibly mid-ramp) value, then anchor it explicitly. linearRampToValueAtTime
+    // interpolates from the previous event, so a concrete setValueAtTime anchor is required —
+    // cancelAndHoldAtTime is not a reliable ramp anchor in Chromium (the ramp jumps to target).
+    const current = gain.value
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(current, now)
+    gain.linearRampToValueAtTime(target, now + durationMs / 1000)
+  }
+
+  private clearPauseFadeTimer(): void {
+    if (this.pauseFadeTimer != null) {
+      clearTimeout(this.pauseFadeTimer)
+      this.pauseFadeTimer = null
     }
   }
 
@@ -4967,13 +5033,24 @@ export class AudioEngine {
 
     if (this._playbackState !== 'playing' || !this.context) return
 
+    // Record the pause position now so the seek bar/time stay correct while the audio fades out.
     this.pauseTime = this.context.currentTime - this.startTime
-    this.stopSource()
     this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
+
+    // Fade out, then tear down the source once it is silent. The source keeps playing during the
+    // fade so a quick play() can reverse it gaplessly (see play()'s rapid-resume branch).
+    this.rampFadeGain(0, PLAYBACK_FADE_MS)
+    this.clearPauseFadeTimer()
+    this.pauseFadeTimer = setTimeout(() => {
+      this.pauseFadeTimer = null
+      if (this._playbackState === 'paused') {
+        this.stopSource()
+      }
+    }, PLAYBACK_FADE_MS + FADE_STOP_EPSILON_MS)
   }
 
   // Toggle play/pause
@@ -4988,6 +5065,7 @@ export class AudioEngine {
   // Stop
   stop(): void {
     this.invalidateLoadOperations()
+    this.clearPauseFadeTimer()
     const stopLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
@@ -5043,6 +5121,7 @@ export class AudioEngine {
 
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
+    this.clearPauseFadeTimer()
     if (this.playbackOutputMode === 'bitperfect') {
       await this.seekNativeBitPerfect(time)
       return
@@ -5404,6 +5483,11 @@ export class AudioEngine {
     if (this.analysisDelayNode) {
       try { this.analysisDelayNode.disconnect() } catch { /* ignore */ }
       this.analysisDelayNode = null
+    }
+
+    if (this.fadeGainNode) {
+      try { this.fadeGainNode.disconnect() } catch { /* ignore */ }
+      this.fadeGainNode = null
     }
 
     if (this.context) {
