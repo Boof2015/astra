@@ -438,12 +438,66 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${WINGET_TOKEN:-}" ]; then
-            echo "::error::WINGET_TOKEN is empty or missing. Add a GitHub PAT that can push to Boof2015/winget-pkgs and open PRs against microsoft/winget-pkgs." >&2
+            echo "::error::WINGET_TOKEN is empty or missing. Add a classic GitHub PAT with public_repo scope that can push to Boof2015/winget-pkgs and open PRs against microsoft/winget-pkgs." >&2
             exit 1
           fi
 
+          TOKEN_HEADERS="$(mktemp)"
+          USER_RESPONSE="$(mktemp)"
           FORK_JSON="$(mktemp)"
-          trap 'rm -f "$FORK_JSON"' EXIT
+          BASE_REF_JSON="$(mktemp)"
+          CREATE_REF_RESPONSE="$(mktemp)"
+          DELETE_REF_RESPONSE="$(mktemp)"
+          CREATED_CHECK_REF=false
+          CHECK_BRANCH="astra-winget-token-check-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CHECK_REF="refs/heads/${CHECK_BRANCH}"
+
+          cleanup() {
+            if [ "$CREATED_CHECK_REF" = "true" ]; then
+              curl -sS \
+                -X DELETE \
+                -o "$DELETE_REF_RESPONSE" \
+                -H "Authorization: Bearer ${WINGET_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/Boof2015/winget-pkgs/git/refs/heads/${CHECK_BRANCH}" >/dev/null || true
+            fi
+            rm -f "$TOKEN_HEADERS" "$USER_RESPONSE" "$FORK_JSON" "$BASE_REF_JSON" "$CREATE_REF_RESPONSE" "$DELETE_REF_RESPONSE"
+          }
+          trap cleanup EXIT
+
+          USER_STATUS="$(curl -sS \
+            -D "$TOKEN_HEADERS" \
+            -o "$USER_RESPONSE" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user")"
+
+          if [ "$USER_STATUS" != "200" ]; then
+            echo "::error::WINGET_TOKEN could not authenticate with GitHub. GitHub API returned HTTP $USER_STATUS." >&2
+            cat "$USER_RESPONSE" >&2
+            exit 1
+          fi
+
+          OAUTH_SCOPES="$(tr -d '\r' < "$TOKEN_HEADERS" | awk -F':[[:space:]]*' 'tolower($1) == "x-oauth-scopes" { print $2; exit }')"
+          SCOPE_LIST="$(printf '%s' "$OAUTH_SCOPES" | tr -d '[:space:]')"
+          case ",$SCOPE_LIST," in
+            *,public_repo,*|*,repo,*)
+              echo "WINGET_TOKEN is a classic PAT with repo/public_repo scope."
+              ;;
+            *)
+              echo "::error::WINGET_TOKEN must be a classic GitHub PAT with public_repo scope. A classic PAT with repo scope also works, but vedantmgoyal9/winget-releaser does not support fine-grained PATs." >&2
+              if [ -n "$OAUTH_SCOPES" ]; then
+                echo "Current token scopes: $OAUTH_SCOPES" >&2
+              else
+                echo "GitHub did not report OAuth scopes for WINGET_TOKEN; this usually means the secret is not a classic PAT." >&2
+              fi
+              exit 1
+              ;;
+          esac
+
           FORK_STATUS="$(curl -sS \
             -o "$FORK_JSON" \
             -w '%{http_code}' \
@@ -458,13 +512,74 @@ jobs:
             exit 1
           fi
 
-          CAN_PUSH="$(jq -r '.permissions.push // false' "$FORK_JSON")"
-          if [ "$CAN_PUSH" != "true" ]; then
-            echo "::error::WINGET_TOKEN can access Boof2015/winget-pkgs but does not have push permission." >&2
+          IS_FORK="$(jq -r '.fork // false' "$FORK_JSON")"
+          PARENT_REPO="$(jq -r '.parent.full_name // empty' "$FORK_JSON")"
+          if [ "$IS_FORK" != "true" ] || [ "$PARENT_REPO" != "microsoft/winget-pkgs" ]; then
+            echo "::error::Boof2015/winget-pkgs must be a fork of microsoft/winget-pkgs for winget-releaser." >&2
             exit 1
           fi
 
-          echo "WINGET_TOKEN can push to Boof2015/winget-pkgs."
+          DEFAULT_BRANCH="$(jq -r '.default_branch // empty' "$FORK_JSON")"
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            echo "::error::Could not resolve the default branch for Boof2015/winget-pkgs." >&2
+            exit 1
+          fi
+
+          BASE_REF_STATUS="$(curl -sS \
+            -o "$BASE_REF_JSON" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Boof2015/winget-pkgs/git/ref/heads/${DEFAULT_BRANCH}")"
+
+          if [ "$BASE_REF_STATUS" != "200" ]; then
+            echo "::error::WINGET_TOKEN could not read Boof2015/winget-pkgs default branch ref '${DEFAULT_BRANCH}'. GitHub API returned HTTP $BASE_REF_STATUS." >&2
+            cat "$BASE_REF_JSON" >&2
+            exit 1
+          fi
+
+          BASE_SHA="$(jq -r '.object.sha // empty' "$BASE_REF_JSON")"
+          if [ -z "$BASE_SHA" ]; then
+            echo "::error::Could not resolve a commit SHA for Boof2015/winget-pkgs default branch '${DEFAULT_BRANCH}'." >&2
+            cat "$BASE_REF_JSON" >&2
+            exit 1
+          fi
+
+          CREATE_REF_STATUS="$(curl -sS \
+            -X POST \
+            -o "$CREATE_REF_RESPONSE" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Boof2015/winget-pkgs/git/refs" \
+            -d "$(jq -cn --arg ref "$CHECK_REF" --arg sha "$BASE_SHA" '{ref: $ref, sha: $sha}')")"
+
+          if [ "$CREATE_REF_STATUS" != "201" ]; then
+            echo "::error::WINGET_TOKEN could not create a branch in Boof2015/winget-pkgs. GitHub API returned HTTP $CREATE_REF_STATUS." >&2
+            cat "$CREATE_REF_RESPONSE" >&2
+            exit 1
+          fi
+          CREATED_CHECK_REF=true
+
+          DELETE_REF_STATUS="$(curl -sS \
+            -X DELETE \
+            -o "$DELETE_REF_RESPONSE" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Boof2015/winget-pkgs/git/refs/heads/${CHECK_BRANCH}")"
+
+          if [ "$DELETE_REF_STATUS" != "204" ]; then
+            echo "::error::WINGET_TOKEN created the test branch but could not delete it. GitHub API returned HTTP $DELETE_REF_STATUS." >&2
+            cat "$DELETE_REF_RESPONSE" >&2
+            exit 1
+          fi
+          CREATED_CHECK_REF=false
+
+          echo "WINGET_TOKEN can create and delete branches in Boof2015/winget-pkgs."
 
       - uses: vedantmgoyal9/winget-releaser@v2
         if: ${{ steps.winget-preflight.outputs.should_publish == 'true' }}
