@@ -802,6 +802,7 @@ const lastFmService = new LastFmService({
 
 const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
+  appVersion: app.getVersion(),
   onStatusChange: () => {
     broadcastLyricsStatus()
     const status = lyricsService.getStatus()

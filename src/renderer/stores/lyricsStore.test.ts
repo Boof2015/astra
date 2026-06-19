@@ -31,6 +31,21 @@ function makeResult(path: string): LyricsLookupResult {
   }
 }
 
+function makeProviderUnavailableResult(): LyricsLookupResult {
+  return {
+    status: 'not_found',
+    reason: 'provider-unavailable'
+  }
+}
+
+function makeTransientErrorResult(): LyricsLookupResult {
+  return {
+    status: 'transient_error',
+    message: 'LRCLIB metadata lookup failed due to a transient network error.',
+    code: 'lrclib_get_timeout'
+  }
+}
+
 function makeQuery(path: string): LyricsTrackQuery {
   return {
     path,
@@ -142,4 +157,52 @@ test('loadForTrack keeps cached lyrics visible while a lookup is pending', async
 
   assert.equal(useLyricsStore.getState().isLoading, false)
   assert.notEqual(useLyricsStore.getState().currentResult, cachedResult)
+})
+
+test('loadForTrack keeps cached lyrics visible when LRCLIB is unavailable', async () => {
+  installLyricsApiMock({
+    getForTrack: async () => makeProviderUnavailableResult()
+  })
+  resetLyricsStore()
+
+  const path = '/music/cached-provider-unavailable.flac'
+  const cachedResult = makeResult(`${path}:cached`)
+  useLyricsStore.setState({
+    resultByTrackPath: {
+      [path]: cachedResult
+    }
+  })
+
+  const result = await useLyricsStore.getState().loadForTrack(makeQuery(path))
+  const state = useLyricsStore.getState()
+
+  assert.deepEqual(result, makeProviderUnavailableResult())
+  assert.equal(state.isLoading, false)
+  assert.equal(state.errorMessage, '')
+  assert.equal(state.currentResult, cachedResult)
+  assert.equal(state.resultByTrackPath[path], cachedResult)
+})
+
+test('refreshForTrack surfaces explicit transient LRCLIB errors', async () => {
+  const transientResult = makeTransientErrorResult()
+  installLyricsApiMock({
+    refreshForTrack: async () => transientResult
+  })
+  resetLyricsStore()
+
+  const path = '/music/manual-refresh.flac'
+  const cachedResult = makeResult(`${path}:cached`)
+  useLyricsStore.setState({
+    resultByTrackPath: {
+      [path]: cachedResult
+    },
+    currentTrackPath: path,
+    currentResult: cachedResult
+  })
+
+  await useLyricsStore.getState().refreshForTrack(makeQuery(path))
+  const state = useLyricsStore.getState()
+
+  assert.deepEqual(state.currentResult, transientResult)
+  assert.equal(state.errorMessage, transientResult.status === 'transient_error' ? transientResult.message : '')
 })

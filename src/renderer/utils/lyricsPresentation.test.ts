@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  DEFAULT_LYRICS_BODY_COPY,
   findActiveSyncedLineIndex,
   getCompactSyncedLyricsLineHeights,
   getLyricsLineSeekTimeSeconds,
+  getLyricsMetaChipText,
   getPreferredLyricsTranslation,
   getLyricsSourceLabel,
   getRenderableSyncedLines,
   getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
+  resolveLyricsBodyState,
   resolveLyricsWordTiming,
   resolveSyncedLyricsTiming
 } from './lyricsPresentation.ts'
@@ -227,6 +230,33 @@ test('getLyricsSourceLabel labels XLRC and manual XLRC sources', () => {
   assert.equal(getLyricsSourceLabel('xlrc', 'xlrc'), 'XLRC File')
   assert.equal(getLyricsSourceLabel('manual', 'xlrc'), 'Manual XLRC')
   assert.equal(getLyricsSourceLabel('manual', 'lrc'), 'Manual')
+})
+
+test('resolveLyricsBodyState presents provider unavailable as a non-error not-found state', () => {
+  const result = {
+    status: 'not_found' as const,
+    reason: 'provider-unavailable' as const
+  }
+
+  assert.deepEqual(resolveLyricsBodyState({
+    currentTrack: { path: '/music/track.flac' },
+    activeLyricsResult: result,
+    isLoading: false,
+    errorMessage: '',
+    copy: DEFAULT_LYRICS_BODY_COPY
+  }), {
+    kind: 'not_found',
+    message: DEFAULT_LYRICS_BODY_COPY.providerUnavailableMessage,
+    reason: 'provider-unavailable'
+  })
+
+  assert.equal(getLyricsMetaChipText({
+    currentTrack: { path: '/music/track.flac' },
+    activeLyricsResult: result,
+    hasSyncedLyrics: false,
+    isLoading: false,
+    errorMessage: ''
+  }), 'LRCLIB Slow')
 })
 
 test('getPreferredLyricsTranslation follows language priority with fallback', () => {

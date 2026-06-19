@@ -17,6 +17,7 @@ export interface LyricsBodyCopy {
   noReadableTextMessage: string
   onlineDisabledMessage: string
   providerNotFoundMessage: string
+  providerUnavailableMessage: string
   embeddedMissingMessage: string
 }
 
@@ -32,7 +33,7 @@ export type LyricsBodyState =
   | { kind: 'no-track'; message: string }
   | { kind: 'loading'; message: string }
   | { kind: 'transient_error'; message: string }
-  | { kind: 'not_found'; message: string; reason: 'embedded-missing' | 'online-disabled' | 'provider-not-found' }
+  | { kind: 'not_found'; message: string; reason: 'embedded-missing' | 'online-disabled' | 'provider-not-found' | 'provider-unavailable' }
   | { kind: 'hit_synced'; sourceLabel: string; cached: boolean; syncedLines: LyricsLine[] }
   | { kind: 'hit_plain'; sourceLabel: string; cached: boolean; plainLyrics: string }
   | { kind: 'hit_empty'; message: string; sourceLabel: string; cached: boolean }
@@ -45,6 +46,7 @@ export const DEFAULT_LYRICS_BODY_COPY: LyricsBodyCopy = {
   noReadableTextMessage: 'Lyrics were found, but no readable text is available.',
   onlineDisabledMessage: 'No local or embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from LRCLIB.',
   providerNotFoundMessage: 'No lyrics found on LRCLIB for this track.',
+  providerUnavailableMessage: "LRCLIB didn't respond in time. A retry may work.",
   embeddedMissingMessage: 'No local or embedded lyrics found for this track.'
 }
 
@@ -584,7 +586,9 @@ export function getLyricsMetaChipText(options: {
   }
   if (activeLyricsResult?.status === 'transient_error') return 'Error'
   if (activeLyricsResult?.status === 'not_found') {
-    return activeLyricsResult.reason === 'online-disabled' ? 'Online Off' : 'Not Found'
+    if (activeLyricsResult.reason === 'online-disabled') return 'Online Off'
+    if (activeLyricsResult.reason === 'provider-unavailable') return 'LRCLIB Slow'
+    return 'Not Found'
   }
   if (errorMessage) return 'Error'
   return 'Ready'
@@ -619,7 +623,9 @@ export function resolveLyricsBodyState(options: ResolveLyricsBodyStateOptions): 
       ? copy.onlineDisabledMessage
       : activeLyricsResult.reason === 'provider-not-found'
         ? copy.providerNotFoundMessage
-        : copy.embeddedMissingMessage
+        : activeLyricsResult.reason === 'provider-unavailable'
+          ? copy.providerUnavailableMessage
+          : copy.embeddedMissingMessage
 
     return {
       kind: 'not_found',

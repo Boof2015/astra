@@ -50,7 +50,7 @@ export interface LyricsPayload {
 
 export type LyricsLookupResult =
   | { status: 'hit'; lyrics: LyricsPayload; cached: boolean }
-  | { status: 'not_found'; reason: 'embedded-missing' | 'online-disabled' | 'provider-not-found' }
+  | { status: 'not_found'; reason: 'embedded-missing' | 'online-disabled' | 'provider-not-found' | 'provider-unavailable' }
   | { status: 'transient_error'; message: string; code?: string }
 
 export interface LyricsStatus {
