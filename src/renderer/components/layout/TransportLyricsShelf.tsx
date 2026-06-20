@@ -190,6 +190,22 @@ export default function TransportLyricsShelf() {
     </div>
   )
 
+  const getPlainLyricsPreview = (plainLyrics: string): string => {
+    if (!plainLyrics) return ''
+    // Take first non-empty line, trim, and collapse internal whitespace
+    const lines = plainLyrics.split(/\r?\n/)
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed) {
+        // Collapse multiple spaces
+        const collapsed = trimmed.replace(/\s+/g, ' ')
+        // Limit length to 100 chars
+        return collapsed.length > 100 ? collapsed.substring(0, 100) + '…' : collapsed
+      }
+    }
+    return ''
+  }
+
   const renderBody = () => {
     if (!lyricsShelfExpanded) {
       if (bodyState.kind === 'hit_synced') {
@@ -197,6 +213,14 @@ export default function TransportLyricsShelf() {
       }
       if (bodyState.kind === 'no-track' || bodyState.kind === 'loading') {
         return <p className="transport-lyrics-shelf-state">{bodyState.message}</p>
+      }
+      if (bodyState.kind === 'hit_plain') {
+        const preview = getPlainLyricsPreview(bodyState.plainLyrics)
+        return (
+          <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-plain">
+            {preview}
+          </p>
+        )
       }
       if (bodyState.kind === 'transient_error') {
         return (

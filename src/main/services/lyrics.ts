@@ -134,18 +134,42 @@ async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload |
     let plainLyrics: string | null = null
     let bestSyncedLines: LyricsLine[] = []
     for (const lyricTag of lyricTags) {
+      // Get unsynchronized lyrics (normalized)
       if (!plainLyrics) {
         plainLyrics = normalizeLyricsText(lyricTag.text)
       }
 
-      const syncedLines = sanitizeSyncLines(lyricTag.syncText)
+      // Try synchronized lyrics from syncText
+      let syncedLines = sanitizeSyncLines(lyricTag.syncText)
+      // If syncText didn't yield lines, try to parse the unsynchronized text as LRC/XLRC
+      if (syncedLines.length === 0 && plainLyrics) {
+        // Attempt to parse as LRC
+        const lrcPayload = parseLyricsText(plainLyrics, 'embedded', 'lrc')
+        if (lrcPayload && lrcPayload.syncedLines.length > 0) {
+          syncedLines = lrcPayload.syncedLines
+        } else {
+          // Attempt to parse as XLRC
+          const xlrcPayload = parseLyricsText(plainLyrics, 'embedded', 'xlrc')
+          if (xlrcPayload && xlrcPayload.syncedLines.length > 0) {
+            syncedLines = xlrcPayload.syncedLines
+          }
+        }
+      }
+
       if (syncedLines.length > bestSyncedLines.length) {
         bestSyncedLines = syncedLines
       }
     }
 
     const syncedLyrics = toPlainLyricsFromLines(bestSyncedLines)
-    return createLyricsPayload('embedded', null, bestSyncedLines.length > 0 ? 'lrc' : 'plain', plainLyrics, syncedLyrics, bestSyncedLines)
+    return createLyricsPayload(
+      'embedded',
+      null,
+      bestSyncedLines.length > 0 ? 'lrc' : 'plain',
+      plainLyrics,
+      syncedLyrics,
+      bestSyncedLines
+    )
   } catch {
     return null
   }
