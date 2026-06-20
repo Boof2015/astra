@@ -355,6 +355,7 @@ export interface PlaylistTrackEntry {
 export interface ArtistRecord {
   artist: string
   track_count: number
+  primary_track_count: number
   artwork_hash: string | null
   artwork_source: ArtistArtworkSource
 }
@@ -4118,6 +4119,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
     interface ArtistAggregate {
       artist: string
       track_count: number
+      primary_track_count: number
       artwork_hash: string | null
       newestArtworkYear: number
       newestArtworkAddedAt: number
@@ -4126,17 +4128,21 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
     const artistCounts = new Map<string, ArtistAggregate>()
 
-    const addTrackToArtist = (track: DbTrackRow, browseArtist: string) => {
+    const addTrackToArtist = (track: DbTrackRow, browseArtist: string, isPrimaryArtist: boolean) => {
       const key = normalizeKey(browseArtist)
       if (!key) return
 
       const existing = artistCounts.get(key)
       if (existing) {
         existing.track_count += 1
+        if (isPrimaryArtist) {
+          existing.primary_track_count += 1
+        }
       } else {
         artistCounts.set(key, {
           artist: browseArtist,
           track_count: 1,
+          primary_track_count: isPrimaryArtist ? 1 : 0,
           artwork_hash: null,
           newestArtworkYear: -1,
           newestArtworkAddedAt: -1,
@@ -4175,8 +4181,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
     `)) {
+      const primaryBrowseArtist = resolvedMode === 'strict'
+        ? resolveStrictBrowseArtist(track)
+        : resolveCanonicalBrowseArtist(track)
+      const primaryArtistKey = normalizeKey(primaryBrowseArtist)
       const browseArtists = resolvedMode === 'strict'
-        ? [resolveStrictBrowseArtist(track)]
+        ? [primaryBrowseArtist]
         : getCanonicalArtistIndexNames(track)
 
       const seenTrackArtistKeys = new Set<string>()
@@ -4184,12 +4194,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         const key = normalizeKey(browseArtist)
         if (!key || seenTrackArtistKeys.has(key)) continue
         seenTrackArtistKeys.add(key)
-        addTrackToArtist(track, browseArtist)
+        addTrackToArtist(track, browseArtist, key === primaryArtistKey)
       }
     }
 
     return Array.from(artistCounts.values())
-      .map(({ artist, track_count, artwork_hash }) => {
+      .map(({ artist, track_count, primary_track_count, artwork_hash }) => {
         const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
         const resolvedArtwork = resolveArtistArtwork(
           artistImageRow?.manual_image_hash,
@@ -4199,6 +4209,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         return {
           artist,
           track_count,
+          primary_track_count,
           artwork_hash: resolvedArtwork.artwork_hash,
           artwork_source: resolvedArtwork.artwork_source
         }

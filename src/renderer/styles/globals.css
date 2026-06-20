@@ -6564,14 +6564,16 @@ button, .titlebar {
   font-weight: normal;
 }
 
-.library-album-view-controls {
+.library-album-view-controls,
+.library-artist-view-controls {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
 
-.library-album-singles-toggle {
+.library-album-singles-toggle,
+.library-artist-collabs-toggle {
   appearance: none;
   height: 32px;
   min-width: 72px;
@@ -6591,18 +6593,21 @@ button, .titlebar {
     color var(--transition-fast);
 }
 
-.library-album-singles-toggle:hover {
+.library-album-singles-toggle:hover,
+.library-artist-collabs-toggle:hover {
   color: var(--text-primary);
   background: var(--glass-highlight);
 }
 
-.library-album-singles-toggle.active {
+.library-album-singles-toggle.active,
+.library-artist-collabs-toggle.active {
   color: var(--accent-text);
   border-color: rgba(var(--accent-rgb), 0.42);
   background: rgba(var(--accent-rgb), 0.12);
 }
 
-.library-album-singles-toggle:focus-visible {
+.library-album-singles-toggle:focus-visible,
+.library-artist-collabs-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -13842,11 +13847,13 @@ body::after {
     width: 130px;
   }
 
-  .library-album-view-controls {
+  .library-album-view-controls,
+  .library-artist-view-controls {
     gap: 6px;
   }
 
-  .library-album-singles-toggle {
+  .library-album-singles-toggle,
+  .library-artist-collabs-toggle {
     height: 30px;
     min-width: 66px;
     padding: 0 10px;

@@ -4,7 +4,22 @@ import { tmpdir } from 'os'
 import { join, relative } from 'path'
 import test from 'node:test'
 import { pathToFileURL } from 'url'
+import { createRequire } from 'module'
 import * as library from './library.ts'
+
+interface TestSqliteStatement {
+  run(...params: unknown[]): void
+}
+
+interface TestSqliteDatabase {
+  prepare(sql: string): TestSqliteStatement
+  close(): void
+}
+
+type TestSqliteDatabaseConstructor = new (path: string) => TestSqliteDatabase
+
+const require = createRequire(import.meta.url)
+const TestSqliteDatabase = require('better-sqlite3') as TestSqliteDatabaseConstructor
 
 function createRiffChunk(id: string, payload: Buffer): Buffer {
   const header = Buffer.alloc(8)
@@ -150,6 +165,18 @@ async function setupSeededLibrary(t: test.TestContext): Promise<void> {
   ])
 }
 
+function updateStoredArtistCredits(userDataDir: string, trackPath: string, artistNames: readonly string[]): void {
+  const directDb = new TestSqliteDatabase(join(userDataDir, 'library.db'))
+  try {
+    directDb.prepare('UPDATE tracks SET artist_names_json = ? WHERE path = ?').run(
+      JSON.stringify(artistNames),
+      trackPath
+    )
+  } finally {
+    directDb.close()
+  }
+}
+
 test('metadata file writes rebuild core tags instead of layering changed fields', () => {
   const args = library.buildFfmpegMetadataRewriteArgs({
     title: 'One Song',
@@ -210,6 +237,47 @@ test('library artist queries preserve primary-artist album grouping', async (t) 
   const janeTracks = library.getTracksByArtist('Jane Remover')
   assert.deepEqual(janeTracks.map((track) => track.title), ['Teen Intro', 'Teen Feature'])
   assert.ok(janeTracks.every((track) => track.album_identity_key === teenAlbum.identity_key))
+})
+
+test('library artist records distinguish primary and collaborator-only canonical artists', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Test Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: 'subsonic://1/collab',
+      source_track_id: 'collab',
+      title: 'Shared Song',
+      artist: 'Primary Artist & Guest Artist',
+      album: 'Collab Release'
+    })
+  ])
+  updateStoredArtistCredits(userDataDir, 'subsonic://1/collab', ['Primary Artist', 'Guest Artist'])
+
+  const canonicalArtists = library.getArtists('canonical')
+  const primaryArtist = canonicalArtists.find((artist) => artist.artist === 'Primary Artist')
+  const guestArtist = canonicalArtists.find((artist) => artist.artist === 'Guest Artist')
+
+  assert.ok(primaryArtist)
+  assert.equal(primaryArtist.track_count, 1)
+  assert.equal(primaryArtist.primary_track_count, 1)
+  assert.ok(guestArtist)
+  assert.equal(guestArtist.track_count, 1)
+  assert.equal(guestArtist.primary_track_count, 0)
+
+  const strictArtists = library.getArtists('strict')
+  const strictArtist = strictArtists.find((artist) => artist.artist === 'Primary Artist & Guest Artist')
+  assert.ok(strictArtist)
+  assert.equal(strictArtist.track_count, 1)
+  assert.equal(strictArtist.primary_track_count, strictArtist.track_count)
 })
 
 test('library search returns public track shape with album identities', async (t) => {

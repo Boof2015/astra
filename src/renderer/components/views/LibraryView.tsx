@@ -20,6 +20,7 @@ type AlbumSortMode = 'title' | 'artist'
 type ArtistRootViewMode = ArtistListViewMode
 const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
+const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
 const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
@@ -34,6 +35,14 @@ function loadAlbumSortModeSetting(): AlbumSortMode {
 function loadIncludeSinglesInAlbumsSetting(): boolean {
   try {
     return localStorage.getItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function loadIncludeCollabArtistsSetting(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_COLLAB_ARTISTS_STORAGE_KEY) === '1'
   } catch {
     return false
   }
@@ -237,6 +246,7 @@ export default function LibraryView() {
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
   const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
+  const [includeCollabArtists, setIncludeCollabArtists] = useState(() => loadIncludeCollabArtistsSetting())
   const [artistRootViewMode, setArtistRootViewMode] = useState<ArtistRootViewMode>(() => loadArtistRootViewModeSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
@@ -383,6 +393,14 @@ export default function LibraryView() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(INCLUDE_COLLAB_ARTISTS_STORAGE_KEY, includeCollabArtists ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  }, [includeCollabArtists])
+
+  useEffect(() => {
+    try {
       localStorage.setItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY, artistRootViewMode)
     } catch {
       // Ignore localStorage write failures in restricted environments.
@@ -495,6 +513,10 @@ export default function LibraryView() {
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
     setIncludeSinglesInAlbums((current) => !current)
+  }, [])
+
+  const handleToggleIncludeCollabArtists = useCallback(() => {
+    setIncludeCollabArtists((current) => !current)
   }, [])
 
   const handleResetSourceFilters = useCallback(() => {
@@ -684,15 +706,37 @@ export default function LibraryView() {
     return keys
   }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
+  const sourceFilteredPrimaryArtistKeys = useMemo(() => {
+    if (artistBrowseMode !== 'canonical') return null
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+
+    const keys = new Set<string>()
+    for (const track of sourceFilteredTracks) {
+      const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
+      if (browseArtistKey) keys.add(browseArtistKey)
+    }
+    return keys
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+
   const visibleArtists = useMemo(() => {
     if (!sourceFilteredArtistKeys) return artists
     return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
   }, [artists, sourceFilteredArtistKeys])
 
+  const rootVisibleArtists = useMemo(() => {
+    if (artistBrowseMode !== 'canonical' || includeCollabArtists) return visibleArtists
+
+    if (sourceFilteredPrimaryArtistKeys) {
+      return visibleArtists.filter((artist) => sourceFilteredPrimaryArtistKeys.has(normalizeKey(artist.artist)))
+    }
+
+    return visibleArtists.filter((artist) => artist.primary_track_count > 0)
+  }, [artistBrowseMode, includeCollabArtists, sourceFilteredPrimaryArtistKeys, visibleArtists])
+
   const filteredArtists = useMemo(() => {
-    if (!hasSearchQuery) return visibleArtists
-    return visibleArtists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
-  }, [hasSearchQuery, normalizedQuery, visibleArtists])
+    if (!hasSearchQuery) return rootVisibleArtists
+    return rootVisibleArtists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
+  }, [hasSearchQuery, normalizedQuery, rootVisibleArtists])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
@@ -1347,44 +1391,59 @@ export default function LibraryView() {
             </div>
           )}
           {isArtistRootView && (
-            <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
-              <span
-                className="library-segmented-highlight"
-                aria-hidden="true"
-                style={{ transform: artistRootViewMode === 'grid' ? 'translateX(100%)' : 'translateX(0%)' }}
-              />
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
-                onClick={() => setArtistRootViewMode('list')}
-                aria-label="Show artists as list"
-                aria-pressed={artistRootViewMode === 'list'}
-                title="List view"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M8 6h13" />
-                  <path d="M8 12h13" />
-                  <path d="M8 18h13" />
-                  <path d="M3 6h.01" />
-                  <path d="M3 12h.01" />
-                  <path d="M3 18h.01" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
-                onClick={() => setArtistRootViewMode('grid')}
-                aria-label="Show artists as grid"
-                aria-pressed={artistRootViewMode === 'grid'}
-                title="Grid view"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="7" height="7" rx="1" />
-                  <rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="3" y="14" width="7" height="7" rx="1" />
-                  <rect x="14" y="14" width="7" height="7" rx="1" />
-                </svg>
-              </button>
+            <div className="library-artist-view-controls">
+              {artistBrowseMode === 'canonical' && (
+                <button
+                  type="button"
+                  className={`library-artist-collabs-toggle ${includeCollabArtists ? 'active' : ''}`}
+                  onClick={handleToggleIncludeCollabArtists}
+                  role="switch"
+                  aria-checked={includeCollabArtists}
+                  aria-label="Include collab-only artists"
+                  title="Include collab-only artists"
+                >
+                  Collabs
+                </button>
+              )}
+              <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
+                <span
+                  className="library-segmented-highlight"
+                  aria-hidden="true"
+                  style={{ transform: artistRootViewMode === 'grid' ? 'translateX(100%)' : 'translateX(0%)' }}
+                />
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
+                  onClick={() => setArtistRootViewMode('list')}
+                  aria-label="Show artists as list"
+                  aria-pressed={artistRootViewMode === 'list'}
+                  title="List view"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M8 6h13" />
+                    <path d="M8 12h13" />
+                    <path d="M8 18h13" />
+                    <path d="M3 6h.01" />
+                    <path d="M3 12h.01" />
+                    <path d="M3 18h.01" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
+                  onClick={() => setArtistRootViewMode('grid')}
+                  aria-label="Show artists as grid"
+                  aria-pressed={artistRootViewMode === 'grid'}
+                  title="Grid view"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="7" height="7" rx="1" />
+                    <rect x="14" y="3" width="7" height="7" rx="1" />
+                    <rect x="3" y="14" width="7" height="7" rx="1" />
+                    <rect x="14" y="14" width="7" height="7" rx="1" />
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
           {isTracklistContext && (
