@@ -343,6 +343,118 @@ test('getTracksByPaths preserves request order, duplicates, and public metadata 
   assert.equal(splitTrack.is_new, false)
 })
 
+test('subsonic metadata upsert can preserve existing artwork until lazy cover refresh', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Artwork Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const trackPath = `subsonic://${source.id}/track/artwork-track`
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: trackPath,
+      source_track_id: 'artwork-track',
+      title: 'Artwork Track',
+      artist: 'Artwork Artist',
+      album: 'Artwork Album',
+      artwork_hash: 'cached-cover.jpg'
+    })
+  ])
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: trackPath,
+      source_track_id: 'artwork-track',
+      title: 'Artwork Track',
+      artist: 'Artwork Artist',
+      album: 'Artwork Album',
+      artwork_hash: null
+    })
+  ], {
+    preserveExistingArtwork: true
+  })
+
+  assert.equal(library.getTrackByPath(trackPath)?.artwork_hash, 'cached-cover.jpg')
+})
+
+test('subsonic sync helpers import starred tracks and server playlists', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Remote Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const firstPath = `subsonic://${source.id}/track/remote-a`
+  const secondPath = `subsonic://${source.id}/track/remote-b`
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: firstPath,
+      source_track_id: 'remote-a',
+      title: 'Remote A',
+      artist: 'Remote Artist',
+      album: 'Remote Album'
+    }),
+    createRemoteTrack({
+      path: secondPath,
+      source_track_id: 'remote-b',
+      title: 'Remote B',
+      artist: 'Remote Artist',
+      album: 'Remote Album'
+    })
+  ])
+
+  const favoritesInserted = await library.syncSubsonicFavoriteTrackIds(source.id, ['remote-b', 'missing'], { persist: false })
+  assert.equal(favoritesInserted, 1)
+  assert.deepEqual(library.getFavoritePaths(), [secondPath])
+
+  const createdSummary = await library.syncSubsonicRemotePlaylists(source.id, [
+    {
+      source_playlist_id: 'playlist-1',
+      name: 'Server Mix',
+      tracks: [
+        { path: firstPath, title: 'Remote A', artist: 'Remote Artist', album: 'Remote Album' },
+        { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' }
+      ]
+    }
+  ], { persist: false })
+  assert.deepEqual(createdSummary, { created: 1, updated: 0, removed: 0 })
+
+  const playlist = library.getPlaylists().find((entry) => entry.name === 'Server Mix')
+  assert.ok(playlist)
+  assert.equal(playlist.track_count, 2)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [firstPath, secondPath])
+
+  const updatedSummary = await library.syncSubsonicRemotePlaylists(source.id, [
+    {
+      source_playlist_id: 'playlist-1',
+      name: 'Server Mix Renamed',
+      tracks: [
+        { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' }
+      ]
+    }
+  ], { persist: false })
+  assert.deepEqual(updatedSummary, { created: 0, updated: 1, removed: 0 })
+
+  const updatedPlaylist = library.getPlaylists().find((entry) => entry.id === playlist.id)
+  assert.ok(updatedPlaylist)
+  assert.equal(updatedPlaylist.name, 'Server Mix Renamed')
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [secondPath])
+
+  const removedSummary = await library.syncSubsonicRemotePlaylists(source.id, [], { persist: false })
+  assert.deepEqual(removedSummary, { created: 0, updated: 0, removed: 1 })
+  assert.equal(library.getPlaylists().some((entry) => entry.id === playlist.id), false)
+})
+
 test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)

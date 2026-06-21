@@ -21,10 +21,13 @@ import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
+  fetchSubsonicStarredTrackIds,
   fetchSubsonicTrackBytes,
   normalizeSubsonicBaseUrl,
+  parseSubsonicArtworkHash,
   parseSubsonicTrackPath,
   syncSubsonicCatalog,
+  syncSubsonicPlaylists,
   testSubsonicConnection,
   type SubsonicDownloadProgress
 } from './services/subsonic'
@@ -424,6 +427,7 @@ const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
 let artworkThumbnailCacheDir = ''
 const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
+const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -2319,41 +2323,6 @@ async function setSubsonicSourceDisabledState(sourceId: number): Promise<void> {
   await library.markSubsonicTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
 }
 
-async function hydrateSubsonicTrackArtworkHashes(
-  connection: { baseUrl: string; username: string; password: string },
-  tracks: Array<{ artwork_source_id: string | null }>,
-  onProgress?: (current: number, total: number, artworkId: string | null) => void
-): Promise<Map<string, string>> {
-  const artworkIds = Array.from(new Set(
-    tracks
-      .map((track) => track.artwork_source_id)
-      .filter((artworkId): artworkId is string => typeof artworkId === 'string' && artworkId.trim().length > 0)
-  ))
-
-  const hashesByArtworkId = new Map<string, string>()
-  onProgress?.(0, artworkIds.length, null)
-  let processed = 0
-  for (const artworkId of artworkIds) {
-    try {
-      const artworkPayload = await fetchSubsonicCoverArt(connection, artworkId, {
-        timeoutMs: 12_000,
-        retries: 1
-      })
-      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
-      if (hash) {
-        hashesByArtworkId.set(artworkId, hash)
-      }
-    } catch (error) {
-      console.warn(`Failed to sync Subsonic cover art ${artworkId}:`, error)
-    } finally {
-      processed += 1
-      onProgress?.(processed, artworkIds.length, artworkId)
-    }
-  }
-
-  return hashesByArtworkId
-}
-
 async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
   if (!source) return false
@@ -2427,42 +2396,59 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     })
 
     setSubsonicSyncProgress(sourceId, {
-      phase: 'artwork',
-      activity: 'Syncing artwork...'
-    })
-    const artworkHashesBySourceId = await hydrateSubsonicTrackArtworkHashes(
-      credentials.connection,
-      result.tracks,
-      (current, total, artworkId) => {
-        setSubsonicSyncProgress(sourceId, {
-          phase: 'artwork',
-          activity: 'Syncing artwork...',
-          current,
-          total,
-          detail: artworkId
-        })
-      }
-    )
-    const tracksForUpsert = result.tracks.map((track) => ({
-      ...track,
-      artwork_hash: track.artwork_source_id
-        ? (artworkHashesBySourceId.get(track.artwork_source_id) ?? track.artwork_hash)
-        : track.artwork_hash
-    }))
-
-    setSubsonicSyncProgress(sourceId, {
       phase: 'finalizing',
-      activity: 'Applying library updates...'
+      activity: 'Applying track metadata...'
     })
-    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, {
+    await library.upsertSubsonicTracks(sourceId, result.tracks, {
       persist: false,
-      syncSessionKey
+      syncSessionKey,
+      preserveExistingArtwork: true
     })
     await library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
     )
+    await library.persistLibraryDatabase()
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'playlists',
+      activity: 'Loading favorites and playlists...'
+    })
+    const [starredResult, playlistsResult] = await Promise.allSettled([
+      fetchSubsonicStarredTrackIds(credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1
+      }),
+      syncSubsonicPlaylists(sourceId, credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1,
+        onProgress: (progress) => {
+          setSubsonicSyncProgress(sourceId, {
+            phase: progress.phase,
+            activity: 'Loading favorites and playlists...',
+            current: progress.current,
+            total: progress.total,
+            detail: progress.detail
+          })
+        }
+      })
+    ])
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'finalizing',
+      activity: 'Applying favorites and playlists...'
+    })
+    if (starredResult.status === 'fulfilled') {
+      await library.syncSubsonicFavoriteTrackIds(sourceId, starredResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic starred tracks for source ${sourceId}:`, starredResult.reason)
+    }
+    if (playlistsResult.status === 'fulfilled') {
+      await library.syncSubsonicRemotePlaylists(sourceId, playlistsResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic playlists for source ${sourceId}:`, playlistsResult.reason)
+    }
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -3386,6 +3372,38 @@ function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
     .digest('hex')
 }
 
+async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> {
+  const parsed = parseSubsonicArtworkHash(hash)
+  if (!parsed) return hash
+
+  if (subsonicArtworkResolveRequestCache.has(hash)) {
+    return subsonicArtworkResolveRequestCache.get(hash)!
+  }
+
+  const request = (async () => {
+    try {
+      const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+      const artworkPayload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, {
+        timeoutMs: 12_000,
+        retries: 1
+      })
+      const cachedHash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      if (!cachedHash) return null
+      await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
+      return cachedHash
+    } catch (error) {
+      console.warn(`Failed to resolve Subsonic artwork ${parsed.artworkId}:`, error)
+      return null
+    }
+  })()
+    .finally(() => {
+      subsonicArtworkResolveRequestCache.delete(hash)
+    })
+
+  subsonicArtworkResolveRequestCache.set(hash, request)
+  return request
+}
+
 function getErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null
   const code = (error as { code?: unknown }).code
@@ -3430,10 +3448,12 @@ function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: n
 
 async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
   if (!hash) return null
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
   try {
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const data = await readFile(artworkPath)
-    return toDataUrl(detectArtworkMimeType(hash, data), data)
+    return toDataUrl(detectArtworkMimeType(resolvedHash, data), data)
   } catch {
     return null
   }
@@ -3447,12 +3467,14 @@ async function getArtworkThumbnailDataUrlByHash(
   }
 ): Promise<string | null> {
   if (!hash) return null
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
 
   try {
     await ensureArtworkThumbnailCacheDirectory()
     const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
     const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
-    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}.jpg`)
+    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(resolvedHash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
@@ -3463,17 +3485,17 @@ async function getArtworkThumbnailDataUrlByHash(
       // Cache miss: generate and persist below.
     }
 
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkDataUrlByHash(resolvedHash)
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkDataUrlByHash(resolvedHash)
     }
 
     try {
@@ -3486,8 +3508,8 @@ async function getArtworkThumbnailDataUrlByHash(
 
     return toDataUrl('image/jpeg', thumbnailBuffer)
   } catch (error) {
-    console.warn('Failed to resolve artwork thumbnail data URL:', hash, error)
-    return getArtworkDataUrlByHash(hash)
+    console.warn('Failed to resolve artwork thumbnail data URL:', resolvedHash, error)
+    return getArtworkDataUrlByHash(resolvedHash)
   }
 }
 

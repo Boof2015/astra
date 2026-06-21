@@ -235,6 +235,17 @@ export interface SubsonicTrackUpsertInput {
   source_path: string | null
 }
 
+export interface SubsonicRemotePlaylistSyncInput {
+  source_playlist_id: string
+  name: string
+  tracks: Array<{
+    path: string
+    title?: string | null
+    artist?: string | null
+    album?: string | null
+  }>
+}
+
 export interface JellyfinTrackUpsertInput {
   path: string
   title: string
@@ -1887,7 +1898,10 @@ export async function initDatabase(): Promise<void> {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       last_played_at INTEGER,
-      custom_cover_hash TEXT
+      custom_cover_hash TEXT,
+      remote_source_type TEXT,
+      remote_source_id INTEGER,
+      remote_playlist_id TEXT
     )
   `)
   try {
@@ -1900,7 +1914,29 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN remote_source_type TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN remote_source_id INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN remote_playlist_id TEXT')
+  } catch {
+    // Column already exists.
+  }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_remote_source
+    ON playlists(remote_source_type, remote_source_id, remote_playlist_id)
+    WHERE remote_source_type IS NOT NULL
+      AND remote_source_id IS NOT NULL
+      AND remote_playlist_id IS NOT NULL
+  `)
 
   // Artist images table
   db.run(`
@@ -2521,6 +2557,19 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
   }
 
   if (source) {
+    db.run(`
+      DELETE FROM playlist_tracks
+      WHERE playlist_id IN (
+        SELECT id
+        FROM playlists
+        WHERE remote_source_type = 'subsonic'
+          AND remote_source_id = ?
+      )
+    `, [sourceId])
+    db.run(
+      "DELETE FROM playlists WHERE remote_source_type = 'subsonic' AND remote_source_id = ?",
+      [sourceId]
+    )
     db.run('DELETE FROM subsonic_sources WHERE id = ?', [sourceId])
   }
   await saveDatabase()
@@ -2600,7 +2649,7 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
 export async function upsertSubsonicTracks(
   sourceId: number,
   tracks: SubsonicTrackUpsertInput[],
-  options: { persist?: boolean; syncSessionKey?: string | null } = {}
+  options: { persist?: boolean; syncSessionKey?: string | null; preserveExistingArtwork?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
   if (!db || tracks.length === 0) {
     return { inserted: 0, updated: 0 }
@@ -2616,7 +2665,17 @@ export async function upsertSubsonicTracks(
   const now = Date.now()
 
   for (const track of tracks) {
-    const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
+    const existing = db.get<{ id?: unknown; artwork_hash?: unknown }>(
+      'SELECT id, artwork_hash FROM tracks WHERE path = ? LIMIT 1',
+      [track.path]
+    )
+    const exists = Boolean(existing)
+    const artworkHash = track.artwork_hash
+      ?? (
+        options.preserveExistingArtwork && typeof existing?.artwork_hash === 'string'
+          ? existing.artwork_hash
+          : null
+      )
 
     if (exists) {
       db.run(
@@ -2664,7 +2723,7 @@ export async function upsertSubsonicTracks(
           track.disc_number,
           track.year,
           track.genre,
-          track.artwork_hash,
+          artworkHash,
           track.format,
           track.sample_rate,
           track.bit_depth,
@@ -2734,7 +2793,7 @@ export async function upsertSubsonicTracks(
         track.disc_number,
         track.year,
         track.genre,
-        track.artwork_hash,
+        artworkHash,
         track.format,
         track.sample_rate,
         track.bit_depth,
@@ -2789,6 +2848,33 @@ export async function markMissingSubsonicTracksUnavailable(
   }
 
   const result = db.run(sql, params)
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+export async function replaceSubsonicArtworkHash(
+  sourceId: number,
+  currentArtworkHash: string,
+  nextArtworkHash: string,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+  const current = currentArtworkHash.trim()
+  const next = nextArtworkHash.trim()
+  if (!current || !next || current === next) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET artwork_hash = ?,
+         modified_at = ?
+     WHERE source_type = 'subsonic'
+       AND source_id = ?
+       AND artwork_hash = ?`,
+    [next, Date.now(), sourceId, current]
+  )
   const count = result.changes
   if (options.persist !== false && count > 0) {
     await saveDatabase()
@@ -6739,6 +6825,67 @@ export async function addFavorite(trackPath: string): Promise<void> {
   await saveDatabase()
 }
 
+export async function addFavoritePaths(
+  trackPaths: string[],
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db || trackPaths.length === 0) return 0
+
+  const uniqueTrackPaths = Array.from(new Set(
+    trackPaths
+      .map((trackPath) => (typeof trackPath === 'string' ? trackPath.trim() : ''))
+      .filter((trackPath) => trackPath.length > 0)
+  ))
+  if (uniqueTrackPaths.length === 0) return 0
+
+  const now = Date.now()
+  let inserted = 0
+  for (const trackPath of uniqueTrackPaths) {
+    const result = db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, now])
+    inserted += Number(result.changes) || 0
+  }
+
+  if (options.persist !== false && inserted > 0) {
+    await saveDatabase()
+  }
+  return inserted
+}
+
+export async function syncSubsonicFavoriteTrackIds(
+  sourceId: number,
+  sourceTrackIds: string[],
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db || sourceTrackIds.length === 0) return 0
+
+  const uniqueSourceTrackIds = Array.from(new Set(
+    sourceTrackIds
+      .map((sourceTrackId) => (typeof sourceTrackId === 'string' ? sourceTrackId.trim() : ''))
+      .filter((sourceTrackId) => sourceTrackId.length > 0)
+  ))
+  if (uniqueSourceTrackIds.length === 0) return 0
+
+  const trackPaths: string[] = []
+  for (let offset = 0; offset < uniqueSourceTrackIds.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = uniqueSourceTrackIds.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    const rows = db.all<{ path?: unknown }>(`
+      SELECT path
+      FROM tracks
+      WHERE source_type = 'subsonic'
+        AND source_id = ?
+        AND source_track_id IN (${placeholders})
+    `, [sourceId, ...chunk])
+    for (const row of rows) {
+      if (typeof row.path === 'string' && row.path.trim().length > 0) {
+        trackPaths.push(row.path)
+      }
+    }
+  }
+
+  return addFavoritePaths(trackPaths, options)
+}
+
 export async function removeFavorite(trackPath: string): Promise<void> {
   if (!db) return
   db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
@@ -6839,6 +6986,124 @@ export async function createPlaylist(name: string): Promise<Playlist> {
     track_count: 0,
     missing_track_count: 0
   }
+}
+
+export async function syncSubsonicRemotePlaylists(
+  sourceId: number,
+  playlists: SubsonicRemotePlaylistSyncInput[],
+  options: { persist?: boolean } = {}
+): Promise<{ created: number; updated: number; removed: number }> {
+  if (!db) return { created: 0, updated: 0, removed: 0 }
+
+  const normalizedPlaylists = playlists
+    .map((playlist) => {
+      const sourcePlaylistId = typeof playlist.source_playlist_id === 'string'
+        ? playlist.source_playlist_id.trim()
+        : ''
+      if (!sourcePlaylistId) return null
+
+      const name = typeof playlist.name === 'string' && playlist.name.trim().length > 0
+        ? playlist.name.trim()
+        : `Playlist ${sourcePlaylistId}`
+
+      const tracks: PlaylistEntryInsertInput[] = []
+      const seenTrackPaths = new Set<string>()
+      for (const track of playlist.tracks) {
+        const trackPath = typeof track.path === 'string' ? track.path.trim() : ''
+        if (!trackPath || seenTrackPaths.has(trackPath)) continue
+        seenTrackPaths.add(trackPath)
+        tracks.push({
+          trackPath,
+          fallbackTitle: normalizeOptionalTextField(track.title ?? null),
+          fallbackArtist: normalizeOptionalTextField(track.artist ?? null),
+          fallbackAlbum: normalizeOptionalTextField(track.album ?? null)
+        })
+      }
+
+      return {
+        sourcePlaylistId,
+        name,
+        tracks
+      }
+    })
+    .filter((playlist): playlist is { sourcePlaylistId: string; name: string; tracks: PlaylistEntryInsertInput[] } => playlist !== null)
+
+  const seenRemotePlaylistIds = new Set(normalizedPlaylists.map((playlist) => playlist.sourcePlaylistId))
+  const existingRows = db.all<{ id?: unknown; remote_playlist_id?: unknown }>(`
+    SELECT id, remote_playlist_id
+    FROM playlists
+    WHERE remote_source_type = 'subsonic'
+      AND remote_source_id = ?
+  `, [sourceId])
+
+  const existingByRemotePlaylistId = new Map<string, number>()
+  for (const row of existingRows) {
+    const id = Number(row.id)
+    const remotePlaylistId = typeof row.remote_playlist_id === 'string' ? row.remote_playlist_id : ''
+    if (Number.isInteger(id) && id > 0 && remotePlaylistId) {
+      existingByRemotePlaylistId.set(remotePlaylistId, id)
+    }
+  }
+
+  const now = Date.now()
+  let created = 0
+  let updated = 0
+
+  for (const playlist of normalizedPlaylists) {
+    let playlistId = existingByRemotePlaylistId.get(playlist.sourcePlaylistId) ?? null
+    if (playlistId === null) {
+      const insertResult = db.run(
+        `INSERT INTO playlists (
+          name,
+          created_at,
+          updated_at,
+          last_played_at,
+          custom_cover_hash,
+          remote_source_type,
+          remote_source_id,
+          remote_playlist_id
+        ) VALUES (?, ?, ?, NULL, NULL, 'subsonic', ?, ?)`,
+        [playlist.name, now, now, sourceId, playlist.sourcePlaylistId]
+      )
+      playlistId = Number(insertResult.lastInsertRowid)
+      existingByRemotePlaylistId.set(playlist.sourcePlaylistId, playlistId)
+      created += 1
+    } else {
+      db.run('UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?', [playlist.name, now, playlistId])
+      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
+      updated += 1
+    }
+
+    let position = 0
+    for (const entry of playlist.tracks) {
+      db.run(
+        'INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          playlistId,
+          entry.trackPath,
+          position++,
+          now,
+          entry.fallbackTitle ?? null,
+          entry.fallbackArtist ?? null,
+          entry.fallbackAlbum ?? null
+        ]
+      )
+    }
+  }
+
+  let removed = 0
+  for (const [remotePlaylistId, playlistId] of existingByRemotePlaylistId.entries()) {
+    if (seenRemotePlaylistIds.has(remotePlaylistId)) continue
+    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
+    const result = db.run('DELETE FROM playlists WHERE id = ?', [playlistId])
+    removed += Number(result.changes) || 0
+  }
+
+  if (options.persist !== false && (created > 0 || updated > 0 || removed > 0)) {
+    await saveDatabase()
+  }
+
+  return { created, updated, removed }
 }
 
 export async function renamePlaylist(id: number, name: string): Promise<void> {
