@@ -8,6 +8,7 @@ import { useGraphStore } from '../../stores/graphStore'
 import { Track } from '../../types/audio'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -833,13 +834,8 @@ export default function LibraryView() {
       featured.push(single)
     }
 
-    featured.sort((a, b) => {
-      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
-      if (albumCompare !== 0) return albumCompare
-      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-      if (artistCompare !== 0) return artistCompare
-      return a.identity_key.localeCompare(b.identity_key)
-    })
+    primary.sort(compareAlbumsByYearDescending)
+    featured.sort(compareAlbumsByYearDescending)
 
     return {
       primaryArtistAlbums: primary,
