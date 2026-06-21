@@ -253,31 +253,56 @@ test('library artist records distinguish primary and collaborator-only canonical
 
   await library.upsertSubsonicTracks(source.id, [
     createRemoteTrack({
-      path: 'subsonic://1/collab',
-      source_track_id: 'collab',
+      path: 'subsonic://1/collab-1',
+      source_track_id: 'collab-1',
       title: 'Shared Song',
       artist: 'Primary Artist & Guest Artist',
-      album: 'Collab Release'
+      album: 'Collab Release',
+      track_number: 1
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/collab-2',
+      source_track_id: 'collab-2',
+      title: 'Follow Up',
+      artist: 'Primary Artist',
+      album: 'Collab Release',
+      track_number: 2
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/single',
+      source_track_id: 'single',
+      title: 'Loose Single',
+      artist: 'Primary Artist',
+      album: 'Loose Single'
     })
   ])
-  updateStoredArtistCredits(userDataDir, 'subsonic://1/collab', ['Primary Artist', 'Guest Artist'])
+  updateStoredArtistCredits(userDataDir, 'subsonic://1/collab-1', ['Primary Artist', 'Guest Artist'])
 
   const canonicalArtists = library.getArtists('canonical')
   const primaryArtist = canonicalArtists.find((artist) => artist.artist === 'Primary Artist')
   const guestArtist = canonicalArtists.find((artist) => artist.artist === 'Guest Artist')
 
   assert.ok(primaryArtist)
-  assert.equal(primaryArtist.track_count, 1)
-  assert.equal(primaryArtist.primary_track_count, 1)
+  assert.equal(primaryArtist.track_count, 3)
+  assert.equal(primaryArtist.primary_track_count, 3)
+  assert.equal(primaryArtist.album_count, 1)
   assert.ok(guestArtist)
   assert.equal(guestArtist.track_count, 1)
   assert.equal(guestArtist.primary_track_count, 0)
+  assert.equal(guestArtist.album_count, 1)
 
   const strictArtists = library.getArtists('strict')
   const strictArtist = strictArtists.find((artist) => artist.artist === 'Primary Artist & Guest Artist')
   assert.ok(strictArtist)
   assert.equal(strictArtist.track_count, 1)
   assert.equal(strictArtist.primary_track_count, strictArtist.track_count)
+  assert.equal(strictArtist.album_count, 1)
+
+  const strictPrimaryArtist = strictArtists.find((artist) => artist.artist === 'Primary Artist')
+  assert.ok(strictPrimaryArtist)
+  assert.equal(strictPrimaryArtist.track_count, 2)
+  assert.equal(strictPrimaryArtist.primary_track_count, strictPrimaryArtist.track_count)
+  assert.equal(strictPrimaryArtist.album_count, 1)
 })
 
 test('library search returns public track shape with album identities', async (t) => {

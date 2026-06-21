@@ -231,6 +231,7 @@ export interface Artist {
   artist: string
   track_count: number
   primary_track_count: number
+  album_count: number
   artwork_hash: string | null
   artwork_source: 'manual' | 'detected' | 'track' | null
 }

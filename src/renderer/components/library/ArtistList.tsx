@@ -7,6 +7,7 @@ import AlbumArtwork from './AlbumArtwork'
 interface ArtistRecord {
   artist: string
   track_count: number
+  album_count: number
   artwork_hash: string | null
 }
 
@@ -53,8 +54,14 @@ function resolveCssPx(element: HTMLElement | null, propertyName: string, fallbac
   return fallback
 }
 
-function formatArtistTrackCount(count: number): string {
-  return `${count} ${count === 1 ? 'track' : 'tracks'}`
+function formatCount(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function formatArtistLibrarySummary(artist: ArtistRecord): string {
+  const trackCount = formatCount(artist.track_count, 'track', 'tracks')
+  if (artist.album_count === 0) return trackCount
+  return `${trackCount} · ${formatCount(artist.album_count, 'album', 'albums')}`
 }
 
 function getArtistInitial(artist: string): string {
@@ -113,7 +120,7 @@ function ArtistListRowRenderer({
         />
         <div className="artist-info">
           <div className="artist-name">{artist.artist}</div>
-          <div className="artist-track-count">{formatArtistTrackCount(artist.track_count)}</div>
+          <div className="artist-track-count">{formatArtistLibrarySummary(artist)}</div>
         </div>
       </div>
     </div>
@@ -156,7 +163,7 @@ function ArtistGridCellRenderer({
         />
         <div className="artist-grid-info">
           <div className="artist-grid-name">{artist.artist}</div>
-          <div className="artist-grid-track-count">{formatArtistTrackCount(artist.track_count)}</div>
+          <div className="artist-grid-track-count">{formatArtistLibrarySummary(artist)}</div>
         </div>
       </button>
     </div>

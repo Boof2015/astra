@@ -367,6 +367,7 @@ export interface ArtistRecord {
   artist: string
   track_count: number
   primary_track_count: number
+  album_count: number
   artwork_hash: string | null
   artwork_source: ArtistArtworkSource
 }
@@ -1544,6 +1545,47 @@ function addTrackToAlbumSummary(
       track.latest_sync_dismissed_at
     )
   }
+}
+
+function collectAlbumSummaryGroups(
+  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>,
+  latestSyncSummary: LatestLibrarySyncSummary | null
+): Map<string, AlbumSummaryAccumulator> {
+  const groups = new Map<string, AlbumSummaryAccumulator>()
+
+  for (const track of iterateEffectiveTrackRows(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+  `)) {
+    const identity = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes)
+    let group = groups.get(identity.identityKey)
+    if (!group) {
+      group = createAlbumSummaryAccumulator(identity)
+      groups.set(identity.identityKey, group)
+    }
+    addTrackToAlbumSummary(group, track, latestSyncSummary)
+  }
+
+  return groups
+}
+
+function collectEligibleAlbumIdentityKeys(
+  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>,
+  options: AlbumListOptions = {}
+): Set<string> {
+  const albumEligibilityOptions: AlbumEligibilityOptions = {
+    includeSingles: options.includeSingles === true
+  }
+  const groups = collectAlbumSummaryGroups(missingAlbumArtistBucketProbes, null)
+  const identityKeys = new Set<string>()
+
+  for (const group of groups.values()) {
+    if (isAlbumGroupEligible(group, albumEligibilityOptions)) {
+      identityKeys.add(group.identityKey)
+    }
+  }
+
+  return identityKeys
 }
 
 // Initialize database
@@ -4201,11 +4243,14 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
     if (!db) return []
     const resolvedMode = normalizeArtistBrowseMode(mode)
     const artistImageRows = readArtistImageRowsForMode(resolvedMode)
+    const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
+    const eligibleAlbumIdentityKeys = collectEligibleAlbumIdentityKeys(missingAlbumArtistBucketProbes)
 
     interface ArtistAggregate {
       artist: string
       track_count: number
       primary_track_count: number
+      album_identity_keys: Set<string>
       artwork_hash: string | null
       newestArtworkYear: number
       newestArtworkAddedAt: number
@@ -4214,7 +4259,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
     const artistCounts = new Map<string, ArtistAggregate>()
 
-    const addTrackToArtist = (track: DbTrackRow, browseArtist: string, isPrimaryArtist: boolean) => {
+    const addTrackToArtist = (
+      track: DbTrackRow,
+      browseArtist: string,
+      isPrimaryArtist: boolean,
+      albumIdentityKey: string | null
+    ) => {
       const key = normalizeKey(browseArtist)
       if (!key) return
 
@@ -4224,11 +4274,15 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         if (isPrimaryArtist) {
           existing.primary_track_count += 1
         }
+        if (albumIdentityKey) {
+          existing.album_identity_keys.add(albumIdentityKey)
+        }
       } else {
         artistCounts.set(key, {
           artist: browseArtist,
           track_count: 1,
           primary_track_count: isPrimaryArtist ? 1 : 0,
+          album_identity_keys: new Set<string>(albumIdentityKey ? [albumIdentityKey] : []),
           artwork_hash: null,
           newestArtworkYear: -1,
           newestArtworkAddedAt: -1,
@@ -4267,6 +4321,10 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
     `)) {
+      const trackAlbumIdentityKey = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes).identityKey
+      const countedAlbumIdentityKey = eligibleAlbumIdentityKeys.has(trackAlbumIdentityKey)
+        ? trackAlbumIdentityKey
+        : null
       const primaryBrowseArtist = resolvedMode === 'strict'
         ? resolveStrictBrowseArtist(track)
         : resolveCanonicalBrowseArtist(track)
@@ -4280,12 +4338,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         const key = normalizeKey(browseArtist)
         if (!key || seenTrackArtistKeys.has(key)) continue
         seenTrackArtistKeys.add(key)
-        addTrackToArtist(track, browseArtist, key === primaryArtistKey)
+        addTrackToArtist(track, browseArtist, key === primaryArtistKey, countedAlbumIdentityKey)
       }
     }
 
     return Array.from(artistCounts.values())
-      .map(({ artist, track_count, primary_track_count, artwork_hash }) => {
+      .map(({ artist, track_count, primary_track_count, album_identity_keys, artwork_hash }) => {
         const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
         const resolvedArtwork = resolveArtistArtwork(
           artistImageRow?.manual_image_hash,
@@ -4296,6 +4354,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
           artist,
           track_count,
           primary_track_count,
+          album_count: album_identity_keys.size,
           artwork_hash: resolvedArtwork.artwork_hash,
           artwork_source: resolvedArtwork.artwork_source
         }
@@ -4322,21 +4381,8 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
     if (!db) return []
 
     const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
-    const groups = new Map<string, AlbumSummaryAccumulator>()
     const latestSyncSummary = getLatestLibrarySyncSummary()
-
-    for (const track of iterateEffectiveTrackRows(`
-      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
-    `)) {
-      const identity = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes)
-      let group = groups.get(identity.identityKey)
-      if (!group) {
-        group = createAlbumSummaryAccumulator(identity)
-        groups.set(identity.identityKey, group)
-      }
-      addTrackToAlbumSummary(group, track, latestSyncSummary)
-    }
+    const groups = collectAlbumSummaryGroups(missingAlbumArtistBucketProbes, latestSyncSummary)
 
     const albumEligibilityOptions: AlbumEligibilityOptions = {
       includeSingles: options.includeSingles === true
