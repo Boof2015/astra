@@ -960,6 +960,7 @@ export default function LibraryView() {
   const selectedAlbumDurationLabel = selectedAlbum
     ? formatCompactTotalTrackDuration(displayTracks)
     : null
+  const showSelectedAlbumDiscHeaders = Boolean(selectedAlbum && sortState === null && !hasSearchQuery)
 
   // Scan progress overlay
   const renderScanProgress = () => {
@@ -1182,6 +1183,7 @@ export default function LibraryView() {
             showAlbum={!selectedAlbum}
             showAddedDate={showTracklistAddedDate}
             showNewTrackIndicator
+            showDiscHeaders={showSelectedAlbumDiscHeaders}
             trackNumberMode={selectedAlbum ? 'album' : 'none'}
             externalScroll
             enableColumnSorting
@@ -1207,6 +1209,7 @@ export default function LibraryView() {
         showAlbum={!selectedAlbum}
         showAddedDate={showTracklistAddedDate}
         showNewTrackIndicator
+        showDiscHeaders={showSelectedAlbumDiscHeaders}
         trackNumberMode={selectedAlbum ? 'album' : 'none'}
         enableColumnSorting
         sortState={sortState}

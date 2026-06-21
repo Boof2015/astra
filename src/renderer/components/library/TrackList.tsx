@@ -12,6 +12,7 @@ import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
+import { buildTrackListRows, type TrackListVirtualRow } from './trackListRows'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -30,6 +31,7 @@ interface DbTrack {
   album_artist_names: string[]
   duration: number
   track_number: number | null
+  disc_number: number | null
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -69,6 +71,7 @@ interface TrackListProps {
   showAlbum?: boolean
   showAddedDate?: boolean
   showNewTrackIndicator?: boolean
+  showDiscHeaders?: boolean
   trackNumberMode?: TrackNumberMode
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
   externalScroll?: boolean
@@ -84,6 +87,7 @@ interface TrackListProps {
 }
 
 interface TrackListRowSharedProps {
+  rows: TrackListVirtualRow[]
   tracks: DbTrack[]
   showArtist: boolean
   showAlbum: boolean
@@ -133,6 +137,7 @@ interface TrackListRowSharedProps {
 }
 
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
+const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 8
 const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
 const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -229,16 +234,33 @@ function resolveContextTrackNumber(
   return index + 1
 }
 
-function resolveTrackRowHeightPx(element: HTMLElement | null): number {
-  if (!element) return TRACK_ROW_HEIGHT_FALLBACK_PX
+function resolveCssPixelVariablePx(element: HTMLElement | null, variableName: string, fallback: number): number {
+  if (!element) return fallback
 
-  const cssValue = getComputedStyle(element).getPropertyValue('--track-row-height').trim()
+  const cssValue = getComputedStyle(element).getPropertyValue(variableName).trim()
   const parsed = Number.parseFloat(cssValue)
   if (Number.isFinite(parsed) && parsed > 0) {
     return Math.round(parsed)
   }
 
-  return TRACK_ROW_HEIGHT_FALLBACK_PX
+  return fallback
+}
+
+function resolveTrackRowHeightPx(element: HTMLElement | null): number {
+  return resolveCssPixelVariablePx(element, '--track-row-height', TRACK_ROW_HEIGHT_FALLBACK_PX)
+}
+
+function resolveTrackDiscHeaderHeightPx(element: HTMLElement | null): number {
+  return resolveCssPixelVariablePx(element, '--track-disc-header-height', TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX)
+}
+
+function getTrackListVirtualRowHeightPx(
+  row: TrackListVirtualRow | undefined,
+  trackRowHeight: number,
+  discHeaderHeight: number
+): number {
+  if (row?.kind === 'disc-header') return discHeaderHeight
+  return trackRowHeight
 }
 
 function formatTrackBpm(bpm: number | null | undefined): string {
@@ -345,6 +367,7 @@ function TrackListRowRenderer({
   ariaAttributes,
   index,
   style,
+  rows,
   tracks,
   showArtist,
   showAlbum,
@@ -387,7 +410,22 @@ function TrackListRowRenderer({
   queueInsertArmedTrackPath,
   selectedTrackPaths
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
-  const track = tracks[index]
+  const row = rows[index]
+  if (!row) return null
+
+  if (row.kind === 'disc-header') {
+    return (
+      <div className="track-list-item track-list-disc-header-item" style={style as CSSProperties} {...ariaAttributes}>
+        <div className="track-disc-header" role="separator" aria-label={`Disc ${row.discNumber}`}>
+          <span className="track-disc-header-label">Disc {row.discNumber}</span>
+          <span className="track-disc-header-rule" aria-hidden="true" />
+        </div>
+      </div>
+    )
+  }
+
+  const trackIndex = row.trackIndex
+  const track = tracks[trackIndex]
   if (!track) return null
 
   const isCurrent = currentTrackPath === track.path
@@ -441,8 +479,8 @@ function TrackListRowRenderer({
   const displayedTrackNumber = trackNumberMode === 'none'
     ? null
     : trackNumberMode === 'context'
-      ? resolveContextTrackNumber(contextTrackNumbersByPath, track.path, index)
-      : track.track_number ?? index + 1
+      ? resolveContextTrackNumber(contextTrackNumbersByPath, track.path, trackIndex)
+      : track.track_number ?? trackIndex + 1
 
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
@@ -454,13 +492,13 @@ function TrackListRowRenderer({
           showQueueInsertAffordance && !isMissingPlaylistEntry ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
-        data-track-index={index}
+        data-track-index={trackIndex}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
-        onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, index)}
+        onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
         onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track)}
         onClick={(event) => {
           if (isMissingPlaylistEntry) return
-          void onTrackClick(event, track, index)
+          void onTrackClick(event, track, trackIndex)
         }}
       >
         <div className="track-col track-col-num">
@@ -690,6 +728,7 @@ export default function TrackList({
   showAlbum = true,
   showAddedDate = false,
   showNewTrackIndicator = false,
+  showDiscHeaders = false,
   trackNumberMode = 'album',
   contextTrackNumbersByPath,
   externalScroll = false,
@@ -752,6 +791,7 @@ export default function TrackList({
   const [isRemovingFromPlaylist, setIsRemovingFromPlaylist] = useState(false)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
+  const [discHeaderHeight, setDiscHeaderHeight] = useState(TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX)
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const isQueueInsertDragOwnerRef = useRef(false)
@@ -764,6 +804,22 @@ export default function TrackList({
   const playlistPopupTriggerRef = useRef<HTMLButtonElement | null>(null)
   const playlistMembershipRequestIdRef = useRef(0)
   const consumedJumpRequestIdRef = useRef<number | null>(null)
+
+  const virtualRows = useMemo(
+    () => buildTrackListRows(tracks, showDiscHeaders),
+    [showDiscHeaders, tracks]
+  )
+  const virtualRowIndexByTrackPath = useMemo(() => {
+    const indexByPath = new Map<string, number>()
+    virtualRows.forEach((row, virtualIndex) => {
+      if (row.kind !== 'track') return
+      const track = tracks[row.trackIndex]
+      if (track) {
+        indexByPath.set(track.path, virtualIndex)
+      }
+    })
+    return indexByPath
+  }, [tracks, virtualRows])
 
   const clearQueueInsertPointerListeners = useCallback(() => {
     queueInsertPointerCleanupRef.current?.()
@@ -800,8 +856,11 @@ export default function TrackList({
     if (!jumpToTrackRequest) return
     if (consumedJumpRequestIdRef.current === jumpToTrackRequest.id) return
 
-    const targetIndex = tracks.findIndex((track) => track.path === jumpToTrackRequest.trackPath)
-    if (targetIndex < 0) return
+    const targetTrackIndex = tracks.findIndex((track) => track.path === jumpToTrackRequest.trackPath)
+    if (targetTrackIndex < 0) return
+
+    const targetVirtualIndex = virtualRowIndexByTrackPath.get(jumpToTrackRequest.trackPath)
+    if (targetVirtualIndex === undefined) return
 
     let canceled = false
     const markRequestConsumed = () => {
@@ -821,7 +880,7 @@ export default function TrackList({
     const scrollToTarget = () => {
       if (canceled) return
       if (externalScroll) {
-        const rowElement = listBodyRef.current?.querySelector<HTMLElement>(`.track-row[data-track-index="${targetIndex}"]`)
+        const rowElement = listBodyRef.current?.querySelector<HTMLElement>(`.track-row[data-track-index="${targetTrackIndex}"]`)
         if (!rowElement) {
           scheduleRetry()
           return
@@ -842,7 +901,7 @@ export default function TrackList({
       }
 
       listRef.current.scrollToRow({
-        index: targetIndex,
+        index: targetVirtualIndex,
         align: 'center',
         behavior: 'smooth'
       })
@@ -854,7 +913,16 @@ export default function TrackList({
       canceled = true
       window.cancelAnimationFrame(frameId)
     }
-  }, [externalScroll, jumpToTrackRequest, onJumpToTrackRequestConsumed, tracks, listViewportHeight, trackRowHeight])
+  }, [
+    externalScroll,
+    jumpToTrackRequest,
+    onJumpToTrackRequestConsumed,
+    tracks,
+    virtualRowIndexByTrackPath,
+    listViewportHeight,
+    trackRowHeight,
+    discHeaderHeight
+  ])
 
   useLayoutEffect(() => {
     const element = listBodyRef.current
@@ -863,9 +931,11 @@ export default function TrackList({
     const updateMeasurements = () => {
       const nextHeight = Math.max(0, Math.round(element.clientHeight))
       const nextRowHeight = resolveTrackRowHeightPx(element)
+      const nextDiscHeaderHeight = resolveTrackDiscHeaderHeightPx(element)
 
       setListViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight))
       setTrackRowHeight((previous) => (previous === nextRowHeight ? previous : nextRowHeight))
+      setDiscHeaderHeight((previous) => (previous === nextDiscHeaderHeight ? previous : nextDiscHeaderHeight))
     }
 
     updateMeasurements()
@@ -1673,9 +1743,15 @@ export default function TrackList({
   }, [integrityEnabled, trackContextMenu])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
+  const virtualContentHeight = useMemo(() => (
+    virtualRows.reduce((height, row) => height + getTrackListVirtualRowHeightPx(row, trackRowHeight, discHeaderHeight), 0)
+  ), [discHeaderHeight, trackRowHeight, virtualRows])
   const resolvedListHeight = externalScroll
-    ? Math.max(trackRowHeight, trackRowHeight * tracks.length)
+    ? Math.max(trackRowHeight, virtualContentHeight)
     : listHeight
+  const resolveVirtualRowHeight = useCallback((rowIndex: number) => (
+    getTrackListVirtualRowHeightPx(virtualRows[rowIndex], trackRowHeight, discHeaderHeight)
+  ), [discHeaderHeight, trackRowHeight, virtualRows])
   const playlistPopupTrackPath = playlistPopup?.primaryTrackPath ?? null
   const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
@@ -1728,6 +1804,7 @@ export default function TrackList({
   )
 
   const rowProps = useMemo<TrackListRowSharedProps>(() => ({
+    rows: virtualRows,
     tracks,
     showArtist,
     showAlbum,
@@ -1770,6 +1847,7 @@ export default function TrackList({
     queueInsertArmedTrackPath,
     selectedTrackPaths
   }), [
+    virtualRows,
     tracks,
     showArtist,
     showAlbum,
@@ -1855,8 +1933,8 @@ export default function TrackList({
           onScroll={externalScroll ? undefined : handleListScroll}
           overscanCount={TRACK_LIST_OVERSCAN_COUNT}
           rowComponent={TrackListRow}
-          rowCount={tracks.length}
-          rowHeight={trackRowHeight}
+          rowCount={virtualRows.length}
+          rowHeight={resolveVirtualRowHeight}
           rowProps={rowProps}
           style={{ height: resolvedListHeight, width: '100%' }}
         />
