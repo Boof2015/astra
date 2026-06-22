@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  formatMiniPlayerTrackContext,
   getNextMiniPlayerTimeDisplayMode,
   mergeMiniPlayerSnapshots,
   normalizeMiniPlayerTimeDisplayMode,
+  resolveMiniPlayerLayout,
   selectMiniPlayerTrackArtworkData,
   type MiniPlayerResolvedArtwork,
   type MiniPlayerSnapshot,
@@ -50,6 +52,24 @@ test('normalizeMiniPlayerTimeDisplayMode defaults to remaining for unknown value
   assert.equal(normalizeMiniPlayerTimeDisplayMode(null), DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE)
 })
 
+test('resolveMiniPlayerLayout covers bounded strip, card, and cover footprints', () => {
+  assert.equal(resolveMiniPlayerLayout(300, 116), 'strip')
+  assert.equal(resolveMiniPlayerLayout(440, 164), 'strip')
+  assert.equal(resolveMiniPlayerLayout(700, 150), 'strip')
+  assert.equal(resolveMiniPlayerLayout(520, 240), 'card')
+  assert.equal(resolveMiniPlayerLayout(360, 480), 'cover')
+  assert.equal(resolveMiniPlayerLayout(300, 300), 'cover')
+  assert.equal(resolveMiniPlayerLayout(298, 720), 'cover')
+  assert.equal(resolveMiniPlayerLayout(720, 720), 'cover')
+})
+
+test('formatMiniPlayerTrackContext gracefully handles incomplete metadata', () => {
+  assert.equal(formatMiniPlayerTrackContext({ artist: 'Artist', album: 'Album' }), 'Artist • Album')
+  assert.equal(formatMiniPlayerTrackContext({ artist: 'Artist', album: '  ' }), 'Artist')
+  assert.equal(formatMiniPlayerTrackContext({ artist: '', album: 'Album' }), 'Album')
+  assert.equal(formatMiniPlayerTrackContext({ artist: ' ', album: '' }), 'Unknown artist')
+})
+
 test('getNextMiniPlayerTimeDisplayMode toggles between remaining and duration', () => {
   assert.equal(getNextMiniPlayerTimeDisplayMode('remaining'), 'duration')
   assert.equal(getNextMiniPlayerTimeDisplayMode('duration'), 'remaining')
@@ -67,6 +87,13 @@ test('mergeMiniPlayerSnapshots preserves artwork for the same track when the nex
   const merged = mergeMiniPlayerSnapshots(previous, next)
 
   assert.equal(merged.currentTrack?.artworkData, 'data:image/png;base64,previous-art')
+})
+
+test('mergeMiniPlayerSnapshots preserves the latest resolved accent', () => {
+  const previous = createSnapshot({ visualizerLineColor: '#38bdf8' })
+  const next = createSnapshot({ visualizerLineColor: '#ef4444' })
+
+  assert.equal(mergeMiniPlayerSnapshots(previous, next).visualizerLineColor, '#ef4444')
 })
 
 test('selectMiniPlayerTrackArtworkData ignores stale artwork resolved for a different track', () => {

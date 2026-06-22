@@ -65,6 +65,8 @@ import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
+  MINI_WINDOW_MAX_HEIGHT,
+  MINI_WINDOW_MAX_WIDTH,
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
   loadMiniWindowPrefs,
@@ -375,6 +377,7 @@ function resolveBuildMetadata(): ResolvedBuildMetadata {
 }
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
+const MINI_WINDOW_TITLE = 'Astra Mini Player'
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
 const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
@@ -2926,6 +2929,8 @@ async function createMiniPlayerWindow(): Promise<void> {
     y: prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
+    maxWidth: MINI_WINDOW_MAX_WIDTH,
+    maxHeight: MINI_WINDOW_MAX_HEIGHT,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -2935,7 +2940,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: 'Astra Mini Player',
+    title: MINI_WINDOW_TITLE,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -2946,6 +2951,11 @@ async function createMiniPlayerWindow(): Promise<void> {
   })
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'mini_player'
+  })
+
+  miniWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    miniWindow?.setTitle(MINI_WINDOW_TITLE)
   })
 
   miniWindow.on('ready-to-show', () => {
@@ -3724,6 +3734,19 @@ ipcMain.handle('mini-player:close', async () => {
 
 ipcMain.handle('mini-player:getWindowState', () => {
   return getMiniWindowState()
+})
+
+ipcMain.handle('mini-player:isCursorInsideWindow', (event) => {
+  if (!miniWindow || miniWindow.isDestroyed() || event.sender !== miniWindow.webContents) {
+    return false
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = miniWindow.getBounds()
+  return cursor.x >= bounds.x
+    && cursor.x < bounds.x + bounds.width
+    && cursor.y >= bounds.y
+    && cursor.y < bounds.y + bounds.height
 })
 
 ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) => {

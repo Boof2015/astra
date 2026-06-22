@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { MiniPlayerVisualizerMode } from '../../../types/miniPlayer'
+import type { MiniPlayerLayoutMode, MiniPlayerVisualizerMode } from '../../../types/miniPlayer'
 import {
   AMBIENT_SPECTRUM_MAX_FREQ,
   AMBIENT_SPECTRUM_MIN_FREQ,
@@ -25,13 +25,14 @@ import {
   type BackdropMetrics,
   type MiniBackdropResolvedProfile
 } from './miniPlayerBackdropContrast.ts'
+import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 
 interface MiniPlayerBackdropVisualizerProps {
   mode: MiniPlayerVisualizerMode
   lineColor: string
   isIdle: boolean
   artworkDataUrl: string | null
-  layoutMode: 'tiny' | 'compact' | 'wide' | 'hero'
+  layoutMode: MiniPlayerLayoutMode
 }
 
 const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
@@ -41,7 +42,6 @@ const SPECTRUM_SMOOTHING_BASE = 0.9
 const ARTWORK_SAMPLE_SIZE = 28
 const ARTWORK_MIN_ALPHA = 24
 const MINI_MAX_PENDING_CHUNKS = 24
-const MINI_MAX_DPR = 1.5
 const MINI_COMPACT_SPECTRUM_POINT_CAP = 320
 const MINI_WIDE_SPECTRUM_POINT_CAP = 520
 const MINI_OSCILLOSCOPE_POINT_CAP = 1024
@@ -154,13 +154,13 @@ async function sampleBackdropMetrics(source: string): Promise<BackdropMetrics | 
 
 function resolveOpacity(
   mode: MiniPlayerVisualizerMode,
-  layoutMode: 'tiny' | 'compact' | 'wide' | 'hero',
+  layoutMode: MiniPlayerLayoutMode,
   idle: boolean,
   profile: MiniBackdropResolvedProfile
 ): number {
   if (mode === 'off') return 0
 
-  const isCompactLayout = layoutMode === 'tiny' || layoutMode === 'compact'
+  const isCompactLayout = layoutMode === 'strip'
   const baseActive = mode === 'oscilloscope'
     ? (isCompactLayout ? 0.28 : 0.30)
     : (isCompactLayout ? 0.28 : 0.36)
@@ -199,8 +199,9 @@ export default function MiniPlayerBackdropVisualizer({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number | null>(null)
   const drawRef = useRef<(() => void) | null>(null)
-  const canvasSizeRef = useRef({ width: 0, height: 0 })
-  const modeRef = useRef(mode)
+  const [isReducedMotion, setIsReducedMotion] = useState(false)
+  const renderMode: MiniPlayerVisualizerMode = isReducedMotion ? 'off' : mode
+  const modeRef = useRef(renderMode)
   const layoutModeRef = useRef(layoutMode)
   const idleRef = useRef(isIdle)
 
@@ -219,6 +220,18 @@ export default function MiniPlayerBackdropVisualizer({
     resolveMiniBackdropRenderProfile(lineColor, deriveFallbackBackdropMetrics(lineColor))
   )
   const [sampledBackdropMetrics, setSampledBackdropMetrics] = useState<BackdropMetrics | null>(null)
+  const { sizeRef: canvasSizeRef } = useBufferedCanvasResize(containerRef, canvasRef, {
+    scaleContextToDpr: true,
+    deferBackingStoreResizeMs: 96,
+  })
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const sync = () => setIsReducedMotion(media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [])
 
   useEffect(() => {
     layoutModeRef.current = layoutMode
@@ -265,37 +278,12 @@ export default function MiniPlayerBackdropVisualizer({
   }, [renderProfile])
 
   const visualizerStyle = useMemo(() => {
-    const opacity = resolveOpacity(mode, layoutMode, isIdle, renderProfile)
+    const opacity = resolveOpacity(renderMode, layoutMode, isIdle, renderProfile)
     return {
       '--mini-visualizer-opacity': opacity.toFixed(3),
       '--mini-visualizer-blend': renderProfile.blendMode,
     } as CSSProperties
-  }, [isIdle, layoutMode, mode, renderProfile])
-
-  const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (!canvas || !container) return
-
-    const rect = container.getBoundingClientRect()
-    const width = Math.max(1, Math.floor(rect.width))
-    const height = Math.max(1, Math.floor(rect.height))
-    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, MINI_MAX_DPR))
-
-    const pixelWidth = Math.max(1, Math.floor(width * dpr))
-    const pixelHeight = Math.max(1, Math.floor(height * dpr))
-
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${height}px`
-    canvas.width = pixelWidth
-    canvas.height = pixelHeight
-
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    }
-    canvasSizeRef.current = { width, height }
-  }, [])
+  }, [isIdle, layoutMode, renderMode, renderProfile])
 
   const stopAnimationLoop = useCallback(() => {
     if (animationRef.current !== null) {
@@ -316,8 +304,8 @@ export default function MiniPlayerBackdropVisualizer({
   }, [])
 
   useEffect(() => {
-    modeRef.current = mode
-    if (mode === 'off') {
+    modeRef.current = renderMode
+    if (renderMode === 'off') {
       pendingLeftChunksRef.current = []
       pendingMonoChunksRef.current = []
       spectrumDataRef.current = null
@@ -337,20 +325,7 @@ export default function MiniPlayerBackdropVisualizer({
     }
 
     scheduleNextFrame()
-  }, [mode, scheduleNextFrame, stopAnimationLoop])
-
-  useEffect(() => {
-    resizeCanvas()
-
-    const observer = new ResizeObserver(() => resizeCanvas())
-    if (containerRef.current) observer.observe(containerRef.current)
-
-    window.addEventListener('resize', resizeCanvas)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', resizeCanvas)
-    }
-  }, [resizeCanvas])
+  }, [renderMode, scheduleNextFrame, stopAnimationLoop])
 
   useEffect(() => {
     if (!isNativeAvailable()) return
@@ -469,7 +444,7 @@ export default function MiniPlayerBackdropVisualizer({
       const maxDb = SPECTRUM_MAX_DB + Math.max(minTiltOffset, maxTiltOffset)
       const dbRange = Math.max(0.0001, maxDb - minDb)
 
-      const isWideLayout = layoutModeRef.current === 'wide' || layoutModeRef.current === 'hero'
+      const isWideLayout = layoutModeRef.current === 'card' || layoutModeRef.current === 'cover'
       const maxPointCount = isWideLayout
         ? MINI_WIDE_SPECTRUM_POINT_CAP
         : MINI_COMPACT_SPECTRUM_POINT_CAP
@@ -602,20 +577,6 @@ export default function MiniPlayerBackdropVisualizer({
       if (!renderData || renderData.length === 0) return
 
       const centerY = height / 2
-      const baselineAccentAlpha = clamp(
-        (idle ? 0.18 : 0.28) +
-        ((idle ? 0.06 : 0.16) * profile.visibilityBoost) +
-        ((idle ? 0.03 : 0.07) * profile.neutralMix),
-        0,
-        0.66
-      )
-      const baselineHaloAlpha = clamp(
-        (idle ? 0.14 : 0.22) +
-        (0.20 * profile.visibilityBoost) +
-        (0.20 * profile.neutralMix),
-        0.12,
-        0.62
-      )
       const waveformAccentAlpha = clamp(
         (idle ? 0.28 : 0.50) +
         ((idle ? 0.10 : 0.22) * profile.visibilityBoost) +
@@ -638,20 +599,6 @@ export default function MiniPlayerBackdropVisualizer({
         0.42
       )
       const underfillEnabled = oscilloscopeUnderfillEnabledRef.current
-
-      ctx.strokeStyle = colorWithAlpha(profile.haloColor, baselineHaloAlpha, profile.haloColor)
-      ctx.lineWidth = 2.0 + (0.6 * profile.visibilityBoost) + (0.6 * profile.neutralMix)
-      ctx.beginPath()
-      ctx.moveTo(0, centerY)
-      ctx.lineTo(width, centerY)
-      ctx.stroke()
-
-      ctx.strokeStyle = colorWithAlpha(profile.strokeColor, baselineAccentAlpha, profile.strokeColor)
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(0, centerY)
-      ctx.lineTo(width, centerY)
-      ctx.stroke()
 
       const totalSamples = Math.min(samplesToShow, renderData.length)
       if (totalSamples < 2) return
@@ -784,7 +731,7 @@ export default function MiniPlayerBackdropVisualizer({
     <div
       ref={containerRef}
       className={`mini-player-backdrop-visualizer ${isIdle ? 'is-idle' : ''}`.trim()}
-      data-mode={mode}
+      data-mode={renderMode}
       style={visualizerStyle}
       aria-hidden="true"
     >

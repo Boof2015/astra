@@ -11,6 +11,7 @@ interface CanvasSize {
 interface UseBufferedCanvasResizeOptions {
   onResize?: (state: CanvasResizeState) => void
   scaleContextToDpr?: boolean
+  deferBackingStoreResizeMs?: number
 }
 
 interface BufferedCanvasResizeControls {
@@ -36,11 +37,16 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
   canvasRef: RefObject<HTMLCanvasElement | null>,
   options: UseBufferedCanvasResizeOptions = {},
 ): BufferedCanvasResizeControls {
-  const { onResize, scaleContextToDpr = false } = options
+  const {
+    onResize,
+    scaleContextToDpr = false,
+    deferBackingStoreResizeMs = 0,
+  } = options
   const onResizeRef = useRef<typeof onResize>(onResize)
   const pendingResizeRef = useRef<CanvasResizeState | null>(null)
   const resizeStateRef = useRef<CanvasResizeState | null>(null)
   const resizeFrameRef = useRef<number | null>(null)
+  const resizeTimerRef = useRef<number | null>(null)
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef<CanvasSize>({ width: 0, height: 0 })
 
@@ -118,15 +124,38 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
 
   const scheduleResize = useCallback((): void => {
     const container = containerRef.current
+    const canvas = canvasRef.current
     if (!container) return
 
     pendingResizeRef.current = measureCanvasResizeState(container)
+
+    if (deferBackingStoreResizeMs > 0) {
+      if (canvas) {
+        canvas.style.width = `${pendingResizeRef.current.cssWidth}px`
+        canvas.style.height = `${pendingResizeRef.current.cssHeight}px`
+      }
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current)
+        resizeFrameRef.current = null
+      }
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current)
+      }
+      resizeTimerRef.current = window.setTimeout(() => {
+        resizeTimerRef.current = null
+        resizeFrameRef.current = window.requestAnimationFrame(() => {
+          applyResize()
+        })
+      }, deferBackingStoreResizeMs)
+      return
+    }
+
     if (resizeFrameRef.current !== null) return
 
     resizeFrameRef.current = window.requestAnimationFrame(() => {
       applyResize()
     })
-  }, [applyResize, containerRef])
+  }, [applyResize, canvasRef, containerRef, deferBackingStoreResizeMs])
 
   const applyResizeNow = useCallback((): void => {
     const container = containerRef.current
@@ -135,6 +164,10 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
     if (resizeFrameRef.current !== null) {
       window.cancelAnimationFrame(resizeFrameRef.current)
       resizeFrameRef.current = null
+    }
+    if (resizeTimerRef.current !== null) {
+      window.clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = null
     }
 
     pendingResizeRef.current = measureCanvasResizeState(container)
@@ -162,6 +195,10 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current)
         resizeFrameRef.current = null
+      }
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current)
+        resizeTimerRef.current = null
       }
       pendingResizeRef.current = null
       resizeStateRef.current = null

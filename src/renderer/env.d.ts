@@ -181,6 +181,7 @@ declare global {
                 open: () => Promise<void>
                 close: () => Promise<void>
                 getWindowState: () => Promise<MiniPlayerWindowState>
+                isCursorInsideWindow: () => Promise<boolean>
                 setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
                 toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
                 getSnapshot: () => Promise<MiniPlayerSnapshot | null>

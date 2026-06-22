@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type {
+  MiniPlayerLayoutMode,
   MiniPlayerSnapshot,
   MiniPlayerVisualizerMode,
   MiniPlayerWindowState
 } from '../../../types/miniPlayer'
 import {
   DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
+  formatMiniPlayerTrackContext,
   mergeMiniPlayerSnapshots,
-  normalizeMiniPlayerTimeDisplayMode
+  normalizeMiniPlayerTimeDisplayMode,
+  resolveMiniPlayerLayout
 } from '../../../types/miniPlayer'
+import { colorToRgbChannels } from '../../utils/color'
 import MiniPlayerBackdropVisualizer from './MiniPlayerBackdropVisualizer'
 import '../../styles/mini-player.css'
+
+const DEFAULT_MINI_ACCENT = '#38bdf8'
+const CURSOR_POLL_INTERVAL_MS = 120
+const BACKDROP_CROSSFADE_MS = 540
+const PENDING_SEEK_ACK_TOLERANCE_SECONDS = 0.35
+const PENDING_SEEK_FALLBACK_MS = 1200
 
 const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   playbackState: 'stopped',
@@ -20,19 +30,22 @@ const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   outputDeviceLabel: null,
   currentTrack: null,
   timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
-  visualizerLineColor: '#38bdf8'
+  visualizerLineColor: DEFAULT_MINI_ACCENT
 }
 
 const EMPTY_WINDOW_STATE: MiniPlayerWindowState = {
   isOpen: true,
   alwaysOnTop: true,
-  visualizerMode: 'spectrum'
+  visualizerMode: 'off'
 }
 
-type MiniLayoutMode = 'tiny' | 'compact' | 'wide' | 'hero'
-const SYSTEM_DEFAULT_OUTPUT_SUFFIX = ' (System Default)'
-const PENDING_SEEK_ACK_TOLERANCE_SECONDS = 0.35
-const PENDING_SEEK_FALLBACK_MS = 1200
+const MINI_VISUALIZER_MODE_ORDER: MiniPlayerVisualizerMode[] = ['off', 'oscilloscope', 'spectrum']
+
+const MINI_VISUALIZER_MODE_LABELS: Record<MiniPlayerVisualizerMode, string> = {
+  off: 'Off',
+  oscilloscope: 'Oscilloscope',
+  spectrum: 'Spectrum'
+}
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -47,25 +60,6 @@ function clampTime(value: number, duration: number): number {
   return Math.max(0, Math.min(duration, value))
 }
 
-function resolveLayoutMode(width: number, height: number): MiniLayoutMode {
-  const isUltraNarrow = width <= 340
-  const isShortStrip = height <= 150
-  const isSmallFootprint = width <= 420 && height <= 220
-
-  if (isUltraNarrow || isShortStrip || isSmallFootprint) return 'tiny'
-  if (width >= 460 && height >= 320) return 'hero'
-  if (width >= 620 && height >= 170) return 'wide'
-  return 'compact'
-}
-
-const MINI_VISUALIZER_MODE_ORDER: MiniPlayerVisualizerMode[] = ['off', 'oscilloscope', 'spectrum']
-
-const MINI_VISUALIZER_MODE_LABELS: Record<MiniPlayerVisualizerMode, string> = {
-  off: 'Off',
-  oscilloscope: 'Oscilloscope',
-  spectrum: 'Spectrum'
-}
-
 function nextMiniVisualizerMode(current: MiniPlayerVisualizerMode): MiniPlayerVisualizerMode {
   const currentIndex = MINI_VISUALIZER_MODE_ORDER.indexOf(current)
   if (currentIndex === -1) return 'off'
@@ -73,11 +67,25 @@ function nextMiniVisualizerMode(current: MiniPlayerVisualizerMode): MiniPlayerVi
   return MINI_VISUALIZER_MODE_ORDER[nextIndex] ?? 'off'
 }
 
-function isSystemDefaultRouteLabel(label: string): boolean {
-  const normalized = label.trim()
-  return normalized.endsWith(SYSTEM_DEFAULT_OUTPUT_SUFFIX)
-    || normalized === 'System Default Output'
-    || normalized === 'System Default Device'
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
+
+function GripIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="5.5" cy="4" r="1.05" fill="currentColor" />
+      <circle cx="10.5" cy="4" r="1.05" fill="currentColor" />
+      <circle cx="5.5" cy="8" r="1.05" fill="currentColor" />
+      <circle cx="10.5" cy="8" r="1.05" fill="currentColor" />
+      <circle cx="5.5" cy="12" r="1.05" fill="currentColor" />
+      <circle cx="10.5" cy="12" r="1.05" fill="currentColor" />
+    </svg>
+  )
 }
 
 export default function MiniPlayerApp() {
@@ -87,7 +95,9 @@ export default function MiniPlayerApp() {
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [scrubTime, setScrubTime] = useState(0)
   const [pendingSeekTime, setPendingSeekTime] = useState<number | null>(null)
-  const [layoutMode, setLayoutMode] = useState<MiniLayoutMode>('compact')
+  const [layoutMode, setLayoutMode] = useState<MiniPlayerLayoutMode>('strip')
+  const [layoutWidth, setLayoutWidth] = useState(440)
+  const [isCursorInside, setIsCursorInside] = useState(false)
   const [activeBackdropArtwork, setActiveBackdropArtwork] = useState<string | null>(null)
   const [previousBackdropArtwork, setPreviousBackdropArtwork] = useState<string | null>(null)
   const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
@@ -105,16 +115,13 @@ export default function MiniPlayerApp() {
     })
 
     void window.electronAPI.miniPlayer.getWindowState().then((state) => {
-      if (!isMounted) return
-      setWindowState(state)
+      if (isMounted) setWindowState(state)
     })
 
     const unsubSnapshot = window.electronAPI.miniPlayer.onSnapshot((next) => {
       setSnapshot((current) => mergeMiniPlayerSnapshots(current, next))
     })
-    const unsubWindowState = window.electronAPI.miniPlayer.onWindowState((next) => {
-      setWindowState(next)
-    })
+    const unsubWindowState = window.electronAPI.miniPlayer.onWindowState(setWindowState)
 
     return () => {
       isMounted = false
@@ -128,7 +135,8 @@ export default function MiniPlayerApp() {
     if (!target) return
 
     const updateLayoutFromRect = (width: number, height: number) => {
-      setLayoutMode(resolveLayoutMode(width, height))
+      setLayoutWidth(width)
+      setLayoutMode(resolveMiniPlayerLayout(width, height))
     }
 
     const initialRect = target.getBoundingClientRect()
@@ -136,12 +144,32 @@ export default function MiniPlayerApp() {
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0]
-      if (!entry) return
-      updateLayoutFromRect(entry.contentRect.width, entry.contentRect.height)
+      if (entry) updateLayoutFromRect(entry.contentRect.width, entry.contentRect.height)
     })
     observer.observe(target)
 
     return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    let isDisposed = false
+
+    const syncCursorInside = () => {
+      void window.electronAPI.miniPlayer.isCursorInsideWindow()
+        .then((inside) => {
+          if (!isDisposed) setIsCursorInside(inside)
+        })
+        .catch(() => {
+          // Renderer pointer events remain the fallback when polling is unavailable.
+        })
+    }
+
+    syncCursorInside()
+    const interval = window.setInterval(syncCursorInside, CURSOR_POLL_INTERVAL_MS)
+    return () => {
+      isDisposed = true
+      window.clearInterval(interval)
+    }
   }, [])
 
   useEffect(() => {
@@ -173,11 +201,9 @@ export default function MiniPlayerApp() {
     return () => {
       if (backdropCrossfadeTimeoutRef.current !== null) {
         window.clearTimeout(backdropCrossfadeTimeoutRef.current)
-        backdropCrossfadeTimeoutRef.current = null
       }
       if (pendingSeekFallbackTimeoutRef.current !== null) {
         window.clearTimeout(pendingSeekFallbackTimeoutRef.current)
-        pendingSeekFallbackTimeoutRef.current = null
       }
     }
   }, [])
@@ -197,21 +223,25 @@ export default function MiniPlayerApp() {
   const rightTimeToggleLabel = showingRemainingTime ? 'Show track duration' : 'Show remaining time'
   const seekProgress = safeDuration > 0 ? (clampedDisplayTime / safeDuration) * 100 : 0
   const seekStyle = { '--seek-progress': `${Math.max(0, Math.min(100, seekProgress))}%` } as CSSProperties
-  const showSeek = layoutMode === 'wide' || layoutMode === 'hero'
-  const showContextLine = layoutMode === 'hero'
-  const showPreviousButton = layoutMode !== 'tiny'
+  const showTimeLabels = layoutMode !== 'strip'
+  const showFavorite = layoutMode !== 'strip' || layoutWidth >= 520
   const visualizerMode = windowState.visualizerMode
   const nextVisualizerMode = nextMiniVisualizerMode(visualizerMode)
   const visualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[visualizerMode]
   const nextVisualizerModeLabel = MINI_VISUALIZER_MODE_LABELS[nextVisualizerMode]
-  const outputDeviceLabel = snapshot.outputDeviceLabel?.trim() ?? ''
-  const artistLabel = track?.artist?.trim() ?? ''
-  const secondaryLabel = isSystemDefaultRouteLabel(outputDeviceLabel)
-    ? (artistLabel || outputDeviceLabel || 'No output selected')
-    : (outputDeviceLabel || artistLabel || 'No output selected')
-  const contextLine = hasTrack
-    ? [track?.artist, track?.album].filter((value): value is string => Boolean(value && value.trim())).join(' • ')
-    : ''
+  const trackContext = track ? formatMiniPlayerTrackContext(track) : ''
+  const accent = colorToRgbChannels(snapshot.visualizerLineColor)
+    ? snapshot.visualizerLineColor
+    : DEFAULT_MINI_ACCENT
+  const accentRgb = colorToRgbChannels(accent) ?? '56, 189, 248'
+  const rootStyle = {
+    '--mini-accent': accent,
+    '--mini-accent-rgb': accentRgb,
+    '--mini-accent-glow': `rgba(${accentRgb}, 0.32)`,
+    '--accent': accent,
+    '--accent-rgb': accentRgb,
+    '--accent-glow': `rgba(${accentRgb}, 0.32)`
+  } as CSSProperties
 
   useEffect(() => {
     if (backdropCrossfadeTimeoutRef.current !== null) {
@@ -227,7 +257,7 @@ export default function MiniPlayerApp() {
       return
     }
 
-    if (!activeBackdropRef.current) {
+    if (!activeBackdropRef.current || prefersReducedMotion()) {
       activeBackdropRef.current = backdropArtwork
       setActiveBackdropArtwork(backdropArtwork)
       setPreviousBackdropArtwork(null)
@@ -246,7 +276,7 @@ export default function MiniPlayerApp() {
       setPreviousBackdropArtwork(null)
       setIsBackdropCrossfading(false)
       backdropCrossfadeTimeoutRef.current = null
-    }, 540)
+    }, BACKDROP_CROSSFADE_MS)
   }, [backdropArtwork])
 
   const handleSeekCommit = (targetTime: number) => {
@@ -263,10 +293,7 @@ export default function MiniPlayerApp() {
       setPendingSeekTime(null)
     }, PENDING_SEEK_FALLBACK_MS)
 
-    window.electronAPI.miniPlayer.sendCommand({
-      type: 'seek',
-      time: seekTime
-    })
+    window.electronAPI.miniPlayer.sendCommand({ type: 'seek', time: seekTime })
   }
 
   const handleCycleVisualizerMode = () => {
@@ -274,7 +301,14 @@ export default function MiniPlayerApp() {
   }
 
   return (
-    <div ref={rootRef} className={`mini-player-root mini-player-mode-${layoutMode}`}>
+    <div
+      ref={rootRef}
+      className={`mini-player-root mini-player-mode-${layoutMode}`}
+      style={rootStyle}
+      onMouseEnter={() => setIsCursorInside(true)}
+      onMouseMove={() => setIsCursorInside(true)}
+      onMouseLeave={() => setIsCursorInside(false)}
+    >
       <div className="mini-player-backdrop" aria-hidden="true">
         {previousBackdropArtwork && (
           <div className={`mini-player-backdrop-layer mini-player-backdrop-layer-previous ${isBackdropCrossfading ? 'is-fading' : ''}`}>
@@ -292,7 +326,7 @@ export default function MiniPlayerApp() {
 
         <MiniPlayerBackdropVisualizer
           mode={visualizerMode}
-          lineColor={snapshot.visualizerLineColor}
+          lineColor={accent}
           isIdle={!track || !isPlaying}
           artworkDataUrl={activeBackdropArtwork ?? backdropArtwork}
           layoutMode={layoutMode}
@@ -302,9 +336,12 @@ export default function MiniPlayerApp() {
         <div className="mini-player-backdrop-scrim" />
       </div>
 
-      <div className="mini-player-shell">
+      <div className={`mini-player-chrome ${isCursorInside ? 'is-cursor-inside' : ''}`}>
         <header className="mini-player-header">
-          <div className="mini-player-drag">ASTRA MINI</div>
+          <div className="mini-player-drag">
+            <span className="mini-player-drag-grip"><GripIcon /></span>
+            <span className="mini-player-brand">ASTRA MINI</span>
+          </div>
           <div className="mini-player-header-controls">
             <button
               className={`mini-header-btn ${windowState.alwaysOnTop ? 'active' : ''}`}
@@ -325,19 +362,13 @@ export default function MiniPlayerApp() {
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 {visualizerMode === 'spectrum' ? (
                   <>
-                    <path d="M4 18V12" />
-                    <path d="M8 18V9" />
-                    <path d="M12 18V6" />
-                    <path d="M16 18V10" />
-                    <path d="M20 18V13" />
+                    <path d="M4 18V12" /><path d="M8 18V9" /><path d="M12 18V6" />
+                    <path d="M16 18V10" /><path d="M20 18V13" />
                   </>
                 ) : visualizerMode === 'oscilloscope' ? (
                   <path d="M3 12h3l2-4 4 8 3-6 2 2h4" />
                 ) : (
-                  <>
-                    <circle cx="12" cy="12" r="7" />
-                    <path d="M7 17 17 7" />
-                  </>
+                  <><circle cx="12" cy="12" r="7" /><path d="M7 17 17 7" /></>
                 )}
               </svg>
             </button>
@@ -353,7 +384,9 @@ export default function MiniPlayerApp() {
             </button>
           </div>
         </header>
+      </div>
 
+      <div className="mini-player-shell">
         <main className="mini-player-body">
           <div className="mini-player-art-panel">
             <div className="mini-player-artwork">
@@ -368,31 +401,20 @@ export default function MiniPlayerApp() {
           <div className="mini-player-main">
             <div className="mini-player-meta">
               <div className="mini-player-title">{track?.title ?? 'No track playing'}</div>
-              <div className="mini-player-secondary-line">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v2.05c.9.57 1.5 1.57 1.5 2.98s-.6 2.41-1.5 2.98v2.05c1.48-.73 2.5-2.25 2.5-4.03z" />
-                </svg>
-                <span>{secondaryLabel}</span>
-              </div>
-              {showContextLine && contextLine && (
-                <div className="mini-player-context-line">{contextLine}</div>
-              )}
+              {trackContext && <div className="mini-player-secondary-line">{trackContext}</div>}
             </div>
 
-            <div className="mini-player-controls" data-mode={layoutMode}>
-              {showPreviousButton && (
-                <button
-                  className="mini-control-btn"
-                  onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'playPrevious' })}
-                  disabled={snapshot.queueLength === 0}
-                  aria-label="Previous"
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="5" x2="6" y2="19" />
-                    <polygon points="18,5 8,12 18,19" />
-                  </svg>
-                </button>
-              )}
+            <div className="mini-player-controls">
+              <button
+                className="mini-control-btn"
+                onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'playPrevious' })}
+                disabled={snapshot.queueLength === 0}
+                aria-label="Previous"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="6" y1="5" x2="6" y2="19" /><polygon points="18,5 8,12 18,19" />
+                </svg>
+              </button>
 
               <button
                 className="mini-control-btn mini-control-btn-play"
@@ -420,29 +442,29 @@ export default function MiniPlayerApp() {
                 aria-label="Next"
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="5" x2="18" y2="19" />
-                  <polygon points="6,5 16,12 6,19" />
+                  <line x1="18" y1="5" x2="18" y2="19" /><polygon points="6,5 16,12 6,19" />
                 </svg>
               </button>
 
-              <button
-                className={`mini-favorite-btn ${track?.isFavorite ? 'active' : ''}`}
-                onClick={() => {
-                  if (!track) return
-                  window.electronAPI.miniPlayer.sendCommand({ type: 'toggleFavorite', trackPath: track.path })
-                }}
-                disabled={!track}
-                aria-label={track?.isFavorite ? 'Remove favorite' : 'Add favorite'}
-                title={track?.isFavorite ? 'Favorited' : 'Favorite'}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 12.5 9.2 16.7 19 7" />
-                </svg>
-              </button>
+              {showFavorite && (
+                <button
+                  className={`mini-favorite-btn ${track?.isFavorite ? 'active' : ''}`}
+                  onClick={() => {
+                    if (track) window.electronAPI.miniPlayer.sendCommand({ type: 'toggleFavorite', trackPath: track.path })
+                  }}
+                  disabled={!track}
+                  aria-label={track?.isFavorite ? 'Remove favorite' : 'Add favorite'}
+                  title={track?.isFavorite ? 'Favorited' : 'Favorite'}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 12.5 9.2 16.7 19 7" />
+                  </svg>
+                </button>
+              )}
             </div>
 
-            {showSeek && (
-              <div className="mini-player-seek-wrap">
+            <div className={`mini-player-seek-wrap ${showTimeLabels ? '' : 'is-rail'}`}>
+              {showTimeLabels && (
                 <div className="mini-player-time-row">
                   <span>{formatTime(clampedDisplayTime)}</span>
                   <button
@@ -455,36 +477,36 @@ export default function MiniPlayerApp() {
                     {rightTimeLabel}
                   </button>
                 </div>
-                <input
-                  className="mini-player-seek"
-                  style={seekStyle}
-                  type="range"
-                  min={0}
-                  max={safeDuration > 0 ? safeDuration : 1}
-                  step={0.01}
-                  value={safeDuration > 0 ? clampedDisplayTime : 0}
-                  onPointerDown={() => setIsScrubbing(true)}
-                  onPointerUp={(event) => {
+              )}
+              <input
+                className="mini-player-seek"
+                style={seekStyle}
+                type="range"
+                min={0}
+                max={safeDuration > 0 ? safeDuration : 1}
+                step={0.01}
+                value={safeDuration > 0 ? clampedDisplayTime : 0}
+                onPointerDown={() => setIsScrubbing(true)}
+                onPointerUp={(event) => {
+                  const next = Number(event.currentTarget.value)
+                  setIsScrubbing(false)
+                  handleSeekCommit(Number.isFinite(next) ? next : scrubTime)
+                }}
+                onPointerCancel={() => setIsScrubbing(false)}
+                onChange={(event) => {
+                  const next = Number(event.target.value)
+                  setScrubTime(Number.isFinite(next) ? next : 0)
+                }}
+                onKeyUp={(event) => {
+                  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
                     const next = Number(event.currentTarget.value)
-                    setIsScrubbing(false)
                     handleSeekCommit(Number.isFinite(next) ? next : scrubTime)
-                  }}
-                  onPointerCancel={() => setIsScrubbing(false)}
-                  onChange={(event) => {
-                    const next = Number(event.target.value)
-                    setScrubTime(Number.isFinite(next) ? next : 0)
-                  }}
-                  onKeyUp={(event) => {
-                    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
-                      const next = Number(event.currentTarget.value)
-                      handleSeekCommit(Number.isFinite(next) ? next : scrubTime)
-                    }
-                  }}
-                  disabled={safeDuration <= 0 || !hasTrack}
-                  aria-label="Seek"
-                />
-              </div>
-            )}
+                  }
+                }}
+                disabled={safeDuration <= 0 || !hasTrack}
+                aria-label="Seek"
+              />
+            </div>
           </div>
         </main>
       </div>

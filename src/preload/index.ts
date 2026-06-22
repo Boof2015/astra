@@ -582,6 +582,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
     getWindowState: () => ipcRenderer.invoke('mini-player:getWindowState'),
+    isCursorInsideWindow: () => ipcRenderer.invoke('mini-player:isCursorInsideWindow'),
     setVisualizerMode: (mode: MiniPlayerVisualizerMode) => ipcRenderer.invoke('mini-player:setVisualizerMode', mode),
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
@@ -1116,6 +1117,7 @@ declare global {
         open: () => Promise<void>
         close: () => Promise<void>
         getWindowState: () => Promise<MiniPlayerWindowState>
+        isCursorInsideWindow: () => Promise<boolean>
         setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>

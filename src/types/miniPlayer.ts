@@ -1,8 +1,46 @@
 export type MiniPlayerPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type MiniPlayerTimeDisplayMode = 'remaining' | 'duration'
 export type MiniPlayerVisualizerMode = 'off' | 'oscilloscope' | 'spectrum'
+export type MiniPlayerLayoutMode = 'strip' | 'card' | 'cover'
 
 export const DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE: MiniPlayerTimeDisplayMode = 'remaining'
+
+// BrowserWindow's 300px minimum includes the miniplayer's 1px border on each side,
+// so its observed content width is 298px. Keep the cover threshold below that box.
+const MINI_PLAYER_COVER_MIN_WIDTH = 280
+const MINI_PLAYER_COVER_MIN_HEIGHT = 300
+const MINI_PLAYER_COVER_MAX_ASPECT_RATIO = 1.35
+const MINI_PLAYER_STRIP_MAX_HEIGHT = 179
+const MINI_PLAYER_STRIP_MAX_WIDTH = 399
+
+export function resolveMiniPlayerLayout(width: number, height: number): MiniPlayerLayoutMode {
+  const safeWidth = Number.isFinite(width) ? Math.max(0, width) : 0
+  const safeHeight = Number.isFinite(height) ? Math.max(0, height) : 0
+  const aspectRatio = safeHeight > 0 ? safeWidth / safeHeight : Number.POSITIVE_INFINITY
+
+  if (
+    safeWidth >= MINI_PLAYER_COVER_MIN_WIDTH
+    && safeHeight >= MINI_PLAYER_COVER_MIN_HEIGHT
+    && aspectRatio <= MINI_PLAYER_COVER_MAX_ASPECT_RATIO
+  ) {
+    return 'cover'
+  }
+
+  if (safeHeight <= MINI_PLAYER_STRIP_MAX_HEIGHT || safeWidth <= MINI_PLAYER_STRIP_MAX_WIDTH) {
+    return 'strip'
+  }
+
+  return 'card'
+}
+
+export function formatMiniPlayerTrackContext(
+  track: Pick<MiniPlayerTrackSnapshot, 'artist' | 'album'>
+): string {
+  const artist = track.artist.trim()
+  const album = track.album.trim()
+  if (artist && album) return `${artist} • ${album}`
+  return artist || album || 'Unknown artist'
+}
 
 export function normalizeMiniPlayerTimeDisplayMode(value: unknown): MiniPlayerTimeDisplayMode {
   return value === 'duration' || value === 'remaining'
