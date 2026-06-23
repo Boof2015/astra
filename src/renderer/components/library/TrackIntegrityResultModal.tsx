@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { IntegrityFindingList } from './LibraryIntegrityPanel'
+import { usePresence } from '../../hooks/usePresence'
 
 function formatTrackPath(path: string): string {
   const normalized = path.replace(/\\/g, '/')
@@ -9,11 +10,22 @@ function formatTrackPath(path: string): string {
 }
 
 export default function TrackIntegrityResultModal() {
-  const result = useLibraryIntegrityStore((state) => state.singleTrackResult)
-  const busyPath = useLibraryIntegrityStore((state) => state.singleTrackBusyPath)
-  const busyPaths = useLibraryIntegrityStore((state) => state.singleTrackBusyPaths)
-  const error = useLibraryIntegrityStore((state) => state.singleTrackError)
+  const liveResult = useLibraryIntegrityStore((state) => state.singleTrackResult)
+  const liveBusyPath = useLibraryIntegrityStore((state) => state.singleTrackBusyPath)
+  const liveBusyPaths = useLibraryIntegrityStore((state) => state.singleTrackBusyPaths)
+  const liveError = useLibraryIntegrityStore((state) => state.singleTrackError)
   const close = useLibraryIntegrityStore((state) => state.closeSingleTrackResult)
+  const isVisible = Boolean(liveResult || liveBusyPath || liveBusyPaths.length > 0 || liveError)
+  const presence = usePresence(isVisible ? {
+    result: liveResult,
+    busyPath: liveBusyPath,
+    busyPaths: liveBusyPaths,
+    error: liveError
+  } : null)
+  const result = presence.presentValue?.result ?? null
+  const busyPath = presence.presentValue?.busyPath ?? null
+  const busyPaths = presence.presentValue?.busyPaths ?? []
+  const error = presence.presentValue?.error ?? ''
 
   const title = useMemo(() => {
     if (busyPaths.length > 1) return 'Checking Selection'
@@ -23,7 +35,7 @@ export default function TrackIntegrityResultModal() {
     return 'Track Integrity'
   }, [busyPath, busyPaths.length, result])
 
-  if (!result && !busyPath && busyPaths.length === 0 && !error) return null
+  if (!presence.shouldRender) return null
 
   const findings = result?.findings ?? []
   const isBusy = busyPaths.length > 0 || Boolean(busyPath)
@@ -34,7 +46,12 @@ export default function TrackIntegrityResultModal() {
       : null
 
   return (
-    <div className="modal-overlay track-integrity-overlay" onClick={isBusy ? undefined : close}>
+    <div
+      className="modal-overlay track-integrity-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      onClick={isBusy ? undefined : close}
+    >
       <div className="modal-content track-integrity-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>

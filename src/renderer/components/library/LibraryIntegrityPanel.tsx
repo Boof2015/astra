@@ -6,6 +6,7 @@ import type {
 } from '../../../types/libraryIntegrity'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { useLibraryIntegrityStore, type IntegrityReportFilter } from '../../stores/libraryIntegrityStore'
+import { usePresence } from '../../hooks/usePresence'
 
 interface IntegrityFolderNode {
   name: string
@@ -271,6 +272,7 @@ export default function LibraryIntegrityPanel() {
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const enabled = useLibraryIntegrityStore((state) => state.enabled)
   const isPanelOpen = useLibraryIntegrityStore((state) => state.isPanelOpen)
+  const presence = usePresence(enabled && isPanelOpen)
   const closePanel = useLibraryIntegrityStore((state) => state.closePanel)
   const mode = useLibraryIntegrityStore((state) => state.mode)
   const setMode = useLibraryIntegrityStore((state) => state.setMode)
@@ -357,10 +359,10 @@ export default function LibraryIntegrityPanel() {
     void startScan()
   }, [isScanning, mode, startScan])
 
-  if (!enabled || !isPanelOpen) return null
+  if (!presence.shouldRender) return null
 
   return (
-    <div className="modal-overlay library-integrity-overlay" onClick={() => {
+    <div className="modal-overlay library-integrity-overlay" data-presence={presence.phase} aria-hidden={presence.phase === 'exiting'} onClick={() => {
       if (canClose) closePanel()
     }}>
       <div className="modal-content library-integrity-panel" onClick={(event) => event.stopPropagation()}>

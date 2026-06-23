@@ -9,20 +9,29 @@ import PlaylistView from '../views/PlaylistView'
 export default function ViewRouter() {
   const activeView = useUIStore((s) => s.activeView)
 
+  let content
   switch (activeView) {
     case 'home':
-      return <HomeView />
+      content = <HomeView />
+      break
     case 'library':
-      return <LibraryView />
+      content = <LibraryView />
+      break
     case 'graph':
-      return <GraphView />
+      content = <GraphView />
+      break
     case 'eq':
-      return <EQView />
+      content = <EQView />
+      break
     case 'settings':
-      return <SettingsView />
+      content = <SettingsView />
+      break
     case 'playlist':
-      return <PlaylistView />
+      content = <PlaylistView />
+      break
     default:
-      return <HomeView />
+      content = <HomeView />
   }
+
+  return <div className="app-view-transition-surface">{content}</div>
 }

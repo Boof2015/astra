@@ -4,6 +4,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
+import { usePresence } from '../../hooks/usePresence'
 import { useGraphStore } from '../../stores/graphStore'
 import type {
   QuickLaunchAlbumRecord,
@@ -122,6 +123,7 @@ export default function QuickLaunchPalette() {
   const setActiveView = useUIStore((state) => state.setActiveView)
   const graphEnabled = useGraphStore((state) => state.enabled)
   const openFullMap = useGraphStore((state) => state.openFullMap)
+  const presence = usePresence(isQuickLaunchOpen)
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
@@ -696,13 +698,15 @@ export default function QuickLaunchPalette() {
     void executeResult(result, 'queue-next')
   }
 
-  if (!isQuickLaunchOpen) return null
+  if (!presence.shouldRender) return null
 
   let rowIndex = -1
 
   return (
     <div
       className="quick-launch-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           closeQuickLaunch()

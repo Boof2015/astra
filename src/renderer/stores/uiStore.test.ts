@@ -42,6 +42,16 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
   assert.equal(normalizeJumpToPlayingDestination(null), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
 })
 
+test('setActiveView commits navigation when the View Transition API is unavailable', () => {
+  useUIStore.setState({ activeView: 'home' })
+
+  useUIStore.getState().setActiveView('library')
+  assert.equal(useUIStore.getState().activeView, 'library')
+
+  useUIStore.getState().setActiveView('home')
+  assert.equal(useUIStore.getState().activeView, 'home')
+})
+
 test('jump to playing destination updates state and persists to localStorage', () => {
   const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const values = new Map<string, string>()

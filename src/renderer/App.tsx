@@ -42,6 +42,7 @@ import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
+import { usePresence } from './hooks/usePresence'
 import type { Track } from './types/audio'
 
 function toAssociatedExternalTrack(filePath: string): Track {
@@ -98,6 +99,8 @@ function App() {
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
   const graphEnabled = useGraphStore((s) => s.enabled)
+  const queuePresence = usePresence(showQueue)
+  const infoSidebarPresence = usePresence(showInfoSidebar)
 
   const appStyle = useMemo(() => {
     const uiScale = uiScalePercent / 100
@@ -303,14 +306,26 @@ function App() {
           <Sidebar />
           <div className="app-content">
             <ViewRouter />
-            {showQueue && (
-              <div className="queue-sidebar">
+            {queuePresence.shouldRender && (
+              <div
+                className="queue-sidebar"
+                data-presence={queuePresence.phase}
+                aria-hidden={queuePresence.phase === 'exiting'}
+              >
                 <QueuePanelBoundary>
                   <QueuePanel />
                 </QueuePanelBoundary>
               </div>
             )}
-            {showInfoSidebar && <InfoSidebar />}
+            {infoSidebarPresence.shouldRender && (
+              <div
+                className="info-sidebar-presence"
+                data-presence={infoSidebarPresence.phase}
+                aria-hidden={infoSidebarPresence.phase === 'exiting'}
+              >
+                <InfoSidebar />
+              </div>
+            )}
           </div>
         </div>
         <TransportBar />

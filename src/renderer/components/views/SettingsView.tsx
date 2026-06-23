@@ -7,6 +7,7 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
+import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
@@ -835,6 +836,7 @@ export default function SettingsView() {
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
   const lastFmProfileModalOpen = lastFmProfileModalMode != null
   const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Destination' : 'Add Destination'
+  const lastFmProfilePresence = usePresence(lastFmProfileModalOpen ? lastFmProfileModalTitle : null)
   const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
     !lastFmProfileUrlInput.trim() ||
     (isScrobbleUsernameRequired(lastFmProfileProtocolInput) && !lastFmProfileUsernameInput.trim()) ||
@@ -2949,14 +2951,19 @@ export default function SettingsView() {
         onCancel={() => setShowBitPerfectWarning(false)}
         onConfirm={handleConfirmBitPerfectWarning}
       />
-      {lastFmProfileModalOpen && (
-        <div className="modal-overlay" onClick={closeLastFmProfileModal}>
+      {lastFmProfilePresence.shouldRender && (
+        <div
+          className="modal-overlay"
+          data-presence={lastFmProfilePresence.phase}
+          aria-hidden={lastFmProfilePresence.phase === 'exiting'}
+          onClick={closeLastFmProfileModal}
+        >
           <div
             className="modal-content settings-lastfm-profile-modal"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
-              <h2>{lastFmProfileModalTitle}</h2>
+              <h2>{lastFmProfilePresence.presentValue}</h2>
               <button className="modal-close" onClick={closeLastFmProfileModal} aria-label="Close">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -3035,8 +3042,8 @@ export default function SettingsView() {
           </div>
         </div>
       )}
-      {localApiPairingModalOpen && (
-        <LocalApiPairingModal
+      <LocalApiPairingModal
+          isOpen={localApiPairingModalOpen}
           ticket={phoneRemoteActivePairingTicket}
           pairedDevices={phoneRemotePairedDevices}
           pendingRequests={phoneRemotePendingPairingRequests}
@@ -3062,7 +3069,6 @@ export default function SettingsView() {
           onRevokeDevice={handleRevokePhoneRemotePairedDevice}
           onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
         />
-      )}
     </div>
   )
 }

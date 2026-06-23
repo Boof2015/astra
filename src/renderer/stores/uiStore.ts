@@ -8,6 +8,7 @@ import {
   type MiniPlayerTimeDisplayMode
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
+import { runAppViewTransition } from '../utils/viewTransitions.ts'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -274,6 +275,7 @@ const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
+let pendingActiveView: AppView | null = null
 
 interface UIStore {
   activeView: AppView
@@ -375,7 +377,16 @@ export const useUIStore = create<UIStore>((set, get) => ({
   pendingSettingsSection: null,
   trackDrag: null,
   sidebarPlaylistCreateRequest: null,
-  setActiveView: (view) => set({ activeView: view }),
+  setActiveView: (view) => {
+    const sourceView = pendingActiveView ?? get().activeView
+    if (sourceView === view) return
+    pendingActiveView = view
+    runAppViewTransition(() => {
+      if (pendingActiveView !== view) return
+      pendingActiveView = null
+      set({ activeView: view })
+    })
+  },
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
   togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf })),

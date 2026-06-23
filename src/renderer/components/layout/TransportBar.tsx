@@ -17,6 +17,7 @@ import ArtistNameLinks from '../library/ArtistNameLinks'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import VolumeControl from '../player/VolumeControl'
 import EQPopover from '../eq/EQPopover'
+import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
@@ -145,6 +146,7 @@ export default function TransportBar() {
   const isFavorite = currentTrack && !isAssociationTrack ? favorites.has(currentTrack.path) : false
 
   const [showEQPopover, setShowEQPopover] = useState(false)
+  const eqPopoverPresence = usePresence(showEQPopover)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
     isOpen: false,
     alwaysOnTop: true,
@@ -618,8 +620,11 @@ export default function TransportBar() {
       </div>
 
       {/* EQ Popover */}
-      {showEQPopover && (
-        <EQPopover onClose={() => setShowEQPopover(false)} />
+      {eqPopoverPresence.shouldRender && (
+        <EQPopover
+          presencePhase={eqPopoverPresence.phase}
+          onClose={() => setShowEQPopover(false)}
+        />
       )}
     </div>
   )

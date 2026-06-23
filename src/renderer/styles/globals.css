@@ -48,6 +48,13 @@
   /* Transitions */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.25s ease;
+  --motion-structural-enter: 190ms;
+  --motion-structural-exit: 140ms;
+  --motion-structural-distance: 14px;
+  --motion-view-fade-enter: 150ms;
+  --motion-view-fade-exit: 110ms;
+  --motion-popover-distance: 9px;
+  --motion-structural-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Reset & Base */
@@ -153,6 +160,58 @@ button, .titlebar {
   display: flex;
   overflow: hidden;
   min-height: 0;
+}
+
+.app-view-transition-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.app-view-transition-surface > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+html.app-view-transition-active .app-view-transition-surface {
+  view-transition-name: app-main-view;
+}
+
+::view-transition-group(app-main-view) {
+  animation-duration: var(--motion-view-fade-enter);
+  animation-timing-function: var(--motion-structural-ease);
+}
+
+::view-transition-old(app-main-view),
+::view-transition-new(app-main-view) {
+  mix-blend-mode: normal;
+}
+
+/* Clean dissolve: the outgoing view is held fully opaque underneath while the
+   incoming view fades in on top. Because there is always one solid layer, the
+   midpoint never washes out to a flash, and nothing translates — so it reads as
+   a dissolve rather than the weak half-slide a symmetric cross-fade produces. */
+html.app-view-transition-active::view-transition-old(app-main-view) {
+  animation: none;
+}
+
+html.app-view-transition-active::view-transition-new(app-main-view) {
+  animation: astraSurfaceFadeIn var(--motion-view-fade-enter) var(--motion-structural-ease) both;
+}
+
+@keyframes astraSurfaceFadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes astraSurfaceFadeOut {
+  to {
+    opacity: 0;
+  }
 }
 
 /* ============================================
@@ -1118,8 +1177,35 @@ button, .titlebar {
 /* ============================================
    Info Sidebar
    ============================================ */
+.info-sidebar-presence {
+  width: var(--info-sidebar-width);
+  flex: 0 0 auto;
+  overflow: hidden;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition:
+    width var(--motion-structural-enter) var(--motion-structural-ease),
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.info-sidebar-presence[data-presence="entering"],
+.info-sidebar-presence[data-presence="exiting"] {
+  width: 0;
+  opacity: 0;
+  transform: translate3d(var(--motion-structural-distance), 0, 0);
+  pointer-events: none;
+}
+
+.info-sidebar-presence[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
+}
+
 .info-sidebar {
   width: var(--info-sidebar-width);
+  min-width: var(--info-sidebar-width);
+  height: 100%;
+  box-sizing: border-box;
   flex-shrink: 0;
   border-left: 1px solid var(--glass-border);
   background: var(--bg-secondary);
@@ -3658,6 +3744,23 @@ button, .titlebar {
   border-radius: var(--radius-md);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   z-index: 100;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: bottom right;
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.eq-popover[data-presence="entering"],
+.eq-popover[data-presence="exiting"] {
+  opacity: 0;
+  transform: translate3d(0, var(--motion-popover-distance), 0) scale(0.97);
+  pointer-events: none;
+}
+
+.eq-popover[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .eq-popover-header {
@@ -5158,6 +5261,23 @@ button, .titlebar {
   background: rgba(10, 14, 22, 0.96);
   backdrop-filter: blur(14px);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: top left;
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.library-header-artist-image-menu[data-presence="entering"],
+.library-header-artist-image-menu[data-presence="exiting"] {
+  opacity: 0;
+  transform: translate3d(0, calc(var(--motion-popover-distance) * -1), 0) scale(0.97);
+  pointer-events: none;
+}
+
+.library-header-artist-image-menu[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .library-header-artist-image-menu-item {
@@ -7336,6 +7456,32 @@ button, .titlebar {
   overflow: hidden;
   background: var(--bg-secondary);
   border-left: 1px solid var(--glass-border);
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition:
+    width var(--motion-structural-enter) var(--motion-structural-ease),
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease),
+    border-color var(--motion-structural-enter) ease;
+}
+
+.queue-sidebar > * {
+  width: var(--queue-width);
+  min-width: var(--queue-width);
+  height: 100%;
+}
+
+.queue-sidebar[data-presence="entering"],
+.queue-sidebar[data-presence="exiting"] {
+  width: 0;
+  opacity: 0;
+  transform: translate3d(var(--motion-structural-distance), 0, 0);
+  border-left-color: transparent;
+  pointer-events: none;
+}
+
+.queue-sidebar[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 /* ============================================
@@ -7351,6 +7497,42 @@ button, .titlebar {
   justify-content: center;
   z-index: 1000;
   animation: fadeIn var(--transition-fast) ease;
+}
+
+.modal-overlay[data-presence] {
+  animation: none;
+  opacity: 1;
+  transition: opacity var(--motion-structural-enter) ease;
+}
+
+.modal-overlay[data-presence] > .modal-content,
+.modal-overlay[data-presence] > .folder-settings-shell > .modal-content {
+  animation: none;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.modal-overlay[data-presence="entering"],
+.modal-overlay[data-presence="exiting"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.modal-overlay[data-presence="entering"] > .modal-content,
+.modal-overlay[data-presence="exiting"] > .modal-content,
+.modal-overlay[data-presence="entering"] > .folder-settings-shell > .modal-content,
+.modal-overlay[data-presence="exiting"] > .folder-settings-shell > .modal-content {
+  opacity: 0;
+  transform: translate3d(0, 8px, 0) scale(0.965);
+}
+
+.modal-overlay[data-presence="exiting"],
+.modal-overlay[data-presence="exiting"] > .modal-content,
+.modal-overlay[data-presence="exiting"] > .folder-settings-shell > .modal-content {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .folder-settings-overlay {
@@ -7459,6 +7641,8 @@ body.folder-settings-open .app {
   justify-content: center;
   align-items: flex-start;
   padding: 72px 20px 32px;
+  opacity: 1;
+  transition: opacity var(--motion-structural-enter) ease;
 }
 
 .quick-launch-panel {
@@ -7471,6 +7655,28 @@ body.folder-settings-open .app {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.quick-launch-overlay[data-presence="entering"],
+.quick-launch-overlay[data-presence="exiting"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.quick-launch-overlay[data-presence="entering"] .quick-launch-panel,
+.quick-launch-overlay[data-presence="exiting"] .quick-launch-panel {
+  opacity: 0;
+  transform: translate3d(0, calc(var(--motion-structural-distance) * -1), 0) scale(0.975);
+}
+
+.quick-launch-overlay[data-presence="exiting"],
+.quick-launch-overlay[data-presence="exiting"] .quick-launch-panel {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .quick-launch-input-wrap {
@@ -9485,6 +9691,27 @@ body.folder-settings-open .app {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   animation: fadeIn var(--transition-fast) ease;
   z-index: 1000;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: bottom right;
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.audio-output-dropdown[data-presence] {
+  animation: none;
+}
+
+.audio-output-dropdown[data-presence="entering"],
+.audio-output-dropdown[data-presence="exiting"] {
+  opacity: 0;
+  transform: translate3d(0, var(--motion-popover-distance), 0) scale(0.97);
+  pointer-events: none;
+}
+
+.audio-output-dropdown[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .audio-output-dropdown-title {
@@ -9899,6 +10126,8 @@ body::after {
   padding: 0;
   margin: 0;
   z-index: 170;
+  opacity: 1;
+  transition: opacity var(--motion-structural-enter) ease;
 }
 
 .sidebar-playlist-popout {
@@ -9915,6 +10144,30 @@ body::after {
   z-index: 171;
   display: flex;
   flex-direction: column;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: top left;
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.sidebar-playlist-popout-backdrop[data-presence="entering"],
+.sidebar-playlist-popout-backdrop[data-presence="exiting"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-playlist-popout[data-presence="entering"],
+.sidebar-playlist-popout[data-presence="exiting"] {
+  opacity: 0;
+  transform: translate3d(calc(var(--motion-popover-distance) * -1), 0, 0) scale(0.97);
+  pointer-events: none;
+}
+
+.sidebar-playlist-popout-backdrop[data-presence="exiting"],
+.sidebar-playlist-popout[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 .sidebar-playlist-popout-header {
@@ -12924,8 +13177,15 @@ body::after {
   display: none;
 }
 
-.view-tabs,
-.library-detail-breadcrumb {
+html.library-context-forward .library-view,
+html.library-context-backward .library-view {
+  view-transition-name: library-context-surface;
+}
+
+html.library-context-forward .view-tabs,
+html.library-context-forward .library-detail-breadcrumb,
+html.library-context-backward .view-tabs,
+html.library-context-backward .library-detail-breadcrumb {
   view-transition-name: library-context-nav;
 }
 
@@ -12935,38 +13195,91 @@ body::after {
   mix-blend-mode: normal;
 }
 
+::view-transition-group(library-context-surface),
 ::view-transition-group(library-context-nav) {
-  animation-duration: 240ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-duration: var(--motion-structural-enter);
+  animation-timing-function: var(--motion-structural-ease);
 }
 
+::view-transition-old(library-context-surface),
+::view-transition-new(library-context-surface),
 ::view-transition-old(library-context-nav),
 ::view-transition-new(library-context-nav) {
   mix-blend-mode: normal;
 }
 
-::view-transition-old(library-context-nav) {
-  animation: library-context-collapse 150ms ease both;
+html.library-context-forward::view-transition-old(library-context-surface),
+html.library-context-forward::view-transition-old(library-context-nav) {
+  animation: libraryContextForwardExit var(--motion-structural-exit) ease-in both;
 }
 
-::view-transition-new(library-context-nav) {
-  animation: library-context-expand 220ms 35ms cubic-bezier(0.22, 1, 0.36, 1) both;
+html.library-context-forward::view-transition-new(library-context-surface),
+html.library-context-forward::view-transition-new(library-context-nav) {
+  animation: libraryContextForwardEnter var(--motion-structural-enter) var(--motion-structural-ease) both;
 }
 
-@keyframes library-context-collapse {
+html.library-context-backward::view-transition-old(library-context-surface),
+html.library-context-backward::view-transition-old(library-context-nav) {
+  animation: libraryContextBackwardExit var(--motion-structural-exit) ease-in both;
+}
+
+html.library-context-backward::view-transition-new(library-context-surface),
+html.library-context-backward::view-transition-new(library-context-nav) {
+  animation: libraryContextBackwardEnter var(--motion-structural-enter) var(--motion-structural-ease) both;
+}
+
+@keyframes libraryContextForwardExit {
   to {
     opacity: 0;
-    filter: blur(2px);
-    transform: translateX(-6px) scale(0.96);
+    transform: translate3d(-10px, 0, 0) scale(0.995);
   }
 }
 
-@keyframes library-context-expand {
+@keyframes libraryContextForwardEnter {
   from {
     opacity: 0;
-    filter: blur(2px);
-    transform: translateX(8px) scale(1.025);
+    transform: translate3d(14px, 0, 0) scale(0.992);
   }
+}
+
+@keyframes libraryContextBackwardExit {
+  to {
+    opacity: 0;
+    transform: translate3d(10px, 0, 0) scale(0.995);
+  }
+}
+
+@keyframes libraryContextBackwardEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(-14px, 0, 0) scale(0.992);
+  }
+}
+
+/* Library tab switch (Tracks / Albums / Artists / Folders): dissolve only the
+   content area, so the header — tab highlight, count, view controls — updates
+   instantly while the list/grid swaps. Same hold-old + fade-new-in dissolve as
+   the top-level view switch, so it reads consistently across the app. */
+html.library-tab-transition .library-content {
+  view-transition-name: library-tab-content;
+}
+
+::view-transition-group(library-tab-content) {
+  animation-duration: var(--motion-view-fade-enter);
+  animation-timing-function: var(--motion-structural-ease);
+}
+
+::view-transition-old(library-tab-content),
+::view-transition-new(library-tab-content) {
+  mix-blend-mode: normal;
+}
+
+html.library-tab-transition::view-transition-old(library-tab-content) {
+  animation: astraSurfaceFadeOut var(--motion-view-fade-exit) ease-out both;
+}
+
+html.library-tab-transition::view-transition-new(library-tab-content) {
+  animation: astraSurfaceFadeIn var(--motion-view-fade-enter) var(--motion-structural-ease) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -18424,6 +18737,26 @@ body::after {
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
   animation: metadataPanelEnter 180ms ease;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    opacity var(--motion-structural-enter) ease,
+    transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.metadata-editor-panel[data-presence] {
+  animation: none;
+}
+
+.metadata-editor-panel[data-presence="entering"],
+.metadata-editor-panel[data-presence="exiting"] {
+  opacity: 0;
+  transform: translate3d(10px, 10px, 0) scale(0.98);
+  pointer-events: none;
+}
+
+.metadata-editor-panel[data-presence="exiting"] {
+  transition-duration: var(--motion-structural-exit);
 }
 
 @keyframes metadataPanelEnter {
@@ -20033,5 +20366,26 @@ body::after {
 
   .metadata-form-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-view-transition-surface,
+  .queue-sidebar,
+  .info-sidebar-presence,
+  .modal-overlay[data-presence],
+  .modal-overlay[data-presence] > .modal-content,
+  .modal-overlay[data-presence] > .folder-settings-shell > .modal-content,
+  .quick-launch-overlay,
+  .quick-launch-panel,
+  .metadata-editor-panel,
+  .audio-output-dropdown,
+  .eq-popover,
+  .sidebar-playlist-popout-backdrop,
+  .sidebar-playlist-popout,
+  .library-header-artist-image-menu {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
   }
 }

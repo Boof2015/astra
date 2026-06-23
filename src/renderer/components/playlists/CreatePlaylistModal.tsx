@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import PlaylistCover from './PlaylistCover'
+import { usePresence } from '../../hooks/usePresence'
 
 interface CreatePlaylistModalProps {
   isOpen: boolean
@@ -29,6 +30,7 @@ export default function CreatePlaylistModal({
   initialName = '',
   pendingTrackCount
 }: CreatePlaylistModalProps) {
+  const presence = usePresence(isOpen)
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -36,6 +38,7 @@ export default function CreatePlaylistModal({
 
   useEffect(() => {
     if (!isOpen) {
+      if (presence.shouldRender) return
       setName('')
       setCoverImagePath(null)
       setIsSubmitting(false)
@@ -47,7 +50,7 @@ export default function CreatePlaylistModal({
     setCoverImagePath(null)
     setIsSubmitting(false)
     setSubmitError(null)
-  }, [initialName, isOpen])
+  }, [initialName, isOpen, presence.shouldRender])
 
   useEffect(() => {
     if (!isOpen) return
@@ -113,10 +116,15 @@ export default function CreatePlaylistModal({
     }
   }
 
-  if (!isOpen) return null
+  if (!presence.shouldRender) return null
 
   return (
-    <div className="modal-overlay playlist-create-modal-overlay" onClick={onClose}>
+    <div
+      className="modal-overlay playlist-create-modal-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      onClick={onClose}
+    >
       <div
         className="modal-content playlist-create-modal"
         onClick={(event) => event.stopPropagation()}

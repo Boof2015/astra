@@ -8,6 +8,7 @@ import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import { usePresence } from '../../hooks/usePresence'
 
 const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
   {
@@ -133,7 +134,6 @@ export default function Sidebar() {
     left: number
     maxHeight: number
   } | null>(null)
-
   useEffect(() => {
     void loadPlaylists()
   }, [loadPlaylists])
@@ -145,6 +145,7 @@ export default function Sidebar() {
     }, 3),
     [playlists, favoriteTracks]
   )
+  const overflowPresence = usePresence(isOverflowOpen && sidebarOverflowPlaylists.length > 0)
   const navItems = useMemo(
     () => baseNavItems.filter((item) => graphEnabled || item.id !== 'graph'),
     [graphEnabled]
@@ -308,7 +309,6 @@ export default function Sidebar() {
 
   useLayoutEffect(() => {
     if (!isOverflowOpen) {
-      setOverflowPopoutStyle(null)
       return
     }
 
@@ -663,16 +663,20 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {isOverflowOpen && sidebarOverflowPlaylists.length > 0 && (
+      {overflowPresence.shouldRender && (
         <>
           <button
             type="button"
             className="sidebar-playlist-popout-backdrop"
+            data-presence={overflowPresence.phase}
+            aria-hidden={overflowPresence.phase === 'exiting'}
             aria-label="Close playlists"
             onClick={() => setIsOverflowOpen(false)}
           />
           <div
             className="sidebar-playlist-popout"
+            data-presence={overflowPresence.phase}
+            aria-hidden={overflowPresence.phase === 'exiting'}
             ref={popoutRef}
             style={overflowPopoutStyle ?? undefined}
           >

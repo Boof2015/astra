@@ -7,9 +7,11 @@ import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { Track } from '../../types/audio'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
+import { usePresence } from '../../hooks/usePresence'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
+import { runViewTransition } from '../../utils/viewTransitions'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList, { type ArtistListViewMode, type ArtistListViewportAPI } from '../library/ArtistList'
@@ -23,26 +25,6 @@ const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
 const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
 const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
-
-interface LibraryViewTransition {
-  updateCallbackDone: Promise<void>
-}
-
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => void | Promise<void>) => LibraryViewTransition
-}
-
-async function runLibraryViewTransition(update: () => void | Promise<void>): Promise<void> {
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  const startViewTransition = (document as ViewTransitionDocument).startViewTransition
-  if (!startViewTransition || prefersReducedMotion) {
-    await update()
-    return
-  }
-
-  const transition = startViewTransition.call(document, update)
-  await transition.updateCallbackDone
-}
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
   try {
@@ -272,6 +254,7 @@ export default function LibraryView() {
   const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
+  const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const collectionPlayPendingRef = useRef(false)
@@ -575,8 +558,13 @@ export default function LibraryView() {
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
     artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
-    await runLibraryViewTransition(() => selectArtist(artistName, 'library'))
+    await runViewTransition(() => selectArtist(artistName, 'library'), 'library-context-forward')
   }, [selectArtist])
+
+  const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
+    if (viewMode === mode) return
+    void runViewTransition(() => setViewMode(mode), 'library-tab-transition')
+  }, [setViewMode, viewMode])
 
   const sourceFilteredTracks = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return tracks
@@ -914,7 +902,7 @@ export default function LibraryView() {
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {
-    await runLibraryViewTransition(async () => {
+    await runViewTransition(async () => {
       const restored = await goBackSelection()
       if (restored) return
 
@@ -926,7 +914,7 @@ export default function LibraryView() {
         else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
       }
       await clearSelection()
-    })
+    }, 'library-context-backward')
   }
 
   const handleOpenFile = async () => {
@@ -1131,7 +1119,10 @@ export default function LibraryView() {
               className="album-card"
               onClick={() => {
                 albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
-                void runLibraryViewTransition(() => selectAlbum(album.album, album.artist, 'library', album.identity_key))
+                void runViewTransition(
+                  () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+                  'library-context-forward'
+                )
               }}
             >
               {album.is_new && (
@@ -1211,7 +1202,10 @@ export default function LibraryView() {
                     key={album.identity_key}
                     type="button"
                     className="library-artist-rail-card"
-                    onClick={() => void runLibraryViewTransition(() => selectAlbum(album.album, album.artist, 'library', album.identity_key))}
+                    onClick={() => void runViewTransition(
+                      () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+                      'library-context-forward'
+                    )}
                   >
                     {album.is_new && (
                       <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
@@ -1433,8 +1427,13 @@ export default function LibraryView() {
                       <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
                     </svg>
                   </button>
-                  {isArtistImageMenuOpen && (
-                    <div className="library-header-artist-image-menu" role="menu">
+                  {artistImageMenuPresence.shouldRender && (
+                    <div
+                      className="library-header-artist-image-menu"
+                      data-presence={artistImageMenuPresence.phase}
+                      aria-hidden={artistImageMenuPresence.phase === 'exiting'}
+                      role="menu"
+                    >
                       <button
                         type="button"
                         className="library-header-artist-image-menu-item"
@@ -1479,25 +1478,25 @@ export default function LibraryView() {
                 <div className="view-tabs">
                   <button
                     className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
-                    onClick={() => setViewMode('tracks')}
+                    onClick={() => handleSelectViewMode('tracks')}
                   >
                     Tracks
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
-                    onClick={() => setViewMode('albums')}
+                    onClick={() => handleSelectViewMode('albums')}
                   >
                     Albums
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
-                    onClick={() => setViewMode('artists')}
+                    onClick={() => handleSelectViewMode('artists')}
                   >
                     Artists
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
-                    onClick={() => setViewMode('folders')}
+                    onClick={() => handleSelectViewMode('folders')}
                   >
                     Folders
                   </button>

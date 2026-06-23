@@ -6,6 +6,7 @@ import {
   type ShortcutSectionId
 } from '../../constants/keyboardShortcuts'
 import { useUIStore } from '../../stores/uiStore'
+import { usePresence } from '../../hooks/usePresence'
 
 function ShortcutBindingDisplay({
   binding,
@@ -30,8 +31,9 @@ export default function KeyboardShortcutsModal() {
   const isOpen = useUIStore((state) => state.isKeyboardShortcutsOpen)
   const closeKeyboardShortcuts = useUIStore((state) => state.closeKeyboardShortcuts)
   const platform = window.electronAPI?.platform ?? 'linux'
+  const presence = usePresence(isOpen)
 
-  if (!isOpen) return null
+  if (!presence.shouldRender) return null
 
   const definitionsBySection = SHORTCUT_SECTION_META.reduce<Record<ShortcutSectionId, typeof SHORTCUT_DEFINITIONS>>(
     (acc, section) => {
@@ -46,7 +48,12 @@ export default function KeyboardShortcutsModal() {
   )
 
   return (
-    <div className="modal-overlay keyboard-shortcuts-overlay" onClick={closeKeyboardShortcuts}>
+    <div
+      className="modal-overlay keyboard-shortcuts-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      onClick={closeKeyboardShortcuts}
+    >
       <div
         className="modal-content keyboard-shortcuts-modal"
         onClick={(event) => event.stopPropagation()}
