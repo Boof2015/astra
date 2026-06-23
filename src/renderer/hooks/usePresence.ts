@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export const STRUCTURAL_MOTION_ENTER_MS = 190
 export const STRUCTURAL_MOTION_EXIT_MS = 140
@@ -20,6 +20,13 @@ export interface PresenceResult<T> {
 /**
  * Retains the most recent truthy value long enough for a short exit transition.
  * Reopening during that window cancels the pending unmount.
+ *
+ * The visibility edge is handled during render (not in an effect) so that the
+ * first committed frame of a newly-shown element already carries the hidden
+ * `entering` styles. Flipping to `entered` afterwards then has a painted
+ * baseline to transition from — without this the enter would pop in while the
+ * exit still animated, because the element would first mount in its visible
+ * base state.
  */
 export function usePresence<T>(
   value: T | null | undefined | false,
@@ -30,58 +37,45 @@ export function usePresence<T>(
   const [phase, setPhase] = useState<PresencePhase>(visible ? 'entered' : 'exited')
   const previousVisibleRef = useRef(visible)
   const frameRef = useRef<number | null>(null)
-  const timeoutRef = useRef<number | null>(null)
 
-  useLayoutEffect(() => {
-    if (visible) retainedValueRef.current = value as T
-  }, [value, visible])
+  if (visible) retainedValueRef.current = value as T
 
-  useLayoutEffect(() => {
-    if (frameRef.current !== null) {
-      window.cancelAnimationFrame(frameRef.current)
-      frameRef.current = null
-    }
-    if (timeoutRef.current !== null) {
-      window.clearTimeout(timeoutRef.current)
-      timeoutRef.current = null
-    }
-
-    const wasVisible = previousVisibleRef.current
+  if (visible !== previousVisibleRef.current) {
     previousVisibleRef.current = visible
-    if (visible === wasVisible) return
-
-    if (visible) {
-      if (prefersReducedMotion()) {
-        setPhase('entered')
-        return
-      }
-      setPhase('entering')
-      frameRef.current = window.requestAnimationFrame(() => {
-        frameRef.current = window.requestAnimationFrame(() => {
-          frameRef.current = null
-          setPhase('entered')
-        })
-      })
-      return
-    }
-
     if (prefersReducedMotion()) {
-      retainedValueRef.current = null
-      setPhase('exited')
-      return
+      if (!visible) retainedValueRef.current = null
+      setPhase(visible ? 'entered' : 'exited')
+    } else {
+      // Start hidden on the first committed frame, then animate from there.
+      setPhase(visible ? 'entering' : 'exiting')
     }
-    setPhase('exiting')
-    timeoutRef.current = window.setTimeout(() => {
-      timeoutRef.current = null
+  }
+
+  // Once the hidden `entering` frame has painted, advance to `entered` so the
+  // CSS transition runs. A single rAF guarantees we are past a paint boundary.
+  useEffect(() => {
+    if (phase !== 'entering') return
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null
+      setPhase('entered')
+    })
+    return () => {
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+    }
+  }, [phase])
+
+  // Hold the element mounted through the exit transition, then release it.
+  useEffect(() => {
+    if (phase !== 'exiting') return
+    const timeout = window.setTimeout(() => {
       retainedValueRef.current = null
       setPhase('exited')
     }, exitMs)
-  }, [exitMs, visible])
-
-  useEffect(() => () => {
-    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current)
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
-  }, [])
+    return () => window.clearTimeout(timeout)
+  }, [exitMs, phase])
 
   return {
     phase,
