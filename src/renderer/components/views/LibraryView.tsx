@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -23,6 +23,26 @@ const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
 const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
 const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
+
+interface LibraryViewTransition {
+  updateCallbackDone: Promise<void>
+}
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void | Promise<void>) => LibraryViewTransition
+}
+
+async function runLibraryViewTransition(update: () => void | Promise<void>): Promise<void> {
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const startViewTransition = (document as ViewTransitionDocument).startViewTransition
+  if (!startViewTransition || prefersReducedMotion) {
+    await update()
+    return
+  }
+
+  const transition = startViewTransition.call(document, update)
+  await transition.updateCallbackDone
+}
 
 function loadAlbumSortModeSetting(): AlbumSortMode {
   try {
@@ -228,7 +248,6 @@ export default function LibraryView() {
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const loadTrack = usePlayerStore((s) => s.loadTrack)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
@@ -250,11 +269,12 @@ export default function LibraryView() {
   const [includeCollabArtists, setIncludeCollabArtists] = useState(() => loadIncludeCollabArtistsSetting())
   const [artistRootViewMode, setArtistRootViewMode] = useState<ArtistRootViewMode>(() => loadArtistRootViewModeSetting())
   const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
-  const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
+  const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
+  const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const previousInDetailViewRef = useRef(false)
-  const shufflePlayPendingRef = useRef(false)
+  const collectionPlayPendingRef = useRef(false)
   const albumGridRef = useRef<HTMLDivElement | null>(null)
   const albumGridScrollRef = useRef(0)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
@@ -352,6 +372,10 @@ export default function LibraryView() {
   useEffect(() => {
     setIsArtistImageMenuOpen(false)
   }, [selectedArtist])
+
+  useEffect(() => {
+    setIsDetailHeaderCollapsed(false)
+  }, [sortContextKey])
 
   useEffect(() => {
     if (!isArtistImageMenuOpen) return
@@ -536,9 +560,22 @@ export default function LibraryView() {
     })
   }, [])
 
+  const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    if (!inDetailView) return
+
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (target.scrollHeight <= target.clientHeight + 1) return
+
+    const scrollTop = target.scrollTop
+    setIsDetailHeaderCollapsed((isCollapsed) => (
+      isCollapsed ? scrollTop > 8 : scrollTop > 40
+    ))
+  }, [inDetailView])
+
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
     artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
-    await selectArtist(artistName, 'library')
+    await runLibraryViewTransition(() => selectArtist(artistName, 'library'))
   }, [selectArtist])
 
   const sourceFilteredTracks = useMemo(() => {
@@ -594,46 +631,29 @@ export default function LibraryView() {
 
     return sorted
   }, [sortState, sourceFilteredTracks])
-  const isShufflePlayDisabled = isShufflePlayPending || queueSeedSortedTracks.length === 0
-  const isShufflePlayActive = useMemo(() => {
-    if (!shuffle) return false
-    if (autoQueue.length === 0) return false
-    if (autoQueue.length !== queueSeedSortedTracks.length) return false
+  const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
 
-    for (let index = 0; index < autoQueue.length; index += 1) {
-      if (autoQueue[index]?.path !== queueSeedSortedTracks[index]?.path) {
-        return false
-      }
-    }
-
-    return true
-  }, [autoQueue, queueSeedSortedTracks, shuffle])
-
-  const handleShufflePlayTracklist = useCallback(async () => {
-    if (shufflePlayPendingRef.current) return
+  const handlePlayTracklist = useCallback(async () => {
+    if (collectionPlayPendingRef.current) return
     if (queueSeedSortedTracks.length === 0) return
 
-    shufflePlayPendingRef.current = true
-    setIsShufflePlayPending(true)
+    collectionPlayPendingRef.current = true
+    setIsCollectionPlayPending(true)
 
     try {
       const queueTrackPaths = queueSeedSortedTracks.map((track) => track.path)
-      const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
-      await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
+      await startPlaybackContextByPaths(queueTrackPaths, 0, {
         contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library',
         sourceContext: playbackSourceContext
       })
-      if (!shuffle) {
-        toggleShuffle()
-      }
     } catch (error) {
-      console.error('Failed to shuffle play tracklist:', error)
+      console.error('Failed to play tracklist:', error)
     } finally {
-      shufflePlayPendingRef.current = false
-      setIsShufflePlayPending(false)
+      collectionPlayPendingRef.current = false
+      setIsCollectionPlayPending(false)
     }
-  }, [playbackSourceContext, queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [playbackSourceContext, queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, startPlaybackContextByPaths])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
@@ -843,6 +863,44 @@ export default function LibraryView() {
     }
   }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
 
+  const selectedAlbumRecord = useMemo(() => {
+    if (!selectedAlbum) return null
+
+    const identityKey = selectedAlbum.identity_key?.trim()
+    const albumCandidates = albumsIncludingSinglesLoaded
+      ? [...albums, ...albumsIncludingSingles]
+      : albums
+
+    if (identityKey) {
+      const identityMatch = albumCandidates.find((album) => album.identity_key === identityKey)
+      if (identityMatch) return identityMatch
+    }
+
+    const selectedAlbumKey = buildAlbumKey(selectedAlbum.album, selectedAlbum.artist)
+    return albumCandidates.find((album) => buildAlbumKey(album.album, album.artist) === selectedAlbumKey) ?? null
+  }, [albums, albumsIncludingSingles, albumsIncludingSinglesLoaded, selectedAlbum])
+
+  const selectedAlbumArtworkHash = selectedAlbum
+    ? selectedAlbumRecord?.artwork_hash
+      ?? tracks.find((track) => track.artwork_hash)?.artwork_hash
+      ?? null
+    : null
+  const selectedAlbumYear = selectedAlbum
+    ? selectedAlbumRecord?.year
+      ?? tracks.reduce<number | null>((latestYear, track) => {
+        if (track.year === null) return latestYear
+        return latestYear === null ? track.year : Math.max(latestYear, track.year)
+      }, null)
+    : null
+  const selectedAlbumArtist = selectedAlbum
+    ? selectedAlbum.artist.trim()
+      || selectedAlbumRecord?.artist.trim()
+      || tracks.find((track) => track.album_artist?.trim())?.album_artist?.trim()
+      || tracks.find((track) => track.artist.trim())?.artist.trim()
+      || ''
+    : ''
+  const detailArtworkHash = selectedAlbumArtworkHash ?? selectedArtistArtworkHash
+
   const trimmedQueryForMessage = searchQuery.trim()
   const searchPlaceholder = inDetailView
     ? 'Search tracks...'
@@ -856,17 +914,19 @@ export default function LibraryView() {
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {
-    const restored = await goBackSelection()
-    if (restored) return
+    await runLibraryViewTransition(async () => {
+      const restored = await goBackSelection()
+      if (restored) return
 
-    const shouldReturnHome = selectionOrigin === 'home'
-    if (shouldReturnHome) {
-      setActiveView('home')
-    } else {
-      if (viewMode === 'albums') pendingScrollRef.current = 'albums'
-      else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
-    }
-    await clearSelection()
+      const shouldReturnHome = selectionOrigin === 'home'
+      if (shouldReturnHome) {
+        setActiveView('home')
+      } else {
+        if (viewMode === 'albums') pendingScrollRef.current = 'albums'
+        else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
+      }
+      await clearSelection()
+    })
   }
 
   const handleOpenFile = async () => {
@@ -954,8 +1014,25 @@ export default function LibraryView() {
     itemLabel = sourceFilteredTracks.length === 1 ? 'track' : 'tracks'
   }
   const selectedAlbumDurationLabel = selectedAlbum
-    ? formatCompactTotalTrackDuration(displayTracks)
+    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
     : null
+  const selectedArtistDurationLabel = selectedArtist
+    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    : null
+  const detailMetaItems = selectedAlbum
+    ? [
+        selectedAlbumArtist || null,
+        selectedAlbumYear ? String(selectedAlbumYear) : null,
+        formatTrackCount(sourceFilteredTracks.length),
+        selectedAlbumDurationLabel
+      ].filter((item): item is string => Boolean(item))
+    : selectedArtist
+      ? [
+          `${primaryArtistAlbums.length} ${primaryArtistAlbums.length === 1 ? 'album' : 'albums'}`,
+          formatTrackCount(sourceFilteredTracks.length),
+          selectedArtistDurationLabel
+        ].filter((item): item is string => Boolean(item))
+      : []
   const showSelectedAlbumDiscHeaders = Boolean(selectedAlbum && sortState === null && !hasSearchQuery)
 
   // Scan progress overlay
@@ -1054,7 +1131,7 @@ export default function LibraryView() {
               className="album-card"
               onClick={() => {
                 albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
-                void selectAlbum(album.album, album.artist, 'library', album.identity_key)
+                void runLibraryViewTransition(() => selectAlbum(album.album, album.artist, 'library', album.identity_key))
               }}
             >
               {album.is_new && (
@@ -1104,17 +1181,8 @@ export default function LibraryView() {
         <div className="library-artist-detail">
           <section className="library-artist-rail">
             <div className="library-artist-rail-header">
-              <h3>Albums</h3>
+              <h3>Discography</h3>
               <div className="library-artist-rail-action-row">
-                {graphEnabled && (
-                  <button
-                    type="button"
-                    className="library-artist-graph-btn"
-                    onClick={handleOpenSelectedArtistInGraph}
-                  >
-                    Open In Graph
-                  </button>
-                )}
                 <div className="library-artist-rail-actions">
                   <button
                     type="button"
@@ -1143,7 +1211,7 @@ export default function LibraryView() {
                     key={album.identity_key}
                     type="button"
                     className="library-artist-rail-card"
-                    onClick={() => void selectAlbum(album.album, album.artist, 'library', album.identity_key)}
+                    onClick={() => void runLibraryViewTransition(() => selectAlbum(album.album, album.artist, 'library', album.identity_key))}
                   >
                     {album.is_new && (
                       <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
@@ -1218,137 +1286,229 @@ export default function LibraryView() {
     )
   }
 
+  const renderSourceFilters = () => {
+    if (!shouldShowSourceFilters) return null
+
+    return (
+      <div className="library-source-filters" role="group" aria-label="Source filters">
+        <button
+          type="button"
+          className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
+          onClick={handleResetSourceFilters}
+        >
+          All
+        </button>
+        <button
+          type="button"
+          className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
+          onClick={() => handleToggleSourceFilter('local')}
+        >
+          Local
+        </button>
+        {sourceFilterOptions.map((source) => (
+          <button
+            key={source.key}
+            type="button"
+            className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
+            onClick={() => handleToggleSourceFilter(source.key)}
+          >
+            {source.label}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  const renderSearchControl = () => (
+    <div className="search-container">
+      <span className="search-icon" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+      </span>
+      <input
+        type="text"
+        className="search-input"
+        data-shortcut-search="true"
+        placeholder={searchPlaceholder}
+        aria-label={searchPlaceholder}
+        value={searchQuery}
+        onChange={(event) => setSearchQuery(event.target.value)}
+      />
+      {searchQuery.length > 0 && (
+        <button
+          type="button"
+          className="search-clear-btn"
+          aria-label="Clear search"
+          title="Clear search"
+          onClick={() => setSearchQuery('')}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+
+  const renderOpenFileControl = () => (
+    <button className="icon-btn" onClick={handleOpenFile} title="Open File" aria-label="Open File">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+      </svg>
+    </button>
+  )
+
   return (
     <div className="library-view">
-      <div className="library-header">
-        <div className="library-header-left">
-          {(selectedAlbum || selectedArtist) && (
-            <button className="back-btn" onClick={handleBack} title="Back">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      {inDetailView && (
+        <div className="library-detail-toolbar">
+          <div className="library-detail-toolbar-left">
+            <button className="back-btn" onClick={handleBack} title="Back" aria-label="Back">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>
             </button>
-          )}
-          {selectedArtist && (
-            <div className="library-header-artist-image-control" ref={artistImageControlRef}>
-              <div className="library-header-artist-avatar">
-                {selectedArtistArtworkHash ? (
+            <div className="library-detail-breadcrumb" aria-label={`Library, ${selectedAlbum ? 'Album' : 'Artist'} detail`}>
+              <span>Library</span>
+              <span className="library-detail-breadcrumb-separator" aria-hidden="true">/</span>
+              <span>{selectedAlbum ? 'Album' : 'Artist'}</span>
+            </div>
+            {renderSourceFilters()}
+          </div>
+          <div className="library-detail-toolbar-right">
+            {renderSearchControl()}
+            {renderOpenFileControl()}
+          </div>
+        </div>
+      )}
+      <div className={`library-header ${inDetailView ? `library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}` : ''}`}>
+        {inDetailView && detailArtworkHash && (
+          <div className="library-detail-hero-backdrop" aria-hidden="true">
+            <AlbumArtwork
+              hash={detailArtworkHash}
+              alt=""
+              variant="card"
+            />
+          </div>
+        )}
+        <div className={`library-header-left ${inDetailView ? 'library-detail-header-left' : ''}`}>
+          {inDetailView ? (
+            <>
+              {selectedAlbum && (
+                <div className="library-detail-artwork">
                   <AlbumArtwork
-                    hash={selectedArtistArtworkHash}
-                    alt={`${selectedArtist} artwork`}
-                    className="library-header-artist-artwork"
+                    hash={selectedAlbumArtworkHash}
+                    alt={`${selectedAlbum.album} artwork`}
                     variant="thumbnail"
                   />
-                ) : (
-                  selectedArtist.charAt(0).toUpperCase()
-                )}
-              </div>
-              <button
-                type="button"
-                className="library-header-artist-edit-btn"
-                onClick={() => setIsArtistImageMenuOpen((isOpen) => !isOpen)}
-                disabled={isUpdatingArtistImage}
-                aria-haspopup="menu"
-                aria-expanded={isArtistImageMenuOpen}
-                aria-label="Edit artist image"
-                title="Edit artist image"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 20h9" />
-                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                </svg>
-              </button>
-              {isArtistImageMenuOpen && (
-                <div className="library-header-artist-image-menu" role="menu">
+                </div>
+              )}
+
+              {selectedArtist && (
+                <div className="library-header-artist-image-control library-detail-artist-image-control" ref={artistImageControlRef}>
+                  <div className="library-header-artist-avatar">
+                    {selectedArtistArtworkHash ? (
+                      <AlbumArtwork
+                        hash={selectedArtistArtworkHash}
+                        alt={`${selectedArtist} artwork`}
+                        className="library-header-artist-artwork"
+                        variant="thumbnail"
+                      />
+                    ) : (
+                      selectedArtist.charAt(0).toUpperCase()
+                    )}
+                  </div>
                   <button
                     type="button"
-                    className="library-header-artist-image-menu-item"
-                    role="menuitem"
-                    onClick={() => void handleChangeSelectedArtistImage()}
+                    className="library-header-artist-edit-btn"
+                    onClick={() => setIsArtistImageMenuOpen((isOpen) => !isOpen)}
+                    disabled={isUpdatingArtistImage}
+                    aria-haspopup="menu"
+                    aria-expanded={isArtistImageMenuOpen}
+                    aria-label="Edit artist image"
+                    title="Edit artist image"
                   >
-                    Change image
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                    </svg>
+                  </button>
+                  {isArtistImageMenuOpen && (
+                    <div className="library-header-artist-image-menu" role="menu">
+                      <button
+                        type="button"
+                        className="library-header-artist-image-menu-item"
+                        role="menuitem"
+                        onClick={() => void handleChangeSelectedArtistImage()}
+                      >
+                        Change image
+                      </button>
+                      <button
+                        type="button"
+                        className="library-header-artist-image-menu-item"
+                        role="menuitem"
+                        onClick={() => void handleResetSelectedArtistImage()}
+                        disabled={!canResetSelectedArtistImage}
+                      >
+                        Reset image
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="library-detail-copy">
+                <div className="library-detail-eyebrow-row">
+                  <span className="library-detail-eyebrow">{selectedAlbum ? 'Album' : 'Artist'}</span>
+                  {selectedAlbum?.is_new && (
+                    <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
+                      NEW
+                    </span>
+                  )}
+                </div>
+                <h2 title={title}>{title}</h2>
+                <div className="library-detail-meta-row">
+                  <span className="library-detail-meta">{detailMetaItems.join(' \u00b7 ')}</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2>{title}</h2>
+              {showViewTabs && (
+                <div className="view-tabs">
+                  <button
+                    className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
+                    onClick={() => setViewMode('tracks')}
+                  >
+                    Tracks
                   </button>
                   <button
-                    type="button"
-                    className="library-header-artist-image-menu-item"
-                    role="menuitem"
-                    onClick={() => void handleResetSelectedArtistImage()}
-                    disabled={!canResetSelectedArtistImage}
+                    className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
+                    onClick={() => setViewMode('albums')}
                   >
-                    Reset image
+                    Albums
+                  </button>
+                  <button
+                    className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
+                    onClick={() => setViewMode('artists')}
+                  >
+                    Artists
+                  </button>
+                  <button
+                    className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
+                    onClick={() => setViewMode('folders')}
+                  >
+                    Folders
                   </button>
                 </div>
               )}
-            </div>
-          )}
-          <h2>{title}</h2>
-          {selectedAlbum?.is_new && (
-            <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
-              NEW
-            </span>
-          )}
-          {showViewTabs && (
-            <div className="view-tabs">
-              <button
-                className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
-                onClick={() => setViewMode('tracks')}
-              >
-                Tracks
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
-                onClick={() => setViewMode('albums')}
-              >
-                Albums
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
-                onClick={() => setViewMode('artists')}
-              >
-                Artists
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
-                onClick={() => setViewMode('folders')}
-              >
-                Folders
-              </button>
-            </div>
-          )}
-          <span className="track-count">
-            {itemCount} {itemLabel}
-            {selectedAlbumDurationLabel ? ` \u00b7 ${selectedAlbumDurationLabel}` : ''}
-          </span>
-          {shouldShowSourceFilters && (
-            <div className="library-source-filters" role="group" aria-label="Source filters">
-              <button
-                type="button"
-                className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
-                onClick={handleResetSourceFilters}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
-                onClick={() => handleToggleSourceFilter('local')}
-              >
-                Local
-              </button>
-              {sourceFilterOptions.map((source) => (
-                <button
-                  key={source.key}
-                  type="button"
-                  className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-                  onClick={() => handleToggleSourceFilter(source.key)}
-                >
-                  {source.label}
-                </button>
-              ))}
-            </div>
+              <span className="track-count">{itemCount} {itemLabel}</span>
+              {renderSourceFilters()}
+            </>
           )}
         </div>
-        <div className="library-header-right">
+        <div className={`library-header-right ${inDetailView ? 'library-detail-header-actions' : ''}`}>
           {isAlbumRootView && (
             <div className="library-album-view-controls">
               <button
@@ -1445,66 +1605,69 @@ export default function LibraryView() {
               </div>
             </div>
           )}
+          {inDetailView && (
+            <button
+              type="button"
+              className="icon-btn library-collection-action-btn library-play-btn"
+              onClick={() => {
+                void handlePlayTracklist()
+              }}
+              title="Play tracklist"
+              aria-label="Play tracklist"
+              disabled={isCollectionPlayDisabled}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              <span className="library-collection-action-label">Play</span>
+            </button>
+          )}
           {isTracklistContext && (
             <button
               type="button"
-              className={`icon-btn library-shuffle-btn ${isShufflePlayActive ? 'active' : ''}`}
-              onClick={() => {
-                void handleShufflePlayTracklist()
-              }}
-              title="Shuffle play tracklist"
-              aria-label="Shuffle play tracklist"
-              disabled={isShufflePlayDisabled}
+              className={`icon-btn library-shuffle-btn ${inDetailView ? 'library-collection-action-btn' : ''} ${shuffle ? 'active' : ''}`}
+              onClick={toggleShuffle}
+              title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+              aria-label="Shuffle"
+              aria-pressed={shuffle}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M16 3h5v5" />
                 <path d="M4 20 21 3" />
                 <path d="M21 16v5h-5" />
                 <path d="M15 15 21 21" />
                 <path d="M4 4 9 9" />
               </svg>
-              <span className="library-shuffle-btn-label">Shuffle all</span>
+              <span className="library-shuffle-btn-label">Shuffle</span>
             </button>
           )}
-          <div className="search-container">
-            <span className="search-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3.5-3.5" />
+          {selectedArtist && graphEnabled && (
+            <button
+              type="button"
+              className="icon-btn library-collection-action-btn library-detail-graph-btn"
+              onClick={handleOpenSelectedArtistInGraph}
+              title="Open in Graph"
+              aria-label="Open in Graph"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="5" cy="6" r="2.2" />
+                <circle cx="18.5" cy="5.5" r="2.2" />
+                <circle cx="12" cy="18" r="2.2" />
+                <path d="M7 7.2 10.5 16" />
+                <path d="m16.8 6.6-3.4 9.1" />
+                <path d="M7.3 6h9" />
               </svg>
-            </span>
-            <input
-              type="text"
-              className="search-input"
-              data-shortcut-search="true"
-              placeholder={searchPlaceholder}
-              aria-label={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            {searchQuery.length > 0 && (
-              <button
-                type="button"
-                className="search-clear-btn"
-                aria-label="Clear search"
-                title="Clear search"
-                onClick={() => setSearchQuery('')}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <button className="icon-btn" onClick={handleOpenFile} title="Open File">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
-            </svg>
-          </button>
+              <span className="library-collection-action-label">Graph</span>
+            </button>
+          )}
+          {!inDetailView && renderSearchControl()}
+          {!inDetailView && renderOpenFileControl()}
         </div>
       </div>
 
       {renderScanProgress()}
 
-      <div className="library-content">
+      <div className="library-content" onScrollCapture={handleLibraryContentScrollCapture}>
         {renderContent()}
       </div>
     </div>
