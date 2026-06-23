@@ -190,12 +190,12 @@ html.app-view-transition-active .app-view-transition-surface {
   mix-blend-mode: normal;
 }
 
-/* Clean dissolve: the outgoing view is held fully opaque underneath while the
-   incoming view fades in on top. Because there is always one solid layer, the
-   midpoint never washes out to a flash, and nothing translates — so it reads as
-   a dissolve rather than the weak half-slide a symmetric cross-fade produces. */
+/* Clean dissolve: the outgoing view fades out as the incoming one fades in,
+   with no transform so it reads as a dissolve rather than the weak half-slide a
+   drifting cross-fade produces. The old layer fades (rather than being held
+   opaque) so sparse content with transparent gaps can't bleed through it. */
 html.app-view-transition-active::view-transition-old(app-main-view) {
-  animation: none;
+  animation: astraSurfaceFadeOut var(--motion-view-fade-exit) ease-out both;
 }
 
 html.app-view-transition-active::view-transition-new(app-main-view) {
