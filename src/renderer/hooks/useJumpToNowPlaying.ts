@@ -246,7 +246,10 @@ export function useJumpToNowPlaying(): () => Promise<boolean> {
     }
 
     if (ui.jumpToPlayingDestination === 'smart-source') {
-      const sourceContext = player.autoQueueSourceContext
+      const currentItem = player.currentQueueItemId
+        ? player.queueItems.find((item) => item.queueId === player.currentQueueItemId)
+        : null
+      const sourceContext = currentItem?.origin === 'context' ? currentItem.sourceContext : null
       if (
         sourceContext?.type === 'playlist'
         && (sourceContext.playlistId > 0 || isSystemFavoritesPlaylistId(sourceContext.playlistId))

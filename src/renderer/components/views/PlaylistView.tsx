@@ -217,15 +217,15 @@ export default function PlaylistView() {
   const setActiveView = useUIStore((s) => s.setActiveView)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
   const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
-  const autoQueueSourcePlaylistId = usePlayerStore((s) => s.autoQueueSourcePlaylistId)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const queueSourcePlaylistId = usePlayerStore((s) => s.queueSourcePlaylistId)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
-  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths),
     [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
@@ -433,17 +433,20 @@ export default function PlaylistView() {
   const isShufflePlayActive = useMemo(() => {
     if (!shuffle) return false
     if (selectedPlaylistId === null) return false
-    if (autoQueueSourcePlaylistId !== selectedPlaylistId) return false
-    if (autoQueue.length === 0 || autoQueue.length !== displayPlayableTrackPaths.length) return false
+    if (queueSourcePlaylistId !== selectedPlaylistId) return false
+    const contextPaths = queueItems
+      .filter((item) => item.origin === 'context')
+      .map((item) => item.entry.path)
+    if (contextPaths.length === 0 || contextPaths.length !== displayPlayableTrackPaths.length) return false
 
-    for (let index = 0; index < autoQueue.length; index += 1) {
-      if (autoQueue[index]?.path !== displayPlayableTrackPaths[index]) {
+    for (let index = 0; index < contextPaths.length; index += 1) {
+      if (contextPaths[index] !== displayPlayableTrackPaths[index]) {
         return false
       }
     }
 
     return true
-  }, [autoQueue, autoQueueSourcePlaylistId, displayPlayableTrackPaths, selectedPlaylistId, shuffle])
+  }, [displayPlayableTrackPaths, queueItems, queueSourcePlaylistId, selectedPlaylistId, shuffle])
   const hasUnsavedReorderChanges = useMemo(() => {
     if (!isReorderMode || !reorderedEntries) return false
     if (reorderedEntries.length !== selectedPlaylistEntries.length) return true
@@ -615,18 +618,16 @@ export default function PlaylistView() {
       const randomStartIndex = Math.floor(Math.random() * displayPlayableTrackPaths.length)
       await startPlaybackContextByPaths(displayPlayableTrackPaths, randomStartIndex, {
         sourcePlaylistId: selectedPlaylistId,
-        contextLabel: playlistName ?? 'Playlist'
+        contextLabel: playlistName ?? 'Playlist',
+        shuffle: true
       })
-      if (!shuffle) {
-        toggleShuffle()
-      }
     } catch (error) {
       console.error('Failed to shuffle play playlist:', error)
     } finally {
       shufflePlayPendingRef.current = false
       setIsShufflePlayPending(false)
     }
-  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, startPlaybackContextByPaths])
 
   const handleToggleReorderMode = useCallback(() => {
     if (!canReorderTracks || isSavingReorder) return
@@ -790,6 +791,15 @@ export default function PlaylistView() {
                   onClick={() => {
                     void handleOpenPlaylist(entry.id)
                   }}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: entry.id, name: entry.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                 >
                   <PlaylistCover
                     hash={entry.cover_hash}
@@ -849,7 +859,24 @@ export default function PlaylistView() {
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
           </button>
-          <div className="playlist-header-cover-control" ref={coverControlRef}>
+          <div
+            className="playlist-header-cover-control"
+            ref={coverControlRef}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (selectedPlaylistId === null) return
+              openCollectionQueueMenu({
+                target: {
+                  kind: 'playlist',
+                  playlistId: selectedPlaylistId,
+                  name: playlistName ?? FAVORITES_PLAYLIST_NAME
+                },
+                x: event.clientX,
+                y: event.clientY
+              })
+            }}
+          >
             <PlaylistCover
               hash={playlistCoverHash}
               name={playlistName ?? FAVORITES_PLAYLIST_NAME}
@@ -901,7 +928,23 @@ export default function PlaylistView() {
               </>
             )}
           </div>
-          <div className="playlist-header-meta">
+          <div
+            className="playlist-header-meta"
+            onContextMenu={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (selectedPlaylistId === null) return
+              openCollectionQueueMenu({
+                target: {
+                  kind: 'playlist',
+                  playlistId: selectedPlaylistId,
+                  name: playlistName ?? FAVORITES_PLAYLIST_NAME
+                },
+                x: event.clientX,
+                y: event.clientY
+              })
+            }}
+          >
             {isRenaming ? (
               <input
                 className="playlist-rename-input"

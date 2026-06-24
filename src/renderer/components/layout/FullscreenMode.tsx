@@ -495,12 +495,8 @@ export default function FullscreenMode() {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
-  const currentTrackSource = usePlayerStore((s) => s.currentTrackSource)
-  const playbackFuture = usePlayerStore((s) => s.playbackFuture)
-  const userQueue = usePlayerStore((s) => s.userQueue)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
-  const autoQueueIndex = usePlayerStore((s) => s.autoQueueIndex)
-  const shuffledAutoIndices = usePlayerStore((s) => s.shuffledAutoIndices)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const upcomingQueueIds = usePlayerStore((s) => s.upcomingQueueIds)
   const togglePlay = usePlayerStore((s) => s.togglePlay)
   const playNext = usePlayerStore((s) => s.playNext)
   const playPrevious = usePlayerStore((s) => s.playPrevious)
@@ -534,15 +530,11 @@ export default function FullscreenMode() {
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
   const nextTrack = useMemo(() => usePlayerStore.getState().getResolvedNextTrack(), [
-    autoQueue,
-    autoQueueIndex,
     currentTrack,
-    currentTrackSource,
-    playbackFuture,
+    queueItems,
     repeat,
     shuffle,
-    shuffledAutoIndices,
-    userQueue
+    upcomingQueueIds
   ])
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
   const currentTrackId = currentTrack?.id ?? null

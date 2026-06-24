@@ -234,6 +234,7 @@ export default function LibraryView() {
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const graphEnabled = useGraphStore((s) => s.enabled)
   const openFocusedGraph = useGraphStore((s) => s.openFocusedGraph)
   const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
@@ -1124,6 +1125,20 @@ export default function LibraryView() {
                   'library-context-forward'
                 )
               }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openCollectionQueueMenu({
+                  target: {
+                    kind: 'album',
+                    album: album.album,
+                    artist: album.artist,
+                    identityKey: album.identity_key
+                  },
+                  x: event.clientX,
+                  y: event.clientY
+                })
+              }}
             >
               {album.is_new && (
                 <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
@@ -1206,6 +1221,20 @@ export default function LibraryView() {
                       () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
                       'library-context-forward'
                     )}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      openCollectionQueueMenu({
+                        target: {
+                          kind: 'album',
+                          album: album.album,
+                          artist: album.artist,
+                          identityKey: album.identity_key
+                        },
+                        x: event.clientX,
+                        y: event.clientY
+                      })
+                    }}
                   >
                     {album.is_new && (
                       <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
@@ -1389,7 +1418,23 @@ export default function LibraryView() {
           {inDetailView ? (
             <>
               {selectedAlbum && (
-                <div className="library-detail-artwork">
+                <div
+                  className="library-detail-artwork"
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: {
+                        kind: 'album',
+                        album: selectedAlbum.album,
+                        artist: selectedAlbum.artist,
+                        identityKey: selectedAlbum.identity_key
+                      },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
+                >
                   <AlbumArtwork
                     hash={selectedAlbumArtworkHash}
                     alt={`${selectedAlbum.album} artwork`}
@@ -1456,7 +1501,23 @@ export default function LibraryView() {
                 </div>
               )}
 
-              <div className="library-detail-copy">
+              <div
+                className="library-detail-copy"
+                onContextMenu={selectedAlbum ? (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openCollectionQueueMenu({
+                    target: {
+                      kind: 'album',
+                      album: selectedAlbum.album,
+                      artist: selectedAlbum.artist,
+                      identityKey: selectedAlbum.identity_key
+                    },
+                    x: event.clientX,
+                    y: event.clientY
+                  })
+                } : undefined}
+              >
                 <div className="library-detail-eyebrow-row">
                   <span className="library-detail-eyebrow">{selectedAlbum ? 'Album' : 'Artist'}</span>
                   {selectedAlbum?.is_new && (

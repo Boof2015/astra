@@ -793,6 +793,7 @@ export default function HomeView() {
   const activeView = useUIStore((s) => s.activeView)
   const homeGreetingTextMode = useUIStore((s) => s.homeGreetingTextMode)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const recentlyPlayed = useMemo(
@@ -1295,6 +1296,20 @@ export default function HomeView() {
                   key={album.identity_key}
                   className="home-album-card"
                   onClick={() => handleOpenAlbum(album)}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: {
+                        kind: 'album',
+                        album: album.album,
+                        artist: album.artist,
+                        identityKey: album.identity_key
+                      },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                 >
                   <div className="home-album-artwork">
                     {album.artwork_hash ? (
@@ -1354,6 +1369,15 @@ export default function HomeView() {
                   key={playlist.id}
                   className={`home-playlist-rail-card ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                 >
                   <PlaylistCover
                     hash={playlist.cover_hash}

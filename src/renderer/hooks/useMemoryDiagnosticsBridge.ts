@@ -317,10 +317,10 @@ export function useMemoryDiagnosticsBridge(): void {
           discordEnabled: useDiscordSettingsStore.getState().enabled,
           discordCoverArtEnabled: useDiscordSettingsStore.getState().coverArtEnabled,
           queue: {
-            userQueueCount: playerState.userQueue.length,
-            autoQueueCount: playerState.autoQueue.length,
+            userQueueCount: playerState.queueItems.filter((item) => item.origin === 'manual').length,
+            autoQueueCount: playerState.queueItems.filter((item) => item.origin === 'context').length,
             playbackHistoryCount: playerState.playbackHistory.length,
-            playbackFutureCount: playerState.playbackFuture.length,
+            playbackFutureCount: 0,
             shuffle: playerState.shuffle,
             repeat: playerState.repeat,
             retainedTrackCount: playerDiagnostics.retention.retainedTrackCount,

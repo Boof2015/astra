@@ -45,11 +45,30 @@ export interface QueueNowPlayingRevealRequest {
   id: number
 }
 
+export type CollectionQueueTarget =
+  | {
+      kind: 'album'
+      album: string
+      artist: string
+      identityKey?: string
+    }
+  | {
+      kind: 'playlist'
+      playlistId: number
+      name: string
+    }
+
+export interface CollectionQueueMenuRequest {
+  target: CollectionQueueTarget
+  x: number
+  y: number
+}
+
 export type TrackDragSurface = 'queue' | 'sidebar'
 
 export interface QueueTrackDragDropTarget {
   surface: 'queue'
-  kind: 'empty' | 'user'
+  kind: 'empty' | 'upcoming'
   index: number
 }
 
@@ -302,6 +321,7 @@ interface UIStore {
   pendingSettingsSection: SettingsSectionId | null
   trackDrag: TrackDragState | null
   sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
+  collectionQueueMenu: CollectionQueueMenuRequest | null
   setActiveView: (view: AppView) => void
   toggleQueue: () => void
   toggleInfoSidebar: () => void
@@ -350,6 +370,8 @@ interface UIStore {
   clearTrackDrag: () => void
   openSidebarPlaylistCreateRequest: (trackPaths: string[]) => void
   clearSidebarPlaylistCreateRequest: () => void
+  openCollectionQueueMenu: (request: CollectionQueueMenuRequest) => void
+  closeCollectionQueueMenu: () => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -377,6 +399,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   pendingSettingsSection: null,
   trackDrag: null,
   sidebarPlaylistCreateRequest: null,
+  collectionQueueMenu: null,
   setActiveView: (view) => {
     const sourceView = pendingActiveView ?? get().activeView
     if (sourceView === view) return
@@ -607,5 +630,13 @@ export const useUIStore = create<UIStore>((set, get) => ({
       trackPaths: [...trackPaths]
     }
   }),
-  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null })
+  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null }),
+  openCollectionQueueMenu: (request) => set({
+    collectionQueueMenu: {
+      target: request.target,
+      x: Number.isFinite(request.x) ? request.x : 0,
+      y: Number.isFinite(request.y) ? request.y : 0
+    }
+  }),
+  closeCollectionQueueMenu: () => set({ collectionQueueMenu: null })
 }))

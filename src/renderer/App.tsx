@@ -6,6 +6,7 @@ import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
+import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
@@ -339,6 +340,7 @@ function App() {
         <TrackIntegrityResultModal />
         <MetadataEditorPanel />
         <LyricsEditorPanel />
+        <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
       </div>
     </div>

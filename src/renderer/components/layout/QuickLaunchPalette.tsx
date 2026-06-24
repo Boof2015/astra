@@ -137,7 +137,7 @@ export default function QuickLaunchPalette() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
-  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
+  const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
@@ -600,7 +600,7 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        void enqueueUserTrackPaths([result.track.path], 'next')
+        void enqueueTrackPaths([result.track.path], 'next')
         closeQuickLaunch()
         return
       }
@@ -622,7 +622,7 @@ export default function QuickLaunchPalette() {
     }
   }, [
     clearPlaylistSelection,
-    enqueueUserTrackPaths,
+    enqueueTrackPaths,
     clearSelection,
     closeQuickLaunch,
     isExecuting,

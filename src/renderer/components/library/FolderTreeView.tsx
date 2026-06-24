@@ -304,8 +304,6 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const pruneFolderViewExpandedPaths = useLibraryStore((state) => state.pruneFolderViewExpandedPaths)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
-  const shuffle = usePlayerStore((state) => state.shuffle)
-  const toggleShuffle = usePlayerStore((state) => state.toggleShuffle)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
   const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
@@ -564,16 +562,13 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
       const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
       await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
-        contextLabel: node.name || node.fullPath
+        contextLabel: node.name || node.fullPath,
+        shuffle: true
       })
-
-      if (!shuffle) {
-        toggleShuffle()
-      }
     } catch (error) {
       console.error('Failed to shuffle folder playback:', error)
     }
-  }, [shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [startPlaybackContextByPaths])
 
   const handleOpenPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FolderTreeNode) => {
     event.stopPropagation()

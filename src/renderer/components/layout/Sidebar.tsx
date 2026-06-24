@@ -98,6 +98,7 @@ export default function Sidebar() {
   const setTrackDragDropTarget = useUIStore((s) => s.setTrackDragDropTarget)
   const sidebarPlaylistCreateRequest = useUIStore((s) => s.sidebarPlaylistCreateRequest)
   const clearSidebarPlaylistCreateRequest = useUIStore((s) => s.clearSidebarPlaylistCreateRequest)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const graphEnabled = useGraphStore((s) => s.enabled)
   const openFullMap = useGraphStore((s) => s.openFullMap)
   const playlists = usePlaylistStore((s) => s.playlists)
@@ -586,6 +587,16 @@ export default function Sidebar() {
                   key={playlist.id}
                   className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setIsOverflowOpen(false)
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                   aria-label={playlist.name}
                   data-sidebar-tooltip={playlist.name}
                   data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
@@ -687,6 +698,16 @@ export default function Sidebar() {
                   key={playlist.id}
                   className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${getSidebarDropClassName(`playlist:${playlist.id}`)}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setIsOverflowOpen(false)
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                   data-sidebar-drop-target="playlist"
                   data-sidebar-drop-playlist-id={playlist.id}
                 >

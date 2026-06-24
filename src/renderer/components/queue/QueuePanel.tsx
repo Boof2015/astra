@@ -25,26 +25,19 @@ interface QueueSectionRow {
   faded?: boolean
 }
 
-interface QueueBoundaryRow {
-  kind: 'boundary'
-  key: string
-  active: boolean
-  label: string | null
-}
-
 interface QueueTrackRow {
   kind: 'track'
   key: string
   track: Track
-  variant: 'current' | 'user' | 'auto' | 'previous'
-  source: 'user' | 'auto' | null
-  actualIndex: number | null
+  variant: 'current' | 'upcoming' | 'previous'
+  queueId: string | null
+  manual: boolean
   dragIndex: number | null
   draggable: boolean
   removable: boolean
 }
 
-type QueueVirtualRow = QueueSectionRow | QueueBoundaryRow | QueueTrackRow
+type QueueVirtualRow = QueueSectionRow | QueueTrackRow
 
 interface QueueRowSharedProps {
   rows: QueueVirtualRow[]
@@ -54,17 +47,16 @@ interface QueueRowSharedProps {
   currentLoadingPercent: number | null
   currentLoadingChunkCount: number
   formatDuration: (seconds: number) => string
-  onDragStart: (event: DragEvent<HTMLDivElement>, index: number) => void
+  onDragStart: (event: DragEvent<HTMLDivElement>, queueId: string, index: number) => void
   onDragOver: (event: DragEvent<HTMLDivElement>, index: number) => void
   onDragEnd: () => void
   onDragLeave: () => void
-  onPlayQueuedTrack: (source: 'user' | 'auto', index: number) => void
-  onRemoveUserTrack: (event: MouseEvent<HTMLButtonElement>, index: number) => void
+  onPlayQueuedTrack: (queueId: string) => void
+  onRemoveTrack: (event: MouseEvent<HTMLButtonElement>, queueId: string) => void
 }
 
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
 const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
-const QUEUE_BOUNDARY_ROW_HEIGHT_PX = 24
 const QUEUE_LIST_OVERSCAN_COUNT = 8
 const QUEUE_DRAG_SCROLL_EDGE_PX = 40
 
@@ -117,7 +109,7 @@ function QueueRowRenderer({
   onDragEnd,
   onDragLeave,
   onPlayQueuedTrack,
-  onRemoveUserTrack
+  onRemoveTrack
 }: RowComponentProps<QueueRowSharedProps>): ReactElement | null {
   const row = rows[index]
   if (!row) return null
@@ -133,21 +125,10 @@ function QueueRowRenderer({
     )
   }
 
-  if (row.kind === 'boundary') {
-    return (
-      <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
-        <div className={`queue-drop-boundary ${row.active ? 'queue-drop-boundary-active' : ''}`}>
-          <div className="queue-drop-boundary-line" />
-          {row.label && <span className="queue-drop-boundary-label">{row.label}</span>}
-        </div>
-      </div>
-    )
-  }
-
   const isReorderDragOver = row.dragIndex !== null && reorderDragOverIndex === row.dragIndex
-  const isExternalDropBefore = row.source === 'user' && row.actualIndex !== null && insertDropIndex === row.actualIndex
+  const isExternalDropBefore = row.variant === 'upcoming' && row.dragIndex !== null && insertDropIndex === row.dragIndex
   const isUnavailable = isUnavailableQueueTrack(row.track)
-  const canPlay = row.source !== null && row.actualIndex !== null && !isUnavailable
+  const canPlay = row.queueId !== null && row.variant === 'upcoming' && !isUnavailable
   const isLoadingRow = row.variant === 'current'
     && isCurrentLoading
     && row.track.sourceType !== undefined
@@ -170,11 +151,11 @@ function QueueRowRenderer({
           isExternalDropBefore ? 'queue-item-insert-before' : ''
         } ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
         draggable={row.draggable}
-        onDragStart={row.draggable && row.dragIndex !== null ? (event) => onDragStart(event, row.dragIndex!) : undefined}
+        onDragStart={row.draggable && row.dragIndex !== null && row.queueId ? (event) => onDragStart(event, row.queueId!, row.dragIndex!) : undefined}
         onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
         onDragEnd={row.draggable ? onDragEnd : undefined}
         onDragLeave={row.draggable ? onDragLeave : undefined}
-        onClick={canPlay && row.source && row.actualIndex !== null ? () => onPlayQueuedTrack(row.source!, row.actualIndex!) : undefined}
+        onClick={canPlay && row.queueId ? () => onPlayQueuedTrack(row.queueId!) : undefined}
       >
         {row.draggable && (
           <div className="queue-item-drag-handle">
@@ -188,6 +169,14 @@ function QueueRowRenderer({
             {isLoadingRow && (
               <span className="queue-item-loading-icon" title="Buffering track">
                 <span className="loading-spinner-small queue-item-loading-spinner" />
+              </span>
+            )}
+            {row.manual && (
+              <span className="queue-manual-badge" title="Queued by you" aria-label="Queued by you">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M4 6h10M4 12h7M4 18h6" />
+                  <path d="M18 13v8M14 17h8" />
+                </svg>
               </span>
             )}
             {sourceLabel && (
@@ -221,10 +210,10 @@ function QueueRowRenderer({
           )}
         </div>
         <div className="queue-item-duration">{formatDuration(row.track.duration)}</div>
-        {row.removable && row.actualIndex !== null && (
+        {row.removable && row.queueId && (
           <button
             className="queue-item-remove"
-            onClick={(event) => onRemoveUserTrack(event, row.actualIndex!)}
+            onClick={(event) => onRemoveTrack(event, row.queueId!)}
             title="Remove from queue"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -243,22 +232,17 @@ const QueueRow = memo(QueueRowRenderer) as (
 
 export default function QueuePanel() {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
-  const currentTrackSource = usePlayerStore((state) => state.currentTrackSource)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
-  const userQueue = usePlayerStore((state) => state.userQueue)
-  const autoQueue = usePlayerStore((state) => state.autoQueue)
-  const autoQueueIndex = usePlayerStore((state) => state.autoQueueIndex)
-  const autoQueueContextLabel = usePlayerStore((state) => state.autoQueueContextLabel)
+  const queueItems = usePlayerStore((state) => state.queueItems)
+  const upcomingQueueIds = usePlayerStore((state) => state.upcomingQueueIds)
   const shuffle = usePlayerStore((state) => state.shuffle)
-  const shuffledAutoIndices = usePlayerStore((state) => state.shuffledAutoIndices)
   const playbackHistory = usePlayerStore((state) => state.playbackHistory)
-  const getResolvedUserQueueEntries = usePlayerStore((state) => state.getResolvedUserQueueEntries)
-  const getResolvedAutoUpcomingEntries = usePlayerStore((state) => state.getResolvedAutoUpcomingEntries)
+  const getResolvedUpcomingEntries = usePlayerStore((state) => state.getResolvedUpcomingEntries)
   const getResolvedPreviousEntries = usePlayerStore((state) => state.getResolvedPreviousEntries)
-  const playQueuedTrack = usePlayerStore((state) => state.playQueuedTrack)
-  const removeUserTrack = usePlayerStore((state) => state.removeUserTrack)
-  const moveUserQueue = usePlayerStore((state) => state.moveUserQueue)
+  const playQueuedItem = usePlayerStore((state) => state.playQueuedItem)
+  const removeUpcomingItem = usePlayerStore((state) => state.removeUpcomingItem)
+  const moveUpcomingItem = usePlayerStore((state) => state.moveUpcomingItem)
   const clearAllQueues = usePlayerStore((state) => state.clearAllQueues)
   const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
   const trackDrag = useUIStore((state) => state.trackDrag)
@@ -267,6 +251,7 @@ export default function QueuePanel() {
   const clearQueueNowPlayingRevealRequest = useUIStore((state) => state.clearQueueNowPlayingRevealRequest)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dragQueueId, setDragQueueId] = useState<string | null>(null)
   const [reorderDragOverIndex, setReorderDragOverIndex] = useState<number | null>(null)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [queueItemRowHeight, setQueueItemRowHeight] = useState(QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX)
@@ -277,28 +262,16 @@ export default function QueuePanel() {
   const listRef = useRef<ListImperativeAPI>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
   const previousDragActiveRef = useRef(false)
-  const previousUserQueueLengthRef = useRef(userQueue.length)
+  const previousUpcomingLengthRef = useRef(upcomingQueueIds.length)
   const consumedQueueRevealRequestIdRef = useRef<number | null>(null)
   const settleTimerRef = useRef<number | null>(null)
-  const userQueueEntries = useMemo(
-    () => getResolvedUserQueueEntries(),
+  const upcomingEntries = useMemo(
+    () => getResolvedUpcomingEntries(),
     [
-      getResolvedUserQueueEntries,
+      getResolvedUpcomingEntries,
+      queueItems,
       trackCacheVersion,
-      userQueue
-    ]
-  )
-  const autoUpcomingEntries = useMemo(
-    () => getResolvedAutoUpcomingEntries(),
-    [
-      autoQueue,
-      autoQueueIndex,
-      currentTrack,
-      currentTrackSource,
-      getResolvedAutoUpcomingEntries,
-      shuffle,
-      shuffledAutoIndices,
-      trackCacheVersion
+      upcomingQueueIds
     ]
   )
   const previousEntries = useMemo(
@@ -390,7 +363,7 @@ export default function QueuePanel() {
     }
 
     const relativeY = drag.pointerY - rect.top + scrollElement.scrollTop
-    const hasVisibleQueue = Boolean(currentTrack) || userQueue.length > 0 || autoUpcomingEntries.length > 0
+    const hasVisibleQueue = Boolean(currentTrack) || upcomingEntries.length > 0
     if (!hasVisibleQueue) {
       setTrackDragDropTarget('queue', {
         surface: 'queue',
@@ -400,19 +373,19 @@ export default function QueuePanel() {
       return
     }
 
-    let userQueueStartOffset = 0
+    let upcomingStartOffset = 0
     if (currentTrack) {
-      userQueueStartOffset += queueSectionRowHeight + queueItemRowHeight
+      upcomingStartOffset += queueSectionRowHeight + queueItemRowHeight
     }
-    if (userQueue.length > 0) {
-      userQueueStartOffset += queueSectionRowHeight
+    if (upcomingEntries.length > 0) {
+      upcomingStartOffset += queueSectionRowHeight
     }
 
     let targetIndex = 0
-    if (userQueue.length > 0) {
-      const localY = relativeY - userQueueStartOffset
-      targetIndex = userQueue.length
-      for (let index = 0; index < userQueue.length; index += 1) {
+    if (upcomingEntries.length > 0) {
+      const localY = relativeY - upcomingStartOffset
+      targetIndex = upcomingEntries.length
+      for (let index = 0; index < upcomingEntries.length; index += 1) {
         const midpoint = index * queueItemRowHeight + queueItemRowHeight / 2
         if (localY < midpoint) {
           targetIndex = index
@@ -423,25 +396,24 @@ export default function QueuePanel() {
 
     setTrackDragDropTarget('queue', {
       surface: 'queue',
-      kind: 'user',
+      kind: 'upcoming',
       index: targetIndex
     })
   }, [
-    autoUpcomingEntries.length,
     currentTrack,
+    upcomingEntries.length,
     trackDrag,
     queueItemRowHeight,
     queueSectionRowHeight,
-    setTrackDragDropTarget,
-    userQueue.length
+    setTrackDragDropTarget
   ])
 
   useEffect(() => {
     const dragActive = Boolean(trackDrag)
     const hadDrag = previousDragActiveRef.current
-    const previousUserQueueLength = previousUserQueueLengthRef.current
+    const previousUpcomingLength = previousUpcomingLengthRef.current
 
-    if (hadDrag && !dragActive && userQueue.length > previousUserQueueLength) {
+    if (hadDrag && !dragActive && upcomingQueueIds.length > previousUpcomingLength) {
       setIsDropSettling(true)
       if (settleTimerRef.current !== null) {
         window.clearTimeout(settleTimerRef.current)
@@ -453,8 +425,8 @@ export default function QueuePanel() {
     }
 
     previousDragActiveRef.current = dragActive
-    previousUserQueueLengthRef.current = userQueue.length
-  }, [trackDrag, userQueue.length])
+    previousUpcomingLengthRef.current = upcomingQueueIds.length
+  }, [trackDrag, upcomingQueueIds.length])
 
   const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
@@ -465,7 +437,7 @@ export default function QueuePanel() {
 
   const insertDropIndex = trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty'
     ? 0
-    : trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'user'
+    : trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'upcoming'
       ? trackDrag.dropTarget.index
       : null
   const queueInsertTrackCount = trackDrag?.tracks.length ?? 0
@@ -489,65 +461,33 @@ export default function QueuePanel() {
         key: `track-current-${currentTrack.id}`,
         track: currentTrack,
         variant: 'current',
-        source: null,
-        actualIndex: null,
+        queueId: null,
+        manual: false,
         dragIndex: null,
         draggable: false,
         removable: false
       })
     }
 
-    if (userQueue.length > 0) {
+    if (upcomingEntries.length > 0) {
       nextRows.push({
         kind: 'section',
-        key: 'section-user-queue',
-        label: `Queued by You (${userQueue.length} ${userQueue.length === 1 ? 'track' : 'tracks'})`
-      })
-
-      userQueueEntries.forEach((entry) => {
-        nextRows.push({
-          kind: 'track',
-          key: `track-user-${entry.track.id}-${entry.index}`,
-          track: entry.track,
-          variant: 'user',
-          source: 'user',
-          actualIndex: entry.index,
-          dragIndex: entry.index,
-          draggable: true,
-          removable: true
-        })
-      })
-    }
-
-    if (autoUpcomingEntries.length > 0) {
-      nextRows.push({
-        kind: 'boundary',
-        key: 'boundary-user-auto',
-        active: insertDropIndex === userQueue.length,
-        label: insertDropIndex === userQueue.length
-          ? queueInsertTrackCount > 1
-            ? `Insert ${queueInsertTrackCount} tracks`
-            : 'Insert into your queue'
-          : null
-      })
-      nextRows.push({
-        kind: 'section',
-        key: 'section-auto-queue',
-        label: `Next From ${autoQueueContextLabel ?? 'Current Selection'} (${autoUpcomingEntries.length} ${autoUpcomingEntries.length === 1 ? 'track' : 'tracks'})`,
+        key: 'section-up-next',
+        label: `Up Next (${upcomingEntries.length})`,
         showShuffled: shuffle
       })
 
-      autoUpcomingEntries.forEach((entry) => {
+      upcomingEntries.forEach((entry) => {
         nextRows.push({
           kind: 'track',
-          key: `track-auto-${entry.track.id}-${entry.index}`,
+          key: `track-upcoming-${entry.queueId}`,
           track: entry.track,
-          variant: 'auto',
-          source: 'auto',
-          actualIndex: entry.index,
-          dragIndex: null,
-          draggable: false,
-          removable: false
+          variant: 'upcoming',
+          queueId: entry.queueId,
+          manual: entry.origin === 'manual',
+          dragIndex: entry.index,
+          draggable: true,
+          removable: true
         })
       })
     }
@@ -566,8 +506,8 @@ export default function QueuePanel() {
           key: `track-previous-${entry.track.id}-${entry.index}`,
           track: entry.track,
           variant: 'previous',
-          source: null,
-          actualIndex: null,
+          queueId: null,
+          manual: false,
           dragIndex: null,
           draggable: false,
           removable: false
@@ -577,15 +517,10 @@ export default function QueuePanel() {
 
     return nextRows
   }, [
-    autoQueueContextLabel,
-    autoUpcomingEntries,
     currentTrack,
-    insertDropIndex,
     previousEntries,
-    queueInsertTrackCount,
     shuffle,
-    userQueue,
-    userQueueEntries
+    upcomingEntries
   ])
 
   useEffect(() => {
@@ -616,7 +551,8 @@ export default function QueuePanel() {
     }
   }, [clearQueueNowPlayingRevealRequest, queueNowPlayingRevealRequest, queueItemRowHeight, queueSectionRowHeight, rows])
 
-  const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
+  const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, queueId: string, index: number) => {
+    setDragQueueId(queueId)
     setDragIndex(index)
     dragNodeRef.current = event.currentTarget
     event.dataTransfer.effectAllowed = 'move'
@@ -632,32 +568,32 @@ export default function QueuePanel() {
   }, [dragIndex])
 
   const handleDragEnd = useCallback(() => {
-    if (dragIndex !== null && reorderDragOverIndex !== null && dragIndex !== reorderDragOverIndex) {
-      moveUserQueue(dragIndex, reorderDragOverIndex)
+    if (dragQueueId && dragIndex !== null && reorderDragOverIndex !== null && dragIndex !== reorderDragOverIndex) {
+      moveUpcomingItem(dragQueueId, reorderDragOverIndex)
     }
     dragNodeRef.current?.classList.remove('dragging')
     setDragIndex(null)
+    setDragQueueId(null)
     setReorderDragOverIndex(null)
-  }, [dragIndex, moveUserQueue, reorderDragOverIndex])
+  }, [dragIndex, dragQueueId, moveUpcomingItem, reorderDragOverIndex])
 
   const handleDragLeave = useCallback(() => {
     setReorderDragOverIndex(null)
   }, [])
 
-  const handlePlayQueuedTrack = useCallback((source: 'user' | 'auto', index: number) => {
-    void playQueuedTrack({ source, index }, { manualStart: true })
-  }, [playQueuedTrack])
+  const handlePlayQueuedTrack = useCallback((queueId: string) => {
+    void playQueuedItem(queueId, { manualStart: true })
+  }, [playQueuedItem])
 
-  const handleRemoveUserTrack = useCallback((event: MouseEvent<HTMLButtonElement>, index: number) => {
+  const handleRemoveTrack = useCallback((event: MouseEvent<HTMLButtonElement>, queueId: string) => {
     event.stopPropagation()
-    removeUserTrack(index)
-  }, [removeUserTrack])
+    removeUpcomingItem(queueId)
+  }, [removeUpcomingItem])
 
   const resolveRowHeight = useCallback((index: number) => {
     const row = rows[index]
     if (!row) return queueItemRowHeight
     if (row.kind === 'section') return queueSectionRowHeight
-    if (row.kind === 'boundary') return QUEUE_BOUNDARY_ROW_HEIGHT_PX
     return queueItemRowHeight
   }, [queueItemRowHeight, queueSectionRowHeight, rows])
 
@@ -682,7 +618,7 @@ export default function QueuePanel() {
     onDragEnd: handleDragEnd,
     onDragLeave: handleDragLeave,
     onPlayQueuedTrack: handlePlayQueuedTrack,
-    onRemoveUserTrack: handleRemoveUserTrack
+    onRemoveTrack: handleRemoveTrack
   }), [
     rows,
     reorderDragOverIndex,
@@ -695,7 +631,7 @@ export default function QueuePanel() {
     handleDragEnd,
     handleDragLeave,
     handlePlayQueuedTrack,
-    handleRemoveUserTrack
+    handleRemoveTrack
   ])
 
   if (rows.length === 0) {

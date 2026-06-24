@@ -745,12 +745,10 @@ export default function TrackList({
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const remoteLoadProgress = usePlayerStore((state) => state.remoteLoadProgress)
-  const userQueue = usePlayerStore((state) => state.userQueue)
-  const autoQueue = usePlayerStore((state) => state.autoQueue)
-  const autoQueueSourcePlaylistId = usePlayerStore((state) => state.autoQueueSourcePlaylistId)
+  const queueItems = usePlayerStore((state) => state.queueItems)
+  const upcomingQueueIds = usePlayerStore((state) => state.upcomingQueueIds)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
-  const playQueuedTrack = usePlayerStore((state) => state.playQueuedTrack)
-  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
+  const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
   const trackDrag = useUIStore((state) => state.trackDrag)
   const startTrackDrag = useUIStore((state) => state.startTrackDrag)
@@ -957,7 +955,16 @@ export default function TrackList({
     }
   }, [])
 
-  const queuedTrackPaths = useMemo(() => new Set(userQueue.map((queuedTrack) => queuedTrack.path)), [userQueue])
+  const manualUpcomingItems = useMemo(() => {
+    const itemById = new Map(queueItems.map((item) => [item.queueId, item]))
+    return upcomingQueueIds
+      .map((queueId) => itemById.get(queueId))
+      .filter((item) => item?.origin === 'manual')
+  }, [queueItems, upcomingQueueIds])
+  const queuedTrackPaths = useMemo(
+    () => new Set(manualUpcomingItems.map((item) => item!.entry.path)),
+    [manualUpcomingItems]
+  )
   const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
   const renderedQueueTrackPaths = useMemo(() => tracks.map((track) => track.path), [tracks])
   const selectedQueueTracks = useMemo(
@@ -976,7 +983,7 @@ export default function TrackList({
     })
     return indexByPath
   }, [queueSeedTracks])
-  const nextQueuedTrackPath = userQueue[0]?.path ?? null
+  const nextQueuedTrackPath = manualUpcomingItems[0]?.entry.path ?? null
 
   const canRemoveFromPlaylist = playlistSourceId !== null && playlistSourceId > 0
   const currentTrackPath = currentTrack?.path ?? null
@@ -1122,22 +1129,12 @@ export default function TrackList({
       return
     }
 
-    const queueMatchesSeed = autoQueueSourcePlaylistId === playlistSourceId
-      && autoQueue.length === queueSeedTrackPaths.length
-      && autoQueue[queueSeedIndex]?.path === dbTrack.path
-      && autoQueue.every((track, autoIndex) => track?.path === queueSeedTrackPaths[autoIndex])
-    if (!queueMatchesSeed) {
-      await startPlaybackContextByPaths(queueSeedTrackPaths, queueSeedIndex, {
-        sourcePlaylistId: playlistSourceId,
-        sourceContext,
-        contextLabel: queueContextLabel
-      })
-      return
-    }
-    await playQueuedTrack({ source: 'auto', index: queueSeedIndex }, { manualStart: true })
+    await startPlaybackContextByPaths(queueSeedTrackPaths, queueSeedIndex, {
+      sourcePlaylistId: playlistSourceId,
+      sourceContext,
+      contextLabel: queueContextLabel
+    })
   }, [
-    autoQueue,
-    autoQueueSourcePlaylistId,
     playlistSourceId,
     sourceContext,
     queueSeedTrackPaths,
@@ -1145,23 +1142,22 @@ export default function TrackList({
     queueContextLabel,
     renderedQueueTrackPaths,
     selectedTrackPaths.size,
-    startPlaybackContextByPaths,
-    playQueuedTrack
+    startPlaybackContextByPaths
   ])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
     const trackPaths = resolveActionTrackPaths(dbTrack)
-    void enqueueUserTrackPaths(trackPaths, 'next')
+    void enqueueTrackPaths(trackPaths, 'next')
     setQueueActionFeedbackForPaths('next', trackPaths)
-  }, [enqueueUserTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
+  }, [enqueueTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
 
   const handleAddToQueue = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
     event.stopPropagation()
     const trackPaths = resolveActionTrackPaths(dbTrack)
-    void enqueueUserTrackPaths(trackPaths, 'end')
+    void enqueueTrackPaths(trackPaths, 'end')
     setQueueActionFeedbackForPaths('queue', trackPaths)
-  }, [enqueueUserTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
+  }, [enqueueTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
 
   const resolveQueueInsertHoverIndex = useCallback((clientX: number, clientY: number): number | null => {
     const target = document.elementFromPoint(clientX, clientY)
@@ -1298,7 +1294,7 @@ export default function TrackList({
       }
       if (dragState?.dropTarget && dragState.tracks.length > 0) {
         if (dragState.dropTarget.surface === 'queue') {
-          void enqueueUserTrackPaths(
+          void enqueueTrackPaths(
             dragState.tracks.map((track) => track.path),
             dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
           )
@@ -1350,7 +1346,7 @@ export default function TrackList({
     cleanupQueueInsertPointerState,
     clearTrackDrag,
     addToPlaylist,
-    enqueueUserTrackPaths,
+    enqueueTrackPaths,
     openSidebarPlaylistCreateRequest,
     renderedQueueTracks,
     resolveQueueInsertHoverIndex,
@@ -1472,18 +1468,18 @@ export default function TrackList({
   const handleContextPlayNext = useCallback(() => {
     if (!trackContextMenu) return
     const trackPaths = trackContextMenu.tracks.map((track) => track.path)
-    void enqueueUserTrackPaths(trackPaths, 'next')
+    void enqueueTrackPaths(trackPaths, 'next')
     setQueueActionFeedbackForPaths('next', trackPaths)
     setTrackContextMenu(null)
-  }, [enqueueUserTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])
+  }, [enqueueTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])
 
   const handleContextAddToQueue = useCallback(() => {
     if (!trackContextMenu) return
     const trackPaths = trackContextMenu.tracks.map((track) => track.path)
-    void enqueueUserTrackPaths(trackPaths, 'end')
+    void enqueueTrackPaths(trackPaths, 'end')
     setQueueActionFeedbackForPaths('queue', trackPaths)
     setTrackContextMenu(null)
-  }, [enqueueUserTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])
+  }, [enqueueTrackPaths, setQueueActionFeedbackForPaths, trackContextMenu])
 
   const handleOpenContextPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     if (!trackContextMenu) return
