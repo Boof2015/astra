@@ -782,12 +782,19 @@ export default function PlaylistView() {
           {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
 
           {allPlaylists.length > 0 ? (
-            <div className="playlist-browser-grid">
+            <div
+              className="playlist-browser-grid"
+              data-controller-group="playlist-browser"
+              data-controller-axis="grid"
+            >
               {allPlaylists.map((entry) => (
                 <button
                   key={entry.id}
                   type="button"
                   className="playlist-browser-card"
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`playlist:${entry.id}`}
                   onClick={() => {
                     void handleOpenPlaylist(entry.id)
                   }}

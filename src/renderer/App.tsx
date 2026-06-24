@@ -14,6 +14,8 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
+import ControllerHints from './components/layout/ControllerHints'
+import ControllerFocusRing from './components/layout/ControllerFocusRing'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -42,6 +44,7 @@ import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
+import { useControllerInput } from './hooks/useControllerInput'
 import { usePresence } from './hooks/usePresence'
 import type { Track } from './types/audio'
 
@@ -76,6 +79,7 @@ function App() {
 
   usePointerFocusCleanup()
   useKeyboardShortcuts()
+  const controllerInput = useControllerInput()
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
@@ -340,6 +344,8 @@ function App() {
         <LyricsEditorPanel />
         <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
+        <ControllerFocusRing active={controllerInput.active} />
+        <ControllerHints {...controllerInput} />
       </div>
     </div>
   )

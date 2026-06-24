@@ -1101,11 +1101,23 @@ export default function LibraryView() {
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
-        <div className="album-grid" ref={albumGridRef}>
+        <div
+          className="album-grid"
+          ref={albumGridRef}
+          data-controller-scroll
+          data-controller-group="library-albums"
+          data-controller-axis="grid"
+        >
           {filteredAlbums.map((album) => (
             <div
               key={album.identity_key}
               className="album-card"
+              data-controller-focusable="true"
+              data-controller-context="true"
+              data-controller-key={`album:${album.identity_key}`}
+              tabIndex={-1}
+              role="button"
+              aria-label={`Open ${album.album} by ${album.artist}`}
               onClick={() => {
                 albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
                 void runViewTransition(
@@ -1173,7 +1185,11 @@ export default function LibraryView() {
 
       return (
         <div className="library-artist-detail">
-          <section className="library-artist-rail">
+          <section
+            className="library-artist-rail"
+            data-controller-group="artist-albums"
+            data-controller-axis="horizontal"
+          >
             <div className="library-artist-rail-header">
               <h3>Discography</h3>
               <div className="library-artist-rail-action-row">
@@ -1205,6 +1221,9 @@ export default function LibraryView() {
                     key={album.identity_key}
                     type="button"
                     className="library-artist-rail-card"
+                    data-controller-focusable="true"
+                    data-controller-context="true"
+                    data-controller-key={`album:${album.identity_key}`}
                     onClick={() => void runViewTransition(
                       () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
                       'library-context-forward'
@@ -1524,27 +1543,31 @@ export default function LibraryView() {
             <>
               <h2>{title}</h2>
               {showViewTabs && (
-                <div className="view-tabs">
+                <div className="view-tabs" data-controller-tabstrip="library-view">
                   <button
                     className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
+                    data-controller-tab="tracks"
                     onClick={() => handleSelectViewMode('tracks')}
                   >
                     Tracks
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
+                    data-controller-tab="albums"
                     onClick={() => handleSelectViewMode('albums')}
                   >
                     Albums
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
+                    data-controller-tab="artists"
                     onClick={() => handleSelectViewMode('artists')}
                   >
                     Artists
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
+                    data-controller-tab="folders"
                     onClick={() => handleSelectViewMode('folders')}
                   >
                     Folders

@@ -79,7 +79,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'experimental',
     label: 'Experimental',
-    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail']
+    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail', 'controller', 'gamepad', 'xbox', 'playstation']
   },
   {
     id: 'info',

@@ -319,7 +319,14 @@ export default function TransportBar() {
   }
 
   return (
-    <div className={transportBarClassName}>
+    <div
+      className={transportBarClassName}
+      data-controller-region="true"
+      data-controller-region-id="transport"
+      data-controller-group="transport-items"
+      data-controller-axis="horizontal"
+      data-controller-auto-items="true"
+    >
       <button
         className={`pipeline-shelf-toggle${showPipelineShelf ? ' pipeline-shelf-toggle-open' : ''}`}
         onClick={togglePipelineShelf}
@@ -341,7 +348,14 @@ export default function TransportBar() {
 
       {/* Left: Track info */}
       <div className="transport-info">
-        <div className="transport-artwork" onClick={() => setFullscreen(true)}>
+        <div
+          className="transport-artwork"
+          onClick={() => setFullscreen(true)}
+          data-controller-focusable="true"
+          tabIndex={-1}
+          role="button"
+          aria-label="Open fullscreen player"
+        >
           {currentTrack?.artworkHash ? (
             <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
           ) : currentTrack?.artworkData ? (

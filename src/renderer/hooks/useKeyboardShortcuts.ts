@@ -1,9 +1,7 @@
 import { useEffect } from 'react'
 import type { InputActionId, InputBinding, RawBindingInput } from '../../types/inputBindings'
 import {
-  INPUT_ACTION_DEFINITIONS,
-  SEEK_STEP_SECONDS,
-  VOLUME_STEP
+  INPUT_ACTION_DEFINITIONS
 } from '../constants/keyboardShortcuts'
 import { dispatchInputCapture } from '../input/inputCapture'
 import {
@@ -12,38 +10,14 @@ import {
   isGlobalInputBindingEnabled,
   useInputBindingStore
 } from '../stores/inputBindingStore'
-import { usePlayerStore } from '../stores/playerStore'
-import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
+import { useUIStore } from '../stores/uiStore'
 import { inputBindingsEqual, keyboardEventToRawInput, normalizeRawKeyboardBinding } from '../utils/inputBindings'
-import { navigateInputBack, navigateInputForward } from '../utils/inputNavigation'
-import { useJumpToNowPlaying } from './useJumpToNowPlaying'
-
-const clamp = (value: number, min: number, max: number): number => {
-  return Math.min(max, Math.max(min, value))
-}
+import { useInputActionDispatcher } from './useInputActionDispatcher'
 
 const isShortcutBlockedTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) return false
   const tagName = target.tagName.toLowerCase()
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable
-}
-
-const isVisibleShortcutInput = (input: HTMLInputElement): boolean => {
-  if (input.disabled || input.readOnly || !input.isConnected) return false
-  if (input.type !== 'text' && input.type !== 'search') return false
-  const style = window.getComputedStyle(input)
-  if (style.display === 'none' || style.visibility === 'hidden') return false
-  return input.offsetParent !== null || style.position === 'fixed'
-}
-
-const focusShortcutSearchInput = (): boolean => {
-  const input = Array.from(
-    document.querySelectorAll<HTMLInputElement>('input[data-shortcut-search="true"]')
-  ).find(isVisibleShortcutInput)
-  if (!input) return false
-  input.focus()
-  input.setSelectionRange(input.value.length, input.value.length)
-  return true
 }
 
 interface ResolvedInputAction {
@@ -62,7 +36,7 @@ function resolveAction(binding: InputBinding): ResolvedInputAction | null {
 }
 
 export function useKeyboardShortcuts(): void {
-  const jumpToNowPlaying = useJumpToNowPlaying()
+  const executeAction = useInputActionDispatcher()
   const overrides = useInputBindingStore((state) => state.overrides)
   const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
   const globalRegistrationSuspended = useInputBindingStore((state) => state.globalRegistrationSuspended)
@@ -101,83 +75,7 @@ export function useKeyboardShortcuts(): void {
   }, [globalEnabled, globalRegistrationSuspended, overrides, setGlobalStatuses])
 
   useEffect(() => {
-    let pendingShortcutSeekTime: number | null = null
     let lastMouseInput: { button: 'back' | 'forward'; source: 'dom' | 'ipc'; at: number } | null = null
-
-    const seekByShortcut = (deltaSeconds: number): void => {
-      const player = usePlayerStore.getState()
-      const baseTime = pendingShortcutSeekTime ?? player.currentTime
-      const nextTime = clamp(baseTime + deltaSeconds, 0, player.duration)
-      pendingShortcutSeekTime = nextTime
-      void player.seek(nextTime).finally(() => {
-        if (pendingShortcutSeekTime === nextTime) pendingShortcutSeekTime = null
-      })
-    }
-
-    const executeAction = (actionId: InputActionId): void => {
-      const player = usePlayerStore.getState()
-      const ui = useUIStore.getState()
-      switch (actionId) {
-        case 'quick-launch-open':
-          ui.toggleQuickLaunch()
-          return
-        case 'keybinds-open':
-          ui.closeQuickLaunch()
-          ui.setPendingSettingsSection('keybinds')
-          ui.setActiveView('settings')
-          return
-        case 'ui-scale-increase':
-          ui.setUIScalePercent(getNextUIScalePercent(ui.uiScalePercent, 'increase'))
-          return
-        case 'ui-scale-decrease':
-          ui.setUIScalePercent(getNextUIScalePercent(ui.uiScalePercent, 'decrease'))
-          return
-        case 'ui-scale-reset':
-          ui.resetUIScalePercent()
-          return
-        case 'playback-toggle':
-          void player.togglePlay()
-          return
-        case 'seek-forward':
-          seekByShortcut(SEEK_STEP_SECONDS)
-          return
-        case 'seek-backward':
-          seekByShortcut(-SEEK_STEP_SECONDS)
-          return
-        case 'next-track':
-          void player.playNext()
-          return
-        case 'previous-track':
-          void player.playPrevious()
-          return
-        case 'volume-up':
-          player.setVolume(clamp(player.volume + VOLUME_STEP, 0, 1))
-          return
-        case 'volume-down':
-          player.setVolume(clamp(player.volume - VOLUME_STEP, 0, 1))
-          return
-        case 'jump-to-now-playing':
-          void jumpToNowPlaying()
-          return
-        case 'mute':
-          player.toggleMute()
-          return
-        case 'shuffle':
-          player.toggleShuffle()
-          return
-        case 'repeat':
-          player.toggleRepeat()
-          return
-        case 'focus-search-field':
-          focusShortcutSearchInput()
-          return
-        case 'navigate-back':
-          void navigateInputBack()
-          return
-        case 'navigate-forward':
-          void navigateInputForward()
-      }
-    }
 
     const handleRawInput = (
       input: RawBindingInput,
@@ -253,5 +151,5 @@ export function useKeyboardShortcuts(): void {
       unsubscribe?.()
       unsubscribeGlobalAction?.()
     }
-  }, [jumpToNowPlaying])
+  }, [executeAction])
 }

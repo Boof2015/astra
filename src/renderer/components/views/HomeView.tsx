@@ -1174,7 +1174,7 @@ export default function HomeView() {
 
   return (
     <div className="home-view">
-      <div className="home-content">
+      <div className="home-content" data-controller-scroll>
         <section ref={greetingCardRef} className={`home-greeting-card is-${greeting.bucket}`}>
           <canvas ref={skyCanvasRef} className="home-greeting-sky-canvas" aria-hidden="true" />
           <canvas ref={starCanvasRef} className="home-greeting-star-canvas" aria-hidden="true" />
@@ -1208,7 +1208,7 @@ export default function HomeView() {
           </div>
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-tracks" data-controller-axis="horizontal">
           <div className="home-section-header">
             <h2>RECENTLY PLAYED</h2>
           </div>
@@ -1219,6 +1219,11 @@ export default function HomeView() {
                   key={track.path}
                   className={`home-track-card ${currentTrackPath === track.path ? 'active' : ''}`}
                   onClick={() => handlePlayRecentList(track, index)}
+                  data-controller-focusable="true"
+                  data-controller-key={`home-track:${track.path}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Play ${track.title} by ${track.artist}`}
                 >
                   <div className="home-track-artwork">
                     {track.artwork_hash ? (
@@ -1239,7 +1244,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-artists" data-controller-axis="grid">
           <div className="home-section-header">
             <h2>RECENT ARTISTS</h2>
             <div className="home-section-actions">
@@ -1255,6 +1260,11 @@ export default function HomeView() {
                   key={artist.artist}
                   className="home-artist-chip"
                   onClick={() => handleOpenArtist(artist.artist)}
+                  data-controller-focusable="true"
+                  data-controller-key={`home-artist:${artist.artist}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${artist.artist}`}
                 >
                   <div className="home-artist-avatar">
                     {artist.artwork_hash ? (
@@ -1280,7 +1290,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-albums" data-controller-axis="grid">
           <div className="home-section-header">
             <h2>RECENT ALBUMS</h2>
             <div className="home-section-actions">
@@ -1296,6 +1306,12 @@ export default function HomeView() {
                   key={album.identity_key}
                   className="home-album-card"
                   onClick={() => handleOpenAlbum(album)}
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`home-album:${album.identity_key}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${album.album} by ${album.artist}`}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -1332,7 +1348,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-playlists" data-controller-axis="horizontal">
           <div className="home-section-header">
             <h2>PLAYLISTS</h2>
             <div className="home-section-actions">
@@ -1369,6 +1385,12 @@ export default function HomeView() {
                   key={playlist.id}
                   className={`home-playlist-rail-card ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`home-playlist:${playlist.id}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${playlist.name}`}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()

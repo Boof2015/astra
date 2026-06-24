@@ -27,6 +27,7 @@ export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
+export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
 
@@ -268,6 +269,22 @@ function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
   }
 }
 
+function readControllerSupportExperimentPreference(): boolean {
+  try {
+    return localStorage.getItem(CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistControllerSupportExperimentPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readJumpToPlayingDestinationPreference(): JumpToPlayingDestination {
   try {
     return normalizeJumpToPlayingDestination(localStorage.getItem(JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY))
@@ -290,6 +307,7 @@ const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
+const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 const MAX_VIEW_HISTORY_ENTRIES = 50
 let nextLibraryTrackRevealRequestId = 0
@@ -313,6 +331,7 @@ interface UIStore {
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
   activityIndicatorExperimentEnabled: boolean
+  controllerSupportEnabled: boolean
   jumpToPlayingDestination: JumpToPlayingDestination
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
@@ -349,6 +368,7 @@ interface UIStore {
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
+  setControllerSupportEnabled: (enabled: boolean) => void
   setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
   resetJumpToPlayingDestination: () => void
   toggleWaveformTimeDisplayMode: () => void
@@ -392,6 +412,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
+  controllerSupportEnabled: initialControllerSupportEnabled,
   jumpToPlayingDestination: initialJumpToPlayingDestination,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
@@ -546,6 +567,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
     const normalized = Boolean(enabled)
     persistActivityIndicatorExperimentPreference(normalized)
     set({ activityIndicatorExperimentEnabled: normalized })
+  },
+  setControllerSupportEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistControllerSupportExperimentPreference(normalized)
+    set({ controllerSupportEnabled: normalized })
   },
   setJumpToPlayingDestination: (destination) => {
     const normalized = normalizeJumpToPlayingDestination(destination)

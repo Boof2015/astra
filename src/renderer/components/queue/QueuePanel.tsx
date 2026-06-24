@@ -16,6 +16,11 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useUIStore } from '../../stores/uiStore'
 import { Track } from '../../types/audio'
+import {
+  CONTROLLER_VIRTUAL_MOVE_EVENT,
+  focusControllerTarget,
+  type ControllerVirtualMoveDetail
+} from '../../utils/controllerFocus'
 
 interface QueueSectionRow {
   kind: 'section'
@@ -150,6 +155,12 @@ function QueueRowRenderer({
         } ${isReorderDragOver ? 'queue-item-drag-over' : ''} ${
           isExternalDropBefore ? 'queue-item-insert-before' : ''
         } ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
+        data-controller-focusable={canPlay ? 'true' : undefined}
+        data-controller-key={row.queueId ? `queue:${row.queueId}` : undefined}
+        data-controller-index={index}
+        tabIndex={canPlay ? -1 : undefined}
+        role={canPlay ? 'button' : undefined}
+        aria-label={canPlay ? `Play ${row.track.title} by ${row.track.artist}` : undefined}
         draggable={row.draggable}
         onDragStart={row.draggable && row.dragIndex !== null && row.queueId ? (event) => onDragStart(event, row.queueId!, row.dragIndex!) : undefined}
         onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
@@ -261,6 +272,7 @@ export default function QueuePanel() {
   const dragNodeRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<ListImperativeAPI>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
+  const controllerGroupRef = useRef<HTMLDivElement | null>(null)
   const previousDragActiveRef = useRef(false)
   const previousUpcomingLengthRef = useRef(upcomingQueueIds.length)
   const consumedQueueRevealRequestIdRef = useRef<number | null>(null)
@@ -634,9 +646,54 @@ export default function QueuePanel() {
     handleRemoveTrack
   ])
 
+  useEffect(() => {
+    const group = controllerGroupRef.current
+    if (!group) return
+
+    let frameId = 0
+    const handleVirtualMove = (rawEvent: Event): void => {
+      const event = rawEvent as CustomEvent<ControllerVirtualMoveDetail>
+      const delta = event.detail.direction === 'up' ? -1 : 1
+      let nextIndex = event.detail.currentIndex + delta
+      while (nextIndex >= 0 && nextIndex < rows.length) {
+        const candidate = rows[nextIndex]
+        if (
+          candidate?.kind === 'track'
+          && candidate.queueId !== null
+          && candidate.variant === 'upcoming'
+          && !isUnavailableQueueTrack(candidate.track)
+        ) break
+        nextIndex += delta
+      }
+      if (nextIndex < 0 || nextIndex >= rows.length) return
+      event.preventDefault()
+      listRef.current?.scrollToRow({ index: nextIndex, align: 'center', behavior: 'auto' })
+
+      let attempts = 8
+      const focusMountedQueueItem = (): void => {
+        const target = queueContentRef.current?.querySelector<HTMLElement>(
+          `.queue-item[data-controller-index="${nextIndex}"]`
+        )
+        if (target) {
+          focusControllerTarget(target)
+          return
+        }
+        attempts -= 1
+        if (attempts > 0) frameId = window.requestAnimationFrame(focusMountedQueueItem)
+      }
+      frameId = window.requestAnimationFrame(focusMountedQueueItem)
+    }
+
+    group.addEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      group.removeEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    }
+  }, [rows])
+
   if (rows.length === 0) {
     return (
-      <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`}>
+      <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
         <div className="queue-header">
           <h3>Queue</h3>
         </div>
@@ -660,7 +717,7 @@ export default function QueuePanel() {
   const listHeight = listViewportHeight > 0 ? listViewportHeight : queueItemRowHeight * 8
 
   return (
-    <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`}>
+    <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
       <div className="queue-header">
         <h3>Queue</h3>
         <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
@@ -673,7 +730,7 @@ export default function QueuePanel() {
         </div>
       )}
 
-      <div className="queue-content" ref={queueContentRef}>
+      <div className="queue-content" ref={queueContentRef} data-controller-scroll>
         <div className={`queue-scroll-glow queue-scroll-glow-top ${queueScrollGlowEdge === 'top' ? 'active' : ''}`} />
         <div className={`queue-scroll-glow queue-scroll-glow-bottom ${queueScrollGlowEdge === 'bottom' ? 'active' : ''}`} />
         <List

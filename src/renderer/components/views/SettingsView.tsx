@@ -440,6 +440,8 @@ export default function SettingsView() {
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
+  const controllerSupportEnabled = useUIStore((state) => state.controllerSupportEnabled)
+  const setControllerSupportEnabled = useUIStore((state) => state.setControllerSupportEnabled)
   const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
   const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
   const setActiveView = useUIStore((state) => state.setActiveView)
@@ -2435,6 +2437,25 @@ export default function SettingsView() {
               <h3>Experimental</h3>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Controller Support</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Controller Support</span>
+                    <button
+                      className={`settings-toggle ${controllerSupportEnabled ? 'active' : ''}`}
+                      onClick={() => setControllerSupportEnabled(!controllerSupportEnabled)}
+                    >
+                      {controllerSupportEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Navigate Astra with an Xbox or PlayStation controller — D-pad/stick to move, A/Cross to select,
+                    bumpers for tabs, stick-clicks to jump to the sidebar or now playing. Early and still rough;
+                    feedback on what feels off is very welcome.
+                  </p>
+                </div>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Activity Indicator</div>
                 <div className="settings-grid">

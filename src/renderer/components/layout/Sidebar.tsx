@@ -559,19 +559,25 @@ export default function Sidebar() {
   return (
     <aside
       className="sidebar"
+      data-controller-region="true"
+      data-controller-region-id="sidebar"
+      data-controller-group="sidebar-items"
+      data-controller-axis="vertical"
+      data-controller-auto-items="true"
       onPointerOver={handleSidebarTooltipPointerOver}
       onPointerOut={handleSidebarTooltipPointerOut}
       onFocus={handleSidebarTooltipFocus}
       onBlur={handleSidebarTooltipBlur}
     >
-      <div className="sidebar-scroll-area">
-        <nav className="sidebar-nav">
+      <div className="sidebar-scroll-area" data-controller-scroll>
+        <nav className="sidebar-nav" data-controller-tabstrip="sidebar-nav">
           {navItems.map((item) => (
             <button
               key={item.id}
               className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
               onClick={() => handleNavClick(item.id)}
               aria-label={item.label}
+              data-controller-tab={item.id}
               data-sidebar-tooltip={item.label}
             >
               {item.icon}
@@ -598,6 +604,7 @@ export default function Sidebar() {
                     })
                   }}
                   aria-label={playlist.name}
+                  data-controller-context={!playlist.isSystemFavorites ? 'true' : undefined}
                   data-sidebar-tooltip={playlist.name}
                   data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
                   data-sidebar-drop-playlist-id={!playlist.isSystemFavorites ? playlist.id : undefined}
@@ -709,6 +716,7 @@ export default function Sidebar() {
                     })
                   }}
                   data-sidebar-drop-target="playlist"
+                  data-controller-context="true"
                   data-sidebar-drop-playlist-id={playlist.id}
                 >
                   <PlaylistCover

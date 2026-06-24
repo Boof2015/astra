@@ -2991,6 +2991,102 @@ html.app-view-transition-active::view-transition-new(app-main-view) {
 }
 
 /* ============================================
+   Controller navigation
+   ============================================ */
+/* In controller mode the floating ring is the sole focus indicator, so suppress the native
+   (user-agent / OS-accent) focus outline on focused controller targets. */
+html[data-input-modality='controller'] [data-controller-region='true'] :focus,
+html[data-input-modality='controller'] [data-controller-region='true'] :focus-visible,
+html[data-input-modality='controller'] [data-controller-scope='overlay'] :focus,
+html[data-input-modality='controller'] [data-controller-scope='overlay'] :focus-visible,
+html[data-input-modality='controller'] .modal-overlay :focus,
+html[data-input-modality='controller'] .modal-overlay :focus-visible,
+html[data-input-modality='controller'] .track-context-menu :focus,
+html[data-input-modality='controller'] .track-context-menu :focus-visible,
+html[data-input-modality='controller'] .sidebar-playlist-popout :focus,
+html[data-input-modality='controller'] .sidebar-playlist-popout :focus-visible {
+  outline: none !important;
+}
+
+/* Floating controller highlight that glides between focus targets (see ControllerFocusRing). */
+.controller-focus-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 9000;
+  pointer-events: none;
+  border-radius: 10px;
+  opacity: 0;
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 0 5px rgba(var(--accent-rgb), 0.22),
+    0 0 26px rgba(var(--accent-rgb), 0.4);
+  will-change: transform, width, height;
+}
+
+.controller-focus-ring.is-visible {
+  opacity: 1;
+}
+
+html[data-input-modality='controller'] .transport-artwork:focus .transport-artwork-overlay {
+  opacity: 1;
+}
+
+html[data-input-modality='controller'] .track-row:focus,
+html[data-input-modality='controller'] .queue-item:focus {
+  background: rgba(var(--accent-rgb), 0.12) !important;
+}
+
+.controller-hints {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--now-playing-height) + 12px);
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 7px 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.25);
+  border-radius: 999px;
+  background: rgba(5, 5, 5, 0.9);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.controller-hints span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.controller-hints kbd {
+  min-width: 19px;
+  padding: 4px 6px;
+  border: 1px solid rgba(var(--accent-rgb), 0.38);
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  font: inherit;
+  text-align: center;
+}
+
+body:has(.fullscreen-overlay) .controller-hints {
+  bottom: 18px;
+}
+
+/* ============================================
    Audio Pipeline Shelf
    ============================================ */
 .pipeline-shelf {

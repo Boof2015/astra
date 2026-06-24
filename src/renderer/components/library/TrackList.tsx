@@ -17,6 +17,11 @@ import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import {
+  CONTROLLER_VIRTUAL_MOVE_EVENT,
+  focusControllerTarget,
+  type ControllerVirtualMoveDetail
+} from '../../utils/controllerFocus'
 
 interface DbTrack {
   id: number
@@ -493,6 +498,13 @@ function TrackListRowRenderer({
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
         data-track-index={trackIndex}
+        data-controller-focusable="true"
+        data-controller-context={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : 'true'}
+        data-controller-key={`track:${track.path}`}
+        data-controller-index={trackIndex}
+        tabIndex={-1}
+        role="button"
+        aria-label={`${track.title} by ${track.artist}`}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
         onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track)}
@@ -797,6 +809,7 @@ export default function TrackList({
   const queueInsertPointerStateRef = useRef<TrackSelectionPointerState | null>(null)
   const suppressQueueInsertClickRef = useRef(false)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
+  const controllerGroupRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<ListImperativeAPI>(null)
   const playlistPopupRef = useRef<HTMLDivElement | null>(null)
   const playlistPopupTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -818,6 +831,53 @@ export default function TrackList({
     })
     return indexByPath
   }, [tracks, virtualRows])
+
+  useEffect(() => {
+    const group = controllerGroupRef.current
+    if (!group) return
+
+    let frameId = 0
+    const handleVirtualMove = (rawEvent: Event): void => {
+      const event = rawEvent as CustomEvent<ControllerVirtualMoveDetail>
+      const delta = event.detail.direction === 'up' ? -1 : 1
+      const nextTrackIndex = event.detail.currentIndex + delta
+      if (nextTrackIndex < 0 || nextTrackIndex >= tracks.length) return
+      const nextTrack = tracks[nextTrackIndex]
+      const targetVirtualIndex = nextTrack
+        ? virtualRowIndexByTrackPath.get(nextTrack.path)
+        : undefined
+      if (targetVirtualIndex === undefined) return
+      event.preventDefault()
+
+      if (!externalScroll) {
+        listRef.current?.scrollToRow({
+          index: targetVirtualIndex,
+          align: 'center',
+          behavior: 'auto'
+        })
+      }
+
+      let attempts = 8
+      const focusMountedRow = (): void => {
+        const row = listBodyRef.current?.querySelector<HTMLElement>(
+          `.track-row[data-track-index="${nextTrackIndex}"]`
+        )
+        if (row) {
+          focusControllerTarget(row)
+          return
+        }
+        attempts -= 1
+        if (attempts > 0) frameId = window.requestAnimationFrame(focusMountedRow)
+      }
+      frameId = window.requestAnimationFrame(focusMountedRow)
+    }
+
+    group.addEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      group.removeEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    }
+  }, [externalScroll, tracks, virtualRowIndexByTrackPath])
 
   const clearQueueInsertPointerListeners = useCallback(() => {
     queueInsertPointerCleanupRef.current?.()
@@ -1895,7 +1955,13 @@ export default function TrackList({
   }
 
   return (
-    <div className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}>
+    <div
+      className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
+      ref={controllerGroupRef}
+      data-controller-group="tracks"
+      data-controller-axis="vertical"
+      data-controller-virtual="true"
+    >
       <div className="track-list-header">
         {canResetDefaultOrder ? (
           <div className="track-col track-col-num">
@@ -1921,7 +1987,11 @@ export default function TrackList({
         {renderSortableHeader('duration', 'Length', 'track-col-duration')}
         <div className="track-col track-col-actions" />
       </div>
-      <div className={`track-list-body ${externalScroll ? 'track-list-body-external-scroll' : ''}`} ref={listBodyRef}>
+      <div
+        className={`track-list-body ${externalScroll ? 'track-list-body-external-scroll' : ''}`}
+        ref={listBodyRef}
+        data-controller-scroll
+      >
         <List
           className="track-list-virtualized"
           defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}

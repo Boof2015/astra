@@ -1,8 +1,13 @@
-import { CSSProperties, memo, ReactElement, Ref, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, memo, ReactElement, Ref, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, List, type CellComponentProps, type GridImperativeAPI, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import type { ArtworkVariant } from '../../stores/libraryStore'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
 import AlbumArtwork from './AlbumArtwork'
+import {
+  CONTROLLER_VIRTUAL_MOVE_EVENT,
+  focusControllerTarget,
+  type ControllerVirtualMoveDetail
+} from '../../utils/controllerFocus'
 
 interface ArtistRecord {
   artist: string
@@ -109,6 +114,12 @@ function ArtistListRowRenderer({
     <div className="artist-list-item" style={style as CSSProperties} {...ariaAttributes}>
       <div
         className="artist-item"
+        data-controller-focusable="true"
+        data-controller-key={`artist:${artist.artist}`}
+        data-controller-index={index}
+        tabIndex={-1}
+        role="button"
+        aria-label={`Open ${artist.artist}`}
         onClick={() => {
           void onSelectArtist(artist.artist)
         }}
@@ -141,6 +152,7 @@ function ArtistGridCellRenderer({
   onSelectArtist
 }: CellComponentProps<ArtistGridCellSharedProps>): ReactElement | null {
   const artist = artists[(rowIndex * columnCount) + columnIndex]
+  const artistIndex = (rowIndex * columnCount) + columnIndex
 
   if (!artist) {
     return <div className="artist-grid-cell artist-grid-cell-empty" style={style as CSSProperties} {...ariaAttributes} />
@@ -151,6 +163,9 @@ function ArtistGridCellRenderer({
       <button
         type="button"
         className="artist-grid-card"
+        data-controller-focusable="true"
+        data-controller-key={`artist:${artist.artist}`}
+        data-controller-index={artistIndex}
         onClick={() => {
           void onSelectArtist(artist.artist)
         }}
@@ -257,6 +272,50 @@ export default function ArtistList({
     onSelectArtist
   }), [artists, gridLayout.columnCount, onSelectArtist])
 
+  useEffect(() => {
+    const group = listBodyRef.current
+    if (!group) return
+
+    let frameId = 0
+    const handleVirtualMove = (rawEvent: Event): void => {
+      const event = rawEvent as CustomEvent<ControllerVirtualMoveDetail>
+      const step = viewMode === 'grid' ? gridLayout.columnCount : 1
+      const nextIndex = event.detail.currentIndex + (event.detail.direction === 'up' ? -step : step)
+      if (nextIndex < 0 || nextIndex >= artists.length) return
+      event.preventDefault()
+
+      if (viewMode === 'grid') {
+        gridApiRef.current?.scrollToRow({
+          index: Math.floor(nextIndex / gridLayout.columnCount),
+          align: 'center',
+          behavior: 'auto'
+        })
+      } else {
+        listApiRef.current?.scrollToRow({ index: nextIndex, align: 'center', behavior: 'auto' })
+      }
+
+      let attempts = 8
+      const focusMountedArtist = (): void => {
+        const target = listBodyRef.current?.querySelector<HTMLElement>(
+          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
+        )
+        if (target) {
+          focusControllerTarget(target)
+          return
+        }
+        attempts -= 1
+        if (attempts > 0) frameId = window.requestAnimationFrame(focusMountedArtist)
+      }
+      frameId = window.requestAnimationFrame(focusMountedArtist)
+    }
+
+    group.addEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      group.removeEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
+    }
+  }, [artists.length, gridLayout.columnCount, viewMode])
+
   const viewportHeight = viewportSize.height > 0 ? viewportSize.height : artistRowHeight
 
   if (artists.length === 0) {
@@ -265,7 +324,14 @@ export default function ArtistList({
 
   if (viewMode === 'grid') {
     return (
-      <div className="artist-list artist-list-grid-mode" ref={listBodyRef}>
+      <div
+        className="artist-list artist-list-grid-mode"
+        ref={listBodyRef}
+        data-controller-scroll
+        data-controller-group="library-artists"
+        data-controller-axis="grid"
+        data-controller-virtual="true"
+      >
         <Grid
           cellComponent={ArtistGridCell}
           cellProps={gridProps}
@@ -285,7 +351,14 @@ export default function ArtistList({
   }
 
   return (
-    <div className="artist-list" ref={listBodyRef}>
+    <div
+      className="artist-list"
+      ref={listBodyRef}
+      data-controller-scroll
+      data-controller-group="library-artists"
+      data-controller-axis="vertical"
+      data-controller-virtual="true"
+    >
       <List
         className="artist-list-virtualized"
         defaultHeight={ARTIST_ROW_HEIGHT_FALLBACK_PX * 8}
