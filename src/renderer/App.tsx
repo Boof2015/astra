@@ -10,7 +10,6 @@ import CollectionQueueContextMenu from './components/queue/CollectionQueueContex
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
-import KeyboardShortcutsModal from './components/layout/KeyboardShortcutsModal'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
@@ -88,7 +87,7 @@ function App() {
 
   const showQueue = useUIStore((s) => s.showQueue)
   const activeView = useUIStore((s) => s.activeView)
-  const setActiveView = useUIStore((s) => s.setActiveView)
+  const replaceActiveView = useUIStore((s) => s.replaceActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
@@ -120,9 +119,9 @@ function App() {
 
   useEffect(() => {
     if (activeView === 'graph' && !graphEnabled) {
-      setActiveView('home')
+      replaceActiveView('home')
     }
-  }, [activeView, graphEnabled, setActiveView])
+  }, [activeView, graphEnabled, replaceActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {
@@ -335,7 +334,6 @@ function App() {
         <AssociatedOpenCue />
         <UpdateAvailableCue />
         <QuickLaunchPalette />
-        <KeyboardShortcutsModal />
         <LibraryIntegrityPanel />
         <TrackIntegrityResultModal />
         <MetadataEditorPanel />

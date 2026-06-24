@@ -25,7 +25,7 @@ const ARTIST_RESULT_LIMIT = 4
 const PLAYLIST_RESULT_LIMIT = 4
 const EMPTY_RECENT_TRACKS_LIMIT = 3
 const EMPTY_SHORTCUT_NAV_IDS = ['nav:eq', 'nav:library'] as const
-const EMPTY_SHORTCUT_SETTING_IDS = ['library', 'playback'] as const
+const EMPTY_SHORTCUT_SETTING_IDS = ['keybinds', 'playback'] as const
 const QUICK_LAUNCH_TRACK_PAGE_LIMIT = 500
 
 interface ResultGroup {

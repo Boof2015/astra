@@ -80,7 +80,7 @@ import type {
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { UIScaleShortcutAction } from '../types/uiScale'
+import type { RawBindingInput } from '../types/inputBindings'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -247,8 +247,8 @@ declare global {
             theme: {
                 setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
             }
-            uiScale: {
-                onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
+            inputBindings: {
+                onInput: (callback: (input: RawBindingInput) => void) => () => void
             }
             discord: {
                 configure: (options: { enabled: boolean; coverArtEnabled: boolean; smallIconEnabled?: boolean; compactStatusMode?: 'title' | 'artist'; expandedInfoMode?: 'file-info' | 'album'; linkDestination?: 'off' | 'ytmusic' | 'lastfm'; pauseClearMinutes?: number }) => Promise<{ ok: boolean; connected: boolean; message: string }>

@@ -53,6 +53,11 @@ export const SETTINGS_SECTIONS = [
     keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
   },
   {
+    id: 'keybinds',
+    label: 'Keybinds',
+    keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls']
+  },
+  {
     id: 'integrations',
     label: 'Integrations',
     keywords: [

@@ -140,7 +140,6 @@ import {
   type LastFmServiceConfig
 } from '../types/lastFm'
 import type { LyricsFormat, LyricsTrackQuery } from '../types/lyrics'
-import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -175,7 +174,7 @@ import type {
   IntegrityScanScope,
   IntegrityScanSummary
 } from '../types/libraryIntegrity'
-import { resolveUIScaleShortcutAction } from './uiScaleShortcuts'
+import { resolveInterceptedKeyboardInput, resolveMouseAppCommand } from './inputBindings'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -3126,6 +3125,13 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  mainWindow.on('app-command', (event, command) => {
+    const input = resolveMouseAppCommand(command)
+    if (!input) return
+    event.preventDefault()
+    mainWindow?.webContents.send('input-bindings:input', input)
+  })
+
   mainWindow.on('move', schedulePersistMainWindowPrefs)
   mainWindow.on('resize', schedulePersistMainWindowPrefs)
   mainWindow.on('maximize', schedulePersistMainWindowPrefs)
@@ -3158,12 +3164,12 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    const action: UIScaleShortcutAction | null = resolveUIScaleShortcutAction(input, process.platform)
-    if (!action) return
+    const interceptedInput = resolveInterceptedKeyboardInput(input, process.platform)
+    if (!interceptedInput) return
 
     event.preventDefault()
     mainWindow?.webContents.setZoomLevel(0)
-    mainWindow?.webContents.send('ui-scale:shortcut', action)
+    mainWindow?.webContents.send('input-bindings:input', interceptedInput)
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {

@@ -43,13 +43,33 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
 })
 
 test('setActiveView commits navigation when the View Transition API is unavailable', () => {
-  useUIStore.setState({ activeView: 'home' })
+  useUIStore.setState({ activeView: 'home', viewBackHistory: [], viewForwardHistory: [] })
 
   useUIStore.getState().setActiveView('library')
   assert.equal(useUIStore.getState().activeView, 'library')
 
   useUIStore.getState().setActiveView('home')
   assert.equal(useUIStore.getState().activeView, 'home')
+})
+
+test('view navigation tracks back and forward history and clears forward on fresh navigation', () => {
+  useUIStore.setState({ activeView: 'home', viewBackHistory: [], viewForwardHistory: [] })
+
+  useUIStore.getState().setActiveView('library')
+  useUIStore.getState().setActiveView('settings')
+  assert.deepEqual(useUIStore.getState().viewBackHistory, ['home', 'library'])
+
+  assert.equal(useUIStore.getState().navigateViewBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'library')
+  assert.deepEqual(useUIStore.getState().viewForwardHistory, ['settings'])
+
+  assert.equal(useUIStore.getState().navigateViewForward(), true)
+  assert.equal(useUIStore.getState().activeView, 'settings')
+
+  useUIStore.getState().navigateViewBack()
+  useUIStore.getState().setActiveView('playlist')
+  assert.deepEqual(useUIStore.getState().viewForwardHistory, [])
+  assert.equal(useUIStore.getState().navigateViewForward(), false)
 })
 
 test('jump to playing destination updates state and persists to localStorage', () => {

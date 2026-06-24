@@ -6,6 +6,7 @@ import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
+import KeybindSettings from '../settings/KeybindSettings'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -432,7 +433,6 @@ export default function SettingsView() {
   })
   const developerRevealClickCountRef = useRef(0)
   const developerRevealResetTimeoutRef = useRef<number | null>(null)
-  const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
@@ -1928,6 +1928,8 @@ export default function SettingsView() {
           </section>
             )}
 
+            {activeSectionId === 'keybinds' && <KeybindSettings />}
+
             {activeSectionId === 'integrations' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
@@ -2695,15 +2697,6 @@ export default function SettingsView() {
                   {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
                 </p>
               </div>
-            </div>
-            <div className="settings-actions settings-info-actions">
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={openKeyboardShortcuts}
-              >
-                Keyboard Shortcuts
-              </button>
             </div>
             <div className="settings-info-panels">
               <div className="settings-info-panel">

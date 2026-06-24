@@ -86,7 +86,7 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { UIScaleShortcutAction } from '../types/uiScale'
+import type { RawBindingInput } from '../types/inputBindings'
 import type {
   IntegrityFinding,
   IntegrityScanMode,
@@ -718,11 +718,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
   },
 
-  uiScale: {
-    onShortcut: (callback: (action: UIScaleShortcutAction) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, action: UIScaleShortcutAction) => callback(action)
-      ipcRenderer.on('ui-scale:shortcut', handler)
-      return () => ipcRenderer.removeListener('ui-scale:shortcut', handler)
+  inputBindings: {
+    onInput: (callback: (input: RawBindingInput) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, input: RawBindingInput) => callback(input)
+      ipcRenderer.on('input-bindings:input', handler)
+      return () => ipcRenderer.removeListener('input-bindings:input', handler)
     }
   },
 
@@ -1175,8 +1175,8 @@ declare global {
       theme: {
         setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
       }
-      uiScale: {
-        onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
+      inputBindings: {
+        onInput: (callback: (input: RawBindingInput) => void) => () => void
       }
 
       // Integrations

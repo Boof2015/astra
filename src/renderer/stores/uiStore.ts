@@ -291,6 +291,7 @@ const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
+const MAX_VIEW_HISTORY_ENTRIES = 50
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
@@ -298,6 +299,8 @@ let pendingActiveView: AppView | null = null
 
 interface UIStore {
   activeView: AppView
+  viewBackHistory: AppView[]
+  viewForwardHistory: AppView[]
   showQueue: boolean
   showInfoSidebar: boolean
   showPipelineShelf: boolean
@@ -316,13 +319,15 @@ interface UIStore {
   playlistTrackRevealRequest: PlaylistTrackRevealRequest | null
   queueNowPlayingRevealRequest: QueueNowPlayingRevealRequest | null
   isQuickLaunchOpen: boolean
-  isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
   trackDrag: TrackDragState | null
   sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
   collectionQueueMenu: CollectionQueueMenuRequest | null
   setActiveView: (view: AppView) => void
+  replaceActiveView: (view: AppView) => void
+  navigateViewBack: () => boolean
+  navigateViewForward: () => boolean
   toggleQueue: () => void
   toggleInfoSidebar: () => void
   togglePipelineShelf: () => void
@@ -356,9 +361,6 @@ interface UIStore {
   openQuickLaunch: () => void
   closeQuickLaunch: () => void
   toggleQuickLaunch: () => void
-  openKeyboardShortcuts: () => void
-  closeKeyboardShortcuts: () => void
-  toggleKeyboardShortcuts: () => void
   setPendingLibrarySearchQuery: (query: string | null) => void
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
@@ -376,6 +378,8 @@ interface UIStore {
 
 export const useUIStore = create<UIStore>((set, get) => ({
   activeView: 'home',
+  viewBackHistory: [],
+  viewForwardHistory: [],
   showQueue: false,
   showInfoSidebar: false,
   showPipelineShelf: false,
@@ -394,7 +398,6 @@ export const useUIStore = create<UIStore>((set, get) => ({
   playlistTrackRevealRequest: null,
   queueNowPlayingRevealRequest: null,
   isQuickLaunchOpen: false,
-  isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
   trackDrag: null,
@@ -407,8 +410,54 @@ export const useUIStore = create<UIStore>((set, get) => ({
     runAppViewTransition(() => {
       if (pendingActiveView !== view) return
       pendingActiveView = null
+      set((state) => state.activeView === view ? state : {
+        activeView: view,
+        viewBackHistory: [...state.viewBackHistory, state.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
+        viewForwardHistory: []
+      })
+    })
+  },
+  replaceActiveView: (view) => {
+    const sourceView = pendingActiveView ?? get().activeView
+    if (sourceView === view) return
+    pendingActiveView = view
+    runAppViewTransition(() => {
+      if (pendingActiveView !== view) return
+      pendingActiveView = null
       set({ activeView: view })
     })
+  },
+  navigateViewBack: () => {
+    const state = get()
+    const target = state.viewBackHistory[state.viewBackHistory.length - 1]
+    if (!target) return false
+    pendingActiveView = target
+    runAppViewTransition(() => {
+      if (pendingActiveView !== target) return
+      pendingActiveView = null
+      set((latest) => ({
+        activeView: target,
+        viewBackHistory: latest.viewBackHistory.slice(0, -1),
+        viewForwardHistory: [...latest.viewForwardHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES)
+      }))
+    })
+    return true
+  },
+  navigateViewForward: () => {
+    const state = get()
+    const target = state.viewForwardHistory[state.viewForwardHistory.length - 1]
+    if (!target) return false
+    pendingActiveView = target
+    runAppViewTransition(() => {
+      if (pendingActiveView !== target) return
+      pendingActiveView = null
+      set((latest) => ({
+        activeView: target,
+        viewBackHistory: [...latest.viewBackHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
+        viewForwardHistory: latest.viewForwardHistory.slice(0, -1)
+      }))
+    })
+    return true
   },
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
@@ -554,9 +603,6 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openQuickLaunch: () => set({ isQuickLaunchOpen: true }),
   closeQuickLaunch: () => set({ isQuickLaunchOpen: false }),
   toggleQuickLaunch: () => set((s) => ({ isQuickLaunchOpen: !s.isQuickLaunchOpen })),
-  openKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: true }),
-  closeKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: false }),
-  toggleKeyboardShortcuts: () => set((s) => ({ isKeyboardShortcutsOpen: !s.isKeyboardShortcutsOpen })),
   setPendingLibrarySearchQuery: (query) => set({ pendingLibrarySearchQuery: query }),
   consumePendingLibrarySearchQuery: () => {
     const query = get().pendingLibrarySearchQuery

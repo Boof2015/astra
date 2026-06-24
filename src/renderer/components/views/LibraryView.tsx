@@ -12,6 +12,7 @@ import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, 
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { runViewTransition } from '../../utils/viewTransitions'
+import { navigateInputBack } from '../../utils/inputNavigation'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistList, { type ArtistListViewMode, type ArtistListViewportAPI } from '../library/ArtistList'
@@ -209,7 +210,6 @@ export default function LibraryView() {
   const viewMode = useLibraryStore((state) => state.viewMode)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
-  const selectionOrigin = useLibraryStore((state) => state.selectionOrigin)
   const isLoading = useLibraryStore((state) => state.isLoading)
   const isScanning = useLibraryStore((state) => state.isScanning)
   const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
@@ -222,8 +222,6 @@ export default function LibraryView() {
   const setViewMode = useLibraryStore((state) => state.setViewMode)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
-  const clearSelection = useLibraryStore((state) => state.clearSelection)
-  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
@@ -903,19 +901,9 @@ export default function LibraryView() {
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {
-    await runViewTransition(async () => {
-      const restored = await goBackSelection()
-      if (restored) return
-
-      const shouldReturnHome = selectionOrigin === 'home'
-      if (shouldReturnHome) {
-        setActiveView('home')
-      } else {
-        if (viewMode === 'albums') pendingScrollRef.current = 'albums'
-        else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
-      }
-      await clearSelection()
-    }, 'library-context-backward')
+    if (viewMode === 'albums') pendingScrollRef.current = 'albums'
+    else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
+    await navigateInputBack()
   }
 
   const handleOpenFile = async () => {

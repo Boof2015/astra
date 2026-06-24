@@ -149,6 +149,7 @@ interface LibraryStore {
   selectedArtist: string | null
   selectionOrigin: SelectionOrigin
   selectionHistory: LibrarySelectionSnapshot[]
+  selectionForwardHistory: LibrarySelectionSnapshot[]
   searchQuery: string
   searchResultPaths: string[]
   isLoading: boolean
@@ -207,6 +208,7 @@ interface LibraryStore {
   releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => void
   clearSelection: () => Promise<void>
   goBackSelection: () => Promise<boolean>
+  goForwardSelection: () => Promise<boolean>
   search: (query: string) => Promise<void>
   clearSearch: () => void
   resolveTrackPaths: (trackPaths: readonly string[]) => DbTrack[]
@@ -380,6 +382,7 @@ type TrackCachePatch = Partial<Pick<
   | 'selectedArtist'
   | 'selectionOrigin'
   | 'selectionHistory'
+  | 'selectionForwardHistory'
 >>
 
 function addPathsToRetainedSet(retainedPaths: Set<string>, trackPaths: readonly string[]): void {
@@ -764,6 +767,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   selectedArtist: null,
   selectionOrigin: null,
   selectionHistory: [],
+  selectionForwardHistory: [],
   searchQuery: '',
   searchResultPaths: [],
   isLoading: false,
@@ -1358,7 +1362,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectedAlbum: null,
         selectedArtist: null,
         selectionOrigin: null,
-        selectionHistory: []
+        selectionHistory: [],
+        selectionForwardHistory: []
       }
     })
   },
@@ -1385,7 +1390,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackPaths: getUniqueTrackPaths(tracks),
       selectedArtist: null,
       selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
+      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
+      selectionForwardHistory: []
     }))
   },
 
@@ -1398,7 +1404,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackPaths: getUniqueTrackPaths(tracks),
       selectedAlbum: null,
       selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state))
+      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
+      selectionForwardHistory: []
     }))
   },
 
@@ -1425,6 +1432,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedArtist: null,
       selectionOrigin: null,
       selectionHistory: [],
+      selectionForwardHistory: [],
       trackPaths: state.viewMode === 'tracks' || state.viewMode === 'folders' ? state.fullTrackPaths : []
     }))
   },
@@ -1432,8 +1440,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Restore previous detail selection when available.
   goBackSelection: async () => {
     const state = get()
+    const current = snapshotCurrentSelection(state)
+    if (!current) return false
     const historyLength = state.selectionHistory.length
-    if (historyLength === 0) return false
+    if (historyLength === 0) {
+      set({
+        selectedAlbum: null,
+        selectedArtist: null,
+        selectionOrigin: null,
+        trackPaths: state.viewMode === 'tracks' || state.viewMode === 'folders' ? state.fullTrackPaths : [],
+        selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current)
+      })
+      return true
+    }
 
     const previous = state.selectionHistory[historyLength - 1]
     if (!previous) return false
@@ -1447,7 +1466,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedArtist: restoredArtist,
       selectionOrigin: previous.selectionOrigin,
       trackPaths: restoredTracks.tracks.map((track) => track.path),
-      selectionHistory: state.selectionHistory.slice(0, -1)
+      selectionHistory: state.selectionHistory.slice(0, -1),
+      selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current)
     })
 
     if (restoredArtist) {
@@ -1467,6 +1487,49 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       set((state) => {
         if (!isSameAlbumSelection(state.selectedAlbum, restoredAlbum)) return {}
         return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    }
+
+    return true
+  },
+
+  goForwardSelection: async () => {
+    const state = get()
+    const forwardLength = state.selectionForwardHistory.length
+    if (forwardLength === 0) return false
+
+    const next = state.selectionForwardHistory[forwardLength - 1]
+    if (!next) return false
+    const current = snapshotCurrentSelection(state)
+    const restoredTracks = resolveTracksFromPaths(next.trackPaths, state.trackByPath)
+    const restoredAlbum = next.selectedAlbum ? { ...next.selectedAlbum } : null
+    const restoredArtist = next.selectedArtist
+
+    set({
+      selectedAlbum: restoredAlbum,
+      selectedArtist: restoredArtist,
+      selectionOrigin: next.selectionOrigin,
+      trackPaths: restoredTracks.tracks.map((track) => track.path),
+      selectionHistory: appendSelectionHistory(state.selectionHistory, current),
+      selectionForwardHistory: state.selectionForwardHistory.slice(0, -1)
+    })
+
+    if (restoredArtist) {
+      const mode = get().artistBrowseMode
+      const tracks = await window.electronAPI.library.getTracksByArtist(restoredArtist, mode)
+      set((latest) => {
+        if (latest.selectedArtist !== restoredArtist || latest.artistBrowseMode !== mode) return {}
+        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    } else if (restoredAlbum && !restoredTracks.complete) {
+      const tracks = await window.electronAPI.library.getTracksByAlbum(
+        restoredAlbum.album,
+        restoredAlbum.artist,
+        restoredAlbum.identity_key
+      )
+      set((latest) => {
+        if (!isSameAlbumSelection(latest.selectedAlbum, restoredAlbum)) return {}
+        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
       })
     }
 
@@ -1665,6 +1728,11 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectedAlbum: updateSelectedAlbumNewFlag(state.selectedAlbum, resolvedAlbumIdentityKey, albumIsNew),
         selectionHistory: updateSelectionHistoryForSeenTrack(
           state.selectionHistory,
+          resolvedAlbumIdentityKey,
+          albumIsNew
+        ),
+        selectionForwardHistory: updateSelectionHistoryForSeenTrack(
+          state.selectionForwardHistory,
           resolvedAlbumIdentityKey,
           albumIsNew
         )
