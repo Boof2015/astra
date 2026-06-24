@@ -9,6 +9,8 @@ import { beginInputCapture } from '../../input/inputCapture'
 import {
   findBindingConflict,
   getEffectiveBindingSlots,
+  getGlobalInputBindingSlotKey,
+  isGlobalInputBindingEnabled,
   useInputBindingStore
 } from '../../stores/inputBindingStore'
 import { formatInputBinding, normalizeRawKeyboardBinding } from '../../utils/inputBindings'
@@ -31,10 +33,14 @@ function isModifierOnlyInput(input: RawBindingInput): boolean {
 
 export default function KeybindSettings() {
   const overrides = useInputBindingStore((state) => state.overrides)
+  const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
+  const globalStatuses = useInputBindingStore((state) => state.globalStatuses)
   const assignBinding = useInputBindingStore((state) => state.assignBinding)
   const clearBinding = useInputBindingStore((state) => state.clearBinding)
   const resetAction = useInputBindingStore((state) => state.resetAction)
   const resetAll = useInputBindingStore((state) => state.resetAll)
+  const setGlobalRegistrationSuspended = useInputBindingStore((state) => state.setGlobalRegistrationSuspended)
+  const setGlobalEnabled = useInputBindingStore((state) => state.setGlobalEnabled)
   const platform = window.electronAPI?.platform ?? 'linux'
   const [captureTarget, setCaptureTarget] = useState<CaptureTarget | null>(null)
   const [pendingConflict, setPendingConflict] = useState<PendingConflict | null>(null)
@@ -49,7 +55,8 @@ export default function KeybindSettings() {
 
   useEffect(() => {
     if (!captureTarget) return
-    return beginInputCapture((input) => {
+    setGlobalRegistrationSuspended(true)
+    const stopCapture = beginInputCapture((input) => {
       if (input.device === 'keyboard' && input.type !== 'keyDown') return
       if (input.device === 'keyboard' && input.key === 'Escape') {
         setCaptureTarget(null)
@@ -93,7 +100,11 @@ export default function KeybindSettings() {
       assignBinding(captureTarget.actionId, captureTarget.slotIndex, binding)
       setFeedback(`${getInputActionDefinition(captureTarget.actionId).action} updated.`)
     })
-  }, [assignBinding, captureTarget, platform])
+    return () => {
+      stopCapture()
+      setGlobalRegistrationSuspended(false)
+    }
+  }, [assignBinding, captureTarget, platform, setGlobalRegistrationSuspended])
 
   const confirmConflict = () => {
     if (!pendingConflict) return
@@ -149,36 +160,71 @@ export default function KeybindSettings() {
                         {slots.map((binding, slotIndex) => {
                           const isCapturing = captureTarget?.actionId === definition.id
                             && captureTarget.slotIndex === slotIndex
+                          const globalOn = isGlobalInputBindingEnabled(definition.id, slotIndex, globalEnabled)
+                          const globalStatus = globalStatuses[getGlobalInputBindingSlotKey(definition.id, slotIndex)]
+                          const globalSupported = binding?.device === 'keyboard'
+                          const hasNoModifiers = binding?.device === 'keyboard' && binding.modifiers.length === 0
                           return (
-                            <div className="keybind-slot-wrap" key={`${definition.id}-${slotIndex}`}>
-                              <button
-                                type="button"
-                                className={`keybind-slot ${isCapturing ? 'is-capturing' : ''}`}
-                                aria-label={`${definition.action}, binding ${slotIndex + 1}`}
-                                onClick={() => {
-                                  setFeedback('')
-                                  setCaptureTarget({ actionId: definition.id, slotIndex })
-                                }}
-                              >
-                                {isCapturing
-                                  ? 'Press input…'
-                                  : binding
-                                    ? formatInputBinding(binding, platform)
-                                    : 'Add binding'}
-                              </button>
-                              {binding && !isCapturing && (
+                            <div className="keybind-slot-control" key={`${definition.id}-${slotIndex}`}>
+                              <div className="keybind-slot-wrap">
                                 <button
                                   type="button"
-                                  className="keybind-clear"
-                                  aria-label={`Clear ${definition.action} binding ${slotIndex + 1}`}
-                                  title="Clear binding"
+                                  className={`keybind-slot ${isCapturing ? 'is-capturing' : ''}`}
+                                  aria-label={`${definition.action}, binding ${slotIndex + 1}`}
                                   onClick={() => {
-                                    clearBinding(definition.id, slotIndex)
-                                    setFeedback(`${definition.action} binding cleared.`)
+                                    setFeedback('')
+                                    setCaptureTarget({ actionId: definition.id, slotIndex })
                                   }}
                                 >
-                                  ×
+                                  {isCapturing
+                                    ? 'Press input…'
+                                    : binding
+                                      ? formatInputBinding(binding, platform)
+                                      : 'Add binding'}
                                 </button>
+                                {binding && !isCapturing && (
+                                  <button
+                                    type="button"
+                                    className="keybind-clear"
+                                    aria-label={`Clear ${definition.action} binding ${slotIndex + 1}`}
+                                    title="Clear binding"
+                                    onClick={() => {
+                                      clearBinding(definition.id, slotIndex)
+                                      setFeedback(`${definition.action} binding cleared.`)
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                className={`keybind-global-toggle ${globalOn ? 'active' : ''} ${globalStatus?.state === 'unavailable' || globalStatus?.state === 'unsupported' ? 'has-error' : ''}`}
+                                aria-pressed={globalOn}
+                                disabled={!binding || !globalSupported || isCapturing}
+                                title={!binding
+                                  ? 'Add a binding first.'
+                                  : !globalSupported
+                                    ? 'Mouse buttons cannot be registered globally by Electron.'
+                                    : globalStatus?.message}
+                                onClick={() => {
+                                  setGlobalEnabled(definition.id, slotIndex, !globalOn)
+                                  setFeedback(!globalOn
+                                    ? `${definition.action} will listen globally while Astra is running.`
+                                    : `${definition.action} is now local to Astra.`)
+                                }}
+                              >
+                                <span className="keybind-global-dot" />
+                                Global
+                              </button>
+                              {globalOn && (globalStatus?.state !== 'registered' || hasNoModifiers) && (
+                                <span className={`keybind-global-status ${globalStatus?.state === 'unavailable' || globalStatus?.state === 'unsupported' ? 'has-error' : hasNoModifiers && globalStatus?.state === 'registered' ? 'has-warning' : ''}`}>
+                                  {globalStatus?.state === 'unavailable' || globalStatus?.state === 'unsupported'
+                                    ? globalStatus.message
+                                    : globalStatus?.state !== 'registered'
+                                      ? 'Registering…'
+                                      : 'No modifier: this key may interfere with typing or navigation in other apps.'}
+                                </span>
                               )}
                             </div>
                           )

@@ -6,7 +6,12 @@ import {
   VOLUME_STEP
 } from '../constants/keyboardShortcuts'
 import { dispatchInputCapture } from '../input/inputCapture'
-import { useInputBindingStore, getEffectiveBindingSlots } from '../stores/inputBindingStore'
+import {
+  getEffectiveBindingSlots,
+  getGlobalInputBindingSlotKey,
+  isGlobalInputBindingEnabled,
+  useInputBindingStore
+} from '../stores/inputBindingStore'
 import { usePlayerStore } from '../stores/playerStore'
 import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
 import { inputBindingsEqual, keyboardEventToRawInput, normalizeRawKeyboardBinding } from '../utils/inputBindings'
@@ -41,18 +46,59 @@ const focusShortcutSearchInput = (): boolean => {
   return true
 }
 
-function resolveAction(binding: InputBinding): InputActionId | null {
+interface ResolvedInputAction {
+  actionId: InputActionId
+  slotIndex: number
+}
+
+function resolveAction(binding: InputBinding): ResolvedInputAction | null {
   const overrides = useInputBindingStore.getState().overrides
   for (const definition of INPUT_ACTION_DEFINITIONS) {
-    const matches = getEffectiveBindingSlots(definition.id, overrides)
-      .some((candidate) => candidate !== null && inputBindingsEqual(candidate, binding))
-    if (matches) return definition.id
+    const slots = getEffectiveBindingSlots(definition.id, overrides)
+    const slotIndex = slots.findIndex((candidate) => candidate !== null && inputBindingsEqual(candidate, binding))
+    if (slotIndex >= 0) return { actionId: definition.id, slotIndex }
   }
   return null
 }
 
 export function useKeyboardShortcuts(): void {
   const jumpToNowPlaying = useJumpToNowPlaying()
+  const overrides = useInputBindingStore((state) => state.overrides)
+  const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
+  const globalRegistrationSuspended = useInputBindingStore((state) => state.globalRegistrationSuspended)
+  const setGlobalStatuses = useInputBindingStore((state) => state.setGlobalStatuses)
+
+  useEffect(() => {
+    let canceled = false
+    const requests = globalRegistrationSuspended ? [] : INPUT_ACTION_DEFINITIONS.flatMap((definition) => {
+      return getEffectiveBindingSlots(definition.id, overrides).flatMap((binding, slotIndex) => {
+        if (
+          binding?.device !== 'keyboard' ||
+          !isGlobalInputBindingEnabled(definition.id, slotIndex, globalEnabled)
+        ) {
+          return []
+        }
+        return [{ actionId: definition.id, slotIndex: slotIndex as 0 | 1, binding }]
+      })
+    })
+
+    void window.electronAPI.inputBindings.configureGlobal(requests).then((statuses) => {
+      if (!canceled) setGlobalStatuses(statuses)
+    }).catch(() => {
+      if (canceled) return
+      setGlobalStatuses(requests.map((request) => ({
+        actionId: request.actionId,
+        slotIndex: request.slotIndex,
+        state: 'unavailable' as const,
+        accelerator: null,
+        message: 'Astra could not update this global shortcut.'
+      })))
+    })
+
+    return () => {
+      canceled = true
+    }
+  }, [globalEnabled, globalRegistrationSuspended, overrides, setGlobalStatuses])
 
   useEffect(() => {
     let pendingShortcutSeekTime: number | null = null
@@ -158,12 +204,17 @@ export function useKeyboardShortcuts(): void {
       const platform = window.electronAPI?.platform ?? 'linux'
       const binding = input.device === 'mouse' ? input : normalizeRawKeyboardBinding(input, platform)
       if (!binding) return false
-      const actionId = resolveAction(binding)
-      if (!actionId) return false
+      const resolved = resolveAction(binding)
+      if (!resolved) return false
+      const { actionId, slotIndex } = resolved
       if (input.device === 'keyboard' && isShortcutBlockedTarget(target) && actionId !== 'quick-launch-open') {
         return false
       }
       if (ui.isQuickLaunchOpen && actionId !== 'quick-launch-open' && actionId !== 'keybinds-open') return false
+
+      const bindingState = useInputBindingStore.getState()
+      const globalStatus = bindingState.globalStatuses[getGlobalInputBindingSlotKey(actionId, slotIndex)]
+      if (input.device === 'keyboard' && globalStatus?.state === 'registered') return true
 
       const definition = INPUT_ACTION_DEFINITIONS.find((candidate) => candidate.id === actionId)
       if (input.device === 'keyboard' && input.repeat && !definition?.allowRepeat) return true
@@ -191,12 +242,16 @@ export function useKeyboardShortcuts(): void {
     const unsubscribe = window.electronAPI?.inputBindings?.onInput((input) => {
       handleRawInput(input, 'ipc')
     })
+    const unsubscribeGlobalAction = window.electronAPI?.inputBindings?.onGlobalAction((actionId) => {
+      executeAction(actionId)
+    })
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
       document.removeEventListener('mousedown', handleMouseDown, true)
       document.removeEventListener('auxclick', preventSideButtonDefault, true)
       unsubscribe?.()
+      unsubscribeGlobalAction?.()
     }
   }, [jumpToNowPlaying])
 }

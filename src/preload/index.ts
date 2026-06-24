@@ -86,7 +86,12 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { RawBindingInput } from '../types/inputBindings'
+import type {
+  GlobalShortcutRegistrationRequest,
+  GlobalShortcutRegistrationResult,
+  InputActionId,
+  RawBindingInput
+} from '../types/inputBindings'
 import type {
   IntegrityFinding,
   IntegrityScanMode,
@@ -719,10 +724,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   inputBindings: {
+    configureGlobal: (requests: GlobalShortcutRegistrationRequest[]): Promise<GlobalShortcutRegistrationResult[]> =>
+      ipcRenderer.invoke('input-bindings:configure-global', requests),
     onInput: (callback: (input: RawBindingInput) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, input: RawBindingInput) => callback(input)
       ipcRenderer.on('input-bindings:input', handler)
       return () => ipcRenderer.removeListener('input-bindings:input', handler)
+    },
+    onGlobalAction: (callback: (actionId: InputActionId) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, actionId: InputActionId) => callback(actionId)
+      ipcRenderer.on('input-bindings:global-action', handler)
+      return () => ipcRenderer.removeListener('input-bindings:global-action', handler)
     }
   },
 
@@ -1176,7 +1188,9 @@ declare global {
         setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
       }
       inputBindings: {
+        configureGlobal: (requests: GlobalShortcutRegistrationRequest[]) => Promise<GlobalShortcutRegistrationResult[]>
         onInput: (callback: (input: RawBindingInput) => void) => () => void
+        onGlobalAction: (callback: (actionId: InputActionId) => void) => () => void
       }
 
       // Integrations

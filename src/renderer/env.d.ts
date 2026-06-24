@@ -80,7 +80,12 @@ import type {
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { RawBindingInput } from '../types/inputBindings'
+import type {
+  GlobalShortcutRegistrationRequest,
+  GlobalShortcutRegistrationResult,
+  InputActionId,
+  RawBindingInput
+} from '../types/inputBindings'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -248,7 +253,9 @@ declare global {
                 setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
             }
             inputBindings: {
+                configureGlobal: (requests: GlobalShortcutRegistrationRequest[]) => Promise<GlobalShortcutRegistrationResult[]>
                 onInput: (callback: (input: RawBindingInput) => void) => () => void
+                onGlobalAction: (callback: (actionId: InputActionId) => void) => () => void
             }
             discord: {
                 configure: (options: { enabled: boolean; coverArtEnabled: boolean; smallIconEnabled?: boolean; compactStatusMode?: 'title' | 'artist'; expandedInfoMode?: 'file-info' | 'album'; linkDestination?: 'off' | 'ytmusic' | 'lastfm'; pauseClearMinutes?: number }) => Promise<{ ok: boolean; connected: boolean; message: string }>

@@ -6,6 +6,7 @@ import {
   findBindingConflict,
   getDefaultBindingSlots,
   getEffectiveBindingSlots,
+  isGlobalInputBindingEnabled,
   parseInputBindingOverrides,
   useInputBindingStore
 } from '../stores/inputBindingStore.ts'
@@ -99,7 +100,7 @@ test('parses versioned overrides and ignores malformed or removed entries', () =
 })
 
 test('assignment moves conflicts, clearing preserves slots, and resets restore defaults', () => {
-  useInputBindingStore.setState({ overrides: {} })
+  useInputBindingStore.setState({ overrides: {}, globalEnabled: {}, globalStatuses: {} })
   const store = useInputBindingStore.getState()
   const nextTrackBinding: InputBinding = { device: 'keyboard', key: 'n', modifiers: [] }
 
@@ -126,4 +127,29 @@ test('assignment moves conflicts, clearing preserves slots, and resets restore d
 
   useInputBindingStore.getState().resetAll()
   assert.deepEqual(useInputBindingStore.getState().overrides, {})
+})
+
+test('global enablement is per keyboard slot and resets when the binding is cleared', () => {
+  useInputBindingStore.setState({ overrides: {}, globalEnabled: {}, globalStatuses: {} })
+
+  useInputBindingStore.getState().setGlobalEnabled('next-track', 0, true)
+  assert.equal(isGlobalInputBindingEnabled(
+    'next-track',
+    0,
+    useInputBindingStore.getState().globalEnabled
+  ), true)
+
+  useInputBindingStore.getState().setGlobalEnabled('navigate-back', 0, true)
+  assert.equal(isGlobalInputBindingEnabled(
+    'navigate-back',
+    0,
+    useInputBindingStore.getState().globalEnabled
+  ), false)
+
+  useInputBindingStore.getState().clearBinding('next-track', 0)
+  assert.equal(isGlobalInputBindingEnabled(
+    'next-track',
+    0,
+    useInputBindingStore.getState().globalEnabled
+  ), false)
 })

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, globalShortcut } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -174,10 +174,29 @@ import type {
   IntegrityScanScope,
   IntegrityScanSummary
 } from '../types/libraryIntegrity'
-import { resolveInterceptedKeyboardInput, resolveMouseAppCommand } from './inputBindings'
+import {
+  resolveInterceptedKeyboardInput,
+  resolveMouseAppCommand,
+  sanitizeGlobalShortcutRegistrationRequests
+} from './inputBindings'
+import { GlobalInputShortcutService } from './services/globalInputShortcuts'
+import type { InputActionId } from '../types/inputBindings'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
+}
+
+const globalInputShortcutService = new GlobalInputShortcutService(globalShortcut)
+const GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW = new Set<InputActionId>([
+  'quick-launch-open',
+  'keybinds-open',
+  'jump-to-now-playing',
+  'focus-search-field',
+  'navigate-back',
+  'navigate-forward'
+])
 
 interface ResolvedBuildMetadata {
   commitHash: string | null
@@ -3144,6 +3163,7 @@ function createWindow(): void {
     void persistMainWindowPrefs()
   })
   mainWindow.on('closed', () => {
+    globalInputShortcutService.clear()
     mainWindow = null
     associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
@@ -3655,6 +3675,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
     mainWindowPersistTimer = null
@@ -3904,6 +3925,20 @@ ipcMain.handle('app:getPerformanceStats', () => {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
   }
+})
+
+ipcMain.handle('input-bindings:configure-global', (event, rawRequests: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return []
+  const requests = sanitizeGlobalShortcutRegistrationRequests(rawRequests)
+  return globalInputShortcutService.configure(requests, (actionId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW.has(actionId)) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    mainWindow.webContents.send('input-bindings:global-action', actionId)
+  })
 })
 
 ipcMain.handle('app:getMainProcessMemoryStats', () => {

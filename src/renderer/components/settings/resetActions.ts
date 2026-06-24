@@ -31,7 +31,11 @@ import {
   UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
-import { INPUT_BINDINGS_STORAGE_KEY, useInputBindingStore } from '../../stores/inputBindingStore'
+import {
+  GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
+  INPUT_BINDINGS_STORAGE_KEY,
+  useInputBindingStore
+} from '../../stores/inputBindingStore'
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
@@ -69,6 +73,7 @@ export const RENDERER_SETTINGS_KEYS = [
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
+  GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   ARTIST_BROWSE_MODE_STORAGE_KEY,
