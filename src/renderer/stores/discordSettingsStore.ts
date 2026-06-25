@@ -29,13 +29,13 @@ interface DiscordSettingsStore {
   resetToDefaults: () => Promise<void>
 }
 
-const ENABLED_STORAGE_KEY = 'astra-discord-rpc-enabled'
-const COVER_ART_ENABLED_STORAGE_KEY = 'astra-discord-rpc-cover-art-enabled'
-const SMALL_ICON_ENABLED_STORAGE_KEY = 'astra-discord-rpc-small-icon-enabled'
-const COMPACT_STATUS_MODE_STORAGE_KEY = 'astra-discord-rpc-compact-status-mode-v1'
-const EXPANDED_INFO_MODE_STORAGE_KEY = 'astra-discord-rpc-expanded-info-mode-v1'
-const LINK_DESTINATION_STORAGE_KEY = 'astra-discord-rpc-link-destination-v1'
-const PAUSE_CLEAR_MINUTES_STORAGE_KEY = 'astra-discord-rpc-pause-clear-minutes-v1'
+export const DISCORD_RPC_ENABLED_STORAGE_KEY = 'astra-discord-rpc-enabled'
+export const DISCORD_RPC_COVER_ART_ENABLED_STORAGE_KEY = 'astra-discord-rpc-cover-art-enabled'
+export const DISCORD_RPC_SMALL_ICON_ENABLED_STORAGE_KEY = 'astra-discord-rpc-small-icon-enabled'
+export const DISCORD_RPC_COMPACT_STATUS_MODE_STORAGE_KEY = 'astra-discord-rpc-compact-status-mode-v1'
+export const DISCORD_RPC_EXPANDED_INFO_MODE_STORAGE_KEY = 'astra-discord-rpc-expanded-info-mode-v1'
+export const DISCORD_RPC_LINK_DESTINATION_STORAGE_KEY = 'astra-discord-rpc-link-destination-v1'
+export const DISCORD_RPC_PAUSE_CLEAR_MINUTES_STORAGE_KEY = 'astra-discord-rpc-pause-clear-minutes-v1'
 const COVER_ART_CACHE_STORAGE_KEY_V1 = 'astra-discord-cover-art-cache-v1'
 const COVER_ART_CACHE_STORAGE_KEY_V2 = 'astra-discord-cover-art-cache-v2'
 const COVER_ART_CACHE_STORAGE_KEY_V3 = 'astra-discord-cover-art-cache-v3'
@@ -61,7 +61,7 @@ export function normalizePauseClearMinutes(value: number): number {
 }
 
 function readSavedPauseClearMinutes(): number {
-  const raw = localStorage.getItem(PAUSE_CLEAR_MINUTES_STORAGE_KEY)
+  const raw = localStorage.getItem(DISCORD_RPC_PAUSE_CLEAR_MINUTES_STORAGE_KEY)
   if (raw === null) return DEFAULT_PAUSE_CLEAR_MINUTES
   const parsed = Number.parseInt(raw, 10)
   return Number.isFinite(parsed) ? normalizePauseClearMinutes(parsed) : DEFAULT_PAUSE_CLEAR_MINUTES
@@ -120,55 +120,55 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
 
     setEnabled: async (enabled: boolean) => {
       set({ enabled, coverArtLookupActive: enabled ? get().coverArtLookupActive : false })
-      localStorage.setItem(ENABLED_STORAGE_KEY, enabled ? '1' : '0')
+      localStorage.setItem(DISCORD_RPC_ENABLED_STORAGE_KEY, enabled ? '1' : '0')
       await applyDiscordConfig()
     },
 
     setCoverArtEnabled: async (coverArtEnabled: boolean) => {
       set({ coverArtEnabled, coverArtLookupActive: coverArtEnabled ? get().coverArtLookupActive : false })
-      localStorage.setItem(COVER_ART_ENABLED_STORAGE_KEY, coverArtEnabled ? '1' : '0')
+      localStorage.setItem(DISCORD_RPC_COVER_ART_ENABLED_STORAGE_KEY, coverArtEnabled ? '1' : '0')
       await applyDiscordConfig()
     },
 
     setSmallIconEnabled: async (smallIconEnabled: boolean) => {
       set({ smallIconEnabled })
-      localStorage.setItem(SMALL_ICON_ENABLED_STORAGE_KEY, smallIconEnabled ? '1' : '0')
+      localStorage.setItem(DISCORD_RPC_SMALL_ICON_ENABLED_STORAGE_KEY, smallIconEnabled ? '1' : '0')
       await applyDiscordConfig()
     },
 
     setCompactStatusMode: async (compactStatusMode: DiscordRpcCompactStatusMode) => {
       set({ compactStatusMode })
-      localStorage.setItem(COMPACT_STATUS_MODE_STORAGE_KEY, compactStatusMode)
+      localStorage.setItem(DISCORD_RPC_COMPACT_STATUS_MODE_STORAGE_KEY, compactStatusMode)
       await applyDiscordConfig()
     },
 
     setExpandedInfoMode: async (expandedInfoMode: DiscordRpcExpandedInfoMode) => {
       set({ expandedInfoMode })
-      localStorage.setItem(EXPANDED_INFO_MODE_STORAGE_KEY, expandedInfoMode)
+      localStorage.setItem(DISCORD_RPC_EXPANDED_INFO_MODE_STORAGE_KEY, expandedInfoMode)
       await applyDiscordConfig()
     },
 
     setLinkDestination: async (linkDestination: DiscordRpcLinkDestination) => {
       set({ linkDestination })
-      localStorage.setItem(LINK_DESTINATION_STORAGE_KEY, linkDestination)
+      localStorage.setItem(DISCORD_RPC_LINK_DESTINATION_STORAGE_KEY, linkDestination)
       await applyDiscordConfig()
     },
 
     setPauseClearMinutes: async (minutes: number) => {
       const pauseClearMinutes = normalizePauseClearMinutes(minutes)
       set({ pauseClearMinutes })
-      localStorage.setItem(PAUSE_CLEAR_MINUTES_STORAGE_KEY, String(pauseClearMinutes))
+      localStorage.setItem(DISCORD_RPC_PAUSE_CLEAR_MINUTES_STORAGE_KEY, String(pauseClearMinutes))
       await applyDiscordConfig()
     },
 
     initFromSaved: async () => {
       clearLegacyClientId()
-      const enabled = localStorage.getItem(ENABLED_STORAGE_KEY) === '1'
-      const coverArtEnabled = localStorage.getItem(COVER_ART_ENABLED_STORAGE_KEY) === '1'
-      const smallIconEnabled = localStorage.getItem(SMALL_ICON_ENABLED_STORAGE_KEY) !== '0'
-      const compactStatusMode = normalizeCompactStatusMode(localStorage.getItem(COMPACT_STATUS_MODE_STORAGE_KEY))
-      const expandedInfoMode = normalizeExpandedInfoMode(localStorage.getItem(EXPANDED_INFO_MODE_STORAGE_KEY))
-      const linkDestination = normalizeLinkDestination(localStorage.getItem(LINK_DESTINATION_STORAGE_KEY))
+      const enabled = localStorage.getItem(DISCORD_RPC_ENABLED_STORAGE_KEY) === '1'
+      const coverArtEnabled = localStorage.getItem(DISCORD_RPC_COVER_ART_ENABLED_STORAGE_KEY) === '1'
+      const smallIconEnabled = localStorage.getItem(DISCORD_RPC_SMALL_ICON_ENABLED_STORAGE_KEY) !== '0'
+      const compactStatusMode = normalizeCompactStatusMode(localStorage.getItem(DISCORD_RPC_COMPACT_STATUS_MODE_STORAGE_KEY))
+      const expandedInfoMode = normalizeExpandedInfoMode(localStorage.getItem(DISCORD_RPC_EXPANDED_INFO_MODE_STORAGE_KEY))
+      const linkDestination = normalizeLinkDestination(localStorage.getItem(DISCORD_RPC_LINK_DESTINATION_STORAGE_KEY))
       const pauseClearMinutes = readSavedPauseClearMinutes()
       set({
         enabled,
@@ -194,13 +194,13 @@ export const useDiscordSettingsStore = create<DiscordSettingsStore>((set, get) =
         pauseClearMinutes: DEFAULT_PAUSE_CLEAR_MINUTES,
         coverArtLookupActive: false
       })
-      localStorage.removeItem(ENABLED_STORAGE_KEY)
-      localStorage.removeItem(COVER_ART_ENABLED_STORAGE_KEY)
-      localStorage.removeItem(SMALL_ICON_ENABLED_STORAGE_KEY)
-      localStorage.removeItem(LINK_DESTINATION_STORAGE_KEY)
-      localStorage.removeItem(PAUSE_CLEAR_MINUTES_STORAGE_KEY)
-      localStorage.removeItem(COMPACT_STATUS_MODE_STORAGE_KEY)
-      localStorage.removeItem(EXPANDED_INFO_MODE_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_COVER_ART_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_SMALL_ICON_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_LINK_DESTINATION_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_PAUSE_CLEAR_MINUTES_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_COMPACT_STATUS_MODE_STORAGE_KEY)
+      localStorage.removeItem(DISCORD_RPC_EXPANDED_INFO_MODE_STORAGE_KEY)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V1)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V2)
       localStorage.removeItem(COVER_ART_CACHE_STORAGE_KEY_V3)

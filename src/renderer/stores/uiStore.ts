@@ -127,7 +127,7 @@ function areTrackDragTracksEqual(left: Track[], right: Track[]): boolean {
   return true
 }
 
-const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
+export const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
 
 export function normalizeAnalyzerHeightPx(value: unknown): number {
   if (value == null) return DEFAULT_ANALYZER_HEIGHT_PX

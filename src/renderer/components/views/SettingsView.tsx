@@ -7,6 +7,7 @@ import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
+import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -264,6 +265,7 @@ export default function SettingsView() {
   const [appBuildCopyValue, setAppBuildCopyValue] = useState('')
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
+  const [settingsTransferWizardOpen, setSettingsTransferWizardOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
@@ -2773,6 +2775,39 @@ export default function SettingsView() {
           </section>
             )}
 
+            {activeSectionId === 'transfer' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Transfer</h3>
+            </div>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Settings Transfer</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Portable Settings</span>
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn-primary"
+                      onClick={() => setSettingsTransferWizardOpen(true)}
+                    >
+                      Open Settings Transfer Wizard
+                    </button>
+                  </div>
+                </div>
+                <p className="settings-note">
+                  Transfers appearance, analyzer profiles, EQ presets, playback preferences, keybinds, and non-secret
+                  integration preferences.
+                </p>
+                <p className="settings-note">
+                  Library data, servers, scrobble profiles, credentials, output devices, and machine-specific assignments
+                  stay on this computer.
+                </p>
+              </div>
+            </div>
+          </section>
+            )}
+
             {activeSectionId === 'developer' && developerSectionVisible && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
@@ -3056,6 +3091,10 @@ export default function SettingsView() {
           </div>
         </div>
       )}
+      <SettingsTransferWizard
+        isOpen={settingsTransferWizardOpen}
+        onClose={() => setSettingsTransferWizardOpen(false)}
+      />
       <LocalApiPairingModal
           isOpen={localApiPairingModalOpen}
           ticket={phoneRemoteActivePairingTicket}

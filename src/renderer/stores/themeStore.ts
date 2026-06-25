@@ -54,7 +54,7 @@ export interface ThemeSettingsState {
   initFromSaved: () => void
 }
 
-const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
+export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
 const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
 const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'

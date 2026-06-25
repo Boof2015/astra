@@ -87,6 +87,11 @@ export const SETTINGS_SECTIONS = [
     keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']
   },
   {
+    id: 'transfer',
+    label: 'Transfer',
+    keywords: ['transfer', 'settings transfer', 'import settings', 'export settings', 'portable', 'move computers', 'backup', 'restore']
+  },
+  {
     id: 'developer',
     label: 'Developer',
     keywords: ['memory', 'diagnostics', 'debug', 'log', 'logging', 'heap', 'bundle', 'profiling', 'developer'],
