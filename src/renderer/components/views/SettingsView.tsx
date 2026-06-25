@@ -77,7 +77,9 @@ import {
 import {
   PARALLAX_DEFAULT_PORT,
   PARALLAX_MAX_PORT,
-  PARALLAX_MIN_PORT
+  PARALLAX_MIN_PORT,
+  type ParallaxConnectedSinkState,
+  type ParallaxPairedSink
 } from '../../../types/parallax'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
@@ -201,6 +203,14 @@ function formatSleepTimerRemaining(remainingMs: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+function formatParallaxTrimMs(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(0)} ms`
+}
+
+function formatParallaxLastSeen(value: number | null | undefined): string {
+  return value ? new Date(value).toLocaleString() : 'Never'
 }
 
 function parseSleepTimerMinutesInput(input: string): number | null {
@@ -359,6 +369,7 @@ export default function SettingsView() {
     setSinkEnabled: setParallaxSinkEnabled,
     setHostPort: setParallaxHostPort,
     revokePairedSink: revokeParallaxPairedSink,
+    renamePairedSink: renameParallaxPairedSink,
     revokeAllPairedSinks: revokeAllParallaxPairedSinks,
     reconnectFromPersisted: reconnectParallaxFromPersisted,
     disconnectSink: disconnectParallaxSink,
@@ -442,6 +453,8 @@ export default function SettingsView() {
   const [localApiFeedback, setLocalApiFeedback] = useState('')
   const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
   const [parallaxFeedback, setParallaxFeedback] = useState('')
+  const [renamingParallaxSinkId, setRenamingParallaxSinkId] = useState<string | null>(null)
+  const [parallaxRenameInput, setParallaxRenameInput] = useState('')
   const [lastFmProfileFeedback, setLastFmProfileFeedback] = useState('')
   const [infoFeedback, setInfoFeedback] = useState('')
   const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
@@ -852,6 +865,25 @@ export default function SettingsView() {
   const parallaxSinkRemovedByHost = parallaxStatus?.sink.removedByHost ?? false
   const parallaxActiveSinks = parallaxPairedSinks.filter((sink) => sink.revokedAt == null)
   const parallaxPresenceRows = parallaxStatus?.host.connectedSinks ?? []
+  const parallaxConnectedBySinkId = useMemo(() => {
+    return new Map<string, ParallaxConnectedSinkState>(
+      parallaxPresenceRows.map((sink) => [sink.sinkId, sink])
+    )
+  }, [parallaxPresenceRows])
+  const parallaxManagedSinks = useMemo(() => {
+    return parallaxActiveSinks
+      .map((sink, index) => ({ sink, index, connected: parallaxConnectedBySinkId.get(sink.id) ?? null }))
+      .sort((left, right) => {
+        const leftOnline = left.connected?.online ? 1 : 0
+        const rightOnline = right.connected?.online ? 1 : 0
+        if (leftOnline !== rightOnline) return rightOnline - leftOnline
+        const createdDelta = right.sink.createdAt - left.sink.createdAt
+        return createdDelta || left.index - right.index
+      })
+  }, [parallaxActiveSinks, parallaxConnectedBySinkId])
+  const parallaxActiveStreamLabel = parallaxStatus?.host.activeStream
+    ? `Streaming ${parallaxStatus.host.activeStream.title || 'current track'}`
+    : 'No active stream'
   // §14.1.2 follow-up (Codex round 1, finding 3). "Removed by host" overrides the normal summary
   // — the user just hit a wall and the next step is re-pairing, not interpreting connection
   // state. lastError already carries the explanation; the summary line is the headline.
@@ -1192,6 +1224,36 @@ export default function SettingsView() {
       setParallaxFeedback(sinkId ? 'Cleared cached Parallax presence row.' : 'Cleared cached Parallax presence rows.')
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : 'Failed to clear Parallax presence cache.'
+      setParallaxFeedback(message)
+    })
+  }
+
+  const startRenamingParallaxSink = (sink: ParallaxPairedSink) => {
+    setRenamingParallaxSinkId(sink.id)
+    setParallaxRenameInput(sink.name)
+  }
+
+  const cancelRenamingParallaxSink = () => {
+    setRenamingParallaxSinkId(null)
+    setParallaxRenameInput('')
+  }
+
+  const saveRenamingParallaxSink = () => {
+    if (!renamingParallaxSinkId) return
+    const nextName = parallaxRenameInput.trim()
+    if (!nextName) {
+      setParallaxFeedback('Parallax sink name is required.')
+      return
+    }
+    void renameParallaxPairedSink(renamingParallaxSinkId, nextName).then((renamed) => {
+      if (!renamed) {
+        setParallaxFeedback('Could not rename sink.')
+        return
+      }
+      setParallaxFeedback('Renamed sink.')
+      cancelRenamingParallaxSink()
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to rename sink.'
       setParallaxFeedback(message)
     })
   }
@@ -2819,12 +2881,22 @@ export default function SettingsView() {
                 </div>
                 {parallaxFeedback && <p className="settings-note settings-note-success">{parallaxFeedback}</p>}
                 {parallaxErrorMessage && <p className="settings-note settings-note-error">{parallaxErrorMessage}</p>}
-                {parallaxActiveSinks.length > 0 && (
-                  <div className="local-api-inline-devices">
-                    <div className="local-api-inline-devices-header">
-                      <span className="local-api-inline-devices-count">
+                <div className="parallax-sink-management-panel">
+                  <div className="parallax-sink-management-header">
+                    <div>
+                      <span className="parallax-sink-management-title">Host Sinks</span>
+                      <span className="parallax-sink-management-count">
                         {parallaxActiveSinks.length} paired sink{parallaxActiveSinks.length !== 1 ? 's' : ''}
                       </span>
+                    </div>
+                    <div className="parallax-sink-management-actions">
+                      <button
+                        className="settings-btn"
+                        onClick={() => handleClearParallaxPresenceCache()}
+                        disabled={parallaxPresenceRows.length === 0}
+                      >
+                        Clear cached status
+                      </button>
                       {parallaxActiveSinks.length >= 2 && (
                         <button
                           className="settings-btn settings-btn-danger"
@@ -2834,8 +2906,11 @@ export default function SettingsView() {
                         </button>
                       )}
                     </div>
-                    <div className="local-api-inline-devices-list">
-                      {parallaxActiveSinks.map((sink) => {
+                  </div>
+
+                  {parallaxManagedSinks.length > 0 ? (
+                    <div className="parallax-sink-management-list">
+                      {parallaxManagedSinks.map(({ sink, connected }) => {
                         // §14.1.1. Match the connected-sink state (ephemeral: online + currently-
                         // reported output device + applied trim) with the persisted paired-sink row
                         // (durable: id + name + trims array).
@@ -2847,7 +2922,6 @@ export default function SettingsView() {
                         // echoed yet) and the user's persisted intent is hidden by stale state.
                         // Sink echo is shown as a small diagnostic when it disagrees with the
                         // persisted value (in-flight push or sink-side override).
-                        const connected = parallaxStatus?.host.connectedSinks?.find((c) => c.sinkId === sink.id)
                         const outputDeviceId = connected?.outputDeviceId ?? null
                         const outputDeviceLabel = connected?.outputDeviceLabel ?? null
                         const persistedTrim = outputDeviceId
@@ -2856,41 +2930,64 @@ export default function SettingsView() {
                         const persistedAdvanceMs = persistedTrim?.advanceMs ?? 0
                         const sinkAppliedAdvanceMs = connected?.appliedAdvanceMs
                         const canEditTrim = Boolean(outputDeviceId)
+                        const echoMismatch = canEditTrim
+                          && typeof sinkAppliedAdvanceMs === 'number'
+                          && Math.abs(sinkAppliedAdvanceMs - persistedAdvanceMs) > 0.5
+                        const isRenaming = renamingParallaxSinkId === sink.id
+                        const lastSeen = connected?.lastSeenAt ?? sink.lastSeenAt
+                        const rttLabel = typeof connected?.rttMs === 'number'
+                          ? `${Math.round(connected.rttMs)} ms RTT`
+                          : 'RTT unknown'
                         const handleTrimAdjust = (deltaMs: number) => {
                           if (!outputDeviceId) return
                           const next = Math.max(-500, Math.min(500, persistedAdvanceMs + deltaMs))
                           if (next === persistedAdvanceMs) return
                           void setParallaxSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, next)
                         }
-                        // Show a small "sink applied: X ms" diagnostic only when echo differs from
-                        // persisted, so steady-state UI stays clean.
-                        const echoMismatch = canEditTrim
-                          && typeof sinkAppliedAdvanceMs === 'number'
-                          && Math.abs(sinkAppliedAdvanceMs - persistedAdvanceMs) > 0.5
+
                         return (
-                          <div key={sink.id} className="local-api-inline-device">
-                            <div className="local-api-inline-device-info">
-                              <span className="local-api-inline-device-name">
-                                {sink.name}
-                                {connected?.online ? '' : ' (offline)'}
-                              </span>
-                              <span className="local-api-inline-device-detail">
-                                Last seen {sink.lastSeenAt ? new Date(sink.lastSeenAt).toLocaleString() : 'Never'}
-                              </span>
-                              <span className="local-api-inline-device-detail">
-                                {canEditTrim
-                                  ? <>Output: {outputDeviceLabel ?? outputDeviceId} &middot; Trim: <strong>{persistedAdvanceMs.toFixed(0)} ms</strong></>
-                                  : 'Output unknown (sink not reporting yet)'}
-                              </span>
-                              {echoMismatch && (
-                                <span className="local-api-inline-device-detail" style={{ opacity: 0.6 }}>
-                                  Sink applied: {(sinkAppliedAdvanceMs as number).toFixed(0)} ms
+                          <div key={sink.id} className={`parallax-sink-row ${connected?.online ? 'is-online' : 'is-offline'}`}>
+                            <div className="parallax-sink-row-main">
+                              <div className="parallax-sink-row-heading">
+                                <span className={`parallax-sink-status-dot ${connected?.online ? 'is-online' : 'is-offline'}`} />
+                                {isRenaming ? (
+                                  <input
+                                    className="settings-select parallax-sink-rename-input"
+                                    value={parallaxRenameInput}
+                                    autoFocus
+                                    onChange={(event) => setParallaxRenameInput(event.target.value)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') saveRenamingParallaxSink()
+                                      if (event.key === 'Escape') cancelRenamingParallaxSink()
+                                    }}
+                                  />
+                                ) : (
+                                  <span className="parallax-sink-name">{sink.name}</span>
+                                )}
+                                <span className="parallax-sink-status-label">
+                                  {connected?.online ? 'Online' : 'Offline'}
                                 </span>
-                              )}
+                              </div>
+
+                              <div className="parallax-sink-meta-grid">
+                                <span>Last seen {formatParallaxLastSeen(lastSeen)}</span>
+                                <span>{rttLabel}</span>
+                                <span>{parallaxActiveStreamLabel}</span>
+                                <span>
+                                  {canEditTrim
+                                    ? `Output ${outputDeviceLabel ?? outputDeviceId}`
+                                    : 'Output unknown'}
+                                </span>
+                                <span>Desired trim {formatParallaxTrimMs(persistedAdvanceMs)}</span>
+                                {echoMismatch && typeof sinkAppliedAdvanceMs === 'number' && (
+                                  <span>Applied trim {formatParallaxTrimMs(sinkAppliedAdvanceMs)}</span>
+                                )}
+                              </div>
+
                               {canEditTrim && (
-                                <div className="parallax-trim-stepper" style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title="Trim −5 ms">-5</button>
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title="Trim −1 ms">-1</button>
+                                <div className="parallax-trim-stepper">
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title="Trim -5 ms">-5</button>
+                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title="Trim -1 ms">-1</button>
                                   <button className="settings-btn" onClick={() => handleTrimAdjust(+1)} title="Trim +1 ms">+1</button>
                                   <button className="settings-btn" onClick={() => handleTrimAdjust(+5)} title="Trim +5 ms">+5</button>
                                   {persistedAdvanceMs !== 0 && (
@@ -2905,18 +3002,49 @@ export default function SettingsView() {
                                 </div>
                               )}
                             </div>
-                            <button
-                              className="settings-btn settings-btn-danger"
-                              onClick={() => void revokeParallaxPairedSink(sink.id)}
-                            >
-                              Revoke
-                            </button>
+
+                            <div className="parallax-sink-row-actions">
+                              {isRenaming ? (
+                                <>
+                                  <button className="settings-btn settings-btn-primary" onClick={saveRenamingParallaxSink}>
+                                    Save
+                                  </button>
+                                  <button className="settings-btn" onClick={cancelRenamingParallaxSink}>
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <button className="settings-btn" onClick={() => startRenamingParallaxSink(sink)}>
+                                  Rename
+                                </button>
+                              )}
+                              <button
+                                className="settings-btn"
+                                onClick={() => handleClearParallaxPresenceCache(sink.id)}
+                                disabled={!connected}
+                              >
+                                Clear cached status
+                              </button>
+                              <button
+                                className="settings-btn settings-btn-danger"
+                                onClick={() => void revokeParallaxPairedSink(sink.id)}
+                              >
+                                Revoke
+                              </button>
+                            </div>
                           </div>
                         )
                       })}
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <div className="parallax-sink-empty-state">
+                      <span>No sinks paired yet.</span>
+                      <button className="settings-btn settings-btn-primary" onClick={handleOpenPairingWizard}>
+                        Add Sink
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </section>
@@ -3179,51 +3307,6 @@ export default function SettingsView() {
                       Production builds keep these toggles off and ignore their stored values.
                     </p>
                   </>
-                )}
-              </div>
-              <div className="settings-info-panel">
-                <h4>Parallax Presence Cache</h4>
-                <p>
-                  Clears host-side cached sink presence rows used by title-bar Parallax surfaces.
-                  Pairing credentials, trims, and tokens are preserved.
-                </p>
-                <div className="settings-info-links">
-                  <button
-                    type="button"
-                    className="settings-btn settings-link-btn"
-                    onClick={() => handleClearParallaxPresenceCache()}
-                    disabled={parallaxPresenceRows.length === 0}
-                  >
-                    Clear All Presence Rows
-                  </button>
-                </div>
-                {parallaxPresenceRows.length > 0 ? (
-                  <div className="local-api-inline-devices-list">
-                    {parallaxPresenceRows.map((sink) => (
-                      <div key={sink.sinkId} className="local-api-inline-device">
-                        <div className="local-api-inline-device-info">
-                          <span className="local-api-inline-device-name">
-                            {sink.name}{sink.online ? '' : ' (offline)'}
-                          </span>
-                          <span className="local-api-inline-device-detail">
-                            {sink.sinkId}
-                          </span>
-                          <span className="local-api-inline-device-detail">
-                            {sink.outputDeviceLabel ?? 'Output unknown'} · Trim {sink.appliedAdvanceMs >= 0 ? '+' : ''}{sink.appliedAdvanceMs.toFixed(0)} ms
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className="settings-btn"
-                          onClick={() => handleClearParallaxPresenceCache(sink.sinkId)}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="settings-note">No cached Parallax host presence rows.</p>
                 )}
               </div>
             </div>

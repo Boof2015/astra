@@ -223,6 +223,134 @@ test('Parallax host presence cache can be cleared without removing pairing crede
   }
 })
 
+test('Parallax host renames paired sink and updates connected status', async (t) => {
+  let port: number
+  try {
+    port = await getFreePort()
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      t.skip('Local socket binding is blocked in this environment.')
+      return
+    }
+    throw error
+  }
+  const config: ParallaxHostConfig = { enabled: true, port }
+  let persistedNames: string[] = []
+  const service = new ParallaxService({
+    config: { enabled: false, port },
+    pairedSinks: [],
+    onPairedSinksChange: (sinks) => {
+      persistedNames = sinks.map((sink) => sink.name)
+    }
+  })
+  try {
+    try {
+      await service.applyHostConfig(config)
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+        t.skip('Local socket binding is blocked in this environment.')
+        return
+      }
+      throw error
+    }
+
+    const baseUrl = `http://127.0.0.1:${port}`
+    const paired = await pairSink(service, baseUrl, 'Desk')
+    const eventsAbort = new AbortController()
+    const eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+      headers: { Authorization: `Bearer ${paired.token}` },
+      signal: eventsAbort.signal
+    })
+    assert.equal(eventsResponse.status, 200)
+    try {
+      await waitFor(() => service.getStatus().host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId))
+
+      const renamed = service.renamePairedSink(paired.sinkId, '  Living    Room   Sink  ')
+      assert.equal(renamed?.name, 'Living Room Sink')
+      assert.equal(service.listPairedSinks().find((sink) => sink.id === paired.sinkId)?.name, 'Living Room Sink')
+      assert.equal(service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === paired.sinkId)?.name, 'Living Room Sink')
+      assert.equal(persistedNames[0], 'Living Room Sink')
+
+      const capped = service.renamePairedSink(paired.sinkId, ` ${'A'.repeat(90)} `)
+      assert.equal(capped?.name, 'A'.repeat(80))
+      assert.equal(service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === paired.sinkId)?.name, 'A'.repeat(80))
+    } finally {
+      eventsAbort.abort()
+      await eventsResponse.body?.cancel().catch(() => undefined)
+    }
+  } finally {
+    await service.stop()
+  }
+})
+
+test('Parallax host rename returns null for missing or revoked sinks', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    assert.equal(service.renamePairedSink('missing', 'Desk'), null)
+
+    const paired = await pairSink(service, baseUrl, 'Desk')
+    assert.ok(service.revokePairedSink(paired.sinkId))
+    assert.equal(service.renamePairedSink(paired.sinkId, 'Renamed'), null)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('Parallax host telemetry exposes connected sink RTT and preserves output trim state', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    const paired = await pairSink(service, baseUrl, 'Desk')
+    service.setSinkTrim(paired.sinkId, 'speaker-default', 'Desk DAC', 15)
+
+    const telemetry = await fetch(`${baseUrl}/v1/parallax/telemetry`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${paired.token}`
+      },
+      body: JSON.stringify({
+        streamId: null,
+        bufferedMs: 500,
+        driftFrames: 0,
+        rttMs: 27.4,
+        underruns: 0,
+        playbackRatePpm: 0,
+        reportedAtMs: Date.now(),
+        outputDeviceId: 'speaker-default',
+        outputDeviceLabel: 'Desk DAC',
+        appliedAdvanceMs: 15
+      })
+    })
+    assert.equal(telemetry.status, 200)
+
+    const row = service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === paired.sinkId)
+    assert.ok(row)
+    assert.equal(row.rttMs, 27.4)
+    assert.equal(row.outputDeviceId, 'speaker-default')
+    assert.equal(row.outputDeviceLabel, 'Desk DAC')
+    assert.equal(row.appliedAdvanceMs, 15)
+    assert.equal(
+      service.listPairedSinks()
+        .find((sink) => sink.id === paired.sinkId)
+        ?.trims?.find((trim) => trim.outputDeviceId === 'speaker-default')
+        ?.advanceMs,
+      15
+    )
+  } finally {
+    await service.stop()
+  }
+})
+
 test('Parallax pairing PIN expires', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {

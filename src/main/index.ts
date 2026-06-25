@@ -5373,6 +5373,16 @@ ipcMain.handle('parallax:revokePairedSink', (_event, id: unknown) => {
   return parallaxService.revokePairedSink(id.trim())
 })
 
+ipcMain.handle('parallax:renamePairedSink', (_event, id: unknown, name: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid Parallax sink id.')
+  }
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new Error('Parallax sink name is required.')
+  }
+  return parallaxService.renamePairedSink(id.trim(), name)
+})
+
 ipcMain.handle('parallax:revokeAllPairedSinks', () => {
   return parallaxService.revokeAllPairedSinks()
 })

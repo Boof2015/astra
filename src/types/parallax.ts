@@ -363,6 +363,9 @@ export interface ParallaxConnectedSinkState {
   outputDeviceLabel: string | null
   appliedAdvanceMs: number
   lastSeenAt: number | null
+  // Host-visible network health mirrored from sink telemetry. Null until the sink has reported
+  // at least one clock sample.
+  rttMs?: number | null
 }
 
 export interface ParallaxHostStatus {

@@ -568,21 +568,25 @@ export class ParallaxService {
     return this.pairedSinks
       .slice()
       .sort((left, right) => right.createdAt - left.createdAt)
-      .map((sink) => ({
-        id: sink.id,
-        name: sink.name,
-        tokenPrefix: sink.tokenPrefix,
-        createdAt: sink.createdAt,
-        lastSeenAt: sink.lastSeenAt,
-        revokedAt: sink.revokedAt,
-        // §14.1.1. Trim list passes through so the renderer can preload existing values into the
-        // stepper for any sink/device the user has already trimmed.
-        trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : [],
-        // §20.19(g) / Codex round 1 finding (medium): without forwarding this, Commit 4's
-        // "Already paired" badge cannot match a discovered TXT UUID against the host's paired
-        // sinks even though the schema persists it.
-        ...(sink.remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid: sink.remoteParallaxEndpointUuid } : {})
-      }))
+      .map((sink) => this.toPublicPairedSink(sink))
+  }
+
+  private toPublicPairedSink(sink: PersistedParallaxPairedSink): ParallaxPairedSink {
+    return {
+      id: sink.id,
+      name: sink.name,
+      tokenPrefix: sink.tokenPrefix,
+      createdAt: sink.createdAt,
+      lastSeenAt: sink.lastSeenAt,
+      revokedAt: sink.revokedAt,
+      // §14.1.1. Trim list passes through so the renderer can preload existing values into the
+      // stepper for any sink/device the user has already trimmed.
+      trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : [],
+      // §20.19(g) / Codex round 1 finding (medium): without forwarding this, Commit 4's
+      // "Already paired" badge cannot match a discovered TXT UUID against the host's paired
+      // sinks even though the schema persists it.
+      ...(sink.remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid: sink.remoteParallaxEndpointUuid } : {})
+    }
   }
 
   replacePairedSinks(sinks: PersistedParallaxPairedSink[]): void {
@@ -642,14 +646,18 @@ export class ParallaxService {
     this.connectedSinkStates.delete(id)
     this.emitPairedSinksChange()
     this.emitStatus()
-    return {
-      id: sink.id,
-      name: sink.name,
-      tokenPrefix: sink.tokenPrefix,
-      createdAt: sink.createdAt,
-      lastSeenAt: sink.lastSeenAt,
-      revokedAt: sink.revokedAt
-    }
+    return this.toPublicPairedSink(sink)
+  }
+
+  renamePairedSink(id: string, name: string): ParallaxPairedSink | null {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === id)
+    if (!sink || sink.revokedAt !== null) return null
+    sink.name = normalizeDeviceLabel(name, sink.name)
+    const connected = this.connectedSinkStates.get(id)
+    if (connected) connected.name = sink.name
+    this.emitPairedSinksChange()
+    this.emitStatus()
+    return this.toPublicPairedSink(sink)
   }
 
   revokeAllPairedSinks(): number {
@@ -1206,7 +1214,8 @@ export class ParallaxService {
       outputDeviceId: null,
       outputDeviceLabel: null,
       appliedAdvanceMs: 0,
-      lastSeenAt: null
+      lastSeenAt: null,
+      rttMs: null
     }
     this.connectedSinkStates.set(sinkId, fresh)
     return fresh
@@ -1226,6 +1235,7 @@ export class ParallaxService {
     const previousOutputDeviceId = state.outputDeviceId
     const previousOutputDeviceLabel = state.outputDeviceLabel
     const previousAppliedAdvanceMs = state.appliedAdvanceMs
+    const previousRttMs = state.rttMs
 
     if (typeof body.outputDeviceId === 'string') {
       state.outputDeviceId = body.outputDeviceId
@@ -1239,6 +1249,11 @@ export class ParallaxService {
     }
     if (Number.isFinite(body.appliedAdvanceMs)) {
       state.appliedAdvanceMs = Number(body.appliedAdvanceMs)
+    }
+    if (Number.isFinite(body.rttMs)) {
+      state.rttMs = Number(body.rttMs)
+    } else if (body.rttMs === null) {
+      state.rttMs = null
     }
 
     // First learning of the sink's device, or a switch (e.g. user moved sink to Bluetooth) →
@@ -1267,12 +1282,13 @@ export class ParallaxService {
 
     // Emit status only when something the UI actually displays changed. `lastSeenAt` updates
     // every telemetry tick (1 Hz) and isn't worth a renderer re-render; the three fields the UI
-    // reads from `connectedSinks` are these. Otherwise the renderer would only see device/trim
+    // reads from `connectedSinks` are these. Otherwise the renderer would only see device/trim/RTT
     // changes when some unrelated event fired emitStatus.
     if (
       state.outputDeviceId !== previousOutputDeviceId ||
       state.outputDeviceLabel !== previousOutputDeviceLabel ||
-      state.appliedAdvanceMs !== previousAppliedAdvanceMs
+      state.appliedAdvanceMs !== previousAppliedAdvanceMs ||
+      state.rttMs !== previousRttMs
     ) {
       this.emitStatus()
     }

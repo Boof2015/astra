@@ -16619,6 +16619,158 @@ body::after {
   color: rgba(255, 255, 255, 0.35);
 }
 
+.parallax-sink-management-panel {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 12px 14px 6px;
+  margin-top: 6px;
+}
+
+.parallax-sink-management-header,
+.parallax-sink-row,
+.parallax-sink-row-heading,
+.parallax-sink-row-actions,
+.parallax-sink-management-actions,
+.parallax-trim-stepper,
+.parallax-sink-empty-state {
+  display: flex;
+}
+
+.parallax-sink-management-header {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 10px;
+}
+
+.parallax-sink-management-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.parallax-sink-management-count {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.parallax-sink-management-actions,
+.parallax-sink-row-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.parallax-sink-management-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.parallax-sink-row {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.parallax-sink-row.is-online {
+  border-color: rgba(83, 214, 139, 0.18);
+}
+
+.parallax-sink-row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.parallax-sink-row-heading {
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+}
+
+.parallax-sink-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+  flex: 0 0 auto;
+}
+
+.parallax-sink-status-dot.is-online {
+  background: #53d68b;
+  box-shadow: 0 0 0 3px rgba(83, 214, 139, 0.12);
+}
+
+.parallax-sink-status-dot.is-offline {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.parallax-sink-name {
+  min-width: 0;
+  max-width: 280px;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.88);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parallax-sink-status-label {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.parallax-sink-row.is-online .parallax-sink-status-label {
+  background: rgba(83, 214, 139, 0.12);
+  color: rgba(151, 244, 190, 0.9);
+}
+
+.parallax-sink-rename-input {
+  width: min(280px, 100%);
+  height: 28px;
+}
+
+.parallax-sink-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 4px 12px;
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 10px;
+}
+
+.parallax-trim-stepper {
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.parallax-sink-empty-state {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 12px;
+}
+
 .settings-shell .settings-danger-zone {
   border: 1px solid rgba(248, 113, 113, 0.24);
   border-radius: 12px;

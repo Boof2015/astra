@@ -73,6 +73,7 @@ interface ParallaxSettingsStore {
   reconnectFromPersisted: () => Promise<ParallaxStatus | null>
   disconnectSink: () => Promise<void>
   revokePairedSink: (id: string) => Promise<void>
+  renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
   // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
   setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<void>
   revokeAllPairedSinks: () => Promise<number>
@@ -1256,6 +1257,23 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         await refreshPairedSinks()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
+      }
+    },
+
+    renamePairedSink: async (id, name) => {
+      try {
+        const renamed = await window.electronAPI.parallax.renamePairedSink(id, name)
+        if (renamed) {
+          set((state) => ({
+            pairedSinks: state.pairedSinks.map((sink) => (sink.id === renamed.id ? renamed : sink)),
+            errorMessage: ''
+          }))
+        }
+        await refreshPairedSinks()
+        return renamed
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
       }
     },
 

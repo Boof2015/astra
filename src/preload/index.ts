@@ -894,6 +894,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:reportHostLatency', metrics),
     revokePairedSink: (id: string): Promise<ParallaxPairedSink | null> =>
       ipcRenderer.invoke('parallax:revokePairedSink', id),
+    renamePairedSink: (id: string, name: string): Promise<ParallaxPairedSink | null> =>
+      ipcRenderer.invoke('parallax:renamePairedSink', id, name),
     revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
     clearHostPresenceCache: (sinkId?: string): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:clearHostPresenceCache', sinkId),
@@ -1448,6 +1450,7 @@ declare global {
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+        renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
         revokeAllPairedSinks: () => Promise<number>
         clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
         resetToDefaults: () => Promise<ParallaxStatus>
