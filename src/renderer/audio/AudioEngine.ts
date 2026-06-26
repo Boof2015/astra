@@ -393,6 +393,11 @@ export class AudioEngine {
   private loadGeneration = 0
   private prebufferGeneration = 0
   private parallaxHostPublishGeneration = 0
+  // Parallax trim test tone (a synced metronome) — fully separate from track playback so it never
+  // touches _playbackState / gapless / now-playing. It rides the same host-stream sync path.
+  private testToneBuffer: AudioBuffer | null = null
+  private testToneSourceNode: AudioBufferSourceNode | null = null
+  private testTonePublishGeneration = 0
   // Phase 0 diagnostics: rolling window of (currentTime - getOutputTimestamp().contextTime) in ms,
   // median-filtered to a stable un-quantized output-latency estimate.
   private parallaxTimestampLatencySamples: number[] = []
@@ -2704,6 +2709,127 @@ export class AudioEngine {
         pcmData: interleaved.buffer
       })
     }
+  }
+
+  // ── Parallax trim test tone (synced metronome) ──────────────────────────────
+  // A pleasant accented metronome (HIGH-low-low-low) generated as one looping bar. It is streamed
+  // through the normal host-stream path so every sink plays + trims it in sync, letting the user
+  // tune a speaker by ear. Generated buffer is one bar; the publish loop reads it modulo its length
+  // so the stream loops seamlessly while the timeline stays linear.
+
+  /** Build the metronome buffer at the context sample rate and stash it. Returns stream specs. */
+  async prepareParallaxTestTone(): Promise<{ sampleRate: number; channels: number; totalFrames: number; durationSeconds: number }> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax test tone is only available in standard mode.')
+    }
+    await this.initContext()
+    if (!this.context) throw new Error('Audio context unavailable for Parallax test tone.')
+    const sampleRate = this.context.sampleRate
+    const beatsPerBar = 4
+    const beatSeconds = 0.6 // ~100 BPM
+    const barFrames = Math.round(beatsPerBar * beatSeconds * sampleRate)
+    const buffer = this.context.createBuffer(1, barFrames, sampleRate)
+    const data = buffer.getChannelData(0)
+    const accentHz = 1318.51 // E6 downbeat
+    const beatHz = 880 // A5 off-beats
+    const toneSeconds = 0.09
+    const toneFrames = Math.round(toneSeconds * sampleRate)
+    for (let beat = 0; beat < beatsPerBar; beat++) {
+      const isAccent = beat === 0
+      const freq = isAccent ? accentHz : beatHz
+      const peak = isAccent ? 0.5 : 0.34
+      const beatStart = Math.round(beat * beatSeconds * sampleRate)
+      for (let i = 0; i < toneFrames; i++) {
+        const t = i / sampleRate
+        // Soft attack + exponential decay so it sounds like a pleasant tick, not a hard click.
+        const attack = Math.min(1, (i / sampleRate) / 0.004)
+        const env = attack * Math.exp(-t * 38)
+        data[beatStart + i] = Math.sin(2 * Math.PI * freq * t) * env * peak
+      }
+    }
+    this.testToneBuffer = buffer
+    // Report a long virtual duration: the publish loop streams indefinitely (ever-increasing
+    // startFrame) by reading the bar buffer modulo its length, so sinks must not bound-reject.
+    const totalFrames = Math.round(sampleRate * 3600)
+    return { sampleRate, channels: 1, totalFrames, durationSeconds: 3600 }
+  }
+
+  /** Schedule the metronome on the host's own output, aligned to the shared acoustic timeline. */
+  async playTestToneOnParallaxTimeline(timeline: ParallaxTimelineState): Promise<void> {
+    await this.initContext()
+    if (!this.testToneBuffer || !this.context) return
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+    }
+    this.stopTestToneSource()
+    const startDelaySeconds = (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const hostLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + startDelaySeconds - hostLatencySec
+    const startAtContextTime = Math.max(this.context.currentTime, mappedStartContextTime)
+    const source = this.context.createBufferSource()
+    source.buffer = this.testToneBuffer
+    source.loop = true
+    this.connectSourceWithRouting(source, this.testToneBuffer.numberOfChannels)
+    source.start(startAtContextTime, 0)
+    this.testToneSourceNode = source
+  }
+
+  /** Stream the metronome to sinks indefinitely (looping the bar) until stopped. */
+  async publishTestToneToParallax(streamId: string, timeline: ParallaxTimelineState): Promise<void> {
+    const buffer = this.testToneBuffer
+    if (!buffer) return
+    const generation = ++this.testTonePublishGeneration
+    const sampleRate = buffer.sampleRate
+    const totalLen = buffer.length
+    const source = buffer.getChannelData(0)
+    let virtualFrame = Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+    while (generation === this.testTonePublishGeneration) {
+      const chunkHostTimeMs = timeline.startHostTimeMs + (((virtualFrame - timeline.startFrame) / sampleRate) * 1000)
+      let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+      while (delayMs > 0) {
+        await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+        if (generation !== this.testTonePublishGeneration) return
+        delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+      }
+      const frameCount = PARALLAX_AUDIO_CHUNK_FRAMES
+      const interleaved = new Float32Array(frameCount)
+      for (let i = 0; i < frameCount; i++) {
+        interleaved[i] = source[(virtualFrame + i) % totalLen] ?? 0
+      }
+      await window.electronAPI.parallax.publishHostAudioChunk({
+        streamId,
+        sampleRate,
+        channels: 1,
+        startFrame: virtualFrame,
+        frameCount,
+        hostTimeMs: chunkHostTimeMs,
+        pcmData: interleaved.buffer
+      })
+      virtualFrame += frameCount
+    }
+  }
+
+  private stopTestToneSource(): void {
+    if (this.testToneSourceNode) {
+      try {
+        this.testToneSourceNode.onended = null
+        this.testToneSourceNode.stop()
+      } catch {
+        // already stopped
+      }
+      try {
+        this.testToneSourceNode.disconnect()
+      } catch {
+        // already disconnected
+      }
+      this.testToneSourceNode = null
+    }
+  }
+
+  /** Halt the publish loop and the host's local metronome. */
+  stopParallaxTestTone(): void {
+    this.testTonePublishGeneration += 1
+    this.stopTestToneSource()
   }
 
   private deinterleaveParallaxChunk(chunk: ParallaxAudioChunk): Float32Array[] {

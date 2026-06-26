@@ -77,6 +77,14 @@ export const SETTINGS_SECTIONS = [
     keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail']
   },
   {
+    id: 'parallax',
+    label: 'Parallax',
+    keywords: ['parallax', 'zone', 'speaker', 'speakers', 'sink', 'host', 'multi-room', 'multiroom', 'sync', 'pair', 'pairing', 'lan'],
+    // Experimental feature: hidden until revealed by the "Enable Parallax" master toggle in the
+    // Experimental section (mirrors the Developer-section reveal pattern).
+    hidden: true
+  },
+  {
     id: 'info',
     label: 'Info',
     keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']

@@ -58,6 +58,11 @@ interface ParallaxSettingsStore {
   // §14.1.4 — base64 data URL of artwork for the active sink stream (hero image on Zone
   // Display). Null when no stream, no artwork available, or fetch hasn't completed yet.
   sinkActiveArtworkUrl: string | null
+  // Whether the host is currently streaming the trim test tone (synced metronome), and which
+  // single speaker it's targeted at (null = no test running). The host always plays it locally as
+  // the reference; only `testToneSinkId` hears it among the sinks.
+  isTestToneActive: boolean
+  testToneSinkId: string | null
   init: () => Promise<void>
   refresh: () => Promise<void>
   setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
@@ -89,6 +94,8 @@ interface ParallaxSettingsStore {
   prepareHostSeek: (timeSeconds: number, playing: boolean) => Promise<ParallaxTimelineState | null>
   pauseHostPlayback: () => Promise<void>
   stopHostPlayback: () => Promise<void>
+  startTestTone: (targetSinkId?: string) => Promise<void>
+  stopTestTone: () => Promise<void>
 }
 
 let statusUnsubscribe: (() => void) | null = null
@@ -97,6 +104,11 @@ let audioChunkUnsubscribe: (() => void) | null = null
 let sinkPairedUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
+// Trim test tone: after a cold start both ends report ~0 output latency until audio has flowed, so
+// the first anchor lands at a wrong offset. We let it play for this long, then restart once so the
+// host reference and the sink re-join both anchor with real (warm) latency.
+let testToneWarmRestartTimer: ReturnType<typeof setTimeout> | null = null
+const TEST_TONE_WARM_RESTART_MS = 2500
 // §14.1.4 — sink Zone Display artwork cache. Keyed by trackId so cross-stream re-resolves of
 // the same track don't re-hit the host. Module-level so it survives ZoneDisplay remounts (the
 // Library escape unmounts and remounts the surface). Cap loosely to avoid unbounded growth.
@@ -562,6 +574,55 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   ): Promise<ParallaxTimelineState> => {
     await window.electronAPI.parallax.publishHostTimeline(timeline, options)
     return timeline
+  }
+
+  const cancelTestToneWarmRestart = (): void => {
+    if (testToneWarmRestartTimer) {
+      clearTimeout(testToneWarmRestartTimer)
+      testToneWarmRestartTimer = null
+    }
+  }
+
+  // Start (or restart) the metronome stream + host-local reference for the trim test tone.
+  const startTestToneStream = async (targetSinkId?: string): Promise<boolean> => {
+    try {
+      const specs = await audioEngine.prepareParallaxTestTone()
+      const streamId = `parallax-test-${Date.now()}`
+      const info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'> = {
+        streamId,
+        trackId: 'parallax-test-tone',
+        trackPath: 'parallax://test-tone',
+        title: 'Parallax test tone',
+        artist: 'Astra',
+        album: 'Setup',
+        sampleRate: specs.sampleRate,
+        channels: specs.channels,
+        durationSeconds: specs.durationSeconds,
+        totalFrames: specs.totalFrames
+      }
+      const timeline = await window.electronAPI.parallax.publishHostStreamStart(info, {
+        startFrame: 0,
+        playbackState: 'playing',
+        targetSinkId
+      })
+      await audioEngine.playTestToneOnParallaxTimeline(timeline)
+      void audioEngine.publishTestToneToParallax(streamId, timeline).catch((error) => {
+        set({ errorMessage: toErrorMessage(error) })
+      })
+      return true
+    } catch (error) {
+      set({ errorMessage: toErrorMessage(error) })
+      return false
+    }
+  }
+
+  const teardownTestToneStream = async (): Promise<void> => {
+    audioEngine.stopParallaxTestTone()
+    try {
+      await window.electronAPI.parallax.stopHostStream()
+    } catch {
+      // best-effort; a subsequent stream-start replaces the slot anyway
+    }
   }
 
   const ensureTelemetry = () => {
@@ -1068,6 +1129,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     isInitialized: false,
     errorMessage: '',
     sinkActiveArtworkUrl: null,
+    isTestToneActive: false,
+    testToneSinkId: null,
 
     init: async () => {
       if (get().isInitialized) return
@@ -1341,6 +1404,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     prepareHostPlayback: async (track) => {
+      if (get().isTestToneActive) {
+        cancelTestToneWarmRestart()
+        audioEngine.stopParallaxTestTone()
+        set({ isTestToneActive: false, testToneSinkId: null })
+      }
       if (!get().shouldDelayHostPlayback(track)) return null
       ensureTelemetry()
       startHostEmitAnchorPublish()
@@ -1433,6 +1501,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     resumeHostPlayback: async (track) => {
+      if (get().isTestToneActive) {
+        cancelTestToneWarmRestart()
+        audioEngine.stopParallaxTestTone()
+        set({ isTestToneActive: false, testToneSinkId: null })
+      }
       // §17 control-side: timeline tracking must run even with zero connected sinks, so a sink
       // reconnecting later doesn't get a stale-extrapolated timeline. But Codex round 1 review
       // of §17 caught a regression here: returning the timeline to playerStore unconditionally
@@ -1565,6 +1638,39 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       }
+    },
+
+    // Trim test tone: a synced metronome streamed to all sinks so the user can tune a speaker by
+    // ear. Reuses the proven host-stream path (sinks play + trim it with zero changes). Mutually
+    // exclusive with track playback — the UI gates it on "not playing", and the music stream
+    // entry points stop it if it's somehow still running.
+    startTestTone: async (targetSinkId) => {
+      if (!(get().status?.host.enabled ?? false)) return
+      cancelTestToneWarmRestart()
+      // Switching target: tear the current test down first (stops the host stream so the previous
+      // target goes idle rather than stalling on a stream that no longer flows).
+      if (get().isTestToneActive) await teardownTestToneStream()
+      const ok = await startTestToneStream(targetSinkId)
+      if (!ok) return
+      set({ isTestToneActive: true, testToneSinkId: targetSinkId ?? null })
+      // Warm-up restart: both ends are playing now, which fills `outputLatency`. After a short
+      // beat, restart so the host reference + the sink's re-join hard-anchor with the real latency
+      // instead of the cold ~0. One-shot; cancelled if the test is stopped or switched first.
+      testToneWarmRestartTimer = setTimeout(() => {
+        testToneWarmRestartTimer = null
+        if (!get().isTestToneActive || get().testToneSinkId !== (targetSinkId ?? null)) return
+        void (async () => {
+          await teardownTestToneStream()
+          const restarted = await startTestToneStream(targetSinkId)
+          if (!restarted) set({ isTestToneActive: false, testToneSinkId: null })
+        })()
+      }, TEST_TONE_WARM_RESTART_MS)
+    },
+
+    stopTestTone: async () => {
+      cancelTestToneWarmRestart()
+      await teardownTestToneStream()
+      set({ isTestToneActive: false, testToneSinkId: null })
     }
   }
 })

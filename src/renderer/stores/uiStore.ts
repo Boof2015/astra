@@ -32,6 +32,12 @@ export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'sm
 // `isZoneDisplayActive` derives its initial value from this OR the `--zone` launch flag, and
 // "Library" clears the session flag without touching the persisted preference.
 export const OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY = 'astra-open-zone-display-on-launch-v1'
+// Parallax is an experimental feature gated behind a master reveal toggle (in the Experimental
+// settings section). When on, a dedicated "Parallax" settings section appears in the sidebar.
+// `parallaxSetupComplete` tracks whether the guided first-run flow has been finished/dismissed,
+// so returning users land directly on the management view.
+export const PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY = 'astra-experimental-parallax-enabled-v1'
+export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complete-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -284,6 +290,38 @@ function persistOpenZoneDisplayOnLaunchPreference(enabled: boolean): void {
   }
 }
 
+function readParallaxExperimentEnabledPreference(): boolean {
+  try {
+    return localStorage.getItem(PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistParallaxExperimentEnabledPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readParallaxSetupCompletePreference(): boolean {
+  try {
+    return localStorage.getItem(PARALLAX_SETUP_COMPLETE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistParallaxSetupCompletePreference(complete: boolean): void {
+  try {
+    localStorage.setItem(PARALLAX_SETUP_COMPLETE_STORAGE_KEY, complete ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readLaunchInZoneModeFlag(): boolean {
   // §14.1.4 — `--zone` launch flag (forwarded by main as `electronAPI.parallax.launchInZoneMode`).
   // Single-launch override; does NOT mutate the persisted preference.
@@ -302,6 +340,8 @@ const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
+const initialParallaxExperimentEnabled = readParallaxExperimentEnabledPreference()
+const initialParallaxSetupComplete = readParallaxSetupCompletePreference()
 const initialZoneDisplayLaunchFlag = readLaunchInZoneModeFlag()
 // Session state: zone display is active at startup if the preference is on OR `--zone` was passed.
 // "Library" escape sets this back to false without touching the preference.
@@ -321,6 +361,8 @@ interface UIStore {
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
   openZoneDisplayOnLaunch: boolean
+  parallaxExperimentEnabled: boolean
+  parallaxSetupComplete: boolean
   isZoneDisplayActive: boolean
   analyzerHeightPx: number
   uiScalePercent: number
@@ -352,6 +394,8 @@ interface UIStore {
   toggleAnalyzerRack: () => void
   setFullscreen: (fs: boolean) => void
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
+  setParallaxExperimentEnabled: (enabled: boolean) => void
+  setParallaxSetupComplete: (complete: boolean) => void
   exitZoneDisplayForSession: () => void
   enterZoneDisplay: () => void
   setAnalyzerHeightPx: (heightPx: number) => void
@@ -401,6 +445,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
   openZoneDisplayOnLaunch: initialOpenZoneDisplayOnLaunch,
+  parallaxExperimentEnabled: initialParallaxExperimentEnabled,
+  parallaxSetupComplete: initialParallaxSetupComplete,
   isZoneDisplayActive: initialIsZoneDisplayActive,
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
@@ -468,6 +514,16 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setOpenZoneDisplayOnLaunch: (enabled) => {
     persistOpenZoneDisplayOnLaunchPreference(enabled)
     set({ openZoneDisplayOnLaunch: enabled })
+  },
+  setParallaxExperimentEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistParallaxExperimentEnabledPreference(normalized)
+    set({ parallaxExperimentEnabled: normalized })
+  },
+  setParallaxSetupComplete: (complete) => {
+    const normalized = Boolean(complete)
+    persistParallaxSetupCompletePreference(normalized)
+    set({ parallaxSetupComplete: normalized })
   },
   exitZoneDisplayForSession: () => set({ isZoneDisplayActive: false }),
   enterZoneDisplay: () => set({ isZoneDisplayActive: true }),

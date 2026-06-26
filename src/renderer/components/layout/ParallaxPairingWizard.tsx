@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ParallaxDiscoveredSink, ParallaxDiscoveryEvent, ParallaxPairedSink } from '../../../types/parallax'
+import {
+  PARALLAX_SINK_DEFAULT_PORT,
+  type ParallaxDiscoveredSink,
+  type ParallaxDiscoveryEvent,
+  type ParallaxPairedSink
+} from '../../../types/parallax'
 import { useParallaxStore } from '../../stores/parallaxStore'
 
 // §20 / §14.1.5 Commit 4. Host-side "Add Sink" wizard. Two phases:
@@ -32,7 +37,9 @@ type WizardPhase =
       submitting: boolean
     }
   | { kind: 'success'; sinkName: string }
-  | { kind: 'error'; message: string }
+  // `retryBaseUrl` carries the sink we were mid-pairing so the error screen can offer a one-tap
+  // "Try again" that re-requests a PIN, instead of dead-ending back at the browse list.
+  | { kind: 'error'; message: string; retryBaseUrl?: string }
 
 function pickSecondsRemaining(expiresAtMs: number, now: number): number {
   return Math.max(0, Math.ceil((expiresAtMs - now) / 1000))
@@ -139,7 +146,11 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
         submitting: false
       })
     } catch (error) {
-      setPhase({ kind: 'error', message: error instanceof Error ? error.message : 'Pair request failed.' })
+      setPhase({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Pair request failed.',
+        retryBaseUrl: baseUrl
+      })
     }
   }, [])
 
@@ -164,7 +175,7 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
         setPhase({ ...phase, attempts: phase.attempts + 1, pinInput: '', submitting: false })
         return
       }
-      setPhase({ kind: 'error', message })
+      setPhase({ kind: 'error', message, retryBaseUrl: phase.sinkBaseUrl })
     }
   }, [phase, onClose])
 
@@ -180,7 +191,16 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
     const trimmed = manualUrl.trim()
     if (!trimmed) return
     let url = trimmed
-    if (!/^https?:\/\//.test(url)) url = `http://${url}`
+    if (!/^https?:\/\//i.test(url)) url = `http://${url}`
+    // A bare IP/hostname has no port, so it would hit :80 and fail. Default to the sink port
+    // (38404) when the user didn't type one — covers "192.168.1.42" and "http://host".
+    try {
+      const parsed = new URL(url)
+      if (!parsed.port) parsed.port = String(PARALLAX_SINK_DEFAULT_PORT)
+      url = parsed.toString()
+    } catch {
+      // Not parseable — let initiatePair surface the error.
+    }
     void handleInitiate(url.replace(/\/+$/, ''))
   }, [manualUrl, handleInitiate])
 
@@ -189,12 +209,12 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
       className="parallax-pairing-wizard-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Add Sink"
+      aria-label="Add a speaker"
       onClick={(event) => { if (event.target === event.currentTarget) handleCancel() }}
     >
       <div className="parallax-pairing-wizard-card">
         <div className="parallax-pairing-wizard-head">
-          <span className="parallax-pairing-wizard-title">Add Sink</span>
+          <span className="parallax-pairing-wizard-title">Add a speaker</span>
           <button
             type="button"
             className="parallax-pairing-wizard-close"
@@ -206,12 +226,12 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
         {phase.kind === 'browse' && (
           <>
             <div className="parallax-pairing-wizard-section-head">
-              <span className="parallax-pairing-wizard-section-label">Discovered</span>
+              <span className="parallax-pairing-wizard-section-label">On this network</span>
               <span className="parallax-pairing-wizard-section-count">{discoveredList.length}</span>
             </div>
             <div className="parallax-pairing-wizard-list">
               {discoveredList.length === 0 ? (
-                <div className="parallax-pairing-wizard-empty">Searching for sinks on this network…</div>
+                <div className="parallax-pairing-wizard-empty">Looking for speakers on this network…</div>
               ) : (
                 discoveredList.map((sink) => {
                   const matchedPair = sink.endpointUuid ? pairedByEndpointUuid.get(sink.endpointUuid) : undefined
@@ -242,7 +262,7 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
             <div className="parallax-pairing-wizard-divider">or</div>
 
             <form className="parallax-pairing-wizard-manual" onSubmit={handleManualSubmit}>
-              <label className="parallax-pairing-wizard-manual-label">Enter sink URL</label>
+              <label className="parallax-pairing-wizard-manual-label">Add by address</label>
               <div className="parallax-pairing-wizard-manual-row">
                 <input
                   type="text"
@@ -261,7 +281,7 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
 
         {phase.kind === 'initiating' && (
           <div className="parallax-pairing-wizard-loading">
-            Contacting {phase.baseUrl}…
+            Connecting to {phase.baseUrl}…
           </div>
         )}
 
@@ -290,6 +310,15 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
           <div className="parallax-pairing-wizard-error">
             <div className="parallax-pairing-wizard-error-message">{phase.message}</div>
             <div className="parallax-pairing-wizard-row-actions">
+              {phase.retryBaseUrl && (
+                <button
+                  type="button"
+                  className="settings-btn settings-btn-primary"
+                  onClick={() => { const url = phase.retryBaseUrl; if (url) void handleInitiate(url) }}
+                >
+                  Try again
+                </button>
+              )}
               <button type="button" className="settings-btn" onClick={() => setPhase({ kind: 'browse' })}>
                 Back
               </button>

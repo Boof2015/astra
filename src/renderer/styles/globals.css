@@ -20620,3 +20620,463 @@ body::after {
   font-size: 0.92rem;
   color: #fca5a5;
 }
+
+/* ── Parallax guided setup + role-reframed settings ─────────────────────────── */
+
+/* Setup overlay (reuses .parallax-pairing-wizard-backdrop / -card for the shell) */
+.parallax-setup-card {
+  gap: 18px;
+}
+
+.parallax-setup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.parallax-setup-kicker {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent-text, #bae6fd);
+}
+
+.parallax-setup-title {
+  margin: 4px 0 0;
+  font-size: 1.18rem;
+  font-weight: 650;
+  color: #fff;
+}
+
+.parallax-setup-close {
+  background: transparent;
+  border: 0;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.parallax-setup-close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.parallax-setup-step {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.parallax-setup-lead {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.parallax-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 520px) {
+  .parallax-choice-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.parallax-choice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  text-align: left;
+  padding: 18px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.parallax-choice-card:hover:not(:disabled) {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.08);
+  transform: translateY(-1px);
+}
+
+.parallax-choice-card:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.parallax-choice-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--accent, #38bdf8);
+}
+
+.parallax-choice-title {
+  font-size: 1rem;
+  font-weight: 650;
+  color: #fff;
+}
+
+.parallax-choice-desc {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.parallax-setup-status {
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.66);
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.parallax-setup-status.is-good {
+  color: rgba(167, 243, 208, 0.92);
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.parallax-setup-cta {
+  align-self: flex-start;
+}
+
+.parallax-setup-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.parallax-setup-identity-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.parallax-setup-identity-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.parallax-setup-identity-value {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  color: rgba(255, 255, 255, 0.86);
+  text-align: right;
+}
+
+.parallax-setup-inline-toggle {
+  padding: 0;
+}
+
+.parallax-setup-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* Management view */
+.parallax-management {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.parallax-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.settings-card-label-bare {
+  padding: 0;
+  border-bottom: 0;
+}
+
+/* Speakers card must not clip the row overflow menu (.settings-card is overflow:hidden). */
+.parallax-speakers-card {
+  overflow: visible;
+}
+
+.parallax-speaker-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.parallax-speaker-list-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.parallax-speaker-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 14px;
+  font-size: 0.86rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* Decluttered speaker row */
+.parallax-speaker-row {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.parallax-speaker-row:last-child {
+  border-bottom: 0;
+}
+
+.parallax-speaker-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+}
+
+.parallax-speaker-row-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.parallax-speaker-row-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.parallax-speaker-row-status {
+  font-size: 0.76rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.parallax-speaker-row-substatus {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.parallax-speaker-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.parallax-speaker-row-tune {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 14px 14px 34px;
+}
+
+.parallax-tune-label {
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.parallax-tune-test {
+  align-self: center;
+}
+
+.parallax-tune-pending {
+  text-align: center;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.42);
+  padding: 2px 8px;
+}
+
+.parallax-tune-countdown {
+  font-family: var(--font-mono);
+  color: var(--accent-text, #bae6fd);
+  font-variant-numeric: tabular-nums;
+}
+
+.parallax-tune-value {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-text, #bae6fd);
+  min-width: 96px;
+  text-align: center;
+}
+
+/* One compact, centered cluster so the two halves read as a single control. */
+.parallax-tune-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.parallax-tune-side-label {
+  font-size: 0.76rem;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+.parallax-tune-nudges {
+  display: flex;
+  gap: 4px;
+}
+
+.parallax-tune-nudges .settings-btn {
+  min-width: 38px;
+  font-variant-numeric: tabular-nums;
+}
+
+.parallax-tune-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.parallax-tune-hint {
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.parallax-tune-reset {
+  flex-shrink: 0;
+}
+
+/* Row overflow menu */
+.parallax-row-menu-wrap {
+  position: relative;
+}
+
+.parallax-row-menu-btn {
+  min-width: 36px;
+  padding: 8px 10px;
+}
+
+.parallax-row-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: transparent;
+  border: 0;
+  cursor: default;
+}
+
+.parallax-row-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(18, 20, 26, 0.98);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+.parallax-row-menu-item {
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.parallax-row-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+}
+
+.parallax-row-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.parallax-row-menu-item.is-danger {
+  color: #fca5a5;
+}
+
+.parallax-row-menu-item.is-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
+}
+
+/* Advanced disclosure */
+.parallax-advanced-disclosure {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.parallax-advanced-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+  user-select: none;
+}
+
+.parallax-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.parallax-advanced-summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform var(--transition-fast);
+}
+
+.parallax-advanced-disclosure[open] .parallax-advanced-summary::before {
+  transform: rotate(90deg);
+}
+
+.parallax-advanced-disclosure[open] .parallax-advanced-summary {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}

@@ -84,6 +84,9 @@ export interface PersistedParallaxPairedSink extends ParallaxPairedSink {
 interface ActiveParallaxStream {
   info: ParallaxStreamInfo
   timeline: ParallaxTimelineState
+  // OFF-WIRE per-sink targeting (trim test tone). When set, only this sink receives the
+  // stream-start event, the /join stream, and the audio chunks.
+  targetSinkId?: string
   packets: Array<{
     startFrame: number
     endFrame: number
@@ -720,6 +723,7 @@ export class ParallaxService {
     this.activeStream = {
       info: stream,
       timeline,
+      targetSinkId: options.targetSinkId,
       packets: []
     }
     // §14.1.4 — pre-resolve artwork bytes for sinks. Off-wire: never reaches `stream` payload.
@@ -751,7 +755,7 @@ export class ParallaxService {
       stream,
       timeline,
       emittedAtHostTimeMs: now
-    })
+    }, options.targetSinkId)
     this.emitStatus()
     return timeline
   }
@@ -812,8 +816,10 @@ export class ParallaxService {
       this.activeStream.packets.splice(0, this.activeStream.packets.length - MAX_AUDIO_CHUNKS)
     }
 
+    const targetSinkId = this.activeStream.targetSinkId
     for (const client of this.audioClients) {
       if (client.streamId !== chunk.streamId) continue
+      if (targetSinkId && client.sinkId !== targetSinkId) continue
       if (endFrame <= client.fromFrame) continue
       try {
         client.response.write(packet)
@@ -1503,12 +1509,16 @@ export class ParallaxService {
 
     if (method === 'POST' && path === '/v1/parallax/join') {
       const hostTimeMs = parallaxNowMs()
+      // A targeted stream (trim test tone) is only for its target sink. Anyone else joining sees
+      // no active stream, so they stay idle instead of playing the test.
+      const targetSinkId = this.activeStream?.targetSinkId
+      const visibleToThisSink = !targetSinkId || targetSinkId === sink.id
       toJsonResponse(res, 200, {
         sinkId: sink.id,
         groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
         hostTimeMs,
-        stream: this.activeStream?.info ?? null,
-        timeline: this.getTimelineForNewSink(hostTimeMs)
+        stream: visibleToThisSink ? (this.activeStream?.info ?? null) : null,
+        timeline: visibleToThisSink ? this.getTimelineForNewSink(hostTimeMs) : null
       } satisfies ParallaxJoinResponse)
       return
     }
@@ -1788,8 +1798,9 @@ export class ParallaxService {
     req.on('aborted', cleanup)
   }
 
-  private broadcastTimelineEvent(event: ParallaxTimelineEvent): void {
+  private broadcastTimelineEvent(event: ParallaxTimelineEvent, onlySinkId?: string): void {
     for (const client of this.sseClients) {
+      if (onlySinkId && client.sinkId !== onlySinkId) continue
       try {
         writeSseEvent(client.response, 'parallax', event)
       } catch {

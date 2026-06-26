@@ -74,16 +74,9 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
-import {
-  PARALLAX_DEFAULT_PORT,
-  PARALLAX_MAX_PORT,
-  PARALLAX_MIN_PORT,
-  type ParallaxConnectedSinkState,
-  type ParallaxPairedSink
-} from '../../../types/parallax'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
-import ParallaxPairingWizard from '../layout/ParallaxPairingWizard'
+import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
   | 'reset-theme'
@@ -205,14 +198,6 @@ function formatSleepTimerRemaining(remainingMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-function formatParallaxTrimMs(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(0)} ms`
-}
-
-function formatParallaxLastSeen(value: number | null | undefined): string {
-  return value ? new Date(value).toLocaleString() : 'Never'
-}
-
 function parseSleepTimerMinutesInput(input: string): number | null {
   const trimmed = input.trim()
   if (!/^\d+$/.test(trimmed)) return null
@@ -280,7 +265,6 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
-  const [showPairingWizard, setShowPairingWizard] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
     () => buildInitialResetStatusMap()
@@ -362,21 +346,6 @@ export default function SettingsView() {
     revokeAllPairedDevices: revokeAllPhoneRemotePairedDevices
   } = usePhoneRemoteSettingsStore()
   const {
-    status: parallaxStatus,
-    pairedSinks: parallaxPairedSinks,
-    errorMessage: parallaxErrorMessage,
-    setHostEnabled: setParallaxHostEnabled,
-    setSinkEnabled: setParallaxSinkEnabled,
-    setHostPort: setParallaxHostPort,
-    revokePairedSink: revokeParallaxPairedSink,
-    renamePairedSink: renameParallaxPairedSink,
-    revokeAllPairedSinks: revokeAllParallaxPairedSinks,
-    reconnectFromPersisted: reconnectParallaxFromPersisted,
-    disconnectSink: disconnectParallaxSink,
-    clearHostPresenceCache: clearParallaxHostPresenceCache,
-    setSinkTrim: setParallaxSinkTrim
-  } = useParallaxStore()
-  const {
     status: lastFmStatus,
     isAuthorizing: lastFmIsAuthorizing,
     errorMessage: lastFmErrorMessage,
@@ -428,21 +397,6 @@ export default function SettingsView() {
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
-  const [parallaxPortInput, setParallaxPortInput] = useState(String(PARALLAX_DEFAULT_PORT))
-  // §20 Commit 4. Legacy host-URL pre-fill is dropped — the wizard does discovery + manual URL
-  // entry inline. Keeping the state and bootstrap for now would just be dead code.
-  const [parallaxHostUrlInput, setParallaxHostUrlInput] = useState('')
-  useEffect(() => {
-    let cancelled = false
-    void window.electronAPI.parallax.getSinkConnection().then((persisted) => {
-      if (cancelled || !persisted) return
-      if (persisted.baseUrl && !parallaxHostUrlInput) {
-        setParallaxHostUrlInput(persisted.baseUrl)
-      }
-    }).catch(() => { /* main process handles its own errors */ })
-    return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
   const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
   const [lastFmEditingProfileId, setLastFmEditingProfileId] = useState<string | null>(null)
   const [lastFmProfileProtocolInput, setLastFmProfileProtocolInput] = useState<LastFmScrobbleProtocol>('lastfm2')
@@ -452,9 +406,6 @@ export default function SettingsView() {
   const [lastFmProfileSessionKeyInput, setLastFmProfileSessionKeyInput] = useState('')
   const [localApiFeedback, setLocalApiFeedback] = useState('')
   const [phoneRemoteFeedback, setPhoneRemoteFeedback] = useState('')
-  const [parallaxFeedback, setParallaxFeedback] = useState('')
-  const [renamingParallaxSinkId, setRenamingParallaxSinkId] = useState<string | null>(null)
-  const [parallaxRenameInput, setParallaxRenameInput] = useState('')
   const [lastFmProfileFeedback, setLastFmProfileFeedback] = useState('')
   const [infoFeedback, setInfoFeedback] = useState('')
   const [infoFeedbackTone, setInfoFeedbackTone] = useState<'success' | 'error'>('success')
@@ -486,8 +437,8 @@ export default function SettingsView() {
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
   const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
   const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
-  const openZoneDisplayOnLaunch = useUIStore((state) => state.openZoneDisplayOnLaunch)
-  const setOpenZoneDisplayOnLaunch = useUIStore((state) => state.setOpenZoneDisplayOnLaunch)
+  const parallaxExperimentEnabled = useUIStore((state) => state.parallaxExperimentEnabled)
+  const setParallaxExperimentEnabled = useUIStore((state) => state.setParallaxExperimentEnabled)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -553,9 +504,29 @@ export default function SettingsView() {
     return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
   }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
   const visibleSettingsSections = useMemo(
-    () => SETTINGS_SECTIONS.filter((section) => developerSectionVisible || !('hidden' in section && section.hidden)),
-    [developerSectionVisible]
+    () => SETTINGS_SECTIONS.filter((section) => {
+      if (!('hidden' in section && section.hidden)) return true
+      // Parallax is revealed by its own Experimental master toggle; other hidden sections
+      // (Developer) stay gated behind the developer visibility preference.
+      if (section.id === 'parallax') return parallaxExperimentEnabled
+      return developerSectionVisible
+    }),
+    [developerSectionVisible, parallaxExperimentEnabled]
   )
+
+  // Master on/off for the experimental Parallax feature. Enabling reveals + jumps to the dedicated
+  // section; disabling fully stops host/sink networking before the section disappears (it is an
+  // experimental feature — "off" means off, not just hidden).
+  const handleToggleParallaxExperiment = (enabled: boolean) => {
+    setParallaxExperimentEnabled(enabled)
+    if (enabled) {
+      setActiveSectionId('parallax')
+    } else {
+      const parallax = useParallaxStore.getState()
+      void parallax.setHostEnabled(false)
+      void parallax.setSinkEnabled(false)
+    }
+  }
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -564,7 +535,6 @@ export default function SettingsView() {
   useEffect(() => {
     void initLocalApi()
     void initPhoneRemote()
-    void useParallaxStore.getState().init()
   }, [initLocalApi, initPhoneRemote])
 
   useEffect(() => {
@@ -580,11 +550,6 @@ export default function SettingsView() {
     if (!phoneRemoteStatus) return
     setPhoneRemotePortInput(String(phoneRemoteStatus.port))
   }, [phoneRemoteStatus?.port])
-
-  useEffect(() => {
-    if (!parallaxStatus) return
-    setParallaxPortInput(String(parallaxStatus.host.port))
-  }, [parallaxStatus?.host.port])
 
   useEffect(() => {
     const lanUrls = phoneRemoteStatus?.lanUrls ?? []
@@ -613,14 +578,6 @@ export default function SettingsView() {
     }, 2600)
     return () => window.clearTimeout(timeoutId)
   }, [phoneRemoteFeedback])
-
-  useEffect(() => {
-    if (!parallaxFeedback) return
-    const timeoutId = window.setTimeout(() => {
-      setParallaxFeedback('')
-    }, 2600)
-    return () => window.clearTimeout(timeoutId)
-  }, [parallaxFeedback])
 
   useEffect(() => {
     if (!lastFmProfileFeedback) return
@@ -858,46 +815,6 @@ export default function SettingsView() {
     : phoneRemoteControllerUrls[0] ?? ''
   const phoneRemotePairedDeviceCount = phoneRemoteStatus?.pairedDeviceCount ?? phoneRemotePairedDevices.length
   const phoneRemotePendingPairingCount = phoneRemoteStatus?.pendingPairingCount ?? phoneRemotePendingPairingRequests.length
-  const parallaxHostEnabled = parallaxStatus?.host.enabled ?? false
-  const parallaxHostLanUrls = parallaxStatus?.host.lanUrls ?? []
-  const parallaxHostUrl = parallaxHostLanUrls[0] ?? `http://127.0.0.1:${PARALLAX_DEFAULT_PORT}`
-  const parallaxSinkConnected = parallaxStatus?.sink.connected ?? false
-  const parallaxSinkRemovedByHost = parallaxStatus?.sink.removedByHost ?? false
-  const parallaxActiveSinks = parallaxPairedSinks.filter((sink) => sink.revokedAt == null)
-  const parallaxPresenceRows = parallaxStatus?.host.connectedSinks ?? []
-  const parallaxConnectedBySinkId = useMemo(() => {
-    return new Map<string, ParallaxConnectedSinkState>(
-      parallaxPresenceRows.map((sink) => [sink.sinkId, sink])
-    )
-  }, [parallaxPresenceRows])
-  const parallaxManagedSinks = useMemo(() => {
-    return parallaxActiveSinks
-      .map((sink, index) => ({ sink, index, connected: parallaxConnectedBySinkId.get(sink.id) ?? null }))
-      .sort((left, right) => {
-        const leftOnline = left.connected?.online ? 1 : 0
-        const rightOnline = right.connected?.online ? 1 : 0
-        if (leftOnline !== rightOnline) return rightOnline - leftOnline
-        const createdDelta = right.sink.createdAt - left.sink.createdAt
-        return createdDelta || left.index - right.index
-      })
-  }, [parallaxActiveSinks, parallaxConnectedBySinkId])
-  const parallaxActiveStreamLabel = parallaxStatus?.host.activeStream
-    ? `Streaming ${parallaxStatus.host.activeStream.title || 'current track'}`
-    : 'No active stream'
-  // §14.1.2 follow-up (Codex round 1, finding 3). "Removed by host" overrides the normal summary
-  // — the user just hit a wall and the next step is re-pairing, not interpreting connection
-  // state. lastError already carries the explanation; the summary line is the headline.
-  const parallaxSummary = parallaxSinkRemovedByHost
-    ? 'Removed by host. Re-pair to reconnect.'
-    : parallaxSinkConnected
-      ? `Connected as a sink to ${parallaxStatus?.sink.persistedHostName ?? parallaxStatus?.sink.baseUrl ?? 'host'}.`
-      : !parallaxHostEnabled
-        ? 'Parallax host is off.'
-        : parallaxHostLanUrls.length === 0
-          ? 'Parallax host is enabled, but Astra has not found a usable LAN address yet.'
-          : parallaxStatus?.host.connectedSinkCount
-            ? `${parallaxStatus.host.connectedSinkCount} sink${parallaxStatus.host.connectedSinkCount === 1 ? '' : 's'} connected.`
-            : 'Parallax host is waiting for paired sinks.'
   const localApiPhoneRemoteSummary = !phoneRemoteEnabled
     ? 'Phone remote is off. Turn it on when you want Astra to expose `/remote/` on your LAN.'
     : phoneRemoteLanUrls.length === 0
@@ -1115,15 +1032,6 @@ export default function SettingsView() {
     }
   }
 
-  const copyParallaxToClipboard = async (value: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setParallaxFeedback(`${label} copied.`)
-    } catch {
-      setParallaxFeedback(`Failed to copy ${label.toLowerCase()}.`)
-    }
-  }
-
   const copyInfoToClipboard = async (value: string, label: string) => {
     try {
       await navigator.clipboard.writeText(value)
@@ -1165,109 +1073,6 @@ export default function SettingsView() {
     void setPhoneRemotePort(parsedPort).then((status) => {
       if (!status) return
       setPhoneRemoteFeedback(`Phone remote port set to ${status.port}.`)
-    })
-  }
-
-  const handleSaveParallaxPort = () => {
-    const parsedPort = Number(parallaxPortInput)
-    if (!Number.isInteger(parsedPort) || parsedPort < PARALLAX_MIN_PORT || parsedPort > PARALLAX_MAX_PORT) {
-      setParallaxFeedback(`Port must be an integer between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
-      return
-    }
-
-    void setParallaxHostPort(parsedPort).then((status) => {
-      if (!status) return
-      setParallaxFeedback(`Parallax port set to ${status.host.port}.`)
-    })
-  }
-
-  // §20 Commit 4. "Add Sink" handler. If host networking is off, ask the user to enable it
-  // first (Codex §20.19(e) — don't silently start host networking). On confirm, enable + open
-  // the wizard. On cancel, do nothing. Wizard mount handles the rest.
-  const handleOpenPairingWizard = async () => {
-    if (!parallaxHostEnabled) {
-      if (!window.confirm('Adding sinks needs Parallax Host enabled. Turn it on now?')) return
-      const status = await setParallaxHostEnabled(true)
-      if (!status?.host.enabled) {
-        setParallaxFeedback('Could not enable Parallax Host.')
-        return
-      }
-    }
-    setShowPairingWizard(true)
-  }
-
-  const handleReconnectParallaxHost = () => {
-    void reconnectParallaxFromPersisted().then((status) => {
-      if (!status) return
-      setParallaxFeedback(status.sink.connected ? 'Reconnected to host.' : 'Reconnect started.')
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to reconnect to host.'
-      setParallaxFeedback(message)
-    })
-  }
-
-  const handleDisconnectParallaxHost = () => {
-    void disconnectParallaxSink().then(() => {
-      setParallaxFeedback('Disconnected from host.')
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to disconnect from host.'
-      setParallaxFeedback(message)
-    })
-  }
-
-  const handleClearParallaxPresenceCache = (sinkId?: string) => {
-    if (!sinkId && !window.confirm('Clear all cached Parallax host presence rows? Pairing credentials are preserved.')) {
-      return
-    }
-    void clearParallaxHostPresenceCache(sinkId).then((status) => {
-      if (!status) return
-      setParallaxFeedback(sinkId ? 'Cleared cached Parallax presence row.' : 'Cleared cached Parallax presence rows.')
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to clear Parallax presence cache.'
-      setParallaxFeedback(message)
-    })
-  }
-
-  const startRenamingParallaxSink = (sink: ParallaxPairedSink) => {
-    setRenamingParallaxSinkId(sink.id)
-    setParallaxRenameInput(sink.name)
-  }
-
-  const cancelRenamingParallaxSink = () => {
-    setRenamingParallaxSinkId(null)
-    setParallaxRenameInput('')
-  }
-
-  const saveRenamingParallaxSink = () => {
-    if (!renamingParallaxSinkId) return
-    const nextName = parallaxRenameInput.trim()
-    if (!nextName) {
-      setParallaxFeedback('Parallax sink name is required.')
-      return
-    }
-    void renameParallaxPairedSink(renamingParallaxSinkId, nextName).then((renamed) => {
-      if (!renamed) {
-        setParallaxFeedback('Could not rename sink.')
-        return
-      }
-      setParallaxFeedback('Renamed sink.')
-      cancelRenamingParallaxSink()
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to rename sink.'
-      setParallaxFeedback(message)
-    })
-  }
-
-  // §14.1.2 / §16.6. Sink-side "Forget host" — symmetric to host's "Revoke". Wipes durable
-  // credential + cancels any in-flight auto-reconnect. Recoverable: user re-pairs from scratch.
-  // Single-click `window.confirm` for the destructive-but-recoverable action per §16.6 lean.
-  const handleForgetParallaxHost = () => {
-    if (!window.confirm('Forget this host? You will need to re-pair to reconnect.')) return
-    void window.electronAPI.parallax.forgetSinkConnection().then(() => {
-      setParallaxFeedback('Forgot host. Pair again to reconnect.')
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to forget host.'
-      setParallaxFeedback(message)
     })
   }
 
@@ -2741,311 +2546,36 @@ export default function SettingsView() {
                   </div>
                 )}
               </div>
-              <div className="settings-integration-card">
-                <div className="settings-integration-card-head">
-                  <h4>Parallax</h4>
-                  <p>Experimental LAN multi-zone sync for standard-mode local playback.</p>
-                </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Parallax</div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Enable Parallax Host</span>
+                    <span className="settings-field-label">Enable Parallax</span>
                     <button
-                      className={`settings-toggle ${parallaxHostEnabled ? 'active' : ''}`}
-                      onClick={() => void setParallaxHostEnabled(!parallaxHostEnabled)}
+                      className={`settings-toggle ${parallaxExperimentEnabled ? 'active' : ''}`}
+                      onClick={() => handleToggleParallaxExperiment(!parallaxExperimentEnabled)}
                     >
-                      {parallaxHostEnabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                  {/* §20 Commit 1. Sink-role toggle. Off by default for new installs; auto-enabled
-                      on first launch for installs that already had a persisted sink connection
-                      from §14.1.2 (so existing pairings survive transparently). Off here stops
-                      mDNS, the sink HTTP listener (when those land in Commits 2 + 3), and
-                      auto-reconnect. Existing credentials persist — use "Forget Host" to wipe. */}
-                  <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Enable Parallax Sink</span>
-                    <button
-                      className={`settings-toggle ${(parallaxStatus?.sink.sinkEnabled ?? false) ? 'active' : ''}`}
-                      onClick={() => void setParallaxSinkEnabled(!(parallaxStatus?.sink.sinkEnabled ?? false))}
-                    >
-                      {(parallaxStatus?.sink.sinkEnabled ?? false) ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                  <div className="settings-field">
-                    <span className="settings-field-label">Parallax Port</span>
-                    <div className="settings-inline-row">
-                      <input
-                        className="settings-select settings-inline-input settings-inline-input-compact"
-                        type="number"
-                        min={PARALLAX_MIN_PORT}
-                        max={PARALLAX_MAX_PORT}
-                        step={1}
-                        value={parallaxPortInput}
-                        onChange={(event) => setParallaxPortInput(event.target.value)}
-                        onBlur={handleSaveParallaxPort}
-                      />
-                      <button className="settings-btn" onClick={handleSaveParallaxPort}>
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                  {/* §20 Commit 4 — Codex round 1 finding (medium): the QR + "Scan on the
-                      sink" copy was for the legacy host-issues-PIN flow, which is gone. Host
-                      address stays here as a debug/info readout — discovery handles the actual
-                      pair flow now via Add Sink below. */}
-                  <div className="settings-field">
-                    <span className="settings-field-label">Host Address</span>
-                    <div className="settings-inline-row">
-                      <span className="settings-chip settings-chip-mono settings-chip-grow">{parallaxHostUrl}</span>
-                      <button
-                        className="settings-btn"
-                        disabled={!parallaxHostEnabled}
-                        onClick={() => void copyParallaxToClipboard(parallaxHostUrl, 'Parallax host URL')}
-                      >
-                        Copy
-                      </button>
-                    </div>
-                  </div>
-                  {/* §20 Commit 4. "Add Sink" replaces the legacy "Generate PIN" + "Connect
-                      This Astra as Sink" UI. Wizard handles mDNS discovery + sink-generated PIN
-                      flow. Host-opt-in prompt: if host is off, ask before opening so users
-                      don't silently start host networking. */}
-                  <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Add Sink</span>
-                    <button
-                      className="settings-btn settings-btn-primary"
-                      onClick={handleOpenPairingWizard}
-                    >
-                      Add Sink
-                    </button>
-                  </div>
-                  {/* §14.1.2 / §16.6 Forget Host — sink-side symmetric of host's Revoke. Still
-                      lives here so the user can wipe stale credentials when the host is
-                      unreachable. Visible whenever a persisted credential exists. */}
-                  {(parallaxStatus?.sink.hasPersistedConnection ?? false) && (
-                    <div className="settings-field settings-field-inline">
-                      <span className="settings-field-label">Paired Host</span>
-                      <div className="settings-inline-row">
-                        <span className="settings-info-value">
-                          {parallaxStatus?.sink.persistedHostName ?? '—'}
-                        </span>
-                        {parallaxSinkConnected ? (
-                          <button
-                            className="settings-btn"
-                            onClick={handleDisconnectParallaxHost}
-                            title="Disconnect from paired host"
-                          >
-                            Disconnect
-                          </button>
-                        ) : (
-                          <button
-                            className="settings-btn settings-btn-primary"
-                            disabled={!(parallaxStatus?.sink.sinkEnabled ?? false)}
-                            onClick={handleReconnectParallaxHost}
-                            title={(parallaxStatus?.sink.sinkEnabled ?? false)
-                              ? 'Reconnect to paired host'
-                              : 'Enable Parallax Sink before reconnecting'}
-                          >
-                            Reconnect
-                          </button>
-                        )}
-                        <button
-                          className="settings-btn settings-btn-danger"
-                          onClick={handleForgetParallaxHost}
-                          title="Forget paired host"
-                        >
-                          Forget Host
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Open Zone Display on Launch</span>
-                    <button
-                      className={`settings-toggle ${openZoneDisplayOnLaunch ? 'active' : ''}`}
-                      onClick={() => setOpenZoneDisplayOnLaunch(!openZoneDisplayOnLaunch)}
-                    >
-                      {openZoneDisplayOnLaunch ? 'Enabled' : 'Disabled'}
+                      {parallaxExperimentEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
                   <p className="settings-note">
-                    When on, Astra opens the dedicated Zone Display surface at launch — full-screen now-playing
-                    for paired sinks, identity card (hostname + LAN IPs) when unpaired or revoked. Use the
-                    Library affordance in Zone Display to return to the normal shell for this session.
-                    Pass <code>--zone</code> on the command line to force Zone Display for a single launch
-                    without changing this preference.
+                    Experimental LAN multi-room sync. Reveals a dedicated <strong>Parallax</strong> section where
+                    you choose whether this machine plays music or acts as a speaker. Turning this off stops all
+                    Parallax networking on this machine and hides the section.
                   </p>
-                  <div className="settings-field">
-                    <span className="settings-field-label">Status</span>
-                    <span className="settings-info-value">{parallaxSummary}</span>
-                  </div>
-                </div>
-                {parallaxFeedback && <p className="settings-note settings-note-success">{parallaxFeedback}</p>}
-                {parallaxErrorMessage && <p className="settings-note settings-note-error">{parallaxErrorMessage}</p>}
-                <div className="parallax-sink-management-panel">
-                  <div className="parallax-sink-management-header">
-                    <div>
-                      <span className="parallax-sink-management-title">Host Sinks</span>
-                      <span className="parallax-sink-management-count">
-                        {parallaxActiveSinks.length} paired sink{parallaxActiveSinks.length !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-                    <div className="parallax-sink-management-actions">
-                      <button
-                        className="settings-btn"
-                        onClick={() => handleClearParallaxPresenceCache()}
-                        disabled={parallaxPresenceRows.length === 0}
-                      >
-                        Clear cached status
-                      </button>
-                      {parallaxActiveSinks.length >= 2 && (
-                        <button
-                          className="settings-btn settings-btn-danger"
-                          onClick={() => void revokeAllParallaxPairedSinks()}
-                        >
-                          Revoke All
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {parallaxManagedSinks.length > 0 ? (
-                    <div className="parallax-sink-management-list">
-                      {parallaxManagedSinks.map(({ sink, connected }) => {
-                        // §14.1.1. Match the connected-sink state (ephemeral: online + currently-
-                        // reported output device + applied trim) with the persisted paired-sink row
-                        // (durable: id + name + trims array).
-                        //
-                        // Codex finding (medium, 2026-06-06): the stepper's edit base must be the
-                        // PERSISTED trim — the host's intent — not the sink's `appliedAdvanceMs`
-                        // echo. Echo lags push by ~1 telemetry tick, so basing the edit on echo
-                        // means quick repeat clicks land on the same target (last push hasn't been
-                        // echoed yet) and the user's persisted intent is hidden by stale state.
-                        // Sink echo is shown as a small diagnostic when it disagrees with the
-                        // persisted value (in-flight push or sink-side override).
-                        const outputDeviceId = connected?.outputDeviceId ?? null
-                        const outputDeviceLabel = connected?.outputDeviceLabel ?? null
-                        const persistedTrim = outputDeviceId
-                          ? (sink.trims ?? []).find((t) => t.outputDeviceId === outputDeviceId)
-                          : undefined
-                        const persistedAdvanceMs = persistedTrim?.advanceMs ?? 0
-                        const sinkAppliedAdvanceMs = connected?.appliedAdvanceMs
-                        const canEditTrim = Boolean(outputDeviceId)
-                        const echoMismatch = canEditTrim
-                          && typeof sinkAppliedAdvanceMs === 'number'
-                          && Math.abs(sinkAppliedAdvanceMs - persistedAdvanceMs) > 0.5
-                        const isRenaming = renamingParallaxSinkId === sink.id
-                        const lastSeen = connected?.lastSeenAt ?? sink.lastSeenAt
-                        const rttLabel = typeof connected?.rttMs === 'number'
-                          ? `${Math.round(connected.rttMs)} ms RTT`
-                          : 'RTT unknown'
-                        const handleTrimAdjust = (deltaMs: number) => {
-                          if (!outputDeviceId) return
-                          const next = Math.max(-500, Math.min(500, persistedAdvanceMs + deltaMs))
-                          if (next === persistedAdvanceMs) return
-                          void setParallaxSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, next)
-                        }
-
-                        return (
-                          <div key={sink.id} className={`parallax-sink-row ${connected?.online ? 'is-online' : 'is-offline'}`}>
-                            <div className="parallax-sink-row-main">
-                              <div className="parallax-sink-row-heading">
-                                <span className={`parallax-sink-status-dot ${connected?.online ? 'is-online' : 'is-offline'}`} />
-                                {isRenaming ? (
-                                  <input
-                                    className="settings-select parallax-sink-rename-input"
-                                    value={parallaxRenameInput}
-                                    autoFocus
-                                    onChange={(event) => setParallaxRenameInput(event.target.value)}
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Enter') saveRenamingParallaxSink()
-                                      if (event.key === 'Escape') cancelRenamingParallaxSink()
-                                    }}
-                                  />
-                                ) : (
-                                  <span className="parallax-sink-name">{sink.name}</span>
-                                )}
-                                <span className="parallax-sink-status-label">
-                                  {connected?.online ? 'Online' : 'Offline'}
-                                </span>
-                              </div>
-
-                              <div className="parallax-sink-meta-grid">
-                                <span>Last seen {formatParallaxLastSeen(lastSeen)}</span>
-                                <span>{rttLabel}</span>
-                                <span>{parallaxActiveStreamLabel}</span>
-                                <span>
-                                  {canEditTrim
-                                    ? `Output ${outputDeviceLabel ?? outputDeviceId}`
-                                    : 'Output unknown'}
-                                </span>
-                                <span>Desired trim {formatParallaxTrimMs(persistedAdvanceMs)}</span>
-                                {echoMismatch && typeof sinkAppliedAdvanceMs === 'number' && (
-                                  <span>Applied trim {formatParallaxTrimMs(sinkAppliedAdvanceMs)}</span>
-                                )}
-                              </div>
-
-                              {canEditTrim && (
-                                <div className="parallax-trim-stepper">
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title="Trim -5 ms">-5</button>
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title="Trim -1 ms">-1</button>
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(+1)} title="Trim +1 ms">+1</button>
-                                  <button className="settings-btn" onClick={() => handleTrimAdjust(+5)} title="Trim +5 ms">+5</button>
-                                  {persistedAdvanceMs !== 0 && (
-                                    <button
-                                      className="settings-btn"
-                                      onClick={() => outputDeviceId && void setParallaxSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, 0)}
-                                      title="Reset trim to 0"
-                                    >
-                                      Reset
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="parallax-sink-row-actions">
-                              {isRenaming ? (
-                                <>
-                                  <button className="settings-btn settings-btn-primary" onClick={saveRenamingParallaxSink}>
-                                    Save
-                                  </button>
-                                  <button className="settings-btn" onClick={cancelRenamingParallaxSink}>
-                                    Cancel
-                                  </button>
-                                </>
-                              ) : (
-                                <button className="settings-btn" onClick={() => startRenamingParallaxSink(sink)}>
-                                  Rename
-                                </button>
-                              )}
-                              <button
-                                className="settings-btn"
-                                onClick={() => handleClearParallaxPresenceCache(sink.id)}
-                                disabled={!connected}
-                              >
-                                Clear cached status
-                              </button>
-                              <button
-                                className="settings-btn settings-btn-danger"
-                                onClick={() => void revokeParallaxPairedSink(sink.id)}
-                              >
-                                Revoke
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <div className="parallax-sink-empty-state">
-                      <span>No sinks paired yet.</span>
-                      <button className="settings-btn settings-btn-primary" onClick={handleOpenPairingWizard}>
-                        Add Sink
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'parallax' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Parallax</h3>
+            </div>
+            <div className="settings-cards">
+              <ParallaxSettingsPanel />
             </div>
           </section>
             )}
@@ -3500,9 +3030,6 @@ export default function SettingsView() {
           onRevokeDevice={handleRevokePhoneRemotePairedDevice}
           onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
         />
-      )}
-      {showPairingWizard && (
-        <ParallaxPairingWizard onClose={() => setShowPairingWizard(false)} />
       )}
     </div>
   )

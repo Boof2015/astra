@@ -216,6 +216,10 @@ export interface ParallaxHostStreamStartOptions {
   startFrame?: number
   playbackState?: ParallaxPlaybackState
   artworkHash?: string
+  // OFF-WIRE. When set, this stream is delivered to ONLY the sink with this id — both the
+  // stream-start event and the audio fan-out are gated to it. Used by the trim test tone to send
+  // a metronome to a single speaker; other sinks never see the stream.
+  targetSinkId?: string
 }
 
 // Options for publishing a same-stream timeline update. `resetAudio` marks a source-position
