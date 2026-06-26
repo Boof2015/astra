@@ -670,13 +670,16 @@ export class ParallaxService {
     return this.getStatus()
   }
 
-  // Pillar 2 (power events). After the host machine wakes, its accepted sockets are likely
-  // half-open and connectedSinkStates is stale. Rebinding the listener gives a clean accept path,
-  // and startHostServer→stopHostServer→closeAllHostClients drops the phantom clients so sinks
-  // re-handshake cleanly. No-op unless host mode is active.
-  async handleHostPowerResume(): Promise<void> {
+  // Pillar 2 (power events). After the host wakes, the per-sink SSE/audio sockets it held before
+  // sleep are half-open — writing into them is futile and connectedSinkStates still reports them
+  // online. Drop those phantom clients (non-blocking) so the host's view is accurate and a
+  // reconnecting sink lands on a clean handshake. We deliberately do NOT rebind the listener: the
+  // listening socket survives sleep and keeps accepting, whereas a restart would both block on
+  // server.close() (it waits on the very half-open sockets we're shedding) and wipe activeStream —
+  // which the reconnecting sinks need to /join and resync to. No-op unless host mode is active.
+  handleHostPowerResume(): void {
     if (!this.config.enabled) return
-    await this.startHostServer()
+    this.closeAllHostClients()
   }
 
   // Pillar 2 (power events). On suspend, proactively close client connections so each sink gets a

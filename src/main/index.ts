@@ -1673,10 +1673,9 @@ function handleParallaxPowerResume(): void {
   // sink relocating this host (Pillar 3) needs a fresh announcement to find it.
   refreshParallaxAdvertisement()
   if (parallaxHostConfig.enabled) {
-    // Host: rebind the listener + drop phantom clients so a woken host cleanly re-accepts.
-    void parallaxService.handleHostPowerResume().catch((error) => {
-      console.warn('Parallax host resume restart failed:', error)
-    })
+    // Host: drop phantom (half-open) sink clients so the woken host's view is accurate and
+    // reconnecting sinks get a clean handshake. The listening socket + activeStream are preserved.
+    parallaxService.handleHostPowerResume()
     return
   }
   // Sink: force a fresh connect (attempt counter reset to 0 → no backoff delay). connectSink tears
