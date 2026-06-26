@@ -7,6 +7,7 @@ import type {
   ParallaxClockSample,
   ParallaxConnectedSinkState,
   ParallaxHostConfig,
+  ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxJoinResponse,
@@ -37,6 +38,7 @@ import {
   buildParallaxClockSample,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
+  resolveParallaxStreamNormalization,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs
 } from '../../types/parallax'
@@ -761,7 +763,7 @@ export class ParallaxService {
   }
 
   publishHostStreamStart(
-    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+    info: ParallaxHostStreamStartInfo,
     options: ParallaxHostStreamStartOptions = {}
   ): ParallaxTimelineState {
     if (!this.config.enabled || !this.active) {
@@ -769,12 +771,15 @@ export class ParallaxService {
     }
 
     const now = parallaxNowMs()
+    const normalization = resolveParallaxStreamNormalization(info)
     const stream: ParallaxStreamInfo = {
       ...info,
       sampleRate: Math.max(1, Math.round(info.sampleRate)),
       channels: Math.max(1, Math.min(8, Math.round(info.channels))),
       totalFrames: Math.max(0, Math.floor(info.totalFrames)),
       durationSeconds: Math.max(0, info.durationSeconds),
+      normalizationGainDb: normalization.normalizationGainDb,
+      normalizationMode: normalization.normalizationMode,
       chunkFrames: PARALLAX_AUDIO_CHUNK_FRAMES,
       groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
       createdAt: Date.now()

@@ -2,6 +2,7 @@ import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
   ParallaxAudioChunk,
+  ParallaxNormalizationMode,
   ParallaxOutputLatencyMetrics,
   ParallaxStreamInfo,
   ParallaxTimelineState
@@ -9,7 +10,8 @@ import type {
 import {
   PARALLAX_AUDIO_CHUNK_FRAMES,
   clampParallaxPlaybackRatePpm,
-  mapHostTimeToSinkTimeMs
+  mapHostTimeToSinkTimeMs,
+  resolveParallaxStreamNormalization
 } from '../../types/parallax'
 import type {
   AudioBufferMemoryStats,
@@ -130,7 +132,7 @@ export function isSupersededAudioLoadError(error: unknown): boolean {
     )
 }
 
-type GainApplicationMode = 'off' | 'normalization' | 'replaygain'
+type GainApplicationMode = ParallaxNormalizationMode
 
 interface GainState {
   gainDb: number
@@ -194,6 +196,8 @@ interface ParallaxSinkRuntimeState {
   sampleRate: number
   channels: number
   durationSeconds: number
+  normalizationGainDb: number
+  normalizationMode: GainApplicationMode
   currentFrame: number
   // Wall time (performance.timeOrigin + performance.now() domain, ms) at which the worklet's
   // currentFrame was reported — derived by mapping the worklet's contextTime through our own
@@ -397,6 +401,7 @@ export class AudioEngine {
   // touches _playbackState / gapless / now-playing. It rides the same host-stream sync path.
   private testToneBuffer: AudioBuffer | null = null
   private testToneSourceNode: AudioBufferSourceNode | null = null
+  private testToneNormalizationBypassNode: GainNode | null = null
   private testTonePublishGeneration = 0
   // Phase 0 diagnostics: rolling window of (currentTime - getOutputTimestamp().contextTime) in ms,
   // median-filtered to a stable un-quantized output-latency estimate.
@@ -1916,6 +1921,14 @@ export class AudioEngine {
     this.parallaxSinkState = null
     this.disconnectParallaxSinkNode()
     this.stopTimeUpdate()
+    this.normalizationApproximate = false
+    if (!this.remoteStreamState && !this.audioBuffer) {
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
+    }
   }
 
   private createRemoteStreamNode(channelCount: number): AudioWorkletNode {
@@ -2367,12 +2380,18 @@ export class AudioEngine {
     this.currentBufferTrackPath = `parallax:${stream.streamId}`
     this.pauseTime = 0
     this.currentReplayGainDb = null
+    const streamNormalization = resolveParallaxStreamNormalization(stream)
+    const streamNormalizationGainDb = streamNormalization.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(streamNormalization.normalizationGainDb)
     this.parallaxSinkNode = this.createParallaxSinkNode(stream.channels, stream.sampleRate)
     this.parallaxSinkState = {
       streamId: stream.streamId,
       sampleRate: stream.sampleRate,
       channels: stream.channels,
       durationSeconds: stream.durationSeconds,
+      normalizationGainDb: streamNormalizationGainDb,
+      normalizationMode: streamNormalization.normalizationMode,
       currentFrame: 0,
       currentFrameAtWallMs: 0,
       bufferedFrames: 0,
@@ -2385,11 +2404,7 @@ export class AudioEngine {
 
     this.applyChannelRoutingPreferences(stream.channels)
     this.applyAnalysisRoutingPreferences(stream.channels)
-    this.applyGainState({
-      gainDb: 0,
-      linearGain: 1,
-      mode: 'off'
-    })
+    this.applyParallaxSinkNormalization()
     this._playbackState = 'paused'
     this.emit('durationChange', stream.durationSeconds)
     this.emit('stateChange', this._playbackState)
@@ -2769,9 +2784,16 @@ export class AudioEngine {
     const source = this.context.createBufferSource()
     source.buffer = this.testToneBuffer
     source.loop = true
-    this.connectSourceWithRouting(source, this.testToneBuffer.numberOfChannels)
+    const normalizationBypass = this.context.createGain()
+    const currentNormalizationGain = this.getCurrentNormalizationLinearGain()
+    normalizationBypass.gain.value = Number.isFinite(currentNormalizationGain) && currentNormalizationGain > 0
+      ? 1 / currentNormalizationGain
+      : 1
+    source.connect(normalizationBypass)
+    this.connectSourceWithRouting(normalizationBypass, this.testToneBuffer.numberOfChannels)
     source.start(startAtContextTime, 0)
     this.testToneSourceNode = source
+    this.testToneNormalizationBypassNode = normalizationBypass
   }
 
   /** Stream the metronome to sinks indefinitely (looping the bar) until stopped. */
@@ -2823,6 +2845,15 @@ export class AudioEngine {
         // already disconnected
       }
       this.testToneSourceNode = null
+    }
+    if (this.testToneNormalizationBypassNode) {
+      this.disconnectSourceRouting(this.testToneNormalizationBypassNode)
+      try {
+        this.testToneNormalizationBypassNode.disconnect()
+      } catch {
+        // already disconnected
+      }
+      this.testToneNormalizationBypassNode = null
     }
   }
 
@@ -3106,6 +3137,23 @@ export class AudioEngine {
     return this.computeNormalizationForAnalysis(analysis)
   }
 
+  private applyParallaxSinkNormalization(): void {
+    const sinkState = this.parallaxSinkState
+    if (!sinkState) return
+
+    const gainDb = sinkState.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(sinkState.normalizationGainDb)
+
+    sinkState.normalizationGainDb = gainDb
+    this.normalizationApproximate = false
+    this.applyGainState({
+      gainDb,
+      linearGain: this.toLinearGain(gainDb),
+      mode: sinkState.normalizationMode
+    })
+  }
+
   private applyGainState(gainState: GainState): void {
     this._normalizationGainDb = gainState.gainDb
     this._normalizationMode = gainState.mode
@@ -3205,6 +3253,10 @@ export class AudioEngine {
       })
       return
     }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
+      return
+    }
     if (!enabled) {
       this.applyGainState({
         gainDb: 0,
@@ -3243,6 +3295,10 @@ export class AudioEngine {
       })
       return
     }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
+      return
+    }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization()
     }
@@ -3275,6 +3331,10 @@ export class AudioEngine {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
       })
+      return
+    }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
       return
     }
 
@@ -3311,6 +3371,10 @@ export class AudioEngine {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
       })
+      return
+    }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
       return
     }
 

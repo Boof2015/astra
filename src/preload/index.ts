@@ -33,13 +33,13 @@ import type {
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
   ParallaxPairResponse,
+  ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxPairingPin,
   ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxStatus,
-  ParallaxStreamInfo,
   ParallaxTimelineEvent,
   ParallaxTimelineState,
   PersistedParallaxSinkConnection
@@ -878,7 +878,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:connectSink', config),
     disconnectSink: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:disconnectSink'),
     publishHostStreamStart: (
-      info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+      info: ParallaxHostStreamStartInfo,
       options?: ParallaxHostStreamStartOptions
     ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostStreamStart', info, options),
     publishHostAudioChunk: (chunk: ParallaxAudioChunk): Promise<void> =>
@@ -1440,7 +1440,7 @@ declare global {
         connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
         disconnectSink: () => Promise<ParallaxStatus>
         publishHostStreamStart: (
-          info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+          info: ParallaxHostStreamStartInfo,
           options?: ParallaxHostStreamStartOptions
         ) => Promise<ParallaxTimelineState>
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>

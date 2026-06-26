@@ -9,6 +9,7 @@ import {
   fitHostEmitAnchorLine,
   hostEmitAnchorSlopeToPpm,
   mapHostTimeToSinkTimeMs,
+  resolveParallaxStreamNormalization,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs,
   type ParallaxAudioChunk
@@ -174,6 +175,61 @@ test('Parallax audio packet waits for complete frame', () => {
   }))
 
   assert.equal(decodeParallaxAudioPacket(packet.slice(0, packet.byteLength - 1)), null)
+})
+
+test('Parallax stream normalization preserves finite host gain metadata', () => {
+  assert.deepEqual(
+    resolveParallaxStreamNormalization({
+      normalizationGainDb: -7.25,
+      normalizationMode: 'normalization'
+    }),
+    {
+      normalizationGainDb: -7.25,
+      normalizationMode: 'normalization'
+    }
+  )
+
+  assert.deepEqual(
+    resolveParallaxStreamNormalization({
+      normalizationGainDb: 2.5,
+      normalizationMode: 'replaygain'
+    }),
+    {
+      normalizationGainDb: 2.5,
+      normalizationMode: 'replaygain'
+    }
+  )
+})
+
+test('Parallax stream normalization defaults missing or malformed metadata to off', () => {
+  const expected = {
+    normalizationGainDb: 0,
+    normalizationMode: 'off'
+  }
+
+  assert.deepEqual(resolveParallaxStreamNormalization(undefined), expected)
+  assert.deepEqual(resolveParallaxStreamNormalization({}), expected)
+  assert.deepEqual(
+    resolveParallaxStreamNormalization({
+      normalizationGainDb: -6,
+      normalizationMode: 'off'
+    }),
+    expected
+  )
+  assert.deepEqual(
+    resolveParallaxStreamNormalization({
+      normalizationGainDb: Number.NaN,
+      normalizationMode: 'normalization'
+    }),
+    expected
+  )
+  assert.deepEqual(
+    resolveParallaxStreamNormalization({
+      normalizationGainDb: -6,
+      normalizationMode: 'invalid-mode'
+    }),
+    expected
+  )
 })
 
 // §20.19(d) migration. Existing persisted sink connection should migrate `parallaxSinkEnabled`

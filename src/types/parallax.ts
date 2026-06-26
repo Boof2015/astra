@@ -78,6 +78,46 @@ export const PARALLAX_REBUFFER_MARGIN_MS = 500
 
 export type ParallaxPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type ParallaxRole = 'idle' | 'host' | 'sink'
+export type ParallaxNormalizationMode = 'off' | 'normalization' | 'replaygain'
+
+export interface ParallaxStreamNormalization {
+  normalizationGainDb: number
+  normalizationMode: ParallaxNormalizationMode
+}
+
+export type ParallaxHostStreamStartInfo =
+  Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt' | 'normalizationGainDb' | 'normalizationMode'>
+  & Partial<ParallaxStreamNormalization>
+
+function normalizeParallaxNormalizationMode(value: unknown): ParallaxNormalizationMode | null {
+  return value === 'off' || value === 'normalization' || value === 'replaygain'
+    ? value
+    : null
+}
+
+export function resolveParallaxStreamNormalization(
+  value: { normalizationGainDb?: unknown; normalizationMode?: unknown } | null | undefined
+): ParallaxStreamNormalization {
+  const normalizationMode = normalizeParallaxNormalizationMode(value?.normalizationMode)
+  const normalizationGainDb = value?.normalizationGainDb
+
+  if (
+    !normalizationMode
+    || normalizationMode === 'off'
+    || typeof normalizationGainDb !== 'number'
+    || !Number.isFinite(normalizationGainDb)
+  ) {
+    return {
+      normalizationGainDb: 0,
+      normalizationMode: 'off'
+    }
+  }
+
+  return {
+    normalizationGainDb,
+    normalizationMode
+  }
+}
 
 // §15.5 — per-output-device manual trim, persisted alongside the paired sink. `outputDeviceId` is
 // the storage key resolution from §15.4: prefers `audioSettingsStore.selectedDeviceId` on the sink,
@@ -171,7 +211,7 @@ export interface ParallaxClockSample {
   offsetMs: number
 }
 
-export interface ParallaxStreamInfo {
+export interface ParallaxStreamInfo extends ParallaxStreamNormalization {
   streamId: string
   trackId: string
   trackPath: string

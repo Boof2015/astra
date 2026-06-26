@@ -6,6 +6,15 @@ import { ParallaxService } from './parallax.ts'
 import type { ParallaxHostConfig, ParallaxPairResponse } from '../../types/parallax.ts'
 import { decodeParallaxAudioPacket } from '../../types/parallax.ts'
 
+type ParallaxSseTestEvent = {
+  type: string
+  stream?: {
+    streamId: string
+    normalizationGainDb?: number
+    normalizationMode?: string
+  }
+}
+
 async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = createNetServer()
@@ -87,9 +96,9 @@ async function pairSink(service: ParallaxService, baseUrl: string, sinkName: str
 async function readParallaxSseEvents(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   count: number
-): Promise<Array<{ type: string; stream?: { streamId: string } }>> {
+): Promise<ParallaxSseTestEvent[]> {
   const decoder = new TextDecoder()
-  const events: Array<{ type: string; stream?: { streamId: string } }> = []
+  const events: ParallaxSseTestEvent[] = []
   let buffer = ''
 
   for (let attempt = 0; attempt < 16 && events.length < count; attempt += 1) {
@@ -103,7 +112,7 @@ async function readParallaxSseEvents(
       buffer = buffer.slice(boundary + 2)
       const dataLine = rawEvent.split(/\r?\n/).find((line) => line.startsWith('data: '))
       if (dataLine) {
-        events.push(JSON.parse(dataLine.slice('data: '.length)) as { type: string; stream?: { streamId: string } })
+        events.push(JSON.parse(dataLine.slice('data: '.length)) as ParallaxSseTestEvent)
       }
       boundary = buffer.indexOf('\n\n')
     }
@@ -449,6 +458,55 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
   }
 })
 
+test('Parallax stream metadata carries host normalization gain through status and join', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    const paired = await pairSink(service, baseUrl)
+    service.publishHostStreamStart({
+      streamId: 'stream-normalized-test',
+      trackId: 'track-normalized-test',
+      trackPath: '/tmp/normalized-test.flac',
+      title: 'Normalized Test',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48000,
+      channels: 2,
+      durationSeconds: 1,
+      totalFrames: 48000,
+      normalizationGainDb: -8.25,
+      normalizationMode: 'replaygain'
+    })
+
+    const activeStream = service.getStatus().host.activeStream
+    assert.equal(activeStream?.streamId, 'stream-normalized-test')
+    assert.equal(activeStream?.normalizationGainDb, -8.25)
+    assert.equal(activeStream?.normalizationMode, 'replaygain')
+
+    const joinResponse = await fetch(`${baseUrl}/v1/parallax/join`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${paired.token}` }
+    })
+    assert.equal(joinResponse.status, 200)
+    const join = await joinResponse.json() as {
+      stream: {
+        streamId: string
+        normalizationGainDb: number
+        normalizationMode: string
+      } | null
+    }
+    assert.equal(join.stream?.streamId, 'stream-normalized-test')
+    assert.equal(join.stream?.normalizationGainDb, -8.25)
+    assert.equal(join.stream?.normalizationMode, 'replaygain')
+  } finally {
+    await service.stop()
+  }
+})
+
 test('Parallax events endpoint delivers consecutive stream-start metadata updates', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {
@@ -476,7 +534,9 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
         sampleRate: 48000,
         channels: 2,
         durationSeconds: 1,
-        totalFrames: 48000
+        totalFrames: 48000,
+        normalizationGainDb: -3.5,
+        normalizationMode: 'normalization'
       })
       service.publishHostStreamStart({
         streamId: 'stream-two',
@@ -488,13 +548,24 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
         sampleRate: 48000,
         channels: 2,
         durationSeconds: 1,
-        totalFrames: 48000
+        totalFrames: 48000,
+        normalizationGainDb: 1.25,
+        normalizationMode: 'replaygain'
       })
 
       const events = await readParallaxSseEvents(reader, 2)
+      const streamStarts = events.filter((event) => event.type === 'stream-start')
       assert.deepEqual(
-        events.filter((event) => event.type === 'stream-start').map((event) => event.stream?.streamId),
+        streamStarts.map((event) => event.stream?.streamId),
         ['stream-one', 'stream-two']
+      )
+      assert.deepEqual(
+        streamStarts.map((event) => event.stream?.normalizationGainDb),
+        [-3.5, 1.25]
+      )
+      assert.deepEqual(
+        streamStarts.map((event) => event.stream?.normalizationMode),
+        ['normalization', 'replaygain']
       )
     } finally {
       await reader.cancel().catch(() => undefined)

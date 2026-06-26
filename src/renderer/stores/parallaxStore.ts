@@ -3,6 +3,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import type { Track } from '../types/audio'
 import type {
   ParallaxAudioChunk,
+  ParallaxHostStreamStartInfo,
   ParallaxPairedSink,
   ParallaxPairResponse,
   ParallaxPairingPin,
@@ -196,7 +197,7 @@ function buildParallaxStreamInfo(
   track: Track,
   streamId: string,
   buffer: AudioBuffer
-): Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'> {
+): ParallaxHostStreamStartInfo {
   return {
     streamId,
     trackId: track.id,
@@ -207,7 +208,9 @@ function buildParallaxStreamInfo(
     sampleRate: buffer.sampleRate,
     channels: Math.max(1, Math.min(8, buffer.numberOfChannels)),
     durationSeconds: buffer.duration,
-    totalFrames: buffer.length
+    totalFrames: buffer.length,
+    normalizationGainDb: audioEngine.getNormalizationGainDb(),
+    normalizationMode: audioEngine.getNormalizationMode()
   }
 }
 
@@ -592,7 +595,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     try {
       const specs = await audioEngine.prepareParallaxTestTone()
       const streamId = `parallax-test-${Date.now()}`
-      const info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'> = {
+      const info: ParallaxHostStreamStartInfo = {
         streamId,
         trackId: 'parallax-test-tone',
         trackPath: 'parallax://test-tone',
@@ -602,7 +605,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         sampleRate: specs.sampleRate,
         channels: specs.channels,
         durationSeconds: specs.durationSeconds,
-        totalFrames: specs.totalFrames
+        totalFrames: specs.totalFrames,
+        normalizationGainDb: 0,
+        normalizationMode: 'off'
       }
       const timeline = await window.electronAPI.parallax.publishHostStreamStart(info, {
         startFrame: 0,
