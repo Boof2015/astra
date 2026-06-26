@@ -267,10 +267,12 @@ export default function ZoneDisplay() {
 
   return (
     <div className={`zone-display fullscreen-overlay ${chromeVisible ? '' : 'is-idle'}`} role="main">
-      {/* Reuse fullscreen's backdrop machinery — art-bathed blurred image, color wash, scrim. */}
+      {/* Reuse fullscreen's backdrop machinery — art-bathed blurred image, color wash, scrim. Only
+          bathe in artwork while actually playing; idle/disconnected falls back to the plain wash so
+          a stale album image doesn't linger after the host goes away. */}
       <div className="fullscreen-backdrop" aria-hidden="true">
         <div className="fullscreen-backdrop-layer fullscreen-backdrop-layer-current">
-          {artworkUrl ? (
+          {nowPlaying && artworkUrl ? (
             <img className="fullscreen-backdrop-image" src={artworkUrl} alt="" />
           ) : (
             <div className="fullscreen-backdrop-fallback" />

@@ -73,13 +73,16 @@ const PARALLAX_AUDIO_STALL_CHECK_MS = 400
 const PARALLAX_AUDIO_RECONNECT_BACKFILL_MS = 1_000
 const STATUS_RETRY_DELAY_MS = 1_000
 const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
+// Persistent reconnect backoff cap. A room speaker must keep trying indefinitely so it rejoins on
+// its own whenever the host comes back — exponential backoff from the base above, capped here so a
+// long-down host is still polled at this interval (rejoin within ~this long of the host returning).
+const SINK_RECONNECT_MAX_DELAY_MS = 20_000
 // §14.1.4 — host-liveness grace window. The SSE event stream is the host's control channel; when it
 // drops (host app closed / quit) the sink keeps a connection config (so it can auto-reconnect) but
 // the host is unreachable. After this grace window with the stream still down, mark the host
 // unreachable so the UI (Zone Display) leaves now-playing for an idle "reconnecting" state. The
 // grace absorbs brief WiFi blips that reconnect within ~1 s without flicker.
 const PARALLAX_HOST_LOST_MS = 4_000
-const SINK_AUTO_RECONNECT_ATTEMPTS = 3
 const MAX_BODY_BYTES = 8 * 1024
 const MAX_AUDIO_CHUNKS = 12_000
 
@@ -2034,22 +2037,23 @@ export class ParallaxService {
     if (this.sinkReconnectTimer !== null) return
 
     const normalizedReason = reason.trim().replace(/\.+$/, '') || 'Parallax connection interrupted'
-    if (this.sinkReconnectAttempts >= SINK_AUTO_RECONNECT_ATTEMPTS) {
-      this.sinkLastError = `${normalizedReason}. Parallax sink reconnect stopped after ${SINK_AUTO_RECONNECT_ATTEMPTS} attempts.`
-      this.emitStatus()
-      return
-    }
-
     const attempt = this.sinkReconnectAttempts + 1
     this.sinkReconnectAttempts = attempt
-    this.sinkLastError = `${normalizedReason}. Retrying Parallax connection (${attempt}/${SINK_AUTO_RECONNECT_ATTEMPTS})...`
+    // Never give up while a connection config exists (it's cleared on explicit disconnect, sink
+    // disable, or host revoke). Exponential backoff from the base, capped so a long-down host is
+    // polled every SINK_RECONNECT_MAX_DELAY_MS until it returns.
+    const delay = Math.min(
+      SINK_AUTO_RECONNECT_DELAY_MS * 2 ** Math.min(attempt - 1, 5),
+      SINK_RECONNECT_MAX_DELAY_MS
+    )
+    this.sinkLastError = `${normalizedReason}. Reconnecting…`
     this.emitStatus()
 
     this.sinkReconnectTimer = setTimeout(() => {
       this.sinkReconnectTimer = null
       if (this.sinkConnection !== connection) return
       void this.reconnectSink(connection)
-    }, SINK_AUTO_RECONNECT_DELAY_MS)
+    }, delay)
   }
 
   private async reconnectSink(connection: ParallaxSinkConnectionState): Promise<void> {
