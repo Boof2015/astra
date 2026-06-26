@@ -77,12 +77,27 @@ const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
 // its own whenever the host comes back — exponential backoff from the base above, capped here so a
 // long-down host is still polled at this interval (rejoin within ~this long of the host returning).
 const SINK_RECONNECT_MAX_DELAY_MS = 20_000
+// Pillar 3 — after this many consecutive failed reconnects against the persisted host address, start
+// asking main to relocate the host via mDNS before each subsequent attempt. ~3 attempts is roughly
+// the first ~14 s of trying the old address (2s+4s+8s backoff), long enough to be confident the
+// address is genuinely stale rather than a momentary blip, short enough to recover quickly.
+const PARALLAX_RELOCATE_AFTER_ATTEMPTS = 3
 // §14.1.4 — host-liveness grace window. The SSE event stream is the host's control channel; when it
 // drops (host app closed / quit) the sink keeps a connection config (so it can auto-reconnect) but
 // the host is unreachable. After this grace window with the stream still down, mark the host
 // unreachable so the UI (Zone Display) leaves now-playing for an idle "reconnecting" state. The
 // grace absorbs brief WiFi blips that reconnect within ~1 s without flicker.
 const PARALLAX_HOST_LOST_MS = 4_000
+// Liveness-driven reconnect. The clock probe (every CLOCK_SYNC_INTERVAL_MS) already detects a dead
+// host within ~3 s, and SSE events / audio chunks each prove the host is alive too — but a host that
+// *sleeps* (vs. cleanly quitting) leaves the long-lived SSE/audio sockets half-open: `reader.read()`
+// blocks forever with no FIN/RST, so nothing on those channels ever schedules a reconnect. We track
+// the last healthy contact across ALL channels and, if the host goes silent past this window, force a
+// reconnect (abort the dead readers + re-handshake) — exactly what a manual disconnect/reconnect does.
+// Sized to ~3 missed 2 s probes so a normal paused gap (clock probes keep flowing) never false-fires,
+// and kept above PARALLAX_HOST_LOST_MS so the UI's "reconnecting" grace shows first.
+const PARALLAX_HOST_SILENCE_MS = 6_000
+const PARALLAX_HOST_SILENCE_CHECK_MS = 1_000
 const MAX_BODY_BYTES = 8 * 1024
 const MAX_AUDIO_CHUNKS = 12_000
 
@@ -138,6 +153,12 @@ interface ParallaxServiceOptions {
   // host returns 401 — main wires this to clearParallaxSinkConnection + cancel auto-reconnect.
   // Covers both initial-connect and in-session paths (event stream, audio stream, clock probe).
   onSinkAuthRevoked?: () => void
+  // Pillar 3 — host relocation. Fired by the in-session reconnect path after the persisted host
+  // address has failed enough times to suspect the host moved (new IP after sleep/wake or a network
+  // change). Main resolves the host's current address via mDNS (by its remembered endpoint UUID),
+  // persists the new baseUrl, and returns it; the service then retargets the reconnect there. Returns
+  // null when the host can't be relocated, in which case the service keeps retrying the old address.
+  onSinkRelocate?: () => Promise<string | null>
   // §14.1.2 follow-up (Codex round 1, finding 3). Read each getStatus() call so the status
   // payload's `sink.hasPersistedConnection` / `sink.persistedHostName` reflect the live
   // app-meta state without the service needing its own copy.
@@ -409,6 +430,7 @@ export class ParallaxService {
   private readonly onSinkEvent?: (event: ParallaxTimelineEvent) => void
   private readonly onSinkAudioChunk?: (chunk: ParallaxAudioChunk) => void
   private readonly onSinkAuthRevoked?: () => void
+  private readonly onSinkRelocate?: () => Promise<string | null>
   private readonly getSinkConnectionInfo?: () => { hasPersistedConnection: boolean; persistedHostName: string | null }
   // §14.1.4 / §19.18(e) — artwork-resolver callback + per-stream parsed-bytes cache. Filled on
   // publishHostStreamStart when an artworkHash is provided. Cleared on stream stop or when a new
@@ -461,6 +483,11 @@ export class ParallaxService {
   private sinkLastError: string | null = null
   private lastAudioChunkAtMs = 0
   private audioStallTimer: ReturnType<typeof setInterval> | null = null
+  // Liveness-driven reconnect (see PARALLAX_HOST_SILENCE_MS). `lastHostContactAtMs` is bumped on any
+  // healthy host signal — a successful clock probe, an SSE event, or an audio chunk — and the
+  // watchdog forces a reconnect once it goes stale.
+  private lastHostContactAtMs = 0
+  private sinkLivenessTimer: ReturnType<typeof setInterval> | null = null
   // §14.1.4 — host reachability, derived from the SSE event-stream connection. True while the
   // control channel is open; flipped false after PARALLAX_HOST_LOST_MS of the stream being down.
   private sinkHostReachable = true
@@ -490,6 +517,7 @@ export class ParallaxService {
     this.onSinkEvent = options.onSinkEvent
     this.onSinkAudioChunk = options.onSinkAudioChunk
     this.onSinkAuthRevoked = options.onSinkAuthRevoked
+    this.onSinkRelocate = options.onSinkRelocate
     this.getSinkConnectionInfo = options.getSinkConnectionInfo
     this.resolveArtworkDataUrl = options.resolveArtworkDataUrl
     this.getSinkEnabled = options.getSinkEnabled
@@ -640,6 +668,24 @@ export class ParallaxService {
     }
 
     return this.getStatus()
+  }
+
+  // Pillar 2 (power events). After the host machine wakes, its accepted sockets are likely
+  // half-open and connectedSinkStates is stale. Rebinding the listener gives a clean accept path,
+  // and startHostServer→stopHostServer→closeAllHostClients drops the phantom clients so sinks
+  // re-handshake cleanly. No-op unless host mode is active.
+  async handleHostPowerResume(): Promise<void> {
+    if (!this.config.enabled) return
+    await this.startHostServer()
+  }
+
+  // Pillar 2 (power events). On suspend, proactively close client connections so each sink gets a
+  // clean FIN and starts reconnecting immediately, instead of waiting out the half-open detection
+  // (the sink's liveness watchdog) once the host is asleep. Best-effort — the FIN may not flush
+  // before the machine sleeps, in which case the sink's watchdog still recovers it. Host-only.
+  handleHostPowerSuspend(): void {
+    if (!this.config.enabled) return
+    this.closeAllHostClients()
   }
 
   createPairingPin(): ParallaxPairingPin {
@@ -1961,10 +2007,43 @@ export class ParallaxService {
 
   private startClockSync(): void {
     this.stopClockSync()
+    // Fresh baseline so the silence watchdog doesn't fire before the first steady-state probe lands.
+    this.lastHostContactAtMs = Date.now()
     this.sinkClockTimer = setInterval(() => {
       void this.runClockProbe()
     }, CLOCK_SYNC_INTERVAL_MS)
     this.startAudioStallWatchdog()
+    this.startHostSilenceWatchdog()
+  }
+
+  // Liveness watchdog: the clock probe, SSE events, and audio chunks all bump lastHostContactAtMs.
+  // If every channel has gone silent past PARALLAX_HOST_SILENCE_MS, the host is gone (or its sockets
+  // are half-open after a sleep) and no reader will ever error to schedule a reconnect — so we force
+  // one here. This is the trigger the reconnect machinery was missing.
+  private startHostSilenceWatchdog(): void {
+    this.stopHostSilenceWatchdog()
+    this.sinkLivenessTimer = setInterval(() => {
+      this.checkHostSilence()
+    }, PARALLAX_HOST_SILENCE_CHECK_MS)
+  }
+
+  private stopHostSilenceWatchdog(): void {
+    if (this.sinkLivenessTimer !== null) {
+      clearInterval(this.sinkLivenessTimer)
+      this.sinkLivenessTimer = null
+    }
+  }
+
+  private checkHostSilence(): void {
+    const connection = this.sinkConnection
+    if (!connection) return
+    // A reconnect already scheduled (backoff timer) will re-establish the streams; don't double-fire.
+    if (this.sinkReconnectTimer !== null) return
+    if (Date.now() - this.lastHostContactAtMs <= PARALLAX_HOST_SILENCE_MS) return
+    // Debounce: reconnectSink awaits clock priming + rejoin (~a few seconds against a dead host before
+    // it falls into backoff). Bumping the timestamp now stops the watchdog re-firing during that work.
+    this.lastHostContactAtMs = Date.now()
+    void this.reconnectSink(connection)
   }
 
   // Detect a half-open (silently stalled) audio stream and re-request it from the live frame before
@@ -2024,6 +2103,7 @@ export class ParallaxService {
       this.sinkClockTimer = null
     }
     this.stopAudioStallWatchdog()
+    this.stopHostSilenceWatchdog()
   }
 
   private clearSinkReconnectTimer(): void {
@@ -2081,6 +2161,21 @@ export class ParallaxService {
     this.emitStatus()
 
     try {
+      // Pillar 3 — if the persisted address has failed repeatedly, the host likely moved (new IP
+      // after sleep/wake or a network change). Ask main to relocate it via mDNS by the remembered
+      // endpoint UUID and retarget this attempt at the new address. Null = couldn't relocate; keep
+      // retrying the old address (it may just be a long outage at the same IP).
+      if (this.sinkReconnectAttempts >= PARALLAX_RELOCATE_AFTER_ATTEMPTS && this.onSinkRelocate) {
+        const relocatedBaseUrl = await this.onSinkRelocate()
+        if (this.sinkConnection !== connection) return
+        if (relocatedBaseUrl) {
+          const normalized = sanitizeBaseUrl(relocatedBaseUrl)
+          if (normalized && normalized !== connection.baseUrl) {
+            connection.baseUrl = normalized
+            this.sinkReconnectAttempts = 0
+          }
+        }
+      }
       // Reconverge the clock BEFORE rejoining. The /join timeline is then computed and applied with
       // an accurate, freshly-primed offset (and full group-latency headroom). Previously the rejoin
       // applied immediately with the stale pre-drop offset, which left the sink badly out of sync
@@ -2146,6 +2241,7 @@ export class ParallaxService {
       )
       this.sinkClockSamples = [...this.sinkClockSamples, sample].slice(-PARALLAX_CLOCK_SAMPLE_LIMIT)
       this.sinkLastError = null
+      this.lastHostContactAtMs = Date.now()
       if (emit) this.emitStatus()
       return true
     } catch (error) {
@@ -2285,6 +2381,8 @@ export class ParallaxService {
     } catch {
       return
     }
+    // Any parsed SSE event proves the control channel is live — feed the liveness watchdog.
+    this.lastHostContactAtMs = Date.now()
 
     if (event.type === 'stream-start') {
       this.sinkActiveStream = event.stream
@@ -2398,6 +2496,7 @@ export class ParallaxService {
         if (done) break
         if (!value) continue
         this.lastAudioChunkAtMs = Date.now()
+        this.lastHostContactAtMs = Date.now()
         const received = new Uint8Array(value.byteLength)
         received.set(value)
         pending = mergeBytes(pending, received)

@@ -918,6 +918,10 @@ const parallaxService = new ParallaxService({
         console.warn('Failed to clear Parallax sink connection after auth-revoked:', error)
       })
   },
+  // Pillar 3 — host relocation. The in-session reconnect path calls this once the persisted host
+  // address has failed repeatedly. Resolve the host's current address via mDNS (by its remembered
+  // endpoint UUID), persist the new baseUrl, and hand it back so the service retargets there.
+  onSinkRelocate: () => relocateParallaxHost(),
   // §14.1.2 follow-up (Codex round 1, finding 3). Service reads on every getStatus() so the
   // status payload mirrors the live app-meta state without the service holding its own copy.
   // Token is intentionally never returned — only the boolean and host name reach the renderer.
@@ -1616,15 +1620,18 @@ async function attemptParallaxAutoReconnect(
     cancelParallaxAutoReconnect()
     return
   }
+  // Use the latest persisted connection as the source of truth for the address — relocation
+  // (Pillar 3) updates it mid-loop, and we must not connect to / persist a stale baseUrl.
+  const active = parallaxSinkConnection ?? connection
   try {
     await parallaxService.connectSink({
-      baseUrl: connection.baseUrl,
-      sinkId: connection.sinkId,
-      token: connection.token
+      baseUrl: active.baseUrl,
+      sinkId: active.sinkId,
+      token: active.token
     })
     if (generation !== parallaxAutoReconnectGeneration) return
     parallaxAutoReconnectAttempt = 0
-    const updated: PersistedParallaxSinkConnection = { ...connection, lastConnectedAt: Date.now() }
+    const updated: PersistedParallaxSinkConnection = { ...active, lastConnectedAt: Date.now() }
     await persistParallaxSinkConnection(updated)
   } catch (error) {
     if (generation !== parallaxAutoReconnectGeneration) return
@@ -1635,9 +1642,18 @@ async function attemptParallaxAutoReconnect(
       return
     }
     parallaxAutoReconnectAttempt += 1
+    // Pillar 3 — after a few failures against the persisted address, the host may have moved (sink
+    // booted while the host was at a new IP). Try to relocate it via mDNS; on success the persisted
+    // baseUrl is updated and the next attempt picks it up (and the attempt counter resets).
+    if (parallaxAutoReconnectAttempt >= PARALLAX_BOOT_RELOCATE_AFTER_ATTEMPTS) {
+      const relocated = await relocateParallaxHost()
+      if (generation !== parallaxAutoReconnectGeneration) return
+      if (relocated) parallaxAutoReconnectAttempt = 0
+    }
+    const next = parallaxSinkConnection ?? connection
     const delayMs = Math.min(60_000, 1_000 * Math.pow(2, Math.min(parallaxAutoReconnectAttempt - 1, 6)))
     parallaxAutoReconnectTimer = setTimeout(() => {
-      void attemptParallaxAutoReconnect(connection, generation)
+      void attemptParallaxAutoReconnect(next, generation)
     }, delayMs)
   }
 }
@@ -1646,6 +1662,77 @@ function startParallaxAutoReconnect(connection: PersistedParallaxSinkConnection)
   cancelParallaxAutoReconnect()
   const generation = parallaxAutoReconnectGeneration
   void attemptParallaxAutoReconnect(connection, generation)
+}
+
+// Pillar 2 — OS power events. After the machine wakes, sockets that were live before sleep are
+// almost always half-open (no FIN), so without an explicit kick both roles would sit wedged until a
+// timeout/backoff elapsed. On resume we force a clean re-handshake immediately. Honors host-vs-sink
+// precedence and the sink-role toggle exactly like `parallax:startAutoReconnect`.
+function handleParallaxPowerResume(): void {
+  // Re-publish the mDNS advert — the multicast socket may have gone stale across sleep, and a paired
+  // sink relocating this host (Pillar 3) needs a fresh announcement to find it.
+  refreshParallaxAdvertisement()
+  if (parallaxHostConfig.enabled) {
+    // Host: rebind the listener + drop phantom clients so a woken host cleanly re-accepts.
+    void parallaxService.handleHostPowerResume().catch((error) => {
+      console.warn('Parallax host resume restart failed:', error)
+    })
+    return
+  }
+  // Sink: force a fresh connect (attempt counter reset to 0 → no backoff delay). connectSink tears
+  // down the half-open connection first, so this recovers a wedged sink instantly instead of waiting
+  // out the liveness watchdog.
+  if (!parallaxSinkConnection || !parallaxSinkEnabled) return
+  startParallaxAutoReconnect(parallaxSinkConnection)
+}
+
+// Pillar 2 — proactive teardown on suspend so peers see a clean FIN and start reconnecting at once
+// rather than waiting out half-open detection. Best-effort: may not flush before the machine sleeps,
+// in which case the peer's own reconnect path still recovers it on resume.
+function handleParallaxPowerSuspend(): void {
+  if (parallaxHostConfig.enabled) {
+    parallaxService.handleHostPowerSuspend()
+    return
+  }
+  if (parallaxService.getStatus().sink.connected) {
+    void parallaxService.disconnectSink().catch(() => undefined)
+  }
+}
+
+// Pillar 3 — host relocation. Resolve a paired host's current address via mDNS by its remembered
+// endpoint UUID and, if it has moved, persist + return the new baseUrl. Returns null when there's no
+// UUID to search by (pre-Pillar-3 pairing), the host can't be found, or it's still at the persisted
+// address. Shared by the in-session reconnect (onSinkRelocate callback) and the boot-path loop.
+const PARALLAX_HOST_RESOLVE_TIMEOUT_MS = 4_000
+// Boot-path counterpart to the service's PARALLAX_RELOCATE_AFTER_ATTEMPTS — relocate after this many
+// failed initial-connect attempts against the persisted address (~3 ≈ the first few backoff cycles).
+const PARALLAX_BOOT_RELOCATE_AFTER_ATTEMPTS = 3
+async function relocateParallaxHost(): Promise<string | null> {
+  const connection = parallaxSinkConnection
+  const uuid = connection?.hostParallaxEndpointUuid?.trim()
+  if (!connection || !uuid) return null
+  let resolved: Awaited<ReturnType<typeof parallaxDiscoveryService.resolveHostByUuid>> = null
+  try {
+    resolved = await parallaxDiscoveryService.resolveHostByUuid(uuid, PARALLAX_HOST_RESOLVE_TIMEOUT_MS)
+  } catch (error) {
+    console.warn('Parallax host relocation lookup failed:', error)
+    return null
+  }
+  if (!resolved) return null
+  // Re-read: the connection may have been cleared/replaced while we were browsing.
+  const current = parallaxSinkConnection
+  if (!current || current.hostParallaxEndpointUuid?.trim() !== uuid) return null
+  if (resolved.baseUrl === current.baseUrl) return null
+  const updated: PersistedParallaxSinkConnection = { ...current, baseUrl: resolved.baseUrl }
+  try {
+    await persistParallaxSinkConnection(updated)
+  } catch (error) {
+    // Persist failure is non-fatal — still return the new URL so the live reconnect can use it; the
+    // next successful connect will re-persist lastConnectedAt anyway.
+    console.warn('Failed to persist relocated Parallax host address:', error)
+  }
+  console.log(`[parallax] relocated host ${uuid} → ${resolved.baseUrl}`)
+  return resolved.baseUrl
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
@@ -1822,7 +1909,11 @@ async function applyParallaxHostConfig(
 ): Promise<ReturnType<typeof parallaxService.getStatus>> {
   parallaxHostConfig = { ...config }
   await persistParallaxHostConfig(parallaxHostConfig)
-  return parallaxService.applyHostConfig(parallaxHostConfig)
+  const status = await parallaxService.applyHostConfig(parallaxHostConfig)
+  // Pillar 3 — keep the mDNS advert in step with host enable/disable so a paired sink can relocate
+  // this host by UUID. Precedence-aware: falls back to the sink advert (or none) when host is off.
+  refreshParallaxAdvertisement()
+  return status
 }
 
 function normalizeOptionalMetaText(value: string | null): string | null {
@@ -4104,6 +4195,15 @@ app.whenReady().then(async () => {
   await localApiService.applyConfig(localApiConfig)
   await phoneRemoteService.applyConfig(phoneRemoteConfig)
   await parallaxService.applyHostConfig(parallaxHostConfig)
+  // Pillar 3 — publish the role-appropriate mDNS advert now that both host config and sink-enabled
+  // are loaded (the sink surface above may have advertised role=sink before host config was known;
+  // this corrects to role=host when host mode is the active role).
+  refreshParallaxAdvertisement()
+  // Pillar 2 — wire OS power events so parallax recovers instantly on sleep→wake instead of waiting
+  // out a timeout/backoff. Registered once at boot; the handlers themselves are role-aware and
+  // no-op when parallax isn't active.
+  powerMonitor.on('resume', handleParallaxPowerResume)
+  powerMonitor.on('suspend', handleParallaxPowerSuspend)
   // §14.1.2 follow-up (Codex round 2, finding 1). Auto-reconnect used to kick off here, BEFORE
   // createWindow(). But `onSinkEvent` / `onSinkAudioChunk` only forward to mainWindow if it
   // exists — a successful pre-window /join would drop the one-shot `stream-start` event and
@@ -5213,23 +5313,40 @@ ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
   return parallaxService.getStatus()
 })
 
-// §20 Commit 2. mDNS lifecycle helpers + IPC handlers for the host-side wizard's browse.
-//
-// Advertisement port matches the (Commit 3) sink listener. Idempotent — calling start again
-// stops any prior advertisement first (see ParallaxDiscoveryService.startAdvertising).
-function startParallaxDiscoveryAdvertisement(): void {
-  if (!parallaxSinkEnabled) return
+// §20 Commit 2 / Pillar 3. mDNS advertisement, honoring host-vs-sink precedence (a machine is host
+// XOR sink). A host advertises role=host so a paired sink can relocate it by UUID after its IP
+// changes (Pillar 3); a sink advertises role=sink on the listener port so the pairing wizard can
+// discover it (§20). Idempotent — startAdvertising replaces any prior advert; with neither role
+// active we stop advertising entirely. Call this whenever host-enabled or sink-enabled changes.
+function refreshParallaxAdvertisement(): void {
   if (!parallaxEndpointUuid) return
-  const name = hostname() || 'Astra Sink'
-  try {
-    parallaxDiscoveryService.startAdvertising({
-      name,
-      port: PARALLAX_SINK_DEFAULT_PORT,
-      endpointUuid: parallaxEndpointUuid
-    })
-  } catch (error) {
-    console.warn('Failed to start Parallax discovery advertisement:', error)
+  if (parallaxHostConfig.enabled) {
+    try {
+      parallaxDiscoveryService.startAdvertising({
+        role: 'host',
+        name: hostname() || 'Astra Host',
+        port: parallaxHostConfig.port,
+        endpointUuid: parallaxEndpointUuid
+      })
+    } catch (error) {
+      console.warn('Failed to start Parallax host advertisement:', error)
+    }
+    return
   }
+  if (parallaxSinkEnabled) {
+    try {
+      parallaxDiscoveryService.startAdvertising({
+        role: 'sink',
+        name: hostname() || 'Astra Sink',
+        port: PARALLAX_SINK_DEFAULT_PORT,
+        endpointUuid: parallaxEndpointUuid
+      })
+    } catch (error) {
+      console.warn('Failed to start Parallax sink advertisement:', error)
+    }
+    return
+  }
+  stopParallaxDiscoveryAdvertisement()
 }
 
 function stopParallaxDiscoveryAdvertisement(): void {
@@ -5274,7 +5391,7 @@ async function startParallaxSinkSurface(): Promise<void> {
     stopParallaxDiscoveryAdvertisement()
     return
   }
-  startParallaxDiscoveryAdvertisement()
+  refreshParallaxAdvertisement()
 }
 
 async function stopParallaxSinkSurface(): Promise<void> {

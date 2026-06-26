@@ -719,18 +719,24 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
   }
 })
 
-test('§20 second pair-request while a PIN is showing returns 409 busy', async () => {
+test('§20 / Pillar 4 a repeat pair-request from the same host supersedes the pending PIN', async () => {
   const fixture = await createPairFixture()
   try {
     await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    // Same host (same loopback remote address) sending a fresh pair-request means its previous
+    // attempt died — it crashed / restarted / slept mid-pair — and is retrying. The sink supersedes
+    // the stale pending and issues a new PIN instead of wedging on 409 "busy", so the user never has
+    // to manually reset the speaker to re-pair (Pillar 4). A genuinely *different* host (different
+    // remote IP) still gets 409; that path can't be exercised over loopback here.
     const second = await postJson(`${fixture.sinkBaseUrl}/v1/parallax/pair-request`, {
       pairingId: 'second',
-      hostName: 'Other Host',
+      hostName: 'Same Host Retry',
       hostPort: fixture.hostPort,
       parallaxEndpointUuid: 'second-uuid'
     })
-    assert.equal(second.status, 409)
-    assert.equal(second.payload?.error, 'busy')
+    assert.equal(second.status, 200)
+    assert.equal(typeof second.payload?.sinkName, 'string')
+    assert.equal(typeof second.payload?.expiresInSeconds, 'number')
   } finally {
     await destroyPairFixture(fixture)
   }

@@ -171,12 +171,28 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
 
   private async handlePairRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
     const now = Date.now()
+    // Derive the host IP up front (also reused below for hostUrl). Strip the IPv6-mapped prefix Node
+    // adds on dual-stack sockets ("::ffff:192.168.1.5" → "192.168.1.5").
+    const rawRemote = req.socket.remoteAddress ?? ''
+    const remoteAddress = rawRemote.startsWith('::ffff:') ? rawRemote.slice('::ffff:'.length) : rawRemote
+
+    // §Pillar 4 — pairing self-heal. A pending pair normally locks the sink to one host at a time
+    // (§20.7 → 409 "busy"). But if the SAME host sends a fresh pair-request, its previous attempt
+    // died (it crashed / restarted / slept mid-pair) and is retrying — superseding the stale pending
+    // (and skipping the rate-limit wait) lets it re-pair without the user manually resetting the
+    // speaker. A request from a DIFFERENT host while one is mid-pair is still rejected with 409.
+    let superseding = false
     if (this.pending) {
-      // One active pair at a time per sink (§20.7). Don't even read the body — busy is busy.
-      toJsonResponse(res, 409, { error: 'busy' })
-      return
+      const pendingHostAddress = parsePendingHostAddress(this.pending.hostUrl)
+      if (remoteAddress && pendingHostAddress && remoteAddress === pendingHostAddress) {
+        this.clearPending(null)
+        superseding = true
+      } else {
+        toJsonResponse(res, 409, { error: 'busy' })
+        return
+      }
     }
-    if (now < this.lastAcceptedRequestAtMs + PARALLAX_PAIR_RATE_LIMIT_MS) {
+    if (!superseding && now < this.lastAcceptedRequestAtMs + PARALLAX_PAIR_RATE_LIMIT_MS) {
       toJsonResponse(res, 429, { error: 'rate-limited' })
       return
     }
@@ -198,11 +214,8 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
       return
     }
 
-    // Codex round 1 amendment (b): derive hostUrl from the socket remote address so we always
-    // store the address we can actually reach back on. Strip IPv6 mapping prefix that Node adds
-    // for dual-stack sockets ("::ffff:192.168.1.5" → "192.168.1.5").
-    const rawRemote = req.socket.remoteAddress ?? ''
-    const remoteAddress = rawRemote.startsWith('::ffff:') ? rawRemote.slice('::ffff:'.length) : rawRemote
+    // Codex round 1 amendment (b): derive hostUrl from the socket remote address (computed above) so
+    // we always store the address we can actually reach back on.
     if (!remoteAddress) {
       toJsonResponse(res, 400, { error: 'Could not derive host address from request.' })
       return
@@ -367,4 +380,14 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 
 function pickString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+// §Pillar 4. Extract just the host (IP) from a stored pending `hostUrl` so a fresh pair-request can
+// be matched to the host that started the current pending. Returns null on a malformed URL.
+function parsePendingHostAddress(hostUrl: string): string | null {
+  try {
+    return new URL(hostUrl).hostname || null
+  } catch {
+    return null
+  }
 }

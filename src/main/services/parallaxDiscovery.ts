@@ -87,10 +87,26 @@ function pickDiscoveryInterface(): DiscoveryInterfacePick | null {
   return { ip: candidates[0].ip, name: candidates[0].name }
 }
 
+export type ParallaxDiscoveryRole = 'host' | 'sink'
+
 export interface ParallaxDiscoveryAdvertiseOptions {
   name: string
   port: number
   endpointUuid: string
+  // §Pillar 3. Distinguishes a host advertisement (so a paired sink can relocate it by UUID after
+  // its IP changes) from a sink advertisement (what the pairing wizard browses for). The pairing
+  // wizard filters to `role=sink`; the sink's relocation browse filters to `role=host`.
+  role: ParallaxDiscoveryRole
+}
+
+// §Pillar 3. A host located by `resolveHostByUuid` — the current reachable address of a paired host
+// that has moved. `baseUrl` is derived from the resolved A-record + SRV port (same rule as the
+// wizard's sink discovery), never from a TXT field.
+export interface ParallaxResolvedHost {
+  endpointUuid: string
+  baseUrl: string
+  address: string
+  port: number
 }
 
 interface ParallaxDiscoveryEvents {
@@ -162,7 +178,8 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
       txt: {
         version: String(PARALLAX_DISCOVERY_TXT_VERSION),
         name: options.name,
-        endpoint_uuid: options.endpointUuid
+        endpoint_uuid: options.endpointUuid,
+        role: options.role
       }
     })
   }
@@ -227,11 +244,55 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
   }
 
   private handleServiceAdded(service: Service): void {
+    // §Pillar 3. The wizard browses for pairable sinks only. Skip host advertisements (role=host).
+    // Pre-Pillar-3 sinks carry no role; treat a missing role as 'sink' for backward compatibility.
+    const role = pickServiceTxt(service, 'role')
+    if (role && role !== 'sink') return
     const discovered = mapServiceToDiscoveredSink(service)
     if (!discovered) return
     // Filter self-discoveries — the multicast loopback bounces our own advertisement back.
     if (this.ownEndpointUuid && discovered.endpointUuid === this.ownEndpointUuid) return
     this.emit('event', { type: 'added', sink: discovered })
+  }
+
+  // §Pillar 3 — sink-side host relocation. When a paired host's persisted baseUrl stops working
+  // (it moved to a new IP after a sleep/wake or network change), find its current address by
+  // browsing for the role=host advertisement carrying the remembered endpoint UUID. One-shot:
+  // resolves with the first match or null on timeout, and leaves no persistent browser running so
+  // it never interferes with the wizard's continuous browse. Reuses the shared Bonjour socket.
+  async resolveHostByUuid(endpointUuid: string, timeoutMs: number): Promise<ParallaxResolvedHost | null> {
+    const target = endpointUuid.trim()
+    if (!target) return null
+    const bonjour = this.ensureBonjour()
+    return await new Promise<ParallaxResolvedHost | null>((resolve) => {
+      let settled = false
+      const browser = bonjour.find({
+        type: PARALLAX_DISCOVERY_SERVICE_TYPE,
+        protocol: PARALLAX_DISCOVERY_PROTOCOL
+      })
+      const finish = (result: ParallaxResolvedHost | null): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { browser.stop?.() } catch { /* ignore */ }
+        resolve(result)
+      }
+      const consider = (service: Service): void => {
+        if (pickServiceTxt(service, 'role') !== 'host') return
+        if (pickServiceTxt(service, 'endpoint_uuid') !== target) return
+        const address = pickServiceAddress(service)
+        if (!address || !Number.isFinite(service.port)) return
+        finish({ endpointUuid: target, baseUrl: `http://${address}:${service.port}`, address, port: service.port })
+      }
+      browser.on('up', consider)
+      browser.on('srv-update', consider)
+      browser.on('txt-update', consider)
+      // Replay anything already cached from a prior/concurrent browse so we don't always wait a
+      // full query round-trip when the host is already known.
+      for (const service of browser.services) consider(service)
+      const timer = setTimeout(() => finish(null), timeoutMs)
+      timer.unref?.()
+    })
   }
 
   private handleServiceRemoved(service: Service): void {
