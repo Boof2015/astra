@@ -39,6 +39,9 @@ export default function ParallaxSetupFlow({ onClose, onAddSpeaker, hidden = fals
     try {
       await setSinkEnabled(false)
       await setHostEnabled(true)
+      // "Open Zone Display on launch" is a speaker-only setting, and its toggle is hidden once this
+      // machine is a host — clear it here so it can't get stranded on with no way to turn it off.
+      if (openZoneDisplayOnLaunch) setOpenZoneDisplayOnLaunch(false)
       setStep('host')
     } finally {
       setBusy(false)

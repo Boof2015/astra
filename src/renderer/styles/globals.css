@@ -20282,6 +20282,15 @@ body::after {
   font-variant-numeric: tabular-nums;
 }
 
+/* Reserved slot below the progress row for the transient sync pill — keeps the layout from
+ * shifting when it appears, and (unlike the old absolute bottom rail) never overlaps the time. */
+.zone-display-np-statusline {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* ── Idle dashboard — ambient corner clock (Alexa/Nest-style) ─────────────────────────────────── */
 .zone-display-idle {
   position: absolute;

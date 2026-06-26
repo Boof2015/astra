@@ -73,6 +73,12 @@ const PARALLAX_AUDIO_STALL_CHECK_MS = 400
 const PARALLAX_AUDIO_RECONNECT_BACKFILL_MS = 1_000
 const STATUS_RETRY_DELAY_MS = 1_000
 const SINK_AUTO_RECONNECT_DELAY_MS = 2_000
+// §14.1.4 — host-liveness grace window. The SSE event stream is the host's control channel; when it
+// drops (host app closed / quit) the sink keeps a connection config (so it can auto-reconnect) but
+// the host is unreachable. After this grace window with the stream still down, mark the host
+// unreachable so the UI (Zone Display) leaves now-playing for an idle "reconnecting" state. The
+// grace absorbs brief WiFi blips that reconnect within ~1 s without flicker.
+const PARALLAX_HOST_LOST_MS = 4_000
 const SINK_AUTO_RECONNECT_ATTEMPTS = 3
 const MAX_BODY_BYTES = 8 * 1024
 const MAX_AUDIO_CHUNKS = 12_000
@@ -452,6 +458,10 @@ export class ParallaxService {
   private sinkLastError: string | null = null
   private lastAudioChunkAtMs = 0
   private audioStallTimer: ReturnType<typeof setInterval> | null = null
+  // §14.1.4 — host reachability, derived from the SSE event-stream connection. True while the
+  // control channel is open; flipped false after PARALLAX_HOST_LOST_MS of the stream being down.
+  private sinkHostReachable = true
+  private hostLostTimer: ReturnType<typeof setTimeout> | null = null
   // Phase 0 diagnostics: latest output-latency signals reported by the host renderer (this machine).
   private lastHostLatencyMetrics: ParallaxOutputLatencyMetrics | null = null
 
@@ -524,6 +534,10 @@ export class ParallaxService {
       },
       sink: {
         connected: sinkConnected,
+        // §14.1.4 — false once the host's SSE control channel has been down past the grace window
+        // (host quit / unreachable). Only meaningful while a connection config exists; reported
+        // true otherwise so non-sink machines never look "unreachable".
+        hostReachable: sinkConnected ? this.sinkHostReachable : true,
         baseUrl: this.sinkConnection?.baseUrl ?? null,
         sinkId: this.sinkConnection?.sinkId ?? null,
         activeStream: this.sinkActiveStream,
@@ -1075,6 +1089,12 @@ export class ParallaxService {
     this.sinkActiveStream = null
     this.sinkLastError = null
     this.sinkReconnectAttempts = 0
+    // Optimistic: assume reachable until the SSE event stream proves otherwise.
+    if (this.hostLostTimer) {
+      clearTimeout(this.hostLostTimer)
+      this.hostLostTimer = null
+    }
+    this.sinkHostReachable = true
 
     try {
       const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
@@ -1120,6 +1140,11 @@ export class ParallaxService {
     this.clearSinkReconnectTimer()
     this.sinkReconnectAttempts = 0
     this.stopClockSync()
+    if (this.hostLostTimer) {
+      clearTimeout(this.hostLostTimer)
+      this.hostLostTimer = null
+    }
+    this.sinkHostReachable = true
     const connection = this.sinkConnection
     this.sinkConnection = null
     this.sinkActiveStream = null
@@ -2129,6 +2154,30 @@ export class ParallaxService {
     }
   }
 
+  // §14.1.4 — track the SSE event-stream connection to derive host reachability. On (re)connect,
+  // immediately mark reachable. On drop, start a grace timer; if the stream is still down when it
+  // fires, mark the host unreachable so the UI can show a disconnected/reconnecting state.
+  private setSinkSseConnected(connected: boolean): void {
+    if (connected) {
+      if (this.hostLostTimer) {
+        clearTimeout(this.hostLostTimer)
+        this.hostLostTimer = null
+      }
+      if (!this.sinkHostReachable) {
+        this.sinkHostReachable = true
+        this.emitStatus()
+      }
+      return
+    }
+    if (this.hostLostTimer || !this.sinkHostReachable) return
+    this.hostLostTimer = setTimeout(() => {
+      this.hostLostTimer = null
+      if (!this.sinkConnection) return
+      this.sinkHostReachable = false
+      this.emitStatus()
+    }, PARALLAX_HOST_LOST_MS)
+  }
+
   private async consumeSinkEvents(): Promise<void> {
     const connection = this.sinkConnection
     if (!connection) return
@@ -2161,6 +2210,7 @@ export class ParallaxService {
       }
       connection.eventReader = reader
       this.sinkLastError = null
+      this.setSinkSseConnected(true)
       this.emitStatus()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -2179,6 +2229,8 @@ export class ParallaxService {
       }
       if (this.sinkConnection === connection && connection.eventGeneration === eventGeneration) {
         if (connection.eventReader === reader) connection.eventReader = null
+        // Host closed the event stream (e.g. quit). Begin the host-lost grace countdown.
+        this.setSinkSseConnected(false)
         setTimeout(() => {
           if (
             this.sinkConnection === connection
@@ -2192,6 +2244,9 @@ export class ParallaxService {
     } catch (error) {
       if (this.sinkConnection !== connection || connection.eventGeneration !== eventGeneration) return
       if (connection.eventReader === reader) connection.eventReader = null
+      // Abort = intentional teardown (disconnect / generation bump), not a host outage — leave
+      // reachability alone. Any other error means the control channel dropped.
+      if (!isAbortLikeError(error)) this.setSinkSseConnected(false)
       if (isAbortLikeError(error)) {
         setTimeout(() => {
           if (

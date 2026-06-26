@@ -404,6 +404,11 @@ export interface ParallaxHostStatus {
 
 export interface ParallaxSinkStatus {
   connected: boolean
+  // §14.1.4 — host reachability from the SSE control channel. `connected` only means a connection
+  // config exists (and auto-reconnect is running); `hostReachable` is false once the host has been
+  // unreachable past the grace window (e.g. the host app quit). UI uses this to leave now-playing
+  // for an idle "reconnecting" state instead of showing a frozen, stale track.
+  hostReachable?: boolean
   baseUrl: string | null
   sinkId: string | null
   activeStream: ParallaxStreamInfo | null

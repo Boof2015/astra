@@ -140,15 +140,16 @@ function ZoneNowPlaying({
         </div>
       </div>
 
-      {/* Quiet sync pill — pinned to the viewport bottom, only while settling/buffering. */}
-      {showPill && (
-        <div className="zone-display-status-rail">
+      {/* Quiet sync pill — sits in the column flow (reserved height so it never shifts/overlaps the
+          progress row), only while settling/buffering. */}
+      <div className="zone-display-np-statusline">
+        {showPill && (
           <span className={`zone-display-sync-pill is-state-${syncState}`}>
             <span className="zone-display-sync-pill-dot" aria-hidden="true" />
             {syncPillCopy(syncState)}
           </span>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -162,10 +163,12 @@ function ZoneIdleDashboard({
   status,
   identity,
   zoneName,
+  hostReachable,
 }: {
   status: ParallaxStatus | null
   identity: EndpointIdentity | null
   zoneName: string
+  hostReachable: boolean
 }) {
   const now = useWallClock()
   const sink = status?.sink ?? null
@@ -184,6 +187,10 @@ function ZoneIdleDashboard({
   } else if (!hasPersisted) {
     statusLabel = 'Ready to pair'
     pairingRelevant = true
+  } else if (!hostReachable) {
+    // Connection config lingers for auto-reconnect, but the host is actually gone.
+    statusLabel = hostName ? `Lost connection to ${hostName}` : 'Lost connection to host'
+    tone = 'warn'
   } else if (connected) {
     statusLabel = hostName ? `Waiting for ${hostName}` : 'Waiting for music'
     tone = 'good'
@@ -245,6 +252,7 @@ export default function ZoneDisplay() {
 
   const sink = status?.sink ?? null
   const connected = sink?.connected ?? false
+  const hostReachable = sink?.hostReachable ?? true
   const stream = sink?.activeStream ?? null
   const outputLabel = sink?.outputDeviceLabel ?? sink?.outputDeviceId ?? null
 
@@ -253,7 +261,9 @@ export default function ZoneDisplay() {
     || (zoneNameOverride && zoneNameOverride.trim())
     || identity?.hostname
     || 'Astra Speaker'
-  const nowPlaying = connected && Boolean(stream)
+  // Only "now playing" when the host is actually reachable — a quit/unreachable host must not leave
+  // a frozen, stale track on screen (the connection config lingers for auto-reconnect).
+  const nowPlaying = connected && hostReachable && Boolean(stream)
 
   return (
     <div className={`zone-display fullscreen-overlay ${chromeVisible ? '' : 'is-idle'}`} role="main">
@@ -311,7 +321,7 @@ export default function ZoneDisplay() {
           </div>
         </div>
       ) : (
-        <ZoneIdleDashboard status={status} identity={identity} zoneName={zoneName} />
+        <ZoneIdleDashboard status={status} identity={identity} zoneName={zoneName} hostReachable={hostReachable} />
       )}
 
       {overlayOpen && <ZoneSettingsOverlay onClose={() => setOverlayOpen(false)} />}
