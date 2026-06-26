@@ -58,6 +58,10 @@ interface ParallaxSettingsStore {
   // §14.1.4 — base64 data URL of artwork for the active sink stream (hero image on Zone
   // Display). Null when no stream, no artwork available, or fetch hasn't completed yet.
   sinkActiveArtworkUrl: string | null
+  // §14.1.4 — the host-assigned display name for this speaker, pushed via `sink-name-update` on
+  // connect + rename. Null until the host pushes (or after disconnect). Zone Display prefers this
+  // over the local zone-name override and the hostname.
+  assignedSinkName: string | null
   // Whether the host is currently streaming the trim test tone (synced metronome), and which
   // single speaker it's targeted at (null = no test running). The host always plays it locally as
   // the reference; only `testToneSinkId` hears it among the sinks.
@@ -983,6 +987,15 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       audioEngine.setParallaxSinkAdvanceMs(event.advanceMs)
       return
     }
+    // §14.1.4. Host-assigned name push — targeted by sinkId, no timeline payload (early-return like
+    // the trim branch above). Drives the Zone Display heading.
+    if (event.type === 'sink-name-update') {
+      const ownSinkId = get().status?.sink.sinkId
+      if (!ownSinkId || ownSinkId !== event.sinkId) return
+      const name = event.name.trim() || null
+      if (name !== get().assignedSinkName) set({ assignedSinkName: name })
+      return
+    }
     const status = get().status
     if (event.type === 'stop') {
       pendingAudioChunks = []
@@ -1129,6 +1142,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     isInitialized: false,
     errorMessage: '',
     sinkActiveArtworkUrl: null,
+    assignedSinkName: null,
     isTestToneActive: false,
     testToneSinkId: null,
 
@@ -1305,7 +1319,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           pendingSinkEvent: null,
           sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
           errorMessage: '',
-          sinkActiveArtworkUrl: null
+          sinkActiveArtworkUrl: null,
+          assignedSinkName: null
         })
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

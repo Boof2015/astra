@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useEndpointIdentity } from '../parallax/parallaxHelpers'
 
 interface Props {
   onClose: () => void
@@ -24,6 +26,10 @@ interface Props {
 // us to a different slot).
 export default function ZoneSettingsOverlay({ onClose }: Props) {
   const status = useParallaxStore((s) => s.status)
+  const assignedName = useParallaxStore((s) => s.assignedSinkName)
+  const zoneNameOverride = useUIStore((s) => s.parallaxZoneName)
+  const setZoneName = useUIStore((s) => s.setParallaxZoneName)
+  const identity = useEndpointIdentity()
   const refreshDevices = useAudioSettingsStore((s) => s.refreshDevices)
   const availableDevices = useAudioSettingsStore((s) => s.availableDevices)
   const selectedDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
@@ -135,6 +141,26 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
           >
             ×
           </button>
+        </div>
+
+        <div className="zone-settings-overlay-section">
+          <div className="zone-settings-overlay-section-head">
+            <span className="zone-settings-overlay-section-label">Zone name</span>
+          </div>
+          <input
+            type="text"
+            className="zone-settings-overlay-select"
+            value={zoneNameOverride}
+            placeholder={assignedName || identity?.hostname || 'Astra Speaker'}
+            maxLength={60}
+            onChange={(event) => setZoneName(event.target.value)}
+            aria-label="Zone name"
+          />
+          <p className="zone-settings-overlay-note">
+            {assignedName
+              ? <>The host calls this speaker <strong>{assignedName}</strong>, which takes priority here. This local name only applies when no host name is set.</>
+              : <>Shown on this display. Leave blank to use the device name ({identity?.hostname || 'hostname'}).</>}
+          </p>
         </div>
 
         <div className="zone-settings-overlay-section">

@@ -274,6 +274,15 @@ export type ParallaxTimelineEvent =
       outputDeviceId: string          // 'default' for the system route
       emittedAtHostTimeMs: number
     }
+  // §14.1.4 — host pushes the speaker's host-assigned display name. Targeted by `sinkId` (other
+  // sinks ignore). Pushed on SSE connect + whenever the host renames the sink, mirroring
+  // `sink-trim-update`. Surface-only (Zone Display heading); no timeline payload.
+  | {
+      type: 'sink-name-update'
+      sinkId: string
+      name: string
+      emittedAtHostTimeMs: number
+    }
 
 export interface ParallaxAudioChunk {
   streamId: string

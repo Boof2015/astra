@@ -19965,7 +19965,7 @@ body::after {
   cursor: pointer;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  transition: background 0.2s ease, border-color 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, opacity 0.4s ease;
 }
 
 .zone-display-exit:hover {
@@ -19974,11 +19974,20 @@ body::after {
   color: #fff;
 }
 
-.zone-display-settings-btn {
+/* Top-right chrome cluster: output chip + settings gear. Fades with the rest of the chrome when
+ * the display goes idle (see .zone-display.is-idle). */
+.zone-display-top-right {
   position: absolute;
   top: 28px;
   right: 28px;
   z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  transition: opacity 0.4s ease;
+}
+
+.zone-display-settings-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -20133,6 +20142,274 @@ body::after {
 @keyframes zone-display-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* ── Appliance layout ──────────────────────────────────────────────────────────────────────────
+ * Zone Display drives its own centered, fluid stack (small monitor → wall TV) rather than the
+ * desktop art-left/text-right hero. Widen the reused fullscreen container and center the stage. */
+.zone-display .fullscreen-content {
+  width: min(1100px, 92vw);
+}
+
+.zone-display .fullscreen-stage {
+  align-items: center;
+  text-align: center;
+}
+
+/* Idle: fade the chrome and hide the cursor on an unattended screen; pointer activity restores it
+ * (see useIdleChrome). Now-playing content + clock stay put. */
+.zone-display.is-idle {
+  cursor: none;
+}
+
+.zone-display.is-idle .zone-display-exit,
+.zone-display.is-idle .zone-display-top-right {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Now-playing stack */
+.zone-display-np {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(14px, 3.2vmin, 32px);
+  width: 100%;
+}
+
+.zone-display-kicker {
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 1.4vmin, 13px);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.85;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zone-display-np-art {
+  width: clamp(180px, 40vmin, 460px);
+  aspect-ratio: 1 / 1;
+  border-radius: clamp(12px, 1.6vmin, 22px);
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.zone-display-np-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.zone-display-np-art .fullscreen-artwork-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(48px, 14vmin, 120px);
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.zone-display-np-meta {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(4px, 0.9vmin, 10px);
+  max-width: 92%;
+}
+
+.zone-display-np-title {
+  margin: 0;
+  font-size: clamp(1.4rem, 4.4vmin, 3rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.zone-display-np-artist {
+  margin: 0;
+  font-size: clamp(0.95rem, 2.4vmin, 1.5rem);
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.zone-display-np-album {
+  margin: 0;
+  font-size: clamp(0.8rem, 1.8vmin, 1.1rem);
+  color: rgba(255, 255, 255, 0.56);
+}
+
+/* Read-only progress (a speaker can't seek — the host drives playback). */
+.zone-display-progress {
+  width: min(620px, 86%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.zone-display-progress-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.zone-display-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.12s linear;
+}
+
+.zone-display-time {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 1.4vmin, 13px);
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.62);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Idle dashboard — ambient corner clock (Alexa/Nest-style) ─────────────────────────────────── */
+.zone-display-idle {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
+/* Soft accent glow anchored under the clock — gives the flat backdrop depth/warmth. */
+.zone-display-idle-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(46% 52% at 16% 86%, var(--accent), transparent 68%);
+  opacity: 0.13;
+}
+
+/* Status card floating top-right. Top inset clears the settings gear that sits above it. */
+.zone-display-idle-card {
+  position: absolute;
+  top: clamp(64px, 9vmin, 104px);
+  right: clamp(20px, 4vmin, 56px);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  max-width: min(360px, 56vw);
+}
+
+.zone-display-idle-card-glyph {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--accent);
+}
+
+.zone-display-idle-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.zone-display-idle-card-name {
+  font-size: clamp(0.95rem, 1.7vmin, 1.2rem);
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zone-display-idle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: clamp(11px, 1.3vmin, 13px);
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.zone-display-idle-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.zone-display-idle-pill.is-good { color: #34d399; }
+.zone-display-idle-pill.is-warn { color: #fbbf24; }
+.zone-display-idle-pill.is-idle { color: rgba(148, 163, 184, 0.92); }
+
+.zone-display-idle-pill.is-warn .zone-display-idle-pill-dot {
+  animation: zone-display-pulse 1.6s ease-in-out infinite;
+}
+
+/* Clock cluster anchored bottom-left, owning the frame. */
+.zone-display-idle-clock-block {
+  position: absolute;
+  left: clamp(28px, 5vw, 76px);
+  bottom: clamp(28px, 6vh, 76px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.zone-display-idle-clock {
+  font-size: clamp(3rem, 14vmin, 9.5rem);
+  font-weight: 200;
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.zone-display-idle-ampm {
+  font-size: 0.3em;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  margin-left: 0.35em;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.zone-display-idle-date {
+  font-size: clamp(0.95rem, 2.2vmin, 1.5rem);
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.zone-display-idle-find {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 1.2vmin, 12px);
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* Zone settings overlay — fullscreen-aesthetic mini panel reachable from the Zone Display chrome. */

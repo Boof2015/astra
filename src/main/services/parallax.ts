@@ -658,6 +658,8 @@ export class ParallaxService {
     sink.name = normalizeDeviceLabel(name, sink.name)
     const connected = this.connectedSinkStates.get(id)
     if (connected) connected.name = sink.name
+    // §14.1.4 — tell the speaker its new name so the Zone Display heading updates live.
+    this.broadcastSinkNameUpdate(id)
     this.emitPairedSinksChange()
     this.emitStatus()
     return this.toPublicPairedSink(sink)
@@ -1335,6 +1337,27 @@ export class ParallaxService {
     }
   }
 
+  // §14.1.4 — push the sink's host-assigned name to its SSE clients (Zone Display heading). Same
+  // targeted try/delete shape as `broadcastSinkTrimUpdate`. Fired on connect + on rename.
+  private broadcastSinkNameUpdate(sinkId: string): void {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId)
+    if (!sink || sink.revokedAt !== null) return
+    const event: ParallaxTimelineEvent = {
+      type: 'sink-name-update',
+      sinkId,
+      name: sink.name,
+      emittedAtHostTimeMs: parallaxNowMs()
+    }
+    for (const client of this.sseClients) {
+      if (client.sinkId !== sinkId) continue
+      try {
+        writeSseEvent(client.response, 'parallax', event)
+      } catch {
+        this.sseClients.delete(client)
+      }
+    }
+  }
+
   // Phase 0 diagnostics: the host renderer reports its own output-latency signals (~1 Hz) so the
   // telemetry CSV can log both ends. Pure diagnostics; does not affect playback.
   recordHostLatencyMetrics(metrics: ParallaxOutputLatencyMetrics | null | undefined): void {
@@ -1727,6 +1750,8 @@ export class ParallaxService {
     // §14.1.1. Mark this sink online + ensure its connected-state row exists. Telemetry will
     // populate outputDevice + appliedAdvanceMs once it starts flowing.
     this.setSinkOnline(sinkId, true)
+    // §14.1.4. Push the host-assigned name so the speaker's Zone Display shows it immediately.
+    this.broadcastSinkNameUpdate(sinkId)
     // §14.1.1 follow-up (Codex 2026-06-06). On SSE reconnect, if we already know this sink's
     // output device from a prior session, re-push the persisted trim immediately. Without this
     // the trim only flows on telemetry-triggered device-change (`ingestSinkTelemetry`), and a

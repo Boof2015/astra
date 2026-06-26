@@ -38,6 +38,10 @@ export const OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY = 'astra-open-zone-display-
 // so returning users land directly on the management view.
 export const PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY = 'astra-experimental-parallax-enabled-v1'
 export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complete-v1'
+// §14.1.4 — friendly zone name for this speaker, shown on the Zone Display (now-playing footer +
+// idle dashboard heading). Renderer-local override; empty string means "fall back to the OS
+// hostname". Persisted here (not main) since it's a display-only label for this surface.
+export const PARALLAX_ZONE_NAME_STORAGE_KEY = 'astra-parallax-zone-name-v1'
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -322,6 +326,23 @@ function persistParallaxSetupCompletePreference(complete: boolean): void {
   }
 }
 
+function readParallaxZoneNamePreference(): string {
+  try {
+    return localStorage.getItem(PARALLAX_ZONE_NAME_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function persistParallaxZoneNamePreference(name: string): void {
+  try {
+    if (name) localStorage.setItem(PARALLAX_ZONE_NAME_STORAGE_KEY, name)
+    else localStorage.removeItem(PARALLAX_ZONE_NAME_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readLaunchInZoneModeFlag(): boolean {
   // §14.1.4 — `--zone` launch flag (forwarded by main as `electronAPI.parallax.launchInZoneMode`).
   // Single-launch override; does NOT mutate the persisted preference.
@@ -342,6 +363,7 @@ const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
 const initialParallaxExperimentEnabled = readParallaxExperimentEnabledPreference()
 const initialParallaxSetupComplete = readParallaxSetupCompletePreference()
+const initialParallaxZoneName = readParallaxZoneNamePreference()
 const initialZoneDisplayLaunchFlag = readLaunchInZoneModeFlag()
 // Session state: zone display is active at startup if the preference is on OR `--zone` was passed.
 // "Library" escape sets this back to false without touching the preference.
@@ -363,6 +385,7 @@ interface UIStore {
   openZoneDisplayOnLaunch: boolean
   parallaxExperimentEnabled: boolean
   parallaxSetupComplete: boolean
+  parallaxZoneName: string
   isZoneDisplayActive: boolean
   analyzerHeightPx: number
   uiScalePercent: number
@@ -396,6 +419,7 @@ interface UIStore {
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
   setParallaxExperimentEnabled: (enabled: boolean) => void
   setParallaxSetupComplete: (complete: boolean) => void
+  setParallaxZoneName: (name: string) => void
   exitZoneDisplayForSession: () => void
   enterZoneDisplay: () => void
   setAnalyzerHeightPx: (heightPx: number) => void
@@ -447,6 +471,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openZoneDisplayOnLaunch: initialOpenZoneDisplayOnLaunch,
   parallaxExperimentEnabled: initialParallaxExperimentEnabled,
   parallaxSetupComplete: initialParallaxSetupComplete,
+  parallaxZoneName: initialParallaxZoneName,
   isZoneDisplayActive: initialIsZoneDisplayActive,
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
@@ -524,6 +549,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
     const normalized = Boolean(complete)
     persistParallaxSetupCompletePreference(normalized)
     set({ parallaxSetupComplete: normalized })
+  },
+  setParallaxZoneName: (name) => {
+    const normalized = typeof name === 'string' ? name.trim().slice(0, 60) : ''
+    persistParallaxZoneNamePreference(normalized)
+    set({ parallaxZoneName: normalized })
   },
   exitZoneDisplayForSession: () => set({ isZoneDisplayActive: false }),
   enterZoneDisplay: () => set({ isZoneDisplayActive: true }),
