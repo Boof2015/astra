@@ -1039,9 +1039,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     return status
   }
 
-  // §21 Gapless sink handoff (sink side). Staged stream's info, held from next-stream-start so its
-  // trackId is available for Zone Display artwork at promote time.
+  // §21 Gapless sink handoff (sink side). Staged stream's info + timeline, held from next-stream-start
+  // so the trackId is available for Zone Display artwork at promote time and so promote can mark the
+  // promoted stream as already-anchored (preventing a re-anchor restart at the seam). `scheduled`
+  // tracks whether the crossover was actually scheduled (needs a primed clock offset).
   let stagedSinkStream: ParallaxStreamInfo | null = null
+  let stagedSinkTimeline: ParallaxTimelineState | null = null
+  let stagedSinkScheduled = false
 
   // Resolve + apply Zone Display artwork for a stream (cache-hit instant; else main-side fetch).
   // Mirrors the stream-start artwork flow; reused for the promoted next stream.
@@ -1086,6 +1090,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     }
     if (audioEngine.getStagedParallaxSinkStreamId() !== event.stream.streamId) return // couldn't stage
     stagedSinkStream = event.stream
+    stagedSinkTimeline = event.timeline
     // Drain any next-stream chunks that arrived before the staged node existed.
     const staged = pendingAudioChunks.filter((chunk) => chunk.streamId === event.stream.streamId)
     pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.stream.streamId)
@@ -1097,7 +1102,16 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     const offsetMs = get().status?.sink.clockOffsetMs
     if (offsetMs !== null && offsetMs !== undefined) {
       audioEngine.scheduleParallaxNextSinkStart(event.timeline, offsetMs, 0)
+      stagedSinkScheduled = true
+    } else {
+      stagedSinkScheduled = false
     }
+  }
+
+  const clearStagedSinkStream = (): void => {
+    stagedSinkStream = null
+    stagedSinkTimeline = null
+    stagedSinkScheduled = false
   }
 
   const handleSinkEvent = async (event: ParallaxTimelineEvent): Promise<void> => {
@@ -1138,6 +1152,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (event.type === 'stop') {
       pendingAudioChunks = []
       audioEngine.stopParallaxSinkPlayback()
+      clearStagedSinkStream()
       resetHostEmitAnchors()
       hostEmitHardSyncCount = 0
       sinkArtworkInFlightStreamId = null
@@ -1163,7 +1178,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (audioEngine.getStagedParallaxSinkStreamId() === event.streamId) {
         audioEngine.clearParallaxNextSink()
       }
-      if (stagedSinkStream?.streamId === event.streamId) stagedSinkStream = null
+      if (stagedSinkStream?.streamId === event.streamId) clearStagedSinkStream()
       return
     }
     if (event.type === 'next-stream-promote') {
@@ -1172,16 +1187,23 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (audioEngine.getStagedParallaxSinkStreamId() === event.streamId) {
         resetHostEmitAnchors()
         hostEmitHardSyncCount = 0
+        const wasScheduled = stagedSinkScheduled
+        const promotedTimeline = stagedSinkTimeline
         audioEngine.promoteParallaxNextSink()
         set({
-          latestTimeline: null,
+          // §21 If the staged crossover was scheduled, it's already playing on its own anchor — mark
+          // the promoted stream as already-anchored so the post-promote re-fetched chunks (which
+          // resume from ~frame 0 at the boundary) do NOT re-anchor it and RESTART the new track at
+          // the seam. If it wasn't scheduled (no clock offset), leave it null so the chunk-driven
+          // anchor starts it.
+          latestTimeline: wasScheduled ? promotedTimeline : null,
           sinkSnapshot: audioEngine.getParallaxSinkSnapshot()
         })
         if (stagedSinkStream?.streamId === event.streamId) {
           loadSinkArtworkForStream(stagedSinkStream)
         }
       }
-      if (stagedSinkStream?.streamId === event.streamId) stagedSinkStream = null
+      if (stagedSinkStream?.streamId === event.streamId) clearStagedSinkStream()
       return
     }
 
@@ -1192,6 +1214,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // where the predictor still held stale anchors from the previous stream. Reset explicitly here
       // so the new stream starts with a clean window and a fresh handoff settle timer.
       resetHostEmitAnchors()
+      // §21 A fresh stream supersedes any staged gapless handoff (manual change / non-gapless boundary).
+      clearStagedSinkStream()
       try {
         if (audioEngine.getParallaxSinkSnapshot().streamId !== event.stream.streamId) {
           await audioEngine.loadParallaxSinkStream(event.stream)
