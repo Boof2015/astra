@@ -619,6 +619,13 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (!buffer || !currentBuffer) return
     const remainingSec = Math.max(0, currentBuffer.duration - getHostAcousticCurrentTimeSeconds())
     const boundaryHostTimeMs = localNowMs() + remainingSec * 1000 - PARALLAX_NEXT_STREAM_SEAM_TRIM_MS
+    // eslint-disable-next-line no-console -- §21 temporary handoff diagnostics
+    console.info('[parallax-handoff] HOST publish next stream', {
+      remainingSec: Number(remainingSec.toFixed(3)),
+      currentDurationSec: Number(currentBuffer.duration.toFixed(3)),
+      acousticPosSec: Number(getHostAcousticCurrentTimeSeconds().toFixed(3)),
+      boundaryInMs: Number((boundaryHostTimeMs - localNowMs()).toFixed(0))
+    })
     const streamId = createStreamId(nextTrack)
     ensureTelemetry()
     try {
@@ -1189,6 +1196,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         hostEmitHardSyncCount = 0
         const wasScheduled = stagedSinkScheduled
         const promotedTimeline = stagedSinkTimeline
+        // eslint-disable-next-line no-console -- §21 temporary handoff diagnostics
+        console.info('[parallax-handoff] SINK promote', {
+          wasScheduled,
+          stagedSnapshot: audioEngine.getParallaxSinkSnapshot()
+        })
         audioEngine.promoteParallaxNextSink()
         set({
           // §21 If the staged crossover was scheduled, it's already playing on its own anchor — mark

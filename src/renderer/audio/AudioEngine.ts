@@ -2660,6 +2660,17 @@ export class AudioEngine {
     const rate = clampParallaxPlaybackRatePpm(playbackRatePpm)
     this.parallaxNextSinkState.currentFrame = startFrame
     this.parallaxNextSinkState.playbackRatePpm = rate
+    // eslint-disable-next-line no-console -- §21 temporary handoff diagnostics
+    console.info('[parallax-handoff] schedule next-sink start', {
+      startHostTimeMs: timeline.startHostTimeMs,
+      offsetMs: hostMinusSinkOffsetMs,
+      delaySeconds: Number(delaySeconds.toFixed(3)),
+      sinkLatencyMs: Number((sinkLatencySec * 1000).toFixed(1)),
+      ctxNow: Number(this.context.currentTime.toFixed(3)),
+      mappedStartContextTime: Number(mappedStartContextTime.toFixed(3)),
+      clampedToNow: mappedStartContextTime < this.context.currentTime,
+      startFrame
+    })
     this.parallaxNextSinkNode.port.postMessage({
       type: 'set-timeline',
       startFrame,
