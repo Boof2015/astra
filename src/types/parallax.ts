@@ -262,6 +262,17 @@ export interface ParallaxHostStreamStartOptions {
   targetSinkId?: string
 }
 
+// §21 Gapless sink handoff. Options for pre-announcing the NEXT stream. Unlike a fresh
+// `publishHostStreamStart` (which anchors `startHostTimeMs` to `now + groupLatency`), the next
+// stream is anchored to the host's already-known track boundary, so the caller supplies the
+// boundary instant explicitly. `startHostTimeMs` is the host-clock wall time the `startFrame` of
+// the next track should leave every speaker.
+export interface ParallaxHostNextStreamStartOptions {
+  startHostTimeMs: number
+  startFrame?: number
+  artworkHash?: string
+}
+
 // Options for publishing a same-stream timeline update. `resetAudio` marks a source-position
 // discontinuity such as seek/scrub: receivers must drop buffered audio from the previous epoch and
 // reconnect/backfill from the new timeline frame. Pause/resume timeline updates leave this false.
@@ -321,6 +332,36 @@ export type ParallaxTimelineEvent =
       type: 'sink-name-update'
       sinkId: string
       name: string
+      emittedAtHostTimeMs: number
+    }
+  // §21 Gapless sink handoff. Host pre-announces the NEXT stream ahead of the track boundary so a
+  // sink can pre-load its audio and schedule a sample-aligned crossover, WITHOUT tearing down the
+  // currently-playing stream. `timeline` is FUTURE-anchored: `startHostTimeMs` is the host-clock
+  // instant the next track's `startFrame` should leave every speaker (the gapless boundary, derived
+  // host-side from the current track's scheduled end), and `startFrame` is the next track's resume
+  // frame (0 for a fresh next track). A sink that can't honor it safely ignores it and still
+  // follows via the boundary `stream-start`/`next-stream-promote` fallback.
+  | {
+      type: 'next-stream-start'
+      stream: ParallaxStreamInfo
+      timeline: ParallaxTimelineState
+      emittedAtHostTimeMs: number
+    }
+  // §21. Host withdrew the pre-announced next stream (skip / seek / queue edit / repeat-one / the
+  // next track changed before the boundary). Sinks drop the staged stream + any buffered
+  // next-stream chunks. `streamId` identifies the withdrawn pending stream.
+  | {
+      type: 'next-stream-cancel'
+      streamId: string
+      emittedAtHostTimeMs: number
+    }
+  // §21. Boundary crossed: the pre-announced next stream is now the live stream. The acoustic
+  // crossover already happened on the sink via the scheduled worklet start; this event is the
+  // bookkeeping signal for the sink to promote its staged stream to active (status, now-playing,
+  // Zone Display artwork). `streamId` is the stream being promoted to active.
+  | {
+      type: 'next-stream-promote'
+      streamId: string
       emittedAtHostTimeMs: number
     }
 
@@ -602,6 +643,11 @@ export interface ParallaxJoinResponse {
   hostTimeMs: number
   stream: ParallaxStreamInfo | null
   timeline: ParallaxTimelineState | null
+  // §21 Gapless sink handoff. A sink joining after the host pre-announced the next stream receives
+  // it here too, so it can pre-stage the upcoming track instead of waiting for the boundary. Null /
+  // omitted when no next stream is pending.
+  nextStream?: ParallaxStreamInfo | null
+  nextTimeline?: ParallaxTimelineState | null
 }
 
 export function buildParallaxClockSample(

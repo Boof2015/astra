@@ -134,6 +134,7 @@ import {
   type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
   type ParallaxHostStreamStartOptions,
+  type ParallaxHostNextStreamStartOptions,
   type ParallaxHostTimelinePublishOptions,
   type ParallaxOutputLatencyMetrics,
   ParallaxAuthError,
@@ -5456,6 +5457,19 @@ ipcMain.handle('parallax:disconnectSink', async () => {
 
 ipcMain.handle('parallax:publishHostStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>, options?: ParallaxHostStreamStartOptions) => {
   return parallaxService.publishHostStreamStart(info, options ?? {})
+})
+
+// §21 Gapless sink handoff — pre-announce / withdraw / promote the next stream.
+ipcMain.handle('parallax:publishHostNextStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>, options: ParallaxHostNextStreamStartOptions) => {
+  return parallaxService.publishHostNextStreamStart(info, options)
+})
+
+ipcMain.handle('parallax:publishHostNextStreamCancel', () => {
+  parallaxService.publishHostNextStreamCancel()
+})
+
+ipcMain.handle('parallax:publishHostPromoteNextStream', () => {
+  return parallaxService.publishHostPromoteNextStream()
 })
 
 ipcMain.handle('parallax:publishHostAudioChunk', (_event, chunk: ParallaxAudioChunk) => {

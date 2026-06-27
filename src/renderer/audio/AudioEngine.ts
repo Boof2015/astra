@@ -390,6 +390,12 @@ export class AudioEngine {
   private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
   private parallaxSinkState: ParallaxSinkRuntimeState | null = null
+  // §21 Gapless sink handoff. Staged next stream, held alongside `parallaxSinkState` from
+  // pre-announce until the boundary crossover. Its worklet node is created via the normal factory,
+  // so its onmessage stays inert (gated on `node !== this.parallaxSinkNode`) until `promoteParallaxNextSink`
+  // swaps it into the active slot.
+  private parallaxNextSinkState: ParallaxSinkRuntimeState | null = null
+  private parallaxNextSinkNode: AudioWorkletNode | null = null
   private remotePlayPromise: Promise<void> | null = null
   private remotePlayResolver: (() => void) | null = null
   private remotePlayRejecter: ((error: Error) => void) | null = null
@@ -397,6 +403,14 @@ export class AudioEngine {
   private loadGeneration = 0
   private prebufferGeneration = 0
   private parallaxHostPublishGeneration = 0
+  // §21 Gapless sink handoff (host side). The next-buffer publish loop streams the WHOLE next track
+  // (captured by reference) and must survive the gapless swap that makes that buffer the current
+  // one — so it can't share the integer generation a fresh pre-announce would bump. Each loop holds
+  // a unique token in this set; `parallaxPendingNextPublishToken` marks the not-yet-promoted loop a
+  // new pre-announce / cancel may supersede. `promoteParallaxHostNextPublish` detaches the pending
+  // token so the loop keeps running as the current stream.
+  private readonly parallaxNextPublishTokens = new Set<symbol>()
+  private parallaxPendingNextPublishToken: symbol | null = null
   // Parallax trim test tone (a synced metronome) — fully separate from track playback so it never
   // touches _playbackState / gapless / now-playing. It rides the same host-stream sync path.
   private testToneBuffer: AudioBuffer | null = null
@@ -1918,6 +1932,9 @@ export class AudioEngine {
   }
 
   private clearParallaxSinkState(): void {
+    // §21. A hard reset of the current sink stream (stop / fresh stream-start) also drops any staged
+    // next stream. NOT called by promoteParallaxNextSink (which uses disconnectParallaxSinkNode).
+    this.clearParallaxNextSink()
     this.parallaxSinkState = null
     this.disconnectParallaxSinkNode()
     this.stopTimeUpdate()
@@ -2567,6 +2584,124 @@ export class AudioEngine {
     this.notifyTrackChange()
   }
 
+  // ── §21 Gapless sink handoff (sink side) ────────────────────────────────────
+  // A staged second worklet node pre-buffers the upcoming track and is scheduled (via the worklet's
+  // set-timeline `startAtContextTime`) to begin emitting exactly at the boundary, while the current
+  // node runs out of buffered audio. `promoteParallaxNextSink` then swaps it into the active slot.
+
+  getStagedParallaxSinkStreamId(): string | null {
+    return this.parallaxNextSinkState?.streamId ?? null
+  }
+
+  // Pre-load the next stream WITHOUT disturbing the currently-playing sink node. Created via the
+  // normal factory (auto-connects to routing + analysis tap; its onmessage stays inert until promote).
+  loadParallaxNextSinkStream(stream: ParallaxStreamInfo): void {
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (!this.context || !this.workletLoaded) return
+    if (!this.parallaxSinkState) return // nothing playing to hand off from
+    if (this.parallaxNextSinkState?.streamId === stream.streamId) return // already staged
+    this.clearParallaxNextSink()
+
+    const streamNormalization = resolveParallaxStreamNormalization(stream)
+    const streamNormalizationGainDb = streamNormalization.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(streamNormalization.normalizationGainDb)
+    this.parallaxNextSinkNode = this.createParallaxSinkNode(stream.channels, stream.sampleRate)
+    this.parallaxNextSinkState = {
+      streamId: stream.streamId,
+      sampleRate: stream.sampleRate,
+      channels: stream.channels,
+      durationSeconds: stream.durationSeconds,
+      normalizationGainDb: streamNormalizationGainDb,
+      normalizationMode: streamNormalization.normalizationMode,
+      currentFrame: Math.max(0, Math.floor(0)),
+      currentFrameAtWallMs: 0,
+      bufferedFrames: 0,
+      bufferedEndFrame: 0,
+      underruns: 0,
+      playbackRatePpm: 0,
+      starvedFrames: 0,
+      rebuffering: false
+    }
+  }
+
+  appendParallaxNextSinkAudioChunk(chunk: ParallaxAudioChunk): void {
+    if (!this.parallaxNextSinkState || !this.parallaxNextSinkNode) return
+    if (chunk.streamId !== this.parallaxNextSinkState.streamId) return
+    const channelData = this.deinterleaveParallaxChunk(chunk)
+    this.parallaxNextSinkNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        startFrame: chunk.startFrame,
+        frameCount: chunk.frameCount,
+        channelData
+      },
+      channelData.map((channel) => channel.buffer)
+    )
+  }
+
+  // Schedule the staged node to begin emitting `timeline.startFrame` at the boundary
+  // (`timeline.startHostTimeMs`, host clock). Same acoustic mapping as applyParallaxTimelineFromHostClock
+  // but targets the staged node and never touches _playbackState (the current stream is still live).
+  scheduleParallaxNextSinkStart(
+    timeline: ParallaxTimelineState,
+    hostMinusSinkOffsetMs: number | null | undefined,
+    playbackRatePpm: number = 0
+  ): void {
+    if (!this.parallaxNextSinkState || !this.parallaxNextSinkNode || !this.context) return
+    if (timeline.streamId !== this.parallaxNextSinkState.streamId) return
+    if (timeline.playbackState !== 'playing') return
+    const offsetMs = Number.isFinite(hostMinusSinkOffsetMs) ? Number(hostMinusSinkOffsetMs) : 0
+    const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
+    const delaySeconds = (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + delaySeconds - sinkLatencySec
+    const startFrame = Math.max(0, Math.floor(timeline.startFrame))
+    const rate = clampParallaxPlaybackRatePpm(playbackRatePpm)
+    this.parallaxNextSinkState.currentFrame = startFrame
+    this.parallaxNextSinkState.playbackRatePpm = rate
+    this.parallaxNextSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame,
+      startAtContextTime: Math.max(this.context.currentTime, mappedStartContextTime),
+      playing: true,
+      playbackRatePpm: rate
+    })
+  }
+
+  // Boundary crossed — swap the staged node into the active slot. The acoustic crossover already
+  // happened via the scheduled start; this is the bookkeeping swap + master-normalization switch.
+  promoteParallaxNextSink(): boolean {
+    if (!this.parallaxNextSinkNode || !this.parallaxNextSinkState) return false
+    // Tear down the outgoing (now-silent) current node, then promote the staged one.
+    this.disconnectParallaxSinkNode()
+    this.parallaxSinkNode = this.parallaxNextSinkNode
+    this.parallaxSinkState = this.parallaxNextSinkState
+    this.parallaxNextSinkNode = null
+    this.parallaxNextSinkState = null
+    this.currentBufferTrackPath = `parallax:${this.parallaxSinkState.streamId}`
+    // Shared master normalization gain now follows the promoted track (per-track gain can't apply to
+    // two concurrent streams — see applyParallaxSinkNormalization).
+    this.applyParallaxSinkNormalization()
+    this._playbackState = 'playing'
+    this.emit('durationChange', this.parallaxSinkState.durationSeconds)
+    this.emit('stateChange', this._playbackState)
+    this.notifyTrackChange()
+    this.startTimeUpdate()
+    return true
+  }
+
+  clearParallaxNextSink(): void {
+    if (this.parallaxNextSinkNode) {
+      this.parallaxNextSinkNode.port.onmessage = null
+      try { this.parallaxNextSinkNode.port.postMessage({ type: 'clear' }) } catch { /* ignore */ }
+      this.disconnectSourceRouting(this.parallaxNextSinkNode)
+      try { this.parallaxNextSinkNode.disconnect() } catch { /* ignore */ }
+      this.parallaxNextSinkNode = null
+    }
+    this.parallaxNextSinkState = null
+  }
+
   getParallaxSinkSnapshot(): {
     streamId: string | null
     currentFrame: number
@@ -2724,6 +2859,76 @@ export class AudioEngine {
         pcmData: interleaved.buffer
       })
     }
+  }
+
+  // §21 Gapless sink handoff (host). Stream the pre-buffered NEXT track to sinks ahead of the
+  // boundary under its own streamId, paced to a FUTURE-anchored timeline (startHostTimeMs = the
+  // boundary). Captures the `nextBuffer` reference so it keeps streaming seamlessly after the gapless
+  // swap turns that same buffer into the current `audioBuffer` (main re-routes the streamId from
+  // pending → active on promote). Cancellation is per-loop-token so a fresh pre-announce supersedes
+  // only the un-promoted loop, never one that already crossed the boundary.
+  async publishNextBufferToParallax(streamId: string, timeline: ParallaxTimelineState): Promise<void> {
+    const buffer = this.nextBuffer
+    if (!buffer) return
+    const channels = Math.max(1, Math.min(8, buffer.numberOfChannels))
+    const totalFrames = buffer.length
+    // Supersede any prior un-promoted pending-next loop (the next track changed).
+    if (this.parallaxPendingNextPublishToken) {
+      this.parallaxNextPublishTokens.delete(this.parallaxPendingNextPublishToken)
+    }
+    const token = Symbol('parallax-next-publish')
+    this.parallaxPendingNextPublishToken = token
+    this.parallaxNextPublishTokens.add(token)
+    const initialFrame =
+      Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+    try {
+      for (let startFrame = initialFrame; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+        if (!this.parallaxNextPublishTokens.has(token)) return
+        const chunkHostTimeMs =
+          timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+        let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        while (delayMs > 0) {
+          await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+          if (!this.parallaxNextPublishTokens.has(token)) return
+          delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        }
+
+        const frameCount = Math.min(PARALLAX_AUDIO_CHUNK_FRAMES, totalFrames - startFrame)
+        const interleaved = new Float32Array(frameCount * channels)
+        for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+          const source = buffer.getChannelData(channelIndex)
+          for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+            interleaved[(frameIndex * channels) + channelIndex] = source[startFrame + frameIndex] ?? 0
+          }
+        }
+        await window.electronAPI.parallax.publishHostAudioChunk({
+          streamId,
+          sampleRate: buffer.sampleRate,
+          channels,
+          startFrame,
+          frameCount,
+          hostTimeMs: chunkHostTimeMs,
+          pcmData: interleaved.buffer
+        })
+      }
+    } finally {
+      this.parallaxNextPublishTokens.delete(token)
+      if (this.parallaxPendingNextPublishToken === token) this.parallaxPendingNextPublishToken = null
+    }
+  }
+
+  // §21. Withdraw the un-promoted pending-next publish loop (skip/seek/queue edit before boundary).
+  cancelParallaxHostNextPublishing(): void {
+    if (this.parallaxPendingNextPublishToken) {
+      this.parallaxNextPublishTokens.delete(this.parallaxPendingNextPublishToken)
+      this.parallaxPendingNextPublishToken = null
+    }
+  }
+
+  // §21. Boundary crossed — detach the pending-next loop so it continues streaming the (now current)
+  // track and a subsequent pre-announce can't cancel it. The loop ends naturally at end-of-buffer.
+  promoteParallaxHostNextPublish(): void {
+    this.parallaxPendingNextPublishToken = null
   }
 
   // ── Parallax trim test tone (synced metronome) ──────────────────────────────
@@ -3315,6 +3520,19 @@ export class AudioEngine {
 
   getNormalizationMode(): GainApplicationMode {
     return this._normalizationMode
+  }
+
+  // §21 Gapless sink handoff. The pre-buffered next track + its normalization, for building the
+  // pre-announced next stream's info. Normalization falls back to current if not yet computed.
+  getNextAudioBuffer(): AudioBuffer | null {
+    return this.nextBuffer
+  }
+
+  getNextNormalization(): { gainDb: number; mode: GainApplicationMode } {
+    if (this.nextNormalizationGainDb != null && this.nextNormalizationMode != null) {
+      return { gainDb: this.nextNormalizationGainDb, mode: this.nextNormalizationMode }
+    }
+    return { gainDb: this._normalizationGainDb, mode: this._normalizationMode }
   }
 
   setCurrentReplayGainDb(replayGainDb: number | null): void {

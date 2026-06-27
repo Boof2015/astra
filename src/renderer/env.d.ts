@@ -31,6 +31,7 @@ import type {
   ParallaxAudioChunk,
   ParallaxDiscoveryEvent,
   ParallaxHostStreamStartOptions,
+  ParallaxHostNextStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
@@ -385,6 +386,12 @@ declare global {
                     info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
                     options?: ParallaxHostStreamStartOptions
                 ) => Promise<ParallaxTimelineState>
+                publishHostNextStreamStart: (
+                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+                    options: ParallaxHostNextStreamStartOptions
+                ) => Promise<ParallaxTimelineState>
+                publishHostNextStreamCancel: () => Promise<void>
+                publishHostPromoteNextStream: () => Promise<ParallaxTimelineState | null>
                 publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
                 publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
                 publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>

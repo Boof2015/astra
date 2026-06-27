@@ -35,6 +35,7 @@ import type {
   ParallaxPairResponse,
   ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
+  ParallaxHostNextStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxPairingPin,
   ParallaxSinkConnectionConfig,
@@ -881,6 +882,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       info: ParallaxHostStreamStartInfo,
       options?: ParallaxHostStreamStartOptions
     ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostStreamStart', info, options),
+    publishHostNextStreamStart: (
+      info: ParallaxHostStreamStartInfo,
+      options: ParallaxHostNextStreamStartOptions
+    ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostNextStreamStart', info, options),
+    publishHostNextStreamCancel: (): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostNextStreamCancel'),
+    publishHostPromoteNextStream: (): Promise<ParallaxTimelineState | null> =>
+      ipcRenderer.invoke('parallax:publishHostPromoteNextStream'),
     publishHostAudioChunk: (chunk: ParallaxAudioChunk): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostAudioChunk', chunk),
     publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions): Promise<void> =>
@@ -1443,6 +1452,12 @@ declare global {
           info: ParallaxHostStreamStartInfo,
           options?: ParallaxHostStreamStartOptions
         ) => Promise<ParallaxTimelineState>
+        publishHostNextStreamStart: (
+          info: ParallaxHostStreamStartInfo,
+          options: ParallaxHostNextStreamStartOptions
+        ) => Promise<ParallaxTimelineState>
+        publishHostNextStreamCancel: () => Promise<void>
+        publishHostPromoteNextStream: () => Promise<ParallaxTimelineState | null>
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
         publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
         publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>

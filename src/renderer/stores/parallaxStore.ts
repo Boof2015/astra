@@ -96,6 +96,10 @@ interface ParallaxSettingsStore {
     playing: boolean
   ) => Promise<ParallaxTimelineState | null>
   resumeHostPlayback: (track: Track | null | undefined) => Promise<ParallaxTimelineState | null>
+  // §21 Gapless sink handoff (host control surface).
+  publishHostNextStream: (nextTrack: Track | null | undefined) => Promise<void>
+  cancelHostNextStream: () => Promise<void>
+  promoteHostNextStream: (currentTrack: Track | null | undefined) => Promise<void>
   prepareHostSeek: (timeSeconds: number, playing: boolean) => Promise<ParallaxTimelineState | null>
   pauseHostPlayback: () => Promise<void>
   stopHostPlayback: () => Promise<void>
@@ -211,6 +215,22 @@ function buildParallaxStreamInfo(
     totalFrames: buffer.length,
     normalizationGainDb: audioEngine.getNormalizationGainDb(),
     normalizationMode: audioEngine.getNormalizationMode()
+  }
+}
+
+// §21 Gapless sink handoff. Like buildParallaxStreamInfo but stamps the NEXT track's normalization
+// (the pre-buffered track's replay gain, not the currently-playing one) so the sink stages it at the
+// correct loudness.
+function buildParallaxNextStreamInfo(
+  track: Track,
+  streamId: string,
+  buffer: AudioBuffer
+): ParallaxHostStreamStartInfo {
+  const normalization = audioEngine.getNextNormalization()
+  return {
+    ...buildParallaxStreamInfo(track, streamId, buffer),
+    normalizationGainDb: normalization.gainDb,
+    normalizationMode: normalization.mode
   }
 }
 
@@ -937,13 +957,19 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     if (!audioChunkUnsubscribe) {
       audioChunkUnsubscribe = window.electronAPI.parallax.onAudioChunk((chunk) => {
-        if (audioEngine.getParallaxSinkSnapshot().streamId !== chunk.streamId) {
-          pendingAudioChunks = [...pendingAudioChunks, chunk].slice(-256)
+        if (audioEngine.getParallaxSinkSnapshot().streamId === chunk.streamId) {
+          audioEngine.appendParallaxSinkAudioChunk(chunk)
+          set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
+          applyChunkTimelineIfNeeded(chunk)
           return
         }
-        audioEngine.appendParallaxSinkAudioChunk(chunk)
-        set({ sinkSnapshot: audioEngine.getParallaxSinkSnapshot() })
-        applyChunkTimelineIfNeeded(chunk)
+        // §21 — route to the staged next stream if it's the one pre-buffering for the gapless handoff.
+        if (audioEngine.getStagedParallaxSinkStreamId() === chunk.streamId) {
+          audioEngine.appendParallaxNextSinkAudioChunk(chunk)
+          return
+        }
+        // Unknown/early chunk — buffer until its stream-start / next-stream-start loads a node.
+        pendingAudioChunks = [...pendingAudioChunks, chunk].slice(-256)
       })
     }
 
@@ -965,6 +991,67 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     applyStatus(status)
     await refreshPairedSinks()
     return status
+  }
+
+  // §21 Gapless sink handoff (sink side). Staged stream's info, held from next-stream-start so its
+  // trackId is available for Zone Display artwork at promote time.
+  let stagedSinkStream: ParallaxStreamInfo | null = null
+
+  // Resolve + apply Zone Display artwork for a stream (cache-hit instant; else main-side fetch).
+  // Mirrors the stream-start artwork flow; reused for the promoted next stream.
+  const loadSinkArtworkForStream = (stream: ParallaxStreamInfo): void => {
+    const trackId = stream.trackId
+    const streamIdAtRequest = stream.streamId
+    const cachedArtwork = trackId ? sinkArtworkByTrackId.get(trackId) ?? null : null
+    if (cachedArtwork) {
+      set({ sinkActiveArtworkUrl: cachedArtwork })
+      return
+    }
+    set({ sinkActiveArtworkUrl: null })
+    sinkArtworkInFlightStreamId = streamIdAtRequest
+    void window.electronAPI.parallax.fetchSinkArtwork(streamIdAtRequest)
+      .then((dataUrl) => {
+        if (sinkArtworkInFlightStreamId !== streamIdAtRequest) return
+        sinkArtworkInFlightStreamId = null
+        if (!dataUrl) return
+        if (trackId) {
+          if (sinkArtworkByTrackId.size >= SINK_ARTWORK_CACHE_CAP) {
+            const firstKey = sinkArtworkByTrackId.keys().next().value
+            if (firstKey !== undefined) sinkArtworkByTrackId.delete(firstKey)
+          }
+          sinkArtworkByTrackId.set(trackId, dataUrl)
+        }
+        if (audioEngine.getParallaxSinkSnapshot().streamId === streamIdAtRequest) {
+          set({ sinkActiveArtworkUrl: dataUrl })
+        }
+      })
+      .catch(() => {
+        if (sinkArtworkInFlightStreamId === streamIdAtRequest) sinkArtworkInFlightStreamId = null
+      })
+  }
+
+  // Pre-load the staged next stream + schedule its boundary crossover. Inert unless we're a connected
+  // sink already playing a stream (loadParallaxNextSinkStream no-ops otherwise).
+  const handleNextStreamStart = (
+    event: Extract<ParallaxTimelineEvent, { type: 'next-stream-start' }>
+  ): void => {
+    if (audioEngine.getStagedParallaxSinkStreamId() !== event.stream.streamId) {
+      audioEngine.loadParallaxNextSinkStream(event.stream)
+    }
+    if (audioEngine.getStagedParallaxSinkStreamId() !== event.stream.streamId) return // couldn't stage
+    stagedSinkStream = event.stream
+    // Drain any next-stream chunks that arrived before the staged node existed.
+    const staged = pendingAudioChunks.filter((chunk) => chunk.streamId === event.stream.streamId)
+    pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.stream.streamId)
+    for (const chunk of staged) {
+      audioEngine.appendParallaxNextSinkAudioChunk(chunk)
+    }
+    // Schedule the crossover at the future boundary (needs a primed clock offset — a sink mid-playback
+    // already has one; if not yet primed, the boundary promote still falls back gracefully).
+    const offsetMs = get().status?.sink.clockOffsetMs
+    if (offsetMs !== null && offsetMs !== undefined) {
+      audioEngine.scheduleParallaxNextSinkStart(event.timeline, offsetMs, 0)
+    }
   }
 
   const handleSinkEvent = async (event: ParallaxTimelineEvent): Promise<void> => {
@@ -1014,6 +1101,41 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         sinkSnapshot: audioEngine.getParallaxSinkSnapshot(),
         sinkActiveArtworkUrl: null
       })
+      return
+    }
+
+    // §21 Gapless sink handoff. These variants drive the staged next-stream node (pre-load /
+    // crossover / cancel) and — for cancel/promote — carry no `event.timeline`, so they MUST
+    // early-return before the shared `event.timeline` access below (same discipline as the
+    // trim/name/stop branches).
+    if (event.type === 'next-stream-start') {
+      handleNextStreamStart(event)
+      return
+    }
+    if (event.type === 'next-stream-cancel') {
+      pendingAudioChunks = pendingAudioChunks.filter((chunk) => chunk.streamId !== event.streamId)
+      if (audioEngine.getStagedParallaxSinkStreamId() === event.streamId) {
+        audioEngine.clearParallaxNextSink()
+      }
+      if (stagedSinkStream?.streamId === event.streamId) stagedSinkStream = null
+      return
+    }
+    if (event.type === 'next-stream-promote') {
+      // The acoustic crossover already happened via the staged node's scheduled start; promote the
+      // bookkeeping (active slot + master normalization + Zone Display artwork).
+      if (audioEngine.getStagedParallaxSinkStreamId() === event.streamId) {
+        resetHostEmitAnchors()
+        hostEmitHardSyncCount = 0
+        audioEngine.promoteParallaxNextSink()
+        set({
+          latestTimeline: null,
+          sinkSnapshot: audioEngine.getParallaxSinkSnapshot()
+        })
+        if (stagedSinkStream?.streamId === event.streamId) {
+          loadSinkArtworkForStream(stagedSinkStream)
+        }
+      }
+      if (stagedSinkStream?.streamId === event.streamId) stagedSinkStream = null
       return
     }
 
@@ -1568,6 +1690,58 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
         return null
+      }
+    },
+
+    // §21 Gapless sink handoff. Pre-announce the pre-buffered next track to sinks, anchored to the
+    // current track's boundary (host-clock instant the current track's last frame leaves the
+    // speaker), and start streaming its audio ahead of time. No-op unless hosting with connected
+    // sinks on a local non-bitperfect track and a next track is buffered.
+    publishHostNextStream: async (nextTrack) => {
+      if (!nextTrack) return
+      if (!get().shouldDelayHostPlayback(nextTrack)) return
+      const buffer = audioEngine.getNextAudioBuffer()
+      const currentBuffer = audioEngine.getAudioBuffer()
+      if (!buffer || !currentBuffer) return
+      const remainingSec = Math.max(0, currentBuffer.duration - getHostAcousticCurrentTimeSeconds())
+      const boundaryHostTimeMs = localNowMs() + remainingSec * 1000
+      const streamId = createStreamId(nextTrack)
+      ensureTelemetry()
+      try {
+        const timeline = await window.electronAPI.parallax.publishHostNextStreamStart(
+          buildParallaxNextStreamInfo(nextTrack, streamId, buffer),
+          { startHostTimeMs: boundaryHostTimeMs, startFrame: 0, artworkHash: nextTrack.artworkHash }
+        )
+        void audioEngine.publishNextBufferToParallax(streamId, timeline).catch((error) => {
+          set({ errorMessage: toErrorMessage(error) })
+        })
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+      }
+    },
+
+    // §21. Withdraw a pre-announced next stream (skip / seek / queue edit / next-track change).
+    cancelHostNextStream: async () => {
+      audioEngine.cancelParallaxHostNextPublishing()
+      try {
+        await window.electronAPI.parallax.publishHostNextStreamCancel()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+      }
+    },
+
+    // §21. Boundary crossed — promote the pre-announced next stream to active. Falls back to the
+    // Phase-1 boundary start when nothing was pre-announced (e.g. handoff couldn't pre-buffer in time).
+    promoteHostNextStream: async (currentTrack) => {
+      audioEngine.promoteParallaxHostNextPublish()
+      let promotedTimeline: ParallaxTimelineState | null = null
+      try {
+        promotedTimeline = await window.electronAPI.parallax.publishHostPromoteNextStream()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+      }
+      if (!promotedTimeline) {
+        await get().startHostStreamForCurrentPlayback(currentTrack, true)
       }
     },
 

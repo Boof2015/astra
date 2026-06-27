@@ -9,6 +9,7 @@ import type {
   ParallaxHostConfig,
   ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
+  ParallaxHostNextStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
   ParallaxJoinResponse,
   ParallaxIncomingPairRequest,
@@ -142,6 +143,11 @@ interface ParallaxSinkConnectionState {
   activeAudioStreamId: string | null
   eventGeneration: number
   audioGeneration: number
+  // §21 Gapless sink handoff. A second concurrent reader pre-fetches the pre-announced next stream's
+  // audio. Short-lived (pre-announce → boundary); on promote it is moved into the primary slot.
+  nextAudioReader: ReadableStreamDefaultReader<Uint8Array> | null
+  nextAudioStreamId: string | null
+  nextAudioGeneration: number
 }
 
 interface ParallaxServiceOptions {
@@ -473,6 +479,13 @@ export class ParallaxService {
   private lastError: string | null = null
   private activePairingPin: ParallaxPairingPin | null = null
   private activeStream: ActiveParallaxStream | null = null
+  // §21 Gapless sink handoff. The pre-announced NEXT stream, held concurrently with `activeStream`
+  // from the moment the host pre-buffers the next track until the boundary is crossed (promoted to
+  // active) or withdrawn (cancelled). Has its own packet ring; audio fan-out keys off
+  // `ParallaxAudioClient.streamId`, so one `audioClients` set serves both streams.
+  private pendingStream: ActiveParallaxStream | null = null
+  private pendingStreamArtworkBytes: { streamId: string; mimeType: string; bytes: Buffer } | null = null
+  private pendingStreamArtworkResolve: { streamId: string; promise: Promise<void> } | null = null
   private readonly sseClients = new Set<ParallaxSseClient>()
   private readonly audioClients = new Set<ParallaxAudioClient>()
   private sinkConnection: ParallaxSinkConnectionState | null = null
@@ -482,6 +495,9 @@ export class ParallaxService {
   private sinkReconnectAttempts = 0
   private sinkActiveStream: ParallaxStreamInfo | null = null
   private sinkTimeline: ParallaxTimelineState | null = null
+  // §21 Gapless sink handoff (sink side). The pre-announced next stream this sink is pre-fetching.
+  private sinkPendingStream: ParallaxStreamInfo | null = null
+  private sinkPendingTimeline: ParallaxTimelineState | null = null
   private sinkLastError: string | null = null
   private lastAudioChunkAtMs = 0
   private audioStallTimer: ReturnType<typeof setInterval> | null = null
@@ -823,6 +839,13 @@ export class ParallaxService {
         })
       this.pendingStreamArtwork = { streamId: streamIdAtRequest, promise: resolvePromise }
     }
+    // §21. A fresh stream supersedes any pre-announced next stream (manual track change / new play).
+    if (this.pendingStream) {
+      this.closeAudioClientsForStream(this.pendingStream.info.streamId)
+      this.pendingStream = null
+      this.pendingStreamArtworkBytes = null
+      this.pendingStreamArtworkResolve = null
+    }
     this.broadcastTimelineEvent({
       type: 'stream-start',
       stream,
@@ -831,6 +854,122 @@ export class ParallaxService {
     }, options.targetSinkId)
     this.emitStatus()
     return timeline
+  }
+
+  // §21 Gapless sink handoff. Pre-announce the NEXT stream so sinks can pre-load its audio and
+  // schedule a sample-aligned crossover at the (future) track boundary. Mirrors publishHostStreamStart
+  // but writes the `pendingStream` slot and anchors the timeline to the caller-supplied boundary
+  // instant (host-known scheduled track end) instead of `now + groupLatency`. Never targeted —
+  // gapless handoff is never the trim test tone.
+  publishHostNextStreamStart(
+    info: ParallaxHostStreamStartInfo,
+    options: ParallaxHostNextStreamStartOptions
+  ): ParallaxTimelineState {
+    if (!this.config.enabled || !this.active) {
+      throw new Error('Parallax host is not active.')
+    }
+    const now = parallaxNowMs()
+    const normalization = resolveParallaxStreamNormalization(info)
+    const stream: ParallaxStreamInfo = {
+      ...info,
+      sampleRate: Math.max(1, Math.round(info.sampleRate)),
+      channels: Math.max(1, Math.min(8, Math.round(info.channels))),
+      totalFrames: Math.max(0, Math.floor(info.totalFrames)),
+      durationSeconds: Math.max(0, info.durationSeconds),
+      normalizationGainDb: normalization.normalizationGainDb,
+      normalizationMode: normalization.normalizationMode,
+      chunkFrames: PARALLAX_AUDIO_CHUNK_FRAMES,
+      groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
+      createdAt: Date.now()
+    }
+    const timeline: ParallaxTimelineState = {
+      streamId: stream.streamId,
+      playbackState: 'playing',
+      startFrame: Math.max(0, Math.min(stream.totalFrames, Math.floor(options.startFrame ?? 0))),
+      startHostTimeMs: options.startHostTimeMs,
+      updatedHostTimeMs: now,
+      groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS
+    }
+    // Replace any prior pending announcement (the next track changed); shed its audio clients first.
+    if (this.pendingStream && this.pendingStream.info.streamId !== stream.streamId) {
+      this.closeAudioClientsForStream(this.pendingStream.info.streamId)
+    }
+    this.pendingStream = { info: stream, timeline, packets: [] }
+    this.pendingStreamArtworkBytes = null
+    this.pendingStreamArtworkResolve = null
+    if (options.artworkHash && this.resolveArtworkDataUrl) {
+      const hash = options.artworkHash
+      const streamIdAtRequest = stream.streamId
+      const resolvePromise = this.resolveArtworkDataUrl(hash)
+        .then((dataUrl) => {
+          if (!this.pendingStream || this.pendingStream.info.streamId !== streamIdAtRequest) return
+          const parsed = parseParallaxArtworkDataUrl(dataUrl)
+          if (!parsed) return
+          this.pendingStreamArtworkBytes = {
+            streamId: streamIdAtRequest,
+            mimeType: parsed.mimeType,
+            bytes: parsed.bytes
+          }
+        })
+        .catch(() => {
+          // Resolver failure is non-fatal; sink falls back to its placeholder glyph.
+        })
+      this.pendingStreamArtworkResolve = { streamId: streamIdAtRequest, promise: resolvePromise }
+    }
+    this.broadcastTimelineEvent({
+      type: 'next-stream-start',
+      stream,
+      timeline,
+      emittedAtHostTimeMs: now
+    })
+    this.emitStatus()
+    return timeline
+  }
+
+  // §21. Withdraw the pre-announced next stream (skip / seek / queue edit / repeat-one / next-track
+  // change before the boundary). Sinks drop the staged stream + buffered next-stream chunks.
+  publishHostNextStreamCancel(): void {
+    const pending = this.pendingStream
+    if (!pending) return
+    const streamId = pending.info.streamId
+    this.pendingStream = null
+    this.pendingStreamArtworkBytes = null
+    this.pendingStreamArtworkResolve = null
+    this.broadcastTimelineEvent({
+      type: 'next-stream-cancel',
+      streamId,
+      emittedAtHostTimeMs: parallaxNowMs()
+    })
+    this.closeAudioClientsForStream(streamId)
+    this.emitStatus()
+  }
+
+  // §21. Boundary crossed — promote the pre-announced next stream to the live stream. The sink's
+  // acoustic crossover already happened via its scheduled worklet start; this swaps the host's
+  // bookkeeping (active slot + artwork) and tells sinks to do the same. Returns the promoted
+  // timeline, or null when nothing is staged (caller falls back to a fresh publishHostStreamStart).
+  publishHostPromoteNextStream(): ParallaxTimelineState | null {
+    const pending = this.pendingStream
+    if (!pending) return null
+    const previousStreamId = this.activeStream?.info.streamId ?? null
+    this.activeStream = pending
+    this.pendingStream = null
+    // The pending stream's resolved artwork (if any) becomes the current stream's.
+    this.currentStreamArtwork = this.pendingStreamArtworkBytes
+    this.pendingStreamArtwork = this.pendingStreamArtworkResolve
+    this.pendingStreamArtworkBytes = null
+    this.pendingStreamArtworkResolve = null
+    // Shed the old stream's audio clients; sinks reconnect/track under the promoted streamId.
+    if (previousStreamId && previousStreamId !== pending.info.streamId) {
+      this.closeAudioClientsForStream(previousStreamId)
+    }
+    this.broadcastTimelineEvent({
+      type: 'next-stream-promote',
+      streamId: pending.info.streamId,
+      emittedAtHostTimeMs: parallaxNowMs()
+    })
+    this.emitStatus()
+    return pending.timeline
   }
 
   publishHostTimeline(timeline: ParallaxTimelineState, options: ParallaxHostTimelinePublishOptions = {}): void {
@@ -879,17 +1018,24 @@ export class ParallaxService {
   }
 
   publishHostAudioChunk(chunk: ParallaxAudioChunk): void {
-    if (!this.activeStream || this.activeStream.info.streamId !== chunk.streamId) return
+    // §21. Route to the active stream or the pre-announced next stream (both buffer concurrently
+    // near a gapless boundary). Audio fan-out keys off the per-client streamId, so one client set
+    // serves both.
+    const target =
+      this.activeStream?.info.streamId === chunk.streamId ? this.activeStream
+      : this.pendingStream?.info.streamId === chunk.streamId ? this.pendingStream
+      : null
+    if (!target) return
     const packet = byteViewFromArrayBuffer(encodeParallaxAudioPacket(chunk))
     const startFrame = Math.max(0, Math.floor(chunk.startFrame))
     const endFrame = startFrame + Math.max(0, Math.floor(chunk.frameCount))
 
-    this.activeStream.packets.push({ startFrame, endFrame, bytes: packet })
-    if (this.activeStream.packets.length > MAX_AUDIO_CHUNKS) {
-      this.activeStream.packets.splice(0, this.activeStream.packets.length - MAX_AUDIO_CHUNKS)
+    target.packets.push({ startFrame, endFrame, bytes: packet })
+    if (target.packets.length > MAX_AUDIO_CHUNKS) {
+      target.packets.splice(0, target.packets.length - MAX_AUDIO_CHUNKS)
     }
 
-    const targetSinkId = this.activeStream.targetSinkId
+    const targetSinkId = target.targetSinkId
     for (const client of this.audioClients) {
       if (client.streamId !== chunk.streamId) continue
       if (targetSinkId && client.sinkId !== targetSinkId) continue
@@ -938,8 +1084,11 @@ export class ParallaxService {
   stopHostStream(): void {
     const streamId = this.activeStream?.info.streamId ?? null
     this.activeStream = null
+    this.pendingStream = null
     this.currentStreamArtwork = null
     this.pendingStreamArtwork = null
+    this.pendingStreamArtworkBytes = null
+    this.pendingStreamArtworkResolve = null
     this.broadcastTimelineEvent({
       type: 'stop',
       streamId,
@@ -1140,7 +1289,10 @@ export class ParallaxService {
       audioReader: null,
       activeAudioStreamId: null,
       eventGeneration: 0,
-      audioGeneration: 0
+      audioGeneration: 0,
+      nextAudioReader: null,
+      nextAudioStreamId: null,
+      nextAudioGeneration: 0
     }
     this.sinkClockSamples = []
     this.sinkActiveStream = null
@@ -1623,7 +1775,14 @@ export class ParallaxService {
         groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
         hostTimeMs,
         stream: visibleToThisSink ? (this.activeStream?.info ?? null) : null,
-        timeline: visibleToThisSink ? this.getTimelineForNewSink(hostTimeMs) : null
+        timeline: visibleToThisSink ? this.getTimelineForNewSink(hostTimeMs) : null,
+        // §21. A late joiner also receives the pre-announced next stream so it can pre-stage. The
+        // pending timeline is future-anchored to the boundary — pass it through as-is (do NOT
+        // advance startFrame for elapsed time the way getTimelineForNewSink does for a live stream).
+        nextStream: this.pendingStream?.info ?? null,
+        nextTimeline: this.pendingStream
+          ? { ...this.pendingStream.timeline, updatedHostTimeMs: hostTimeMs }
+          : null
       } satisfies ParallaxJoinResponse)
       return
     }
@@ -1855,6 +2014,15 @@ export class ParallaxService {
         emittedAtHostTimeMs
       } satisfies ParallaxTimelineEvent)
     }
+    // §21. Replay the pre-announced next stream to a sink whose event channel connects mid-handoff.
+    if (this.pendingStream) {
+      writeSseEvent(res, 'parallax', {
+        type: 'next-stream-start',
+        stream: this.pendingStream.info,
+        timeline: this.pendingStream.timeline,
+        emittedAtHostTimeMs: parallaxNowMs()
+      } satisfies ParallaxTimelineEvent)
+    }
 
     this.emitStatus()
     const cleanup = () => {
@@ -1880,7 +2048,12 @@ export class ParallaxService {
   ): void {
     const streamId = toSafeOptionalString(requestUrl.searchParams.get('streamId'))
     const fromFrame = Math.max(0, Math.floor(Number(requestUrl.searchParams.get('fromFrame') ?? 0) || 0))
-    if (!this.activeStream || !streamId || this.activeStream.info.streamId !== streamId) {
+    // §21. Serve the active stream or the pre-announced next stream (a sink pre-fetches both).
+    const targetStream =
+      this.activeStream?.info.streamId === streamId ? this.activeStream
+      : this.pendingStream?.info.streamId === streamId ? this.pendingStream
+      : null
+    if (!streamId || !targetStream) {
       toJsonResponse(res, 409, { error: 'No matching Parallax stream is active.' })
       return
     }
@@ -1891,7 +2064,7 @@ export class ParallaxService {
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders()
 
-    for (const packet of this.activeStream.packets) {
+    for (const packet of targetStream.packets) {
       if (packet.endFrame <= fromFrame) continue
       res.write(packet.bytes)
     }
@@ -2395,6 +2568,10 @@ export class ParallaxService {
     if (event.type === 'stream-start') {
       this.sinkActiveStream = event.stream
       this.sinkTimeline = event.timeline
+      // §21. A fresh stream supersedes any in-flight gapless handoff.
+      this.sinkPendingStream = null
+      this.sinkPendingTimeline = null
+      this.cancelSinkNextAudio(null)
       this.emitStatus()
       void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
     } else if (event.type === 'timeline') {
@@ -2405,9 +2582,24 @@ export class ParallaxService {
       if (event.resetAudio && this.sinkActiveStream?.streamId === event.timeline.streamId) {
         void this.consumeSinkAudio(event.timeline.streamId, event.timeline.startFrame, true)
       }
+    } else if (event.type === 'next-stream-start') {
+      // §21. Pre-fetch the pre-announced next stream's audio concurrently with the current one.
+      this.sinkPendingStream = event.stream
+      this.sinkPendingTimeline = event.timeline
+      void this.consumeSinkNextAudio(event.stream.streamId, event.timeline.startFrame)
+    } else if (event.type === 'next-stream-cancel') {
+      if (this.sinkPendingStream?.streamId === event.streamId) {
+        this.sinkPendingStream = null
+        this.sinkPendingTimeline = null
+      }
+      this.cancelSinkNextAudio(event.streamId)
+    } else if (event.type === 'next-stream-promote') {
+      this.promoteSinkNextAudio(event.streamId)
     } else if (event.type === 'stop') {
       this.sinkActiveStream = null
       this.sinkTimeline = null
+      this.sinkPendingStream = null
+      this.sinkPendingTimeline = null
       const connection = this.sinkConnection
       if (connection) {
         connection.audioGeneration += 1
@@ -2415,6 +2607,7 @@ export class ParallaxService {
         try { void connection.audioReader?.cancel() } catch { /* ignore */ }
         connection.audioReader = null
       }
+      this.cancelSinkNextAudio(null)
       this.emitStatus()
     }
 
@@ -2555,5 +2748,133 @@ export class ParallaxService {
       this.sinkLastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
       this.scheduleSinkReconnect(connection, this.sinkLastError)
     }
+  }
+
+  // §21 Gapless sink handoff (sink side). A lean second reader that pre-fetches the pre-announced
+  // next stream concurrently with the current one. Short-lived (pre-announce → boundary), so unlike
+  // consumeSinkAudio it does not auto-reconnect — on the boundary, promoteSinkNextAudio cancels it
+  // and re-establishes the stream in the primary slot. Chunks are forwarded tagged by streamId; the
+  // renderer routes them to its staged node.
+  private async consumeSinkNextAudio(streamId: string, fromFrame: number): Promise<void> {
+    const connection = this.sinkConnection
+    if (!connection) return
+    if (connection.nextAudioStreamId === streamId && connection.nextAudioReader) return
+
+    connection.nextAudioGeneration += 1
+    const audioGeneration = connection.nextAudioGeneration
+    connection.nextAudioStreamId = streamId
+    try {
+      await connection.nextAudioReader?.cancel()
+    } catch {
+      // Ignore replacement races.
+    }
+    connection.nextAudioReader = null
+
+    try {
+      const requestFromFrame = Math.max(0, Math.floor(fromFrame))
+      const response = await fetch(
+        `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
+        {
+          method: 'GET',
+          signal: connection.abortController.signal,
+          headers: { Authorization: `Bearer ${connection.token}` }
+        }
+      )
+      if (!response.ok || !response.body) {
+        if (response.status === 401) {
+          throw new ParallaxAuthError(401, 'Parallax next audio stream unauthorized.')
+        }
+        throw new Error(`Parallax next audio stream failed (${response.status}).`)
+      }
+
+      const reader = response.body.getReader()
+      if (
+        this.sinkConnection !== connection
+        || connection.nextAudioStreamId !== streamId
+        || connection.nextAudioGeneration !== audioGeneration
+      ) {
+        await reader.cancel().catch(() => undefined)
+        return
+      }
+      connection.nextAudioReader = reader
+      this.lastHostContactAtMs = Date.now()
+      let pending: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
+      while (
+        this.sinkConnection === connection
+        && connection.nextAudioStreamId === streamId
+        && connection.nextAudioGeneration === audioGeneration
+      ) {
+        const { done, value } = await reader.read()
+        if (
+          this.sinkConnection !== connection
+          || connection.nextAudioStreamId !== streamId
+          || connection.nextAudioGeneration !== audioGeneration
+        ) {
+          return
+        }
+        if (done) break
+        if (!value) continue
+        this.lastHostContactAtMs = Date.now()
+        const received = new Uint8Array(value.byteLength)
+        received.set(value)
+        pending = mergeBytes(pending, received)
+        while (true) {
+          const decoded = decodeParallaxAudioPacket(pending)
+          if (!decoded) break
+          pending = pending.slice(decoded.bytesRead)
+          this.onSinkAudioChunk?.({ ...decoded.chunk, streamId })
+        }
+      }
+      if (
+        this.sinkConnection === connection
+        && connection.nextAudioStreamId === streamId
+        && connection.nextAudioGeneration === audioGeneration
+      ) {
+        connection.nextAudioReader = null
+      }
+    } catch (error) {
+      if (
+        this.sinkConnection !== connection
+        || connection.nextAudioStreamId !== streamId
+        || connection.nextAudioGeneration !== audioGeneration
+      ) return
+      connection.nextAudioReader = null
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleSinkAuthRevoked()
+        return
+      }
+      // Non-fatal: pre-fetch is best-effort; the boundary promote re-fetches as the primary stream.
+    }
+  }
+
+  // §21. Stop the pre-fetch reader (skip / seek / queue edit / fresh stream-start / stop). Pass null
+  // to cancel whatever next stream is in flight; pass a streamId to cancel only if it matches.
+  private cancelSinkNextAudio(streamId: string | null): void {
+    const connection = this.sinkConnection
+    if (!connection) return
+    if (streamId !== null && connection.nextAudioStreamId !== streamId) return
+    connection.nextAudioGeneration += 1
+    connection.nextAudioStreamId = null
+    try { void connection.nextAudioReader?.cancel() } catch { /* ignore */ }
+    connection.nextAudioReader = null
+  }
+
+  // §21. Boundary crossed — the pre-announced next stream becomes primary. Cancel the pre-fetch
+  // reader and re-establish the stream in the primary slot from the live frame (the host keeps
+  // streaming it post-boundary). Re-sent backlog is idempotent — the sink worklet plays by absolute
+  // frame, so duplicate frames don't glitch.
+  private promoteSinkNextAudio(streamId: string): void {
+    const connection = this.sinkConnection
+    if (!connection) return
+    if (this.sinkPendingStream?.streamId !== streamId) return
+    this.sinkActiveStream = this.sinkPendingStream
+    this.sinkTimeline = this.sinkPendingTimeline
+    this.sinkPendingStream = null
+    this.sinkPendingTimeline = null
+    this.cancelSinkNextAudio(streamId)
+    const resumeFrame = this.getSinkReconnectFrame(streamId, this.sinkTimeline?.startFrame ?? 0)
+    this.lastAudioChunkAtMs = Date.now()
+    this.emitStatus()
+    void this.consumeSinkAudio(streamId, resumeFrame, true)
   }
 }

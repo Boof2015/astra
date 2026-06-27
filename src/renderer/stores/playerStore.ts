@@ -746,6 +746,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
     audioEngine.clearNextBuffer()
+    // §21 Gapless sink handoff — the pre-announced next stream (if any) is now stale; withdraw it
+    // from sinks. Idempotent: a no-op when nothing is pending. Re-published when the next prebuffer
+    // completes.
+    void useParallaxStore.getState().cancelHostNextStream()
   }
 
   const beginLoadRequest = (): number => {
@@ -1598,6 +1602,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     seek: async (time: number) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
+      // §21 Gapless sink handoff — a seek moves the current track's boundary, invalidating the
+      // pre-announced next stream's scheduled crossover. Withdraw it; this boundary falls back to the
+      // Phase-1 sink follow.
+      void useParallaxStore.getState().cancelHostNextStream()
+
       const state = get()
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
@@ -2355,6 +2364,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 trackPath: nextTrack.path,
                 loaded: true
               })
+              // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
+              // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
+              // sinks on a non-bitperfect local track.
+              void useParallaxStore.getState().publishHostNextStream(nextTrack)
               return
             }
             if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
@@ -2604,13 +2617,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         startRecentPlaySession(nextTrack.path)
         prebufferAttemptedTrackPath = null
 
-        // Tell connected Parallax sinks to follow the auto-advance. The host audio is already
-        // mid-playback from the swapped pre-buffer, so anchor a fresh stream at the host's current
-        // position WITHOUT rescheduling host audio (no playWithParallaxIfNeeded here). No-op when
-        // not hosting with connected sinks (gated by shouldDelayHostPlayback inside).
+        // §21 Gapless sink handoff. Promote the pre-announced next stream so sinks cross the boundary
+        // gaplessly. promoteHostNextStream falls back to the Phase-1 boundary start
+        // (startHostStreamForCurrentPlayback) when nothing was pre-announced — so sinks always follow.
         void useParallaxStore
           .getState()
-          .startHostStreamForCurrentPlayback(nextTrack, true)
+          .promoteHostNextStream(nextTrack)
           .catch(() => {
             /* host streaming is best-effort; errors surface via parallaxStore */
           })
