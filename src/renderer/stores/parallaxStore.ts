@@ -113,6 +113,12 @@ let audioChunkUnsubscribe: (() => void) | null = null
 let sinkPairedUnsubscribe: (() => void) | null = null
 let telemetryTimer: number | null = null
 let pendingAudioChunks: ParallaxAudioChunk[] = []
+// §21 Gapless sink handoff. Pre-announce the next stream this many ms BEFORE the track boundary
+// (rather than at prebuffer-complete, which can be ~10s+ early). The crossover boundary is a nominal
+// projection, so a shorter projection window means less nominal-vs-real clock drift at the seam.
+// Kept comfortably above the host chunk lookahead (3s) so the sink still has lead time to pre-buffer.
+const PARALLAX_NEXT_STREAM_LEAD_MS = 4000
+let nextStreamPublishTimer: ReturnType<typeof setTimeout> | null = null
 // Trim test tone: after a cold start both ends report ~0 output latency until audio has flowed, so
 // the first anchor lands at a wrong offset. We let it play for this long, then restart once so the
 // host reference and the sink re-join both anchor with real (warm) latency.
@@ -593,6 +599,38 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     const writeCursorSec = audioEngine.currentTime
     if (!Number.isFinite(writeCursorSec)) return 0
     return Math.max(0, writeCursorSec - audioEngine.getParallaxEndpointLatencyMs() / 1000)
+  }
+
+  // §21 Gapless sink handoff. The actual next-stream announce — computes the boundary FRESH at call
+  // time (so deferring it close to the boundary shrinks the projection window) and starts streaming
+  // the next track's audio to sinks. Called either immediately or from the deferral timer below.
+  const doPublishHostNextStream = async (nextTrack: Track): Promise<void> => {
+    if (!get().shouldDelayHostPlayback(nextTrack)) return
+    const buffer = audioEngine.getNextAudioBuffer()
+    const currentBuffer = audioEngine.getAudioBuffer()
+    if (!buffer || !currentBuffer) return
+    const remainingSec = Math.max(0, currentBuffer.duration - getHostAcousticCurrentTimeSeconds())
+    const boundaryHostTimeMs = localNowMs() + remainingSec * 1000
+    const streamId = createStreamId(nextTrack)
+    ensureTelemetry()
+    try {
+      const timeline = await window.electronAPI.parallax.publishHostNextStreamStart(
+        buildParallaxNextStreamInfo(nextTrack, streamId, buffer),
+        { startHostTimeMs: boundaryHostTimeMs, startFrame: 0, artworkHash: nextTrack.artworkHash }
+      )
+      void audioEngine.publishNextBufferToParallax(streamId, timeline).catch((error) => {
+        set({ errorMessage: toErrorMessage(error) })
+      })
+    } catch (error) {
+      set({ errorMessage: toErrorMessage(error) })
+    }
+  }
+
+  const clearNextStreamPublishTimer = (): void => {
+    if (nextStreamPublishTimer) {
+      clearTimeout(nextStreamPublishTimer)
+      nextStreamPublishTimer = null
+    }
   }
 
   const publishHostTimeline = async (
@@ -1698,30 +1736,30 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     // speaker), and start streaming its audio ahead of time. No-op unless hosting with connected
     // sinks on a local non-bitperfect track and a next track is buffered.
     publishHostNextStream: async (nextTrack) => {
+      // A new pre-announce supersedes any pending deferral.
+      clearNextStreamPublishTimer()
       if (!nextTrack) return
       if (!get().shouldDelayHostPlayback(nextTrack)) return
-      const buffer = audioEngine.getNextAudioBuffer()
       const currentBuffer = audioEngine.getAudioBuffer()
-      if (!buffer || !currentBuffer) return
+      if (!audioEngine.getNextAudioBuffer() || !currentBuffer) return
       const remainingSec = Math.max(0, currentBuffer.duration - getHostAcousticCurrentTimeSeconds())
-      const boundaryHostTimeMs = localNowMs() + remainingSec * 1000
-      const streamId = createStreamId(nextTrack)
-      ensureTelemetry()
-      try {
-        const timeline = await window.electronAPI.parallax.publishHostNextStreamStart(
-          buildParallaxNextStreamInfo(nextTrack, streamId, buffer),
-          { startHostTimeMs: boundaryHostTimeMs, startFrame: 0, artworkHash: nextTrack.artworkHash }
-        )
-        void audioEngine.publishNextBufferToParallax(streamId, timeline).catch((error) => {
-          set({ errorMessage: toErrorMessage(error) })
-        })
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
+      const leadSec = PARALLAX_NEXT_STREAM_LEAD_MS / 1000
+      // Defer the announce to ~leadSec before the boundary so the boundary projection window is
+      // short (less nominal-vs-real clock drift at the crossover seam). If the track is shorter than
+      // the lead (or we're already inside it), announce now.
+      if (remainingSec > leadSec) {
+        nextStreamPublishTimer = setTimeout(() => {
+          nextStreamPublishTimer = null
+          void doPublishHostNextStream(nextTrack)
+        }, (remainingSec - leadSec) * 1000)
+        return
       }
+      await doPublishHostNextStream(nextTrack)
     },
 
     // §21. Withdraw a pre-announced next stream (skip / seek / queue edit / next-track change).
     cancelHostNextStream: async () => {
+      clearNextStreamPublishTimer()
       audioEngine.cancelParallaxHostNextPublishing()
       try {
         await window.electronAPI.parallax.publishHostNextStreamCancel()
