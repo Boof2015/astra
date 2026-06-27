@@ -2604,6 +2604,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         startRecentPlaySession(nextTrack.path)
         prebufferAttemptedTrackPath = null
 
+        // Tell connected Parallax sinks to follow the auto-advance. The host audio is already
+        // mid-playback from the swapped pre-buffer, so anchor a fresh stream at the host's current
+        // position WITHOUT rescheduling host audio (no playWithParallaxIfNeeded here). No-op when
+        // not hosting with connected sinks (gated by shouldDelayHostPlayback inside).
+        void useParallaxStore
+          .getState()
+          .startHostStreamForCurrentPlayback(nextTrack, true)
+          .catch(() => {
+            /* host streaming is best-effort; errors surface via parallaxStore */
+          })
+
         // Schedule the NEXT next track for the new handoff window.
         schedulePreBufferNextTrack()
       })
