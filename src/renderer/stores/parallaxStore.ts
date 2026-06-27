@@ -119,11 +119,13 @@ let pendingAudioChunks: ParallaxAudioChunk[] = []
 // Kept comfortably above the host chunk lookahead (3s) so the sink still has lead time to pre-buffer.
 const PARALLAX_NEXT_STREAM_LEAD_MS = 4000
 // §21 Seam trim. A fixed amount (ms) to advance the staged crossover EARLIER than the projected
-// boundary, cancelling the constant scheduling slack on the staged node's fresh start (worklet
-// render-quantum + chunk pipeline) that the already-running current node doesn't have. TUNING DIAL:
-// higher = crossover starts earlier. If the seam leans LATE, raise this; if it leans EARLY, lower it
-// (can go negative). The window-drift component is handled separately by PARALLAX_NEXT_STREAM_LEAD_MS.
-const PARALLAX_NEXT_STREAM_SEAM_TRIM_MS = 15
+// boundary. TUNING DIAL: higher = crossover starts earlier. ASYMMETRY: too EARLY = the two tracks
+// OVERLAP (worse artifact); too LATE = a tiny gap (more forgiving) — so favor "just barely late",
+// never overshoot early. By-ear (2026-06-27): the residual seam wobble is at the jitter floor (the
+// worklet starts on 128-frame render quanta, ~2.9ms of non-deterministic wobble per transition), so
+// a static trim can't reliably null it — kept at 0 to sit on the safe slightly-late side. Drift is
+// handled separately by PARALLAX_NEXT_STREAM_LEAD_MS.
+const PARALLAX_NEXT_STREAM_SEAM_TRIM_MS = 0
 let nextStreamPublishTimer: ReturnType<typeof setTimeout> | null = null
 // Trim test tone: after a cold start both ends report ~0 output latency until audio has flowed, so
 // the first anchor lands at a wrong offset. We let it play for this long, then restart once so the
