@@ -11,6 +11,7 @@ import {
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useThemeStore } from '../../stores/themeStore'
 import {
   buildArtistGraph,
   buildArtistGraphLayout,
@@ -218,6 +219,25 @@ export default function GraphView() {
   const resetFocusNeighbors = useGraphStore((state) => state.resetFocusNeighbors)
 
   const setActiveView = useUIStore((state) => state.setActiveView)
+  const isLightTheme = useThemeStore((state) => state.resolvedTokens.isLight)
+  const graphEdgeStroke = isLightTheme
+    ? 'rgba(30, 41, 59, 0.82)'
+    : 'rgba(255, 255, 255, 0.88)'
+  const graphNodeFills = isLightTheme
+    ? {
+      selected: 'rgba(15, 23, 42, 0.86)',
+      hovered: 'rgba(30, 41, 59, 0.74)',
+      focusRoot: 'rgba(51, 65, 85, 0.62)',
+      compared: 'rgba(71, 85, 105, 0.64)',
+      base: 'rgba(100, 116, 139, 0.52)',
+    }
+    : {
+      selected: 'rgba(240, 244, 252, 0.95)',
+      hovered: 'rgba(226, 231, 240, 0.88)',
+      focusRoot: 'rgba(196, 204, 218, 0.76)',
+      compared: 'rgba(188, 198, 216, 0.8)',
+      base: 'rgba(174, 182, 196, 0.7)',
+    }
 
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const surfaceObserverRef = useRef<ResizeObserver | null>(null)
@@ -1269,7 +1289,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.thin}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.08}
                         strokeWidth={0.6}
                         strokeLinecap="round"
@@ -1279,7 +1299,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.medium}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.12}
                         strokeWidth={1}
                         strokeLinecap="round"
@@ -1289,7 +1309,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.thick}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.18}
                         strokeWidth={1.6}
                         strokeLinecap="round"
@@ -1331,7 +1351,7 @@ export default function GraphView() {
                       y1={sourceNode.y}
                       x2={targetNode.x}
                       y2={targetNode.y}
-                      stroke="rgba(255, 255, 255, 0.88)"
+                      stroke={graphEdgeStroke}
                       strokeOpacity={strokeOpacity}
                       strokeWidth={strokeWidth}
                       strokeLinecap="round"
@@ -1386,14 +1406,14 @@ export default function GraphView() {
                         r={radius}
                         fill={
                           isSelected
-                            ? 'rgba(240, 244, 252, 0.95)'
+                            ? graphNodeFills.selected
                             : isHovered
-                              ? 'rgba(226, 231, 240, 0.88)'
+                              ? graphNodeFills.hovered
                               : isFocusRoot
-                                ? 'rgba(196, 204, 218, 0.76)'
+                                ? graphNodeFills.focusRoot
                                 : isCompared
-                                  ? 'rgba(188, 198, 216, 0.8)'
-                                  : 'rgba(174, 182, 196, 0.7)'
+                                  ? graphNodeFills.compared
+                                  : graphNodeFills.base
                         }
                         opacity={opacity}
                       />

@@ -5,6 +5,7 @@ import { FrameScheduler } from '../../audio/visualizers/frameScheduler'
 import { isNativeAvailable } from '../../audio/native/index'
 import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
+import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
@@ -39,6 +40,16 @@ interface ResizeSession {
   startLeftWidth: number
   pairWidth: number
   pairWeight: number
+}
+
+interface VisualizerDisplayColors {
+  backgroundColor: string
+  gridColor: string
+  gridMutedColor: string
+  meterBackgroundColor: string
+  meterTickColor: string
+  meterTextColor: string
+  meterMutedTextColor: string
 }
 
 const MIN_SCOPE_WIDTH_PX = 112
@@ -168,6 +179,7 @@ function useAnalyzerSurfaceVisible(
 
 function DockedSpectrumTile({
   lineColor,
+  displayColors,
   fftSize,
   displayMode,
   tiltDbPerOctave,
@@ -177,6 +189,7 @@ function DockedSpectrumTile({
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   fftSize: number
   displayMode: SpectrumDisplayMode
   tiltDbPerOctave: number
@@ -199,6 +212,8 @@ function DockedSpectrumTile({
       visualizerRef.current = new SpectrumAnalyzer(canvasRef.current, {
         frameScheduler,
         lineColor,
+        backgroundColor: displayColors.backgroundColor,
+        gridColor: displayColors.gridColor,
         lineWidth: 2,
         fillGradient: !heatmapFill,
         heatmapFill,
@@ -230,6 +245,8 @@ function DockedSpectrumTile({
   useEffect(() => {
     visualizerRef.current?.setOptions({
       lineColor,
+      backgroundColor: displayColors.backgroundColor,
+      gridColor: displayColors.gridColor,
       fftSize,
       displayMode,
       fillGradient: !heatmapFill,
@@ -242,7 +259,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
+  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
 
   useEffect(() => {
     if (isRunning) {
@@ -261,12 +278,14 @@ function DockedSpectrumTile({
 
 function DockedOscilloscopeTile({
   lineColor,
+  displayColors,
   pitchLock,
   underfillEnabled,
   isRunning,
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   pitchLock: boolean
   underfillEnabled: boolean
   isRunning: boolean
@@ -286,6 +305,8 @@ function DockedOscilloscopeTile({
       visualizerRef.current = new Oscilloscope(canvasRef.current, {
         frameScheduler,
         lineColor,
+        backgroundColor: displayColors.backgroundColor,
+        gridColor: displayColors.gridColor,
         lineWidth: 2,
         pitchLock,
         underfillEnabled,
@@ -305,8 +326,14 @@ function DockedOscilloscopeTile({
   }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, pitchLock, underfillEnabled })
-  }, [lineColor, pitchLock, underfillEnabled])
+    visualizerRef.current?.setOptions({
+      lineColor,
+      backgroundColor: displayColors.backgroundColor,
+      gridColor: displayColors.gridColor,
+      pitchLock,
+      underfillEnabled,
+    })
+  }, [displayColors, lineColor, pitchLock, underfillEnabled])
 
   useEffect(() => {
     if (isRunning) {
@@ -325,12 +352,14 @@ function DockedOscilloscopeTile({
 
 function DockedVectorscopeTile({
   lineColor,
+  displayColors,
   vectorscopeMode,
   vectorscopeMultiband,
   isRunning,
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   vectorscopeMode: VectorscopeMode
   vectorscopeMultiband: boolean
   isRunning: boolean
@@ -350,6 +379,8 @@ function DockedVectorscopeTile({
       visualizerRef.current = new Vectorscope(canvasRef.current, {
         frameScheduler,
         lineColor,
+        backgroundColor: displayColors.backgroundColor,
+        gridColor: displayColors.gridColor,
         lineWidth: 1,
         showGrid: true,
         mode: vectorscopeMode,
@@ -369,8 +400,14 @@ function DockedVectorscopeTile({
   }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, mode: vectorscopeMode, multiband: vectorscopeMultiband })
-  }, [lineColor, vectorscopeMode, vectorscopeMultiband])
+    visualizerRef.current?.setOptions({
+      lineColor,
+      backgroundColor: displayColors.backgroundColor,
+      gridColor: displayColors.gridColor,
+      mode: vectorscopeMode,
+      multiband: vectorscopeMultiband,
+    })
+  }, [displayColors, lineColor, vectorscopeMode, vectorscopeMultiband])
 
   useEffect(() => {
     if (isRunning) {
@@ -389,6 +426,7 @@ function DockedVectorscopeTile({
 
 function DockedSpectrogramTile({
   lineColor,
+  displayColors,
   fftSize,
   scrollSpeed,
   clarityMode,
@@ -397,6 +435,7 @@ function DockedSpectrogramTile({
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   fftSize: number
   scrollSpeed: number
   clarityMode: SpectrogramClarityMode
@@ -418,6 +457,7 @@ function DockedSpectrogramTile({
       visualizerRef.current = new Spectrogram(canvasRef.current, {
         frameScheduler,
         lineColor,
+        backgroundColor: displayColors.backgroundColor,
         fftSize,
         scrollSpeed,
         clarityMode,
@@ -437,8 +477,15 @@ function DockedSpectrogramTile({
   }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, fftSize, scrollSpeed, clarityMode, scaleMode })
-  }, [clarityMode, lineColor, fftSize, scrollSpeed, scaleMode])
+    visualizerRef.current?.setOptions({
+      lineColor,
+      backgroundColor: displayColors.backgroundColor,
+      fftSize,
+      scrollSpeed,
+      clarityMode,
+      scaleMode,
+    })
+  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode])
 
   useEffect(() => {
     if (isRunning) {
@@ -457,12 +504,14 @@ function DockedSpectrogramTile({
 
 function DockedVUMeterTile({
   lineColor,
+  displayColors,
   vuMeterMode,
   vuMeterOrientation,
   isRunning,
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   vuMeterMode: VUMeterMode
   vuMeterOrientation: VUMeterOrientation
   isRunning: boolean
@@ -482,6 +531,10 @@ function DockedVUMeterTile({
       visualizerRef.current = new VUMeter(canvasRef.current, {
         frameScheduler,
         lineColor,
+        meterBackgroundColor: displayColors.meterBackgroundColor,
+        meterTickColor: displayColors.meterTickColor,
+        meterTextColor: displayColors.meterTextColor,
+        meterMutedTextColor: displayColors.meterMutedTextColor,
         mode: vuMeterMode,
         orientation: vuMeterOrientation,
       })
@@ -499,8 +552,16 @@ function DockedVUMeterTile({
   }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, mode: vuMeterMode, orientation: vuMeterOrientation })
-  }, [lineColor, vuMeterMode, vuMeterOrientation])
+    visualizerRef.current?.setOptions({
+      lineColor,
+      meterBackgroundColor: displayColors.meterBackgroundColor,
+      meterTickColor: displayColors.meterTickColor,
+      meterTextColor: displayColors.meterTextColor,
+      meterMutedTextColor: displayColors.meterMutedTextColor,
+      mode: vuMeterMode,
+      orientation: vuMeterOrientation,
+    })
+  }, [displayColors, lineColor, vuMeterMode, vuMeterOrientation])
 
   useEffect(() => {
     if (isRunning) {
@@ -575,6 +636,7 @@ function DockedLUFSMeterTile({
 
 function DockedWaveformTile({
   lineColor,
+  displayColors,
   scrollSpeed,
   gainDb,
   multiband,
@@ -582,6 +644,7 @@ function DockedWaveformTile({
   frameScheduler,
 }: {
   lineColor: string
+  displayColors: VisualizerDisplayColors
   scrollSpeed: number
   gainDb: number
   multiband: boolean
@@ -602,6 +665,8 @@ function DockedWaveformTile({
       visualizerRef.current = new Waveform(canvasRef.current, {
         frameScheduler,
         lineColor,
+        gridColor: displayColors.gridColor,
+        gridMutedColor: displayColors.gridMutedColor,
         scrollSpeed,
         gainDb,
         multiband,
@@ -620,8 +685,15 @@ function DockedWaveformTile({
   }, [applyResizeNow, frameScheduler])
 
   useEffect(() => {
-    visualizerRef.current?.setOptions({ lineColor, scrollSpeed, gainDb, multiband })
-  }, [lineColor, scrollSpeed, gainDb, multiband])
+    visualizerRef.current?.setOptions({
+      lineColor,
+      gridColor: displayColors.gridColor,
+      gridMutedColor: displayColors.gridMutedColor,
+      scrollSpeed,
+      gainDb,
+      multiband,
+    })
+  }, [displayColors, lineColor, scrollSpeed, gainDb, multiband])
 
   useEffect(() => {
     if (isRunning) {
@@ -733,6 +805,7 @@ export default function VisualizerPanel({
 }: VisualizerPanelProps) {
   const frameScheduler = useMemo(() => new FrameScheduler(), [])
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
+  const visualizerTheme = useThemeStore((s) => s.resolvedTokens)
   const fftSize = useVisualizerSettingsStore((s) => s.fftSize)
   const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
@@ -767,6 +840,15 @@ export default function VisualizerPanel({
   const resizePreviewWeightsRef = useRef<Partial<Record<ScopeKind, number>> | null>(null)
   const [resizePreviewWeights, setResizePreviewWeights] = useState<Partial<Record<ScopeKind, number>> | null>(null)
   const [handleOffsets, setHandleOffsets] = useState<number[]>([])
+  const displayColors = useMemo<VisualizerDisplayColors>(() => ({
+    backgroundColor: visualizerTheme.stageBg,
+    gridColor: visualizerTheme.stageGrid,
+    gridMutedColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(255, 255, 255, 0.04)',
+    meterBackgroundColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.055)' : 'rgba(255, 255, 255, 0.04)',
+    meterTickColor: visualizerTheme.stageGrid,
+    meterTextColor: visualizerTheme.stageText,
+    meterMutedTextColor: visualizerTheme.stageTextMuted,
+  }), [visualizerTheme])
 
   const openScopePopout = useCallback((scope: ScopeKind) => {
     void window.electronAPI.scopePopout.open(scope)
@@ -1102,6 +1184,7 @@ export default function VisualizerPanel({
           <DockedSpectrumTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             fftSize={fftSize}
             displayMode={spectrumDisplayMode}
             tiltDbPerOctave={spectrumTiltDbPerOctave}
@@ -1113,6 +1196,7 @@ export default function VisualizerPanel({
           <DockedOscilloscopeTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             pitchLock={pitchLock}
             underfillEnabled={oscilloscopeUnderfillEnabled}
             isRunning={isDockedAnalyzerActive && isRunning}
@@ -1121,6 +1205,7 @@ export default function VisualizerPanel({
           <DockedSpectrogramTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             fftSize={spectrogramFftSize}
             scrollSpeed={spectrogramScrollSpeed}
             clarityMode={spectrogramClarityMode}
@@ -1131,6 +1216,7 @@ export default function VisualizerPanel({
           <DockedVUMeterTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             vuMeterMode={vuMeterMode}
             vuMeterOrientation={vuMeterOrientation}
             isRunning={isDockedAnalyzerActive && isRunning}
@@ -1145,6 +1231,7 @@ export default function VisualizerPanel({
           <DockedWaveformTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             scrollSpeed={waveformScrollSpeed}
             gainDb={waveformGainDb}
             multiband={waveformMultiband}
@@ -1154,6 +1241,7 @@ export default function VisualizerPanel({
           <DockedVectorscopeTile
             frameScheduler={frameScheduler}
             lineColor={lineColor}
+            displayColors={displayColors}
             vectorscopeMode={vectorscopeMode}
             vectorscopeMultiband={vectorscopeMultiband}
             isRunning={isDockedAnalyzerActive && isRunning}

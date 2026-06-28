@@ -37,7 +37,7 @@ export default function WaveformSeekBar({
   const [hoverPercent, setHoverPercent] = useState<number | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const isDraggingRef = useRef(false)
-  const accent = useThemeStore((s) => s.resolvedTokens.accent)
+  const waveformTheme = useThemeStore((s) => s.resolvedTokens)
 
   // Resize observer for responsive canvas
   useEffect(() => {
@@ -97,9 +97,11 @@ export default function WaveformSeekBar({
       ? Math.max(0, Math.min(width, (effectiveSeekableDuration / duration) * width))
       : width
     const centerY = height / 2
-    const playedColor = accent
-    const loadedColor = 'rgba(255, 255, 255, 0.12)'
-    const unloadedColor = 'rgba(255, 255, 255, 0.05)'
+    const playedColor = waveformTheme.accent
+    const loadedColor = waveformTheme.isLight ? 'rgba(15, 23, 42, 0.18)' : 'rgba(255, 255, 255, 0.12)'
+    const unloadedColor = waveformTheme.isLight ? 'rgba(15, 23, 42, 0.08)' : 'rgba(255, 255, 255, 0.05)'
+    const markerColor = waveformTheme.stageText
+    const limitColor = waveformTheme.stageGrid
 
     if (!displayData || displayData.length === 0) {
       // Fallback: simple thin progress line
@@ -145,7 +147,7 @@ export default function WaveformSeekBar({
 
     // Playhead line — always visible during playback
     if (progress > 0) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
+      ctx.strokeStyle = markerColor
       ctx.lineWidth = 2 * dpr
       ctx.beginPath()
       ctx.moveTo(playedX, 0)
@@ -154,7 +156,7 @@ export default function WaveformSeekBar({
     }
 
     if (seekableX < width) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'
+      ctx.strokeStyle = limitColor
       ctx.lineWidth = 1 * dpr
       ctx.beginPath()
       ctx.moveTo(seekableX, 0)
@@ -165,14 +167,14 @@ export default function WaveformSeekBar({
     // White hover/seek indicator
     if (hoverPercent !== null) {
       const hoverX = hoverPercent * width
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'
+      ctx.strokeStyle = markerColor
       ctx.lineWidth = 1.5 * dpr
       ctx.beginPath()
       ctx.moveTo(hoverX, 0)
       ctx.lineTo(hoverX, height)
       ctx.stroke()
     }
-  }, [displayData, progress, hoverPercent, canvasSize, accent, analyzedRatio, bufferedRatio, duration, seekableDuration])
+  }, [displayData, progress, hoverPercent, canvasSize, waveformTheme, analyzedRatio, bufferedRatio, duration, seekableDuration])
 
   // Redraw on any dependency change
   useEffect(() => {

@@ -32,6 +32,7 @@ export interface SpectrogramOptions {
   scaleMode?: SpectrogramScaleMode
   colorScheme?: 'heat' | 'mono'
   lineColor?: string
+  backgroundColor?: string
   dataSource?: SpectrogramDataSource
   frameScheduler?: FrameScheduler
 }
@@ -55,6 +56,7 @@ const defaultOptions: ResolvedSpectrogramOptions = {
   scaleMode: DEFAULT_SPECTROGRAM_SCALE_MODE,
   colorScheme: 'heat',
   lineColor: '#38bdf8',
+  backgroundColor: '#000000',
 }
 
 const defaultSpectrogramDataSource: SpectrogramDataSource = {
@@ -97,6 +99,7 @@ function resolveOptions(base: ResolvedSpectrogramOptions, overrides: Partial<Spe
     scaleMode: resolveScaleMode(overrides.scaleMode, base.scaleMode),
     colorScheme: overrides.colorScheme ?? base.colorScheme,
     lineColor: overrides.lineColor ?? base.lineColor,
+    backgroundColor: overrides.backgroundColor ?? base.backgroundColor,
   }
 }
 
@@ -360,7 +363,10 @@ export class Spectrogram {
       this.sampleBufferPos = 0
       this.lastFftSize = 0
       this.resetDisplay()
-    } else if (this.options.scaleMode !== previousOptions.scaleMode) {
+    } else if (
+      this.options.scaleMode !== previousOptions.scaleMode
+      || this.options.backgroundColor !== previousOptions.backgroundColor
+    ) {
       this.resetDisplay()
     }
 
@@ -521,6 +527,7 @@ export class Spectrogram {
     if (!this.columnImageData) return
 
     const imageData = this.columnImageData.data
+    const { r: bgR, g: bgG, b: bgB } = resolveColorToRgb(this.options.backgroundColor)
     const { r: tintR, g: tintG, b: tintB } = this.options.colorScheme === 'mono'
       ? resolveColorToRgb(this.options.lineColor)
       : { r: 0, g: 0, b: 0 }
@@ -531,13 +538,14 @@ export class Spectrogram {
       const dataIndex = row * 4
 
       if (this.options.colorScheme === 'heat') {
-        imageData[dataIndex] = HEAT_LUT[lutIndex * 3]
-        imageData[dataIndex + 1] = HEAT_LUT[(lutIndex * 3) + 1]
-        imageData[dataIndex + 2] = HEAT_LUT[(lutIndex * 3) + 2]
+        const mix = Math.pow(intensity, 0.78)
+        imageData[dataIndex] = lerpChannel(bgR, HEAT_LUT[lutIndex * 3], mix)
+        imageData[dataIndex + 1] = lerpChannel(bgG, HEAT_LUT[(lutIndex * 3) + 1], mix)
+        imageData[dataIndex + 2] = lerpChannel(bgB, HEAT_LUT[(lutIndex * 3) + 2], mix)
       } else {
-        imageData[dataIndex] = Math.round(tintR * intensity)
-        imageData[dataIndex + 1] = Math.round(tintG * intensity)
-        imageData[dataIndex + 2] = Math.round(tintB * intensity)
+        imageData[dataIndex] = lerpChannel(bgR, tintR, intensity)
+        imageData[dataIndex + 1] = lerpChannel(bgG, tintG, intensity)
+        imageData[dataIndex + 2] = lerpChannel(bgB, tintB, intensity)
       }
 
       imageData[dataIndex + 3] = 255
