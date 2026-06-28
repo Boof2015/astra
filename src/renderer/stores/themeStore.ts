@@ -276,9 +276,9 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(0, 0, 0, 0.6)',
       textTertiary: 'rgba(0, 0, 0, 0.42)',
     },
-    accent: '#0284c7',
-    accentHover: '#0369a1',
-    accentGlow: 'rgba(2, 132, 199, 0.30)',
+    accent: '#0369a1',
+    accentHover: '#075985',
+    accentGlow: 'rgba(3, 105, 161, 0.24)',
   },
 }
 
@@ -323,12 +323,14 @@ function darkenChannel(channel: number, amount: number): number {
   return Math.round(channel * (1 - amount))
 }
 
-function deriveAccentHover(hex: string): string {
+function deriveAccentHover(hex: string, darken = false): string {
   const rgb = hexToRgb(hex)
   if (!rgb) return DEFAULT_ACCENT
-  const r = lightenChannel(rgb.r, 0.35)
-  const g = lightenChannel(rgb.g, 0.35)
-  const b = lightenChannel(rgb.b, 0.35)
+  const adjust = darken ? darkenChannel : lightenChannel
+  const amount = darken ? 0.15 : 0.35
+  const r = adjust(rgb.r, amount)
+  const g = adjust(rgb.g, amount)
+  const b = adjust(rgb.b, amount)
   return rgbToHex(r, g, b)
 }
 
@@ -400,14 +402,20 @@ function resolveThemeTokens(
   const effectiveAccent = accentSource === 'cover-art' && coverArtAccent
     ? coverArtAccent
     : themeAccent
+  const isLight = Boolean(preset.isLight)
+  const usesPresetAccent = customAccent === null && !(accentSource === 'cover-art' && coverArtAccent)
 
   return {
     ...preset.tokens,
-    ...(preset.isLight ? LIGHT_SURFACE_DEFAULTS : DARK_SURFACE_DEFAULTS),
-    isLight: Boolean(preset.isLight),
+    ...(isLight ? LIGHT_SURFACE_DEFAULTS : DARK_SURFACE_DEFAULTS),
+    isLight,
     accent: effectiveAccent,
-    accentHover: deriveAccentHover(effectiveAccent),
-    accentGlow: deriveAccentGlow(effectiveAccent),
+    accentHover: isLight && usesPresetAccent
+      ? preset.accentHover
+      : deriveAccentHover(effectiveAccent, isLight),
+    accentGlow: isLight && usesPresetAccent
+      ? preset.accentGlow
+      : deriveAccentGlow(effectiveAccent),
   }
 }
 
@@ -584,7 +592,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
     const initialTokens: ResolvedThemeTokens = {
       ...targetTokens,
       accent: initialAccent,
-      accentHover: deriveAccentHover(initialAccent),
+      accentHover: deriveAccentHover(initialAccent, isLight),
       accentGlow: deriveAccentGlow(initialAccent),
     }
 
@@ -666,7 +674,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         startRgb.g + ((endRgb.g - startRgb.g) * eased),
         startRgb.b + ((endRgb.b - startRgb.b) * eased)
       )
-      const accentHover = deriveAccentHover(accent)
+      const accentHover = deriveAccentHover(accent, isLight)
       const accentGlow = deriveAccentGlow(accent)
 
       applyAccentTokensToDocument(accent, accentHover, accentGlow, isLight)
