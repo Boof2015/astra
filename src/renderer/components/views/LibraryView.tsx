@@ -12,6 +12,7 @@ import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, 
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { runViewTransition } from '../../utils/viewTransitions'
+import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { navigateInputBack } from '../../utils/inputNavigation'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -562,7 +563,7 @@ export default function LibraryView() {
 
   const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
     if (viewMode === mode) return
-    void runViewTransition(() => setViewMode(mode), 'library-tab-transition')
+    void runViewTransition(() => setViewMode(mode), getLibraryTabTransitionScopeClasses(viewMode, mode))
   }, [setViewMode, viewMode])
 
   const sourceFilteredTracks = useMemo(() => {

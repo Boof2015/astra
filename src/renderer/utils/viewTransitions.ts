@@ -12,6 +12,10 @@ type ViewTransitionDocument = Document & {
 const activeScopedTransitions = new Map<string, AstraViewTransition>()
 let transitionUpdateDepth = 0
 
+type ViewTransitionScope = string | string[] | undefined
+
+export type AppViewTransitionDirection = 'up' | 'down' | null
+
 function canAnimateViewTransition(): boolean {
   if (typeof document === 'undefined' || typeof window === 'undefined') return false
   if (typeof (document as ViewTransitionDocument).startViewTransition !== 'function') return false
@@ -19,9 +23,15 @@ function canAnimateViewTransition(): boolean {
     || !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+function normalizeScopeClassNames(scopeClassName: ViewTransitionScope): string[] {
+  if (!scopeClassName) return []
+  const scopeClassNames = Array.isArray(scopeClassName) ? scopeClassName : [scopeClassName]
+  return [...new Set(scopeClassNames.map((name) => name.trim()).filter(Boolean))]
+}
+
 export async function runViewTransition(
   update: () => void | Promise<void>,
-  scopeClassName?: string
+  scopeClassName?: ViewTransitionScope
 ): Promise<void> {
   if (transitionUpdateDepth > 0) {
     await update()
@@ -39,9 +49,13 @@ export async function runViewTransition(
     return
   }
 
-  if (scopeClassName) {
-    activeScopedTransitions.get(scopeClassName)?.skipTransition()
-    document.documentElement.classList.add(scopeClassName)
+  const scopeClassNames = normalizeScopeClassNames(scopeClassName)
+
+  if (scopeClassNames.length > 0) {
+    for (const className of scopeClassNames) {
+      activeScopedTransitions.get(className)?.skipTransition()
+    }
+    document.documentElement.classList.add(...scopeClassNames)
   }
 
   let transition: AstraViewTransition
@@ -55,17 +69,22 @@ export async function runViewTransition(
       }
     })
   } catch {
-    if (scopeClassName) document.documentElement.classList.remove(scopeClassName)
+    if (scopeClassNames.length > 0) document.documentElement.classList.remove(...scopeClassNames)
     await update()
     return
   }
 
-  if (scopeClassName) {
-    activeScopedTransitions.set(scopeClassName, transition)
+  if (scopeClassNames.length > 0) {
+    for (const className of scopeClassNames) {
+      activeScopedTransitions.set(className, transition)
+    }
     void transition.finished.finally(() => {
-      if (activeScopedTransitions.get(scopeClassName) === transition) {
-        activeScopedTransitions.delete(scopeClassName)
-        document.documentElement.classList.remove(scopeClassName)
+      const completedClassNames = scopeClassNames.filter((className) => activeScopedTransitions.get(className) === transition)
+      for (const className of completedClassNames) {
+        activeScopedTransitions.delete(className)
+      }
+      if (completedClassNames.length > 0) {
+        document.documentElement.classList.remove(...completedClassNames)
       }
     })
   }
@@ -73,6 +92,10 @@ export async function runViewTransition(
   await transition.updateCallbackDone
 }
 
-export function runAppViewTransition(update: () => void): void {
-  void runViewTransition(update, 'app-view-transition-active')
+export function runAppViewTransition(update: () => void, direction: AppViewTransitionDirection = null): void {
+  const scopeClassNames = ['app-view-transition-active']
+  if (direction) {
+    scopeClassNames.push(`app-view-transition-${direction}`)
+  }
+  void runViewTransition(update, scopeClassNames)
 }

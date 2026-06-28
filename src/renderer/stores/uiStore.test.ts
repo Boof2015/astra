@@ -9,6 +9,7 @@ import {
   UI_SCALE_STEP_PERCENT,
   getNextUIScalePercent,
   normalizeJumpToPlayingDestination,
+  resolveAppViewTransitionDirection,
   useUIStore
 } from './uiStore.ts'
 
@@ -40,6 +41,14 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
   assert.equal(normalizeJumpToPlayingDestination('queue'), 'queue')
   assert.equal(normalizeJumpToPlayingDestination('unknown'), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
   assert.equal(normalizeJumpToPlayingDestination(null), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
+})
+
+test('resolveAppViewTransitionDirection follows sidebar order', () => {
+  assert.equal(resolveAppViewTransitionDirection('library', 'eq'), 'down')
+  assert.equal(resolveAppViewTransitionDirection('eq', 'library'), 'up')
+  assert.equal(resolveAppViewTransitionDirection('library', 'library'), null)
+  assert.equal(resolveAppViewTransitionDirection(null, 'library'), null)
+  assert.equal(resolveAppViewTransitionDirection('library', undefined), null)
 })
 
 test('setActiveView commits navigation when the View Transition API is unavailable', () => {

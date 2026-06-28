@@ -8,7 +8,7 @@ import {
   type MiniPlayerTimeDisplayMode
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
-import { runAppViewTransition } from '../utils/viewTransitions.ts'
+import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -30,6 +30,21 @@ export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-act
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
+
+const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'graph', 'eq', 'playlist', 'settings']
+
+export function resolveAppViewTransitionDirection(
+  sourceView: AppView | null | undefined,
+  targetView: AppView | null | undefined
+): AppViewTransitionDirection {
+  if (!sourceView || !targetView || sourceView === targetView) return null
+
+  const sourceIndex = APP_VIEW_MOTION_ORDER.indexOf(sourceView)
+  const targetIndex = APP_VIEW_MOTION_ORDER.indexOf(targetView)
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return null
+
+  return targetIndex > sourceIndex ? 'down' : 'up'
+}
 
 export interface LibraryTrackRevealRequest {
   id: number
@@ -427,6 +442,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setActiveView: (view) => {
     const sourceView = pendingActiveView ?? get().activeView
     if (sourceView === view) return
+    const direction = resolveAppViewTransitionDirection(sourceView, view)
     pendingActiveView = view
     runAppViewTransition(() => {
       if (pendingActiveView !== view) return
@@ -436,22 +452,25 @@ export const useUIStore = create<UIStore>((set, get) => ({
         viewBackHistory: [...state.viewBackHistory, state.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
         viewForwardHistory: []
       })
-    })
+    }, direction)
   },
   replaceActiveView: (view) => {
     const sourceView = pendingActiveView ?? get().activeView
     if (sourceView === view) return
+    const direction = resolveAppViewTransitionDirection(sourceView, view)
     pendingActiveView = view
     runAppViewTransition(() => {
       if (pendingActiveView !== view) return
       pendingActiveView = null
       set({ activeView: view })
-    })
+    }, direction)
   },
   navigateViewBack: () => {
     const state = get()
     const target = state.viewBackHistory[state.viewBackHistory.length - 1]
     if (!target) return false
+    const sourceView = pendingActiveView ?? state.activeView
+    const direction = resolveAppViewTransitionDirection(sourceView, target)
     pendingActiveView = target
     runAppViewTransition(() => {
       if (pendingActiveView !== target) return
@@ -461,13 +480,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
         viewBackHistory: latest.viewBackHistory.slice(0, -1),
         viewForwardHistory: [...latest.viewForwardHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES)
       }))
-    })
+    }, direction)
     return true
   },
   navigateViewForward: () => {
     const state = get()
     const target = state.viewForwardHistory[state.viewForwardHistory.length - 1]
     if (!target) return false
+    const sourceView = pendingActiveView ?? state.activeView
+    const direction = resolveAppViewTransitionDirection(sourceView, target)
     pendingActiveView = target
     runAppViewTransition(() => {
       if (pendingActiveView !== target) return
@@ -477,7 +498,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
         viewBackHistory: [...latest.viewBackHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
         viewForwardHistory: latest.viewForwardHistory.slice(0, -1)
       }))
-    })
+    }, direction)
     return true
   },
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),

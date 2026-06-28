@@ -90,7 +90,7 @@ export interface FolderSubdirectoryEntry {
   audioFileCount: number
 }
 
-type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
+export type ViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'

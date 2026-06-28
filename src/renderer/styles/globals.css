@@ -78,6 +78,12 @@
   --motion-structural-enter: 190ms;
   --motion-structural-exit: 140ms;
   --motion-structural-distance: 14px;
+  --motion-app-view-enter: 205ms;
+  --motion-app-view-exit: 140ms;
+  --motion-app-view-distance: 18px;
+  --motion-library-tab-enter: 190ms;
+  --motion-library-tab-exit: 125ms;
+  --motion-library-tab-distance: 12px;
   --motion-view-fade-enter: 150ms;
   --motion-view-fade-exit: 110ms;
   --motion-popover-distance: 9px;
@@ -208,7 +214,7 @@ html.app-view-transition-active .app-view-transition-surface {
 }
 
 ::view-transition-group(app-main-view) {
-  animation-duration: var(--motion-view-fade-enter);
+  animation-duration: var(--motion-app-view-enter);
   animation-timing-function: var(--motion-structural-ease);
 }
 
@@ -217,16 +223,30 @@ html.app-view-transition-active .app-view-transition-surface {
   mix-blend-mode: normal;
 }
 
-/* Clean dissolve: the outgoing view fades out as the incoming one fades in,
-   with no transform so it reads as a dissolve rather than the weak half-slide a
-   drifting cross-fade produces. The old layer fades (rather than being held
-   opaque) so sparse content with transparent gaps can't bleed through it. */
+/* Main view transitions move vertically according to sidebar order. The base
+   scope stays as a clean fade for any neutral/unknown transition path. */
 html.app-view-transition-active::view-transition-old(app-main-view) {
-  animation: astraSurfaceFadeOut var(--motion-view-fade-exit) ease-out both;
+  animation: astraSurfaceFadeOut var(--motion-app-view-exit) ease-out both;
 }
 
 html.app-view-transition-active::view-transition-new(app-main-view) {
-  animation: astraSurfaceFadeIn var(--motion-view-fade-enter) var(--motion-structural-ease) both;
+  animation: astraSurfaceFadeIn var(--motion-app-view-enter) var(--motion-structural-ease) both;
+}
+
+html.app-view-transition-down::view-transition-old(app-main-view) {
+  animation: astraAppViewDownExit var(--motion-app-view-exit) ease-in both;
+}
+
+html.app-view-transition-down::view-transition-new(app-main-view) {
+  animation: astraAppViewDownEnter var(--motion-app-view-enter) var(--motion-structural-ease) both;
+}
+
+html.app-view-transition-up::view-transition-old(app-main-view) {
+  animation: astraAppViewUpExit var(--motion-app-view-exit) ease-in both;
+}
+
+html.app-view-transition-up::view-transition-new(app-main-view) {
+  animation: astraAppViewUpEnter var(--motion-app-view-enter) var(--motion-structural-ease) both;
 }
 
 @keyframes astraSurfaceFadeIn {
@@ -238,6 +258,34 @@ html.app-view-transition-active::view-transition-new(app-main-view) {
 @keyframes astraSurfaceFadeOut {
   to {
     opacity: 0;
+  }
+}
+
+@keyframes astraAppViewDownExit {
+  to {
+    opacity: 0;
+    transform: translate3d(0, calc(var(--motion-app-view-distance) * -0.55), 0) scale(0.996);
+  }
+}
+
+@keyframes astraAppViewDownEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--motion-app-view-distance), 0) scale(0.992);
+  }
+}
+
+@keyframes astraAppViewUpExit {
+  to {
+    opacity: 0;
+    transform: translate3d(0, calc(var(--motion-app-view-distance) * 0.55), 0) scale(0.996);
+  }
+}
+
+@keyframes astraAppViewUpEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, calc(var(--motion-app-view-distance) * -1), 0) scale(0.992);
   }
 }
 
@@ -13236,16 +13284,15 @@ html.library-context-backward::view-transition-new(library-context-nav) {
   }
 }
 
-/* Library tab switch (Tracks / Albums / Artists / Folders): dissolve only the
+/* Library tab switch (Tracks / Albums / Artists / Folders): move only the
    content area, so the header — tab highlight, count, view controls — updates
-   instantly while the list/grid swaps. Same hold-old + fade-new-in dissolve as
-   the top-level view switch, so it reads consistently across the app. */
+   instantly while the list/grid settles in tab order. */
 html.library-tab-transition .library-content {
   view-transition-name: library-tab-content;
 }
 
 ::view-transition-group(library-tab-content) {
-  animation-duration: var(--motion-view-fade-enter);
+  animation-duration: var(--motion-library-tab-enter);
   animation-timing-function: var(--motion-structural-ease);
 }
 
@@ -13255,11 +13302,55 @@ html.library-tab-transition .library-content {
 }
 
 html.library-tab-transition::view-transition-old(library-tab-content) {
-  animation: astraSurfaceFadeOut var(--motion-view-fade-exit) ease-out both;
+  animation: astraSurfaceFadeOut var(--motion-library-tab-exit) ease-out both;
 }
 
 html.library-tab-transition::view-transition-new(library-tab-content) {
-  animation: astraSurfaceFadeIn var(--motion-view-fade-enter) var(--motion-structural-ease) both;
+  animation: astraSurfaceFadeIn var(--motion-library-tab-enter) var(--motion-structural-ease) both;
+}
+
+html.library-tab-transition-forward::view-transition-old(library-tab-content) {
+  animation: libraryTabForwardExit var(--motion-library-tab-exit) ease-in both;
+}
+
+html.library-tab-transition-forward::view-transition-new(library-tab-content) {
+  animation: libraryTabForwardEnter var(--motion-library-tab-enter) var(--motion-structural-ease) both;
+}
+
+html.library-tab-transition-backward::view-transition-old(library-tab-content) {
+  animation: libraryTabBackwardExit var(--motion-library-tab-exit) ease-in both;
+}
+
+html.library-tab-transition-backward::view-transition-new(library-tab-content) {
+  animation: libraryTabBackwardEnter var(--motion-library-tab-enter) var(--motion-structural-ease) both;
+}
+
+@keyframes libraryTabForwardExit {
+  to {
+    opacity: 0;
+    transform: translate3d(calc(var(--motion-library-tab-distance) * -0.65), 0, 0) scale(0.996);
+  }
+}
+
+@keyframes libraryTabForwardEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(var(--motion-library-tab-distance), 0, 0) scale(0.994);
+  }
+}
+
+@keyframes libraryTabBackwardExit {
+  to {
+    opacity: 0;
+    transform: translate3d(calc(var(--motion-library-tab-distance) * 0.65), 0, 0) scale(0.996);
+  }
+}
+
+@keyframes libraryTabBackwardEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(calc(var(--motion-library-tab-distance) * -1), 0, 0) scale(0.994);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
