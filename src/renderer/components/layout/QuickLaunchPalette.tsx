@@ -16,6 +16,7 @@ import type {
   QuickLaunchTrackRecord
 } from '../../types/quickLaunch'
 import { multiFieldScore, MIN_SCORE_THRESHOLD } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 
 const SETTINGS_RESULT_LIMIT = 3
 const NAV_RESULT_LIMIT = 3
@@ -39,45 +40,6 @@ function compareScoredResults<T extends { score: number; id: string }>(a: T, b: 
     return b.score - a.score
   }
   return a.id.localeCompare(b.id)
-}
-
-// Match highlighting: prefer contiguous substring, fallback to sequential chars
-function highlightMatch(text: string, query: string): ReactNode {
-  if (!query) return text
-  const normalizedText = text.toLowerCase()
-  const normalizedQuery = query.toLowerCase().trim()
-  if (!normalizedQuery) return text
-
-  // Try contiguous substring first
-  const substringIndex = normalizedText.indexOf(normalizedQuery)
-  if (substringIndex >= 0) {
-    return (
-      <>
-        {text.slice(0, substringIndex)}
-        <mark className="ql-highlight">{text.slice(substringIndex, substringIndex + normalizedQuery.length)}</mark>
-        {text.slice(substringIndex + normalizedQuery.length)}
-      </>
-    )
-  }
-
-  // Fallback: highlight sequential matched characters
-  const parts: ReactNode[] = []
-  let qi = 0
-  let lastPushed = 0
-  for (let i = 0; i < text.length && qi < normalizedQuery.length; i++) {
-    if (text[i].toLowerCase() === normalizedQuery[qi]) {
-      if (i > lastPushed) {
-        parts.push(text.slice(lastPushed, i))
-      }
-      parts.push(<mark key={i} className="ql-highlight">{text[i]}</mark>)
-      qi++
-      lastPushed = i + 1
-    }
-  }
-  if (lastPushed < text.length) {
-    parts.push(text.slice(lastPushed))
-  }
-  return <>{parts}</>
 }
 
 // Artwork thumbnail component
@@ -796,12 +758,12 @@ export default function QuickLaunchPalette() {
                       {/* Text */}
                       <div className="quick-launch-result-text">
                         <span className="quick-launch-result-label">
-                          {result.kind === 'setting' && highlightMatch(result.label, trimmedQuery)}
-                          {result.kind === 'nav' && highlightMatch(result.label, trimmedQuery)}
-                          {result.kind === 'track' && highlightMatch(result.track.title, trimmedQuery)}
-                          {result.kind === 'album' && highlightMatch(result.album.album, trimmedQuery)}
-                          {result.kind === 'artist' && highlightMatch(result.artist.artist, trimmedQuery)}
-                          {result.kind === 'playlist' && highlightMatch(result.playlist.name, trimmedQuery)}
+                          {result.kind === 'setting' && highlightSearchMatch(result.label, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'nav' && highlightSearchMatch(result.label, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'track' && highlightSearchMatch(result.track.title, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'album' && highlightSearchMatch(result.album.album, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'artist' && highlightSearchMatch(result.artist.artist, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'playlist' && highlightSearchMatch(result.playlist.name, trimmedQuery, 'ql-highlight')}
                         </span>
                         <span className="quick-launch-result-subtitle">
                           {result.kind === 'setting' && result.subtitle}

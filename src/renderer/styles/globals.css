@@ -8061,6 +8061,7 @@ body.folder-settings-open .app {
   flex-shrink: 0;
 }
 
+.search-highlight,
 .ql-highlight {
   background: rgba(var(--accent-rgb), 0.25);
   color: var(--accent-text-strong);

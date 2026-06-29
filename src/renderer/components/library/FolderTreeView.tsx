@@ -3,6 +3,8 @@ import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 
@@ -70,6 +72,7 @@ interface RowSharedProps {
   onToggleExpand: (fullPath: string) => void
   expandedNodes: Set<string>
   playlistPopupFolderPath: string | null
+  searchQuery: string
 }
 
 const FOLDER_ROW_HEIGHT = 32
@@ -180,7 +183,8 @@ function FolderTreeRowRenderer({
   onOpenPlaylistPopup,
   onToggleExpand,
   expandedNodes,
-  playlistPopupFolderPath
+  playlistPopupFolderPath,
+  searchQuery
 }: RowComponentProps<RowSharedProps>): ReactElement | null {
   const row = rows[index]
   if (!row) return null
@@ -215,7 +219,7 @@ function FolderTreeRowRenderer({
             </svg>
           )}
           <span className="folder-browse-main">
-            <span className="folder-browse-name" title={node.fullPath}>{node.name}</span>
+            <span className="folder-browse-name" title={node.fullPath}>{highlightSearchMatch(node.name, searchQuery)}</span>
             <span className={`folder-browse-actions ${isPlaylistPopupOpen ? 'has-open-popover' : ''}`}>
               <button
                 type="button"
@@ -281,8 +285,8 @@ function FolderTreeRowRenderer({
             <path d="M8 5v14l11-7z" />
           </svg>
         </button>
-        <span className="folder-browse-track-title" title={track.title}>{track.title}</span>
-        <span className="folder-browse-track-artist">{track.artist}</span>
+        <span className="folder-browse-track-title" title={track.title}>{highlightSearchMatch(track.title, searchQuery)}</span>
+        <span className="folder-browse-track-artist">{highlightSearchMatch(track.artist, searchQuery)}</span>
         <span className="folder-browse-track-duration">{formatDuration(track.duration)}</span>
       </div>
     </div>
@@ -316,19 +320,17 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const latestScrollTopRef = useRef(restoreScrollTopRef.current)
   const hasRestoredScrollRef = useRef(restoreScrollTopRef.current <= 0)
 
-  const normalizedQuery = searchQuery.trim().toLowerCase()
+  const trimmedSearchQuery = searchQuery.trim()
 
   const filteredTracks = useMemo(() => {
-    if (!normalizedQuery) return tracks
-    return tracks.filter((track) => (
-      track.title.toLowerCase().includes(normalizedQuery)
-      || track.artist.toLowerCase().includes(normalizedQuery)
-      || track.artist_names.some((artist) => artist.toLowerCase().includes(normalizedQuery))
-      || track.album_artist_names.some((artist) => artist.toLowerCase().includes(normalizedQuery))
-      || track.album.toLowerCase().includes(normalizedQuery)
-      || track.path.toLowerCase().includes(normalizedQuery)
-    ))
-  }, [tracks, normalizedQuery])
+    if (!trimmedSearchQuery) return tracks
+    return tracks.filter((track) => matchesFuzzyFields(trimmedSearchQuery, [
+      { value: track.title, weight: 1.5 },
+      { value: track.artist, weight: 0.9 },
+      { value: track.artist_names.join(' '), weight: 0.9 },
+      { value: track.path, weight: 0.8 }
+    ]))
+  }, [tracks, trimmedSearchQuery])
 
   const tree = useMemo(() => buildFolderTree(folders, filteredTracks), [filteredTracks, folders])
 
@@ -690,9 +692,9 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   }, [restoreScrollPosition])
 
   const filteredPlaylists = useMemo(() => {
-    const query = folderPlaylistSearch.trim().toLocaleLowerCase()
-    if (!query) return playlists
-    return playlists.filter((playlist) => playlist.name.toLocaleLowerCase().includes(query))
+    return rankFuzzyMatches(playlists, folderPlaylistSearch, (playlist) => [
+      { value: playlist.name, weight: 1.5 }
+    ])
   }, [folderPlaylistSearch, playlists])
 
   const folderPlaylistPopupStyle = useMemo(() => {
@@ -728,7 +730,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     onOpenPlaylistPopup: handleOpenPlaylistPopup,
     onToggleExpand: toggleExpand,
     expandedNodes,
-    playlistPopupFolderPath: folderPlaylistPopup?.folderPath ?? null
+    playlistPopupFolderPath: folderPlaylistPopup?.folderPath ?? null,
+    searchQuery: trimmedSearchQuery
   }), [
     currentTrackPath,
     expandedNodes,
@@ -736,13 +739,14 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     handleOpenPlaylistPopup,
     handlePlayTrack,
     handleShuffleFolder,
+    trimmedSearchQuery,
     toggleExpand,
     visibleRows
   ])
 
   const content = tree.length === 0 ? (
     <div className="library-empty">
-      {normalizedQuery
+      {trimmedSearchQuery
         ? <p>No tracks found for &ldquo;{searchQuery.trim()}&rdquo;</p>
         : <p>No folders with tracks</p>
       }
@@ -826,7 +830,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
                     name={playlist.name}
                     className="track-playlist-popup-cover"
                   />
-                  <span className="track-playlist-popup-item-name">{playlist.name}</span>
+                  <span className="track-playlist-popup-item-name">{highlightSearchMatch(playlist.name, folderPlaylistSearch)}</span>
                   <span className="folder-playlist-popup-item-count">
                     {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
                   </span>

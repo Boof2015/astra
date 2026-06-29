@@ -11,6 +11,8 @@ import { usePresence } from '../../hooks/usePresence'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
+import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { navigateInputBack } from '../../utils/inputNavigation'
@@ -187,14 +189,12 @@ function resolveBrowseArtistForTrack(
 }
 
 function trackMatchesLibraryQuery(
-  track: { title: string; artist: string; artist_names?: string[] | null; album: string; album_artist_names?: string[] | null },
-  normalizedQuery: string
+  track: { title: string },
+  query: string
 ): boolean {
-  return track.title.toLowerCase().includes(normalizedQuery)
-    || track.artist.toLowerCase().includes(normalizedQuery)
-    || track.album.toLowerCase().includes(normalizedQuery)
-    || (track.artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
-    || (track.album_artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
+  return matchesFuzzyFields(query, [
+    { value: track.title, weight: 1.5 }
+  ])
 }
 
 export default function LibraryView() {
@@ -268,8 +268,8 @@ export default function LibraryView() {
 
   useHorizontalWheelScroll(artistAlbumRailRef)
 
-  const normalizedQuery = searchQuery.trim().toLowerCase()
-  const hasSearchQuery = normalizedQuery.length > 0
+  const trimmedSearchQuery = searchQuery.trim()
+  const hasSearchQuery = trimmedSearchQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
   const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist
@@ -646,8 +646,8 @@ export default function LibraryView() {
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, normalizedQuery))
-  }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
+    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
+  }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const albumGridSourceAlbums = isAlbumRootView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
     ? albumsIncludingSingles
@@ -669,10 +669,10 @@ export default function LibraryView() {
   const filteredAlbums = useMemo(() => {
     const visibleAlbums = !hasSearchQuery
       ? sourceFilteredAlbums
-      : sourceFilteredAlbums.filter((album) =>
-        album.album.toLowerCase().includes(normalizedQuery)
-        || album.artist.toLowerCase().includes(normalizedQuery)
-      )
+      : sourceFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
+        { value: album.album, weight: 1.4 },
+        { value: album.artist, weight: 1.1 }
+      ]))
 
     const sortedAlbums = [...visibleAlbums]
     sortedAlbums.sort((a, b) => {
@@ -691,7 +691,7 @@ export default function LibraryView() {
     })
 
     return sortedAlbums
-  }, [albumSortMode, hasSearchQuery, normalizedQuery, sourceFilteredAlbums])
+  }, [albumSortMode, hasSearchQuery, trimmedSearchQuery, sourceFilteredAlbums])
 
   const sourceFilteredArtistKeys = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
@@ -745,8 +745,10 @@ export default function LibraryView() {
 
   const filteredArtists = useMemo(() => {
     if (!hasSearchQuery) return rootVisibleArtists
-    return rootVisibleArtists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
-  }, [hasSearchQuery, normalizedQuery, rootVisibleArtists])
+    return rootVisibleArtists.filter((artist) => matchesFuzzyFields(trimmedSearchQuery, [
+      { value: artist.artist, weight: 1.5 }
+    ]))
+  }, [hasSearchQuery, trimmedSearchQuery, rootVisibleArtists])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
@@ -1151,8 +1153,8 @@ export default function LibraryView() {
                 <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
               </div>
               <div className="album-info">
-                <div className="album-title">{album.album}</div>
-                <div className="album-artist">{album.artist}</div>
+                <div className="album-title">{highlightSearchMatch(album.album, trimmedSearchQuery)}</div>
+                <div className="album-artist">{highlightSearchMatch(album.artist, trimmedSearchQuery)}</div>
                 <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` \u2022 ${album.year}` : ''}</div>
               </div>
             </div>
@@ -1174,6 +1176,7 @@ export default function LibraryView() {
           onSelectArtist={handleSelectArtistFromList}
           viewMode={artistRootViewMode}
           viewportRef={artistViewportRef}
+          searchQuery={trimmedSearchQuery}
         />
       )
     }
@@ -1289,6 +1292,7 @@ export default function LibraryView() {
             onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
             jumpToTrackRequest={libraryTrackRevealRequest}
             onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+            searchQuery={trimmedSearchQuery}
           />
         </div>
       )
@@ -1314,6 +1318,7 @@ export default function LibraryView() {
         onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
         onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+        searchQuery={trimmedSearchQuery}
       />
     )
   }

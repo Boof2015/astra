@@ -20,6 +20,7 @@ import {
   type ArtistGraphBuildResult,
   type ArtistGraphNode
 } from '../../utils/libraryGraph'
+import { getFuzzyFieldScore } from '../../utils/fuzzySearch'
 
 interface GraphViewport {
   panX: number
@@ -147,17 +148,27 @@ function findBestArtistMatch(
   graph: ArtistGraphBuildResult,
   query: string
 ): ArtistGraphNode | null {
-  const trimmedQuery = query.trim().toLocaleLowerCase()
+  const trimmedQuery = query.trim()
   if (!trimmedQuery) return null
 
-  const exact = graph.nodes.find((node) => node.artist.toLocaleLowerCase() === trimmedQuery)
+  const normalizedQuery = trimmedQuery.toLocaleLowerCase()
+  const exact = graph.nodes.find((node) => node.artist.toLocaleLowerCase() === normalizedQuery)
   if (exact) return exact
 
-  const prefix = graph.nodes.find((node) => node.artist.toLocaleLowerCase().startsWith(trimmedQuery))
-  if (prefix) return prefix
+  const scored = graph.nodes.map((node, index) => {
+    const score = getFuzzyFieldScore(trimmedQuery, [
+      { value: node.artist, weight: 1.5 }
+    ])
+    if (score === null) return null
+    return { node, score, index }
+  }).filter((result): result is { node: ArtistGraphNode; score: number; index: number } => result !== null)
 
-  const includes = graph.nodes.find((node) => node.artist.toLocaleLowerCase().includes(trimmedQuery))
-  return includes ?? null
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score
+    return a.index - b.index
+  })
+
+  return scored[0]?.node ?? null
 }
 
 function getNodeRadius(node: ArtistGraphNode, maxTrackCount: number): number {

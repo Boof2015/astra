@@ -2,6 +2,7 @@ import { CSSProperties, memo, ReactElement, Ref, useEffect, useImperativeHandle,
 import { Grid, List, type CellComponentProps, type GridImperativeAPI, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import type { ArtworkVariant } from '../../stores/libraryStore'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 import AlbumArtwork from './AlbumArtwork'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
@@ -27,17 +28,20 @@ interface ArtistListProps {
   onSelectArtist: (artist: string) => void | Promise<void>
   viewMode?: ArtistListViewMode
   viewportRef?: Ref<ArtistListViewportAPI>
+  searchQuery?: string
 }
 
 interface ArtistListRowSharedProps {
   artists: ArtistRecord[]
   onSelectArtist: (artist: string) => void | Promise<void>
+  searchQuery: string
 }
 
 interface ArtistGridCellSharedProps {
   artists: ArtistRecord[]
   columnCount: number
   onSelectArtist: (artist: string) => void | Promise<void>
+  searchQuery: string
 }
 
 const ARTIST_ROW_HEIGHT_FALLBACK_PX = 64
@@ -105,7 +109,8 @@ function ArtistListRowRenderer({
   index,
   style,
   artists,
-  onSelectArtist
+  onSelectArtist,
+  searchQuery
 }: RowComponentProps<ArtistListRowSharedProps>): ReactElement | null {
   const artist = artists[index]
   if (!artist) return null
@@ -130,7 +135,7 @@ function ArtistListRowRenderer({
           artworkClassName="artist-avatar-artwork"
         />
         <div className="artist-info">
-          <div className="artist-name">{artist.artist}</div>
+          <div className="artist-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
           <div className="artist-track-count">{formatArtistLibrarySummary(artist)}</div>
         </div>
       </div>
@@ -149,7 +154,8 @@ function ArtistGridCellRenderer({
   style,
   artists,
   columnCount,
-  onSelectArtist
+  onSelectArtist,
+  searchQuery
 }: CellComponentProps<ArtistGridCellSharedProps>): ReactElement | null {
   const artist = artists[(rowIndex * columnCount) + columnIndex]
   const artistIndex = (rowIndex * columnCount) + columnIndex
@@ -177,7 +183,7 @@ function ArtistGridCellRenderer({
           artworkVariant="card"
         />
         <div className="artist-grid-info">
-          <div className="artist-grid-name">{artist.artist}</div>
+          <div className="artist-grid-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
           <div className="artist-grid-track-count">{formatArtistLibrarySummary(artist)}</div>
         </div>
       </button>
@@ -193,7 +199,8 @@ export default function ArtistList({
   artists,
   onSelectArtist,
   viewMode = 'list',
-  viewportRef
+  viewportRef,
+  searchQuery = ''
 }: ArtistListProps) {
   const [viewportSize, setViewportSize] = useState({ height: 0, width: 0 })
   const [artistRowHeight, setArtistRowHeight] = useState(ARTIST_ROW_HEIGHT_FALLBACK_PX)
@@ -256,8 +263,9 @@ export default function ArtistList({
 
   const rowProps = useMemo<ArtistListRowSharedProps>(() => ({
     artists,
-    onSelectArtist
-  }), [artists, onSelectArtist])
+    onSelectArtist,
+    searchQuery
+  }), [artists, onSelectArtist, searchQuery])
 
   const gridLayout = useMemo(() => resolveArtistGridLayout({
     containerWidth: viewportSize.width,
@@ -269,8 +277,9 @@ export default function ArtistList({
   const gridProps = useMemo<ArtistGridCellSharedProps>(() => ({
     artists,
     columnCount: gridLayout.columnCount,
-    onSelectArtist
-  }), [artists, gridLayout.columnCount, onSelectArtist])
+    onSelectArtist,
+    searchQuery
+  }), [artists, gridLayout.columnCount, onSelectArtist, searchQuery])
 
   useEffect(() => {
     const group = listBodyRef.current

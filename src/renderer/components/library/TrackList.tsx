@@ -22,6 +22,8 @@ import {
   focusControllerTarget,
   type ControllerVirtualMoveDetail
 } from '../../utils/controllerFocus'
+import { rankFuzzyMatches } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 
 interface DbTrack {
   id: number
@@ -89,6 +91,7 @@ interface TrackListProps {
   onSortColumnToggle?: (key: TrackListSortKey) => void
   enableDefaultOrderReset?: boolean
   onDefaultOrderReset?: () => void
+  searchQuery?: string
 }
 
 interface TrackListRowSharedProps {
@@ -99,6 +102,7 @@ interface TrackListRowSharedProps {
   showTracklistBpmKey: boolean
   showAddedDate: boolean
   showNewTrackIndicator: boolean
+  searchQuery: string
   trackNumberMode: TrackNumberMode
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
   currentTrackPath: string | null
@@ -379,6 +383,7 @@ function TrackListRowRenderer({
   showTracklistBpmKey,
   showAddedDate,
   showNewTrackIndicator,
+  searchQuery,
   trackNumberMode,
   contextTrackNumbersByPath,
   currentTrackPath,
@@ -555,7 +560,7 @@ function TrackListRowRenderer({
                 <span>{sourceLabel}</span>
               </span>
             )}
-            <span className="track-title">{track.title}</span>
+            <span className="track-title">{highlightSearchMatch(track.title, searchQuery)}</span>
             {isMissingPlaylistEntry && (
               <span className="track-missing-playlist-label">Missing</span>
             )}
@@ -752,7 +757,8 @@ export default function TrackList({
   sortState = null,
   onSortColumnToggle,
   enableDefaultOrderReset = false,
-  onDefaultOrderReset
+  onDefaultOrderReset,
+  searchQuery = ''
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
@@ -1746,9 +1752,9 @@ export default function TrackList({
   }, [trackContextMenu])
 
   const filteredPlaylists = useMemo(() => {
-    const query = playlistPopupSearch.trim().toLocaleLowerCase()
-    if (!query) return playlists
-    return playlists.filter((playlist) => playlist.name.toLocaleLowerCase().includes(query))
+    return rankFuzzyMatches(playlists, playlistPopupSearch, (playlist) => [
+      { value: playlist.name, weight: 1.5 }
+    ])
   }, [playlistPopupSearch, playlists])
 
   const playlistPopupTrack = useMemo(() => {
@@ -1867,6 +1873,7 @@ export default function TrackList({
     showTracklistBpmKey,
     showAddedDate,
     showNewTrackIndicator,
+    searchQuery,
     trackNumberMode,
     contextTrackNumbersByPath,
     currentTrackPath,
@@ -1910,6 +1917,7 @@ export default function TrackList({
     showTracklistBpmKey,
     showAddedDate,
     showNewTrackIndicator,
+    searchQuery,
     trackNumberMode,
     contextTrackNumbersByPath,
     currentTrackPath,
@@ -2113,7 +2121,7 @@ export default function TrackList({
                       name={playlist.name}
                       className="track-playlist-popup-cover"
                     />
-                    <span className="track-playlist-popup-item-name">{playlist.name}</span>
+                    <span className="track-playlist-popup-item-name">{highlightSearchMatch(playlist.name, playlistPopupSearch)}</span>
                     {!isSingleTrack && matchedTrackCount > 0 && (
                       <span className="track-playlist-popup-item-count">
                         {matchedTrackCount}/{playlistPopup.trackPaths.length}
