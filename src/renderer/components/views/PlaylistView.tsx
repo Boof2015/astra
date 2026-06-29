@@ -212,7 +212,9 @@ export default function PlaylistView() {
     clearPlaylistCustomCover,
     reorderPlaylistTracks,
     importPlaylistFromFile,
-    exportPlaylistToM3u
+    exportPlaylistToM3u,
+    sortState,
+    setSortState
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
@@ -246,7 +248,6 @@ export default function PlaylistView() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isUpdatingCover, setIsUpdatingCover] = useState(false)
-  const [sortState, setSortState] = useState<TrackListSortState | null>(null)
   const [isReorderMode, setIsReorderMode] = useState(false)
   const [reorderedEntries, setReorderedEntries] = useState<PlaylistEntry[] | null>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -271,7 +272,6 @@ export default function PlaylistView() {
     setIsRenaming(false)
     setRenameValue('')
     setIsUpdatingCover(false)
-    setSortState(null)
     setIsReorderMode(false)
     setReorderedEntries(null)
     setDragIndex(null)
@@ -334,7 +334,7 @@ export default function PlaylistView() {
     if (!sortState) return
     if (sortState.key !== 'bpm' && sortState.key !== 'musical_key') return
     setSortState(null)
-  }, [showTracklistBpmKey, sortState])
+  }, [setSortState, showTracklistBpmKey, sortState])
 
   useEffect(() => {
     if (!playlistImportStatus) return
@@ -589,23 +589,23 @@ export default function PlaylistView() {
   }
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
-    setSortState((current) => {
-      if (current?.key === key) {
-        return {
-          key,
-          direction: current.direction === 'asc' ? 'desc' : 'asc'
-        }
-      }
-      return {
+    const current = usePlaylistStore.getState().sortState
+    if (current?.key === key) {
+      setSortState({
         key,
-        direction: 'asc'
-      }
+        direction: current.direction === 'asc' ? 'desc' : 'asc'
+      })
+      return
+    }
+    setSortState({
+      key,
+      direction: 'asc'
     })
-  }, [])
+  }, [setSortState])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
-  }, [])
+  }, [setSortState])
 
   const handleShufflePlayPlaylist = useCallback(async () => {
     if (shufflePlayPendingRef.current) return
@@ -655,7 +655,7 @@ export default function PlaylistView() {
     setDropIndex(null)
     setReorderedEntries([...selectedPlaylistEntries])
     setIsReorderMode(true)
-  }, [canReorderTracks, hasUnsavedReorderChanges, isReorderMode, isSavingReorder, selectedPlaylistEntries])
+  }, [canReorderTracks, hasUnsavedReorderChanges, isReorderMode, isSavingReorder, selectedPlaylistEntries, setSortState])
 
   const handleCancelReorder = useCallback(() => {
     if (isSavingReorder) return
@@ -727,7 +727,7 @@ export default function PlaylistView() {
     } finally {
       setIsSavingReorder(false)
     }
-  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistTracks, selectPlaylist, selectedPlaylistId])
+  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistTracks, selectPlaylist, selectedPlaylistId, setSortState])
 
   const handleConfirmDiscardReorder = useCallback(() => {
     if (isSavingReorder) return

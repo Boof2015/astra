@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
-import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
+import { useLibraryStore, type LibraryArtistBrowseMode, type LibraryAlbumSortMode } from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
@@ -16,52 +16,13 @@ import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { navigateInputBack } from '../../utils/inputNavigation'
-import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
+import TrackList, { type TrackListSortKey } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
-import ArtistList, { type ArtistListViewMode, type ArtistListViewportAPI } from '../library/ArtistList'
+import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
-type AlbumSortMode = 'title' | 'artist'
-type ArtistRootViewMode = ArtistListViewMode
-const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
-const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
-const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
-const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
-
-function loadAlbumSortModeSetting(): AlbumSortMode {
-  try {
-    const stored = localStorage.getItem(ALBUM_SORT_MODE_STORAGE_KEY)
-    return stored === 'artist' ? 'artist' : 'title'
-  } catch {
-    return 'title'
-  }
-}
-
-function loadIncludeSinglesInAlbumsSetting(): boolean {
-  try {
-    return localStorage.getItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function loadIncludeCollabArtistsSetting(): boolean {
-  try {
-    return localStorage.getItem(INCLUDE_COLLAB_ARTISTS_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function loadArtistRootViewModeSetting(): ArtistRootViewMode {
-  try {
-    return localStorage.getItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY) === 'grid' ? 'grid' : 'list'
-  } catch {
-    return 'list'
-  }
-}
 
 function formatTrackCount(count: number): string {
   return `${count} ${count === 1 ? 'track' : 'tracks'}`
@@ -225,6 +186,20 @@ export default function LibraryView() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
+  const sortState = useLibraryStore((state) => state.trackListSortState)
+  const setSortState = useLibraryStore((state) => state.setTrackListSortState)
+  const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
+  const setSelectedSourceFilters = useLibraryStore((state) => state.setSelectedSourceFilters)
+  const clearSelectedSourceFilters = useLibraryStore((state) => state.clearSelectedSourceFilters)
+  const toggleSourceFilter = useLibraryStore((state) => state.toggleSourceFilter)
+  const albumSortMode = useLibraryStore((state) => state.albumSortMode)
+  const setAlbumSortMode = useLibraryStore((state) => state.setAlbumSortMode)
+  const includeSinglesInAlbums = useLibraryStore((state) => state.includeSinglesInAlbums)
+  const setIncludeSinglesInAlbums = useLibraryStore((state) => state.setIncludeSinglesInAlbums)
+  const includeCollabArtists = useLibraryStore((state) => state.includeCollabArtists)
+  const setIncludeCollabArtists = useLibraryStore((state) => state.setIncludeCollabArtists)
+  const artistRootViewMode = useLibraryStore((state) => state.artistRootViewMode)
+  const setArtistRootViewMode = useLibraryStore((state) => state.setArtistRootViewMode)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
@@ -241,16 +216,10 @@ export default function LibraryView() {
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
-  const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
-  const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
-  const [includeCollabArtists, setIncludeCollabArtists] = useState(() => loadIncludeCollabArtistsSetting())
-  const [artistRootViewMode, setArtistRootViewMode] = useState<ArtistRootViewMode>(() => loadArtistRootViewModeSetting())
-  const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
   const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
@@ -342,8 +311,8 @@ export default function LibraryView() {
   useEffect(() => {
     if (!libraryTrackRevealRequest) return
     setSearchQuery('')
-    setSelectedSourceFilters(new Set())
-  }, [libraryTrackRevealRequest])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters, libraryTrackRevealRequest])
 
   useEffect(() => {
     if (!previousInDetailViewRef.current && inDetailView) {
@@ -384,38 +353,6 @@ export default function LibraryView() {
   }, [isArtistImageMenuOpen])
 
   useEffect(() => {
-    try {
-      localStorage.setItem(ALBUM_SORT_MODE_STORAGE_KEY, albumSortMode)
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [albumSortMode])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY, includeSinglesInAlbums ? '1' : '0')
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [includeSinglesInAlbums])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(INCLUDE_COLLAB_ARTISTS_STORAGE_KEY, includeCollabArtists ? '1' : '0')
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [includeCollabArtists])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY, artistRootViewMode)
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [artistRootViewMode])
-
-  useEffect(() => {
     if (!includeSinglesInAlbums || !isAlbumRootView || albumsIncludingSinglesLoaded) return
     void loadAlbumsIncludingSingles()
   }, [albumsIncludingSinglesLoaded, includeSinglesInAlbums, isAlbumRootView, loadAlbumsIncludingSingles])
@@ -435,22 +372,20 @@ export default function LibraryView() {
       ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
     ])
 
-    setSelectedSourceFilters((current) => {
-      if (current.size === 0) return current
-      const next = new Set<string>()
-      for (const key of current) {
-        if (validFilterKeys.has(key)) {
-          next.add(key)
-        }
+    if (selectedSourceFilters.size === 0) return
+    const next = new Set<string>()
+    for (const key of selectedSourceFilters) {
+      if (validFilterKeys.has(key)) {
+        next.add(key)
       }
-      return next.size === current.size ? current : next
-    })
-  }, [jellyfinSources, subsonicSources])
+    }
+    setSelectedSourceFilters(next)
+  }, [jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
 
   useEffect(() => {
     if (shouldShowSourceFilters) return
-    setSelectedSourceFilters((current) => (current.size === 0 ? current : new Set()))
-  }, [shouldShowSourceFilters])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters, shouldShowSourceFilters])
 
   useEffect(() => {
     setArtistAlbumRailMode('albums')
@@ -470,14 +405,6 @@ export default function LibraryView() {
   }, [cancelScan, isScanning])
 
   useLayoutEffect(() => {
-    if (selectedAlbum) {
-      setSortState(null)
-      return
-    }
-    setSortState({ key: 'title', direction: 'asc' })
-  }, [sortContextKey, selectedAlbum])
-
-  useLayoutEffect(() => {
     const pending = pendingScrollRef.current
     if (pending === 'albums' && albumGridRef.current) {
       albumGridRef.current.scrollTop = albumGridScrollRef.current
@@ -494,54 +421,46 @@ export default function LibraryView() {
     const hideAddedSort = !showTracklistAddedDate && sortState.key === 'added'
     if (!hideBpmKeySort && !hideAddedSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [selectedAlbum, showTracklistAddedDate, showTracklistBpmKey, sortState])
+  }, [selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
-    setSortState((current) => {
-      if (current?.key === key) {
-        return {
-          key,
-          direction: current.direction === 'asc' ? 'desc' : 'asc'
-        }
-      }
-      return {
+    const current = useLibraryStore.getState().trackListSortState
+    if (current?.key === key) {
+      setSortState({
         key,
-        direction: key === 'added' ? 'desc' : 'asc'
-      }
+        direction: current.direction === 'asc' ? 'desc' : 'asc'
+      })
+      return
+    }
+    setSortState({
+      key,
+      direction: key === 'added' ? 'desc' : 'asc'
     })
-  }, [])
+  }, [setSortState])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
-  }, [])
+  }, [setSortState])
 
-  const handleSetAlbumSortMode = useCallback((mode: AlbumSortMode) => {
+  const handleSetAlbumSortMode = useCallback((mode: LibraryAlbumSortMode) => {
     setAlbumSortMode(mode)
-  }, [])
+  }, [setAlbumSortMode])
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
-    setIncludeSinglesInAlbums((current) => !current)
-  }, [])
+    setIncludeSinglesInAlbums(!includeSinglesInAlbums)
+  }, [includeSinglesInAlbums, setIncludeSinglesInAlbums])
 
   const handleToggleIncludeCollabArtists = useCallback(() => {
-    setIncludeCollabArtists((current) => !current)
-  }, [])
+    setIncludeCollabArtists(!includeCollabArtists)
+  }, [includeCollabArtists, setIncludeCollabArtists])
 
   const handleResetSourceFilters = useCallback(() => {
-    setSelectedSourceFilters(new Set())
-  }, [])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters])
 
   const handleToggleSourceFilter = useCallback((filterKey: string) => {
-    setSelectedSourceFilters((current) => {
-      const next = new Set(current)
-      if (next.has(filterKey)) {
-        next.delete(filterKey)
-      } else {
-        next.add(filterKey)
-      }
-      return next
-    })
-  }, [])
+    toggleSourceFilter(filterKey)
+  }, [toggleSourceFilter])
 
   const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     if (!inDetailView) return

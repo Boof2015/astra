@@ -150,3 +150,49 @@ test('track reveal requests clear only after the matching request id is consumed
   ui.clearQueueNowPlayingRevealRequest(queueRequest.id)
   assert.equal(useUIStore.getState().queueNowPlayingRevealRequest, null)
 })
+
+test('session restore applies core view state without transient history or overlays', () => {
+  useUIStore.setState({
+    activeView: 'home',
+    viewBackHistory: ['library'],
+    viewForwardHistory: ['settings'],
+    showQueue: false,
+    showInfoSidebar: false,
+    showPipelineShelf: false,
+    showLyricsShelf: false,
+    lyricsShelfExpanded: false,
+    isFullscreen: true,
+    isQuickLaunchOpen: true,
+    pendingLibrarySearchQuery: 'query'
+  })
+
+  useUIStore.getState().restoreSession({
+    activeView: 'library',
+    showQueue: true,
+    showInfoSidebar: true,
+    showPipelineShelf: true,
+    showLyricsShelf: true,
+    lyricsShelfExpanded: true
+  })
+
+  const state = useUIStore.getState()
+  assert.equal(state.activeView, 'library')
+  assert.deepEqual(state.viewBackHistory, [])
+  assert.deepEqual(state.viewForwardHistory, [])
+  assert.equal(state.showQueue, true)
+  assert.equal(state.showInfoSidebar, true)
+  assert.equal(state.showPipelineShelf, true)
+  assert.equal(state.showLyricsShelf, true)
+  assert.equal(state.lyricsShelfExpanded, true)
+  assert.equal(state.isFullscreen, false)
+  assert.equal(state.isQuickLaunchOpen, false)
+  assert.equal(state.pendingLibrarySearchQuery, null)
+  assert.deepEqual(state.getSessionSnapshot(), {
+    activeView: 'library',
+    showQueue: true,
+    showInfoSidebar: true,
+    showPipelineShelf: true,
+    showLyricsShelf: true,
+    lyricsShelfExpanded: true
+  })
+})

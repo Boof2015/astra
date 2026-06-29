@@ -1,15 +1,61 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { useLibraryStore } from './libraryStore.ts'
+import { useLibraryStore, type DbTrack } from './libraryStore.ts'
 
-function installLibraryMock(): void {
+function makeDbTrack(path: string, artist = 'Artist A'): DbTrack {
+  return {
+    id: 1,
+    path,
+    album_identity_key: 'album:key',
+    is_new: false,
+    title: path,
+    artist,
+    artist_names: [artist],
+    album: 'Album',
+    album_artist: artist,
+    album_artist_names: [artist],
+    duration: 180,
+    track_number: 1,
+    disc_number: 1,
+    year: 2026,
+    genre: null,
+    artwork_hash: null,
+    base_artwork_hash: null,
+    format: 'flac',
+    sample_rate: 44100,
+    bit_depth: 16,
+    bitrate: null,
+    channels: 2,
+    codec: null,
+    codec_profile: null,
+    is_atmos_joc: 0,
+    bpm: null,
+    musical_key: null,
+    source_type: 'local',
+    source_id: null,
+    source_track_id: null,
+    source_path: null,
+    is_available: 1,
+    availability_reason: null,
+    file_created_at: null,
+    replaygain_track_gain_db: null,
+    replaygain_album_gain_db: null,
+    added_at: 1,
+    modified_at: 1
+  }
+}
+
+function installLibraryMock(options: {
+  artistTracks?: DbTrack[]
+  albumTracks?: DbTrack[]
+} = {}): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
       electronAPI: {
         library: {
-          getTracksByArtist: async () => [],
-          getTracksByAlbum: async () => []
+          getTracksByArtist: async () => options.artistTracks ?? [],
+          getTracksByAlbum: async () => options.albumTracks ?? []
         }
       }
     }
@@ -28,6 +74,8 @@ function resetLibraryNavigation(): void {
     fullTrackPaths: [],
     trackByPath: new Map()
   })
+  useLibraryStore.getState().setTrackListSortState({ key: 'title', direction: 'asc' })
+  useLibraryStore.getState().clearSelectedSourceFilters()
 }
 
 test('Library detail navigation traverses backward and forward', async () => {
@@ -63,4 +111,67 @@ test('Library root participates in forward navigation and fresh selection clears
   await useLibraryStore.getState().selectArtist('Artist C')
   assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 0)
   assert.equal(await useLibraryStore.getState().goForwardSelection(), false)
+})
+
+test('Library session restore applies valid detail, sort, and source filters', async () => {
+  const track = makeDbTrack('/artist/a.flac', 'Artist A')
+  installLibraryMock({ artistTracks: [track] })
+  resetLibraryNavigation()
+  useLibraryStore.setState({
+    artists: [{
+      artist: 'Artist A',
+      track_count: 1,
+      primary_track_count: 1,
+      album_count: 1,
+      artwork_hash: null,
+      artwork_source: null
+    }]
+  })
+
+  await useLibraryStore.getState().restoreSession({
+    viewMode: 'artists',
+    selectedAlbum: null,
+    selectedArtist: 'Artist A',
+    trackListSortState: { key: 'added', direction: 'desc' },
+    selectedSourceFilters: ['local'],
+    albumSortMode: 'artist',
+    includeSinglesInAlbums: true,
+    includeCollabArtists: true,
+    artistRootViewMode: 'grid'
+  })
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.viewMode, 'artists')
+  assert.equal(state.selectedArtist, 'Artist A')
+  assert.deepEqual(state.trackPaths, [track.path])
+  assert.deepEqual(state.trackListSortState, { key: 'added', direction: 'desc' })
+  assert.deepEqual([...state.selectedSourceFilters], ['local'])
+  assert.equal(state.albumSortMode, 'artist')
+  assert.equal(state.includeSinglesInAlbums, true)
+  assert.equal(state.includeCollabArtists, true)
+  assert.equal(state.artistRootViewMode, 'grid')
+})
+
+test('Library session restore drops a stale album detail and keeps root state', async () => {
+  installLibraryMock({ albumTracks: [] })
+  resetLibraryNavigation()
+
+  await useLibraryStore.getState().restoreSession({
+    viewMode: 'albums',
+    selectedAlbum: { album: 'Missing', artist: 'Missing Artist', identity_key: 'missing' },
+    selectedArtist: null,
+    trackListSortState: null,
+    selectedSourceFilters: ['local'],
+    albumSortMode: 'title',
+    includeSinglesInAlbums: false,
+    includeCollabArtists: false,
+    artistRootViewMode: 'list'
+  })
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.viewMode, 'albums')
+  assert.equal(state.selectedAlbum, null)
+  assert.equal(state.selectedArtist, null)
+  assert.deepEqual(state.trackPaths, [])
+  assert.deepEqual([...state.selectedSourceFilters], ['local'])
 })

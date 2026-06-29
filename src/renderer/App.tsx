@@ -34,6 +34,7 @@ import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
 import { useGraphStore } from './stores/graphStore'
 import { usePlayerStore } from './stores/playerStore'
+import { usePlaylistStore } from './stores/playlistStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -47,6 +48,8 @@ import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
 import { useControllerInput } from './hooks/useControllerInput'
 import { usePresence } from './hooks/usePresence'
 import type { Track } from './types/audio'
+import { readSessionSnapshot } from './utils/sessionState'
+import { installSessionPersistence } from './utils/sessionAutosave'
 
 function toAssociatedExternalTrack(filePath: string): Track {
   const normalizedPath = filePath.replace(/\\/g, '/')
@@ -191,8 +194,12 @@ function App() {
   }, [isAnalyzerEditMode, isAnalyzerRackVisible])
 
   useEffect(() => {
+    let sessionPersistenceCleanup: (() => void) | null = null
+    let associatedOpenReady = false
+    let didUnmount = false
+    const sessionSnapshot = readSessionSnapshot()
+
     useThemeStore.getState().initFromSaved()
-    useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
@@ -234,7 +241,38 @@ function App() {
         console.error('Failed to handle associated open files:', error)
       })
     })
-    window.electronAPI.associatedOpenFiles.markReady()
+
+    void (async () => {
+      try {
+        if (sessionSnapshot?.ui) {
+          useUIStore.getState().restoreSession(sessionSnapshot.ui)
+        }
+
+        const libraryStore = useLibraryStore.getState()
+        await libraryStore.loadLibrary()
+        if (sessionSnapshot?.library) {
+          await libraryStore.restoreSession(sessionSnapshot.library)
+        }
+
+        const playlistStore = usePlaylistStore.getState()
+        await playlistStore.loadPlaylists()
+        if (sessionSnapshot?.playlist) {
+          await playlistStore.restoreSession(sessionSnapshot.playlist)
+        }
+
+        if (sessionSnapshot?.player) {
+          await usePlayerStore.getState().restoreSession(sessionSnapshot.player)
+        }
+      } catch (error) {
+        console.error('Failed to restore Astra session:', error)
+      } finally {
+        if (!didUnmount) {
+          sessionPersistenceCleanup = installSessionPersistence()
+          window.electronAPI.associatedOpenFiles.markReady()
+          associatedOpenReady = true
+        }
+      }
+    })()
 
     const updatesStore = useUpdateStore.getState()
     if (updatesStore.autoCheckEnabled) {
@@ -247,9 +285,14 @@ function App() {
       void useLibraryStore.getState().loadLibrary()
     })
     return () => {
+      didUnmount = true
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeAssociatedOpenFiles()
+      sessionPersistenceCleanup?.()
+      if (!associatedOpenReady) {
+        window.electronAPI.associatedOpenFiles.markReady()
+      }
     }
   }, [])
 

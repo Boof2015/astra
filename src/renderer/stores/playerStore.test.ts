@@ -16,6 +16,7 @@ import { useLibraryStore, type DbTrack } from './libraryStore.ts'
 import type { Track } from '../types/audio.ts'
 import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
 import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
+import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
 
 function makeTrack(path: string, overrides: Partial<Track> = {}): Track {
   return {
@@ -147,7 +148,9 @@ function resetStores(): void {
     queueContextLabel: null,
     shuffle: false,
     repeat: 'none',
-    playbackHistory: []
+    playbackHistory: [],
+    restoredTrackNeedsLoad: false,
+    restoredPlaybackTime: null
   })
 }
 
@@ -613,4 +616,108 @@ test('collection queue resolution preserves album, playlist, favorite, and dupli
     playlistId: FAVORITES_PLAYLIST_ID,
     name: 'Favorites'
   }), ['/favorite/2.flac', '/favorite/1.flac'])
+})
+
+test('session restore filters stale library queue items and advances queue ids', async () => {
+  resetStores()
+  const validTrack = makeTrack('/session/valid.flac', { sourceType: 'local', title: 'Valid' })
+  const staleTrack = makeTrack('/session/stale.flac', { sourceType: 'local', title: 'Stale' })
+  installMockTrackFetch((paths) => paths.includes(validTrack.path) ? [makeDbTrack(validTrack.path, { title: 'Valid' })] : [])
+
+  const validEntry = createQueueEntryFromTrack(validTrack)
+  const staleEntry = createQueueEntryFromTrack(staleTrack)
+  const snapshot: PlayerSessionSnapshot = {
+    currentTrack: validEntry.snapshot,
+    currentTrackSource: 'context',
+    savedPlaybackState: 'playing',
+    currentTime: 42,
+    duration: 120,
+    queueItems: [
+      {
+        queueId: 'queue-9000',
+        entry: validEntry,
+        origin: 'context',
+        sourcePlaylistId: null,
+        sourceContext: null,
+        contextLabel: 'Session'
+      },
+      {
+        queueId: 'queue-9001',
+        entry: staleEntry,
+        origin: 'manual',
+        sourcePlaylistId: null,
+        sourceContext: null,
+        contextLabel: null
+      }
+    ],
+    baseUpcomingQueueIds: ['queue-9000', 'queue-9001'],
+    upcomingQueueIds: ['queue-9000', 'queue-9001'],
+    currentQueueItemId: 'queue-9000',
+    queueSourcePlaylistId: null,
+    queueSourceContext: null,
+    queueContextLabel: 'Session',
+    shuffle: true,
+    repeat: 'all',
+    playbackHistory: []
+  }
+
+  await usePlayerStore.getState().restoreSession(snapshot)
+
+  assert.equal(usePlayerStore.getState().currentTrack?.path, validTrack.path)
+  assert.equal(usePlayerStore.getState().playbackState, 'paused')
+  assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, true)
+  assert.equal(usePlayerStore.getState().currentTime, 42)
+  assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, ['queue-9000'])
+
+  usePlayerStore.getState().enqueueTrack(makeTrack('/session/manual.flac'), 'end')
+  assert.equal(usePlayerStore.getState().upcomingQueueIds.at(-1), 'queue-9001')
+})
+
+test('playing a restored session lazily loads from the saved position', async () => {
+  resetStores()
+  const track = makeTrack('/session/resume.flac', { sourceType: 'local', title: 'Resume' })
+  installMockTrackFetch(() => [makeDbTrack(track.path, { title: 'Resume' })])
+  const entry = createQueueEntryFromTrack(track)
+  const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
+  let capturedStartTime: number | undefined
+
+  usePlayerStore.setState({
+    _loadAndPlayTrack: async (loadedTrack, options) => {
+      capturedStartTime = options?.startTime
+      usePlayerStore.setState({
+        currentTrack: loadedTrack,
+        playbackState: 'playing',
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
+      })
+      return 'loaded'
+    }
+  })
+
+  try {
+    await usePlayerStore.getState().restoreSession({
+      currentTrack: entry.snapshot,
+      currentTrackSource: 'standalone',
+      savedPlaybackState: 'playing',
+      currentTime: 37,
+      duration: 180,
+      queueItems: [],
+      baseUpcomingQueueIds: [],
+      upcomingQueueIds: [],
+      currentQueueItemId: null,
+      queueSourcePlaylistId: null,
+      queueSourceContext: null,
+      queueContextLabel: null,
+      shuffle: false,
+      repeat: 'none',
+      playbackHistory: []
+    })
+
+    await usePlayerStore.getState().play()
+    assert.equal(capturedStartTime, 37)
+    assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, false)
+    assert.equal(usePlayerStore.getState().playbackState, 'playing')
+  } finally {
+    usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
+  }
 })

@@ -9,6 +9,7 @@ import {
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
+import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -409,6 +410,8 @@ interface UIStore {
   clearSidebarPlaylistCreateRequest: () => void
   openCollectionQueueMenu: (request: CollectionQueueMenuRequest) => void
   closeCollectionQueueMenu: () => void
+  getSessionSnapshot: () => UISessionSnapshot
+  restoreSession: (snapshot: UISessionSnapshot) => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -731,5 +734,36 @@ export const useUIStore = create<UIStore>((set, get) => ({
       y: Number.isFinite(request.y) ? request.y : 0
     }
   }),
-  closeCollectionQueueMenu: () => set({ collectionQueueMenu: null })
+  closeCollectionQueueMenu: () => set({ collectionQueueMenu: null }),
+  getSessionSnapshot: () => {
+    const state = get()
+    return {
+      activeView: state.activeView,
+      showQueue: state.showQueue,
+      showInfoSidebar: state.showInfoSidebar,
+      showPipelineShelf: state.showPipelineShelf,
+      showLyricsShelf: state.showLyricsShelf,
+      lyricsShelfExpanded: state.lyricsShelfExpanded
+    }
+  },
+  restoreSession: (snapshot) => {
+    const showLyricsShelf = Boolean(snapshot.showLyricsShelf)
+    set({
+      activeView: normalizeAppView(snapshot.activeView),
+      viewBackHistory: [],
+      viewForwardHistory: [],
+      showQueue: Boolean(snapshot.showQueue),
+      showInfoSidebar: Boolean(snapshot.showInfoSidebar),
+      showPipelineShelf: Boolean(snapshot.showPipelineShelf),
+      showLyricsShelf,
+      lyricsShelfExpanded: showLyricsShelf && Boolean(snapshot.lyricsShelfExpanded),
+      isFullscreen: false,
+      isQuickLaunchOpen: false,
+      pendingLibrarySearchQuery: null,
+      pendingSettingsSection: null,
+      collectionQueueMenu: null,
+      sidebarPlaylistCreateRequest: null,
+      trackDrag: null
+    })
+  }
 }))

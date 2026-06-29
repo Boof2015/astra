@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 import type { TrackSourceType } from '../../types/subsonic'
+import { normalizeTrackSortState, type PlaylistSessionSnapshot, type SessionTrackSortState } from '../utils/sessionState'
 
 export interface Playlist {
   id: number
@@ -50,6 +51,8 @@ export interface PlaylistTrackMembershipSummary {
   playlistId: number
   matchedTrackCount: number
 }
+
+export type PlaylistTrackListSortState = SessionTrackSortState
 
 interface DbTrack {
   id: number
@@ -105,6 +108,7 @@ interface PlaylistStore {
   selectedPlaylistId: number | null
   selectedPlaylistEntries: PlaylistTrackEntry[]
   selectedPlaylistTracks: DbTrack[]
+  sortState: PlaylistTrackListSortState | null
 
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
@@ -124,6 +128,9 @@ interface PlaylistStore {
   getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
   exportPlaylistToM3u: (playlistId: number, playlistName: string) => Promise<PlaylistExportResult | null>
+  setSortState: (sortState: PlaylistTrackListSortState | null) => void
+  getSessionSnapshot: () => PlaylistSessionSnapshot
+  restoreSession: (snapshot: PlaylistSessionSnapshot) => Promise<void>
 }
 
 function getPlayableTracksFromEntries(entries: PlaylistTrackEntry[]): DbTrack[] {
@@ -172,6 +179,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     selectedPlaylistId: null,
     selectedPlaylistEntries: [],
     selectedPlaylistTracks: [],
+    sortState: null,
 
     loadPlaylists: async () => {
       const playlists = await window.electronAPI.library.getPlaylists()
@@ -324,6 +332,54 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (!filePath) return null
 
       return window.electronAPI.library.exportPlaylistToM3u(playlistId, ensurePlaylistExportExtension(filePath))
+    },
+
+    setSortState: (sortState) => {
+      set({ sortState: sortState ? normalizeTrackSortState(sortState) : null })
+    },
+
+    getSessionSnapshot: () => {
+      const state = get()
+      return {
+        selectedPlaylistId: state.selectedPlaylistId,
+        sortState: state.sortState ? { ...state.sortState } : null
+      }
+    },
+
+    restoreSession: async (snapshot) => {
+      const sortState = normalizeTrackSortState(snapshot.sortState)
+      const selectedPlaylistId = snapshot.selectedPlaylistId
+      if (selectedPlaylistId === null) {
+        set({
+          selectedPlaylistId: null,
+          selectedPlaylistEntries: [],
+          selectedPlaylistTracks: [],
+          sortState
+        })
+        return
+      }
+
+      if (isSystemFavoritesPlaylistId(selectedPlaylistId)) {
+        set({ sortState })
+        await get().selectPlaylist(selectedPlaylistId)
+        set({ sortState })
+        return
+      }
+
+      const playlistExists = get().playlists.some((playlist) => playlist.id === selectedPlaylistId)
+      if (!playlistExists) {
+        set({
+          selectedPlaylistId: null,
+          selectedPlaylistEntries: [],
+          selectedPlaylistTracks: [],
+          sortState
+        })
+        return
+      }
+
+      set({ sortState })
+      await get().selectPlaylist(selectedPlaylistId)
+      set({ sortState })
     }
   }
 })

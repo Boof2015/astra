@@ -6,6 +6,12 @@ import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import {
+  type PlayerSessionSnapshot,
+  type SessionPlaybackSourceContext,
+  type SessionQueueItem,
+  type SessionQueueTrackSnapshot
+} from '../utils/sessionState'
 
 interface RemoteLoadProgress {
   path: string
@@ -105,6 +111,8 @@ interface PlayerStore {
     fileCount: number
     sourceLabel: string
   } | null
+  restoredTrackNeedsLoad: boolean
+  restoredPlaybackTime: number | null
 
   // Queue state
   queueItems: QueueItem[]
@@ -166,11 +174,13 @@ interface PlayerStore {
     sourceLabel: string
   }) => void
   clearAssociatedOpenNotice: () => void
+  getSessionSnapshot: () => PlayerSessionSnapshot
+  restoreSession: (snapshot: PlayerSessionSnapshot) => Promise<void>
 
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<PlaybackLoadOutcome>
+  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean; startTime?: number }) => Promise<PlaybackLoadOutcome>
   _preBufferNextTrack: () => Promise<void>
   _schedulePreBufferNextTrack: (options?: { invalidatePending?: boolean }) => void
   _getNextEntry: () => ResolvedQueueTrack | null
@@ -199,6 +209,65 @@ function createQueueId(): string {
   const queueId = `queue-${nextQueueItemId}`
   nextQueueItemId += 1
   return queueId
+}
+
+function getQueueIdSequenceNumber(queueId: string): number | null {
+  const match = /^queue-(\d+)$/.exec(queueId)
+  if (!match) return null
+  const parsed = Number(match[1])
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function advanceNextQueueItemId(queueIds: Iterable<string>): void {
+  let maxId = 0
+  for (const queueId of queueIds) {
+    const parsed = getQueueIdSequenceNumber(queueId)
+    if (parsed !== null) {
+      maxId = Math.max(maxId, parsed)
+    }
+  }
+  nextQueueItemId = Math.max(nextQueueItemId, maxId + 1)
+}
+
+function sessionContextToPlaybackContext(context: SessionPlaybackSourceContext | null): PlaybackSourceContext | null {
+  if (!context) return null
+  if (context.type === 'playlist') {
+    return typeof context.playlistId === 'number'
+      ? { type: 'playlist', playlistId: context.playlistId }
+      : null
+  }
+  if (context.type === 'artist') {
+    return context.artist ? { type: 'artist', artist: context.artist } : null
+  }
+  if (context.type === 'album') {
+    return context.album
+      ? {
+          type: 'album',
+          album: context.album,
+          albumArtist: context.albumArtist,
+          identityKey: context.identityKey
+        }
+      : null
+  }
+  return null
+}
+
+function sessionQueueItemToQueueItem(item: SessionQueueItem): QueueItem {
+  return {
+    queueId: item.queueId,
+    entry: {
+      path: item.entry.path,
+      snapshot: { ...item.entry.snapshot }
+    },
+    origin: item.origin,
+    sourcePlaylistId: item.sourcePlaylistId,
+    sourceContext: sessionContextToPlaybackContext(item.sourceContext),
+    contextLabel: item.contextLabel
+  }
+}
+
+function sessionTrackSnapshotToTrack(snapshot: SessionQueueTrackSnapshot): Track {
+  return { ...snapshot }
 }
 
 class SupersededPlaybackLoadError extends Error {
@@ -1275,7 +1344,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       queueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
       shuffle: nextShuffle,
       playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
-      currentTrackSource: 'context'
+      currentTrackSource: 'context',
+      restoredTrackNeedsLoad: false,
+      restoredPlaybackTime: null
     })
 
     const targetTrack = resolveQueueEntryTrack(currentItem.entry)
@@ -1323,6 +1394,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     schedulePreBufferNextTrack()
   }
 
+  const seekLoadedTrackBeforePlay = async (track: Track, requestedTime: number | null | undefined): Promise<void> => {
+    if (!Number.isFinite(requestedTime) || !requestedTime || requestedTime <= 0) return
+    if (track.sourceType && track.sourceType !== 'local') return
+
+    const resolvedDuration = resolvePositiveDuration(audioEngine.duration, track.duration)
+    const targetTime = resolvedDuration > 0
+      ? Math.min(Math.max(0, requestedTime), resolvedDuration)
+      : Math.max(0, requestedTime)
+    if (targetTime <= 0) return
+
+    await audioEngine.seek(targetTime)
+    set({ currentTime: targetTime })
+  }
+
   return {
     // Initial state
     currentTrack: null,
@@ -1341,6 +1426,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
     associatedOpenNotice: null,
+    restoredTrackNeedsLoad: false,
+    restoredPlaybackTime: null,
 
     // Queue state
     queueItems: [],
@@ -1376,7 +1463,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
-        duration: track.duration
+        duration: track.duration,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
 
       try {
@@ -1405,7 +1494,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             remoteStreamSessionId: null,
             waveformBufferedRatio: 1,
             waveformAnalyzedRatio: 1,
-            currentTime: 0
+            currentTime: 0,
+            restoredTrackNeedsLoad: false,
+            restoredPlaybackTime: null
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           pendingManualLoadCueTrack = resolvedTrack
@@ -1455,7 +1546,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
           waveformAnalyzedRatio: 1,
-          currentTime: 0
+          currentTime: 0,
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
@@ -1494,6 +1587,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Playback controls
     play: async () => {
       const state = get()
+      if (state.currentTrack && state.restoredTrackNeedsLoad) {
+        const track = state.currentTrack
+        const startTime = state.restoredPlaybackTime ?? state.currentTime
+        set({
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
+        })
+        const loaded = await get()._loadAndPlayTrack(track, { manualStart: true, startTime })
+        if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
+          markTrackUnavailableInState(track.path)
+        }
+        return
+      }
+
       if (!state.currentTrack) {
         const candidate = findNextPlayableCandidate(state)
         if (!candidate || candidate.kind === 'current') return
@@ -1540,7 +1647,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     togglePlay: async () => {
       const state = get()
-      if (!state.currentTrack || state.playbackState === 'stopped') {
+      if (!state.currentTrack || state.playbackState === 'stopped' || state.restoredTrackNeedsLoad) {
         await get().play()
         return
       }
@@ -1553,13 +1660,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       recentPlaySession = null
       set({
         remoteBufferedSeconds: 0,
-        remoteStreamSessionId: null
+        remoteStreamSessionId: null,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
       audioEngine.stop()
     },
 
     seek: async (time: number) => {
       const state = get()
+      if (state.restoredTrackNeedsLoad) {
+        const duration = resolvePositiveDuration(state.duration, state.currentTrack?.duration)
+        const targetTime = duration > 0
+          ? Math.min(Math.max(0, time), duration)
+          : Math.max(0, time)
+        set({
+          currentTime: targetTime,
+          restoredPlaybackTime: targetTime
+        })
+        return
+      }
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
@@ -1688,6 +1808,124 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     clearAssociatedOpenNotice: () => {
       set({ associatedOpenNotice: null })
+    },
+
+    getSessionSnapshot: () => {
+      const state = get()
+      return {
+        currentTrack: state.currentTrack ? stripTrackArtworkData(state.currentTrack) : null,
+        currentTrackSource: state.currentTrackSource,
+        savedPlaybackState: state.playbackState,
+        currentTime: state.currentTime,
+        duration: state.duration,
+        queueItems: state.queueItems.map((item) => ({
+          queueId: item.queueId,
+          entry: {
+            path: item.entry.path,
+            snapshot: { ...item.entry.snapshot }
+          },
+          origin: item.origin,
+          sourcePlaylistId: item.sourcePlaylistId,
+          sourceContext: item.sourceContext,
+          contextLabel: item.contextLabel
+        })),
+        baseUpcomingQueueIds: [...state.baseUpcomingQueueIds],
+        upcomingQueueIds: [...state.upcomingQueueIds],
+        currentQueueItemId: state.currentQueueItemId,
+        queueSourcePlaylistId: state.queueSourcePlaylistId,
+        queueSourceContext: state.queueSourceContext,
+        queueContextLabel: state.queueContextLabel,
+        shuffle: state.shuffle,
+        repeat: state.repeat,
+        playbackHistory: state.playbackHistory.map((entry) => ({
+          item: {
+            queueId: entry.item.queueId,
+            entry: {
+              path: entry.item.entry.path,
+              snapshot: { ...entry.item.entry.snapshot }
+            },
+            origin: entry.item.origin,
+            sourcePlaylistId: entry.item.sourcePlaylistId,
+            sourceContext: entry.item.sourceContext,
+            contextLabel: entry.item.contextLabel
+          }
+        }))
+      }
+    },
+
+    restoreSession: async (snapshot) => {
+      const knownLibraryPaths = new Set<string>()
+      const collectLibraryPath = (track: SessionQueueTrackSnapshot | null | undefined) => {
+        if (!track) return
+        if (track.origin === 'associated-external') return
+        if (!track.sourceType) return
+        knownLibraryPaths.add(track.path)
+      }
+
+      collectLibraryPath(snapshot.currentTrack)
+      snapshot.queueItems.forEach((item) => collectLibraryPath(item.entry.snapshot))
+      snapshot.playbackHistory.forEach((entry) => collectLibraryPath(entry.item.entry.snapshot))
+
+      const resolvedLibraryPaths = knownLibraryPaths.size > 0
+        ? new Set((await useLibraryStore.getState().resolveTrackPathsWithFetch([...knownLibraryPaths])).map((track) => track.path))
+        : new Set<string>()
+      const isRestorableTrack = (track: SessionQueueTrackSnapshot | null | undefined): boolean => {
+        if (!track) return false
+        if (track.origin === 'associated-external') return true
+        if (!track.sourceType) return true
+        return resolvedLibraryPaths.has(track.path)
+      }
+
+      const queueItems = snapshot.queueItems
+        .filter((item) => isRestorableTrack(item.entry.snapshot))
+        .map(sessionQueueItemToQueueItem)
+      const queueItemIds = new Set(queueItems.map((item) => item.queueId))
+      const baseUpcomingQueueIds = snapshot.baseUpcomingQueueIds.filter((queueId) => queueItemIds.has(queueId))
+      const upcomingQueueIds = snapshot.upcomingQueueIds.filter((queueId) => queueItemIds.has(queueId))
+      const currentQueueItemId = snapshot.currentQueueItemId && queueItemIds.has(snapshot.currentQueueItemId)
+        ? snapshot.currentQueueItemId
+        : null
+      const playbackHistory = snapshot.playbackHistory
+        .filter((entry) => isRestorableTrack(entry.item.entry.snapshot))
+        .map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) }))
+      const currentTrack = isRestorableTrack(snapshot.currentTrack)
+        ? sessionTrackSnapshotToTrack(snapshot.currentTrack!)
+        : null
+
+      advanceNextQueueItemId([
+        ...queueItems.map((item) => item.queueId),
+        ...playbackHistory.map((entry) => entry.item.queueId)
+      ])
+
+      clearBufferedNextTrack()
+      set({
+        currentTrack,
+        currentTrackSource: currentTrack ? snapshot.currentTrackSource : 'standalone',
+        playbackState: currentTrack ? 'paused' : 'stopped',
+        currentTime: currentTrack ? snapshot.currentTime : 0,
+        duration: currentTrack ? resolvePositiveDuration(snapshot.duration, currentTrack.duration) : 0,
+        waveformData: null,
+        waveformBufferedRatio: currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? 0 : 1,
+        waveformAnalyzedRatio: currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? 0 : 1,
+        remoteLoadProgress: null,
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null,
+        ffmpegFallbackNotice: null,
+        outputDelayNotice: null,
+        associatedOpenNotice: null,
+        restoredTrackNeedsLoad: Boolean(currentTrack),
+        restoredPlaybackTime: currentTrack ? snapshot.currentTime : null,
+        queueItems,
+        baseUpcomingQueueIds,
+        upcomingQueueIds,
+        currentQueueItemId,
+        queueSourcePlaylistId: snapshot.queueSourcePlaylistId,
+        queueSourceContext: sessionContextToPlaybackContext(snapshot.queueSourceContext),
+        queueContextLabel: snapshot.queueContextLabel,
+        shuffle: snapshot.shuffle,
+        repeat: snapshot.repeat,
+        playbackHistory
+      })
     },
 
     playQueuedItem: async (queueId, options) => {
@@ -1853,6 +2091,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
+      const startTime = Number.isFinite(options.startTime) ? Math.max(0, Number(options.startTime)) : 0
       pendingManualLoadCueTrack = null
       // Initialize listeners if needed
       if (!listenersInitialized) {
@@ -1871,7 +2110,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
-        duration: track.duration
+        duration: track.duration,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
 
       try {
@@ -1891,9 +2132,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
             currentTrack: resolvedTrack,
             remoteLoadProgress: null,
-            currentTime: 0
+            currentTime: 0,
+            restoredTrackNeedsLoad: false,
+            restoredPlaybackTime: null
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+          await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
           if (manualStart) {
             showOutputDelayNotice(resolvedTrack)
           }
@@ -1935,7 +2179,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
-              currentTime: 0
+              currentTime: 0,
+              restoredTrackNeedsLoad: false,
+              restoredPlaybackTime: null
             })
             hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
             if (manualStart) {
@@ -2057,9 +2303,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
           waveformAnalyzedRatio: 1,
-          currentTime: 0
+          currentTime: 0,
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+        await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }
