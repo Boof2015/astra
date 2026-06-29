@@ -66,6 +66,7 @@ export interface PlaybackContextOptions {
   contextLabel?: string | null
   sourceContext?: PlaybackSourceContext | null
   shuffle?: boolean
+  startShuffled?: boolean
 }
 
 interface PlayerStore {
@@ -578,6 +579,19 @@ function shuffleQueueIds(queueIds: readonly string[]): string[] {
     ;[ids[index], ids[swapIndex]] = [ids[swapIndex], ids[index]]
   }
   return ids
+}
+
+function getShuffledStartIndex(entryCount: number, requestedStartIndex: number): number {
+  if (entryCount <= 1) return requestedStartIndex
+
+  const candidateIndexes: number[] = []
+  for (let index = 0; index < entryCount; index += 1) {
+    if (requestedStartIndex === 0 && index === 0) continue
+    candidateIndexes.push(index)
+  }
+
+  if (candidateIndexes.length === 0) return requestedStartIndex
+  return candidateIndexes[Math.floor(Math.random() * candidateIndexes.length)] ?? requestedStartIndex
 }
 
 interface RecentPlaySession {
@@ -1219,30 +1233,33 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const normalizedStartIndex = entries.length === 0
       ? -1
       : Math.max(0, Math.min(entries.length - 1, Math.floor(startIndex)))
+    const nextShuffle = options?.shuffle ?? state.shuffle
+    const playbackStartIndex = options?.startShuffled && nextShuffle
+      ? getShuffledStartIndex(entries.length, normalizedStartIndex)
+      : normalizedStartIndex
     const currentEntry = getCurrentPlaybackEntry(state)
 
-    if (normalizedStartIndex < 0) {
+    if (playbackStartIndex < 0) {
       clearBufferedNextTrack()
       return
     }
 
     const contextItems = entries.map((entry) => createQueueItem(entry, 'context', options))
-    const currentItem = contextItems[normalizedStartIndex]
+    const currentItem = contextItems[playbackStartIndex]
     const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
     const manualItems = state.upcomingQueueIds
       .map((queueId) => itemsById.get(queueId))
       .filter((item): item is QueueItem => item?.origin === 'manual')
     const queueItems = [
-      ...contextItems.slice(0, normalizedStartIndex + 1),
+      ...contextItems.slice(0, playbackStartIndex + 1),
       ...manualItems,
-      ...contextItems.slice(normalizedStartIndex + 1)
+      ...contextItems.slice(playbackStartIndex + 1)
     ]
-    const nextShuffle = options?.shuffle ?? state.shuffle
     const baseUpcomingQueueIds = nextShuffle
       ? queueItems.map((item) => item.queueId).filter((queueId) => queueId !== currentItem.queueId)
       : [
           ...manualItems.map((item) => item.queueId),
-          ...contextItems.slice(normalizedStartIndex + 1).map((item) => item.queueId)
+          ...contextItems.slice(playbackStartIndex + 1).map((item) => item.queueId)
         ]
     const upcomingQueueIds = nextShuffle
       ? shuffleQueueIds(baseUpcomingQueueIds)

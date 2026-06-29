@@ -633,7 +633,8 @@ export default function LibraryView() {
 
       await startPlaybackContextByPaths(queueTrackPaths, 0, {
         contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library',
-        sourceContext: playbackSourceContext
+        sourceContext: playbackSourceContext,
+        startShuffled: true
       })
     } catch (error) {
       console.error('Failed to play tracklist:', error)
@@ -1677,10 +1678,10 @@ export default function LibraryView() {
               </div>
             </div>
           )}
-          {inDetailView && (
+          {isTracklistContext && (
             <button
               type="button"
-              className="icon-btn library-collection-action-btn library-play-btn"
+              className={`icon-btn library-play-btn ${inDetailView ? 'library-collection-action-btn' : ''}`}
               onClick={() => {
                 void handlePlayTracklist()
               }}

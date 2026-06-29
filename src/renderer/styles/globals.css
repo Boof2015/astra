@@ -7080,6 +7080,21 @@ body:has(.fullscreen-overlay) .controller-hints {
   color: var(--text-primary);
 }
 
+.library-header-right .library-play-btn {
+  width: auto;
+  min-width: 36px;
+  padding: 0 10px;
+  gap: 6px;
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.13);
+  color: var(--accent-text-strong);
+}
+
+.library-header-right .library-play-btn:hover {
+  border-color: rgba(var(--accent-rgb), 0.64);
+  background: rgba(var(--accent-rgb), 0.2);
+}
+
 .library-header-right .library-shuffle-btn {
   width: auto;
   min-width: 36px;

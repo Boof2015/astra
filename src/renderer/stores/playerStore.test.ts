@@ -393,6 +393,84 @@ test('shuffle mixes manual and context items and unshuffle restores canonical or
   }
 })
 
+test('startShuffled is ignored while shuffle is off', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0, { startShuffled: true })
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/b.flac',
+      '/queue/c.flac'
+    ])
+    assert.equal(usePlayerStore.getState().shuffle, false)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('startShuffled picks a non-first current item when global shuffle starts from play', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    usePlayerStore.setState({ shuffle: true })
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0, { startShuffled: true })
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/b.flac')
+    assert.notEqual(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(
+      new Set(resolvedUpcomingPaths()),
+      new Set(['/queue/a.flac', '/queue/c.flac'])
+    )
+    assert.equal(usePlayerStore.getState().shuffle, true)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('global shuffle without startShuffled keeps the requested current item', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    usePlayerStore.setState({ shuffle: true })
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0)
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(
+      new Set(resolvedUpcomingPaths()),
+      new Set(['/queue/b.flac', '/queue/c.flac'])
+    )
+    assert.equal(usePlayerStore.getState().shuffle, true)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
 test('play next, add, move, and remove operate on the unified upcoming order', async () => {
   resetStores()
   const restoreLoad = installLoadedTrackStub()
