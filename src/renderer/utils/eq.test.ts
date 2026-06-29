@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { EQBand } from '../types/audio.ts'
 import {
   computeEQFilterMagnitude,
+  EQ_MAX_BANDS,
   parseEQPresetData,
   serializeEQPresetData,
 } from './eq.ts'
@@ -107,4 +108,25 @@ test('legacy peaking and shelf presets still load unchanged', () => {
       { id: 'legacy-3', type: 'highshelf', frequency: 9000, gain: 2.25, Q: 0.7 },
     ]
   )
+})
+
+test('preset parsing preserves the first maximum supported bands', () => {
+  let nextId = 0
+  const parsed = parseEQPresetData({
+    name: 'Twenty Plus',
+    preamp: 0,
+    bands: Array.from({ length: EQ_MAX_BANDS + 3 }, (_, index) => ({
+      type: 'peaking',
+      frequency: 100 + index,
+      gain: 0,
+      Q: 1,
+    })),
+  }, () => `cap-${++nextId}`)
+
+  assert.equal(parsed.bands.length, EQ_MAX_BANDS)
+  assert.equal(nextId, EQ_MAX_BANDS)
+  assert.equal(parsed.bands[0].id, 'cap-1')
+  assert.equal(parsed.bands[0].frequency, 100)
+  assert.equal(parsed.bands.at(-1)?.id, `cap-${EQ_MAX_BANDS}`)
+  assert.equal(parsed.bands.at(-1)?.frequency, 100 + EQ_MAX_BANDS - 1)
 })

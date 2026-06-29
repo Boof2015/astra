@@ -1,4 +1,5 @@
-import { EQBand, EQPreset } from '../types/audio'
+import type { EQBand, EQPreset } from '../types/audio'
+import { EQ_MAX_BANDS } from './eq.ts'
 
 const TYPE_MAP: Record<string, EQBand['type']> = {
   PK: 'peaking',
@@ -54,6 +55,6 @@ export function parseAutoEQ(content: string, filename?: string): EQPreset {
     id: '',
     name,
     preamp,
-    bands: bands.slice(0, 10),
+    bands: bands.slice(0, EQ_MAX_BANDS),
   }
 }

@@ -2,6 +2,7 @@ import type { EQBand, EQPreset } from '../types/audio'
 
 export const EQ_MIN_GAIN_DB = -12
 export const EQ_MAX_GAIN_DB = 12
+export const EQ_MAX_BANDS = 20
 export const EQ_MIN_FREQUENCY = 20
 export const EQ_MAX_FREQUENCY = 20000
 export const EQ_MIN_Q = 0.1
@@ -116,7 +117,7 @@ export function parseEQPresetData(value: unknown, createId: () => string): EQPre
     id: '',
     name: rawPreset.name.trim(),
     preamp: clampEQGain(coerceFiniteNumber(rawPreset.preamp, 0)),
-    bands: rawPreset.bands.slice(0, 10).map((band) => (
+    bands: rawPreset.bands.slice(0, EQ_MAX_BANDS).map((band) => (
       createNormalizedEQBand(
         band && typeof band === 'object' && !Array.isArray(band) ? band as RawEQBand : {},
         createId()

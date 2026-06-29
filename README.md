@@ -26,7 +26,7 @@ Seven real-time visualizers powered by a native C++ module - oscilloscope, spect
 
 ## Equalizer
 
-Up to 10 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
+Up to 20 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
 
 ![Astra equalizer](assets/EQ.png)
 
