@@ -2,7 +2,7 @@ import { memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, u
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
-import { usePlaylistStore } from '../../stores/playlistStore'
+import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -692,7 +692,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   }, [restoreScrollPosition])
 
   const filteredPlaylists = useMemo(() => {
-    return rankFuzzyMatches(playlists, folderPlaylistSearch, (playlist) => [
+    return rankFuzzyMatches(getNormalPlaylists(playlists), folderPlaylistSearch, (playlist) => [
       { value: playlist.name, weight: 1.5 }
     ])
   }, [folderPlaylistSearch, playlists])

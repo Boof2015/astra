@@ -7,6 +7,7 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import {
   deepScanFlacIntegrityTrack,
   isFlacTarget,
@@ -6011,6 +6012,22 @@ ipcMain.handle('library:getPlaylists', () => {
 
 ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
   return library.createPlaylist(name)
+})
+
+ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
+  return library.createDynamicPlaylist(name, rules)
+})
+
+ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) => {
+  return library.getDynamicPlaylistRules(playlistId)
+})
+
+ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
+  await library.updateDynamicPlaylistRules(playlistId, rules)
+})
+
+ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
+  return library.previewDynamicPlaylist(rules)
 })
 
 ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {

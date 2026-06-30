@@ -12,6 +12,7 @@ import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
 
 interface HomeTrack {
   path: string
@@ -790,6 +791,8 @@ export default function HomeView() {
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
   const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
+  const createDynamicPlaylistWithOptions = usePlaylistStore((s) => s.createDynamicPlaylistWithOptions)
+  const previewDynamicPlaylist = usePlaylistStore((s) => s.previewDynamicPlaylist)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
@@ -1110,6 +1113,12 @@ export default function HomeView() {
     setActiveView('playlist')
   }
 
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+    const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
+  }
+
   const handleOpenPlaylist = async (playlistId: number) => {
     await selectPlaylist(playlistId)
     setActiveView('playlist')
@@ -1415,7 +1424,7 @@ export default function HomeView() {
                   />
                   <div className="home-playlist-rail-meta">
                     <div className="home-playlist-rail-name">{playlist.name}</div>
-                    <div className="home-playlist-rail-count">{playlist.track_count} tracks</div>
+                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? 'Dynamic - ' : ''}{playlist.track_count} tracks</div>
                   </div>
                 </article>
               ))}
@@ -1429,6 +1438,9 @@ export default function HomeView() {
         isOpen={isCreatePlaylistModalOpen}
         onClose={() => setIsCreatePlaylistModalOpen(false)}
         onCreate={handleCreatePlaylist}
+        onCreateDynamic={handleCreateDynamicPlaylist}
+        onPreviewDynamic={previewDynamicPlaylist}
+        allowDynamic
       />
     </div>
   )

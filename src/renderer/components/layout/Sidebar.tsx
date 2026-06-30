@@ -9,6 +9,7 @@ import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
+import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
 
 const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
   {
@@ -105,6 +106,8 @@ export default function Sidebar() {
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
   const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
+  const createDynamicPlaylistWithOptions = usePlaylistStore((s) => s.createDynamicPlaylistWithOptions)
+  const previewDynamicPlaylist = usePlaylistStore((s) => s.previewDynamicPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const clearPlaylistSelection = usePlaylistStore((s) => s.clearSelection)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
@@ -484,6 +487,18 @@ export default function Sidebar() {
     setCreatePlaylistTrackPaths(null)
   }, [createPlaylistTrackPaths, createPlaylistWithOptions, selectPlaylist, setActiveView])
 
+  const handleCreateDynamicPlaylist = useCallback(async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+    const playlist = await createDynamicPlaylistWithOptions({
+      name,
+      coverImagePath,
+      rules
+    })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
+    setIsOverflowOpen(false)
+    setCreatePlaylistTrackPaths(null)
+  }, [createDynamicPlaylistWithOptions, selectPlaylist, setActiveView])
+
   const handleCloseCreatePlaylistModal = useCallback(() => {
     setIsCreatePlaylistModalOpen(false)
     setCreatePlaylistTrackPaths(null)
@@ -591,7 +606,7 @@ export default function Sidebar() {
               {sidebarQuickPlaylists.map((playlist) => (
                 <button
                   key={playlist.id}
-                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
+                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onContextMenu={(event) => {
                     event.preventDefault()
@@ -606,8 +621,8 @@ export default function Sidebar() {
                   aria-label={playlist.name}
                   data-controller-context={!playlist.isSystemFavorites ? 'true' : undefined}
                   data-sidebar-tooltip={playlist.name}
-                  data-sidebar-drop-target={!playlist.isSystemFavorites ? 'playlist' : undefined}
-                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites ? playlist.id : undefined}
+                  data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? 'playlist' : undefined}
+                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? playlist.id : undefined}
                 >
                   {playlist.isSystemFavorites ? (
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -620,7 +635,7 @@ export default function Sidebar() {
                       className="sidebar-playlist-btn-cover"
                     />
                   )}
-                  {!playlist.isSystemFavorites && (
+                  {!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && (
                     <span className="sidebar-drop-label">Add to Playlist</span>
                   )}
                 </button>
@@ -703,7 +718,7 @@ export default function Sidebar() {
               {sidebarOverflowPlaylists.map((playlist) => (
                 <button
                   key={playlist.id}
-                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${getSidebarDropClassName(`playlist:${playlist.id}`)}`.trim()}
+                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onContextMenu={(event) => {
                     event.preventDefault()
@@ -715,9 +730,9 @@ export default function Sidebar() {
                       y: event.clientY
                     })
                   }}
-                  data-sidebar-drop-target="playlist"
+                  data-sidebar-drop-target={playlist.kind !== 'dynamic' ? 'playlist' : undefined}
                   data-controller-context="true"
-                  data-sidebar-drop-playlist-id={playlist.id}
+                  data-sidebar-drop-playlist-id={playlist.kind !== 'dynamic' ? playlist.id : undefined}
                 >
                   <PlaylistCover
                     hash={playlist.cover_hash}
@@ -731,7 +746,7 @@ export default function Sidebar() {
                       {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
                     </span>
                   </span>
-                  <span className="sidebar-drop-label">Add to Playlist</span>
+                  {playlist.kind !== 'dynamic' && <span className="sidebar-drop-label">Add to Playlist</span>}
                 </button>
               ))}
             </div>
@@ -752,6 +767,9 @@ export default function Sidebar() {
         isOpen={isCreatePlaylistModalOpen}
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylist}
+        onCreateDynamic={handleCreateDynamicPlaylist}
+        onPreviewDynamic={previewDynamicPlaylist}
+        allowDynamic={!createPlaylistTrackPaths}
         onImport={createPlaylistTrackPaths ? undefined : handleImportPlaylist}
         isImporting={isImportingPlaylist}
         title={createPlaylistTrackPaths ? 'Create Playlist from Tracks' : 'Create Playlist'}

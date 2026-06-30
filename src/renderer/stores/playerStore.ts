@@ -4,6 +4,7 @@ import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities } from '../../types/nativeAudio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
+import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import {
@@ -1051,9 +1052,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     session.counted = true
     if (!session.allowDbWrite) return
     void useLibraryStore.getState().recordPlay(session.trackPath)
-    if (session.sourcePlaylistId !== null) {
-      void window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
-    }
+    void (async () => {
+      if (session.sourcePlaylistId !== null) {
+        await window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
+      }
+      await usePlaylistStore.getState().loadPlaylists()
+    })()
   }
 
   const updateRecentPlayAccumulation = (

@@ -2,10 +2,16 @@ import { create } from 'zustand'
 import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 import type { TrackSourceType } from '../../types/subsonic'
 import { normalizeTrackSortState, type PlaylistSessionSnapshot, type SessionTrackSortState } from '../utils/sessionState'
+import {
+  normalizeDynamicPlaylistRules,
+  type DynamicPlaylistRulesV1,
+  type PlaylistKind
+} from '../../shared/playlists/dynamicPlaylist'
 
 export interface Playlist {
   id: number
   name: string
+  kind: PlaylistKind
   created_at: number
   updated_at: number
   last_played_at: number | null
@@ -41,10 +47,21 @@ export interface PlaylistExportResult {
   warnings: string[]
 }
 
+export interface DynamicPlaylistPreview {
+  track_count: number
+  tracks: DbTrack[]
+}
+
 export interface CreatePlaylistOptions {
   name: string
   coverImagePath?: string | null
   trackPaths?: string[]
+}
+
+export interface CreateDynamicPlaylistOptions {
+  name: string
+  rules: DynamicPlaylistRulesV1
+  coverImagePath?: string | null
 }
 
 export interface PlaylistTrackMembershipSummary {
@@ -116,6 +133,11 @@ interface PlaylistStore {
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
   createPlaylistWithOptions: (options: CreatePlaylistOptions) => Promise<Playlist>
+  createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
+  createDynamicPlaylistWithOptions: (options: CreateDynamicPlaylistOptions) => Promise<Playlist>
+  getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
+  updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
+  previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
   selectPlaylist: (id: number) => Promise<void>
@@ -158,6 +180,10 @@ function ensurePlaylistExportExtension(filePath: string): string {
   return `${filePath}.m3u8`
 }
 
+export function getNormalPlaylists(playlists: Playlist[]): Playlist[] {
+  return playlists.filter((playlist) => playlist.kind !== 'dynamic')
+}
+
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   const loadPlaylistSelection = async (playlistId: number): Promise<Pick<PlaylistStore, 'selectedPlaylistEntries' | 'selectedPlaylistTracks'>> => {
     if (playlistId === FAVORITES_PLAYLIST_ID) {
@@ -185,7 +211,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     sortState: null,
 
     loadPlaylists: async () => {
-      const playlists = await window.electronAPI.library.getPlaylists()
+      const playlists = (await window.electronAPI.library.getPlaylists()).map((playlist) => ({
+        ...playlist,
+        kind: playlist.kind === 'dynamic' ? 'dynamic' as const : 'normal' as const
+      }))
       set({ playlists })
     },
 
@@ -222,6 +251,59 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
       await get().loadPlaylists()
       return playlist
+    },
+
+    createDynamicPlaylist: async (name: string, rules: DynamicPlaylistRulesV1) => {
+      return get().createDynamicPlaylistWithOptions({ name, rules })
+    },
+
+    createDynamicPlaylistWithOptions: async ({ name, rules, coverImagePath = null }) => {
+      const trimmedName = name.trim()
+      if (!trimmedName) {
+        throw new Error('Playlist name is required.')
+      }
+
+      const normalizedRules = normalizeDynamicPlaylistRules(rules)
+      const playlist = await window.electronAPI.library.createDynamicPlaylist(trimmedName, normalizedRules)
+
+      try {
+        if (coverImagePath && playlist.id > 0) {
+          await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
+        }
+      } catch (error) {
+        if (playlist.id > 0) {
+          try {
+            await window.electronAPI.library.deletePlaylist(playlist.id)
+          } catch {
+            // Ignore rollback failures and surface the original error.
+          }
+        }
+        await get().loadPlaylists()
+        throw error
+      }
+
+      await get().loadPlaylists()
+      return playlist
+    },
+
+    getDynamicPlaylistRules: async (playlistId: number) => {
+      if (!Number.isInteger(playlistId) || playlistId <= 0) {
+        throw new Error('Playlist id is required.')
+      }
+      return window.electronAPI.library.getDynamicPlaylistRules(playlistId)
+    },
+
+    updateDynamicPlaylistRules: async (playlistId: number, rules: DynamicPlaylistRulesV1) => {
+      if (!Number.isInteger(playlistId) || playlistId <= 0) {
+        throw new Error('Playlist id is required.')
+      }
+      await window.electronAPI.library.updateDynamicPlaylistRules(playlistId, normalizeDynamicPlaylistRules(rules))
+      await get().loadPlaylists()
+      await refreshSelectedPlaylist(playlistId)
+    },
+
+    previewDynamicPlaylist: async (rules: DynamicPlaylistRulesV1) => {
+      return window.electronAPI.library.previewDynamicPlaylist(normalizeDynamicPlaylistRules(rules))
     },
 
     renamePlaylist: async (id: number, name: string) => {

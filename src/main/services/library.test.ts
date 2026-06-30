@@ -6,6 +6,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
+import { createDefaultDynamicPlaylistRules } from '../../shared/playlists/dynamicPlaylist.ts'
 
 interface TestSqliteStatement {
   run(...params: unknown[]): void
@@ -1170,4 +1171,170 @@ test('playlist export rejects unsupported file extensions', async (t) => {
     () => library.exportPlaylistToM3u(playlist.id, join(dir, 'invalid-export.txt')),
     /Unsupported playlist export format/
   )
+})
+
+test('normal playlists default to normal kind', async (t) => {
+  await setupSeededLibrary(t)
+
+  const playlist = await library.createPlaylist('Normal Kind')
+  assert.equal(playlist.kind, 'normal')
+
+  const summary = library.getPlaylists().find((entry) => entry.id === playlist.id)
+  assert.ok(summary)
+  assert.equal(summary.kind, 'normal')
+})
+
+test('dynamic playlists evaluate metadata rules without stored membership', async (t) => {
+  await setupSeededLibrary(t)
+
+  const playlist = await library.createDynamicPlaylist('Jane Dynamic', {
+    version: 1,
+    conditions: [
+      { kind: 'text', field: 'artist', operator: 'contains', value: 'Jane' }
+    ],
+    sort: { field: 'title', direction: 'asc' },
+    limit: null
+  })
+
+  assert.equal(playlist.kind, 'dynamic')
+  assert.equal(playlist.track_count, 2)
+
+  const tracks = library.getPlaylistTracks(playlist.id)
+  assert.deepEqual(tracks.map((track) => track.title), ['Teen Feature', 'Teen Intro'])
+
+  const entries = library.getPlaylistTrackEntries(playlist.id)
+  assert.deepEqual(entries.map((entry) => entry.track_path), tracks.map((track) => track.path))
+  assert.deepEqual(entries.map((entry) => entry.missing), [false, false])
+  assert.ok(entries.every((entry) => entry.id < 0))
+
+  const summary = library.getPlaylists().find((entry) => entry.id === playlist.id)
+  assert.ok(summary)
+  assert.equal(summary.kind, 'dynamic')
+  assert.equal(summary.track_count, 2)
+  assert.equal(summary.missing_track_count, 0)
+})
+
+test('dynamic playlist filters favorites, play counts, last played, sorting, and limits', async (t) => {
+  await setupSeededLibrary(t)
+
+  const playedFavoritePath = 'subsonic://1/teen-1'
+  const unplayedFavoritePath = 'subsonic://1/split-a'
+  await library.addFavorite(playedFavoritePath)
+  await library.addFavorite(unplayedFavoritePath)
+  await library.addRecentlyPlayed(playedFavoritePath)
+
+  const playlist = await library.createDynamicPlaylist('Played Favorites', {
+    version: 1,
+    conditions: [
+      { kind: 'exact', field: 'favorite', operator: 'is', value: true },
+      { kind: 'numeric', field: 'play_count', operator: 'gte', value: 1 },
+      { kind: 'date', field: 'last_played_at', operator: 'within_days', value: 1 }
+    ],
+    sort: { field: 'play_count', direction: 'desc' },
+    limit: 1
+  })
+
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [playedFavoritePath])
+
+  const preview = library.previewDynamicPlaylist({
+    version: 1,
+    conditions: [
+      { kind: 'exact', field: 'favorite', operator: 'is', value: true },
+      { kind: 'date', field: 'last_played_at', operator: 'not_within_days', value: 1 }
+    ],
+    sort: { field: 'title', direction: 'asc' },
+    limit: null
+  })
+  assert.deepEqual(preview.tracks.map((track) => track.path), [unplayedFavoritePath])
+  assert.equal(preview.track_count, 1)
+})
+
+test('dynamic playlists reject manual membership edits while normal playlists still accept them', async (t) => {
+  await setupSeededLibrary(t)
+
+  const dynamicPlaylist = await library.createDynamicPlaylist('All Dynamic', createDefaultDynamicPlaylistRules())
+  const normalPlaylist = await library.createPlaylist('Manual Set')
+  const trackPath = 'subsonic://1/split-a'
+
+  await assert.rejects(
+    () => library.addToPlaylist(dynamicPlaylist.id, [trackPath]),
+    /Dynamic playlists cannot accept manual tracks/
+  )
+  await assert.rejects(
+    () => library.removeFromPlaylist(dynamicPlaylist.id, trackPath),
+    /Dynamic playlists cannot remove tracks manually/
+  )
+  await assert.rejects(
+    () => library.reorderPlaylistTracks(dynamicPlaylist.id, [trackPath]),
+    /Dynamic playlists cannot reorder tracks manually/
+  )
+
+  await library.addToPlaylist(normalPlaylist.id, [trackPath])
+  assert.deepEqual(library.getPlaylistTracks(normalPlaylist.id).map((track) => track.path), [trackPath])
+})
+
+test('dynamic playlist rules are validated before storage', async (t) => {
+  await setupSeededLibrary(t)
+
+  await assert.rejects(
+    () => library.createDynamicPlaylist('Bad Dynamic', {
+      version: 1,
+      conditions: [
+        { kind: 'text', field: 'title', operator: 'contains', value: '' }
+      ],
+      sort: { field: 'title', direction: 'asc' },
+      limit: null
+    }),
+    /Text value is required/
+  )
+})
+
+test('dynamic playlist export writes the current evaluated result', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Export Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: 'subsonic://export/a',
+      source_track_id: 'export-a',
+      title: 'Export A',
+      artist: 'Export Artist',
+      album: 'Dynamic Export'
+    }),
+    createRemoteTrack({
+      path: 'subsonic://export/b',
+      source_track_id: 'export-b',
+      title: 'Export B',
+      artist: 'Other Artist',
+      album: 'Dynamic Export'
+    })
+  ])
+
+  const playlist = await library.createDynamicPlaylist('Dynamic Export', {
+    version: 1,
+    conditions: [
+      { kind: 'text', field: 'artist', operator: 'is', value: 'Export Artist' }
+    ],
+    sort: { field: 'title', direction: 'asc' },
+    limit: null
+  })
+
+  const exportDir = join(dir, 'exports')
+  await mkdir(exportDir)
+  const exportPath = join(exportDir, 'dynamic-export.m3u8')
+  const result = await library.exportPlaylistToM3u(playlist.id, exportPath)
+
+  assert.equal(result.exportedCount, 1)
+  assert.deepEqual(result.warnings, ['1 entries reference remote or app-specific locations and may not work outside Astra.'])
+  const lines = (await readFile(exportPath, 'utf-8')).trimEnd().split('\n')
+  assert.equal(lines[0], '#EXTM3U')
+  assert.match(lines[1], /^#EXTINF:-?\d+,Export Artist - Export A$/)
+  assert.equal(lines[2], 'subsonic://export/a')
 })

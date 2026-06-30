@@ -2,7 +2,7 @@ import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEff
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
-import { usePlaylistStore } from '../../stores/playlistStore'
+import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
@@ -1768,7 +1768,7 @@ export default function TrackList({
   }, [trackContextMenu])
 
   const filteredPlaylists = useMemo(() => {
-    return rankFuzzyMatches(playlists, playlistPopupSearch, (playlist) => [
+    return rankFuzzyMatches(getNormalPlaylists(playlists), playlistPopupSearch, (playlist) => [
       { value: playlist.name, weight: 1.5 }
     ])
   }, [playlistPopupSearch, playlists])

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { usePlaylistStore, type Playlist } from './playlistStore.ts'
+import { getNormalPlaylists, usePlaylistStore, type Playlist } from './playlistStore.ts'
 
-function makePlaylist(id: number, name = `Playlist ${id}`): Playlist {
+function makePlaylist(id: number, name = `Playlist ${id}`, kind: Playlist['kind'] = 'normal'): Playlist {
   return {
     id,
     name,
+    kind,
     created_at: 1,
     updated_at: 1,
     last_played_at: null,
@@ -57,6 +58,19 @@ test('Playlist session restore selects an existing playlist and restores sort st
   })
 })
 
+test('Playlist session restore selects an existing dynamic playlist', async () => {
+  installPlaylistMock()
+  resetPlaylistStore([makePlaylist(11, 'Dynamic Set', 'dynamic')])
+
+  await usePlaylistStore.getState().restoreSession({
+    selectedPlaylistId: 11,
+    sortState: { key: 'title', direction: 'asc' }
+  })
+
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, 11)
+  assert.deepEqual(usePlaylistStore.getState().selectedPlaylistTracks, [])
+})
+
 test('Playlist session restore drops a missing selected playlist but keeps sort preference', async () => {
   installPlaylistMock()
   resetPlaylistStore([makePlaylist(3)])
@@ -68,4 +82,11 @@ test('Playlist session restore drops a missing selected playlist but keeps sort 
 
   assert.equal(usePlaylistStore.getState().selectedPlaylistId, null)
   assert.deepEqual(usePlaylistStore.getState().sortState, { key: 'title', direction: 'asc' })
+})
+
+test('getNormalPlaylists filters dynamic playlists out of manual targets', () => {
+  const normal = makePlaylist(1, 'Manual')
+  const dynamic = makePlaylist(2, 'Dynamic', 'dynamic')
+
+  assert.deepEqual(getNormalPlaylists([normal, dynamic]), [normal])
 })

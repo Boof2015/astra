@@ -56,6 +56,7 @@ export interface QuickLaunchArtistRecord {
 export interface QuickLaunchPlaylistRecord {
   id: number
   name: string
+  kind?: 'normal' | 'dynamic'
   track_count: number
   custom_cover_hash: string | null
   auto_cover_hash: string | null
