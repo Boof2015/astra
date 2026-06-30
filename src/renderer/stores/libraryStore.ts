@@ -179,6 +179,7 @@ interface LibraryStore {
   fullTrackPaths: string[]
   fullTrackConsumers: Set<LibraryFullTrackConsumer>
   totalTrackCount: number
+  totalTrackDuration: number
   albums: Album[]
   albumsIncludingSingles: Album[]
   albumsIncludingSinglesLoaded: boolean
@@ -224,6 +225,7 @@ interface LibraryStore {
   loadTracks: () => Promise<void>
   loadFullTracks: (consumer?: LibraryFullTrackConsumer) => Promise<void>
   loadTrackCount: () => Promise<void>
+  loadTrackDuration: () => Promise<void>
   loadAlbums: () => Promise<void>
   loadAlbumsIncludingSingles: () => Promise<void>
   loadArtists: () => Promise<void>
@@ -904,6 +906,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   fullTrackPaths: [],
   fullTrackConsumers: new Set<LibraryFullTrackConsumer>(),
   totalTrackCount: 0,
+  totalTrackDuration: 0,
   albums: [],
   albumsIncludingSingles: [],
   albumsIncludingSinglesLoaded: false,
@@ -957,6 +960,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
     await Promise.all([
       get().loadTrackCount(),
+      get().loadTrackDuration(),
       get().loadAlbums(),
       shouldReloadAlbumsIncludingSingles ? get().loadAlbumsIncludingSingles() : Promise.resolve(),
       get().loadArtists(),
@@ -1101,6 +1105,18 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       set({ totalTrackCount })
     } catch (error) {
       console.error('Failed to load library track count:', error)
+    }
+  },
+
+  loadTrackDuration: async () => {
+    try {
+      const totalTrackDuration = await window.electronAPI.library.getTotalTrackDuration()
+      if (typeof totalTrackDuration !== 'number' || !Number.isFinite(totalTrackDuration) || totalTrackDuration < 0) {
+        return
+      }
+      set({ totalTrackDuration })
+    } catch (error) {
+      console.error('Failed to load library track duration:', error)
     }
   },
 

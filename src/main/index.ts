@@ -5909,6 +5909,10 @@ ipcMain.handle('library:getTrackCount', () => {
   return library.getTrackCount()
 })
 
+ipcMain.handle('library:getTotalTrackDuration', () => {
+  return library.getTotalTrackDuration()
+})
+
 // Get artwork path
 ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
   return library.getArtworkPath(hash)

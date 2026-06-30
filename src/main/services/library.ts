@@ -6790,6 +6790,14 @@ export function getTrackCount(): number {
   return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
 }
 
+export function getTotalTrackDuration(): number {
+  if (!db) return 0
+  const total = Number(db.get<{ total?: unknown }>(
+    'SELECT SUM(duration) as total FROM tracks WHERE duration > 0'
+  )?.total ?? 0)
+  return Number.isFinite(total) && total > 0 ? total : 0
+}
+
 function resolveEditableValuesForSave(
   snapshot: EditableTrackSnapshot,
   changes: MetadataEditChanges

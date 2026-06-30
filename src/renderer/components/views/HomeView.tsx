@@ -6,6 +6,7 @@ import { useUIStore } from '../../stores/uiStore'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { formatExactDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
@@ -772,6 +773,7 @@ function formatHomeClockDate(date: Date): string {
 
 export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
+  const totalTrackDuration = useLibraryStore((s) => s.totalTrackDuration)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
@@ -1193,6 +1195,10 @@ export default function HomeView() {
             </div>
           )}
           <div className="home-greeting-stats">
+            <div className="home-greeting-stat home-greeting-stat-duration">
+              <span className="home-greeting-stat-label">Total Time</span>
+              <span className="home-greeting-stat-value">{formatExactDuration(totalTrackDuration)}</span>
+            </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Tracks</span>
               <span className="home-greeting-stat-value">{totalTrackCount}</span>

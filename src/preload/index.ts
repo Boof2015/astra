@@ -1021,7 +1021,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       canceled?: boolean
     }>,
-    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
+    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount') as Promise<number>,
+    getTotalTrackDuration: () => ipcRenderer.invoke('library:getTotalTrackDuration') as Promise<number>,
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
     getArtworkThumbnailDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkThumbnailDataUrl', hash),
@@ -1399,6 +1400,7 @@ declare global {
           canceled?: boolean
         }>
         getTrackCount: () => Promise<number>
+        getTotalTrackDuration: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>

@@ -222,6 +222,50 @@ test('metadata file writes rebuild core tags instead of layering changed fields'
   ])
 })
 
+test('total track duration sums positive durations and returns zero for empty libraries', async (t) => {
+  await setupEmptyLibrary(t)
+
+  assert.equal(library.getTotalTrackDuration(), 0)
+
+  const source = await library.createSubsonicSource({
+    name: 'Duration Source',
+    base_url: 'https://duration.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: 'subsonic://duration/short',
+      source_track_id: 'duration-short',
+      title: 'Short Track',
+      artist: 'Duration Artist',
+      album: 'Duration Album',
+      duration: 61.5
+    }),
+    createRemoteTrack({
+      path: 'subsonic://duration/long',
+      source_track_id: 'duration-long',
+      title: 'Long Track',
+      artist: 'Duration Artist',
+      album: 'Duration Album',
+      duration: 3661
+    }),
+    createRemoteTrack({
+      path: 'subsonic://duration/unknown',
+      source_track_id: 'duration-unknown',
+      title: 'Unknown Duration',
+      artist: 'Duration Artist',
+      album: 'Duration Album',
+      duration: 0
+    })
+  ])
+
+  assert.equal(library.getTotalTrackDuration(), 3722.5)
+})
+
 test('library grouping queries preserve shared-cover compilation identities', async (t) => {
   await setupSeededLibrary(t)
 
