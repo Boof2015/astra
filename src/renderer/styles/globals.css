@@ -21979,10 +21979,12 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 16px;
   min-height: 72px;
   padding: 12px 14px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid rgba(var(--tint), 0.12);
   border-radius: 8px;
-  background: rgba(12, 14, 18, 0.94);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+  background: var(--surface-overlay);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .parallax-sink-copy {
@@ -22023,6 +22025,10 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .parallax-sink-error {
   color: #fca5a5;
+}
+
+html[data-theme-tone="light"] .parallax-sink-error {
+  color: #b91c1c;
 }
 
 .parallax-sink-actions {
