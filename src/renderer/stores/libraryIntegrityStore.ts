@@ -10,7 +10,7 @@ import type {
 
 export type IntegrityReportFilter = IntegrityFindingSeverity | 'all'
 
-const LIBRARY_INTEGRITY_ENABLED_STORAGE_KEY = 'astra-experimental-library-integrity-enabled-v1'
+export const LIBRARY_INTEGRITY_ENABLED_STORAGE_KEY = 'astra-experimental-library-integrity-enabled-v1'
 
 function readEnabledPreference(): boolean {
   try {

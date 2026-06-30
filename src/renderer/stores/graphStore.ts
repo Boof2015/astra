@@ -3,7 +3,7 @@ import { normalizeKey } from '../utils/albumIdentity'
 
 export type ArtistGraphMode = 'full' | 'focus'
 
-const LIBRARY_GRAPH_ENABLED_STORAGE_KEY = 'astra-experimental-library-graph-enabled-v1'
+export const LIBRARY_GRAPH_ENABLED_STORAGE_KEY = 'astra-experimental-library-graph-enabled-v1'
 const DEFAULT_EDGE_WEIGHT_THRESHOLD = 2
 const DEFAULT_FOCUS_NEIGHBOR_LIMIT = 8
 const FOCUS_NEIGHBOR_INCREMENT = 8

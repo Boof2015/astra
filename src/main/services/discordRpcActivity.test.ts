@@ -62,6 +62,134 @@ test('builds a Spotify-like listening activity while playing', () => {
   })
 })
 
+test('adds the small image badge when a key is provided alongside cover art', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    currentTimeSeconds: 12,
+    durationSeconds: 180,
+    track: {
+      title: 'Bambi',
+      artist: 'Dazbee'
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    smallImageKey: 'astra-logo',
+    smallImageText: 'Astra',
+    nowSeconds: 1000
+  })
+
+  assert.deepEqual(activity?.assets, {
+    large_image: 'https://example.com/cover.jpg',
+    small_image: 'astra-logo',
+    small_text: 'Astra'
+  })
+})
+
+test('ignores the small image key without a large image', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    currentTimeSeconds: 12,
+    durationSeconds: 180,
+    track: {
+      title: 'Bambi',
+      artist: 'Dazbee'
+    }
+  }, {
+    smallImageKey: 'astra-logo',
+    smallImageText: 'Astra',
+    nowSeconds: 1000
+  })
+
+  assert.equal(activity?.assets, undefined)
+})
+
+test('links title, artist, album art, and badge for YouTube Music', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    currentTimeSeconds: 12,
+    durationSeconds: 180,
+    track: {
+      title: 'Air',
+      artist: 'Dzeko & Torres',
+      album: 'Air EP'
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    smallImageKey: 'astra-logo',
+    smallImageText: 'Astra',
+    smallImageLinkUrl: 'https://github.com/Boof2015/astra',
+    linkDestination: 'ytmusic',
+    nowSeconds: 1000
+  })
+
+  assert.equal(activity?.details_url, 'https://music.youtube.com/search?q=Air%20Dzeko%20%26%20Torres')
+  assert.equal(activity?.state_url, 'https://music.youtube.com/search?q=Dzeko%20%26%20Torres')
+  assert.equal(activity?.assets?.large_url, 'https://music.youtube.com/search?q=Air%20EP%20Dzeko%20%26%20Torres')
+  assert.equal(activity?.assets?.small_url, 'https://github.com/Boof2015/astra')
+})
+
+test('links to Last.fm pages and prefers the album artist for album links', () => {
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    currentTimeSeconds: 12,
+    durationSeconds: 180,
+    track: {
+      title: 'Air',
+      artist: 'Dzeko & Torres, Delaney',
+      albumArtist: 'Dzeko & Torres',
+      album: 'Air EP'
+    }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    linkDestination: 'lastfm',
+    nowSeconds: 1000
+  })
+
+  assert.equal(activity?.details_url, 'https://www.last.fm/music/Dzeko%20%26%20Torres%2C%20Delaney/_/Air')
+  assert.equal(activity?.state_url, 'https://www.last.fm/music/Dzeko%20%26%20Torres%2C%20Delaney')
+  assert.equal(activity?.assets?.large_url, 'https://www.last.fm/music/Dzeko%20%26%20Torres/Air%20EP')
+})
+
+test('omits link fields when the destination is off or metadata is missing', () => {
+  const offActivity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: { title: 'Air', artist: 'Dzeko & Torres' }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    linkDestination: 'off',
+    nowSeconds: 1000
+  })
+  assert.equal(offActivity?.details_url, undefined)
+  assert.equal(offActivity?.state_url, undefined)
+  assert.equal(offActivity?.assets?.large_url, undefined)
+
+  // Last.fm track pages need an artist; no artist means no links at all.
+  const noArtistActivity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: { title: 'Air' }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    linkDestination: 'lastfm',
+    nowSeconds: 1000
+  })
+  assert.equal(noArtistActivity?.details_url, undefined)
+  assert.equal(noArtistActivity?.state_url, undefined)
+})
+
+test('drops links that exceed the Discord URL length limit', () => {
+  const longTitle = 'A'.repeat(300)
+  const activity = buildDiscordActivityFromPresence({
+    playbackState: 'playing',
+    track: { title: longTitle, artist: 'Ado' }
+  }, {
+    largeImageUrl: 'https://example.com/cover.jpg',
+    linkDestination: 'ytmusic',
+    nowSeconds: 1000
+  })
+  assert.equal(activity?.details_url, undefined)
+  assert.equal(activity?.state_url, 'https://music.youtube.com/search?q=Ado')
+})
+
 test('keeps paused tracks as listening activity without moving timestamps', () => {
   const activity = buildDiscordActivityFromPresence({
     playbackState: 'paused',

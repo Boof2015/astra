@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import type { LUFSMeterMode } from '../../../types/lufsmeter'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { resolveColorToRgb } from '../../utils/color'
 import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
 import { FrameScheduler } from './frameScheduler'
@@ -384,7 +385,7 @@ export class LUFSMeter {
   private drawBars(width: number, height: number): void {
     const ctx = this.ctx
     const { r: tintR, g: tintG, b: tintB } = resolveColorToRgb(this.options.lineColor)
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(this.canvas)
 
     const padding = Math.round(8 * dpr)
     const labelHeight = Math.round(20 * dpr)

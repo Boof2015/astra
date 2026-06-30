@@ -46,6 +46,10 @@ import type {
   PersistedParallaxSinkConnection
 } from '../types/parallax'
 import type {
+  DynamicPlaylistRulesV1,
+  PlaylistKind
+} from '../shared/playlists/dynamicPlaylist'
+import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
   LastFmCustomProfileInput,
@@ -104,7 +108,12 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { UIScaleShortcutAction } from '../types/uiScale'
+import type {
+  GlobalShortcutRegistrationRequest,
+  GlobalShortcutRegistrationResult,
+  InputActionId,
+  RawBindingInput
+} from '../types/inputBindings'
 import type {
   IntegrityFinding,
   IntegrityScanMode,
@@ -171,6 +180,7 @@ export interface DbTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   base_artwork_hash: string | null
   format: string
@@ -192,6 +202,8 @@ export interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   added_at: number
   modified_at: number
 }
@@ -248,8 +260,17 @@ export interface AlbumListOptions {
 export interface Artist {
   artist: string
   track_count: number
+  primary_track_count: number
+  album_count: number
   artwork_hash: string | null
   artwork_source: 'manual' | 'detected' | 'track' | null
+}
+
+export interface Genre {
+  genre: string
+  track_count: number
+  album_count: number
+  artwork_hash: string | null
 }
 
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
@@ -287,6 +308,7 @@ export interface ScanIssueLog {
 export interface Playlist {
   id: number
   name: string
+  kind: PlaylistKind
   created_at: number
   updated_at: number
   last_played_at: number | null
@@ -332,6 +354,11 @@ export interface PlaylistExportResult {
   playlistId: number
   exportedCount: number
   warnings: string[]
+}
+
+export interface DynamicPlaylistPreview {
+  track_count: number
+  tracks: DbTrack[]
 }
 
 export type MetadataSaveMode = 'virtual' | 'file'
@@ -415,12 +442,16 @@ export interface DiscordPresenceUpdate {
 
 export type DiscordRpcCompactStatusMode = 'title' | 'artist'
 export type DiscordRpcExpandedInfoMode = 'file-info' | 'album'
+export type DiscordRpcLinkDestination = 'off' | 'ytmusic' | 'lastfm'
 
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled: boolean
+  smallIconEnabled?: boolean
   compactStatusMode?: DiscordRpcCompactStatusMode
   expandedInfoMode?: DiscordRpcExpandedInfoMode
+  linkDestination?: DiscordRpcLinkDestination
+  pauseClearMinutes?: number
 }
 
 export interface DiscordRpcConfigureResult {
@@ -594,6 +625,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
     getWindowState: () => ipcRenderer.invoke('mini-player:getWindowState'),
+    isCursorInsideWindow: () => ipcRenderer.invoke('mini-player:isCursorInsideWindow'),
     setVisualizerMode: (mode: MiniPlayerVisualizerMode) => ipcRenderer.invoke('mini-player:setVisualizerMode', mode),
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
@@ -729,11 +761,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
   },
 
-  uiScale: {
-    onShortcut: (callback: (action: UIScaleShortcutAction) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, action: UIScaleShortcutAction) => callback(action)
-      ipcRenderer.on('ui-scale:shortcut', handler)
-      return () => ipcRenderer.removeListener('ui-scale:shortcut', handler)
+  inputBindings: {
+    configureGlobal: (requests: GlobalShortcutRegistrationRequest[]): Promise<GlobalShortcutRegistrationResult[]> =>
+      ipcRenderer.invoke('input-bindings:configure-global', requests),
+    onInput: (callback: (input: RawBindingInput) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, input: RawBindingInput) => callback(input)
+      ipcRenderer.on('input-bindings:input', handler)
+      return () => ipcRenderer.removeListener('input-bindings:input', handler)
+    },
+    onGlobalAction: (callback: (actionId: InputActionId) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, actionId: InputActionId) => callback(actionId)
+      ipcRenderer.on('input-bindings:global-action', handler)
+      return () => ipcRenderer.removeListener('input-bindings:global-action', handler)
     }
   },
 
@@ -1086,9 +1125,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
+    getTracksByGenre: (genre: string) =>
+      ipcRenderer.invoke('library:getTracksByGenre', genre) as Promise<DbTrack[]>,
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
+    getGenres: () => ipcRenderer.invoke('library:getGenres') as Promise<Genre[]>,
     setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) =>
       ipcRenderer.invoke('library:setArtistImageFromFile', artist, mode, imagePath),
     clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) =>
@@ -1174,7 +1216,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       canceled?: boolean
     }>,
-    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
+    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount') as Promise<number>,
+    getTotalTrackDuration: () => ipcRenderer.invoke('library:getTotalTrackDuration') as Promise<number>,
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
     getArtworkThumbnailDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkThumbnailDataUrl', hash),
@@ -1234,6 +1277,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
+    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
+    getDynamicPlaylistRules: (playlistId: number) => ipcRenderer.invoke('library:getDynamicPlaylistRules', playlistId),
+    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
+    previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
@@ -1322,6 +1369,7 @@ declare global {
         open: () => Promise<void>
         close: () => Promise<void>
         getWindowState: () => Promise<MiniPlayerWindowState>
+        isCursorInsideWindow: () => Promise<boolean>
         setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>
@@ -1379,8 +1427,10 @@ declare global {
       theme: {
         setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
       }
-      uiScale: {
-        onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
+      inputBindings: {
+        configureGlobal: (requests: GlobalShortcutRegistrationRequest[]) => Promise<GlobalShortcutRegistrationResult[]>
+        onInput: (callback: (input: RawBindingInput) => void) => () => void
+        onGlobalAction: (callback: (actionId: InputActionId) => void) => () => void
       }
 
       // Integrations
@@ -1563,8 +1613,10 @@ declare global {
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
+        getTracksByGenre: (genre: string) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
+        getGenres: () => Promise<Genre[]>
         setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
         clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
         getAlbums: (options?: AlbumListOptions) => Promise<Album[]>
@@ -1648,6 +1700,7 @@ declare global {
           canceled?: boolean
         }>
         getTrackCount: () => Promise<number>
+        getTotalTrackDuration: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>
@@ -1675,6 +1728,10 @@ declare global {
         // Playlists
         getPlaylists: () => Promise<Playlist[]>
         createPlaylist: (name: string) => Promise<Playlist>
+        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
+        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
+        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
+        previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>

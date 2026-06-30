@@ -3,7 +3,7 @@ import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import type { EQBand } from '../../types/audio'
-import { EQ_PASS_FILTER_DEFAULT_Q, isPassEQBandType } from '../../utils/eq'
+import { EQ_MAX_BANDS, EQ_PASS_FILTER_DEFAULT_Q, isPassEQBandType } from '../../utils/eq'
 import EQFrequencyResponse from './EQFrequencyResponse'
 import EQSpectrumOverlay from './EQSpectrumOverlay'
 import EQBandSlider from './EQBandSlider'
@@ -286,7 +286,7 @@ export default function EQPanel() {
         ))}
 
         {/* Add band button */}
-        {bands.length < 10 && (
+        {bands.length < EQ_MAX_BANDS && (
           <button className="eq-add-band" onClick={() => addBand()} title="Add band">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />

@@ -6,11 +6,11 @@ import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
+import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
-import KeyboardShortcutsModal from './components/layout/KeyboardShortcutsModal'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
@@ -18,6 +18,8 @@ import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
 import { runHostOutputCalibration } from './audio/parallaxCalibration'
+import ControllerHints from './components/layout/ControllerHints'
+import ControllerFocusRing from './components/layout/ControllerFocusRing'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -37,6 +39,7 @@ import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
 import { useGraphStore } from './stores/graphStore'
 import { usePlayerStore } from './stores/playerStore'
+import { usePlaylistStore } from './stores/playlistStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
@@ -47,7 +50,11 @@ import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
+import { useControllerInput } from './hooks/useControllerInput'
+import { usePresence } from './hooks/usePresence'
 import type { Track } from './types/audio'
+import { readSessionSnapshot } from './utils/sessionState'
+import { installSessionPersistence } from './utils/sessionAutosave'
 
 function toAssociatedExternalTrack(filePath: string): Track {
   const normalizedPath = filePath.replace(/\\/g, '/')
@@ -80,6 +87,7 @@ function App() {
 
   usePointerFocusCleanup()
   useKeyboardShortcuts()
+  const controllerInput = useControllerInput()
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
@@ -91,7 +99,7 @@ function App() {
 
   const showQueue = useUIStore((s) => s.showQueue)
   const activeView = useUIStore((s) => s.activeView)
-  const setActiveView = useUIStore((s) => s.setActiveView)
+  const replaceActiveView = useUIStore((s) => s.replaceActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
@@ -104,6 +112,8 @@ function App() {
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
   const graphEnabled = useGraphStore((s) => s.enabled)
+  const queuePresence = usePresence(showQueue)
+  const infoSidebarPresence = usePresence(showInfoSidebar)
 
   const appStyle = useMemo(() => {
     const uiScale = uiScalePercent / 100
@@ -122,9 +132,9 @@ function App() {
 
   useEffect(() => {
     if (activeView === 'graph' && !graphEnabled) {
-      setActiveView('home')
+      replaceActiveView('home')
     }
-  }, [activeView, graphEnabled, setActiveView])
+  }, [activeView, graphEnabled, replaceActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {
@@ -289,8 +299,12 @@ function App() {
   }, [])
 
   useEffect(() => {
+    let sessionPersistenceCleanup: (() => void) | null = null
+    let associatedOpenReady = false
+    let didUnmount = false
+    const sessionSnapshot = readSessionSnapshot()
+
     useThemeStore.getState().initFromSaved()
-    useLibraryStore.getState().loadLibrary()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
@@ -333,7 +347,38 @@ function App() {
         console.error('Failed to handle associated open files:', error)
       })
     })
-    window.electronAPI.associatedOpenFiles.markReady()
+
+    void (async () => {
+      try {
+        if (sessionSnapshot?.ui) {
+          useUIStore.getState().restoreSession(sessionSnapshot.ui)
+        }
+
+        const libraryStore = useLibraryStore.getState()
+        await libraryStore.loadLibrary()
+        if (sessionSnapshot?.library) {
+          await libraryStore.restoreSession(sessionSnapshot.library)
+        }
+
+        const playlistStore = usePlaylistStore.getState()
+        await playlistStore.loadPlaylists()
+        if (sessionSnapshot?.playlist) {
+          await playlistStore.restoreSession(sessionSnapshot.playlist)
+        }
+
+        if (sessionSnapshot?.player) {
+          await usePlayerStore.getState().restoreSession(sessionSnapshot.player)
+        }
+      } catch (error) {
+        console.error('Failed to restore Astra session:', error)
+      } finally {
+        if (!didUnmount) {
+          sessionPersistenceCleanup = installSessionPersistence()
+          window.electronAPI.associatedOpenFiles.markReady()
+          associatedOpenReady = true
+        }
+      }
+    })()
 
     const updatesStore = useUpdateStore.getState()
     if (updatesStore.autoCheckEnabled) {
@@ -346,9 +391,14 @@ function App() {
       void useLibraryStore.getState().loadLibrary()
     })
     return () => {
+      didUnmount = true
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeAssociatedOpenFiles()
+      sessionPersistenceCleanup?.()
+      if (!associatedOpenReady) {
+        window.electronAPI.associatedOpenFiles.markReady()
+      }
     }
   }, [])
 
@@ -420,14 +470,26 @@ function App() {
           <Sidebar />
           <div className="app-content">
             <ViewRouter />
-            {showQueue && (
-              <div className="queue-sidebar">
+            {queuePresence.shouldRender && (
+              <div
+                className="queue-sidebar"
+                data-presence={queuePresence.phase}
+                aria-hidden={queuePresence.phase === 'exiting'}
+              >
                 <QueuePanelBoundary>
                   <QueuePanel />
                 </QueuePanelBoundary>
               </div>
             )}
-            {showInfoSidebar && <InfoSidebar />}
+            {infoSidebarPresence.shouldRender && (
+              <div
+                className="info-sidebar-presence"
+                data-presence={infoSidebarPresence.phase}
+                aria-hidden={infoSidebarPresence.phase === 'exiting'}
+              >
+                <InfoSidebar />
+              </div>
+            )}
           </div>
         </div>
         <TransportBar />
@@ -438,12 +500,14 @@ function App() {
         <AssociatedOpenCue />
         <UpdateAvailableCue />
         <QuickLaunchPalette />
-        <KeyboardShortcutsModal />
         <LibraryIntegrityPanel />
         <TrackIntegrityResultModal />
         <MetadataEditorPanel />
         <LyricsEditorPanel />
+        <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
+        <ControllerFocusRing active={controllerInput.active} />
+        <ControllerHints {...controllerInput} />
       </div>
     </div>
   )

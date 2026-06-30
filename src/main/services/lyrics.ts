@@ -6,10 +6,20 @@ import {
   createLyricsPayload,
   normalizeLyricsText,
   parseLyricsText,
-  parseLrcSyncedLines,
   sanitizeSyncLines,
   toPlainLyricsFromLines
 } from './lyricsParsing'
+import {
+  LrclibLookupCoordinator,
+  createLrclibClientConfig,
+  normalizeLrclibMetadataText
+} from './lyricsLrclib'
+import type { LrclibLookupResult } from './lyricsLrclib'
+import {
+  XlrcdbLookupCoordinator,
+  createXlrcdbClientConfig,
+  type XlrcdbLookupResult
+} from './lyricsXlrcdb'
 import type {
   LyricsFormat,
   LyricsLine,
@@ -23,32 +33,38 @@ import type {
   LyricsTrackQuery,
 } from '../../types/lyrics'
 
-const LRCLIB_GET_URL = 'https://lrclib.net/api/get'
-const LRCLIB_SEARCH_URL = 'https://lrclib.net/api/search'
-const LRCLIB_USER_AGENT = 'Astra-Lyrics/0.1.0 (https://github.com/Boof2015/astra)'
-const LRCLIB_REQUEST_TIMEOUT_MS = 9_000
 const MAX_TRACK_OFFSET_MS = 3_600_000
+
+export interface LyricsServiceLibraryApi {
+  getLyricsTrackOverride: typeof library.getLyricsTrackOverride
+  upsertLyricsTrackManual: typeof library.upsertLyricsTrackManual
+  clearLyricsTrackManual: typeof library.clearLyricsTrackManual
+  setLyricsTrackSyncOffset: typeof library.setLyricsTrackSyncOffset
+  getLyricsCache: typeof library.getLyricsCache
+  upsertLyricsCache: typeof library.upsertLyricsCache
+}
+
+type LyricsOnlineLookupResult = LrclibLookupResult | XlrcdbLookupResult
+
+export interface LyricsOnlineLookupProvider {
+  lookup: (
+    query: LyricsTrackQuery,
+    lookupKey: string,
+    options?: { forceRefresh?: boolean }
+  ) => Promise<LyricsOnlineLookupResult>
+}
 
 interface LyricsServiceOptions {
   enabled: boolean
+  appVersion: string
+  requestTimeoutMs?: number
+  now?: () => number
   onStatusChange?: (status: LyricsStatus) => void
-}
-
-type LrclibLookupResult =
-  | { status: 'hit'; lyrics: LyricsPayload }
-  | { status: 'not_found' }
-  | { status: 'transient_error'; message: string; code?: string }
-
-type FetchJsonResult<T> =
-  | { kind: 'ok'; payload: T }
-  | { kind: 'http_error'; status: number }
-  | { kind: 'timeout' }
-  | { kind: 'network_error' }
-  | { kind: 'invalid_payload' }
-
-interface ScoredLrclibCandidate {
-  entry: Record<string, unknown>
-  score: number
+  libraryApi?: LyricsServiceLibraryApi
+  sidecarLookup?: typeof lookupSidecarLyrics
+  embeddedResolver?: typeof resolveEmbeddedLyrics
+  xlrcdbProvider?: LyricsOnlineLookupProvider
+  lrclibProvider?: LyricsOnlineLookupProvider
 }
 
 function normalizeText(value: unknown): string | null {
@@ -85,17 +101,6 @@ function normalizeTrackPathList(trackPaths: string[]): string[] {
     .map((trackPath) => trackPath.trim())
     .filter((trackPath) => trackPath.length > 0)
   return Array.from(new Set(normalized))
-}
-
-function scoreMatch(candidate: string | null, target: string): number {
-  if (!candidate) return 0
-  const normalizedCandidate = normalizeMatchKey(candidate)
-  const normalizedTarget = normalizeMatchKey(target)
-  if (!normalizedCandidate || !normalizedTarget) return 0
-  if (normalizedCandidate === normalizedTarget) return 100
-  if (normalizedCandidate.startsWith(normalizedTarget) || normalizedTarget.startsWith(normalizedCandidate)) return 60
-  if (normalizedCandidate.includes(normalizedTarget) || normalizedTarget.includes(normalizedCandidate)) return 30
-  return 0
 }
 
 function hasManualLyricsOverride(entry: {
@@ -150,203 +155,6 @@ function createMetadataSignature(query: LyricsTrackQuery): string {
   return hash.digest('hex')
 }
 
-function isTransientHttpStatus(status: number): boolean {
-  return status === 429 || status >= 500
-}
-
-function fetchResultToTransientCode(prefix: string, result: FetchJsonResult<unknown>): string {
-  if (result.kind === 'timeout') return `${prefix}_timeout`
-  if (result.kind === 'network_error') return `${prefix}_network_error`
-  if (result.kind === 'invalid_payload') return `${prefix}_invalid_payload`
-  if (result.kind === 'http_error') return `${prefix}_http_${result.status}`
-  return `${prefix}_error`
-}
-
-async function fetchJson<T>(url: string): Promise<FetchJsonResult<T>> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), LRCLIB_REQUEST_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': LRCLIB_USER_AGENT
-      },
-      signal: controller.signal
-    })
-
-    if (!response.ok) {
-      return {
-        kind: 'http_error',
-        status: response.status
-      }
-    }
-
-    try {
-      const payload = await response.json()
-      return {
-        kind: 'ok',
-        payload: payload as T
-      }
-    } catch {
-      return { kind: 'invalid_payload' }
-    }
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      return { kind: 'timeout' }
-    }
-    return { kind: 'network_error' }
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-function parseLrclibEntry(entry: Record<string, unknown>): LyricsPayload | null {
-  const plainLyrics = normalizeLyricsText(entry.plainLyrics) ?? normalizeLyricsText(entry.plain_lyrics)
-  const syncedRaw = normalizeLyricsText(entry.syncedLyrics) ?? normalizeLyricsText(entry.synced_lyrics)
-  const syncedLines = syncedRaw ? parseLrcSyncedLines(syncedRaw) : []
-  return createLyricsPayload('lrclib', 'lrclib', syncedLines.length > 0 ? 'lrc' : 'plain', plainLyrics, syncedRaw, syncedLines)
-}
-
-function scoreSearchEntry(entry: Record<string, unknown>, query: LyricsTrackQuery): number {
-  const titleValue = normalizeText(entry.trackName) ?? normalizeText(entry.track_name)
-  const artistValue = normalizeText(entry.artistName) ?? normalizeText(entry.artist_name)
-  const albumValue = normalizeText(entry.albumName) ?? normalizeText(entry.album_name)
-  const durationValue = normalizeDurationSeconds(entry.duration)
-
-  const titleScore = scoreMatch(titleValue, query.title)
-  const artistScore = scoreMatch(artistValue, query.artist)
-  if (titleScore === 0 || artistScore === 0) return 0
-
-  let score = (titleScore * 5) + (artistScore * 4)
-  if (query.album) {
-    score += scoreMatch(albumValue, query.album) * 2
-  }
-
-  const queryDuration = normalizeDurationSeconds(query.durationSeconds)
-  if (queryDuration !== null && durationValue !== null) {
-    const delta = Math.abs(queryDuration - durationValue)
-    if (delta <= 2) {
-      score += 120
-    } else if (delta <= 5) {
-      score += 80
-    } else if (delta <= 10) {
-      score += 40
-    }
-  }
-
-  return score
-}
-
-async function lookupLrclibByMetadata(query: LyricsTrackQuery): Promise<LrclibLookupResult> {
-  const params = new URLSearchParams({
-    track_name: query.title,
-    artist_name: query.artist
-  })
-  const album = normalizeText(query.album)
-  if (album) {
-    params.set('album_name', album)
-  }
-  const duration = normalizeDurationSeconds(query.durationSeconds)
-  if (duration !== null) {
-    params.set('duration', String(duration))
-  }
-
-  const response = await fetchJson<Record<string, unknown>>(`${LRCLIB_GET_URL}?${params.toString()}`)
-  if (response.kind === 'http_error') {
-    if (response.status === 404) {
-      return { status: 'not_found' }
-    }
-    if (isTransientHttpStatus(response.status)) {
-      return {
-        status: 'transient_error',
-        message: 'LRCLIB metadata lookup failed due to a transient HTTP error.',
-        code: fetchResultToTransientCode('lrclib_get', response)
-      }
-    }
-    return { status: 'not_found' }
-  }
-
-  if (response.kind !== 'ok') {
-    return {
-      status: 'transient_error',
-      message: 'LRCLIB metadata lookup failed due to a transient network error.',
-      code: fetchResultToTransientCode('lrclib_get', response)
-    }
-  }
-
-  if (!response.payload || typeof response.payload !== 'object' || Array.isArray(response.payload)) {
-    return {
-      status: 'transient_error',
-      message: 'LRCLIB metadata lookup returned an invalid payload.',
-      code: 'lrclib_get_invalid_payload'
-    }
-  }
-
-  const parsed = parseLrclibEntry(response.payload)
-  if (!parsed) return { status: 'not_found' }
-  return { status: 'hit', lyrics: parsed }
-}
-
-async function lookupLrclibBySearch(query: LyricsTrackQuery): Promise<LrclibLookupResult> {
-  const searchTerm = [query.title, query.artist, query.album ?? '']
-    .map((value) => normalizeText(value))
-    .filter((value): value is string => Boolean(value))
-    .join(' ')
-  if (!searchTerm) return { status: 'not_found' }
-
-  const params = new URLSearchParams({ q: searchTerm })
-  const response = await fetchJson<unknown[]>(`${LRCLIB_SEARCH_URL}?${params.toString()}`)
-  if (response.kind === 'http_error') {
-    if (response.status === 404) return { status: 'not_found' }
-    if (isTransientHttpStatus(response.status)) {
-      return {
-        status: 'transient_error',
-        message: 'LRCLIB search lookup failed due to a transient HTTP error.',
-        code: fetchResultToTransientCode('lrclib_search', response)
-      }
-    }
-    return { status: 'not_found' }
-  }
-
-  if (response.kind !== 'ok') {
-    return {
-      status: 'transient_error',
-      message: 'LRCLIB search lookup failed due to a transient network error.',
-      code: fetchResultToTransientCode('lrclib_search', response)
-    }
-  }
-
-  if (!Array.isArray(response.payload)) {
-    return {
-      status: 'transient_error',
-      message: 'LRCLIB search lookup returned an invalid payload.',
-      code: 'lrclib_search_invalid_payload'
-    }
-  }
-
-  const candidates: ScoredLrclibCandidate[] = []
-  for (const item of response.payload) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
-    const entry = item as Record<string, unknown>
-    const score = scoreSearchEntry(entry, query)
-    if (score <= 0) continue
-    candidates.push({ entry, score })
-  }
-
-  candidates.sort((left, right) => right.score - left.score)
-  for (const candidate of candidates) {
-    const parsed = parseLrclibEntry(candidate.entry)
-    if (!parsed) continue
-    return {
-      status: 'hit',
-      lyrics: parsed
-    }
-  }
-
-  return { status: 'not_found' }
-}
-
 async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload | null> {
   try {
     const metadata = await mm.parseFile(trackPath, { skipCovers: true })
@@ -376,10 +184,27 @@ async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload |
 export class LyricsService {
   private enabled: boolean
   private lastError: string | null = null
+  private readonly libraryApi: LyricsServiceLibraryApi
+  private readonly sidecarLookup: typeof lookupSidecarLyrics
+  private readonly embeddedResolver: typeof resolveEmbeddedLyrics
+  private readonly xlrcdb: LyricsOnlineLookupProvider
+  private readonly lrclib: LyricsOnlineLookupProvider
   private readonly onStatusChange?: (status: LyricsStatus) => void
 
   constructor(options: LyricsServiceOptions) {
     this.enabled = Boolean(options.enabled)
+    this.libraryApi = options.libraryApi ?? library
+    this.sidecarLookup = options.sidecarLookup ?? lookupSidecarLyrics
+    this.embeddedResolver = options.embeddedResolver ?? resolveEmbeddedLyrics
+    this.xlrcdb = options.xlrcdbProvider ?? new XlrcdbLookupCoordinator(createXlrcdbClientConfig({
+      requestTimeoutMs: options.requestTimeoutMs,
+      now: options.now
+    }))
+    this.lrclib = options.lrclibProvider ?? new LrclibLookupCoordinator(createLrclibClientConfig({
+      appVersion: options.appVersion,
+      requestTimeoutMs: options.requestTimeoutMs,
+      now: options.now
+    }))
     this.onStatusChange = options.onStatusChange
   }
 
@@ -387,8 +212,8 @@ export class LyricsService {
     if (!this.enabled) {
       return {
         enabled: false,
-        provider: 'lrclib',
-        statusMessage: 'Online lyrics lookup is disabled. Astra will only use local LRC and embedded lyrics.',
+        provider: 'xlrcdb',
+        statusMessage: 'Online lyrics lookup is disabled. Astra will only use local lyrics and embedded lyrics.',
         lastError: this.lastError
       }
     }
@@ -396,16 +221,16 @@ export class LyricsService {
     if (this.lastError) {
       return {
         enabled: true,
-        provider: 'lrclib',
-        statusMessage: 'Online lyrics lookup is enabled with LRCLIB, but the last request failed.',
+        provider: 'xlrcdb',
+        statusMessage: 'Online lyrics lookup is enabled with XLRCDB and LRCLIB fallback, but the last request failed.',
         lastError: this.lastError
       }
     }
 
     return {
       enabled: true,
-      provider: 'lrclib',
-      statusMessage: 'Online lyrics lookup is enabled with LRCLIB fallback.',
+      provider: 'xlrcdb',
+      statusMessage: 'Online lyrics lookup is enabled with XLRCDB and LRCLIB fallback.',
       lastError: null
     }
   }
@@ -444,7 +269,7 @@ export class LyricsService {
       }
     }
 
-    const override = library.getLyricsTrackOverride(normalizedTrackPath)
+    const override = this.libraryApi.getLyricsTrackOverride(normalizedTrackPath)
     if (!override) {
       return {
         trackPath: normalizedTrackPath,
@@ -486,7 +311,7 @@ export class LyricsService {
       throw new Error('Selected lyrics file is empty or could not be parsed.')
     }
 
-    const updated = await library.upsertLyricsTrackManual(normalizedTrackPaths, {
+    const updated = await this.libraryApi.upsertLyricsTrackManual(normalizedTrackPaths, {
       format: payload.format,
       plainLyrics: payload.plainLyrics,
       syncedLyrics: payload.syncedLyrics,
@@ -506,7 +331,7 @@ export class LyricsService {
       return { cleared: 0 }
     }
 
-    const cleared = await library.clearLyricsTrackManual(normalizedTrackPaths)
+    const cleared = await this.libraryApi.clearLyricsTrackManual(normalizedTrackPaths)
     return { cleared }
   }
 
@@ -525,7 +350,7 @@ export class LyricsService {
       throw new Error(`Sync offset must be between -${MAX_TRACK_OFFSET_MS} and ${MAX_TRACK_OFFSET_MS} ms.`)
     }
 
-    const updated = await library.setLyricsTrackSyncOffset(normalizedTrackPaths, normalizedOffset)
+    const updated = await this.libraryApi.setLyricsTrackSyncOffset(normalizedTrackPaths, normalizedOffset)
     return {
       updated,
       offsetMs: normalizedOffset
@@ -537,9 +362,9 @@ export class LyricsService {
     options: { forceRefresh?: boolean } = {}
   ): Promise<LyricsLookupResult> {
     const path = normalizeText(query.path)
-    const title = normalizeText(query.title)
-    const artist = normalizeText(query.artist)
-    const album = normalizeText(query.album)
+    const title = normalizeLrclibMetadataText(query.title)
+    const artist = normalizeLrclibMetadataText(query.artist)
+    const album = normalizeLrclibMetadataText(query.album)
     const durationSeconds = normalizeDurationSeconds(query.durationSeconds) ?? undefined
 
     if (!path || !title || !artist) {
@@ -557,8 +382,9 @@ export class LyricsService {
       durationSeconds
     }
     const metadataSignature = createMetadataSignature(normalizedQuery)
-    const trackOverride = library.getLyricsTrackOverride(path)
+    const trackOverride = this.libraryApi.getLyricsTrackOverride(path)
     const trackOffsetMs = trackOverride?.syncOffsetMs ?? 0
+    let lrclibCached: library.LyricsCacheEntry | null = null
 
     if (trackOverride && hasManualLyricsOverride(trackOverride)) {
       const manualPayload = createLyricsPayload(
@@ -579,7 +405,7 @@ export class LyricsService {
       }
     }
 
-    const sidecarLyrics = await lookupSidecarLyrics(path)
+    const sidecarLyrics = await this.sidecarLookup(path)
     if (sidecarLyrics) {
       this.setLastError(null)
       return {
@@ -589,37 +415,21 @@ export class LyricsService {
     }
 
     if (!options.forceRefresh) {
-      const cached = library.getLyricsCache(path, metadataSignature)
+      const cached = this.libraryApi.getLyricsCache(path, metadataSignature)
       if (cached) {
-        if (cached.status === 'hit') {
-          const payload = createLyricsPayload(
-            cached.source,
-            cached.provider,
-            cached.format,
-            cached.plainLyrics,
-            cached.syncedLyrics,
-            cached.syncedLines
-          )
-          if (payload) {
-            return {
-              status: 'hit',
-              lyrics: applyTrackOffsetToPayload(payload, trackOffsetMs),
-              cached: true
-            }
-          }
-        }
-
-        return {
-          status: 'not_found',
-          reason: cached.source === 'lrclib' ? 'provider-not-found' : 'embedded-missing'
+        if (cached.source === 'lrclib' && this.enabled) {
+          lrclibCached = cached
+        } else {
+          const cachedResult = this.createLookupResultFromCache(cached, trackOffsetMs)
+          if (cachedResult) return cachedResult
         }
       }
     }
 
-    const embedded = await resolveEmbeddedLyrics(path)
+    const embedded = await this.embeddedResolver(path)
     if (embedded) {
       this.setLastError(null)
-      await library.upsertLyricsCache({
+      await this.libraryApi.upsertLyricsCache({
         trackPath: path,
         metadataSignature,
         status: 'hit',
@@ -643,76 +453,125 @@ export class LyricsService {
       }
     }
 
-    const metadataLookup = await lookupLrclibByMetadata(normalizedQuery)
-    if (metadataLookup.status === 'hit') {
+    const xlrcdbLookup = await this.xlrcdb.lookup(normalizedQuery, metadataSignature, {
+      forceRefresh: options.forceRefresh
+    })
+    if (xlrcdbLookup.status === 'hit') {
       this.setLastError(null)
-      await library.upsertLyricsCache({
+      await this.libraryApi.upsertLyricsCache({
         trackPath: path,
         metadataSignature,
         status: 'hit',
-        source: 'lrclib',
-        provider: 'lrclib',
-        plainLyrics: metadataLookup.lyrics.plainLyrics,
-        syncedLyrics: metadataLookup.lyrics.syncedLyrics,
-        syncedLines: metadataLookup.lyrics.syncedLines
+        source: 'xlrcdb',
+        provider: 'xlrcdb',
+        plainLyrics: xlrcdbLookup.lyrics.plainLyrics,
+        syncedLyrics: xlrcdbLookup.lyrics.syncedLyrics,
+        syncedLines: xlrcdbLookup.lyrics.syncedLines
       })
       return {
         status: 'hit',
-        lyrics: applyTrackOffsetToPayload(metadataLookup.lyrics, trackOffsetMs),
+        lyrics: applyTrackOffsetToPayload(xlrcdbLookup.lyrics, trackOffsetMs),
         cached: false
-      }
-    }
-    if (metadataLookup.status === 'transient_error') {
-      this.setLastError(metadataLookup.message)
-      return {
-        status: 'transient_error',
-        message: metadataLookup.message,
-        code: metadataLookup.code
       }
     }
 
-    const searchLookup = await lookupLrclibBySearch(normalizedQuery)
-    if (searchLookup.status === 'hit') {
+    if (lrclibCached) {
+      if (lrclibCached.status === 'not_found' && xlrcdbLookup.status === 'not_found') {
+        await this.cacheOnlineNotFound(path, metadataSignature)
+      }
+      const cachedResult = this.createLookupResultFromCache(lrclibCached, trackOffsetMs)
+      if (cachedResult) {
+        this.setLastError(null)
+        return cachedResult
+      }
+    }
+
+    const lrclibLookup = await this.lrclib.lookup(normalizedQuery, metadataSignature, {
+      forceRefresh: options.forceRefresh
+    })
+    if (lrclibLookup.status === 'hit') {
       this.setLastError(null)
-      await library.upsertLyricsCache({
+      await this.libraryApi.upsertLyricsCache({
         trackPath: path,
         metadataSignature,
         status: 'hit',
         source: 'lrclib',
         provider: 'lrclib',
-        plainLyrics: searchLookup.lyrics.plainLyrics,
-        syncedLyrics: searchLookup.lyrics.syncedLyrics,
-        syncedLines: searchLookup.lyrics.syncedLines
+        plainLyrics: lrclibLookup.lyrics.plainLyrics,
+        syncedLyrics: lrclibLookup.lyrics.syncedLyrics,
+        syncedLines: lrclibLookup.lyrics.syncedLines
       })
       return {
         status: 'hit',
-        lyrics: applyTrackOffsetToPayload(searchLookup.lyrics, trackOffsetMs),
+        lyrics: applyTrackOffsetToPayload(lrclibLookup.lyrics, trackOffsetMs),
         cached: false
       }
     }
-    if (searchLookup.status === 'transient_error') {
-      this.setLastError(searchLookup.message)
+
+    if (lrclibLookup.status === 'provider_unavailable') {
+      this.setLastError(null)
+      return {
+        status: 'not_found',
+        reason: 'provider-unavailable'
+      }
+    }
+
+    if (lrclibLookup.status === 'transient_error') {
+      this.setLastError(lrclibLookup.message)
       return {
         status: 'transient_error',
-        message: searchLookup.message,
-        code: searchLookup.code
+        message: lrclibLookup.message,
+        code: lrclibLookup.code
       }
     }
 
     this.setLastError(null)
-    await library.upsertLyricsCache({
-      trackPath: path,
-      metadataSignature,
-      status: 'not_found',
-      source: 'lrclib',
-      provider: 'lrclib',
-      plainLyrics: null,
-      syncedLyrics: null,
-      syncedLines: []
-    })
+    if (xlrcdbLookup.status === 'not_found') {
+      await this.cacheOnlineNotFound(path, metadataSignature)
+    }
     return {
       status: 'not_found',
       reason: 'provider-not-found'
     }
+  }
+
+  private createLookupResultFromCache(
+    cached: library.LyricsCacheEntry,
+    trackOffsetMs: number
+  ): LyricsLookupResult | null {
+    if (cached.status === 'hit') {
+      const payload = createLyricsPayload(
+        cached.source,
+        cached.provider,
+        cached.format,
+        cached.plainLyrics,
+        cached.syncedLyrics,
+        cached.syncedLines
+      )
+      if (!payload) return null
+      return {
+        status: 'hit',
+        lyrics: applyTrackOffsetToPayload(payload, trackOffsetMs),
+        cached: true
+      }
+    }
+
+    return {
+      status: 'not_found',
+      reason: cached.source === 'embedded' ? 'embedded-missing' : 'provider-not-found'
+    }
+  }
+
+  private async cacheOnlineNotFound(trackPath: string, metadataSignature: string): Promise<void> {
+    await this.libraryApi.upsertLyricsCache({
+      trackPath,
+      metadataSignature,
+      status: 'not_found',
+      source: 'xlrcdb',
+      provider: 'xlrcdb',
+      plainLyrics: null,
+      syncedLyrics: null,
+      syncedLines: []
+    })
   }
 }

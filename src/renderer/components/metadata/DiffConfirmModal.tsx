@@ -1,4 +1,5 @@
 import type { MetadataSaveMode } from '../../stores/metadataEditorStore'
+import { usePresence } from '../../hooks/usePresence'
 
 export interface DiffEntry {
   field: string
@@ -23,10 +24,12 @@ export default function DiffConfirmModal({
   onConfirm,
   onCancel
 }: DiffConfirmModalProps) {
-  if (!isOpen) return null
+  const presence = usePresence(isOpen ? { mode, trackCount, diffs } : null)
+  if (!presence.shouldRender || !presence.presentValue) return null
+  const displayed = presence.presentValue
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay" data-presence={presence.phase} aria-hidden={presence.phase === 'exiting'} onClick={onCancel}>
       <div
         className="modal-content metadata-diff-modal"
         onClick={(event) => event.stopPropagation()}
@@ -42,8 +45,8 @@ export default function DiffConfirmModal({
 
         <div className="modal-body">
           <p className="metadata-diff-summary">
-            {trackCount} track{trackCount !== 1 ? 's' : ''} will be updated via{' '}
-            <strong>{mode === 'file' ? 'file tag write' : 'virtual override'}</strong>.
+            {displayed.trackCount} track{displayed.trackCount !== 1 ? 's' : ''} will be updated via{' '}
+            <strong>{displayed.mode === 'file' ? 'file tag write' : 'virtual override'}</strong>.
           </p>
 
           <table className="metadata-diff-table">
@@ -56,7 +59,7 @@ export default function DiffConfirmModal({
               </tr>
             </thead>
             <tbody>
-              {diffs.map((diff) => (
+              {displayed.diffs.map((diff) => (
                 <tr key={diff.field}>
                   <td>{diff.field}</td>
                   <td className="metadata-diff-old">{diff.oldValue}</td>
@@ -67,7 +70,7 @@ export default function DiffConfirmModal({
             </tbody>
           </table>
 
-          {mode === 'file' && (
+          {displayed.mode === 'file' && (
             <div className="metadata-diff-file-warning">
               File tag writes are irreversible. The original file metadata will be overwritten.
             </div>

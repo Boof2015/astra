@@ -98,7 +98,12 @@ import type {
     MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { UIScaleShortcutAction } from '../types/uiScale'
+import type {
+  GlobalShortcutRegistrationRequest,
+  GlobalShortcutRegistrationResult,
+  InputActionId,
+  RawBindingInput
+} from '../types/inputBindings'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -120,10 +125,11 @@ interface DbTrack {
     album_artist_names: string[]
     duration: number
     track_number: number | null
-    disc_number: number | null
-    year: number | null
-    genre: string | null
-    artwork_hash: string | null
+	    disc_number: number | null
+	    year: number | null
+	    genre: string | null
+	    genres: string[]
+	    artwork_hash: string | null
     base_artwork_hash: string | null
     format: string
     sample_rate: number | null
@@ -144,6 +150,8 @@ interface DbTrack {
     is_available: number
     availability_reason: string | null
     file_created_at: number | null
+    play_count: number
+    last_played_at: number | null
     added_at: number
     modified_at: number
 }
@@ -226,6 +234,7 @@ declare global {
                 open: () => Promise<void>
                 close: () => Promise<void>
                 getWindowState: () => Promise<MiniPlayerWindowState>
+                isCursorInsideWindow: () => Promise<boolean>
                 setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
                 toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
                 getSnapshot: () => Promise<MiniPlayerSnapshot | null>
@@ -291,11 +300,13 @@ declare global {
             theme: {
                 setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
             }
-            uiScale: {
-                onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
+            inputBindings: {
+                configureGlobal: (requests: GlobalShortcutRegistrationRequest[]) => Promise<GlobalShortcutRegistrationResult[]>
+                onInput: (callback: (input: RawBindingInput) => void) => () => void
+                onGlobalAction: (callback: (actionId: InputActionId) => void) => () => void
             }
             discord: {
-                configure: (options: { enabled: boolean; coverArtEnabled: boolean }) => Promise<{ ok: boolean; connected: boolean; message: string }>
+                configure: (options: { enabled: boolean; coverArtEnabled: boolean; smallIconEnabled?: boolean; compactStatusMode?: 'title' | 'artist'; expandedInfoMode?: 'file-info' | 'album'; linkDestination?: 'off' | 'ytmusic' | 'lastfm'; pauseClearMinutes?: number }) => Promise<{ ok: boolean; connected: boolean; message: string }>
                 updatePresence: (update: {
                     playbackState: 'stopped' | 'playing' | 'paused' | 'loading'
                     currentTimeSeconds?: number

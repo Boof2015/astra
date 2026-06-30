@@ -8,6 +8,8 @@ import {
   type MiniPlayerTimeDisplayMode
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
+import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
+import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
 
 export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -26,6 +28,7 @@ export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
+export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
 // §14.1.4 — persisted preference: open the Zone Display layout at launch. The session-state
@@ -43,6 +46,21 @@ export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complet
 // hostname". Persisted here (not main) since it's a display-only label for this surface.
 export const PARALLAX_ZONE_NAME_STORAGE_KEY = 'astra-parallax-zone-name-v1'
 
+const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'graph', 'eq', 'playlist', 'settings']
+
+export function resolveAppViewTransitionDirection(
+  sourceView: AppView | null | undefined,
+  targetView: AppView | null | undefined
+): AppViewTransitionDirection {
+  if (!sourceView || !targetView || sourceView === targetView) return null
+
+  const sourceIndex = APP_VIEW_MOTION_ORDER.indexOf(sourceView)
+  const targetIndex = APP_VIEW_MOTION_ORDER.indexOf(targetView)
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return null
+
+  return targetIndex > sourceIndex ? 'down' : 'up'
+}
+
 export interface LibraryTrackRevealRequest {
   id: number
   trackPath: string
@@ -58,11 +76,30 @@ export interface QueueNowPlayingRevealRequest {
   id: number
 }
 
+export type CollectionQueueTarget =
+  | {
+      kind: 'album'
+      album: string
+      artist: string
+      identityKey?: string
+    }
+  | {
+      kind: 'playlist'
+      playlistId: number
+      name: string
+    }
+
+export interface CollectionQueueMenuRequest {
+  target: CollectionQueueTarget
+  x: number
+  y: number
+}
+
 export type TrackDragSurface = 'queue' | 'sidebar'
 
 export interface QueueTrackDragDropTarget {
   surface: 'queue'
-  kind: 'empty' | 'user'
+  kind: 'empty' | 'upcoming'
   index: number
 }
 
@@ -120,7 +157,7 @@ function areTrackDragTracksEqual(left: Track[], right: Track[]): boolean {
   return true
 }
 
-const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
+export const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
 
 export function normalizeAnalyzerHeightPx(value: unknown): number {
   if (value == null) return DEFAULT_ANALYZER_HEIGHT_PX
@@ -262,6 +299,22 @@ function persistActivityIndicatorExperimentPreference(enabled: boolean): void {
   }
 }
 
+function readControllerSupportExperimentPreference(): boolean {
+  try {
+    return localStorage.getItem(CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistControllerSupportExperimentPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readJumpToPlayingDestinationPreference(): JumpToPlayingDestination {
   try {
     return normalizeJumpToPlayingDestination(localStorage.getItem(JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY))
@@ -359,6 +412,7 @@ const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
+const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
 const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
 const initialParallaxExperimentEnabled = readParallaxExperimentEnabledPreference()
@@ -368,12 +422,16 @@ const initialZoneDisplayLaunchFlag = readLaunchInZoneModeFlag()
 // Session state: zone display is active at startup if the preference is on OR `--zone` was passed.
 // "Library" escape sets this back to false without touching the preference.
 const initialIsZoneDisplayActive = initialOpenZoneDisplayOnLaunch || initialZoneDisplayLaunchFlag
+const MAX_VIEW_HISTORY_ENTRIES = 50
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
+let pendingActiveView: AppView | null = null
 
 interface UIStore {
   activeView: AppView
+  viewBackHistory: AppView[]
+  viewForwardHistory: AppView[]
   showQueue: boolean
   showInfoSidebar: boolean
   showPipelineShelf: boolean
@@ -391,18 +449,22 @@ interface UIStore {
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
   activityIndicatorExperimentEnabled: boolean
+  controllerSupportEnabled: boolean
   jumpToPlayingDestination: JumpToPlayingDestination
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   playlistTrackRevealRequest: PlaylistTrackRevealRequest | null
   queueNowPlayingRevealRequest: QueueNowPlayingRevealRequest | null
   isQuickLaunchOpen: boolean
-  isKeyboardShortcutsOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
   trackDrag: TrackDragState | null
   sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
+  collectionQueueMenu: CollectionQueueMenuRequest | null
   setActiveView: (view: AppView) => void
+  replaceActiveView: (view: AppView) => void
+  navigateViewBack: () => boolean
+  navigateViewForward: () => boolean
   toggleQueue: () => void
   toggleInfoSidebar: () => void
   togglePipelineShelf: () => void
@@ -430,6 +492,7 @@ interface UIStore {
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
+  setControllerSupportEnabled: (enabled: boolean) => void
   setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
   resetJumpToPlayingDestination: () => void
   toggleWaveformTimeDisplayMode: () => void
@@ -442,9 +505,6 @@ interface UIStore {
   openQuickLaunch: () => void
   closeQuickLaunch: () => void
   toggleQuickLaunch: () => void
-  openKeyboardShortcuts: () => void
-  closeKeyboardShortcuts: () => void
-  toggleKeyboardShortcuts: () => void
   setPendingLibrarySearchQuery: (query: string | null) => void
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
@@ -456,10 +516,16 @@ interface UIStore {
   clearTrackDrag: () => void
   openSidebarPlaylistCreateRequest: (trackPaths: string[]) => void
   clearSidebarPlaylistCreateRequest: () => void
+  openCollectionQueueMenu: (request: CollectionQueueMenuRequest) => void
+  closeCollectionQueueMenu: () => void
+  getSessionSnapshot: () => UISessionSnapshot
+  restoreSession: (snapshot: UISessionSnapshot) => void
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
   activeView: 'home',
+  viewBackHistory: [],
+  viewForwardHistory: [],
   showQueue: false,
   showInfoSidebar: false,
   showPipelineShelf: false,
@@ -477,18 +543,80 @@ export const useUIStore = create<UIStore>((set, get) => ({
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
+  controllerSupportEnabled: initialControllerSupportEnabled,
   jumpToPlayingDestination: initialJumpToPlayingDestination,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   playlistTrackRevealRequest: null,
   queueNowPlayingRevealRequest: null,
   isQuickLaunchOpen: false,
-  isKeyboardShortcutsOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
   trackDrag: null,
   sidebarPlaylistCreateRequest: null,
-  setActiveView: (view) => set({ activeView: view }),
+  collectionQueueMenu: null,
+  setActiveView: (view) => {
+    const sourceView = pendingActiveView ?? get().activeView
+    if (sourceView === view) return
+    const direction = resolveAppViewTransitionDirection(sourceView, view)
+    pendingActiveView = view
+    runAppViewTransition(() => {
+      if (pendingActiveView !== view) return
+      pendingActiveView = null
+      set((state) => state.activeView === view ? state : {
+        activeView: view,
+        viewBackHistory: [...state.viewBackHistory, state.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
+        viewForwardHistory: []
+      })
+    }, direction)
+  },
+  replaceActiveView: (view) => {
+    const sourceView = pendingActiveView ?? get().activeView
+    if (sourceView === view) return
+    const direction = resolveAppViewTransitionDirection(sourceView, view)
+    pendingActiveView = view
+    runAppViewTransition(() => {
+      if (pendingActiveView !== view) return
+      pendingActiveView = null
+      set({ activeView: view })
+    }, direction)
+  },
+  navigateViewBack: () => {
+    const state = get()
+    const target = state.viewBackHistory[state.viewBackHistory.length - 1]
+    if (!target) return false
+    const sourceView = pendingActiveView ?? state.activeView
+    const direction = resolveAppViewTransitionDirection(sourceView, target)
+    pendingActiveView = target
+    runAppViewTransition(() => {
+      if (pendingActiveView !== target) return
+      pendingActiveView = null
+      set((latest) => ({
+        activeView: target,
+        viewBackHistory: latest.viewBackHistory.slice(0, -1),
+        viewForwardHistory: [...latest.viewForwardHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES)
+      }))
+    }, direction)
+    return true
+  },
+  navigateViewForward: () => {
+    const state = get()
+    const target = state.viewForwardHistory[state.viewForwardHistory.length - 1]
+    if (!target) return false
+    const sourceView = pendingActiveView ?? state.activeView
+    const direction = resolveAppViewTransitionDirection(sourceView, target)
+    pendingActiveView = target
+    runAppViewTransition(() => {
+      if (pendingActiveView !== target) return
+      pendingActiveView = null
+      set((latest) => ({
+        activeView: target,
+        viewBackHistory: [...latest.viewBackHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
+        viewForwardHistory: latest.viewForwardHistory.slice(0, -1)
+      }))
+    }, direction)
+    return true
+  },
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
   togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf })),
@@ -598,6 +726,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
     persistActivityIndicatorExperimentPreference(normalized)
     set({ activityIndicatorExperimentEnabled: normalized })
   },
+  setControllerSupportEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistControllerSupportExperimentPreference(normalized)
+    set({ controllerSupportEnabled: normalized })
+  },
   setJumpToPlayingDestination: (destination) => {
     const normalized = normalizeJumpToPlayingDestination(destination)
     persistJumpToPlayingDestinationPreference(normalized)
@@ -654,9 +787,6 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openQuickLaunch: () => set({ isQuickLaunchOpen: true }),
   closeQuickLaunch: () => set({ isQuickLaunchOpen: false }),
   toggleQuickLaunch: () => set((s) => ({ isQuickLaunchOpen: !s.isQuickLaunchOpen })),
-  openKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: true }),
-  closeKeyboardShortcuts: () => set({ isKeyboardShortcutsOpen: false }),
-  toggleKeyboardShortcuts: () => set((s) => ({ isKeyboardShortcutsOpen: !s.isKeyboardShortcutsOpen })),
   setPendingLibrarySearchQuery: (query) => set({ pendingLibrarySearchQuery: query }),
   consumePendingLibrarySearchQuery: () => {
     const query = get().pendingLibrarySearchQuery
@@ -730,5 +860,44 @@ export const useUIStore = create<UIStore>((set, get) => ({
       trackPaths: [...trackPaths]
     }
   }),
-  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null })
+  clearSidebarPlaylistCreateRequest: () => set({ sidebarPlaylistCreateRequest: null }),
+  openCollectionQueueMenu: (request) => set({
+    collectionQueueMenu: {
+      target: request.target,
+      x: Number.isFinite(request.x) ? request.x : 0,
+      y: Number.isFinite(request.y) ? request.y : 0
+    }
+  }),
+  closeCollectionQueueMenu: () => set({ collectionQueueMenu: null }),
+  getSessionSnapshot: () => {
+    const state = get()
+    return {
+      activeView: state.activeView,
+      showQueue: state.showQueue,
+      showInfoSidebar: state.showInfoSidebar,
+      showPipelineShelf: state.showPipelineShelf,
+      showLyricsShelf: state.showLyricsShelf,
+      lyricsShelfExpanded: state.lyricsShelfExpanded
+    }
+  },
+  restoreSession: (snapshot) => {
+    const showLyricsShelf = Boolean(snapshot.showLyricsShelf)
+    set({
+      activeView: normalizeAppView(snapshot.activeView),
+      viewBackHistory: [],
+      viewForwardHistory: [],
+      showQueue: Boolean(snapshot.showQueue),
+      showInfoSidebar: Boolean(snapshot.showInfoSidebar),
+      showPipelineShelf: Boolean(snapshot.showPipelineShelf),
+      showLyricsShelf,
+      lyricsShelfExpanded: showLyricsShelf && Boolean(snapshot.lyricsShelfExpanded),
+      isFullscreen: false,
+      isQuickLaunchOpen: false,
+      pendingLibrarySearchQuery: null,
+      pendingSettingsSection: null,
+      collectionQueueMenu: null,
+      sidebarPlaylistCreateRequest: null,
+      trackDrag: null
+    })
+  }
 }))

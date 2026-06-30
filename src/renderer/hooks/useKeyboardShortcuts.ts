@@ -1,228 +1,155 @@
 import { useEffect } from 'react'
-import { SEEK_STEP_SECONDS, VOLUME_STEP } from '../constants/keyboardShortcuts'
-import { usePlayerStore } from '../stores/playerStore'
-import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
-import { useJumpToNowPlaying } from './useJumpToNowPlaying'
-
-const clamp = (value: number, min: number, max: number): number => {
-  return Math.min(max, Math.max(min, value))
-}
+import type { InputActionId, InputBinding, RawBindingInput } from '../../types/inputBindings'
+import {
+  INPUT_ACTION_DEFINITIONS
+} from '../constants/keyboardShortcuts'
+import { dispatchInputCapture } from '../input/inputCapture'
+import {
+  getEffectiveBindingSlots,
+  getGlobalInputBindingSlotKey,
+  isGlobalInputBindingEnabled,
+  useInputBindingStore
+} from '../stores/inputBindingStore'
+import { useUIStore } from '../stores/uiStore'
+import { inputBindingsEqual, keyboardEventToRawInput, normalizeRawKeyboardBinding } from '../utils/inputBindings'
+import { useInputActionDispatcher } from './useInputActionDispatcher'
 
 const isShortcutBlockedTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) return false
-
   const tagName = target.tagName.toLowerCase()
-  return (
-    tagName === 'input' ||
-    tagName === 'textarea' ||
-    tagName === 'select' ||
-    target.isContentEditable
-  )
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable
 }
 
-const isVisibleShortcutInput = (input: HTMLInputElement): boolean => {
-  if (input.disabled || input.readOnly) return false
-  if (!input.isConnected) return false
-  if (input.type !== 'text' && input.type !== 'search') return false
-
-  const style = window.getComputedStyle(input)
-  if (style.display === 'none' || style.visibility === 'hidden') return false
-  if (input.offsetParent === null && style.position !== 'fixed') return false
-
-  return true
+interface ResolvedInputAction {
+  actionId: InputActionId
+  slotIndex: number
 }
 
-const focusShortcutSearchInput = (): boolean => {
-  const candidateInputs = Array.from(
-    document.querySelectorAll<HTMLInputElement>('input[data-shortcut-search="true"]')
-  )
-  const shortcutSearchInput = candidateInputs.find(isVisibleShortcutInput)
-  if (!shortcutSearchInput) return false
-
-  shortcutSearchInput.focus()
-  const caretPosition = shortcutSearchInput.value.length
-  shortcutSearchInput.setSelectionRange(caretPosition, caretPosition)
-  return true
+function resolveAction(binding: InputBinding): ResolvedInputAction | null {
+  const overrides = useInputBindingStore.getState().overrides
+  for (const definition of INPUT_ACTION_DEFINITIONS) {
+    const slots = getEffectiveBindingSlots(definition.id, overrides)
+    const slotIndex = slots.findIndex((candidate) => candidate !== null && inputBindingsEqual(candidate, binding))
+    if (slotIndex >= 0) return { actionId: definition.id, slotIndex }
+  }
+  return null
 }
 
 export function useKeyboardShortcuts(): void {
-  const jumpToNowPlaying = useJumpToNowPlaying()
+  const executeAction = useInputActionDispatcher()
+  const overrides = useInputBindingStore((state) => state.overrides)
+  const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
+  const globalRegistrationSuspended = useInputBindingStore((state) => state.globalRegistrationSuspended)
+  const setGlobalStatuses = useInputBindingStore((state) => state.setGlobalStatuses)
 
   useEffect(() => {
-    const unsubscribe = window.electronAPI?.uiScale?.onShortcut((action) => {
-      const ui = useUIStore.getState()
-      if (action === 'reset') {
-        ui.resetUIScalePercent()
-        return
-      }
+    let canceled = false
+    const requests = globalRegistrationSuspended ? [] : INPUT_ACTION_DEFINITIONS.flatMap((definition) => {
+      return getEffectiveBindingSlots(definition.id, overrides).flatMap((binding, slotIndex) => {
+        if (
+          binding?.device !== 'keyboard' ||
+          !isGlobalInputBindingEnabled(definition.id, slotIndex, globalEnabled)
+        ) {
+          return []
+        }
+        return [{ actionId: definition.id, slotIndex: slotIndex as 0 | 1, binding }]
+      })
+    })
 
-      ui.setUIScalePercent(getNextUIScalePercent(ui.uiScalePercent, action))
+    void window.electronAPI.inputBindings.configureGlobal(requests).then((statuses) => {
+      if (!canceled) setGlobalStatuses(statuses)
+    }).catch(() => {
+      if (canceled) return
+      setGlobalStatuses(requests.map((request) => ({
+        actionId: request.actionId,
+        slotIndex: request.slotIndex,
+        state: 'unavailable' as const,
+        accelerator: null,
+        message: 'Astra could not update this global shortcut.'
+      })))
     })
 
     return () => {
-      unsubscribe?.()
+      canceled = true
     }
-  }, [])
+  }, [globalEnabled, globalRegistrationSuspended, overrides, setGlobalStatuses])
 
   useEffect(() => {
-    let pendingShortcutSeekTime: number | null = null
+    let lastMouseInput: { button: 'back' | 'forward'; source: 'dom' | 'ipc'; at: number } | null = null
 
-    const seekByShortcut = (deltaSeconds: number): void => {
-      const player = usePlayerStore.getState()
-      const baseTime = pendingShortcutSeekTime ?? player.currentTime
-      const nextTime = clamp(baseTime + deltaSeconds, 0, player.duration)
-      pendingShortcutSeekTime = nextTime
+    const handleRawInput = (
+      input: RawBindingInput,
+      source: 'dom' | 'ipc',
+      target: EventTarget | null = document.activeElement
+    ): boolean => {
+      if (dispatchInputCapture(input)) return true
 
-      void player.seek(nextTime).finally(() => {
-        if (pendingShortcutSeekTime === nextTime) {
-          pendingShortcutSeekTime = null
+      if (input.device === 'mouse') {
+        const now = performance.now()
+        if (
+          lastMouseInput &&
+          lastMouseInput.button === input.button &&
+          lastMouseInput.source !== source &&
+          now - lastMouseInput.at < 120
+        ) {
+          lastMouseInput = { button: input.button, source, at: now }
+          return true
         }
-      })
+        lastMouseInput = { button: input.button, source, at: now }
+      }
+
+      const ui = useUIStore.getState()
+      const platform = window.electronAPI?.platform ?? 'linux'
+      const binding = input.device === 'mouse' ? input : normalizeRawKeyboardBinding(input, platform)
+      if (!binding) return false
+      const resolved = resolveAction(binding)
+      if (!resolved) return false
+      const { actionId, slotIndex } = resolved
+      if (input.device === 'keyboard' && isShortcutBlockedTarget(target) && actionId !== 'quick-launch-open') {
+        return false
+      }
+      if (ui.isQuickLaunchOpen && actionId !== 'quick-launch-open' && actionId !== 'keybinds-open') return false
+
+      const bindingState = useInputBindingStore.getState()
+      const globalStatus = bindingState.globalStatuses[getGlobalInputBindingSlotKey(actionId, slotIndex)]
+      if (input.device === 'keyboard' && globalStatus?.state === 'registered') return true
+
+      const definition = INPUT_ACTION_DEFINITIONS.find((candidate) => candidate.id === actionId)
+      if (input.device === 'keyboard' && input.repeat && !definition?.allowRepeat) return true
+      executeAction(actionId)
+      return true
     }
 
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      const key = e.key
-      const normalizedKey = key.toLowerCase()
-      const ui = useUIStore.getState()
-      const isTextInputTarget = isShortcutBlockedTarget(e.target)
-      const isShortcutHelpOpen =
-        (!e.metaKey && !e.ctrlKey && !e.altKey && key === '?') ||
-        ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === '/')
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (handleRawInput(keyboardEventToRawInput(event), 'dom', event.target)) event.preventDefault()
+    }
 
-      if (isShortcutHelpOpen && !isTextInputTarget) {
-        e.preventDefault()
-        if (e.repeat) return
-        ui.openKeyboardShortcuts()
-        return
-      }
+    const handleMouseDown = (event: MouseEvent): void => {
+      const button = event.button === 3 ? 'back' : event.button === 4 ? 'forward' : null
+      if (!button) return
+      if (handleRawInput({ device: 'mouse', button }, 'dom', event.target)) event.preventDefault()
+    }
 
-      if (ui.isKeyboardShortcutsOpen) {
-        if (key === 'Escape') {
-          e.preventDefault()
-          if (e.repeat) return
-          ui.closeKeyboardShortcuts()
-        }
-        return
-      }
-
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && normalizedKey === 'k') {
-        e.preventDefault()
-        if (e.repeat) return
-        ui.toggleQuickLaunch()
-        return
-      }
-
-      if (ui.isQuickLaunchOpen) return
-
-      // Don't intercept when modifier keys are held (e.g. Cmd+Space = Spotlight)
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-
-      // Don't intercept while interacting with form fields/editable content.
-      if (isTextInputTarget) {
-        return
-      }
-
-      const player = usePlayerStore.getState()
-
-      if (key === '/') {
-        if (focusShortcutSearchInput()) {
-          e.preventDefault()
-        }
-        return
-      }
-
-      if (e.shiftKey && key === 'ArrowRight') {
-        e.preventDefault()
-        if (e.repeat) return
-        void player.playNext()
-        return
-      }
-
-      if (e.shiftKey && key === 'ArrowLeft') {
-        e.preventDefault()
-        if (e.repeat) return
-        void player.playPrevious()
-        return
-      }
-
-      if (!e.shiftKey && key === 'ArrowRight') {
-        e.preventDefault()
-        if (e.repeat) return
-        seekByShortcut(SEEK_STEP_SECONDS)
-        return
-      }
-
-      if (!e.shiftKey && key === 'ArrowLeft') {
-        e.preventDefault()
-        if (e.repeat) return
-        seekByShortcut(-SEEK_STEP_SECONDS)
-        return
-      }
-
-      if (key === 'ArrowUp') {
-        e.preventDefault()
-        const nextVolume = clamp(player.volume + VOLUME_STEP, 0, 1)
-        player.setVolume(nextVolume)
-        return
-      }
-
-      if (key === 'ArrowDown') {
-        e.preventDefault()
-        const nextVolume = clamp(player.volume - VOLUME_STEP, 0, 1)
-        player.setVolume(nextVolume)
-        return
-      }
-
-      if (e.code === 'Space') {
-        e.preventDefault()
-        if (e.repeat) return
-        void player.togglePlay()
-        return
-      }
-
-      if (normalizedKey === 'n') {
-        e.preventDefault()
-        if (e.repeat) return
-        void player.playNext()
-        return
-      }
-
-      if (normalizedKey === 'p') {
-        e.preventDefault()
-        if (e.repeat) return
-        void player.playPrevious()
-        return
-      }
-
-      if (!e.shiftKey && normalizedKey === 'j') {
-        e.preventDefault()
-        if (e.repeat) return
-        void jumpToNowPlaying()
-        return
-      }
-
-      if (normalizedKey === 'm') {
-        e.preventDefault()
-        if (e.repeat) return
-        player.toggleMute()
-        return
-      }
-
-      if (normalizedKey === 's') {
-        e.preventDefault()
-        if (e.repeat) return
-        player.toggleShuffle()
-        return
-      }
-
-      if (normalizedKey === 'r') {
-        e.preventDefault()
-        if (e.repeat) return
-        player.toggleRepeat()
-      }
+    const preventSideButtonDefault = (event: MouseEvent): void => {
+      if (event.button === 3 || event.button === 4) event.preventDefault()
     }
 
     document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [jumpToNowPlaying])
+    document.addEventListener('mousedown', handleMouseDown, true)
+    document.addEventListener('auxclick', preventSideButtonDefault, true)
+    const unsubscribe = window.electronAPI?.inputBindings?.onInput((input) => {
+      handleRawInput(input, 'ipc')
+    })
+    const unsubscribeGlobalAction = window.electronAPI?.inputBindings?.onGlobalAction((actionId) => {
+      executeAction(actionId)
+    })
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('mousedown', handleMouseDown, true)
+      document.removeEventListener('auxclick', preventSideButtonDefault, true)
+      unsubscribe?.()
+      unsubscribeGlobalAction?.()
+    }
+  }, [executeAction])
 }

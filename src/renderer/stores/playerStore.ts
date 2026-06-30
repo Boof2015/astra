@@ -4,9 +4,16 @@ import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities } from '../../types/nativeAudio'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
+import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import {
+  type PlayerSessionSnapshot,
+  type SessionPlaybackSourceContext,
+  type SessionQueueItem,
+  type SessionQueueTrackSnapshot
+} from '../utils/sessionState'
 
 interface RemoteLoadProgress {
   path: string
@@ -25,7 +32,8 @@ interface RemoteLoadProgress {
   playable: boolean
 }
 
-export type QueueTrackSource = 'user' | 'auto' | 'manual'
+export type QueueItemOrigin = 'context' | 'manual'
+export type QueueTrackSource = QueueItemOrigin | 'standalone'
 type PlaybackLoadOutcome = 'loaded' | 'failed' | 'superseded'
 
 export type QueueTrackSnapshot = Omit<Track, 'artworkData'>
@@ -35,21 +43,39 @@ export interface QueueTrackEntry {
   snapshot: QueueTrackSnapshot
 }
 
-export interface PlaybackHistoryEntry {
+export interface QueueItem {
+  queueId: string
   entry: QueueTrackEntry
-  source: QueueTrackSource
-  autoQueueIndex: number
+  origin: QueueItemOrigin
+  sourcePlaylistId: number | null
+  sourceContext: PlaybackSourceContext | null
+  contextLabel: string | null
 }
 
-export interface QueueTrackLocator {
-  source: 'user' | 'auto'
-  index: number
+export interface PlaybackHistoryEntry {
+  item: QueueItem
 }
 
 export interface ResolvedQueueTrack {
-  source: 'future' | 'user' | 'auto' | 'previous'
+  queueId: string
+  source: 'upcoming' | 'previous'
+  origin: QueueItemOrigin
   track: Track
   index: number
+}
+
+export type PlaybackSourceContext =
+  | { type: 'playlist'; playlistId: number }
+  | { type: 'artist'; artist: string }
+  | { type: 'genre'; genre: string }
+  | { type: 'album'; album: string; albumArtist?: string; identityKey?: string }
+
+export interface PlaybackContextOptions {
+  sourcePlaylistId?: number | null
+  contextLabel?: string | null
+  sourceContext?: PlaybackSourceContext | null
+  shuffle?: boolean
+  startShuffled?: boolean
 }
 
 interface PlayerStore {
@@ -88,18 +114,20 @@ interface PlayerStore {
     fileCount: number
     sourceLabel: string
   } | null
+  restoredTrackNeedsLoad: boolean
+  restoredPlaybackTime: number | null
 
   // Queue state
-  userQueue: QueueTrackEntry[]
-  autoQueue: QueueTrackEntry[]
-  autoQueueIndex: number
-  autoQueueSourcePlaylistId: number | null
-  autoQueueContextLabel: string | null
+  queueItems: QueueItem[]
+  baseUpcomingQueueIds: string[]
+  upcomingQueueIds: string[]
+  currentQueueItemId: string | null
+  queueSourcePlaylistId: number | null
+  queueSourceContext: PlaybackSourceContext | null
+  queueContextLabel: string | null
   shuffle: boolean
   repeat: 'none' | 'one' | 'all'
-  shuffledAutoIndices: number[]
   playbackHistory: PlaybackHistoryEntry[]
-  playbackFuture: PlaybackHistoryEntry[]
 
   // Actions
   loadTrack: (track: Track, audioData: ArrayBuffer) => Promise<boolean>
@@ -116,30 +144,26 @@ interface PlayerStore {
   startPlaybackContext: (
     tracks: Track[],
     startIndex?: number,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ) => Promise<void>
   startPlaybackContextByPaths: (
     paths: string[],
     startIndex?: number,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ) => Promise<void>
-  enqueueUserTrack: (track: Track, position?: number | 'next' | 'end') => void
-  enqueueUserTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
-  enqueueUserTrackPaths: (paths: string[], position?: number | 'next' | 'end') => Promise<void>
-  moveUserQueue: (fromIndex: number, toIndex: number) => void
-  removeUserTrack: (index: number) => void
-  clearUserQueue: () => void
+  enqueueTrack: (track: Track, position?: number | 'next' | 'end') => void
+  enqueueTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
+  enqueueTrackPaths: (paths: string[], position?: number | 'next' | 'end') => Promise<void>
+  moveUpcomingItem: (queueId: string, toIndex: number) => void
+  removeUpcomingItem: (queueId: string) => void
   clearAllQueues: () => void
   playNext: () => Promise<void>
   playPrevious: () => Promise<void>
-  playQueuedTrack: (locator: QueueTrackLocator, options?: { manualStart?: boolean }) => Promise<void>
+  playQueuedItem: (queueId: string, options?: { manualStart?: boolean }) => Promise<void>
   toggleShuffle: () => void
   toggleRepeat: () => void
   getResolvedUpcomingTracks: () => Track[]
   getResolvedUpcomingEntries: () => ResolvedQueueTrack[]
-  getResolvedUserQueueEntries: () => ResolvedQueueTrack[]
-  getResolvedAutoUpcomingTracks: () => Track[]
-  getResolvedAutoUpcomingEntries: () => ResolvedQueueTrack[]
   getResolvedPreviousTracks: () => Track[]
   getResolvedPreviousEntries: () => ResolvedQueueTrack[]
   getResolvedNextTrack: () => Track | null
@@ -153,26 +177,16 @@ interface PlayerStore {
     sourceLabel: string
   }) => void
   clearAssociatedOpenNotice: () => void
-
-  // Compatibility wrappers during queue migration
-  setQueue: (tracks: Track[], startIndex?: number, options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }) => void
-  addToQueue: (track: Track) => void
-  addToQueueNext: (track: Track) => void
-  removeFromQueue: (index: number) => void
-  moveInQueue: (fromIndex: number, toIndex: number) => void
-  clearQueue: () => void
-  playTrackAt: (index: number) => Promise<void>
-  getUpcomingTracks: () => Track[]
-  getPreviousTracks: () => Track[]
+  getSessionSnapshot: () => PlayerSessionSnapshot
+  restoreSession: (snapshot: PlayerSessionSnapshot) => Promise<void>
 
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean }) => Promise<PlaybackLoadOutcome>
+  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean; startTime?: number }) => Promise<PlaybackLoadOutcome>
   _preBufferNextTrack: () => Promise<void>
   _schedulePreBufferNextTrack: (options?: { invalidatePending?: boolean }) => void
   _getNextEntry: () => ResolvedQueueTrack | null
-  _generateShuffleOrder: (currentAutoQueueIndex: number) => void
 }
 
 // Waveform cache stored outside zustand to avoid re-renders on cache updates
@@ -180,7 +194,7 @@ const waveformCache = new Map<string, Float32Array>()
 const MAX_WAVEFORM_CACHE_ENTRIES = 128
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
-const RECENT_PLAY_MIN_SECONDS = 10
+export const RECENT_PLAY_MIN_SECONDS = 15
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
 const BYTES_PER_FLOAT32_SAMPLE = 4
@@ -192,6 +206,75 @@ const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
 export const MAX_PLAYBACK_HISTORY = 500
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
+let nextQueueItemId = 1
+
+function createQueueId(): string {
+  const queueId = `queue-${nextQueueItemId}`
+  nextQueueItemId += 1
+  return queueId
+}
+
+function getQueueIdSequenceNumber(queueId: string): number | null {
+  const match = /^queue-(\d+)$/.exec(queueId)
+  if (!match) return null
+  const parsed = Number(match[1])
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function advanceNextQueueItemId(queueIds: Iterable<string>): void {
+  let maxId = 0
+  for (const queueId of queueIds) {
+    const parsed = getQueueIdSequenceNumber(queueId)
+    if (parsed !== null) {
+      maxId = Math.max(maxId, parsed)
+    }
+  }
+  nextQueueItemId = Math.max(nextQueueItemId, maxId + 1)
+}
+
+function sessionContextToPlaybackContext(context: SessionPlaybackSourceContext | null): PlaybackSourceContext | null {
+  if (!context) return null
+  if (context.type === 'playlist') {
+    return typeof context.playlistId === 'number'
+      ? { type: 'playlist', playlistId: context.playlistId }
+      : null
+  }
+  if (context.type === 'artist') {
+    return context.artist ? { type: 'artist', artist: context.artist } : null
+  }
+  if (context.type === 'genre') {
+    return context.genre ? { type: 'genre', genre: context.genre } : null
+  }
+  if (context.type === 'album') {
+    return context.album
+      ? {
+          type: 'album',
+          album: context.album,
+          albumArtist: context.albumArtist,
+          identityKey: context.identityKey
+        }
+      : null
+  }
+  return null
+}
+
+function sessionQueueItemToQueueItem(item: SessionQueueItem): QueueItem {
+  return {
+    queueId: item.queueId,
+    entry: {
+      path: item.entry.path,
+      snapshot: { ...item.entry.snapshot }
+    },
+    origin: item.origin,
+    sourcePlaylistId: item.sourcePlaylistId,
+    sourceContext: sessionContextToPlaybackContext(item.sourceContext),
+    contextLabel: item.contextLabel
+  }
+}
+
+function sessionTrackSnapshotToTrack(snapshot: SessionQueueTrackSnapshot): Track {
+  return { ...snapshot }
+}
 
 class SupersededPlaybackLoadError extends Error {
   constructor() {
@@ -287,6 +370,44 @@ export function shouldApplyDurationChange(
   return resolvePositiveDuration(currentTrack.duration) <= 0
 }
 
+export interface RecentPlayAccumulationState {
+  accumulatedSeconds: number
+  lastAccumulatedAtMs: number | null
+}
+
+export function getRecentPlayThresholdSecondsForDuration(duration: number | null | undefined): number {
+  if (!Number.isFinite(duration) || (duration ?? 0) <= 0) {
+    return RECENT_PLAY_MIN_SECONDS
+  }
+  return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, duration ?? 0))
+}
+
+export function advanceRecentPlayAccumulation(
+  state: RecentPlayAccumulationState,
+  playbackState: PlaybackState,
+  nowMs: number
+): RecentPlayAccumulationState {
+  if (playbackState !== 'playing') {
+    return {
+      accumulatedSeconds: state.accumulatedSeconds,
+      lastAccumulatedAtMs: null
+    }
+  }
+
+  if (state.lastAccumulatedAtMs === null) {
+    return {
+      accumulatedSeconds: state.accumulatedSeconds,
+      lastAccumulatedAtMs: nowMs
+    }
+  }
+
+  const deltaSeconds = Math.max(0, (nowMs - state.lastAccumulatedAtMs) / 1000)
+  return {
+    accumulatedSeconds: state.accumulatedSeconds + deltaSeconds,
+    lastAccumulatedAtMs: nowMs
+  }
+}
+
 export function stripTrackArtworkData(track: Track): QueueTrackSnapshot {
   const { artworkData: _artworkData, ...snapshot } = track
   return snapshot
@@ -340,6 +461,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     discNumber: dbTrack.disc_number ?? undefined,
     year: dbTrack.year ?? undefined,
     genre: dbTrack.genre ?? undefined,
+    genres: dbTrack.genres,
     artworkHash: dbTrack.artwork_hash ?? undefined,
     format: dbTrack.format,
     sampleRate: dbTrack.sample_rate ?? undefined,
@@ -427,7 +549,7 @@ function updateQueueEntryAvailability(entry: QueueTrackEntry, trackPath: string,
   }
 }
 
-function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 'userQueue' | 'autoQueue' | 'playbackHistory' | 'playbackFuture'>) {
+function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 'queueItems' | 'playbackHistory'>) {
   let retainedArtworkTrackCount = 0
   let retainedArtworkDataBytes = 0
   const distinctTrackPaths = new Set<string>()
@@ -446,10 +568,8 @@ function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 
       retainedArtworkDataBytes += artworkBytes
     }
   }
-  state.userQueue.forEach((entry) => addTrackPath(entry.path))
-  state.autoQueue.forEach((entry) => addTrackPath(entry.path))
-  state.playbackHistory.forEach((entry) => addTrackPath(entry.entry.path))
-  state.playbackFuture.forEach((entry) => addTrackPath(entry.entry.path))
+  state.queueItems.forEach((item) => addTrackPath(item.entry.path))
+  state.playbackHistory.forEach((entry) => addTrackPath(entry.item.entry.path))
 
   return {
     retainedTrackCount: state.currentTrack ? 1 : 0,
@@ -500,10 +620,8 @@ function setWaveformCacheEntry(trackPath: string, peaks: Float32Array): void {
 }
 
 type NextCandidate =
-  | { kind: 'current'; track: Track; source: QueueTrackSource; autoQueueIndex: number }
-  | { kind: 'future'; entry: PlaybackHistoryEntry; track: Track }
-  | { kind: 'user'; entry: QueueTrackEntry; track: Track; index: number }
-  | { kind: 'auto'; entry: QueueTrackEntry; track: Track; index: number }
+  | { kind: 'current'; track: Track }
+  | { kind: 'queue'; item: QueueItem; track: Track; index: number }
 
 function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   if (!track) return false
@@ -523,28 +641,78 @@ function clampQueuePosition(index: number, length: number): number {
   return Math.max(0, Math.min(length, normalized))
 }
 
+function moveQueueId(order: readonly string[], queueId: string, toIndex: number): string[] {
+  const fromIndex = order.indexOf(queueId)
+  if (fromIndex < 0) return [...order]
+  const next = [...order]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(Math.max(0, Math.min(next.length, Math.floor(toIndex))), 0, moved)
+  return next
+}
+
+function moveQueueIdRelativeToVisibleOrder(
+  order: readonly string[],
+  queueId: string,
+  visibleOrder: readonly string[]
+): string[] {
+  const visibleIndex = visibleOrder.indexOf(queueId)
+  if (visibleIndex < 0 || !order.includes(queueId)) return [...order]
+
+  const next = order.filter((id) => id !== queueId)
+  const followingId = visibleOrder[visibleIndex + 1]
+  const precedingId = visibleOrder[visibleIndex - 1]
+  const followingIndex = followingId ? next.indexOf(followingId) : -1
+  if (followingIndex >= 0) {
+    next.splice(followingIndex, 0, queueId)
+    return next
+  }
+
+  const precedingIndex = precedingId ? next.indexOf(precedingId) : -1
+  next.splice(precedingIndex >= 0 ? precedingIndex + 1 : next.length, 0, queueId)
+  return next
+}
+
 function normalizeContextLabel(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null
   const normalized = value.trim()
   return normalized.length > 0 ? normalized : null
 }
 
-function buildAutoShuffleOrder(queueLength: number, currentAutoQueueIndex: number): number[] {
-  if (queueLength <= 0) return []
-  const normalizedIndex = Math.max(0, Math.min(queueLength - 1, currentAutoQueueIndex))
-  const indices = Array.from({ length: queueLength }, (_, index) => index).filter((index) => index !== normalizedIndex)
+function resolvePlaybackSourceContext(options?: PlaybackContextOptions): PlaybackSourceContext | null {
+  if (options?.sourceContext) return options.sourceContext
+  if (typeof options?.sourcePlaylistId === 'number') {
+    return { type: 'playlist', playlistId: options.sourcePlaylistId }
+  }
+  return null
+}
 
-  for (let index = indices.length - 1; index > 0; index -= 1) {
+function shuffleQueueIds(queueIds: readonly string[]): string[] {
+  const ids = [...queueIds]
+  for (let index = ids.length - 1; index > 0; index -= 1) {
     const swapIndex = Math.floor(Math.random() * (index + 1))
-    ;[indices[index], indices[swapIndex]] = [indices[swapIndex], indices[index]]
+    ;[ids[index], ids[swapIndex]] = [ids[swapIndex], ids[index]]
+  }
+  return ids
+}
+
+function getShuffledStartIndex(entryCount: number, requestedStartIndex: number): number {
+  if (entryCount <= 1) return requestedStartIndex
+
+  const candidateIndexes: number[] = []
+  for (let index = 0; index < entryCount; index += 1) {
+    if (requestedStartIndex === 0 && index === 0) continue
+    candidateIndexes.push(index)
   }
 
-  return [normalizedIndex, ...indices]
+  if (candidateIndexes.length === 0) return requestedStartIndex
+  return candidateIndexes[Math.floor(Math.random() * candidateIndexes.length)] ?? requestedStartIndex
 }
 
 interface RecentPlaySession {
   trackPath: string
   thresholdSeconds: number
+  accumulatedSeconds: number
+  lastAccumulatedAtMs: number | null
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
@@ -874,35 +1042,42 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
   }
 
-  const getRecentPlayThresholdSeconds = (track: Track | null): number => {
-    if (!track || !Number.isFinite(track.duration) || track.duration <= 0) {
-      return RECENT_PLAY_MIN_SECONDS
-    }
-    return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, track.duration))
-  }
+  const getRecentPlayThresholdSeconds = (track: Track | null): number => (
+    getRecentPlayThresholdSecondsForDuration(track?.duration)
+  )
+
+  const createQueueItem = (
+    entry: QueueTrackEntry,
+    origin: QueueItemOrigin,
+    options?: PlaybackContextOptions
+  ): QueueItem => ({
+    queueId: createQueueId(),
+    entry,
+    origin,
+    sourcePlaylistId: origin === 'context' ? options?.sourcePlaylistId ?? null : null,
+    sourceContext: origin === 'context' ? resolvePlaybackSourceContext(options) : null,
+    contextLabel: origin === 'context'
+      ? normalizeContextLabel(options?.contextLabel) ?? 'Current Selection'
+      : null
+  })
 
   const getCurrentPlaybackEntry = (
-    state: Pick<PlayerStore, 'currentTrack' | 'currentTrackSource' | 'autoQueueIndex'>
+    state: Pick<PlayerStore, 'currentTrack' | 'currentQueueItemId' | 'queueItems'>
   ): PlaybackHistoryEntry | null => {
     if (!state.currentTrack) return null
+    const activeItem = state.currentQueueItemId
+      ? state.queueItems.find((item) => item.queueId === state.currentQueueItemId)
+      : null
     return {
-      entry: createQueueEntryFromTrack(state.currentTrack),
-      source: state.currentTrackSource,
-      autoQueueIndex: state.autoQueueIndex
+      item: activeItem ?? createQueueItem(createQueueEntryFromTrack(state.currentTrack), 'manual')
     }
   }
 
   const resolveSourcePlaylistIdForState = (
-    state: Pick<PlayerStore, 'currentTrack' | 'currentTrackSource' | 'autoQueue' | 'autoQueueIndex' | 'autoQueueSourcePlaylistId'>
+    state: Pick<PlayerStore, 'currentQueueItemId' | 'queueItems'>
   ): number | null => {
-    if (state.currentTrackSource !== 'auto' || state.autoQueueSourcePlaylistId === null) {
-      return null
-    }
-    const queuedTrackPath = state.autoQueue[state.autoQueueIndex]?.path
-    if (queuedTrackPath === state.currentTrack?.path) {
-      return state.autoQueueSourcePlaylistId
-    }
-    return null
+    if (!state.currentQueueItemId) return null
+    return state.queueItems.find((item) => item.queueId === state.currentQueueItemId)?.sourcePlaylistId ?? null
   }
 
   const commitRecentPlay = (session: RecentPlaySession): void => {
@@ -910,20 +1085,42 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     session.counted = true
     if (!session.allowDbWrite) return
     void useLibraryStore.getState().recordPlay(session.trackPath)
-    if (session.sourcePlaylistId !== null) {
-      void window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
-    }
+    void (async () => {
+      if (session.sourcePlaylistId !== null) {
+        await window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
+      }
+      await usePlaylistStore.getState().loadPlaylists()
+    })()
+  }
+
+  const updateRecentPlayAccumulation = (
+    playbackState: PlaybackState,
+    nowMs: number = performance.now()
+  ): RecentPlaySession | null => {
+    if (!recentPlaySession || recentPlaySession.counted) return recentPlaySession
+
+    const next = advanceRecentPlayAccumulation(recentPlaySession, playbackState, nowMs)
+    recentPlaySession.accumulatedSeconds = next.accumulatedSeconds
+    recentPlaySession.lastAccumulatedAtMs = next.lastAccumulatedAtMs
+    return recentPlaySession
   }
 
   const commitRecentPlayNow = (): void => {
-    if (!recentPlaySession || recentPlaySession.counted) return
-    commitRecentPlay(recentPlaySession)
+    const session = updateRecentPlayAccumulation(get().playbackState)
+    if (!session || session.counted) return
+    if (session.accumulatedSeconds >= session.thresholdSeconds) {
+      commitRecentPlay(session)
+    }
   }
 
-  const maybeCommitRecentPlay = (time: number): void => {
-    if (!recentPlaySession || recentPlaySession.counted) return
-    if (time >= recentPlaySession.thresholdSeconds) {
-      commitRecentPlay(recentPlaySession)
+  const maybeCommitRecentPlay = (
+    playbackState: PlaybackState = get().playbackState,
+    nowMs: number = performance.now()
+  ): void => {
+    const session = updateRecentPlayAccumulation(playbackState, nowMs)
+    if (!session || session.counted) return
+    if (session.accumulatedSeconds >= session.thresholdSeconds) {
+      commitRecentPlay(session)
     }
   }
 
@@ -934,6 +1131,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     recentPlaySession = {
       trackPath,
       thresholdSeconds,
+      accumulatedSeconds: 0,
+      lastAccumulatedAtMs: null,
       counted: false,
       allowDbWrite: track?.origin !== 'associated-external',
       sourcePlaylistId: resolveSourcePlaylistIdForState(state)
@@ -981,20 +1180,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
     set((state) => ({
-      userQueue: state.userQueue.map((queuedTrack) => (
-        updateQueueEntryAvailability(queuedTrack, trackPath, reason)
-      )),
-      autoQueue: state.autoQueue.map((queuedTrack) => (
-        updateQueueEntryAvailability(queuedTrack, trackPath, reason)
-      )),
+      queueItems: state.queueItems.map((item) => ({
+        ...item,
+        entry: updateQueueEntryAvailability(item.entry, trackPath, reason)
+      })),
       playbackHistory: state.playbackHistory.map((entry) => (
-        entry.entry.path === trackPath
-          ? { ...entry, entry: updateQueueEntryAvailability(entry.entry, trackPath, reason) }
-          : entry
-      )),
-      playbackFuture: state.playbackFuture.map((entry) => (
-        entry.entry.path === trackPath
-          ? { ...entry, entry: updateQueueEntryAvailability(entry.entry, trackPath, reason) }
+        entry.item.entry.path === trackPath
+          ? {
+              ...entry,
+              item: {
+                ...entry.item,
+                entry: updateQueueEntryAvailability(entry.item.entry, trackPath, reason)
+              }
+            }
           : entry
       )),
       currentTrack: state.currentTrack && state.currentTrack.path === trackPath
@@ -1003,82 +1201,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }))
   }
 
-  const getAutoPlaybackOrder = (
-    state: Pick<PlayerStore, 'autoQueue' | 'shuffle' | 'shuffledAutoIndices'>
-  ): number[] => {
-    if (state.autoQueue.length === 0) return []
-    if (state.shuffle && state.shuffledAutoIndices.length === state.autoQueue.length) {
-      return state.shuffledAutoIndices
-    }
-    return state.autoQueue.map((_, index) => index)
-  }
-
-  const getAutoPlaybackPosition = (
-    state: Pick<PlayerStore, 'autoQueue' | 'autoQueueIndex' | 'shuffle' | 'shuffledAutoIndices'>
-  ): number => {
-    if (state.autoQueue.length === 0) return -1
-    if (state.autoQueueIndex < 0 || state.autoQueueIndex >= state.autoQueue.length) return -1
-
-    const order = getAutoPlaybackOrder(state)
-    return order.indexOf(state.autoQueueIndex)
-  }
-
-  const getAutoUpcomingIndices = (
-    state: Pick<PlayerStore, 'autoQueue' | 'autoQueueIndex' | 'currentTrack' | 'currentTrackSource' | 'shuffle' | 'shuffledAutoIndices'>
-  ): number[] => {
-    const order = getAutoPlaybackOrder(state)
-    if (order.length === 0) return []
-
-    const currentAutoPosition = getAutoPlaybackPosition(state)
-    const hasAutoAnchor = currentAutoPosition >= 0
-    const startPosition = state.currentTrack
-      ? (hasAutoAnchor ? currentAutoPosition + 1 : 0)
-      : (hasAutoAnchor ? currentAutoPosition : 0)
-
-    return order.slice(Math.max(0, startPosition))
-  }
-
-  const getAutoWrapIndices = (
-    state: Pick<PlayerStore, 'autoQueue' | 'autoQueueIndex' | 'shuffle' | 'shuffledAutoIndices'>
-  ): number[] => {
-    const order = getAutoPlaybackOrder(state)
-    if (order.length === 0) return []
-
-    const currentAutoPosition = getAutoPlaybackPosition(state)
-    if (currentAutoPosition < 0) return []
-    return order.slice(0, currentAutoPosition + 1)
-  }
-
   const buildResolvedUpcomingEntries = (
-    state: Pick<PlayerStore, 'playbackFuture' | 'userQueue' | 'autoQueue' | 'autoQueueIndex' | 'currentTrack' | 'currentTrackSource' | 'shuffle' | 'shuffledAutoIndices'>
+    state: Pick<PlayerStore, 'queueItems' | 'upcomingQueueIds'>
   ): ResolvedQueueTrack[] => {
+    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
     const resolved: ResolvedQueueTrack[] = []
-
-    state.playbackFuture.forEach((entry, index) => {
-      const track = resolveQueueEntryTrack(entry.entry)
+    state.upcomingQueueIds.forEach((queueId, index) => {
+      const item = itemsById.get(queueId)
+      const track = resolveQueueEntryTrack(item?.entry)
+      if (!item || !track) return
       if (!track) return
       resolved.push({
-        source: 'future',
-        track,
-        index
-      })
-    })
-
-    state.userQueue.forEach((entry, index) => {
-      const track = resolveQueueEntryTrack(entry)
-      if (!track) return
-      resolved.push({
-        source: 'user',
-        track,
-        index
-      })
-    })
-
-    getAutoUpcomingIndices(state).forEach((index) => {
-      const track = resolveQueueEntryTrack(state.autoQueue[index])
-      if (!track) return
-      resolved.push({
-        source: 'auto',
+        queueId,
+        source: 'upcoming',
+        origin: item.origin,
         track,
         index
       })
@@ -1089,42 +1225,25 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const collectNextCandidates = (state: PlayerStore): NextCandidate[] => {
     if (state.repeat === 'one' && state.currentTrack) {
-      return [{
-        kind: 'current',
-        track: state.currentTrack,
-        source: state.currentTrackSource,
-        autoQueueIndex: state.autoQueueIndex
-      }]
+      return [{ kind: 'current', track: state.currentTrack }]
     }
 
+    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
     const candidates: NextCandidate[] = []
-
-    state.playbackFuture.forEach((entry) => {
-      const track = resolveQueueEntryTrack(entry.entry)
-      if (!track) return
-      candidates.push({ kind: 'future', entry, track })
+    state.upcomingQueueIds.forEach((queueId, index) => {
+      const item = itemsById.get(queueId)
+      const track = resolveQueueEntryTrack(item?.entry)
+      if (!item || !track) return
+      candidates.push({ kind: 'queue', item, track, index })
     })
 
-    state.userQueue.forEach((entry, index) => {
-      const track = resolveQueueEntryTrack(entry)
-      if (!track) return
-      candidates.push({ kind: 'user', entry, track, index })
-    })
-
-    getAutoUpcomingIndices(state).forEach((index) => {
-      const entry = state.autoQueue[index]
-      const track = resolveQueueEntryTrack(entry)
-      if (!track) return
-      candidates.push({ kind: 'auto', entry, track, index })
-    })
-
-    if (state.repeat === 'all') {
-      getAutoWrapIndices(state).forEach((index) => {
-        const entry = state.autoQueue[index]
-        const track = resolveQueueEntryTrack(entry)
-        if (!track) return
-        candidates.push({ kind: 'auto', entry, track, index })
-      })
+    if (candidates.length === 0 && state.repeat === 'all' && state.currentTrack) {
+      const currentItem = state.currentQueueItemId
+        ? itemsById.get(state.currentQueueItemId)
+        : null
+      if (currentItem && state.queueItems.length === 1) {
+        candidates.push({ kind: 'current', track: state.currentTrack })
+      }
     }
 
     return candidates
@@ -1250,55 +1369,39 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const applyCandidateTransition = (
     state: PlayerStore,
     candidate: NextCandidate,
-    options: { pushCurrentToHistory: boolean; clearFuture: boolean }
+    options: { pushCurrentToHistory: boolean }
   ) => {
     const currentEntry = getCurrentPlaybackEntry(state)
     const nextHistory = options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
       ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY)
       : state.playbackHistory
 
-    let nextFuture = state.playbackFuture
-    let nextUserQueue = state.userQueue
-    let nextCurrentSource = state.currentTrackSource
-    let nextAutoQueueIndex = state.autoQueueIndex
-
-    if (options.clearFuture && candidate.kind !== 'future' && candidate.kind !== 'current') {
-      nextFuture = []
+    if (candidate.kind === 'current') {
+      return { playbackHistory: nextHistory }
     }
 
-    switch (candidate.kind) {
-      case 'current':
-        nextCurrentSource = candidate.source
-        nextAutoQueueIndex = candidate.autoQueueIndex
-        break
-      case 'future':
-        nextCurrentSource = candidate.entry.source
-        nextAutoQueueIndex = candidate.entry.autoQueueIndex
-        nextFuture = state.playbackFuture.slice(1)
-        break
-      case 'user':
-        nextCurrentSource = 'user'
-        nextUserQueue = state.userQueue.filter((_, index) => index !== candidate.index)
-        break
-      case 'auto':
-        nextCurrentSource = 'auto'
-        nextAutoQueueIndex = candidate.index
-        break
+    let nextBaseIds = state.baseUpcomingQueueIds.filter((queueId) => queueId !== candidate.item.queueId)
+    let nextUpcomingIds = state.upcomingQueueIds.filter((queueId) => queueId !== candidate.item.queueId)
+    if (nextUpcomingIds.length === 0 && state.repeat === 'all') {
+      nextBaseIds = state.queueItems
+        .map((item) => item.queueId)
+        .filter((queueId) => queueId !== candidate.item.queueId)
+      nextUpcomingIds = state.shuffle ? shuffleQueueIds(nextBaseIds) : [...nextBaseIds]
     }
 
     return {
       playbackHistory: nextHistory,
-      playbackFuture: nextFuture,
-      userQueue: nextUserQueue,
-      currentTrackSource: nextCurrentSource,
-      autoQueueIndex: nextAutoQueueIndex
+      baseUpcomingQueueIds: nextBaseIds,
+      upcomingQueueIds: nextUpcomingIds,
+      currentQueueItemId: candidate.item.queueId,
+      currentTrackSource: candidate.item.origin
     }
   }
 
   const startPlaybackContextEntries = async (
     entries: QueueTrackEntry[],
     startIndex = 0,
-    options?: { sourcePlaylistId?: number | null; contextLabel?: string | null }
+    options?: PlaybackContextOptions
   ): Promise<void> => {
     if (blockLocalPlaybackInParallaxSinkMode()) return
 
@@ -1306,27 +1409,54 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const normalizedStartIndex = entries.length === 0
       ? -1
       : Math.max(0, Math.min(entries.length - 1, Math.floor(startIndex)))
+    const nextShuffle = options?.shuffle ?? state.shuffle
+    const playbackStartIndex = options?.startShuffled && nextShuffle
+      ? getShuffledStartIndex(entries.length, normalizedStartIndex)
+      : normalizedStartIndex
     const currentEntry = getCurrentPlaybackEntry(state)
 
-    set({
-      autoQueue: entries,
-      autoQueueIndex: normalizedStartIndex,
-      autoQueueSourcePlaylistId: options?.sourcePlaylistId ?? null,
-      autoQueueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
-      shuffledAutoIndices: state.shuffle && normalizedStartIndex >= 0
-        ? buildAutoShuffleOrder(entries.length, normalizedStartIndex)
-        : [],
-      playbackFuture: [],
-      playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
-      currentTrackSource: normalizedStartIndex >= 0 ? 'auto' : state.currentTrackSource
-    })
-
-    if (normalizedStartIndex < 0) {
+    if (playbackStartIndex < 0) {
       clearBufferedNextTrack()
       return
     }
 
-    const targetTrack = resolveQueueEntryTrack(entries[normalizedStartIndex])
+    const contextItems = entries.map((entry) => createQueueItem(entry, 'context', options))
+    const currentItem = contextItems[playbackStartIndex]
+    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
+    const manualItems = state.upcomingQueueIds
+      .map((queueId) => itemsById.get(queueId))
+      .filter((item): item is QueueItem => item?.origin === 'manual')
+    const queueItems = [
+      ...contextItems.slice(0, playbackStartIndex + 1),
+      ...manualItems,
+      ...contextItems.slice(playbackStartIndex + 1)
+    ]
+    const baseUpcomingQueueIds = nextShuffle
+      ? queueItems.map((item) => item.queueId).filter((queueId) => queueId !== currentItem.queueId)
+      : [
+          ...manualItems.map((item) => item.queueId),
+          ...contextItems.slice(playbackStartIndex + 1).map((item) => item.queueId)
+        ]
+    const upcomingQueueIds = nextShuffle
+      ? shuffleQueueIds(baseUpcomingQueueIds)
+      : [...baseUpcomingQueueIds]
+
+    set({
+      queueItems,
+      baseUpcomingQueueIds,
+      upcomingQueueIds,
+      currentQueueItemId: currentItem.queueId,
+      queueSourcePlaylistId: options?.sourcePlaylistId ?? null,
+      queueSourceContext: resolvePlaybackSourceContext(options),
+      queueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
+      shuffle: nextShuffle,
+      playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
+      currentTrackSource: 'context',
+      restoredTrackNeedsLoad: false,
+      restoredPlaybackTime: null
+    })
+
+    const targetTrack = resolveQueueEntryTrack(currentItem.entry)
     if (!targetTrack || isUnavailableRemoteTrack(targetTrack)) return
 
     const loaded = await get()._loadAndPlayTrack(targetTrack, { manualStart: true })
@@ -1335,27 +1465,60 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
-  const enqueueUserEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end'): void => {
+  const enqueueEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end'): void => {
     if (entries.length === 0) return
 
     const state = get()
-    const nextUserQueue = [...state.userQueue]
+    const items = entries.map((entry) => createQueueItem(entry, 'manual'))
     const insertionIndex = position === 'next'
       ? 0
       : position === 'end'
-        ? nextUserQueue.length
-        : clampQueuePosition(position, nextUserQueue.length)
+        ? state.upcomingQueueIds.length
+        : clampQueuePosition(position, state.upcomingQueueIds.length)
+    const itemIds = items.map((item) => item.queueId)
+    const baseUpcomingQueueIds = [...state.baseUpcomingQueueIds]
+    const upcomingQueueIds = [...state.upcomingQueueIds]
+    baseUpcomingQueueIds.splice(insertionIndex, 0, ...itemIds)
+    upcomingQueueIds.splice(insertionIndex, 0, ...itemIds)
 
-    nextUserQueue.splice(insertionIndex, 0, ...entries)
-    set({ userQueue: nextUserQueue })
+    const queueItems = [...state.queueItems]
+    const targetQueueId = state.upcomingQueueIds[insertionIndex]
+    const currentIndex = state.currentQueueItemId
+      ? queueItems.findIndex((item) => item.queueId === state.currentQueueItemId)
+      : -1
+    const targetIndex = targetQueueId
+      ? queueItems.findIndex((item) => item.queueId === targetQueueId)
+      : -1
+    const canonicalInsertionIndex = position === 'next' && currentIndex >= 0
+      ? currentIndex + 1
+      : targetIndex >= 0
+        ? targetIndex
+        : queueItems.length
+    queueItems.splice(canonicalInsertionIndex, 0, ...items)
+
+    set({ queueItems, baseUpcomingQueueIds, upcomingQueueIds })
     clearBufferedNextTrack()
     schedulePreBufferNextTrack()
+  }
+
+  const seekLoadedTrackBeforePlay = async (track: Track, requestedTime: number | null | undefined): Promise<void> => {
+    if (!Number.isFinite(requestedTime) || !requestedTime || requestedTime <= 0) return
+    if (track.sourceType && track.sourceType !== 'local') return
+
+    const resolvedDuration = resolvePositiveDuration(audioEngine.duration, track.duration)
+    const targetTime = resolvedDuration > 0
+      ? Math.min(Math.max(0, requestedTime), resolvedDuration)
+      : Math.max(0, requestedTime)
+    if (targetTime <= 0) return
+
+    await audioEngine.seek(targetTime)
+    set({ currentTime: targetTime })
   }
 
   return {
     // Initial state
     currentTrack: null,
-    currentTrackSource: 'manual',
+    currentTrackSource: 'standalone',
     playbackState: 'stopped',
     currentTime: 0,
     duration: 0,
@@ -1370,18 +1533,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
     associatedOpenNotice: null,
+    restoredTrackNeedsLoad: false,
+    restoredPlaybackTime: null,
 
     // Queue state
-    userQueue: [],
-    autoQueue: [],
-    autoQueueIndex: -1,
-    autoQueueSourcePlaylistId: null,
-    autoQueueContextLabel: null,
+    queueItems: [],
+    baseUpcomingQueueIds: [],
+    upcomingQueueIds: [],
+    currentQueueItemId: null,
+    queueSourcePlaylistId: null,
+    queueSourceContext: null,
+    queueContextLabel: null,
     shuffle: false,
     repeat: 'none',
-    shuffledAutoIndices: [],
     playbackHistory: [],
-    playbackFuture: [],
 
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
@@ -1397,7 +1562,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       set({
         currentTrack: track,
-        currentTrackSource: 'manual',
+        currentTrackSource: 'standalone',
+        currentQueueItemId: null,
         playbackState: 'loading',
         waveformData: null,
         waveformBufferedRatio: 1,
@@ -1406,7 +1572,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
-        duration: track.duration
+        duration: track.duration,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
 
       try {
@@ -1428,13 +1596,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           set({
             duration: result.duration > 0 ? result.duration : track.duration,
             currentTrack: resolvedTrack,
-            currentTrackSource: 'manual',
+            currentTrackSource: 'standalone',
+            currentQueueItemId: null,
             remoteLoadProgress: null,
             remoteBufferedSeconds: 0,
             remoteStreamSessionId: null,
             waveformBufferedRatio: 1,
             waveformAnalyzedRatio: 1,
-            currentTime: 0
+            currentTime: 0,
+            restoredTrackNeedsLoad: false,
+            restoredPlaybackTime: null
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           pendingManualLoadCueTrack = resolvedTrack
@@ -1477,13 +1648,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         set({
           duration: resolvedDuration,
           currentTrack: resolvedTrack,
-          currentTrackSource: 'manual',
+          currentTrackSource: 'standalone',
+          currentQueueItemId: null,
           remoteLoadProgress: null,
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
           waveformAnalyzedRatio: 1,
-          currentTime: 0
+          currentTime: 0,
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
         if (usedFfmpegFallback) {
@@ -1524,13 +1698,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
+      if (state.currentTrack && state.restoredTrackNeedsLoad) {
+        const track = state.currentTrack
+        const startTime = state.restoredPlaybackTime ?? state.currentTime
+        set({
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
+        })
+        const loaded = await get()._loadAndPlayTrack(track, { manualStart: true, startTime })
+        if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
+          markTrackUnavailableInState(track.path)
+        }
+        return
+      }
+
       if (!state.currentTrack) {
         const candidate = findNextPlayableCandidate(state)
         if (!candidate || candidate.kind === 'current') return
 
         set(applyCandidateTransition(state, candidate, {
-          pushCurrentToHistory: false,
-          clearFuture: false
+          pushCurrentToHistory: false
         }))
 
         const loaded = await get()._loadAndPlayTrack(candidate.track, { manualStart: true })
@@ -1575,7 +1762,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
-      if (!state.currentTrack || state.playbackState === 'stopped') {
+      if (!state.currentTrack || state.playbackState === 'stopped' || state.restoredTrackNeedsLoad) {
         await get().play()
         return
       }
@@ -1594,7 +1781,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       recentPlaySession = null
       set({
         remoteBufferedSeconds: 0,
-        remoteStreamSessionId: null
+        remoteStreamSessionId: null,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
       audioEngine.stop()
     },
@@ -1608,6 +1797,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       void useParallaxStore.getState().cancelHostNextStream()
 
       const state = get()
+      if (state.restoredTrackNeedsLoad) {
+        const duration = resolvePositiveDuration(state.duration, state.currentTrack?.duration)
+        const targetTime = duration > 0
+          ? Math.min(Math.max(0, time), duration)
+          : Math.max(0, time)
+        set({
+          currentTime: targetTime,
+          restoredPlaybackTime: targetTime
+        })
+        return
+      }
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
@@ -1654,63 +1854,69 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       await startPlaybackContextEntries(await createQueueEntriesFromPathsWithFetch(paths), startIndex, options)
     },
 
-    enqueueUserTrack: (track: Track, position = 'end') => {
-      get().enqueueUserTracks([track], position)
+    enqueueTrack: (track: Track, position = 'end') => {
+      get().enqueueTracks([track], position)
     },
 
-    enqueueUserTracks: (tracks: Track[], position = 'end') => {
-      enqueueUserEntries(createQueueEntriesFromTracks(tracks), position)
+    enqueueTracks: (tracks: Track[], position = 'end') => {
+      enqueueEntries(createQueueEntriesFromTracks(tracks), position)
     },
 
-    enqueueUserTrackPaths: async (paths: string[], position = 'end') => {
-      enqueueUserEntries(await createQueueEntriesFromPathsWithFetch(paths), position)
+    enqueueTrackPaths: async (paths: string[], position = 'end') => {
+      enqueueEntries(await createQueueEntriesFromPathsWithFetch(paths), position)
     },
 
-    moveUserQueue: (fromIndex: number, toIndex: number) => {
+    moveUpcomingItem: (queueId: string, toIndex: number) => {
       const state = get()
-      if (fromIndex === toIndex) return
-      if (fromIndex < 0 || fromIndex >= state.userQueue.length) return
-      if (toIndex < 0 || toIndex >= state.userQueue.length) return
+      if (!state.upcomingQueueIds.includes(queueId)) return
 
-      const nextUserQueue = [...state.userQueue]
-      const [removed] = nextUserQueue.splice(fromIndex, 1)
-      nextUserQueue.splice(toIndex, 0, removed)
-      set({ userQueue: nextUserQueue })
-
-      clearBufferedNextTrack()
-      schedulePreBufferNextTrack()
-    },
-
-    removeUserTrack: (index: number) => {
-      const state = get()
-      if (index < 0 || index >= state.userQueue.length) return
-
+      const upcomingQueueIds = moveQueueId(state.upcomingQueueIds, queueId, toIndex)
+      const baseUpcomingQueueIds = moveQueueId(state.baseUpcomingQueueIds, queueId, toIndex)
+      const canonicalIds = moveQueueIdRelativeToVisibleOrder(
+        state.queueItems.map((item) => item.queueId),
+        queueId,
+        baseUpcomingQueueIds
+      )
+      const itemById = new Map(state.queueItems.map((item) => [item.queueId, item]))
       set({
-        userQueue: state.userQueue.filter((_, trackIndex) => trackIndex !== index)
+        upcomingQueueIds,
+        baseUpcomingQueueIds,
+        queueItems: canonicalIds.map((id) => itemById.get(id)).filter((item): item is QueueItem => Boolean(item))
       })
 
       clearBufferedNextTrack()
       schedulePreBufferNextTrack()
     },
 
-    clearUserQueue: () => {
-      set({ userQueue: [] })
+    removeUpcomingItem: (queueId: string) => {
+      const state = get()
+      if (!state.upcomingQueueIds.includes(queueId)) return
+
+      set({
+        queueItems: state.queueItems.filter((item) => item.queueId !== queueId),
+        baseUpcomingQueueIds: state.baseUpcomingQueueIds.filter((id) => id !== queueId),
+        upcomingQueueIds: state.upcomingQueueIds.filter((id) => id !== queueId)
+      })
+
       clearBufferedNextTrack()
       schedulePreBufferNextTrack()
     },
 
     clearAllQueues: () => {
       clearBufferedNextTrack()
+      const state = get()
+      const currentItem = state.currentQueueItemId
+        ? state.queueItems.find((item) => item.queueId === state.currentQueueItemId)
+        : null
       set({
-        userQueue: [],
-        autoQueue: [],
-        autoQueueIndex: -1,
-        autoQueueSourcePlaylistId: null,
-        autoQueueContextLabel: null,
-        shuffledAutoIndices: [],
+        queueItems: currentItem ? [currentItem] : [],
+        baseUpcomingQueueIds: [],
+        upcomingQueueIds: [],
+        queueSourcePlaylistId: currentItem?.sourcePlaylistId ?? null,
+        queueSourceContext: currentItem?.sourceContext ?? null,
+        queueContextLabel: currentItem?.contextLabel ?? null,
         playbackHistory: [],
-        playbackFuture: [],
-        currentTrackSource: get().currentTrack ? 'manual' : 'manual'
+        currentTrackSource: currentItem?.origin ?? (state.currentTrack ? 'standalone' : 'standalone')
       })
     },
 
@@ -1742,27 +1948,139 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({ associatedOpenNotice: null })
     },
 
-    playQueuedTrack: async (locator, options) => {
+    getSessionSnapshot: () => {
+      const state = get()
+      return {
+        currentTrack: state.currentTrack ? stripTrackArtworkData(state.currentTrack) : null,
+        currentTrackSource: state.currentTrackSource,
+        savedPlaybackState: state.playbackState,
+        currentTime: state.currentTime,
+        duration: state.duration,
+        queueItems: state.queueItems.map((item) => ({
+          queueId: item.queueId,
+          entry: {
+            path: item.entry.path,
+            snapshot: { ...item.entry.snapshot }
+          },
+          origin: item.origin,
+          sourcePlaylistId: item.sourcePlaylistId,
+          sourceContext: item.sourceContext,
+          contextLabel: item.contextLabel
+        })),
+        baseUpcomingQueueIds: [...state.baseUpcomingQueueIds],
+        upcomingQueueIds: [...state.upcomingQueueIds],
+        currentQueueItemId: state.currentQueueItemId,
+        queueSourcePlaylistId: state.queueSourcePlaylistId,
+        queueSourceContext: state.queueSourceContext,
+        queueContextLabel: state.queueContextLabel,
+        shuffle: state.shuffle,
+        repeat: state.repeat,
+        playbackHistory: state.playbackHistory.map((entry) => ({
+          item: {
+            queueId: entry.item.queueId,
+            entry: {
+              path: entry.item.entry.path,
+              snapshot: { ...entry.item.entry.snapshot }
+            },
+            origin: entry.item.origin,
+            sourcePlaylistId: entry.item.sourcePlaylistId,
+            sourceContext: entry.item.sourceContext,
+            contextLabel: entry.item.contextLabel
+          }
+        }))
+      }
+    },
+
+    restoreSession: async (snapshot) => {
+      const knownLibraryPaths = new Set<string>()
+      const collectLibraryPath = (track: SessionQueueTrackSnapshot | null | undefined) => {
+        if (!track) return
+        if (track.origin === 'associated-external') return
+        if (!track.sourceType) return
+        knownLibraryPaths.add(track.path)
+      }
+
+      collectLibraryPath(snapshot.currentTrack)
+      snapshot.queueItems.forEach((item) => collectLibraryPath(item.entry.snapshot))
+      snapshot.playbackHistory.forEach((entry) => collectLibraryPath(entry.item.entry.snapshot))
+
+      const resolvedLibraryPaths = knownLibraryPaths.size > 0
+        ? new Set((await useLibraryStore.getState().resolveTrackPathsWithFetch([...knownLibraryPaths])).map((track) => track.path))
+        : new Set<string>()
+      const isRestorableTrack = (track: SessionQueueTrackSnapshot | null | undefined): boolean => {
+        if (!track) return false
+        if (track.origin === 'associated-external') return true
+        if (!track.sourceType) return true
+        return resolvedLibraryPaths.has(track.path)
+      }
+
+      const queueItems = snapshot.queueItems
+        .filter((item) => isRestorableTrack(item.entry.snapshot))
+        .map(sessionQueueItemToQueueItem)
+      const queueItemIds = new Set(queueItems.map((item) => item.queueId))
+      const baseUpcomingQueueIds = snapshot.baseUpcomingQueueIds.filter((queueId) => queueItemIds.has(queueId))
+      const upcomingQueueIds = snapshot.upcomingQueueIds.filter((queueId) => queueItemIds.has(queueId))
+      const currentQueueItemId = snapshot.currentQueueItemId && queueItemIds.has(snapshot.currentQueueItemId)
+        ? snapshot.currentQueueItemId
+        : null
+      const playbackHistory = snapshot.playbackHistory
+        .filter((entry) => isRestorableTrack(entry.item.entry.snapshot))
+        .map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) }))
+      const currentTrack = isRestorableTrack(snapshot.currentTrack)
+        ? sessionTrackSnapshotToTrack(snapshot.currentTrack!)
+        : null
+
+      advanceNextQueueItemId([
+        ...queueItems.map((item) => item.queueId),
+        ...playbackHistory.map((entry) => entry.item.queueId)
+      ])
+
+      clearBufferedNextTrack()
+      set({
+        currentTrack,
+        currentTrackSource: currentTrack ? snapshot.currentTrackSource : 'standalone',
+        playbackState: currentTrack ? 'paused' : 'stopped',
+        currentTime: currentTrack ? snapshot.currentTime : 0,
+        duration: currentTrack ? resolvePositiveDuration(snapshot.duration, currentTrack.duration) : 0,
+        waveformData: null,
+        waveformBufferedRatio: currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? 0 : 1,
+        waveformAnalyzedRatio: currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? 0 : 1,
+        remoteLoadProgress: null,
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null,
+        ffmpegFallbackNotice: null,
+        outputDelayNotice: null,
+        associatedOpenNotice: null,
+        restoredTrackNeedsLoad: Boolean(currentTrack),
+        restoredPlaybackTime: currentTrack ? snapshot.currentTime : null,
+        queueItems,
+        baseUpcomingQueueIds,
+        upcomingQueueIds,
+        currentQueueItemId,
+        queueSourcePlaylistId: snapshot.queueSourcePlaylistId,
+        queueSourceContext: sessionContextToPlaybackContext(snapshot.queueSourceContext),
+        queueContextLabel: snapshot.queueContextLabel,
+        shuffle: snapshot.shuffle,
+        repeat: snapshot.repeat,
+        playbackHistory
+      })
+    },
+
+    playQueuedItem: async (queueId, options) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
-      const candidate: NextCandidate | null = locator.source === 'user'
-        ? (() => {
-            const entry = state.userQueue[locator.index]
-            const track = resolveQueueEntryTrack(entry)
-            return entry && track ? { kind: 'user', entry, track, index: locator.index } : null
-          })()
-        : (() => {
-            const entry = state.autoQueue[locator.index]
-            const track = resolveQueueEntryTrack(entry)
-            return entry && track ? { kind: 'auto', entry, track, index: locator.index } : null
-          })()
+      const item = state.queueItems.find((candidate) => candidate.queueId === queueId)
+      const track = resolveQueueEntryTrack(item?.entry)
+      const index = state.upcomingQueueIds.indexOf(queueId)
+      const candidate: NextCandidate | null = item && track
+        ? { kind: 'queue', item, track, index }
+        : null
 
       if (!candidate || isUnavailableRemoteTrack(candidate.track)) return
 
       set(applyCandidateTransition(state, candidate, {
-        pushCurrentToHistory: true,
-        clearFuture: true
+        pushCurrentToHistory: true
       }))
 
       const loaded = await get()._loadAndPlayTrack(candidate.track, {
@@ -1781,8 +2099,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (!candidate) return
 
       set(applyCandidateTransition(state, candidate, {
-        pushCurrentToHistory: true,
-        clearFuture: true
+        pushCurrentToHistory: true
       }))
 
       await runSerializedTrackLoad(candidate.track)
@@ -1801,15 +2118,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
 
       const previousEntry = state.playbackHistory[state.playbackHistory.length - 1]
-      const previousTrack = resolveQueueEntryTrack(previousEntry?.entry)
+      const previousTrack = resolveQueueEntryTrack(previousEntry?.item.entry)
       if (!previousEntry || !previousTrack || isUnavailableRemoteTrack(previousTrack)) return
 
       const currentEntry = getCurrentPlaybackEntry(state)
+      const queueItemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
+      if (currentEntry) queueItemsById.set(currentEntry.item.queueId, currentEntry.item)
+      queueItemsById.set(previousEntry.item.queueId, previousEntry.item)
+      const queueItems = [...queueItemsById.values()]
+      const currentId = currentEntry?.item.queueId ?? null
+      const baseUpcomingQueueIds = currentId
+        ? [currentId, ...state.baseUpcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
+        : state.baseUpcomingQueueIds.filter((id) => id !== previousEntry.item.queueId)
+      const upcomingQueueIds = currentId
+        ? [currentId, ...state.upcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
+        : state.upcomingQueueIds.filter((id) => id !== previousEntry.item.queueId)
       set({
+        queueItems,
+        baseUpcomingQueueIds,
+        upcomingQueueIds,
         playbackHistory: state.playbackHistory.slice(0, -1),
-        playbackFuture: currentEntry ? [currentEntry, ...state.playbackFuture] : state.playbackFuture,
-        currentTrackSource: previousEntry.source,
-        autoQueueIndex: previousEntry.autoQueueIndex
+        currentQueueItemId: previousEntry.item.queueId,
+        currentTrackSource: previousEntry.item.origin
       })
 
       await runSerializedTrackLoad(previousTrack, { manualStart: true })
@@ -1820,9 +2150,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const newShuffle = !state.shuffle
       set({
         shuffle: newShuffle,
-        shuffledAutoIndices: newShuffle && state.autoQueue.length > 0
-          ? buildAutoShuffleOrder(state.autoQueue.length, state.autoQueueIndex >= 0 ? state.autoQueueIndex : 0)
-          : []
+        upcomingQueueIds: newShuffle
+          ? shuffleQueueIds(state.baseUpcomingQueueIds)
+          : [...state.baseUpcomingQueueIds]
       })
       clearBufferedNextTrack()
       schedulePreBufferNextTrack()
@@ -1832,7 +2162,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set((state) => {
         const modes: Array<'none' | 'one' | 'all'> = ['none', 'all', 'one']
         const currentIndex = modes.indexOf(state.repeat)
-        return { repeat: modes[(currentIndex + 1) % modes.length] }
+        const repeat = modes[(currentIndex + 1) % modes.length]
+        if (repeat !== 'all' || state.upcomingQueueIds.length > 0 || !state.currentQueueItemId) {
+          return { repeat }
+        }
+        const baseUpcomingQueueIds = state.queueItems
+          .map((item) => item.queueId)
+          .filter((queueId) => queueId !== state.currentQueueItemId)
+        return {
+          repeat,
+          baseUpcomingQueueIds,
+          upcomingQueueIds: state.shuffle ? shuffleQueueIds(baseUpcomingQueueIds) : [...baseUpcomingQueueIds]
+        }
       })
       clearBufferedNextTrack()
       schedulePreBufferNextTrack()
@@ -1846,42 +2187,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return buildResolvedUpcomingEntries(get())
     },
 
-    getResolvedUserQueueEntries: () => {
-      const entries: ResolvedQueueTrack[] = []
-      get().userQueue.forEach((entry, index) => {
-        const track = resolveQueueEntryTrack(entry)
-        if (!track) return
-        entries.push({
-          source: 'user',
-          track,
-          index
-        })
-      })
-      return entries
-    },
-
-    getResolvedAutoUpcomingTracks: () => {
-      const state = get()
-      return getAutoUpcomingIndices(state)
-        .map((index) => resolveQueueEntryTrack(state.autoQueue[index]))
-        .filter((track): track is Track => Boolean(track))
-    },
-
-    getResolvedAutoUpcomingEntries: () => {
-      const state = get()
-      const entries: ResolvedQueueTrack[] = []
-      getAutoUpcomingIndices(state).forEach((index) => {
-        const track = resolveQueueEntryTrack(state.autoQueue[index])
-        if (!track) return
-        entries.push({
-          source: 'auto',
-          track,
-          index
-        })
-      })
-      return entries
-    },
-
     getResolvedPreviousTracks: () => {
       return get().getResolvedPreviousEntries().map((entry) => entry.track)
     },
@@ -1889,10 +2194,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     getResolvedPreviousEntries: () => {
       const entries: ResolvedQueueTrack[] = []
       get().playbackHistory.forEach((entry, index) => {
-        const track = resolveQueueEntryTrack(entry.entry)
+        const track = resolveQueueEntryTrack(entry.item.entry)
         if (!track) return
         entries.push({
+          queueId: entry.item.queueId,
           source: 'previous',
+          origin: entry.item.origin,
           track,
           index
         })
@@ -1911,83 +2218,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return state.playbackHistory.length + (state.currentTrack ? 1 : 0) + buildResolvedUpcomingEntries(state).length
     },
 
-    setQueue: (tracks, startIndex = 0, options) => {
-      const state = get()
-      const entries = createQueueEntriesFromTracks(tracks)
-      const normalizedStartIndex = entries.length === 0
-        ? -1
-        : Math.max(0, Math.min(entries.length - 1, Math.floor(startIndex)))
-
-      set({
-        autoQueue: entries,
-        autoQueueIndex: normalizedStartIndex,
-        autoQueueSourcePlaylistId: options?.sourcePlaylistId ?? null,
-        autoQueueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
-        shuffledAutoIndices: state.shuffle && normalizedStartIndex >= 0
-          ? buildAutoShuffleOrder(entries.length, normalizedStartIndex)
-          : []
-      })
-    },
-
-    addToQueue: (track) => {
-      get().enqueueUserTrack(track, 'end')
-    },
-
-    addToQueueNext: (track) => {
-      get().enqueueUserTrack(track, 'next')
-    },
-
-    removeFromQueue: (index) => {
-      get().removeUserTrack(index)
-    },
-
-    moveInQueue: (fromIndex, toIndex) => {
-      get().moveUserQueue(fromIndex, toIndex)
-    },
-
-    clearQueue: () => {
-      get().clearAllQueues()
-    },
-
-    playTrackAt: async (index) => {
-      await get().playQueuedTrack({ source: 'auto', index }, { manualStart: true })
-    },
-
-    getUpcomingTracks: () => {
-      return get().getResolvedUpcomingTracks()
-    },
-
-    getPreviousTracks: () => {
-      return get().getResolvedPreviousTracks()
-    },
-
     _getNextEntry: () => {
       const candidate = findNextPlayableCandidate(get())
       if (!candidate || candidate.kind === 'current') return null
-      if (candidate.kind === 'future') {
-        return {
-          source: 'future',
-          track: candidate.track,
-          index: 0
-        }
-      }
-
       return {
-        source: candidate.kind,
+        queueId: candidate.item.queueId,
+        source: 'upcoming',
+        origin: candidate.item.origin,
         track: candidate.track,
         index: candidate.index
       }
-    },
-
-    _generateShuffleOrder: (currentAutoQueueIndex: number) => {
-      const { autoQueue } = get()
-      if (autoQueue.length === 0) {
-        set({ shuffledAutoIndices: [] })
-        return
-      }
-      set({
-        shuffledAutoIndices: buildAutoShuffleOrder(autoQueue.length, currentAutoQueueIndex)
-      })
     },
 
     // Internal: Load and play a track from queue
@@ -1997,6 +2237,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
+      const startTime = Number.isFinite(options.startTime) ? Math.max(0, Number(options.startTime)) : 0
       pendingManualLoadCueTrack = null
       // Initialize listeners if needed
       if (!listenersInitialized) {
@@ -2015,7 +2256,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteBufferedSeconds: 0,
         remoteStreamSessionId: null,
         currentTime: 0,
-        duration: track.duration
+        duration: track.duration,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
       })
 
       try {
@@ -2035,9 +2278,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
             currentTrack: resolvedTrack,
             remoteLoadProgress: null,
-            currentTime: 0
+            currentTime: 0,
+            restoredTrackNeedsLoad: false,
+            restoredPlaybackTime: null
           })
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+          await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
           if (manualStart) {
             showOutputDelayNotice(resolvedTrack)
           }
@@ -2079,7 +2325,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
-              currentTime: 0
+              currentTime: 0,
+              restoredTrackNeedsLoad: false,
+              restoredPlaybackTime: null
             })
             hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
             if (manualStart) {
@@ -2201,9 +2449,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteStreamSessionId: null,
           waveformBufferedRatio: 1,
           waveformAnalyzedRatio: 1,
-          currentTime: 0
+          currentTime: 0,
+          restoredTrackNeedsLoad: false,
+          restoredPlaybackTime: null
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+        await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }
@@ -2420,8 +2671,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
+        const previousPlaybackState = get().playbackState
+        const now = performance.now()
+        maybeCommitRecentPlay(previousPlaybackState, now)
+        if (recentPlaySession && nextPlaybackState !== 'playing') {
+          recentPlaySession.lastAccumulatedAtMs = null
+        } else if (recentPlaySession && previousPlaybackState !== 'playing') {
+          recentPlaySession.lastAccumulatedAtMs = now
+        }
         if (nextPlaybackState === 'playing') {
-          lastCommittedCurrentTimeMs = performance.now()
+          lastCommittedCurrentTimeMs = now
           set({
             playbackState: nextPlaybackState,
             currentTime: audioEngine.currentTime
@@ -2431,7 +2690,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         clearScheduledPrebufferTimer()
-        lastCommittedCurrentTimeMs = performance.now()
+        lastCommittedCurrentTimeMs = now
         set({
           playbackState: nextPlaybackState,
           currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
@@ -2450,7 +2709,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('timeUpdate', (time) => {
         const normalizedTime = time as number
-        maybeCommitRecentPlay(normalizedTime)
+        maybeCommitRecentPlay()
 
         const state = get()
         if (state.playbackState === 'playing' || state.playbackState === 'paused') {
@@ -2585,8 +2844,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
 
         const transitionState = applyCandidateTransition(state, nextCandidate, {
-          pushCurrentToHistory: true,
-          clearFuture: true
+          pushCurrentToHistory: true
         })
         const nextState: typeof transitionState & {
           currentTrack: Track

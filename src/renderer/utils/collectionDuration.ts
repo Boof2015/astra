@@ -31,6 +31,18 @@ export function formatCompactDuration(totalSeconds: number): string | null {
   return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`
 }
 
+export function formatExactDuration(totalSeconds: number): string {
+  if (typeof totalSeconds !== 'number' || !Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return '0:00:00'
+  }
+
+  const seconds = Math.floor(totalSeconds)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainingSeconds = seconds % 60
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
+}
+
 export function formatCompactTotalTrackDuration(tracks: readonly TrackDurationLike[]): string | null {
   return formatCompactDuration(sumValidTrackDurations(tracks))
 }

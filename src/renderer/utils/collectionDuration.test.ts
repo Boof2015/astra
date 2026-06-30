@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   formatCompactDuration,
+  formatExactDuration,
   formatCompactTotalTrackDuration,
   sumValidTrackDurations
 } from './collectionDuration.ts'
@@ -41,6 +42,13 @@ test('formatCompactDuration returns null for unavailable totals', () => {
   assert.equal(formatCompactDuration(0), null)
   assert.equal(formatCompactDuration(-1), null)
   assert.equal(formatCompactDuration(Number.NaN), null)
+})
+
+test('formatExactDuration formats exact clock-style totals', () => {
+  assert.equal(formatExactDuration(0), '0:00:00')
+  assert.equal(formatExactDuration(65), '0:01:05')
+  assert.equal(formatExactDuration(3661), '1:01:01')
+  assert.equal(formatExactDuration(90061), '25:01:01')
 })
 
 test('formatCompactTotalTrackDuration returns null when all durations are unavailable', () => {

@@ -53,6 +53,11 @@ export const SETTINGS_SECTIONS = [
     keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
   },
   {
+    id: 'keybinds',
+    label: 'Keybinds',
+    keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls']
+  },
+  {
     id: 'integrations',
     label: 'Integrations',
     keywords: [
@@ -68,13 +73,14 @@ export const SETTINGS_SECTIONS = [
       'scrobbling',
       'lyrics',
       'lyric',
+      'xlrcdb',
       'lrclib'
     ]
   },
   {
     id: 'experimental',
     label: 'Experimental',
-    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail']
+    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail', 'controller', 'gamepad', 'xbox', 'playstation']
   },
   {
     id: 'parallax',
@@ -88,6 +94,11 @@ export const SETTINGS_SECTIONS = [
     id: 'info',
     label: 'Info',
     keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog']
+  },
+  {
+    id: 'transfer',
+    label: 'Transfer',
+    keywords: ['transfer', 'settings transfer', 'import settings', 'export settings', 'portable', 'move computers', 'backup', 'restore']
   },
   {
     id: 'developer',

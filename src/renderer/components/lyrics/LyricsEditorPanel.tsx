@@ -3,6 +3,7 @@ import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import type { LyricsFormat, LyricsTrackOverride } from '../../../types/lyrics'
+import { usePresence } from '../../hooks/usePresence'
 
 interface TrackRecord {
   path: string
@@ -67,8 +68,10 @@ export default function LyricsEditorPanel() {
   const panelRequest = useLyricsEditorStore((state) => state.panelRequest)
   const closePanel = useLyricsEditorStore((state) => state.closePanel)
   const refreshLyricsForTrack = useLyricsStore((state) => state.refreshForTrack)
+  const presence = usePresence(panelRequest)
+  const displayedPanelRequest = presence.presentValue
 
-  const requestTrackPaths = panelRequest?.trackPaths ?? EMPTY_TRACK_PATHS
+  const requestTrackPaths = displayedPanelRequest?.trackPaths ?? EMPTY_TRACK_PATHS
   const requestTrackPathKey = requestTrackPaths.join('\u0000')
 
   const [tracks, setTracks] = useState<TrackRecord[]>([])
@@ -161,7 +164,7 @@ export default function LyricsEditorPanel() {
   }, [])
 
   useEffect(() => {
-    if (!panelRequest) {
+    if (!displayedPanelRequest) {
       setTracks([])
       setOverrides({})
       setValidationError(null)
@@ -192,7 +195,7 @@ export default function LyricsEditorPanel() {
     return () => {
       cancelled = true
     }
-  }, [loadPanelState, panelRequest, requestTrackPathKey, requestTrackPaths])
+  }, [displayedPanelRequest, loadPanelState, requestTrackPathKey, requestTrackPaths])
 
   const importLyricsText = useCallback(async (lyricsText: string, format: LyricsFormat, sourceLabel: string) => {
     if (selectedTrackPaths.length !== 1) {
@@ -373,10 +376,17 @@ export default function LyricsEditorPanel() {
     closePanel()
   }, [closePanel, isActionRunning, lyricsTextDirty, offsetDirty])
 
-  if (!panelRequest) return null
+  if (!presence.shouldRender || !displayedPanelRequest) return null
 
   return (
-    <aside className="metadata-editor-panel lyrics-editor-panel" role="dialog" aria-modal="false" aria-labelledby="lyrics-editor-panel-title">
+    <aside
+      className="metadata-editor-panel lyrics-editor-panel"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="lyrics-editor-panel-title"
+    >
       <div className="metadata-panel-header">
         <div className="metadata-panel-heading">
           <h2 id="lyrics-editor-panel-title">Edit Lyrics</h2>
@@ -446,7 +456,7 @@ export default function LyricsEditorPanel() {
                   </div>
                   <div className="lyrics-drop-zone-copy">
                     <span>Drop LRC or XLRC here</span>
-                    <small>Manual lyrics override sidecar files, embedded tags, and LRCLIB results.</small>
+                    <small>Manual lyrics override sidecar files, embedded tags, and online results.</small>
                   </div>
                   <button
                     type="button"

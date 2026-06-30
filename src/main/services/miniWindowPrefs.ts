@@ -5,14 +5,14 @@ import type { MiniPlayerVisualizerMode, MiniPlayerWindowPrefs } from '../../type
 
 const PREFS_FILE_NAME = 'mini-player-window.json'
 
-export const MINI_WINDOW_MIN_WIDTH = 280
+export const MINI_WINDOW_MIN_WIDTH = 300
 export const MINI_WINDOW_MIN_HEIGHT = 116
-export const MINI_WINDOW_DEFAULT_WIDTH = 420
-export const MINI_WINDOW_DEFAULT_HEIGHT = 220
+export const MINI_WINDOW_DEFAULT_WIDTH = 440
+export const MINI_WINDOW_DEFAULT_HEIGHT = 164
+export const MINI_WINDOW_MAX_WIDTH = 720
+export const MINI_WINDOW_MAX_HEIGHT = 720
 
-const MAX_WIDTH = 1600
-const MAX_HEIGHT = 1200
-const DEFAULT_MINI_PLAYER_VISUALIZER_MODE: MiniPlayerVisualizerMode = 'spectrum'
+const DEFAULT_MINI_PLAYER_VISUALIZER_MODE: MiniPlayerVisualizerMode = 'off'
 
 const DEFAULT_PREFS: MiniPlayerWindowPrefs = {
   width: MINI_WINDOW_DEFAULT_WIDTH,
@@ -64,12 +64,12 @@ export function normalizeMiniWindowPrefs(value: unknown): MiniPlayerWindowPrefs 
   const width = clamp(
     toFiniteNumber(raw.width) ?? DEFAULT_PREFS.width,
     MINI_WINDOW_MIN_WIDTH,
-    MAX_WIDTH
+    MINI_WINDOW_MAX_WIDTH
   )
   const height = clamp(
     toFiniteNumber(raw.height) ?? DEFAULT_PREFS.height,
     MINI_WINDOW_MIN_HEIGHT,
-    MAX_HEIGHT
+    MINI_WINDOW_MAX_HEIGHT
   )
   const alwaysOnTop = typeof raw.alwaysOnTop === 'boolean'
     ? raw.alwaysOnTop

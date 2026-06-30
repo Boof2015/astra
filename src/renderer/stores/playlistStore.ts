@@ -1,10 +1,17 @@
 import { create } from 'zustand'
 import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 import type { TrackSourceType } from '../../types/subsonic'
+import { normalizeTrackSortState, type PlaylistSessionSnapshot, type SessionTrackSortState } from '../utils/sessionState'
+import {
+  normalizeDynamicPlaylistRules,
+  type DynamicPlaylistRulesV1,
+  type PlaylistKind
+} from '../../shared/playlists/dynamicPlaylist'
 
 export interface Playlist {
   id: number
   name: string
+  kind: PlaylistKind
   created_at: number
   updated_at: number
   last_played_at: number | null
@@ -40,16 +47,29 @@ export interface PlaylistExportResult {
   warnings: string[]
 }
 
+export interface DynamicPlaylistPreview {
+  track_count: number
+  tracks: DbTrack[]
+}
+
 export interface CreatePlaylistOptions {
   name: string
   coverImagePath?: string | null
   trackPaths?: string[]
 }
 
+export interface CreateDynamicPlaylistOptions {
+  name: string
+  rules: DynamicPlaylistRulesV1
+  coverImagePath?: string | null
+}
+
 export interface PlaylistTrackMembershipSummary {
   playlistId: number
   matchedTrackCount: number
 }
+
+export type PlaylistTrackListSortState = SessionTrackSortState
 
 interface DbTrack {
   id: number
@@ -67,6 +87,7 @@ interface DbTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -82,6 +103,8 @@ interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number
@@ -105,10 +128,16 @@ interface PlaylistStore {
   selectedPlaylistId: number | null
   selectedPlaylistEntries: PlaylistTrackEntry[]
   selectedPlaylistTracks: DbTrack[]
+  sortState: PlaylistTrackListSortState | null
 
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
   createPlaylistWithOptions: (options: CreatePlaylistOptions) => Promise<Playlist>
+  createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
+  createDynamicPlaylistWithOptions: (options: CreateDynamicPlaylistOptions) => Promise<Playlist>
+  getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
+  updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
+  previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
   selectPlaylist: (id: number) => Promise<void>
@@ -124,6 +153,9 @@ interface PlaylistStore {
   getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
   exportPlaylistToM3u: (playlistId: number, playlistName: string) => Promise<PlaylistExportResult | null>
+  setSortState: (sortState: PlaylistTrackListSortState | null) => void
+  getSessionSnapshot: () => PlaylistSessionSnapshot
+  restoreSession: (snapshot: PlaylistSessionSnapshot) => Promise<void>
 }
 
 function getPlayableTracksFromEntries(entries: PlaylistTrackEntry[]): DbTrack[] {
@@ -146,6 +178,10 @@ function ensurePlaylistExportExtension(filePath: string): string {
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath
   if (/\.[^.]+$/.test(fileName)) return filePath
   return `${filePath}.m3u8`
+}
+
+export function getNormalPlaylists(playlists: Playlist[]): Playlist[] {
+  return playlists.filter((playlist) => playlist.kind !== 'dynamic')
 }
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
@@ -172,9 +208,13 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     selectedPlaylistId: null,
     selectedPlaylistEntries: [],
     selectedPlaylistTracks: [],
+    sortState: null,
 
     loadPlaylists: async () => {
-      const playlists = await window.electronAPI.library.getPlaylists()
+      const playlists = (await window.electronAPI.library.getPlaylists()).map((playlist) => ({
+        ...playlist,
+        kind: playlist.kind === 'dynamic' ? 'dynamic' as const : 'normal' as const
+      }))
       set({ playlists })
     },
 
@@ -211,6 +251,59 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
       await get().loadPlaylists()
       return playlist
+    },
+
+    createDynamicPlaylist: async (name: string, rules: DynamicPlaylistRulesV1) => {
+      return get().createDynamicPlaylistWithOptions({ name, rules })
+    },
+
+    createDynamicPlaylistWithOptions: async ({ name, rules, coverImagePath = null }) => {
+      const trimmedName = name.trim()
+      if (!trimmedName) {
+        throw new Error('Playlist name is required.')
+      }
+
+      const normalizedRules = normalizeDynamicPlaylistRules(rules)
+      const playlist = await window.electronAPI.library.createDynamicPlaylist(trimmedName, normalizedRules)
+
+      try {
+        if (coverImagePath && playlist.id > 0) {
+          await window.electronAPI.library.setPlaylistCustomCoverFromFile(playlist.id, coverImagePath)
+        }
+      } catch (error) {
+        if (playlist.id > 0) {
+          try {
+            await window.electronAPI.library.deletePlaylist(playlist.id)
+          } catch {
+            // Ignore rollback failures and surface the original error.
+          }
+        }
+        await get().loadPlaylists()
+        throw error
+      }
+
+      await get().loadPlaylists()
+      return playlist
+    },
+
+    getDynamicPlaylistRules: async (playlistId: number) => {
+      if (!Number.isInteger(playlistId) || playlistId <= 0) {
+        throw new Error('Playlist id is required.')
+      }
+      return window.electronAPI.library.getDynamicPlaylistRules(playlistId)
+    },
+
+    updateDynamicPlaylistRules: async (playlistId: number, rules: DynamicPlaylistRulesV1) => {
+      if (!Number.isInteger(playlistId) || playlistId <= 0) {
+        throw new Error('Playlist id is required.')
+      }
+      await window.electronAPI.library.updateDynamicPlaylistRules(playlistId, normalizeDynamicPlaylistRules(rules))
+      await get().loadPlaylists()
+      await refreshSelectedPlaylist(playlistId)
+    },
+
+    previewDynamicPlaylist: async (rules: DynamicPlaylistRulesV1) => {
+      return window.electronAPI.library.previewDynamicPlaylist(normalizeDynamicPlaylistRules(rules))
     },
 
     renamePlaylist: async (id: number, name: string) => {
@@ -324,6 +417,54 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (!filePath) return null
 
       return window.electronAPI.library.exportPlaylistToM3u(playlistId, ensurePlaylistExportExtension(filePath))
+    },
+
+    setSortState: (sortState) => {
+      set({ sortState: sortState ? normalizeTrackSortState(sortState) : null })
+    },
+
+    getSessionSnapshot: () => {
+      const state = get()
+      return {
+        selectedPlaylistId: state.selectedPlaylistId,
+        sortState: state.sortState ? { ...state.sortState } : null
+      }
+    },
+
+    restoreSession: async (snapshot) => {
+      const sortState = normalizeTrackSortState(snapshot.sortState)
+      const selectedPlaylistId = snapshot.selectedPlaylistId
+      if (selectedPlaylistId === null) {
+        set({
+          selectedPlaylistId: null,
+          selectedPlaylistEntries: [],
+          selectedPlaylistTracks: [],
+          sortState
+        })
+        return
+      }
+
+      if (isSystemFavoritesPlaylistId(selectedPlaylistId)) {
+        set({ sortState })
+        await get().selectPlaylist(selectedPlaylistId)
+        set({ sortState })
+        return
+      }
+
+      const playlistExists = get().playlists.some((playlist) => playlist.id === selectedPlaylistId)
+      if (!playlistExists) {
+        set({
+          selectedPlaylistId: null,
+          selectedPlaylistEntries: [],
+          selectedPlaylistTracks: [],
+          sortState
+        })
+        return
+      }
+
+      set({ sortState })
+      await get().selectPlaylist(selectedPlaylistId)
+      set({ sortState })
     }
   }
 })

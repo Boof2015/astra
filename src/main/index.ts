@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, session } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, session, globalShortcut } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -7,6 +7,7 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import {
   deepScanFlacIntegrityTrack,
   isFlacTarget,
@@ -21,10 +22,13 @@ import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
+  fetchSubsonicStarredTrackIds,
   fetchSubsonicTrackBytes,
   normalizeSubsonicBaseUrl,
+  parseSubsonicArtworkHash,
   parseSubsonicTrackPath,
   syncSubsonicCatalog,
+  syncSubsonicPlaylists,
   testSubsonicConnection,
   type SubsonicDownloadProgress
 } from './services/subsonic'
@@ -65,6 +69,8 @@ import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
+  MINI_WINDOW_MAX_HEIGHT,
+  MINI_WINDOW_MAX_WIDTH,
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
   loadMiniWindowPrefs,
@@ -158,7 +164,6 @@ import {
   type LastFmServiceConfig
 } from '../types/lastFm'
 import type { LyricsFormat, LyricsTrackQuery } from '../types/lyrics'
-import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -193,10 +198,29 @@ import type {
   IntegrityScanScope,
   IntegrityScanSummary
 } from '../types/libraryIntegrity'
-import { resolveUIScaleShortcutAction } from './uiScaleShortcuts'
+import {
+  resolveInterceptedKeyboardInput,
+  resolveMouseAppCommand,
+  sanitizeGlobalShortcutRegistrationRequests
+} from './inputBindings'
+import { GlobalInputShortcutService } from './services/globalInputShortcuts'
+import type { InputActionId } from '../types/inputBindings'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
+}
+
+const globalInputShortcutService = new GlobalInputShortcutService(globalShortcut)
+const GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW = new Set<InputActionId>([
+  'quick-launch-open',
+  'keybinds-open',
+  'jump-to-now-playing',
+  'focus-search-field',
+  'navigate-back',
+  'navigate-forward'
+])
 
 interface ResolvedBuildMetadata {
   commitHash: string | null
@@ -233,6 +257,7 @@ let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let artistCreditsBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let genreMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
 let jellyfinSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -395,6 +420,7 @@ function resolveBuildMetadata(): ResolvedBuildMetadata {
 }
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
+const MINI_WINDOW_TITLE = 'Astra Mini Player'
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
 const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
@@ -402,6 +428,8 @@ const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS = 16_000
 const ARTIST_CREDITS_BACKFILL_MIGRATION_KEY = 'artist_credits_backfill_v1_done'
+const GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS = 16_500
+const GENRE_METADATA_BACKFILL_MIGRATION_KEY = 'genre_metadata_backfill_v1_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
@@ -463,6 +491,7 @@ const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
 let artworkThumbnailCacheDir = ''
 const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
+const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -982,6 +1011,7 @@ const lastFmService = new LastFmService({
 
 const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
+  appVersion: app.getVersion(),
   onStatusChange: () => {
     broadcastLyricsStatus()
     const status = lyricsService.getStatus()
@@ -2918,41 +2948,6 @@ async function setSubsonicSourceDisabledState(sourceId: number): Promise<void> {
   await library.markSubsonicTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
 }
 
-async function hydrateSubsonicTrackArtworkHashes(
-  connection: { baseUrl: string; username: string; password: string },
-  tracks: Array<{ artwork_source_id: string | null }>,
-  onProgress?: (current: number, total: number, artworkId: string | null) => void
-): Promise<Map<string, string>> {
-  const artworkIds = Array.from(new Set(
-    tracks
-      .map((track) => track.artwork_source_id)
-      .filter((artworkId): artworkId is string => typeof artworkId === 'string' && artworkId.trim().length > 0)
-  ))
-
-  const hashesByArtworkId = new Map<string, string>()
-  onProgress?.(0, artworkIds.length, null)
-  let processed = 0
-  for (const artworkId of artworkIds) {
-    try {
-      const artworkPayload = await fetchSubsonicCoverArt(connection, artworkId, {
-        timeoutMs: 12_000,
-        retries: 1
-      })
-      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
-      if (hash) {
-        hashesByArtworkId.set(artworkId, hash)
-      }
-    } catch (error) {
-      console.warn(`Failed to sync Subsonic cover art ${artworkId}:`, error)
-    } finally {
-      processed += 1
-      onProgress?.(processed, artworkIds.length, artworkId)
-    }
-  }
-
-  return hashesByArtworkId
-}
-
 async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
   if (!source) return false
@@ -3026,42 +3021,59 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     })
 
     setSubsonicSyncProgress(sourceId, {
-      phase: 'artwork',
-      activity: 'Syncing artwork...'
-    })
-    const artworkHashesBySourceId = await hydrateSubsonicTrackArtworkHashes(
-      credentials.connection,
-      result.tracks,
-      (current, total, artworkId) => {
-        setSubsonicSyncProgress(sourceId, {
-          phase: 'artwork',
-          activity: 'Syncing artwork...',
-          current,
-          total,
-          detail: artworkId
-        })
-      }
-    )
-    const tracksForUpsert = result.tracks.map((track) => ({
-      ...track,
-      artwork_hash: track.artwork_source_id
-        ? (artworkHashesBySourceId.get(track.artwork_source_id) ?? track.artwork_hash)
-        : track.artwork_hash
-    }))
-
-    setSubsonicSyncProgress(sourceId, {
       phase: 'finalizing',
-      activity: 'Applying library updates...'
+      activity: 'Applying track metadata...'
     })
-    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, {
+    await library.upsertSubsonicTracks(sourceId, result.tracks, {
       persist: false,
-      syncSessionKey
+      syncSessionKey,
+      preserveExistingArtwork: true
     })
     await library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
     )
+    await library.persistLibraryDatabase()
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'playlists',
+      activity: 'Loading favorites and playlists...'
+    })
+    const [starredResult, playlistsResult] = await Promise.allSettled([
+      fetchSubsonicStarredTrackIds(credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1
+      }),
+      syncSubsonicPlaylists(sourceId, credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1,
+        onProgress: (progress) => {
+          setSubsonicSyncProgress(sourceId, {
+            phase: progress.phase,
+            activity: 'Loading favorites and playlists...',
+            current: progress.current,
+            total: progress.total,
+            detail: progress.detail
+          })
+        }
+      })
+    ])
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'finalizing',
+      activity: 'Applying favorites and playlists...'
+    })
+    if (starredResult.status === 'fulfilled') {
+      await library.syncSubsonicFavoriteTrackIds(sourceId, starredResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic starred tracks for source ${sourceId}:`, starredResult.reason)
+    }
+    if (playlistsResult.status === 'fulfilled') {
+      await library.syncSubsonicRemotePlaylists(sourceId, playlistsResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic playlists for source ${sourceId}:`, playlistsResult.reason)
+    }
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -3539,6 +3551,8 @@ async function createMiniPlayerWindow(): Promise<void> {
     y: prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
+    maxWidth: MINI_WINDOW_MAX_WIDTH,
+    maxHeight: MINI_WINDOW_MAX_HEIGHT,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -3548,7 +3562,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: 'Astra Mini Player',
+    title: MINI_WINDOW_TITLE,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -3559,6 +3573,11 @@ async function createMiniPlayerWindow(): Promise<void> {
   })
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'mini_player'
+  })
+
+  miniWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    miniWindow?.setTitle(MINI_WINDOW_TITLE)
   })
 
   miniWindow.on('ready-to-show', () => {
@@ -3729,6 +3748,13 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  mainWindow.on('app-command', (event, command) => {
+    const input = resolveMouseAppCommand(command)
+    if (!input) return
+    event.preventDefault()
+    mainWindow?.webContents.send('input-bindings:input', input)
+  })
+
   mainWindow.on('move', schedulePersistMainWindowPrefs)
   mainWindow.on('resize', schedulePersistMainWindowPrefs)
   mainWindow.on('maximize', schedulePersistMainWindowPrefs)
@@ -3741,6 +3767,7 @@ function createWindow(): void {
     void persistMainWindowPrefs()
   })
   mainWindow.on('closed', () => {
+    globalInputShortcutService.clear()
     mainWindow = null
     associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
@@ -3761,12 +3788,12 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    const action: UIScaleShortcutAction | null = resolveUIScaleShortcutAction(input, process.platform)
-    if (!action) return
+    const interceptedInput = resolveInterceptedKeyboardInput(input, process.platform)
+    if (!interceptedInput) return
 
     event.preventDefault()
     mainWindow?.webContents.setZoomLevel(0)
-    mainWindow?.webContents.send('ui-scale:shortcut', action)
+    mainWindow?.webContents.send('input-bindings:input', interceptedInput)
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
@@ -3904,6 +3931,49 @@ function scheduleArtistCreditsBackfillMigration(): void {
   }, ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS)
 }
 
+async function maybeRunGenreMetadataBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  let completed = false
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingGenreMetadata()
+    if (scanned > 0) {
+      console.log(`Genre metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+    completed = true
+  } catch (err) {
+    console.warn('Genre metadata backfill failed:', err)
+  } finally {
+    if (completed) {
+      try {
+        await library.setAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY, '1')
+      } catch (err) {
+        console.warn('Failed to persist genre metadata backfill migration flag:', err)
+      }
+    }
+  }
+}
+
+function scheduleGenreMetadataBackfillMigration(): void {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+  }
+
+  genreMetadataBackfillTimer = setTimeout(() => {
+    genreMetadataBackfillTimer = null
+    void maybeRunGenreMetadataBackfillOnce()
+  }, GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS)
+}
+
 async function maybeRunReplayGainBackfillOnce(): Promise<void> {
   if (!replayGainScanEnabled) {
     return
@@ -3985,6 +4055,38 @@ function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
     .digest('hex')
 }
 
+async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> {
+  const parsed = parseSubsonicArtworkHash(hash)
+  if (!parsed) return hash
+
+  if (subsonicArtworkResolveRequestCache.has(hash)) {
+    return subsonicArtworkResolveRequestCache.get(hash)!
+  }
+
+  const request = (async () => {
+    try {
+      const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+      const artworkPayload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, {
+        timeoutMs: 12_000,
+        retries: 1
+      })
+      const cachedHash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      if (!cachedHash) return null
+      await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
+      return cachedHash
+    } catch (error) {
+      console.warn(`Failed to resolve Subsonic artwork ${parsed.artworkId}:`, error)
+      return null
+    }
+  })()
+    .finally(() => {
+      subsonicArtworkResolveRequestCache.delete(hash)
+    })
+
+  subsonicArtworkResolveRequestCache.set(hash, request)
+  return request
+}
+
 function getErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null
   const code = (error as { code?: unknown }).code
@@ -4029,10 +4131,12 @@ function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: n
 
 async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
   if (!hash) return null
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
   try {
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const data = await readFile(artworkPath)
-    return toDataUrl(detectArtworkMimeType(hash, data), data)
+    return toDataUrl(detectArtworkMimeType(resolvedHash, data), data)
   } catch {
     return null
   }
@@ -4046,12 +4150,14 @@ async function getArtworkThumbnailDataUrlByHash(
   }
 ): Promise<string | null> {
   if (!hash) return null
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
 
   try {
     await ensureArtworkThumbnailCacheDirectory()
     const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
     const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
-    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}.jpg`)
+    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(resolvedHash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
@@ -4062,17 +4168,17 @@ async function getArtworkThumbnailDataUrlByHash(
       // Cache miss: generate and persist below.
     }
 
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkDataUrlByHash(resolvedHash)
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkDataUrlByHash(hash)
+      return getArtworkDataUrlByHash(resolvedHash)
     }
 
     try {
@@ -4085,8 +4191,8 @@ async function getArtworkThumbnailDataUrlByHash(
 
     return toDataUrl('image/jpeg', thumbnailBuffer)
   } catch (error) {
-    console.warn('Failed to resolve artwork thumbnail data URL:', hash, error)
-    return getArtworkDataUrlByHash(hash)
+    console.warn('Failed to resolve artwork thumbnail data URL:', resolvedHash, error)
+    return getArtworkDataUrlByHash(resolvedHash)
   }
 }
 
@@ -4249,6 +4355,7 @@ app.whenReady().then(async () => {
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
   scheduleArtistCreditsBackfillMigration()
+  scheduleGenreMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
 
   app.on('activate', () => {
@@ -4266,6 +4373,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
     mainWindowPersistTimer = null
@@ -4285,6 +4393,10 @@ app.on('before-quit', () => {
   if (artistCreditsBackfillTimer !== null) {
     clearTimeout(artistCreditsBackfillTimer)
     artistCreditsBackfillTimer = null
+  }
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+    genreMetadataBackfillTimer = null
   }
   if (replayGainBackfillTimer !== null) {
     clearTimeout(replayGainBackfillTimer)
@@ -4360,6 +4472,19 @@ ipcMain.handle('mini-player:close', async () => {
 
 ipcMain.handle('mini-player:getWindowState', () => {
   return getMiniWindowState()
+})
+
+ipcMain.handle('mini-player:isCursorInsideWindow', (event) => {
+  if (!miniWindow || miniWindow.isDestroyed() || event.sender !== miniWindow.webContents) {
+    return false
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = miniWindow.getBounds()
+  return cursor.x >= bounds.x
+    && cursor.x < bounds.x + bounds.width
+    && cursor.y >= bounds.y
+    && cursor.y < bounds.y + bounds.height
 })
 
 ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) => {
@@ -4511,6 +4636,20 @@ ipcMain.handle('app:getPerformanceStats', () => {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
   }
+})
+
+ipcMain.handle('input-bindings:configure-global', (event, rawRequests: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return []
+  const requests = sanitizeGlobalShortcutRegistrationRequests(rawRequests)
+  return globalInputShortcutService.configure(requests, (actionId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW.has(actionId)) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    mainWindow.webContents.send('input-bindings:global-action', actionId)
+  })
 })
 
 ipcMain.handle('app:getMainProcessMemoryStats', () => {
@@ -5826,6 +5965,10 @@ ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: libr
   return library.getTracksByArtist(artist, mode)
 })
 
+ipcMain.handle('library:getTracksByGenre', (_event, genre: string) => {
+  return library.getTracksByGenre(genre)
+})
+
 // Get tracks by album
 ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string, identityKey?: string) => {
   return library.getTracksByAlbum(album, artist, identityKey)
@@ -5834,6 +5977,10 @@ ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: stri
 // Get all artists
 ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) => {
   return library.getArtists(mode)
+})
+
+ipcMain.handle('library:getGenres', () => {
+  return library.getGenres()
 })
 
 ipcMain.handle('library:setArtistImageFromFile', async (_event, artist: string, mode: library.ArtistBrowseMode, imagePath: string) => {
@@ -6876,6 +7023,10 @@ ipcMain.handle('library:getTrackCount', () => {
   return library.getTrackCount()
 })
 
+ipcMain.handle('library:getTotalTrackDuration', () => {
+  return library.getTotalTrackDuration()
+})
+
 // Get artwork path
 ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
   return library.getArtworkPath(hash)
@@ -6974,6 +7125,22 @@ ipcMain.handle('library:getPlaylists', () => {
 
 ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
   return library.createPlaylist(name)
+})
+
+ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
+  return library.createDynamicPlaylist(name, rules)
+})
+
+ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) => {
+  return library.getDynamicPlaylistRules(playlistId)
+})
+
+ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
+  await library.updateDynamicPlaylistRules(playlistId, rules)
+})
+
+ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
+  return library.previewDynamicPlaylist(rules)
 })
 
 ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {

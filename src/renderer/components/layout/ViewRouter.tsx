@@ -8,21 +8,40 @@ import PlaylistView from '../views/PlaylistView'
 
 export default function ViewRouter() {
   const activeView = useUIStore((s) => s.activeView)
+  const controllerEnabledView = activeView === 'home' || activeView === 'library' || activeView === 'playlist'
 
+  let content
   switch (activeView) {
     case 'home':
-      return <HomeView />
+      content = <HomeView />
+      break
     case 'library':
-      return <LibraryView />
+      content = <LibraryView />
+      break
     case 'graph':
-      return <GraphView />
+      content = <GraphView />
+      break
     case 'eq':
-      return <EQView />
+      content = <EQView />
+      break
     case 'settings':
-      return <SettingsView />
+      content = <SettingsView />
+      break
     case 'playlist':
-      return <PlaylistView />
+      content = <PlaylistView />
+      break
     default:
-      return <HomeView />
+      content = <HomeView />
   }
+
+  return (
+    <div
+      className="app-view-transition-surface"
+      data-controller-region={controllerEnabledView ? 'true' : undefined}
+      data-controller-region-id={controllerEnabledView ? `view:${activeView}` : undefined}
+      data-controller-exclude={controllerEnabledView ? undefined : 'true'}
+    >
+      {content}
+    </div>
+  )
 }

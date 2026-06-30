@@ -23,6 +23,16 @@ import {
 import { clearDiscordCoverArtLookupCache } from '../../hooks/useDiscordPresence'
 import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerStore'
 import {
+  ALBUM_SORT_MODE_STORAGE_KEY,
+  ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
+  ASTRA_SESSION_STATE_STORAGE_KEY,
+  INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
+  INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
+  TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
+} from '../../constants/settingsStorageKeys'
+import {
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
@@ -31,6 +41,12 @@ import {
   UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
+import {
+  GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
+  INPUT_BINDINGS_STORAGE_KEY,
+  useInputBindingStore
+} from '../../stores/inputBindingStore'
+import { clearPersistedSessionStateForReset } from '../../utils/sessionAutosave'
 
 export const RENDERER_SETTINGS_KEYS = [
   'astra-theme-settings-v1',
@@ -45,10 +61,14 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
   PLAYER_VOLUME_STORAGE_KEY,
+  ASTRA_SESSION_STATE_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
+  'astra-discord-rpc-small-icon-enabled',
   'astra-discord-rpc-compact-status-mode-v1',
   'astra-discord-rpc-expanded-info-mode-v1',
+  'astra-discord-rpc-link-destination-v1',
+  'astra-discord-rpc-pause-clear-minutes-v1',
   'astra-discord-cover-art-cache-v1',
   'astra-discord-cover-art-cache-v2',
   'astra-discord-cover-art-cache-v3',
@@ -64,10 +84,18 @@ export const RENDERER_SETTINGS_KEYS = [
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
+  INPUT_BINDINGS_STORAGE_KEY,
+  GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   ARTIST_BROWSE_MODE_STORAGE_KEY,
-  'astra-library-tracklist-bpm-key-visible-v1',
+  TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
+  ALBUM_SORT_MODE_STORAGE_KEY,
+  INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
+  INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
+  ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
   EQ_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
 ] as const
@@ -135,6 +163,8 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetHomeGreetingTextMode()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   useUIStore.getState().resetJumpToPlayingDestination()
+  useInputBindingStore.getState().resetAll()
+  clearPersistedSessionStateForReset()
   return 'All renderer settings reset.'
 }
 

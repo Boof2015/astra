@@ -495,12 +495,8 @@ export default function FullscreenMode() {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
-  const currentTrackSource = usePlayerStore((s) => s.currentTrackSource)
-  const playbackFuture = usePlayerStore((s) => s.playbackFuture)
-  const userQueue = usePlayerStore((s) => s.userQueue)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
-  const autoQueueIndex = usePlayerStore((s) => s.autoQueueIndex)
-  const shuffledAutoIndices = usePlayerStore((s) => s.shuffledAutoIndices)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const upcomingQueueIds = usePlayerStore((s) => s.upcomingQueueIds)
   const togglePlay = usePlayerStore((s) => s.togglePlay)
   const playNext = usePlayerStore((s) => s.playNext)
   const playPrevious = usePlayerStore((s) => s.playPrevious)
@@ -534,15 +530,11 @@ export default function FullscreenMode() {
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
   const nextTrack = useMemo(() => usePlayerStore.getState().getResolvedNextTrack(), [
-    autoQueue,
-    autoQueueIndex,
     currentTrack,
-    currentTrackSource,
-    playbackFuture,
+    queueItems,
     repeat,
     shuffle,
-    shuffledAutoIndices,
-    userQueue
+    upcomingQueueIds
   ])
   const isFavorite = currentTrack ? favorites.has(currentTrack.path) : false
   const currentTrackId = currentTrack?.id ?? null
@@ -735,6 +727,7 @@ export default function FullscreenMode() {
       role="dialog"
       aria-modal="true"
       aria-label="Fullscreen player"
+      data-controller-scope="overlay"
     >
       <div className="fullscreen-backdrop" aria-hidden="true">
         {showPreviousBackdropLayer && (
@@ -780,7 +773,12 @@ export default function FullscreenMode() {
           <div
             className={`fullscreen-hero fullscreen-hero-${heroPhase}${showLyricsDock ? ' lyrics-active' : ''}`}
           >
-            <div className="fullscreen-hero-topbar">
+            <div
+              className="fullscreen-hero-topbar"
+              data-controller-group="fullscreen-topbar"
+              data-controller-axis="horizontal"
+              data-controller-auto-items="true"
+            >
               <span className="fullscreen-status-label">
                 {isLoadingTrack ? 'Loading' : isPlaying ? 'Now Playing' : currentTrack ? 'Paused' : 'Ready'}
               </span>
@@ -844,7 +842,12 @@ export default function FullscreenMode() {
             />
 
             <div className="fullscreen-console">
-              <div className="fullscreen-controls">
+              <div
+                className="fullscreen-controls"
+                data-controller-group="fullscreen-controls"
+                data-controller-axis="horizontal"
+                data-controller-auto-items="true"
+              >
                 <button
                   className={`fullscreen-control-btn ${shuffle ? 'active' : ''}`}
                   aria-label="Shuffle"
@@ -933,7 +936,12 @@ export default function FullscreenMode() {
               <FullscreenWaveformSection />
   
               <div className="fullscreen-footer">
-                <div className="fullscreen-footer-primary">
+                <div
+                  className="fullscreen-footer-primary"
+                  data-controller-group="fullscreen-footer"
+                  data-controller-axis="horizontal"
+                  data-controller-auto-items="true"
+                >
                   <button
                     className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
                     aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}

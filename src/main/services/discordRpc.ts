@@ -6,14 +6,21 @@ import { tmpdir } from 'os'
 import {
   buildDiscordActivityFromPresence,
   type DiscordActivityCompactStatusMode,
-  type DiscordActivityExpandedInfoMode
+  type DiscordActivityExpandedInfoMode,
+  type DiscordActivityLinkDestination
 } from './discordRpcActivity'
 
 const DISCORD_IPC_ENDPOINTS = 10
 const RECONNECT_DELAY_MS = 5000
 const MAX_RPC_PACKET_SIZE = 1024 * 1024
 const DISCORD_RPC_CLIENT_ID = '1471059486100815915'
+const DISCORD_SMALL_IMAGE_KEY = 'astra-logo'
+const DISCORD_SMALL_IMAGE_TEXT = 'Astra'
+const DISCORD_SMALL_IMAGE_LINK_URL = 'https://github.com/Boof2015/astra'
+const DEFAULT_PAUSE_CLEAR_MINUTES = 5
+const MAX_PAUSE_CLEAR_MINUTES = 1440
 const DISCORD_APP_INFO_LOOKUP_URL = `https://discord.com/api/v10/oauth2/applications/${DISCORD_RPC_CLIENT_ID}/rpc`
+const DISCORD_APP_ASSETS_LOOKUP_URL = `https://discord.com/api/v10/oauth2/applications/${DISCORD_RPC_CLIENT_ID}/assets`
 const DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS = 5000
 const DISCORD_RPC_USER_AGENT = 'Astra-Discord-RPC/0.2.0 (https://github.com/Boof2015/astra)'
 const DISCORD_SET_ACTIVITY_COALESCE_MS = 150
@@ -62,8 +69,11 @@ export interface DiscordPresenceUpdate {
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled?: boolean
+  smallIconEnabled?: boolean
   compactStatusMode?: DiscordActivityCompactStatusMode
   expandedInfoMode?: DiscordActivityExpandedInfoMode
+  linkDestination?: DiscordActivityLinkDestination
+  pauseClearMinutes?: number
 }
 
 export interface DiscordRpcConfigureResult {
@@ -74,6 +84,11 @@ export interface DiscordRpcConfigureResult {
 
 interface DiscordRpcApplicationInfoResponse {
   icon?: unknown
+}
+
+interface DiscordRpcApplicationAssetResponse {
+  id?: unknown
+  name?: unknown
 }
 
 function normalizeText(value: unknown): string | undefined {
@@ -99,6 +114,16 @@ function normalizeCompactStatusMode(value: unknown): DiscordActivityCompactStatu
 
 function normalizeExpandedInfoMode(value: unknown): DiscordActivityExpandedInfoMode {
   return value === 'album' ? 'album' : 'file-info'
+}
+
+function normalizeLinkDestination(value: unknown): DiscordActivityLinkDestination {
+  return value === 'lastfm' || value === 'off' ? value : 'ytmusic'
+}
+
+function normalizePauseClearMinutes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PAUSE_CLEAR_MINUTES
+  if (value <= 0) return 0
+  return Math.min(Math.round(value), MAX_PAUSE_CLEAR_MINUTES)
 }
 
 function normalizeHttpsUrl(value: unknown): string | undefined {
@@ -128,8 +153,13 @@ function listDirectories(path: string): string[] {
 export class DiscordRpcService {
   private enabled = false
   private coverArtEnabled = false
+  private smallIconEnabled = true
   private compactStatusMode: DiscordActivityCompactStatusMode = 'title'
   private expandedInfoMode: DiscordActivityExpandedInfoMode = 'file-info'
+  private linkDestination: DiscordActivityLinkDestination = 'ytmusic'
+  private pauseClearMinutes = DEFAULT_PAUSE_CLEAR_MINUTES
+  private pauseClearTimer: NodeJS.Timeout | null = null
+  private presenceSuppressedByPause = false
   private socket: Socket | null = null
   private ready = false
   private receiveBuffer = Buffer.alloc(0)
@@ -144,26 +174,40 @@ export class DiscordRpcService {
   private sendAfterInFlight = false
   private fallbackLargeImageUrl: string | null = null
   private fallbackLargeImageLookupPromise: Promise<void> | null = null
+  private smallImageUrl: string | null = null
+  private smallImageLookupPromise: Promise<void> | null = null
 
   async configure(options: DiscordRpcConfigureOptions): Promise<DiscordRpcConfigureResult> {
     const nextEnabled = Boolean(options.enabled)
     const nextCoverArtEnabled = Boolean(options.coverArtEnabled)
+    const nextSmallIconEnabled = options.smallIconEnabled !== false
     const nextCompactStatusMode = normalizeCompactStatusMode(options.compactStatusMode)
     const nextExpandedInfoMode = normalizeExpandedInfoMode(options.expandedInfoMode)
+    const nextLinkDestination = normalizeLinkDestination(options.linkDestination)
+    const nextPauseClearMinutes = normalizePauseClearMinutes(options.pauseClearMinutes)
     const enabledChanged = this.enabled !== nextEnabled
+    const pauseClearChanged = this.pauseClearMinutes !== nextPauseClearMinutes
     const displayChanged = this.coverArtEnabled !== nextCoverArtEnabled
+      || this.smallIconEnabled !== nextSmallIconEnabled
       || this.compactStatusMode !== nextCompactStatusMode
       || this.expandedInfoMode !== nextExpandedInfoMode
+      || this.linkDestination !== nextLinkDestination
+      || pauseClearChanged
 
     this.enabled = nextEnabled
     this.coverArtEnabled = nextCoverArtEnabled
+    this.smallIconEnabled = nextSmallIconEnabled
     this.compactStatusMode = nextCompactStatusMode
     this.expandedInfoMode = nextExpandedInfoMode
+    this.linkDestination = nextLinkDestination
+    this.pauseClearMinutes = nextPauseClearMinutes
 
     if (!this.enabled) {
       this.clearPresenceSendTimer()
       this.clearSetActivityInFlight()
       this.pendingForcePresenceSend = false
+      this.clearPauseClearTimer()
+      this.presenceSuppressedByPause = false
       this.clearReconnectTimer()
       this.disconnectSocket()
       return {
@@ -173,6 +217,13 @@ export class DiscordRpcService {
       }
     }
 
+    if (pauseClearChanged) {
+      // Restart the countdown (and un-clear a cleared presence) under the new duration.
+      this.clearPauseClearTimer()
+      this.presenceSuppressedByPause = false
+    }
+    this.syncPauseClearState()
+
     if (enabledChanged) {
       this.disconnectSocket()
     }
@@ -180,6 +231,9 @@ export class DiscordRpcService {
     const connected = await this.ensureConnected()
     if (!this.fallbackLargeImageUrl) {
       void this.ensureFallbackLargeImageUrl()
+    }
+    if (!this.smallImageUrl) {
+      void this.ensureSmallImageUrl()
     }
     if (displayChanged && this.ready && this.pendingPresence) {
       this.queuePendingPresenceSend(0, true)
@@ -225,6 +279,8 @@ export class DiscordRpcService {
         : null
     }
 
+    this.syncPauseClearState()
+
     if (!this.enabled) return
     if (!this.ready) {
       void this.ensureConnected()
@@ -238,6 +294,8 @@ export class DiscordRpcService {
     this.pendingPresence = null
     this.lastPresenceSignature = null
     this.pendingForcePresenceSend = true
+    this.clearPauseClearTimer()
+    this.presenceSuppressedByPause = false
     if (!this.ready) {
       this.clearPresenceSendTimer()
       return
@@ -252,8 +310,35 @@ export class DiscordRpcService {
     this.clearPresenceSendTimer()
     this.clearSetActivityInFlight()
     this.pendingForcePresenceSend = false
+    this.clearPauseClearTimer()
+    this.presenceSuppressedByPause = false
     this.clearReconnectTimer()
     this.disconnectSocket()
+  }
+
+  private clearPauseClearTimer(): void {
+    if (!this.pauseClearTimer) return
+    clearTimeout(this.pauseClearTimer)
+    this.pauseClearTimer = null
+  }
+
+  private syncPauseClearState(): void {
+    const paused = this.pendingPresence?.playbackState === 'paused' && Boolean(this.pendingPresence?.track)
+
+    if (!this.enabled || !paused || this.pauseClearMinutes <= 0) {
+      this.clearPauseClearTimer()
+      this.presenceSuppressedByPause = false
+      return
+    }
+
+    if (this.presenceSuppressedByPause) return
+    if (this.pauseClearTimer) return
+
+    this.pauseClearTimer = setTimeout(() => {
+      this.pauseClearTimer = null
+      this.presenceSuppressedByPause = true
+      this.queuePendingPresenceSend(0, true)
+    }, this.pauseClearMinutes * 60_000)
   }
 
   private async ensureConnected(): Promise<boolean> {
@@ -519,10 +604,19 @@ export class DiscordRpcService {
   private buildActivityFromPresence(
     presence: DiscordPresenceUpdate | null
   ): Record<string, unknown> | null {
+    if (this.presenceSuppressedByPause) return null
+
     const coverArtUrl = this.coverArtEnabled ? normalizeHttpsUrl(presence?.track?.coverArtUrl) : undefined
     const largeImageUrl = coverArtUrl ?? this.fallbackLargeImageUrl ?? undefined
+    // Only badge cover art; the fallback large image is already the Astra icon.
+    // Prefer the resolved CDN URL; the raw asset key is a fallback while lookup is pending.
+    const showSmallIcon = this.smallIconEnabled && Boolean(coverArtUrl)
     return buildDiscordActivityFromPresence(presence, {
       largeImageUrl,
+      smallImageKey: showSmallIcon ? (this.smallImageUrl ?? DISCORD_SMALL_IMAGE_KEY) : undefined,
+      smallImageText: showSmallIcon ? DISCORD_SMALL_IMAGE_TEXT : undefined,
+      smallImageLinkUrl: showSmallIcon ? DISCORD_SMALL_IMAGE_LINK_URL : undefined,
+      linkDestination: this.linkDestination,
       compactStatusMode: this.compactStatusMode,
       expandedInfoMode: this.expandedInfoMode
     })
@@ -575,6 +669,64 @@ export class DiscordRpcService {
       if (!iconUrl) return
 
       this.fallbackLargeImageUrl = iconUrl
+      if (this.enabled && this.ready && this.pendingPresence) {
+        this.queuePendingPresenceSend(0, true)
+      }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private async ensureSmallImageUrl(): Promise<void> {
+    if (this.smallImageUrl) return
+    if (this.smallImageLookupPromise) {
+      await this.smallImageLookupPromise
+      return
+    }
+
+    this.smallImageLookupPromise = this.fetchSmallImageUrl()
+      .catch(() => {
+        // Ignore lookup failures and keep presence updates running.
+      })
+      .finally(() => {
+        this.smallImageLookupPromise = null
+      })
+
+    await this.smallImageLookupPromise
+  }
+
+  private async fetchSmallImageUrl(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), DISCORD_APP_ICON_LOOKUP_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(DISCORD_APP_ASSETS_LOOKUP_URL, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': DISCORD_RPC_USER_AGENT
+        },
+        signal: controller.signal
+      })
+
+      if (!response.ok) return
+
+      const payload: unknown = await response.json()
+      if (!Array.isArray(payload)) return
+
+      const asset = payload.find((entry: DiscordRpcApplicationAssetResponse) => {
+        return Boolean(entry) && typeof entry === 'object' && normalizeText(entry.name) === DISCORD_SMALL_IMAGE_KEY
+      }) as DiscordRpcApplicationAssetResponse | undefined
+
+      const assetId = normalizeText(asset?.id)
+      if (!assetId) return
+
+      const assetUrl = normalizeHttpsUrl(
+        `https://cdn.discordapp.com/app-assets/${DISCORD_RPC_CLIENT_ID}/${assetId}.png?size=512`
+      )
+      if (!assetUrl) return
+
+      this.smallImageUrl = assetUrl
       if (this.enabled && this.ready && this.pendingPresence) {
         this.queuePendingPresenceSend(0, true)
       }
@@ -659,6 +811,9 @@ export class DiscordRpcService {
       this.ready = true
       if (!this.fallbackLargeImageUrl) {
         void this.ensureFallbackLargeImageUrl()
+      }
+      if (!this.smallImageUrl) {
+        void this.ensureSmallImageUrl()
       }
       this.queuePendingPresenceSend(0, true)
       return

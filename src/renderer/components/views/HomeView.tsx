@@ -1,15 +1,18 @@
-import { type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { TrackSourceType } from '../../../types/subsonic'
+import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { formatExactDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
 
 interface HomeTrack {
   path: string
@@ -771,6 +774,7 @@ function formatHomeClockDate(date: Date): string {
 
 export default function HomeView() {
   const totalTrackCount = useLibraryStore((s) => s.totalTrackCount)
+  const totalTrackDuration = useLibraryStore((s) => s.totalTrackDuration)
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
@@ -787,11 +791,14 @@ export default function HomeView() {
   const selectedPlaylistId = usePlaylistStore((s) => s.selectedPlaylistId)
   const loadPlaylists = usePlaylistStore((s) => s.loadPlaylists)
   const createPlaylistWithOptions = usePlaylistStore((s) => s.createPlaylistWithOptions)
+  const createDynamicPlaylistWithOptions = usePlaylistStore((s) => s.createDynamicPlaylistWithOptions)
+  const previewDynamicPlaylist = usePlaylistStore((s) => s.previewDynamicPlaylist)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const activeView = useUIStore((s) => s.activeView)
   const homeGreetingTextMode = useUIStore((s) => s.homeGreetingTextMode)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
 
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const recentlyPlayed = useMemo(
@@ -813,8 +820,13 @@ export default function HomeView() {
   const greetingCardRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const recentRowRef = useRef<HTMLDivElement | null>(null)
+  const playlistRowRef = useRef<HTMLDivElement | null>(null)
   const hasLibraryContent = totalTrackCount > 0 || albums.length > 0 || artists.length > 0
   const recentLimits = useMemo(() => getHomeRecentLimits(viewportWidth), [viewportWidth])
+
+  useHorizontalWheelScroll(recentRowRef)
+  useHorizontalWheelScroll(playlistRowRef)
 
   useEffect(() => {
     void loadPlaylists()
@@ -1095,30 +1107,14 @@ export default function HomeView() {
     })
   }
 
-  const handleRecentRowWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
-    const element = event.currentTarget
-    const maxScrollLeft = element.scrollWidth - element.clientWidth
-
-    if (maxScrollLeft <= 0) return
-    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
-
-    const isAtStart = element.scrollLeft <= 0
-    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
-
-    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
-
-    const deltaY = event.deltaMode === 1
-      ? event.deltaY * 16
-      : event.deltaMode === 2
-        ? event.deltaY * element.clientWidth
-        : event.deltaY
-
-    event.preventDefault()
-    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
-  }, [])
-
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
+  }
+
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+    const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
   }
@@ -1189,7 +1185,7 @@ export default function HomeView() {
 
   return (
     <div className="home-view">
-      <div className="home-content">
+      <div className="home-content" data-controller-scroll>
         <section ref={greetingCardRef} className={`home-greeting-card is-${greeting.bucket}`}>
           <canvas ref={skyCanvasRef} className="home-greeting-sky-canvas" aria-hidden="true" />
           <canvas ref={starCanvasRef} className="home-greeting-star-canvas" aria-hidden="true" />
@@ -1208,6 +1204,10 @@ export default function HomeView() {
             </div>
           )}
           <div className="home-greeting-stats">
+            <div className="home-greeting-stat home-greeting-stat-duration">
+              <span className="home-greeting-stat-label">Total Time</span>
+              <span className="home-greeting-stat-value">{formatExactDuration(totalTrackDuration)}</span>
+            </div>
             <div className="home-greeting-stat">
               <span className="home-greeting-stat-label">Tracks</span>
               <span className="home-greeting-stat-value">{totalTrackCount}</span>
@@ -1223,17 +1223,22 @@ export default function HomeView() {
           </div>
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-tracks" data-controller-axis="horizontal">
           <div className="home-section-header">
             <h2>RECENTLY PLAYED</h2>
           </div>
           {recentTracks.length > 0 ? (
-            <div className="home-recent-row" onWheel={handleRecentRowWheel}>
+            <div className="home-recent-row" ref={recentRowRef}>
               {recentTracks.map((track, index) => (
                 <article
                   key={track.path}
                   className={`home-track-card ${currentTrackPath === track.path ? 'active' : ''}`}
                   onClick={() => handlePlayRecentList(track, index)}
+                  data-controller-focusable="true"
+                  data-controller-key={`home-track:${track.path}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Play ${track.title} by ${track.artist}`}
                 >
                   <div className="home-track-artwork">
                     {track.artwork_hash ? (
@@ -1254,7 +1259,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-artists" data-controller-axis="grid">
           <div className="home-section-header">
             <h2>RECENT ARTISTS</h2>
             <div className="home-section-actions">
@@ -1270,6 +1275,11 @@ export default function HomeView() {
                   key={artist.artist}
                   className="home-artist-chip"
                   onClick={() => handleOpenArtist(artist.artist)}
+                  data-controller-focusable="true"
+                  data-controller-key={`home-artist:${artist.artist}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${artist.artist}`}
                 >
                   <div className="home-artist-avatar">
                     {artist.artwork_hash ? (
@@ -1295,7 +1305,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-recent-albums" data-controller-axis="grid">
           <div className="home-section-header">
             <h2>RECENT ALBUMS</h2>
             <div className="home-section-actions">
@@ -1311,6 +1321,26 @@ export default function HomeView() {
                   key={album.identity_key}
                   className="home-album-card"
                   onClick={() => handleOpenAlbum(album)}
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`home-album:${album.identity_key}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${album.album} by ${album.artist}`}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: {
+                        kind: 'album',
+                        album: album.album,
+                        artist: album.artist,
+                        identityKey: album.identity_key
+                      },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                 >
                   <div className="home-album-artwork">
                     {album.artwork_hash ? (
@@ -1333,7 +1363,7 @@ export default function HomeView() {
           )}
         </section>
 
-        <section className="home-section">
+        <section className="home-section" data-controller-group="home-playlists" data-controller-axis="horizontal">
           <div className="home-section-header">
             <h2>PLAYLISTS</h2>
             <div className="home-section-actions">
@@ -1364,12 +1394,27 @@ export default function HomeView() {
           )}
 
           {homePlaylists.length > 0 ? (
-            <div className="home-playlist-row">
+            <div className="home-playlist-row" ref={playlistRowRef}>
               {homePlaylists.map((playlist) => (
                 <article
                   key={playlist.id}
                   className={`home-playlist-rail-card ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''}`}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`home-playlist:${playlist.id}`}
+                  tabIndex={-1}
+                  role="button"
+                  aria-label={`Open ${playlist.name}`}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
                 >
                   <PlaylistCover
                     hash={playlist.cover_hash}
@@ -1379,7 +1424,7 @@ export default function HomeView() {
                   />
                   <div className="home-playlist-rail-meta">
                     <div className="home-playlist-rail-name">{playlist.name}</div>
-                    <div className="home-playlist-rail-count">{playlist.track_count} tracks</div>
+                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? 'Dynamic - ' : ''}{playlist.track_count} tracks</div>
                   </div>
                 </article>
               ))}
@@ -1393,6 +1438,9 @@ export default function HomeView() {
         isOpen={isCreatePlaylistModalOpen}
         onClose={() => setIsCreatePlaylistModalOpen(false)}
         onCreate={handleCreatePlaylist}
+        onCreateDynamic={handleCreateDynamicPlaylist}
+        onPreviewDynamic={previewDynamicPlaylist}
+        allowDynamic
       />
     </div>
   )

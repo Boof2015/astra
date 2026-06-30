@@ -3,6 +3,7 @@ import { spectrum as nativeSpectrum, isNativeAvailable, warnNativeUnavailableOnc
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import {
   DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
@@ -342,7 +343,7 @@ export class SpectrumAnalyzer {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
     const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter((frequency) => {
       return frequency >= minFrequency && frequency <= maxFrequency
     })
@@ -400,7 +401,7 @@ export class SpectrumAnalyzer {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
     if (width <= 0 || height <= 0) {
       return
     }
@@ -601,7 +602,7 @@ export class SpectrumAnalyzer {
     const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
 
     ctx.strokeStyle = options.gridColor
     ctx.lineWidth = dpr

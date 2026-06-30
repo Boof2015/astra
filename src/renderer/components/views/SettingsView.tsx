@@ -6,7 +6,10 @@ import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
+import KeybindSettings from '../settings/KeybindSettings'
+import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
+import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
@@ -26,7 +29,7 @@ import {
   type ReplayGainMode
 } from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
-import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
+import { DISCORD_PAUSE_CLEAR_MINUTE_PRESETS, useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -264,6 +267,7 @@ export default function SettingsView() {
   const [appBuildCopyValue, setAppBuildCopyValue] = useState('')
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
+  const [settingsTransferWizardOpen, setSettingsTransferWizardOpen] = useState(false)
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
@@ -305,6 +309,8 @@ export default function SettingsView() {
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
+  const setShowTracklistGenre = useLibraryStore((state) => state.setShowTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
@@ -312,13 +318,19 @@ export default function SettingsView() {
   const {
     enabled: discordEnabled,
     coverArtEnabled: discordCoverArtEnabled,
+    smallIconEnabled: discordSmallIconEnabled,
     compactStatusMode: discordCompactStatusMode,
     expandedInfoMode: discordExpandedInfoMode,
+    linkDestination: discordLinkDestination,
+    pauseClearMinutes: discordPauseClearMinutes,
     statusMessage: discordStatusMessage,
     setEnabled: setDiscordEnabled,
     setCoverArtEnabled: setDiscordCoverArtEnabled,
+    setSmallIconEnabled: setDiscordSmallIconEnabled,
     setCompactStatusMode: setDiscordCompactStatusMode,
     setExpandedInfoMode: setDiscordExpandedInfoMode,
+    setLinkDestination: setDiscordLinkDestination,
+    setPauseClearMinutes: setDiscordPauseClearMinutes,
   } = useDiscordSettingsStore()
   const {
     status: localApiStatus,
@@ -394,7 +406,7 @@ export default function SettingsView() {
     revealPreviousLog,
   } = useDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
-  const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('spectrum')
+  const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('off')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
   const [phoneRemotePortInput, setPhoneRemotePortInput] = useState(String(PHONE_REMOTE_DEFAULT_PORT))
   const [lastFmProfileModalMode, setLastFmProfileModalMode] = useState<'create' | 'edit' | null>(null)
@@ -427,7 +439,6 @@ export default function SettingsView() {
   })
   const developerRevealClickCountRef = useRef(0)
   const developerRevealResetTimeoutRef = useRef<number | null>(null)
-  const openKeyboardShortcuts = useUIStore((state) => state.openKeyboardShortcuts)
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
@@ -435,6 +446,8 @@ export default function SettingsView() {
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
+  const controllerSupportEnabled = useUIStore((state) => state.controllerSupportEnabled)
+  const setControllerSupportEnabled = useUIStore((state) => state.setControllerSupportEnabled)
   const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
   const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
   const parallaxExperimentEnabled = useUIStore((state) => state.parallaxExperimentEnabled)
@@ -855,6 +868,7 @@ export default function SettingsView() {
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
   const lastFmProfileModalOpen = lastFmProfileModalMode != null
   const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Destination' : 'Add Destination'
+  const lastFmProfilePresence = usePresence(lastFmProfileModalOpen ? lastFmProfileModalTitle : null)
   const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
     !lastFmProfileUrlInput.trim() ||
     (isScrobbleUsernameRequired(lastFmProfileProtocolInput) && !lastFmProfileUsernameInput.trim()) ||
@@ -1716,6 +1730,15 @@ export default function SettingsView() {
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Genre</span>
+                    <button
+                      className={`settings-toggle ${showTracklistGenre ? 'active' : ''}`}
+                      onClick={() => setShowTracklistGenre(!showTracklistGenre)}
+                    >
+                      {showTracklistGenre ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Added Date</span>
                     <button
                       className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
@@ -1946,6 +1969,8 @@ export default function SettingsView() {
           </section>
             )}
 
+            {activeSectionId === 'keybinds' && <KeybindSettings />}
+
             {activeSectionId === 'integrations' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
@@ -2110,7 +2135,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Lyrics</h4>
-                  <p>LRC, XLRC, embedded lyrics, and optional LRCLIB fallback.</p>
+                  <p>LRC, XLRC, embedded lyrics, and optional XLRCDB/LRCLIB lookup.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -2206,6 +2231,16 @@ export default function SettingsView() {
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Astra Icon on Cover Art</span>
+                    <button
+                      className={`settings-toggle ${discordSmallIconEnabled ? 'active' : ''}`}
+                      onClick={() => void setDiscordSmallIconEnabled(!discordSmallIconEnabled)}
+                      disabled={!discordEnabled || !discordCoverArtEnabled}
+                    >
+                      {discordSmallIconEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Compact Status</span>
                     <div
                       className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
@@ -2261,6 +2296,78 @@ export default function SettingsView() {
                       >
                         Album
                       </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Title & Artist Links</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-links ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord title and artist links"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{
+                          transform: discordLinkDestination === 'lastfm'
+                            ? 'translateX(100%)'
+                            : discordLinkDestination === 'off'
+                              ? 'translateX(200%)'
+                              : 'translateX(0)'
+                        }}
+                      />
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'ytmusic' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('ytmusic')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'ytmusic'}
+                      >
+                        YT Music
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'lastfm' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('lastfm')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'lastfm'}
+                      >
+                        Last.fm
+                      </button>
+                      <button
+                        className={`library-segmented-btn ${discordLinkDestination === 'off' ? 'active' : ''}`}
+                        onClick={() => void setDiscordLinkDestination('off')}
+                        disabled={!discordEnabled}
+                        aria-pressed={discordLinkDestination === 'off'}
+                      >
+                        Off
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Clear When Paused</span>
+                    <div
+                      className={`library-segmented-toggle settings-discord-pause ${!discordEnabled ? 'is-disabled' : ''}`}
+                      role="group"
+                      aria-label="Discord clear presence when paused"
+                    >
+                      <span
+                        className="library-segmented-highlight"
+                        style={{
+                          transform: `translateX(${Math.max(
+                            0,
+                            (DISCORD_PAUSE_CLEAR_MINUTE_PRESETS as readonly number[]).indexOf(discordPauseClearMinutes)
+                          ) * 100}%)`
+                        }}
+                      />
+                      {DISCORD_PAUSE_CLEAR_MINUTE_PRESETS.map((minutes) => (
+                        <button
+                          key={minutes}
+                          className={`library-segmented-btn ${discordPauseClearMinutes === minutes ? 'active' : ''}`}
+                          onClick={() => void setDiscordPauseClearMinutes(minutes)}
+                          disabled={!discordEnabled}
+                          aria-pressed={discordPauseClearMinutes === minutes}
+                        >
+                          {minutes === 0 ? 'Off' : `${minutes}m`}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -2369,6 +2476,25 @@ export default function SettingsView() {
               <h3>Experimental</h3>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Controller Support</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Controller Support</span>
+                    <button
+                      className={`settings-toggle ${controllerSupportEnabled ? 'active' : ''}`}
+                      onClick={() => setControllerSupportEnabled(!controllerSupportEnabled)}
+                    >
+                      {controllerSupportEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Navigate Astra with an Xbox or PlayStation controller — D-pad/stick to move, A/Cross to select,
+                    bumpers for tabs, stick-clicks to jump to the sidebar or now playing. Early and still rough;
+                    feedback on what feels off is very welcome.
+                  </p>
+                </div>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Activity Indicator</div>
                 <div className="settings-grid">
@@ -2662,15 +2788,6 @@ export default function SettingsView() {
                 </p>
               </div>
             </div>
-            <div className="settings-actions settings-info-actions">
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={openKeyboardShortcuts}
-              >
-                Keyboard Shortcuts
-              </button>
-            </div>
             <div className="settings-info-panels">
               <div className="settings-info-panel">
                 <h4>Attribution</h4>
@@ -2720,6 +2837,39 @@ export default function SettingsView() {
                     GPL v3 Text
                   </button>
                 </div>
+              </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'transfer' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Transfer</h3>
+            </div>
+            <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Settings Transfer</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Portable Settings</span>
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn-primary"
+                      onClick={() => setSettingsTransferWizardOpen(true)}
+                    >
+                      Open Settings Transfer Wizard
+                    </button>
+                  </div>
+                </div>
+                <p className="settings-note">
+                  Transfers appearance, analyzer profiles, EQ presets, playback preferences, keybinds, and non-secret
+                  integration preferences.
+                </p>
+                <p className="settings-note">
+                  Library data, servers, scrobble profiles, credentials, output devices, and machine-specific assignments
+                  stay on this computer.
+                </p>
               </div>
             </div>
           </section>
@@ -2917,14 +3067,19 @@ export default function SettingsView() {
         onCancel={() => setShowBitPerfectWarning(false)}
         onConfirm={handleConfirmBitPerfectWarning}
       />
-      {lastFmProfileModalOpen && (
-        <div className="modal-overlay" onClick={closeLastFmProfileModal}>
+      {lastFmProfilePresence.shouldRender && (
+        <div
+          className="modal-overlay"
+          data-presence={lastFmProfilePresence.phase}
+          aria-hidden={lastFmProfilePresence.phase === 'exiting'}
+          onClick={closeLastFmProfileModal}
+        >
           <div
             className="modal-content settings-lastfm-profile-modal"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
-              <h2>{lastFmProfileModalTitle}</h2>
+              <h2>{lastFmProfilePresence.presentValue}</h2>
               <button className="modal-close" onClick={closeLastFmProfileModal} aria-label="Close">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -3003,8 +3158,12 @@ export default function SettingsView() {
           </div>
         </div>
       )}
-      {localApiPairingModalOpen && (
-        <LocalApiPairingModal
+      <SettingsTransferWizard
+        isOpen={settingsTransferWizardOpen}
+        onClose={() => setSettingsTransferWizardOpen(false)}
+      />
+      <LocalApiPairingModal
+          isOpen={localApiPairingModalOpen}
           ticket={phoneRemoteActivePairingTicket}
           pairedDevices={phoneRemotePairedDevices}
           pendingRequests={phoneRemotePendingPairingRequests}
@@ -3030,7 +3189,6 @@ export default function SettingsView() {
           onRevokeDevice={handleRevokePhoneRemotePairedDevice}
           onRevokeAllDevices={handleRevokeAllPhoneRemoteDevices}
         />
-      )}
     </div>
   )
 }

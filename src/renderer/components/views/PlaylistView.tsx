@@ -14,8 +14,14 @@ import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistIm
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
+import DynamicPlaylistRuleEditor from '../playlists/DynamicPlaylistRuleEditor'
 import PlaylistCover from '../playlists/PlaylistCover'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
+import {
+  createDefaultDynamicPlaylistRules,
+  normalizeDynamicPlaylistRules,
+  type DynamicPlaylistRulesV1
+} from '../../../shared/playlists/dynamicPlaylist'
 
 const PLAYLIST_IMPORT_STATUS_TIMEOUT_MS = 9000
 
@@ -50,6 +56,7 @@ function createMissingPlaylistTrackPlaceholder(entry: PlaylistEntry, index: numb
     disc_number: null,
     year: null,
     genre: null,
+    genres: [],
     artwork_hash: null,
     format: 'missing',
     sample_rate: null,
@@ -65,6 +72,8 @@ function createMissingPlaylistTrackPlaceholder(entry: PlaylistEntry, index: numb
     is_available: 0,
     availability_reason: 'missing_playlist_entry',
     file_created_at: null,
+    play_count: 0,
+    last_played_at: null,
     replaygain_track_gain_db: null,
     replaygain_album_gain_db: null,
     added_at: entry.added_at,
@@ -190,6 +199,9 @@ function comparePlaylistTracksBySort(a: PlaylistTrack, b: PlaylistTrack, sortSta
   if (sortState.key === 'bpm') {
     return compareNullableBpm(a.bpm, b.bpm, sortState.direction)
   }
+  if (sortState.key === 'genre') {
+    return compareNullableKey(a.genre, b.genre, sortState.direction)
+  }
   if (sortState.key === 'added') {
     return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), sortState.direction)
   }
@@ -204,6 +216,10 @@ export default function PlaylistView() {
     playlists,
     clearSelection,
     createPlaylistWithOptions,
+    createDynamicPlaylistWithOptions,
+    getDynamicPlaylistRules,
+    updateDynamicPlaylistRules,
+    previewDynamicPlaylist,
     loadPlaylists,
     selectPlaylist,
     renamePlaylist,
@@ -212,20 +228,23 @@ export default function PlaylistView() {
     clearPlaylistCustomCover,
     reorderPlaylistTracks,
     importPlaylistFromFile,
-    exportPlaylistToM3u
+    exportPlaylistToM3u,
+    sortState,
+    setSortState
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
   const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((s) => s.showTracklistGenre)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
-  const autoQueueSourcePlaylistId = usePlayerStore((s) => s.autoQueueSourcePlaylistId)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const queueSourcePlaylistId = usePlayerStore((s) => s.queueSourcePlaylistId)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
-  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths),
     [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
@@ -234,6 +253,7 @@ export default function PlaylistView() {
   const isPlaylistBrowser = selectedPlaylistId === null
   const isFavoritesPlaylist = isSystemFavoritesPlaylistId(selectedPlaylistId)
   const playlist = playlists.find((p) => p.id === selectedPlaylistId)
+  const isDynamicPlaylist = playlist?.kind === 'dynamic'
   const playlistName = isFavoritesPlaylist ? FAVORITES_PLAYLIST_NAME : playlist?.name
   const allPlaylists = useMemo(
     () => buildPlaylistDisplaySections(playlists, {
@@ -246,7 +266,6 @@ export default function PlaylistView() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isUpdatingCover, setIsUpdatingCover] = useState(false)
-  const [sortState, setSortState] = useState<TrackListSortState | null>(null)
   const [isReorderMode, setIsReorderMode] = useState(false)
   const [reorderedEntries, setReorderedEntries] = useState<PlaylistEntry[] | null>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -263,6 +282,11 @@ export default function PlaylistView() {
   const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
   const [isCoverMenuOpen, setIsCoverMenuOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [isDynamicRulesModalOpen, setIsDynamicRulesModalOpen] = useState(false)
+  const [dynamicRulesDraft, setDynamicRulesDraft] = useState<DynamicPlaylistRulesV1>(() => createDefaultDynamicPlaylistRules())
+  const [dynamicRulesError, setDynamicRulesError] = useState<string | null>(null)
+  const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
+  const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
   const shufflePlayPendingRef = useRef(false)
   const coverControlRef = useRef<HTMLDivElement | null>(null)
   const moreMenuRef = useRef<HTMLDivElement | null>(null)
@@ -271,7 +295,6 @@ export default function PlaylistView() {
     setIsRenaming(false)
     setRenameValue('')
     setIsUpdatingCover(false)
-    setSortState(null)
     setIsReorderMode(false)
     setReorderedEntries(null)
     setDragIndex(null)
@@ -285,6 +308,11 @@ export default function PlaylistView() {
     setIsDiscardReorderConfirmOpen(false)
     setIsCoverMenuOpen(false)
     setIsMoreMenuOpen(false)
+    setIsDynamicRulesModalOpen(false)
+    setDynamicRulesDraft(createDefaultDynamicPlaylistRules())
+    setDynamicRulesError(null)
+    setIsDynamicRulesLoading(false)
+    setIsSavingDynamicRules(false)
   }, [selectedPlaylistId])
 
   useEffect(() => {
@@ -330,11 +358,12 @@ export default function PlaylistView() {
   }, [isReorderMode, playlistTrackRevealRequest, selectedPlaylistId])
 
   useEffect(() => {
-    if (showTracklistBpmKey) return
     if (!sortState) return
-    if (sortState.key !== 'bpm' && sortState.key !== 'musical_key') return
+    const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
+    const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
+    if (!hideBpmKeySort && !hideGenreSort) return
     setSortState(null)
-  }, [showTracklistBpmKey, sortState])
+  }, [setSortState, showTracklistBpmKey, showTracklistGenre, sortState])
 
   useEffect(() => {
     if (!playlistImportStatus) return
@@ -428,22 +457,25 @@ export default function PlaylistView() {
     void selectPlaylist(selectedPlaylistId)
   }, [isFavoritesPlaylist, isReorderMode, isSavingReorder, loadPlaylists, selectPlaylist, selectedPlaylistId, trackCacheVersion])
 
-  const canReorderTracks = !isFavoritesPlaylist && selectedPlaylistId !== null && selectedPlaylistId > 0
+  const canReorderTracks = !isFavoritesPlaylist && !isDynamicPlaylist && selectedPlaylistId !== null && selectedPlaylistId > 0
   const isShufflePlayDisabled = isShufflePlayPending || isReorderMode || isSavingReorder || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
   const isShufflePlayActive = useMemo(() => {
     if (!shuffle) return false
     if (selectedPlaylistId === null) return false
-    if (autoQueueSourcePlaylistId !== selectedPlaylistId) return false
-    if (autoQueue.length === 0 || autoQueue.length !== displayPlayableTrackPaths.length) return false
+    if (queueSourcePlaylistId !== selectedPlaylistId) return false
+    const contextPaths = queueItems
+      .filter((item) => item.origin === 'context')
+      .map((item) => item.entry.path)
+    if (contextPaths.length === 0 || contextPaths.length !== displayPlayableTrackPaths.length) return false
 
-    for (let index = 0; index < autoQueue.length; index += 1) {
-      if (autoQueue[index]?.path !== displayPlayableTrackPaths[index]) {
+    for (let index = 0; index < contextPaths.length; index += 1) {
+      if (contextPaths[index] !== displayPlayableTrackPaths[index]) {
         return false
       }
     }
 
     return true
-  }, [autoQueue, autoQueueSourcePlaylistId, displayPlayableTrackPaths, selectedPlaylistId, shuffle])
+  }, [displayPlayableTrackPaths, queueItems, queueSourcePlaylistId, selectedPlaylistId, shuffle])
   const hasUnsavedReorderChanges = useMemo(() => {
     if (!isReorderMode || !reorderedEntries) return false
     if (reorderedEntries.length !== selectedPlaylistEntries.length) return true
@@ -458,6 +490,15 @@ export default function PlaylistView() {
 
     return false
   }, [isReorderMode, reorderedEntries, selectedPlaylistEntries])
+
+  const isDynamicRulesDraftInvalid = useMemo(() => {
+    try {
+      normalizeDynamicPlaylistRules(dynamicRulesDraft)
+      return false
+    } catch {
+      return true
+    }
+  }, [dynamicRulesDraft])
 
   const handleBack = () => {
     clearSelection()
@@ -486,6 +527,13 @@ export default function PlaylistView() {
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
     if (isReorderMode || isSavingReorder) return
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+    await selectPlaylist(playlist.id)
+    setActiveView('playlist')
+  }
+
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+    if (isReorderMode || isSavingReorder) return
+    const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
   }
@@ -521,6 +569,36 @@ export default function PlaylistView() {
     setIsMoreMenuOpen(false)
     setIsDeleteConfirmOpen(true)
   }
+
+  const handleOpenDynamicRules = useCallback(async () => {
+    if (!isDynamicPlaylist || selectedPlaylistId === null) return
+    setIsMoreMenuOpen(false)
+    setDynamicRulesError(null)
+    setIsDynamicRulesLoading(true)
+    setIsDynamicRulesModalOpen(true)
+    try {
+      setDynamicRulesDraft(await getDynamicPlaylistRules(selectedPlaylistId))
+    } catch (error) {
+      setDynamicRulesError(error instanceof Error ? error.message : 'Failed to load dynamic playlist rules.')
+    } finally {
+      setIsDynamicRulesLoading(false)
+    }
+  }, [getDynamicPlaylistRules, isDynamicPlaylist, selectedPlaylistId])
+
+  const handleSaveDynamicRules = useCallback(async () => {
+    if (!isDynamicPlaylist || selectedPlaylistId === null || isSavingDynamicRules) return
+
+    setIsSavingDynamicRules(true)
+    setDynamicRulesError(null)
+    try {
+      await updateDynamicPlaylistRules(selectedPlaylistId, normalizeDynamicPlaylistRules(dynamicRulesDraft))
+      setIsDynamicRulesModalOpen(false)
+    } catch (error) {
+      setDynamicRulesError(error instanceof Error ? error.message : 'Failed to save dynamic playlist rules.')
+    } finally {
+      setIsSavingDynamicRules(false)
+    }
+  }, [dynamicRulesDraft, isDynamicPlaylist, isSavingDynamicRules, selectedPlaylistId, updateDynamicPlaylistRules])
 
   const handleExportPlaylist = useCallback(async () => {
     if (isExportingPlaylist) return
@@ -586,23 +664,23 @@ export default function PlaylistView() {
   }
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
-    setSortState((current) => {
-      if (current?.key === key) {
-        return {
-          key,
-          direction: current.direction === 'asc' ? 'desc' : 'asc'
-        }
-      }
-      return {
+    const current = usePlaylistStore.getState().sortState
+    if (current?.key === key) {
+      setSortState({
         key,
-        direction: 'asc'
-      }
+        direction: current.direction === 'asc' ? 'desc' : 'asc'
+      })
+      return
+    }
+    setSortState({
+      key,
+      direction: 'asc'
     })
-  }, [])
+  }, [setSortState])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
-  }, [])
+  }, [setSortState])
 
   const handleShufflePlayPlaylist = useCallback(async () => {
     if (shufflePlayPendingRef.current) return
@@ -615,18 +693,16 @@ export default function PlaylistView() {
       const randomStartIndex = Math.floor(Math.random() * displayPlayableTrackPaths.length)
       await startPlaybackContextByPaths(displayPlayableTrackPaths, randomStartIndex, {
         sourcePlaylistId: selectedPlaylistId,
-        contextLabel: playlistName ?? 'Playlist'
+        contextLabel: playlistName ?? 'Playlist',
+        shuffle: true
       })
-      if (!shuffle) {
-        toggleShuffle()
-      }
     } catch (error) {
       console.error('Failed to shuffle play playlist:', error)
     } finally {
       shufflePlayPendingRef.current = false
       setIsShufflePlayPending(false)
     }
-  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, startPlaybackContextByPaths])
 
   const handleToggleReorderMode = useCallback(() => {
     if (!canReorderTracks || isSavingReorder) return
@@ -654,7 +730,7 @@ export default function PlaylistView() {
     setDropIndex(null)
     setReorderedEntries([...selectedPlaylistEntries])
     setIsReorderMode(true)
-  }, [canReorderTracks, hasUnsavedReorderChanges, isReorderMode, isSavingReorder, selectedPlaylistEntries])
+  }, [canReorderTracks, hasUnsavedReorderChanges, isReorderMode, isSavingReorder, selectedPlaylistEntries, setSortState])
 
   const handleCancelReorder = useCallback(() => {
     if (isSavingReorder) return
@@ -726,7 +802,7 @@ export default function PlaylistView() {
     } finally {
       setIsSavingReorder(false)
     }
-  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistTracks, selectPlaylist, selectedPlaylistId])
+  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistTracks, selectPlaylist, selectedPlaylistId, setSortState])
 
   const handleConfirmDiscardReorder = useCallback(() => {
     if (isSavingReorder) return
@@ -781,14 +857,30 @@ export default function PlaylistView() {
           {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
 
           {allPlaylists.length > 0 ? (
-            <div className="playlist-browser-grid">
+            <div
+              className="playlist-browser-grid"
+              data-controller-group="playlist-browser"
+              data-controller-axis="grid"
+            >
               {allPlaylists.map((entry) => (
                 <button
                   key={entry.id}
                   type="button"
                   className="playlist-browser-card"
+                  data-controller-focusable="true"
+                  data-controller-context="true"
+                  data-controller-key={`playlist:${entry.id}`}
                   onClick={() => {
                     void handleOpenPlaylist(entry.id)
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: { kind: 'playlist', playlistId: entry.id, name: entry.name },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
                   }}
                 >
                   <PlaylistCover
@@ -800,6 +892,7 @@ export default function PlaylistView() {
                   <span className="playlist-browser-card-meta">
                     <span className="playlist-browser-card-name">{entry.name}</span>
                     <span className="playlist-browser-card-count">
+                      {entry.kind === 'dynamic' ? 'Dynamic - ' : ''}
                       {entry.track_count} {entry.track_count === 1 ? 'track' : 'tracks'}
                       {entry.missing_track_count ? `, ${entry.missing_track_count} missing` : ''}
                     </span>
@@ -818,6 +911,9 @@ export default function PlaylistView() {
           isOpen={isCreatePlaylistModalOpen}
           onClose={() => setIsCreatePlaylistModalOpen(false)}
           onCreate={handleCreatePlaylist}
+          onCreateDynamic={handleCreateDynamicPlaylist}
+          onPreviewDynamic={previewDynamicPlaylist}
+          allowDynamic
           onImport={handleImportPlaylist}
           isImporting={isImportingPlaylist}
         />
@@ -849,7 +945,24 @@ export default function PlaylistView() {
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
           </button>
-          <div className="playlist-header-cover-control" ref={coverControlRef}>
+          <div
+            className="playlist-header-cover-control"
+            ref={coverControlRef}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (selectedPlaylistId === null) return
+              openCollectionQueueMenu({
+                target: {
+                  kind: 'playlist',
+                  playlistId: selectedPlaylistId,
+                  name: playlistName ?? FAVORITES_PLAYLIST_NAME
+                },
+                x: event.clientX,
+                y: event.clientY
+              })
+            }}
+          >
             <PlaylistCover
               hash={playlistCoverHash}
               name={playlistName ?? FAVORITES_PLAYLIST_NAME}
@@ -901,7 +1014,23 @@ export default function PlaylistView() {
               </>
             )}
           </div>
-          <div className="playlist-header-meta">
+          <div
+            className="playlist-header-meta"
+            onContextMenu={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (selectedPlaylistId === null) return
+              openCollectionQueueMenu({
+                target: {
+                  kind: 'playlist',
+                  playlistId: selectedPlaylistId,
+                  name: playlistName ?? FAVORITES_PLAYLIST_NAME
+                },
+                x: event.clientX,
+                y: event.clientY
+              })
+            }}
+          >
             {isRenaming ? (
               <input
                 className="playlist-rename-input"
@@ -921,7 +1050,10 @@ export default function PlaylistView() {
                 autoFocus
               />
             ) : (
-              <h2>{playlistName}</h2>
+              <h2>
+                {playlistName}
+                {isDynamicPlaylist && <span className="playlist-kind-badge">Dynamic</span>}
+              </h2>
             )}
             <span className="track-count">
               {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? 'track' : 'tracks'}
@@ -1000,6 +1132,19 @@ export default function PlaylistView() {
                 >
                   New playlist
                 </button>
+                {isDynamicPlaylist && (
+                  <button
+                    type="button"
+                    className="playlist-header-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      void handleOpenDynamicRules()
+                    }}
+                    disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                  >
+                    Edit Rules
+                  </button>
+                )}
                 <button
                   type="button"
                   className="playlist-header-menu-item"
@@ -1131,7 +1276,7 @@ export default function PlaylistView() {
                 queueContextLabel={playlistName ?? 'Playlist'}
                 trackNumberMode="context"
                 contextTrackNumbersByPath={playlistTrackNumbersByPath}
-                playlistSourceId={selectedPlaylistId}
+                playlistSourceId={isDynamicPlaylist ? null : selectedPlaylistId}
                 enableColumnSorting
                 sortState={sortState}
                 onSortColumnToggle={handleSortColumnToggle}
@@ -1148,13 +1293,15 @@ export default function PlaylistView() {
           </>
         ) : (
           <div className="library-empty">
-            <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : 'This playlist is empty'}</p>
+            <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : isDynamicPlaylist ? 'No matching tracks' : 'This playlist is empty'}</p>
             <p className="empty-hint">
               {selectedPlaylistId === FAVORITES_PLAYLIST_ID
                 ? 'Click the heart icon on any track to add favorites.'
-                : 'Add tracks from the Library view'}
+                : isDynamicPlaylist
+                  ? 'Edit the rules or add more music to the library.'
+                  : 'Add tracks from the Library view'}
             </p>
-            {selectedPlaylistId !== FAVORITES_PLAYLIST_ID && (
+            {selectedPlaylistId !== FAVORITES_PLAYLIST_ID && !isDynamicPlaylist && (
               <div className="playlist-empty-actions">
                 <button type="button" className="settings-btn settings-btn-primary" onClick={handleOpenLibrary}>
                   Open Library
@@ -1168,9 +1315,76 @@ export default function PlaylistView() {
         isOpen={isCreatePlaylistModalOpen}
         onClose={() => setIsCreatePlaylistModalOpen(false)}
         onCreate={handleCreatePlaylist}
+        onCreateDynamic={handleCreateDynamicPlaylist}
+        onPreviewDynamic={previewDynamicPlaylist}
+        allowDynamic
         onImport={handleImportPlaylist}
         isImporting={isImportingPlaylist}
       />
+      {isDynamicRulesModalOpen && (
+        <div
+          className="modal-overlay playlist-create-modal-overlay"
+          onClick={() => {
+            if (!isSavingDynamicRules) setIsDynamicRulesModalOpen(false)
+          }}
+        >
+          <div
+            className="modal-content playlist-create-modal playlist-dynamic-rules-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header playlist-create-modal-header">
+              <h2>Edit Dynamic Rules</h2>
+              <button
+                className="modal-close"
+                onClick={() => setIsDynamicRulesModalOpen(false)}
+                aria-label="Close"
+                disabled={isSavingDynamicRules}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body playlist-create-modal-body">
+              {isDynamicRulesLoading ? (
+                <div className="playlist-dynamic-preview-empty">Loading rules...</div>
+              ) : (
+                <DynamicPlaylistRuleEditor
+                  rules={dynamicRulesDraft}
+                  onRulesChange={setDynamicRulesDraft}
+                  onPreview={previewDynamicPlaylist}
+                  disabled={isSavingDynamicRules}
+                />
+              )}
+              {dynamicRulesError && (
+                <div className="playlist-create-error" role="alert">
+                  {dynamicRulesError}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer playlist-create-modal-footer">
+              <div className="playlist-create-modal-actions">
+                <button
+                  className="settings-btn"
+                  onClick={() => setIsDynamicRulesModalOpen(false)}
+                  disabled={isSavingDynamicRules}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="settings-btn settings-btn-primary"
+                  onClick={() => {
+                    void handleSaveDynamicRules()
+                  }}
+                  disabled={isSavingDynamicRules || isDynamicRulesLoading || isDynamicRulesDraftInvalid}
+                >
+                  {isSavingDynamicRules ? 'Saving...' : 'Save Rules'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <ConfirmActionModal
         isOpen={isDeleteConfirmOpen}
         title="Delete Playlist?"

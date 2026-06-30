@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { useVisualizerSettingsStore } from './visualizerSettingsStore'
 
-export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson'
+export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson' | 'light'
 export type AccentSource = 'theme' | 'cover-art'
 export type CoverArtAccentMethod = 'dominant' | 'average' | 'vibrant'
 
@@ -15,16 +15,118 @@ export interface ResolvedThemeTokens {
   textPrimary: string
   textSecondary: string
   textTertiary: string
+  // Foreground tint channel ("R, G, B") used by globals.css via rgba(var(--tint), a).
+  // White on dark themes, black on light, so every inline white-tint flips coherently.
+  tint: string
+  // Opaque chrome panels (transport bar, popovers, tooltips).
+  surfaceOverlay: string
+  // Translucent zone-darkening scrims on top of chrome.
+  scrimSoft: string
+  scrimStrong: string
+  // Text color that sits on an inverted (tint) fill.
+  onAccent: string
+  // Recessed/control surfaces bucketed by depth (dark uses high-alpha black, light
+  // uses explicit low-alpha values that can't be reached by inverting alpha).
+  controlBgSoft: string
+  controlBg: string
+  controlBgStrong: string
+  // Faint eyebrow/section-label text (needs more contrast on light than inverted tint).
+  eyebrow: string
+  // Emphatic text that was a solid white literal (flips to near-black on light).
+  textStrong: string
+  // Analyzer/graph/EQ display surfaces and drawing colors.
+  stageBg: string
+  stageSurface: string
+  stageBorder: string
+  stageGrid: string
+  stageText: string
+  stageTextMuted: string
+  shadowSoft: string
+  isLight: boolean
   accent: string
   accentHover: string
   accentGlow: string
 }
 
+type SurfaceTokens = Pick<
+  ResolvedThemeTokens,
+  | 'tint'
+  | 'surfaceOverlay'
+  | 'scrimSoft'
+  | 'scrimStrong'
+  | 'onAccent'
+  | 'controlBgSoft'
+  | 'controlBg'
+  | 'controlBgStrong'
+  | 'eyebrow'
+  | 'textStrong'
+  | 'stageBg'
+  | 'stageSurface'
+  | 'stageBorder'
+  | 'stageGrid'
+  | 'stageText'
+  | 'stageTextMuted'
+  | 'shadowSoft'
+>
+
+// Surface tokens shared by every dark preset, resolved by isLight so the existing
+// presets keep only their 9 base color tokens and don't need per-preset overrides.
+// The dark values match today's hardcoded shades (imperceptible shift); light values
+// are explicit low-alpha surfaces because high-alpha black can't be inverted cleanly.
+const DARK_SURFACE_DEFAULTS: SurfaceTokens = {
+  tint: '255, 255, 255',
+  surfaceOverlay: 'rgba(5, 5, 5, 0.95)',
+  scrimSoft: 'rgba(0, 0, 0, 0.4)',
+  scrimStrong: 'rgba(0, 0, 0, 0.6)',
+  onAccent: '#050505',
+  controlBgSoft: 'rgba(0, 0, 0, 0.18)',
+  controlBg: 'rgba(0, 0, 0, 0.3)',
+  controlBgStrong: 'rgba(0, 0, 0, 0.45)',
+  eyebrow: 'rgba(255, 255, 255, 0.4)',
+  textStrong: '#ffffff',
+  stageBg: '#0a0e14',
+  stageSurface: 'rgba(8, 10, 14, 0.985)',
+  stageBorder: 'rgba(255, 255, 255, 0.08)',
+  stageGrid: 'rgba(255, 255, 255, 0.1)',
+  stageText: 'rgba(255, 255, 255, 0.88)',
+  stageTextMuted: 'rgba(255, 255, 255, 0.46)',
+  shadowSoft: 'rgba(0, 0, 0, 0.28)',
+}
+
+const LIGHT_SURFACE_DEFAULTS: SurfaceTokens = {
+  tint: '0, 0, 0',
+  surfaceOverlay: 'rgba(246, 247, 249, 0.95)',
+  scrimSoft: 'rgba(0, 0, 0, 0.05)',
+  scrimStrong: 'rgba(0, 0, 0, 0.1)',
+  onAccent: '#ffffff',
+  controlBgSoft: 'rgba(0, 0, 0, 0.035)',
+  controlBg: 'rgba(0, 0, 0, 0.05)',
+  controlBgStrong: 'rgba(0, 0, 0, 0.08)',
+  eyebrow: 'rgba(0, 0, 0, 0.55)',
+  textStrong: '#0b0d12',
+  stageBg: '#f1f4f8',
+  stageSurface: 'rgba(255, 255, 255, 0.92)',
+  stageBorder: 'rgba(15, 23, 42, 0.12)',
+  stageGrid: 'rgba(15, 23, 42, 0.13)',
+  stageText: 'rgba(15, 23, 42, 0.82)',
+  stageTextMuted: 'rgba(15, 23, 42, 0.48)',
+  shadowSoft: 'rgba(15, 23, 42, 0.12)',
+}
+
+// Base color tokens carried by each preset definition (surface tokens come from the
+// DARK/LIGHT defaults above, accent trio is resolved separately).
+type PresetBaseTokens = Omit<
+  ResolvedThemeTokens,
+  'accent' | 'accentHover' | 'accentGlow' | 'isLight' | keyof SurfaceTokens
+>
+
 interface ThemePresetDefinition {
   id: ThemePresetId
   label: string
   description: string
-  tokens: Omit<ResolvedThemeTokens, 'accent' | 'accentHover' | 'accentGlow'>
+  // Light presets derive accent text by darkening (not lightening) the accent.
+  isLight?: boolean
+  tokens: PresetBaseTokens
   accent: string
   accentHover: string
   accentGlow: string
@@ -54,7 +156,7 @@ export interface ThemeSettingsState {
   initFromSaved: () => void
 }
 
-const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
+export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
 const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
 const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'
@@ -158,6 +260,26 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
     accentHover: '#f87171',
     accentGlow: 'rgba(239, 68, 68, 0.32)',
   },
+  light: {
+    id: 'light',
+    label: 'Light',
+    description: 'Bright daylight surfaces',
+    isLight: true,
+    tokens: {
+      bgPrimary: '#f6f7f9',
+      bgSecondary: '#eceef2',
+      bgTertiary: '#e2e5ea',
+      glassBg: 'rgba(0, 0, 0, 0.03)',
+      glassBorder: 'rgba(0, 0, 0, 0.10)',
+      glassHighlight: 'rgba(0, 0, 0, 0.05)',
+      textPrimary: 'rgba(0, 0, 0, 0.92)',
+      textSecondary: 'rgba(0, 0, 0, 0.6)',
+      textTertiary: 'rgba(0, 0, 0, 0.42)',
+    },
+    accent: '#0369a1',
+    accentHover: '#075985',
+    accentGlow: 'rgba(3, 105, 161, 0.24)',
+  },
 }
 
 export const THEME_PRESET_LIST: ThemePresetDefinition[] = Object.values(THEME_PRESETS)
@@ -197,12 +319,18 @@ function lightenChannel(channel: number, amount: number): number {
   return Math.round(channel + ((255 - channel) * amount))
 }
 
-function deriveAccentHover(hex: string): string {
+function darkenChannel(channel: number, amount: number): number {
+  return Math.round(channel * (1 - amount))
+}
+
+function deriveAccentHover(hex: string, darken = false): string {
   const rgb = hexToRgb(hex)
   if (!rgb) return DEFAULT_ACCENT
-  const r = lightenChannel(rgb.r, 0.35)
-  const g = lightenChannel(rgb.g, 0.35)
-  const b = lightenChannel(rgb.b, 0.35)
+  const adjust = darken ? darkenChannel : lightenChannel
+  const amount = darken ? 0.15 : 0.35
+  const r = adjust(rgb.r, amount)
+  const g = adjust(rgb.g, amount)
+  const b = adjust(rgb.b, amount)
   return rgbToHex(r, g, b)
 }
 
@@ -251,14 +379,15 @@ export function deriveAccentHue(hex: string): number {
   return 199
 }
 
-function deriveAccentText(hex: string, amount: number, fallbackHex: string): string {
+function deriveAccentText(hex: string, amount: number, fallbackHex: string, darken = false): string {
   const rgb = hexToRgb(hex)
   if (!rgb) return fallbackHex
 
+  const adjust = darken ? darkenChannel : lightenChannel
   return rgbToHex(
-    lightenChannel(rgb.r, amount),
-    lightenChannel(rgb.g, amount),
-    lightenChannel(rgb.b, amount)
+    adjust(rgb.r, amount),
+    adjust(rgb.g, amount),
+    adjust(rgb.b, amount)
   )
 }
 
@@ -273,12 +402,20 @@ function resolveThemeTokens(
   const effectiveAccent = accentSource === 'cover-art' && coverArtAccent
     ? coverArtAccent
     : themeAccent
+  const isLight = Boolean(preset.isLight)
+  const usesPresetAccent = customAccent === null && !(accentSource === 'cover-art' && coverArtAccent)
 
   return {
     ...preset.tokens,
+    ...(isLight ? LIGHT_SURFACE_DEFAULTS : DARK_SURFACE_DEFAULTS),
+    isLight,
     accent: effectiveAccent,
-    accentHover: deriveAccentHover(effectiveAccent),
-    accentGlow: deriveAccentGlow(effectiveAccent),
+    accentHover: isLight && usesPresetAccent
+      ? preset.accentHover
+      : deriveAccentHover(effectiveAccent, isLight),
+    accentGlow: isLight && usesPresetAccent
+      ? preset.accentGlow
+      : deriveAccentGlow(effectiveAccent),
   }
 }
 
@@ -293,14 +430,43 @@ function applyNonAccentTokensToDocument(tokens: ResolvedThemeTokens): void {
   root.style.setProperty('--text-primary', tokens.textPrimary)
   root.style.setProperty('--text-secondary', tokens.textSecondary)
   root.style.setProperty('--text-tertiary', tokens.textTertiary)
+  root.style.setProperty('--tint', tokens.tint)
+  root.style.setProperty('--surface-overlay', tokens.surfaceOverlay)
+  root.style.setProperty('--scrim-soft', tokens.scrimSoft)
+  root.style.setProperty('--scrim-strong', tokens.scrimStrong)
+  root.style.setProperty('--on-accent', tokens.onAccent)
+  root.style.setProperty('--control-bg-soft', tokens.controlBgSoft)
+  root.style.setProperty('--control-bg', tokens.controlBg)
+  root.style.setProperty('--control-bg-strong', tokens.controlBgStrong)
+  root.style.setProperty('--eyebrow', tokens.eyebrow)
+  root.style.setProperty('--text-strong', tokens.textStrong)
+  root.style.setProperty('--stage-bg', tokens.stageBg)
+  root.style.setProperty('--stage-surface', tokens.stageSurface)
+  root.style.setProperty('--stage-border', tokens.stageBorder)
+  root.style.setProperty('--stage-grid', tokens.stageGrid)
+  root.style.setProperty('--stage-text', tokens.stageText)
+  root.style.setProperty('--stage-text-muted', tokens.stageTextMuted)
+  root.style.setProperty('--shadow-soft', tokens.shadowSoft)
+  root.dataset.themeTone = tokens.isLight ? 'light' : 'dark'
 }
 
-function applyAccentTokensToDocument(accent: string, accentHover: string, accentGlow: string): void {
+function applyAccentTokensToDocument(
+  accent: string,
+  accentHover: string,
+  accentGlow: string,
+  isLight = false
+): void {
   const root = document.documentElement
   const accentRgb = deriveAccentRgb(accent)
   const accentHoverRgb = deriveAccentRgb(accentHover)
-  const accentText = deriveAccentText(accent, 0.65, '#bae6fd')
-  const accentTextStrong = deriveAccentText(accent, 0.85, '#e0f2fe')
+  // On dark themes accent text is lightened for legibility; on light themes it must
+  // be darkened instead so accent-colored text stays readable on bright surfaces.
+  const accentText = isLight
+    ? deriveAccentText(accent, 0.1, '#0369a1', true)
+    : deriveAccentText(accent, 0.65, '#bae6fd')
+  const accentTextStrong = isLight
+    ? deriveAccentText(accent, 0.3, '#075985', true)
+    : deriveAccentText(accent, 0.85, '#e0f2fe')
   const accentHue = deriveAccentHue(accent)
 
   root.style.setProperty('--accent', accent)
@@ -346,6 +512,7 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       || presetCandidate === 'midnight'
       || presetCandidate === 'studio'
       || presetCandidate === 'crimson'
+      || presetCandidate === 'light'
     )
       ? presetCandidate
       : DEFAULT_PRESET_ID
@@ -418,20 +585,22 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       nextState.accentSource,
       normalizedCoverArtAccent
     )
+    const isLight = Boolean(THEME_PRESETS[nextState.presetId]?.isLight)
 
     const previousAccent = normalizeHexColor(get().resolvedTokens.accent) ?? targetTokens.accent
     const initialAccent = previousAccent
     const initialTokens: ResolvedThemeTokens = {
       ...targetTokens,
       accent: initialAccent,
-      accentHover: deriveAccentHover(initialAccent),
+      accentHover: deriveAccentHover(initialAccent, isLight),
       accentGlow: deriveAccentGlow(initialAccent),
     }
 
     cancelAccentAnimation()
 
     applyNonAccentTokensToDocument(targetTokens)
-    applyAccentTokensToDocument(initialTokens.accent, initialTokens.accentHover, initialTokens.accentGlow)
+    document.documentElement.dataset.themePreset = nextState.presetId
+    applyAccentTokensToDocument(initialTokens.accent, initialTokens.accentHover, initialTokens.accentGlow, isLight)
     useVisualizerSettingsStore.getState().setLineColor(initialTokens.accent)
 
     set({
@@ -461,7 +630,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
           accentGlow: targetTokens.accentGlow,
         },
       }))
-      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow, isLight)
       useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
       return
     }
@@ -469,7 +638,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
     const startRgb = hexToRgb(initialTokens.accent)
     const endRgb = hexToRgb(targetTokens.accent)
     if (!startRgb || !endRgb) {
-      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+      applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow, isLight)
       useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
       set((state) => ({
         resolvedTokens: {
@@ -505,10 +674,10 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         startRgb.g + ((endRgb.g - startRgb.g) * eased),
         startRgb.b + ((endRgb.b - startRgb.b) * eased)
       )
-      const accentHover = deriveAccentHover(accent)
+      const accentHover = deriveAccentHover(accent, isLight)
       const accentGlow = deriveAccentGlow(accent)
 
-      applyAccentTokensToDocument(accent, accentHover, accentGlow)
+      applyAccentTokensToDocument(accent, accentHover, accentGlow, isLight)
       useVisualizerSettingsStore.getState().setLineColor(accent)
       set((state) => ({
         resolvedTokens: {
@@ -521,7 +690,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
 
       if (progress >= 1) {
         accentAnimationFrame = null
-        applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow)
+        applyAccentTokensToDocument(targetTokens.accent, targetTokens.accentHover, targetTokens.accentGlow, isLight)
         useVisualizerSettingsStore.getState().setLineColor(targetTokens.accent)
         set((state) => ({
           resolvedTokens: {

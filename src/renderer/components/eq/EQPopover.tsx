@@ -2,18 +2,21 @@ import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
 import EQResponsePreview from './EQResponsePreview'
 
+import type { PresencePhase } from '../../hooks/usePresence'
+
 interface EQPopoverProps {
   onClose: () => void
+  presencePhase: PresencePhase
 }
 
-export default function EQPopover({ onClose }: EQPopoverProps) {
+export default function EQPopover({ onClose, presencePhase }: EQPopoverProps) {
   const { enabled, toggleEnabled, presets, activePresetId, applyPreset } = useEQStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
 
   const activePreset = activePresetId ? presets.find((p) => p.id === activePresetId) : null
 
   return (
-    <div className="eq-popover">
+    <div className="eq-popover" data-presence={presencePhase} aria-hidden={presencePhase === 'exiting'}>
       <div className="eq-popover-header">
         <span className="eq-popover-title">EQ PREVIEW</span>
         <div className="eq-popover-actions">

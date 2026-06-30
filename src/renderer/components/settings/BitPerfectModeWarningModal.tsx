@@ -1,3 +1,5 @@
+import { usePresence } from '../../hooks/usePresence'
+
 interface BitPerfectModeWarningModalProps {
   isOpen: boolean
   dontShowAgain: boolean
@@ -13,10 +15,11 @@ export default function BitPerfectModeWarningModal({
   onCancel,
   onConfirm,
 }: BitPerfectModeWarningModalProps) {
-  if (!isOpen) return null
+  const presence = usePresence(isOpen)
+  if (!presence.shouldRender) return null
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay" data-presence={presence.phase} aria-hidden={presence.phase === 'exiting'} onClick={onCancel}>
       <div
         className="modal-content confirm-action-modal confirm-action-modal-danger exclusive-mode-warning-modal"
         onClick={(event) => event.stopPropagation()}

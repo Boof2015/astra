@@ -1,18 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  advanceRecentPlayAccumulation,
   createQueueEntriesFromPaths,
   createQueueEntryFromTrack,
   GAPLESS_PREBUFFER_LEAD_SECONDS,
   getGaplessPrebufferDelayMs,
+  getRecentPlayThresholdSecondsForDuration,
   MAX_PLAYBACK_HISTORY,
+  RECENT_PLAY_MIN_SECONDS,
   resolvePositiveDuration,
   shouldApplyDurationChange,
   usePlayerStore,
+  type QueueItem,
   type QueueTrackEntry
 } from './playerStore.ts'
 import { useLibraryStore, type DbTrack } from './libraryStore.ts'
 import type { Track } from '../types/audio.ts'
+import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
+import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
+import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
 
 function makeTrack(path: string, overrides: Partial<Track> = {}): Track {
   return {
@@ -31,6 +38,7 @@ function makeTrack(path: string, overrides: Partial<Track> = {}): Track {
     discNumber: overrides.discNumber,
     year: overrides.year,
     genre: overrides.genre,
+    genres: overrides.genres,
     artworkData: overrides.artworkData,
     artworkHash: overrides.artworkHash,
     format: overrides.format ?? 'flac',
@@ -69,6 +77,7 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
     genre: overrides.genre ?? null,
+    genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
     base_artwork_hash: overrides.base_artwork_hash ?? null,
     format: overrides.format ?? 'flac',
@@ -88,6 +97,8 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     is_available: overrides.is_available ?? 1,
     availability_reason: overrides.availability_reason ?? null,
     file_created_at: overrides.file_created_at ?? null,
+    play_count: overrides.play_count ?? 0,
+    last_played_at: overrides.last_played_at ?? null,
     replaygain_track_gain_db: overrides.replaygain_track_gain_db ?? null,
     replaygain_album_gain_db: overrides.replaygain_album_gain_db ?? null,
     added_at: overrides.added_at ?? 1,
@@ -97,6 +108,17 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
 
 function hasArtworkData(entry: QueueTrackEntry): boolean {
   return Object.hasOwn(entry.snapshot as Record<string, unknown>, 'artworkData')
+}
+
+function makeQueueItem(entry: QueueTrackEntry, queueId: string, origin: 'context' | 'manual' = 'manual'): QueueItem {
+  return {
+    queueId,
+    entry,
+    origin,
+    sourcePlaylistId: null,
+    sourceContext: null,
+    contextLabel: origin === 'context' ? 'Test Context' : null
+  }
 }
 
 function installMockTrackFetch(handler: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]): void {
@@ -120,21 +142,38 @@ function resetStores(): void {
 
   usePlayerStore.setState({
     currentTrack: null,
-    currentTrackSource: 'manual',
+    currentTrackSource: 'standalone',
     playbackState: 'stopped',
     currentTime: 0,
     duration: 0,
-    userQueue: [],
-    autoQueue: [],
-    autoQueueIndex: -1,
-    autoQueueSourcePlaylistId: null,
-    autoQueueContextLabel: null,
+    queueItems: [],
+    baseUpcomingQueueIds: [],
+    upcomingQueueIds: [],
+    currentQueueItemId: null,
+    queueSourcePlaylistId: null,
+    queueSourceContext: null,
+    queueContextLabel: null,
     shuffle: false,
     repeat: 'none',
-    shuffledAutoIndices: [],
     playbackHistory: [],
-    playbackFuture: []
+    restoredTrackNeedsLoad: false,
+    restoredPlaybackTime: null
   })
+}
+
+function installLoadedTrackStub(): () => void {
+  const original = usePlayerStore.getState()._loadAndPlayTrack
+  usePlayerStore.setState({
+    _loadAndPlayTrack: async (track) => {
+      usePlayerStore.setState({ currentTrack: track, playbackState: 'paused' })
+      return 'loaded'
+    }
+  })
+  return () => usePlayerStore.setState({ _loadAndPlayTrack: original })
+}
+
+function resolvedUpcomingPaths(): string[] {
+  return usePlayerStore.getState().getResolvedUpcomingEntries().map((entry) => entry.track.path)
 }
 
 test('queue entries strip artworkData from retained snapshots', () => {
@@ -173,8 +212,9 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   assert.equal(entry.snapshot.artworkHash, 'art-hash')
   assert.equal(hasArtworkData(entry), false)
 
-  usePlayerStore.setState({ userQueue: [entry] })
-  const [resolved] = usePlayerStore.getState().getResolvedUserQueueEntries()
+  const item = makeQueueItem(entry, 'cached')
+  usePlayerStore.setState({ queueItems: [item], baseUpcomingQueueIds: [item.queueId], upcomingQueueIds: [item.queueId] })
+  const [resolved] = usePlayerStore.getState().getResolvedUpcomingEntries()
   assert.equal(resolved?.track.title, 'Cached Title')
   assert.deepEqual(resolved?.track.artistNames, ['Cached Artist', 'Featured Artist'])
   assert.deepEqual(resolved?.track.albumArtistNames, ['Cached Artist', 'Featured Artist'])
@@ -200,24 +240,24 @@ test('path queue actions fetch missing library metadata before queueing', async 
     return [dbTrack]
   })
 
-  await usePlayerStore.getState().enqueueUserTrackPaths([dbTrack.path], 'end')
+  await usePlayerStore.getState().enqueueTrackPaths([dbTrack.path], 'end')
 
   assert.deepEqual(requestedPaths, [dbTrack.path])
   assert.equal(useLibraryStore.getState().trackByPath.get(dbTrack.path), dbTrack)
 
-  const [entry] = usePlayerStore.getState().userQueue
-  assert.ok(entry)
-  assert.equal(entry.snapshot.title, 'Fetched Title')
-  assert.equal(entry.snapshot.artist, 'Fetched Artist')
-  assert.equal(entry.snapshot.album, 'Fetched Album')
-  assert.equal(entry.snapshot.duration, 245)
-  assert.equal(entry.snapshot.artworkHash, 'fetched-art')
-  assert.equal(entry.snapshot.codec, 'mp3')
-  assert.equal(entry.snapshot.codecProfile, 'mpeg layer iii')
-  assert.equal(entry.snapshot.isAtmosJoc, true)
-  assert.equal(hasArtworkData(entry), false)
+  const [item] = usePlayerStore.getState().queueItems
+  assert.ok(item)
+  assert.equal(item.entry.snapshot.title, 'Fetched Title')
+  assert.equal(item.entry.snapshot.artist, 'Fetched Artist')
+  assert.equal(item.entry.snapshot.album, 'Fetched Album')
+  assert.equal(item.entry.snapshot.duration, 245)
+  assert.equal(item.entry.snapshot.artworkHash, 'fetched-art')
+  assert.equal(item.entry.snapshot.codec, 'mp3')
+  assert.equal(item.entry.snapshot.codecProfile, 'mpeg layer iii')
+  assert.equal(item.entry.snapshot.isAtmosJoc, true)
+  assert.equal(hasArtworkData(item.entry), false)
 
-  const [resolved] = usePlayerStore.getState().getResolvedUserQueueEntries()
+  const [resolved] = usePlayerStore.getState().getResolvedUpcomingEntries()
   assert.equal(resolved?.track.title, 'Fetched Title')
   assert.equal(resolved?.track.duration, 245)
 })
@@ -226,15 +266,15 @@ test('path queue actions keep filename fallback for tracks missing from the libr
   resetStores()
   installMockTrackFetch(() => [])
 
-  await usePlayerStore.getState().enqueueUserTrackPaths(['/missing/No Metadata.mp3'], 'end')
+  await usePlayerStore.getState().enqueueTrackPaths(['/missing/No Metadata.mp3'], 'end')
 
-  const [entry] = usePlayerStore.getState().userQueue
-  assert.ok(entry)
-  assert.equal(entry.snapshot.title, 'No Metadata')
-  assert.equal(entry.snapshot.artist, 'Unknown Artist')
-  assert.equal(entry.snapshot.album, 'Unknown Album')
-  assert.equal(entry.snapshot.duration, 0)
-  assert.equal(entry.snapshot.format, 'mp3')
+  const [item] = usePlayerStore.getState().queueItems
+  assert.ok(item)
+  assert.equal(item.entry.snapshot.title, 'No Metadata')
+  assert.equal(item.entry.snapshot.artist, 'Unknown Artist')
+  assert.equal(item.entry.snapshot.album, 'Unknown Album')
+  assert.equal(item.entry.snapshot.duration, 0)
+  assert.equal(item.entry.snapshot.format, 'mp3')
 })
 
 test('associated external queue entries use sanitized snapshots instead of library hydration', () => {
@@ -250,9 +290,10 @@ test('associated external queue entries use sanitized snapshots instead of libra
     title: 'Opened File Title',
     artworkData: 'data:image/png;base64,large'
   }))
-  usePlayerStore.setState({ userQueue: [entry] })
+  const item = makeQueueItem(entry, 'associated')
+  usePlayerStore.setState({ queueItems: [item], baseUpcomingQueueIds: [item.queueId], upcomingQueueIds: [item.queueId] })
 
-  const [resolved] = usePlayerStore.getState().getResolvedUserQueueEntries()
+  const [resolved] = usePlayerStore.getState().getResolvedUpcomingEntries()
   assert.equal(hasArtworkData(entry), false)
   assert.equal(resolved?.track.title, 'Opened File Title')
   assert.equal(resolved?.track.origin, 'associated-external')
@@ -279,6 +320,55 @@ test('duration helpers preserve positive track durations through zero engine val
   assert.equal(shouldApplyDurationChange(190, makeTrack('/music/a.flac', { duration: 185 }), 'playing'), true)
 })
 
+test('recent play threshold uses fifteen seconds or full short-track duration', () => {
+  assert.equal(RECENT_PLAY_MIN_SECONDS, 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(180), 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(4), 4)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(0), 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(null), 15)
+})
+
+test('recent play accumulation only counts elapsed playing time', () => {
+  let state = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 1_000)
+  assert.equal(state.accumulatedSeconds, 0)
+  assert.equal(state.lastAccumulatedAtMs, 1_000)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 15_900)
+  assert.equal(state.accumulatedSeconds, 14.9)
+  assert.equal(state.accumulatedSeconds < RECENT_PLAY_MIN_SECONDS, true)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 16_000)
+  assert.equal(state.accumulatedSeconds, 15)
+  assert.equal(state.accumulatedSeconds >= RECENT_PLAY_MIN_SECONDS, true)
+})
+
+test('recent play accumulation ignores paused gaps and position jumps', () => {
+  let state = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 1_000)
+  state = advanceRecentPlayAccumulation(state, 'playing', 6_000)
+  assert.equal(state.accumulatedSeconds, 5)
+
+  state = advanceRecentPlayAccumulation(state, 'paused', 20_000)
+  assert.equal(state.accumulatedSeconds, 5)
+  assert.equal(state.lastAccumulatedAtMs, null)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 25_000)
+  assert.equal(state.accumulatedSeconds, 5)
+  assert.equal(state.lastAccumulatedAtMs, 25_000)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 34_000)
+  assert.equal(state.accumulatedSeconds, 14)
+
+  const shortTrackThreshold = getRecentPlayThresholdSecondsForDuration(4)
+  let shortTrackState = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+  shortTrackState = advanceRecentPlayAccumulation(shortTrackState, 'playing', 0)
+  shortTrackState = advanceRecentPlayAccumulation(shortTrackState, 'playing', 4_000)
+  assert.equal(shortTrackState.accumulatedSeconds >= shortTrackThreshold, true)
+})
+
 test('playback history is capped and stores sanitized queue entries', async () => {
   resetStores()
 
@@ -294,8 +384,8 @@ test('playback history is capped and stores sanitized queue entries', async () =
         currentTrack: makeTrack(`/history/current-${index}.flac`, {
           artworkData: `data:image/jpeg;base64,${index}`
         }),
-        currentTrackSource: 'manual',
-        autoQueueIndex: -1
+        currentTrackSource: 'standalone',
+        currentQueueItemId: null
       })
 
       await usePlayerStore.getState().startPlaybackContext([
@@ -305,11 +395,387 @@ test('playback history is capped and stores sanitized queue entries', async () =
 
     const history = usePlayerStore.getState().playbackHistory
     assert.equal(history.length, MAX_PLAYBACK_HISTORY)
-    assert.equal(history[0]?.entry.path, '/history/current-5.flac')
-    assert.equal(history.every((entry) => !hasArtworkData(entry.entry)), true)
+    assert.equal(history[0]?.item.entry.path, '/history/current-5.flac')
+    assert.equal(history.every((entry) => !hasArtworkData(entry.item.entry)), true)
   } finally {
     usePlayerStore.setState({
       _loadAndPlayTrack: originalLoadAndPlayTrack
     })
+  }
+})
+
+test('shuffle mixes manual and context items and unshuffle restores canonical order', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0)
+    usePlayerStore.getState().enqueueTrack(makeTrack('/queue/manual.flac'), 'end')
+
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/b.flac',
+      '/queue/c.flac',
+      '/queue/manual.flac'
+    ])
+
+    Math.random = () => 0
+    usePlayerStore.getState().toggleShuffle()
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/c.flac',
+      '/queue/manual.flac',
+      '/queue/b.flac'
+    ])
+    assert.deepEqual(
+      usePlayerStore.getState().getResolvedUpcomingEntries().map((entry) => entry.origin),
+      ['context', 'manual', 'context']
+    )
+
+    const manualEntry = usePlayerStore.getState().getResolvedUpcomingEntries()
+      .find((entry) => entry.origin === 'manual')
+    assert.ok(manualEntry)
+    usePlayerStore.getState().moveUpcomingItem(manualEntry.queueId, 0)
+
+    usePlayerStore.getState().toggleShuffle()
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/manual.flac',
+      '/queue/b.flac',
+      '/queue/c.flac'
+    ])
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('startShuffled is ignored while shuffle is off', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0, { startShuffled: true })
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/b.flac',
+      '/queue/c.flac'
+    ])
+    assert.equal(usePlayerStore.getState().shuffle, false)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('startShuffled picks a non-first current item when global shuffle starts from play', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    usePlayerStore.setState({ shuffle: true })
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0, { startShuffled: true })
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/b.flac')
+    assert.notEqual(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(
+      new Set(resolvedUpcomingPaths()),
+      new Set(['/queue/a.flac', '/queue/c.flac'])
+    )
+    assert.equal(usePlayerStore.getState().shuffle, true)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('global shuffle without startShuffled keeps the requested current item', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    usePlayerStore.setState({ shuffle: true })
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0)
+
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.deepEqual(
+      new Set(resolvedUpcomingPaths()),
+      new Set(['/queue/b.flac', '/queue/c.flac'])
+    )
+    assert.equal(usePlayerStore.getState().shuffle, true)
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('play next, add, move, and remove operate on the unified upcoming order', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0)
+    usePlayerStore.getState().enqueueTrack(makeTrack('/queue/end.flac'), 'end')
+    usePlayerStore.getState().enqueueTrack(makeTrack('/queue/next.flac'), 'next')
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/next.flac',
+      '/queue/b.flac',
+      '/queue/c.flac',
+      '/queue/end.flac'
+    ])
+
+    const entries = usePlayerStore.getState().getResolvedUpcomingEntries()
+    const contextEntry = entries.find((entry) => entry.track.path === '/queue/c.flac')
+    const nextEntry = entries.find((entry) => entry.track.path === '/queue/next.flac')
+    assert.ok(contextEntry)
+    assert.ok(nextEntry)
+    usePlayerStore.getState().moveUpcomingItem(contextEntry.queueId, 0)
+    usePlayerStore.getState().removeUpcomingItem(nextEntry.queueId)
+    assert.deepEqual(resolvedUpcomingPaths(), [
+      '/queue/c.flac',
+      '/queue/b.flac',
+      '/queue/end.flac'
+    ])
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('duplicate queue paths retain independent stable IDs', async () => {
+  resetStores()
+  installMockTrackFetch(() => [])
+
+  await usePlayerStore.getState().enqueueTrackPaths(['/queue/duplicate.flac', '/queue/duplicate.flac'])
+  const entries = usePlayerStore.getState().getResolvedUpcomingEntries()
+  assert.equal(entries.length, 2)
+  assert.notEqual(entries[0]?.queueId, entries[1]?.queueId)
+
+  usePlayerStore.getState().removeUpcomingItem(entries[0]!.queueId)
+  assert.deepEqual(resolvedUpcomingPaths(), ['/queue/duplicate.flac'])
+})
+
+test('atomic shuffled context includes every non-current item and repeat all includes manual items', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const originalRandom = Math.random
+  Math.random = () => 0
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 1, { shuffle: true })
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/b.flac')
+    assert.deepEqual(new Set(resolvedUpcomingPaths()), new Set(['/queue/a.flac', '/queue/c.flac']))
+
+    usePlayerStore.getState().enqueueTrack(makeTrack('/queue/manual.flac'), 'end')
+    usePlayerStore.setState({ repeat: 'all' })
+    await usePlayerStore.getState().playQueuedItem(
+      usePlayerStore.getState().getResolvedUpcomingEntries().find((entry) => entry.track.path === '/queue/a.flac')!.queueId
+    )
+    await usePlayerStore.getState().playQueuedItem(
+      usePlayerStore.getState().getResolvedUpcomingEntries().find((entry) => entry.track.path === '/queue/c.flac')!.queueId
+    )
+    await usePlayerStore.getState().playQueuedItem(
+      usePlayerStore.getState().getResolvedUpcomingEntries().find((entry) => entry.track.path === '/queue/manual.flac')!.queueId
+    )
+    assert.equal(resolvedUpcomingPaths().includes('/queue/manual.flac'), false)
+    assert.deepEqual(
+      new Set(resolvedUpcomingPaths()),
+      new Set(['/queue/a.flac', '/queue/b.flac', '/queue/c.flac'])
+    )
+  } finally {
+    Math.random = originalRandom
+    restoreLoad()
+  }
+})
+
+test('previous restores the former current item at the front of the actual queue', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+
+  try {
+    await usePlayerStore.getState().startPlaybackContext([
+      makeTrack('/queue/a.flac'),
+      makeTrack('/queue/b.flac'),
+      makeTrack('/queue/c.flac')
+    ], 0)
+    await usePlayerStore.getState().playNext()
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/b.flac')
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/queue/a.flac')
+    assert.equal(usePlayerStore.getState().getResolvedNextTrack()?.path, '/queue/b.flac')
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('collection queue resolution preserves album, playlist, favorite, and duplicate order', async () => {
+  resetStores()
+  const albumTracks = [makeDbTrack('/album/1.flac'), makeDbTrack('/album/1.flac'), makeDbTrack('/album/2.flac')]
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        library: {
+          getTracksByAlbum: async () => albumTracks,
+          getPlaylistTrackEntries: async () => [
+            { track_path: '/playlist/1.flac', missing: false, track: makeDbTrack('/playlist/1.flac') },
+            { track_path: '/playlist/missing.flac', missing: true, track: null },
+            { track_path: '/playlist/1.flac', missing: false, track: makeDbTrack('/playlist/1.flac') }
+          ]
+        }
+      }
+    }
+  })
+  useLibraryStore.setState({ favoriteTrackPaths: ['/favorite/2.flac', '/favorite/1.flac'] })
+
+  assert.deepEqual(await resolveCollectionTrackPaths({
+    kind: 'album',
+    album: 'Album',
+    artist: 'Artist',
+    identityKey: 'album:key'
+  }), ['/album/1.flac', '/album/1.flac', '/album/2.flac'])
+  assert.deepEqual(await resolveCollectionTrackPaths({
+    kind: 'playlist',
+    playlistId: 42,
+    name: 'Playlist'
+  }), ['/playlist/1.flac', '/playlist/1.flac'])
+  assert.deepEqual(await resolveCollectionTrackPaths({
+    kind: 'playlist',
+    playlistId: FAVORITES_PLAYLIST_ID,
+    name: 'Favorites'
+  }), ['/favorite/2.flac', '/favorite/1.flac'])
+})
+
+test('session restore filters stale library queue items and advances queue ids', async () => {
+  resetStores()
+  const validTrack = makeTrack('/session/valid.flac', { sourceType: 'local', title: 'Valid' })
+  const staleTrack = makeTrack('/session/stale.flac', { sourceType: 'local', title: 'Stale' })
+  installMockTrackFetch((paths) => paths.includes(validTrack.path) ? [makeDbTrack(validTrack.path, { title: 'Valid' })] : [])
+
+  const validEntry = createQueueEntryFromTrack(validTrack)
+  const staleEntry = createQueueEntryFromTrack(staleTrack)
+  const snapshot: PlayerSessionSnapshot = {
+    currentTrack: validEntry.snapshot,
+    currentTrackSource: 'context',
+    savedPlaybackState: 'playing',
+    currentTime: 42,
+    duration: 120,
+    queueItems: [
+      {
+        queueId: 'queue-9000',
+        entry: validEntry,
+        origin: 'context',
+        sourcePlaylistId: null,
+        sourceContext: { type: 'genre', genre: 'Electronic' },
+        contextLabel: 'Electronic'
+      },
+      {
+        queueId: 'queue-9001',
+        entry: staleEntry,
+        origin: 'manual',
+        sourcePlaylistId: null,
+        sourceContext: null,
+        contextLabel: null
+      }
+    ],
+    baseUpcomingQueueIds: ['queue-9000', 'queue-9001'],
+    upcomingQueueIds: ['queue-9000', 'queue-9001'],
+    currentQueueItemId: 'queue-9000',
+    queueSourcePlaylistId: null,
+    queueSourceContext: { type: 'genre', genre: 'Electronic' },
+    queueContextLabel: 'Electronic',
+    shuffle: true,
+    repeat: 'all',
+    playbackHistory: []
+  }
+
+  await usePlayerStore.getState().restoreSession(snapshot)
+
+  assert.equal(usePlayerStore.getState().currentTrack?.path, validTrack.path)
+  assert.equal(usePlayerStore.getState().playbackState, 'paused')
+  assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, true)
+  assert.equal(usePlayerStore.getState().currentTime, 42)
+  assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, ['queue-9000'])
+  assert.deepEqual(usePlayerStore.getState().queueSourceContext, { type: 'genre', genre: 'Electronic' })
+  assert.deepEqual(usePlayerStore.getState().queueItems[0]?.sourceContext, { type: 'genre', genre: 'Electronic' })
+
+  usePlayerStore.getState().enqueueTrack(makeTrack('/session/manual.flac'), 'end')
+  assert.equal(usePlayerStore.getState().upcomingQueueIds.at(-1), 'queue-9001')
+})
+
+test('playing a restored session lazily loads from the saved position', async () => {
+  resetStores()
+  const track = makeTrack('/session/resume.flac', { sourceType: 'local', title: 'Resume' })
+  installMockTrackFetch(() => [makeDbTrack(track.path, { title: 'Resume' })])
+  const entry = createQueueEntryFromTrack(track)
+  const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
+  let capturedStartTime: number | undefined
+
+  usePlayerStore.setState({
+    _loadAndPlayTrack: async (loadedTrack, options) => {
+      capturedStartTime = options?.startTime
+      usePlayerStore.setState({
+        currentTrack: loadedTrack,
+        playbackState: 'playing',
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null
+      })
+      return 'loaded'
+    }
+  })
+
+  try {
+    await usePlayerStore.getState().restoreSession({
+      currentTrack: entry.snapshot,
+      currentTrackSource: 'standalone',
+      savedPlaybackState: 'playing',
+      currentTime: 37,
+      duration: 180,
+      queueItems: [],
+      baseUpcomingQueueIds: [],
+      upcomingQueueIds: [],
+      currentQueueItemId: null,
+      queueSourcePlaylistId: null,
+      queueSourceContext: null,
+      queueContextLabel: null,
+      shuffle: false,
+      repeat: 'none',
+      playbackHistory: []
+    })
+
+    await usePlayerStore.getState().play()
+    assert.equal(capturedStartTime, 37)
+    assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, false)
+    assert.equal(usePlayerStore.getState().playbackState, 'playing')
+  } finally {
+    usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
   }
 })

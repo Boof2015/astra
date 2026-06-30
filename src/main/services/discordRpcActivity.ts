@@ -8,6 +8,7 @@ const DISCORD_STATUS_DISPLAY_DETAILS = 2
 export type DiscordActivityPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 export type DiscordActivityCompactStatusMode = 'title' | 'artist'
 export type DiscordActivityExpandedInfoMode = 'file-info' | 'album'
+export type DiscordActivityLinkDestination = 'off' | 'ytmusic' | 'lastfm'
 
 export interface DiscordActivityTrackPresence {
   title: string
@@ -35,6 +36,10 @@ export interface DiscordActivityPresenceUpdate {
 
 export interface BuildDiscordActivityOptions {
   largeImageUrl?: string
+  smallImageKey?: string
+  smallImageText?: string
+  smallImageLinkUrl?: string
+  linkDestination?: DiscordActivityLinkDestination
   nowSeconds?: number
   compactStatusMode?: DiscordActivityCompactStatusMode
   expandedInfoMode?: DiscordActivityExpandedInfoMode
@@ -45,7 +50,9 @@ export interface DiscordRichPresenceActivity {
   name: string
   type: number
   details: string
+  details_url?: string
   state?: string
+  state_url?: string
   status_display_type: number
   instance: false
   timestamps?: {
@@ -55,6 +62,10 @@ export interface DiscordRichPresenceActivity {
   assets?: {
     large_image: string
     large_text?: string
+    large_url?: string
+    small_image?: string
+    small_text?: string
+    small_url?: string
   }
 }
 
@@ -148,6 +159,66 @@ function buildPlaybackStateLine(
   return undefined
 }
 
+// Discord rejects activity URLs longer than 256 characters; drop them instead of
+// truncating, since a cut percent-encoding breaks the link entirely.
+const DISCORD_URL_MAX_LENGTH = 256
+
+function asDiscordUrl(url: string): string | undefined {
+  return url.length <= DISCORD_URL_MAX_LENGTH ? url : undefined
+}
+
+function buildSearchLinkUrl(base: string, terms: Array<string | undefined>): string | undefined {
+  const query = terms.filter((term): term is string => Boolean(term)).join(' ')
+  if (!query) return undefined
+  return asDiscordUrl(`${base}${encodeURIComponent(query)}`)
+}
+
+export function buildTrackLinkUrl(
+  destination: DiscordActivityLinkDestination,
+  title?: string,
+  artist?: string
+): string | undefined {
+  if (!title) return undefined
+  if (destination === 'ytmusic') {
+    return buildSearchLinkUrl('https://music.youtube.com/search?q=', [title, artist])
+  }
+  if (destination === 'lastfm') {
+    if (!artist) return undefined
+    return asDiscordUrl(`https://www.last.fm/music/${encodeURIComponent(artist)}/_/${encodeURIComponent(title)}`)
+  }
+  return undefined
+}
+
+export function buildArtistLinkUrl(
+  destination: DiscordActivityLinkDestination,
+  artist?: string
+): string | undefined {
+  if (!artist) return undefined
+  if (destination === 'ytmusic') {
+    return buildSearchLinkUrl('https://music.youtube.com/search?q=', [artist])
+  }
+  if (destination === 'lastfm') {
+    return asDiscordUrl(`https://www.last.fm/music/${encodeURIComponent(artist)}`)
+  }
+  return undefined
+}
+
+export function buildAlbumLinkUrl(
+  destination: DiscordActivityLinkDestination,
+  album?: string,
+  artist?: string
+): string | undefined {
+  if (!album) return undefined
+  if (destination === 'ytmusic') {
+    return buildSearchLinkUrl('https://music.youtube.com/search?q=', [album, artist])
+  }
+  if (destination === 'lastfm') {
+    if (!artist) return undefined
+    return asDiscordUrl(`https://www.last.fm/music/${encodeURIComponent(artist)}/${encodeURIComponent(album)}`)
+  }
+  return undefined
+}
+
 function buildExpandedInfoLine(
   track: DiscordActivityTrackPresence,
   mode: DiscordActivityExpandedInfoMode
@@ -188,6 +259,18 @@ export function buildDiscordActivityFromPresence(
     activity.state = state
   }
 
+  const linkDestination = options.linkDestination ?? 'off'
+  if (linkDestination !== 'off') {
+    const detailsUrl = buildTrackLinkUrl(linkDestination, normalizeText(presence.track.title), artistLine)
+    if (detailsUrl) {
+      activity.details_url = detailsUrl
+    }
+    const stateUrl = buildArtistLinkUrl(linkDestination, artistLine)
+    if (activity.state && stateUrl) {
+      activity.state_url = stateUrl
+    }
+  }
+
   if (presence.playbackState === 'playing') {
     const duration = normalizeNumber(presence.durationSeconds ?? presence.track.durationSeconds)
     const current = normalizeNumber(presence.currentTimeSeconds) ?? 0
@@ -210,6 +293,26 @@ export function buildDiscordActivityFromPresence(
     }
     if (expandedInfoLine) {
       activity.assets.large_text = truncateDiscordField(expandedInfoLine, 128)
+    }
+    if (linkDestination !== 'off') {
+      // Album pages are keyed by album artist when available; fall back to the track artist.
+      const albumArtistLine = normalizeText(presence.track.albumArtist) ?? artistLine
+      const largeUrl = buildAlbumLinkUrl(linkDestination, normalizeText(presence.track.album), albumArtistLine)
+      if (largeUrl) {
+        activity.assets.large_url = largeUrl
+      }
+    }
+    const smallImageKey = normalizeText(options.smallImageKey)
+    if (smallImageKey) {
+      activity.assets.small_image = smallImageKey
+      const smallImageText = normalizeText(options.smallImageText)
+      if (smallImageText) {
+        activity.assets.small_text = truncateDiscordField(smallImageText, 128)
+      }
+      const smallImageLinkUrl = asDiscordUrl(normalizeText(options.smallImageLinkUrl) ?? '')
+      if (smallImageLinkUrl) {
+        activity.assets.small_url = smallImageLinkUrl
+      }
     }
   }
 

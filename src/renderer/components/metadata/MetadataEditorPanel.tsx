@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/metadataEditorStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { usePresence } from '../../hooks/usePresence'
 
 interface DraftField {
   value: string
@@ -219,10 +220,12 @@ export default function MetadataEditorPanel() {
     redo,
     closePanel
   } = useMetadataEditorStore()
+  const presence = usePresence(panelRequest)
+  const displayedPanelRequest = presence.presentValue
 
-  const requestTrackPaths = panelRequest?.trackPaths ?? EMPTY_TRACK_PATHS
+  const requestTrackPaths = displayedPanelRequest?.trackPaths ?? EMPTY_TRACK_PATHS
   const requestTrackPathKey = requestTrackPaths.join('\u0000')
-  const skippedRemoteCount = panelRequest?.skippedRemoteCount ?? 0
+  const skippedRemoteCount = displayedPanelRequest?.skippedRemoteCount ?? 0
 
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [isTracksLoading, setIsTracksLoading] = useState(false)
@@ -255,7 +258,7 @@ export default function MetadataEditorPanel() {
   }, [requestTrackPathKey, requestTrackPaths])
 
   useEffect(() => {
-    if (!panelRequest) {
+    if (!displayedPanelRequest) {
       setTracks([])
       setValidationError(null)
       setStatusMessage(null)
@@ -293,7 +296,7 @@ export default function MetadataEditorPanel() {
     return () => {
       cancelled = true
     }
-  }, [loadOverridePaths, panelRequest, reloadPanelTracks])
+  }, [displayedPanelRequest, loadOverridePaths, reloadPanelTracks])
 
   useEffect(() => {
     setDraft(createDraftFromCommon(selectionCommon))
@@ -555,10 +558,17 @@ export default function MetadataEditorPanel() {
     }
   }, [redo, refreshAfterMutation])
 
-  if (!panelRequest) return null
+  if (!presence.shouldRender || !displayedPanelRequest) return null
 
   return (
-    <aside className="metadata-editor-panel" role="dialog" aria-modal="false" aria-labelledby="metadata-editor-panel-title">
+    <aside
+      className="metadata-editor-panel"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="metadata-editor-panel-title"
+    >
       <div className="metadata-panel-header">
         <div className="metadata-panel-heading">
           <h2 id="metadata-editor-panel-title">Edit Metadata</h2>

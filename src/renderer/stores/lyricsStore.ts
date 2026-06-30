@@ -77,6 +77,10 @@ function touchLyricsResultCacheEntry(
   return putLyricsResultInCache(cache, trackPath, result, currentTrackPath)
 }
 
+function isProviderUnavailableResult(result: LyricsLookupResult): boolean {
+  return result.status === 'not_found' && result.reason === 'provider-unavailable'
+}
+
 export const useLyricsStore = create<LyricsStore>((set, get) => {
   const applyStatus = (status: LyricsStatus): LyricsStatus => {
     set({
@@ -106,9 +110,13 @@ export const useLyricsStore = create<LyricsStore>((set, get) => {
   ): LyricsLookupResult => {
     if (requestId !== activeRequestId) return result
     set((state) => ({
-      resultByTrackPath: putLyricsResultInCache(state.resultByTrackPath, trackPath, result, trackPath),
+      resultByTrackPath: isProviderUnavailableResult(result) && state.resultByTrackPath[trackPath]?.status === 'hit'
+        ? touchLyricsResultCacheEntry(state.resultByTrackPath, trackPath, trackPath)
+        : putLyricsResultInCache(state.resultByTrackPath, trackPath, result, trackPath),
       currentTrackPath: trackPath,
-      currentResult: result,
+      currentResult: isProviderUnavailableResult(result) && state.resultByTrackPath[trackPath]?.status === 'hit'
+        ? state.resultByTrackPath[trackPath]
+        : result,
       isLoading: false,
       errorMessage: result.status === 'transient_error' ? result.message : ''
     }))

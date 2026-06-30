@@ -1,50 +1,27 @@
-import { type WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
-import { usePlayerStore } from '../../stores/playerStore'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
+import { useLibraryStore, type LibraryArtistBrowseMode, type LibraryAlbumSortMode } from '../../stores/libraryStore'
+import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useGraphStore } from '../../stores/graphStore'
-import { Track } from '../../types/audio'
+import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
+import { usePresence } from '../../hooks/usePresence'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
+import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
-import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
+import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
+import { runViewTransition } from '../../utils/viewTransitions'
+import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
+import { navigateInputBack } from '../../utils/inputNavigation'
+import TrackList, { type TrackListSortKey } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
-import ArtistList, { type ArtistListViewMode, type ArtistListViewportAPI } from '../library/ArtistList'
+import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
-type AlbumSortMode = 'title' | 'artist'
-type ArtistRootViewMode = ArtistListViewMode
-const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
-const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
-const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
-
-function loadAlbumSortModeSetting(): AlbumSortMode {
-  try {
-    const stored = localStorage.getItem(ALBUM_SORT_MODE_STORAGE_KEY)
-    return stored === 'artist' ? 'artist' : 'title'
-  } catch {
-    return 'title'
-  }
-}
-
-function loadIncludeSinglesInAlbumsSetting(): boolean {
-  try {
-    return localStorage.getItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function loadArtistRootViewModeSetting(): ArtistRootViewMode {
-  try {
-    return localStorage.getItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY) === 'grid' ? 'grid' : 'list'
-  } catch {
-    return 'list'
-  }
-}
 
 function formatTrackCount(count: number): string {
   return `${count} ${count === 1 ? 'track' : 'tracks'}`
@@ -172,14 +149,12 @@ function resolveBrowseArtistForTrack(
 }
 
 function trackMatchesLibraryQuery(
-  track: { title: string; artist: string; artist_names?: string[] | null; album: string; album_artist_names?: string[] | null },
-  normalizedQuery: string
+  track: { title: string },
+  query: string
 ): boolean {
-  return track.title.toLowerCase().includes(normalizedQuery)
-    || track.artist.toLowerCase().includes(normalizedQuery)
-    || track.album.toLowerCase().includes(normalizedQuery)
-    || (track.artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
-    || (track.album_artist_names ?? []).some((artist) => artist.toLowerCase().includes(normalizedQuery))
+  return matchesFuzzyFields(query, [
+    { value: track.title, weight: 1.5 }
+  ])
 }
 
 export default function LibraryView() {
@@ -192,36 +167,51 @@ export default function LibraryView() {
   const albumsIncludingSingles = useLibraryStore((state) => state.albumsIncludingSingles)
   const albumsIncludingSinglesLoaded = useLibraryStore((state) => state.albumsIncludingSinglesLoaded)
   const artists = useLibraryStore((state) => state.artists)
+  const genres = useLibraryStore((state) => state.genres)
   const folders = useLibraryStore((state) => state.folders)
   const viewMode = useLibraryStore((state) => state.viewMode)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
-  const selectionOrigin = useLibraryStore((state) => state.selectionOrigin)
+  const selectedGenre = useLibraryStore((state) => state.selectedGenre)
   const isLoading = useLibraryStore((state) => state.isLoading)
   const isScanning = useLibraryStore((state) => state.isScanning)
   const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
   const scanProgress = useLibraryStore((state) => state.scanProgress)
   const scanStage = useLibraryStore((state) => state.scanStage)
   const cancelScan = useLibraryStore((state) => state.cancelScan)
+  const rescan = useLibraryStore((state) => state.rescan)
   const loadAlbumsIncludingSingles = useLibraryStore((state) => state.loadAlbumsIncludingSingles)
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
-  const clearSelection = useLibraryStore((state) => state.clearSelection)
-  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
+  const selectGenre = useLibraryStore((state) => state.selectGenre)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
+  const sortState = useLibraryStore((state) => state.trackListSortState)
+  const setSortState = useLibraryStore((state) => state.setTrackListSortState)
+  const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
+  const setSelectedSourceFilters = useLibraryStore((state) => state.setSelectedSourceFilters)
+  const clearSelectedSourceFilters = useLibraryStore((state) => state.clearSelectedSourceFilters)
+  const toggleSourceFilter = useLibraryStore((state) => state.toggleSourceFilter)
+  const albumSortMode = useLibraryStore((state) => state.albumSortMode)
+  const setAlbumSortMode = useLibraryStore((state) => state.setAlbumSortMode)
+  const includeSinglesInAlbums = useLibraryStore((state) => state.includeSinglesInAlbums)
+  const setIncludeSinglesInAlbums = useLibraryStore((state) => state.setIncludeSinglesInAlbums)
+  const includeCollabArtists = useLibraryStore((state) => state.includeCollabArtists)
+  const setIncludeCollabArtists = useLibraryStore((state) => state.setIncludeCollabArtists)
+  const artistRootViewMode = useLibraryStore((state) => state.artistRootViewMode)
+  const setArtistRootViewMode = useLibraryStore((state) => state.setArtistRootViewMode)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
-  const loadTrack = usePlayerStore((s) => s.loadTrack)
-  const autoQueue = usePlayerStore((s) => s.autoQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const graphEnabled = useGraphStore((s) => s.enabled)
   const openFocusedGraph = useGraphStore((s) => s.openFocusedGraph)
   const libraryTrackRevealRequest = useUIStore((s) => s.libraryTrackRevealRequest)
@@ -229,35 +219,37 @@ export default function LibraryView() {
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortState, setSortState] = useState<TrackListSortState | null>({ key: 'title', direction: 'asc' })
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
-  const [albumSortMode, setAlbumSortMode] = useState<AlbumSortMode>(() => loadAlbumSortModeSetting())
-  const [includeSinglesInAlbums, setIncludeSinglesInAlbums] = useState(() => loadIncludeSinglesInAlbumsSetting())
-  const [artistRootViewMode, setArtistRootViewMode] = useState<ArtistRootViewMode>(() => loadArtistRootViewModeSetting())
-  const [selectedSourceFilters, setSelectedSourceFilters] = useState<Set<string>>(new Set())
-  const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
+  const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
+  const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
+  const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const previousInDetailViewRef = useRef(false)
-  const shufflePlayPendingRef = useRef(false)
+  const collectionPlayPendingRef = useRef(false)
   const albumGridRef = useRef<HTMLDivElement | null>(null)
   const albumGridScrollRef = useRef(0)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
   const artistScrollRef = useRef(0)
+  const genreGridRef = useRef<HTMLDivElement | null>(null)
+  const genreGridScrollRef = useRef(0)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
-  const pendingScrollRef = useRef<'albums' | 'artists' | null>(null)
+  const artistAlbumRailRef = useRef<HTMLDivElement | null>(null)
+  const pendingScrollRef = useRef<'albums' | 'artists' | 'genres' | null>(null)
 
-  const normalizedQuery = searchQuery.trim().toLowerCase()
-  const hasSearchQuery = normalizedQuery.length > 0
-  const inDetailView = Boolean(selectedAlbum || selectedArtist)
-  const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist
-  const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist
-  const isTracklistContext = Boolean(selectedAlbum || selectedArtist || viewMode === 'tracks')
-  const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && (
-    viewMode === 'tracks' || viewMode === 'folders' || selectedSourceFilters.size > 0
+  useHorizontalWheelScroll(artistAlbumRailRef)
+
+  const trimmedSearchQuery = searchQuery.trim()
+  const hasSearchQuery = trimmedSearchQuery.length > 0
+  const inDetailView = Boolean(selectedAlbum || selectedArtist || selectedGenre)
+  const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre
+  const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre
+  const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
+  const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && !selectedGenre && (
+    viewMode === 'tracks' || viewMode === 'genres' || viewMode === 'folders' || selectedSourceFilters.size > 0
   )
   const isFullTrackListPending = shouldRetainFullTracks && totalTrackCount > 0 && fullTrackPaths.length === 0
   const activeTrackPaths = shouldRetainFullTracks ? fullTrackPaths : trackPaths
@@ -274,8 +266,28 @@ export default function LibraryView() {
     if (selectedArtist) {
       return `artist:${selectedArtist.trim().toLocaleLowerCase()}`
     }
+    if (selectedGenre) {
+      return `genre:${selectedGenre.trim().toLocaleLowerCase()}`
+    }
     return 'library-root'
-  }, [selectedAlbum, selectedArtist])
+  }, [selectedAlbum, selectedArtist, selectedGenre])
+  const playbackSourceContext = useMemo<PlaybackSourceContext | null>(() => {
+    if (selectedAlbum) {
+      return {
+        type: 'album',
+        album: selectedAlbum.album,
+        albumArtist: selectedAlbum.artist || undefined,
+        identityKey: selectedAlbum.identity_key
+      }
+    }
+    if (selectedArtist) {
+      return { type: 'artist', artist: selectedArtist }
+    }
+    if (selectedGenre) {
+      return { type: 'genre', genre: selectedGenre }
+    }
+    return null
+  }, [selectedAlbum, selectedArtist, selectedGenre])
   const sourceFilterOptions = useMemo(() => {
     return [
       ...subsonicSources.map((source) => ({
@@ -297,6 +309,12 @@ export default function LibraryView() {
   const selectedArtistArtworkHash = selectedArtistRecord?.artwork_hash ?? null
   const selectedArtistArtworkSource = selectedArtistRecord?.artwork_source ?? null
   const canResetSelectedArtistImage = selectedArtistArtworkSource === 'manual'
+  const selectedGenreRecord = useMemo(() => {
+    if (!selectedGenre) return null
+    const selectedGenreKey = normalizeKey(selectedGenre)
+    return genres.find((genre) => normalizeKey(genre.genre) === selectedGenreKey) ?? null
+  }, [genres, selectedGenre])
+  const selectedGenreArtworkHash = selectedGenreRecord?.artwork_hash ?? null
 
   useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
@@ -310,8 +328,8 @@ export default function LibraryView() {
   useEffect(() => {
     if (!libraryTrackRevealRequest) return
     setSearchQuery('')
-    setSelectedSourceFilters(new Set())
-  }, [libraryTrackRevealRequest])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters, libraryTrackRevealRequest])
 
   useEffect(() => {
     if (!previousInDetailViewRef.current && inDetailView) {
@@ -323,6 +341,10 @@ export default function LibraryView() {
   useEffect(() => {
     setIsArtistImageMenuOpen(false)
   }, [selectedArtist])
+
+  useEffect(() => {
+    setIsDetailHeaderCollapsed(false)
+  }, [sortContextKey])
 
   useEffect(() => {
     if (!isArtistImageMenuOpen) return
@@ -348,30 +370,6 @@ export default function LibraryView() {
   }, [isArtistImageMenuOpen])
 
   useEffect(() => {
-    try {
-      localStorage.setItem(ALBUM_SORT_MODE_STORAGE_KEY, albumSortMode)
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [albumSortMode])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY, includeSinglesInAlbums ? '1' : '0')
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [includeSinglesInAlbums])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY, artistRootViewMode)
-    } catch {
-      // Ignore localStorage write failures in restricted environments.
-    }
-  }, [artistRootViewMode])
-
-  useEffect(() => {
     if (!includeSinglesInAlbums || !isAlbumRootView || albumsIncludingSinglesLoaded) return
     void loadAlbumsIncludingSingles()
   }, [albumsIncludingSinglesLoaded, includeSinglesInAlbums, isAlbumRootView, loadAlbumsIncludingSingles])
@@ -391,22 +389,20 @@ export default function LibraryView() {
       ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
     ])
 
-    setSelectedSourceFilters((current) => {
-      if (current.size === 0) return current
-      const next = new Set<string>()
-      for (const key of current) {
-        if (validFilterKeys.has(key)) {
-          next.add(key)
-        }
+    if (selectedSourceFilters.size === 0) return
+    const next = new Set<string>()
+    for (const key of selectedSourceFilters) {
+      if (validFilterKeys.has(key)) {
+        next.add(key)
       }
-      return next.size === current.size ? current : next
-    })
-  }, [jellyfinSources, subsonicSources])
+    }
+    setSelectedSourceFilters(next)
+  }, [jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
 
   useEffect(() => {
     if (shouldShowSourceFilters) return
-    setSelectedSourceFilters((current) => (current.size === 0 ? current : new Set()))
-  }, [shouldShowSourceFilters])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters, shouldShowSourceFilters])
 
   useEffect(() => {
     setArtistAlbumRailMode('albums')
@@ -426,14 +422,6 @@ export default function LibraryView() {
   }, [cancelScan, isScanning])
 
   useLayoutEffect(() => {
-    if (selectedAlbum) {
-      setSortState(null)
-      return
-    }
-    setSortState({ key: 'title', direction: 'asc' })
-  }, [sortContextKey, selectedAlbum])
-
-  useLayoutEffect(() => {
     const pending = pendingScrollRef.current
     if (pending === 'albums' && albumGridRef.current) {
       albumGridRef.current.scrollTop = albumGridScrollRef.current
@@ -441,86 +429,82 @@ export default function LibraryView() {
     } else if (pending === 'artists' && artistViewportRef.current?.element) {
       artistViewportRef.current.element.scrollTop = artistScrollRef.current
       pendingScrollRef.current = null
+    } else if (pending === 'genres' && genreGridRef.current) {
+      genreGridRef.current.scrollTop = genreGridScrollRef.current
+      pendingScrollRef.current = null
     }
   })
 
   useEffect(() => {
     if (!sortState) return
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
+    const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
     const hideAddedSort = !showTracklistAddedDate && sortState.key === 'added'
-    if (!hideBpmKeySort && !hideAddedSort) return
+    if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [selectedAlbum, showTracklistAddedDate, showTracklistBpmKey, sortState])
+  }, [selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
-    setSortState((current) => {
-      if (current?.key === key) {
-        return {
-          key,
-          direction: current.direction === 'asc' ? 'desc' : 'asc'
-        }
-      }
-      return {
+    const current = useLibraryStore.getState().trackListSortState
+    if (current?.key === key) {
+      setSortState({
         key,
-        direction: key === 'added' ? 'desc' : 'asc'
-      }
+        direction: current.direction === 'asc' ? 'desc' : 'asc'
+      })
+      return
+    }
+    setSortState({
+      key,
+      direction: key === 'added' ? 'desc' : 'asc'
     })
-  }, [])
+  }, [setSortState])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
-  }, [])
+  }, [setSortState])
 
-  const handleSetAlbumSortMode = useCallback((mode: AlbumSortMode) => {
+  const handleSetAlbumSortMode = useCallback((mode: LibraryAlbumSortMode) => {
     setAlbumSortMode(mode)
-  }, [])
+  }, [setAlbumSortMode])
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
-    setIncludeSinglesInAlbums((current) => !current)
-  }, [])
+    setIncludeSinglesInAlbums(!includeSinglesInAlbums)
+  }, [includeSinglesInAlbums, setIncludeSinglesInAlbums])
 
-  const handleArtistAlbumRailWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
-    const element = event.currentTarget
-    const maxScrollLeft = element.scrollWidth - element.clientWidth
-
-    if (maxScrollLeft <= 0) return
-    if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
-
-    const isAtStart = element.scrollLeft <= 0
-    const isAtEnd = element.scrollLeft >= maxScrollLeft - 1
-
-    if ((event.deltaY < 0 && isAtStart) || (event.deltaY > 0 && isAtEnd)) return
-
-    const deltaY = event.deltaMode === 1
-      ? event.deltaY * 16
-      : event.deltaMode === 2
-        ? event.deltaY * element.clientWidth
-        : event.deltaY
-
-    event.preventDefault()
-    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + deltaY))
-  }, [])
+  const handleToggleIncludeCollabArtists = useCallback(() => {
+    setIncludeCollabArtists(!includeCollabArtists)
+  }, [includeCollabArtists, setIncludeCollabArtists])
 
   const handleResetSourceFilters = useCallback(() => {
-    setSelectedSourceFilters(new Set())
-  }, [])
+    clearSelectedSourceFilters()
+  }, [clearSelectedSourceFilters])
 
   const handleToggleSourceFilter = useCallback((filterKey: string) => {
-    setSelectedSourceFilters((current) => {
-      const next = new Set(current)
-      if (next.has(filterKey)) {
-        next.delete(filterKey)
-      } else {
-        next.add(filterKey)
-      }
-      return next
-    })
-  }, [])
+    toggleSourceFilter(filterKey)
+  }, [toggleSourceFilter])
+
+  const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    if (!inDetailView) return
+
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (target.scrollHeight <= target.clientHeight + 1) return
+
+    const scrollTop = target.scrollTop
+    setIsDetailHeaderCollapsed((isCollapsed) => (
+      isCollapsed ? scrollTop > 8 : scrollTop > 40
+    ))
+  }, [inDetailView])
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
     artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
-    await selectArtist(artistName, 'library')
+    await runViewTransition(() => selectArtist(artistName, 'library'), 'library-context-forward')
   }, [selectArtist])
+
+  const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
+    if (viewMode === mode) return
+    void runViewTransition(() => setViewMode(mode), getLibraryTabTransitionScopeClasses(viewMode, mode))
+  }, [setViewMode, viewMode])
 
   const sourceFilteredTracks = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return tracks
@@ -563,6 +547,8 @@ export default function LibraryView() {
         comparison = compareNullableDuration(a.duration, b.duration, sortState.direction)
       } else if (sortState.key === 'bpm') {
         comparison = compareNullableBpm(a.bpm, b.bpm, sortState.direction)
+      } else if (sortState.key === 'genre') {
+        comparison = compareNullableKey(a.genre, b.genre, sortState.direction)
       } else if (sortState.key === 'added') {
         comparison = compareAddedAt(a, b, sortState.direction)
       } else {
@@ -575,50 +561,35 @@ export default function LibraryView() {
 
     return sorted
   }, [sortState, sourceFilteredTracks])
-  const isShufflePlayDisabled = isShufflePlayPending || queueSeedSortedTracks.length === 0
-  const isShufflePlayActive = useMemo(() => {
-    if (!shuffle) return false
-    if (autoQueue.length === 0) return false
-    if (autoQueue.length !== queueSeedSortedTracks.length) return false
+  const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
 
-    for (let index = 0; index < autoQueue.length; index += 1) {
-      if (autoQueue[index]?.path !== queueSeedSortedTracks[index]?.path) {
-        return false
-      }
-    }
-
-    return true
-  }, [autoQueue, queueSeedSortedTracks, shuffle])
-
-  const handleShufflePlayTracklist = useCallback(async () => {
-    if (shufflePlayPendingRef.current) return
+  const handlePlayTracklist = useCallback(async () => {
+    if (collectionPlayPendingRef.current) return
     if (queueSeedSortedTracks.length === 0) return
 
-    shufflePlayPendingRef.current = true
-    setIsShufflePlayPending(true)
+    collectionPlayPendingRef.current = true
+    setIsCollectionPlayPending(true)
 
     try {
       const queueTrackPaths = queueSeedSortedTracks.map((track) => track.path)
-      const randomStartIndex = Math.floor(Math.random() * queueTrackPaths.length)
 
-      await startPlaybackContextByPaths(queueTrackPaths, randomStartIndex, {
-        contextLabel: selectedAlbum?.album ?? selectedArtist ?? 'Library'
+      await startPlaybackContextByPaths(queueTrackPaths, 0, {
+        contextLabel: selectedAlbum?.album ?? selectedArtist ?? selectedGenre ?? 'Library',
+        sourceContext: playbackSourceContext,
+        startShuffled: true
       })
-      if (!shuffle) {
-        toggleShuffle()
-      }
     } catch (error) {
-      console.error('Failed to shuffle play tracklist:', error)
+      console.error('Failed to play tracklist:', error)
     } finally {
-      shufflePlayPendingRef.current = false
-      setIsShufflePlayPending(false)
+      collectionPlayPendingRef.current = false
+      setIsCollectionPlayPending(false)
     }
-  }, [queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, shuffle, startPlaybackContextByPaths, toggleShuffle])
+  }, [playbackSourceContext, queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, selectedGenre, startPlaybackContextByPaths])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, normalizedQuery))
-  }, [hasSearchQuery, normalizedQuery, queueSeedSortedTracks])
+    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
+  }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const albumGridSourceAlbums = isAlbumRootView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
     ? albumsIncludingSingles
@@ -640,10 +611,10 @@ export default function LibraryView() {
   const filteredAlbums = useMemo(() => {
     const visibleAlbums = !hasSearchQuery
       ? sourceFilteredAlbums
-      : sourceFilteredAlbums.filter((album) =>
-        album.album.toLowerCase().includes(normalizedQuery)
-        || album.artist.toLowerCase().includes(normalizedQuery)
-      )
+      : sourceFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
+        { value: album.album, weight: 1.4 },
+        { value: album.artist, weight: 1.1 }
+      ]))
 
     const sortedAlbums = [...visibleAlbums]
     sortedAlbums.sort((a, b) => {
@@ -662,7 +633,7 @@ export default function LibraryView() {
     })
 
     return sortedAlbums
-  }, [albumSortMode, hasSearchQuery, normalizedQuery, sourceFilteredAlbums])
+  }, [albumSortMode, hasSearchQuery, trimmedSearchQuery, sourceFilteredAlbums])
 
   const sourceFilteredArtistKeys = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
@@ -687,15 +658,63 @@ export default function LibraryView() {
     return keys
   }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
+  const sourceFilteredPrimaryArtistKeys = useMemo(() => {
+    if (artistBrowseMode !== 'canonical') return null
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+
+    const keys = new Set<string>()
+    for (const track of sourceFilteredTracks) {
+      const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
+      if (browseArtistKey) keys.add(browseArtistKey)
+    }
+    return keys
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+
   const visibleArtists = useMemo(() => {
     if (!sourceFilteredArtistKeys) return artists
     return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
   }, [artists, sourceFilteredArtistKeys])
 
+  const rootVisibleArtists = useMemo(() => {
+    if (artistBrowseMode !== 'canonical' || includeCollabArtists) return visibleArtists
+
+    if (sourceFilteredPrimaryArtistKeys) {
+      return visibleArtists.filter((artist) => sourceFilteredPrimaryArtistKeys.has(normalizeKey(artist.artist)))
+    }
+
+    return visibleArtists.filter((artist) => artist.primary_track_count > 0)
+  }, [artistBrowseMode, includeCollabArtists, sourceFilteredPrimaryArtistKeys, visibleArtists])
+
   const filteredArtists = useMemo(() => {
-    if (!hasSearchQuery) return visibleArtists
-    return visibleArtists.filter((artist) => artist.artist.toLowerCase().includes(normalizedQuery))
-  }, [hasSearchQuery, normalizedQuery, visibleArtists])
+    if (!hasSearchQuery) return rootVisibleArtists
+    return rootVisibleArtists.filter((artist) => matchesFuzzyFields(trimmedSearchQuery, [
+      { value: artist.artist, weight: 1.5 }
+    ]))
+  }, [hasSearchQuery, trimmedSearchQuery, rootVisibleArtists])
+
+  const sourceFilteredGenreKeys = useMemo(() => {
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+    const keys = new Set<string>()
+    for (const track of sourceFilteredTracks) {
+      for (const genre of track.genres) {
+        const normalizedGenreKey = normalizeKey(genre)
+        if (normalizedGenreKey) keys.add(normalizedGenreKey)
+      }
+    }
+    return keys
+  }, [selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+
+  const visibleGenres = useMemo(() => {
+    if (!sourceFilteredGenreKeys) return genres
+    return genres.filter((genre) => sourceFilteredGenreKeys.has(normalizeKey(genre.genre)))
+  }, [genres, sourceFilteredGenreKeys])
+
+  const filteredGenres = useMemo(() => {
+    if (!hasSearchQuery) return visibleGenres
+    return visibleGenres.filter((genre) => matchesFuzzyFields(trimmedSearchQuery, [
+      { value: genre.genre, weight: 1.5 }
+    ]))
+  }, [hasSearchQuery, trimmedSearchQuery, visibleGenres])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
@@ -792,19 +811,52 @@ export default function LibraryView() {
       featured.push(single)
     }
 
-    featured.sort((a, b) => {
-      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
-      if (albumCompare !== 0) return albumCompare
-      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-      if (artistCompare !== 0) return artistCompare
-      return a.identity_key.localeCompare(b.identity_key)
-    })
+    primary.sort(compareAlbumsByYearDescending)
+    featured.sort(compareAlbumsByYearDescending)
 
     return {
       primaryArtistAlbums: primary,
       featuredArtistAlbums: featured
     }
   }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
+
+  const selectedAlbumRecord = useMemo(() => {
+    if (!selectedAlbum) return null
+
+    const identityKey = selectedAlbum.identity_key?.trim()
+    const albumCandidates = albumsIncludingSinglesLoaded
+      ? [...albums, ...albumsIncludingSingles]
+      : albums
+
+    if (identityKey) {
+      const identityMatch = albumCandidates.find((album) => album.identity_key === identityKey)
+      if (identityMatch) return identityMatch
+    }
+
+    const selectedAlbumKey = buildAlbumKey(selectedAlbum.album, selectedAlbum.artist)
+    return albumCandidates.find((album) => buildAlbumKey(album.album, album.artist) === selectedAlbumKey) ?? null
+  }, [albums, albumsIncludingSingles, albumsIncludingSinglesLoaded, selectedAlbum])
+
+  const selectedAlbumArtworkHash = selectedAlbum
+    ? selectedAlbumRecord?.artwork_hash
+      ?? tracks.find((track) => track.artwork_hash)?.artwork_hash
+      ?? null
+    : null
+  const selectedAlbumYear = selectedAlbum
+    ? selectedAlbumRecord?.year
+      ?? tracks.reduce<number | null>((latestYear, track) => {
+        if (track.year === null) return latestYear
+        return latestYear === null ? track.year : Math.max(latestYear, track.year)
+      }, null)
+    : null
+  const selectedAlbumArtist = selectedAlbum
+    ? selectedAlbum.artist.trim()
+      || selectedAlbumRecord?.artist.trim()
+      || tracks.find((track) => track.album_artist?.trim())?.album_artist?.trim()
+      || tracks.find((track) => track.artist.trim())?.artist.trim()
+      || ''
+    : ''
+  const detailArtworkHash = selectedAlbumArtworkHash ?? selectedArtistArtworkHash ?? selectedGenreArtworkHash
 
   const trimmedQueryForMessage = searchQuery.trim()
   const searchPlaceholder = inDetailView
@@ -813,49 +865,18 @@ export default function LibraryView() {
       ? 'Search albums...'
       : viewMode === 'artists'
         ? 'Search artists...'
-      : viewMode === 'folders'
-          ? 'Search folders & tracks...'
-          : 'Search tracks...'
+        : viewMode === 'genres'
+          ? 'Search genres...'
+          : viewMode === 'folders'
+            ? 'Search folders & tracks...'
+            : 'Search tracks...'
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const handleBack = async () => {
-    const restored = await goBackSelection()
-    if (restored) return
-
-    const shouldReturnHome = selectionOrigin === 'home'
-    if (shouldReturnHome) {
-      setActiveView('home')
-    } else {
-      if (viewMode === 'albums') pendingScrollRef.current = 'albums'
-      else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
-    }
-    await clearSelection()
-  }
-
-  const handleOpenFile = async () => {
-    const result = await window.electronAPI.openAudioFile()
-    if (result) {
-      const track: Track = {
-        id: result.path,
-        path: result.path,
-        title: result.metadata?.title ?? result.name,
-        artist: result.metadata?.artist ?? 'Unknown Artist',
-        artistNames: result.metadata?.artistNames,
-        album: result.metadata?.album ?? 'Unknown Album',
-        albumArtist: result.metadata?.albumArtist,
-        albumArtistNames: result.metadata?.albumArtistNames,
-        duration: result.metadata?.duration ?? 0,
-        format: result.metadata?.format ?? 'unknown',
-        artworkData: result.metadata?.artwork,
-        channels: result.metadata?.channels,
-        codec: result.metadata?.codec,
-        codecProfile: result.metadata?.codecProfile,
-        isAtmosJoc: result.metadata?.isAtmosJoc,
-        replayGainTrackDb: result.metadata?.replayGainTrackDb,
-        replayGainAlbumDb: result.metadata?.replayGainAlbumDb,
-      }
-      await loadTrack(track, result.data)
-    }
+    if (viewMode === 'albums') pendingScrollRef.current = 'albums'
+    else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
+    else if (viewMode === 'genres') pendingScrollRef.current = 'genres'
+    await navigateInputBack()
   }
 
   const handleOpenSelectedArtistInGraph = () => {
@@ -906,19 +927,52 @@ export default function LibraryView() {
   } else if (selectedArtist) {
     title = selectedArtist
     showViewTabs = false
+  } else if (selectedGenre) {
+    title = selectedGenre
+    showViewTabs = false
   } else if (viewMode === 'albums') {
     itemCount = filteredAlbums.length
     itemLabel = filteredAlbums.length === 1 ? 'album' : 'albums'
   } else if (viewMode === 'artists') {
     itemCount = filteredArtists.length
     itemLabel = filteredArtists.length === 1 ? 'artist' : 'artists'
+  } else if (viewMode === 'genres') {
+    itemCount = filteredGenres.length
+    itemLabel = filteredGenres.length === 1 ? 'genre' : 'genres'
   } else if (viewMode === 'folders') {
     itemCount = sourceFilteredTracks.length
     itemLabel = sourceFilteredTracks.length === 1 ? 'track' : 'tracks'
   }
   const selectedAlbumDurationLabel = selectedAlbum
-    ? formatCompactTotalTrackDuration(displayTracks)
+    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
     : null
+  const selectedArtistDurationLabel = selectedArtist
+    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    : null
+  const selectedGenreDurationLabel = selectedGenre
+    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    : null
+  const detailMetaItems = selectedAlbum
+    ? [
+        selectedAlbumArtist || null,
+        selectedAlbumYear ? String(selectedAlbumYear) : null,
+        formatTrackCount(sourceFilteredTracks.length),
+        selectedAlbumDurationLabel
+      ].filter((item): item is string => Boolean(item))
+    : selectedArtist
+      ? [
+          `${primaryArtistAlbums.length} ${primaryArtistAlbums.length === 1 ? 'album' : 'albums'}`,
+          formatTrackCount(sourceFilteredTracks.length),
+          selectedArtistDurationLabel
+        ].filter((item): item is string => Boolean(item))
+      : selectedGenre
+        ? [
+            `${selectedGenreRecord?.album_count ?? 0} ${(selectedGenreRecord?.album_count ?? 0) === 1 ? 'album' : 'albums'}`,
+            formatTrackCount(sourceFilteredTracks.length),
+            selectedGenreDurationLabel
+          ].filter((item): item is string => Boolean(item))
+        : []
+  const showSelectedAlbumDiscHeaders = Boolean(selectedAlbum && sortState === null && !hasSearchQuery)
 
   // Scan progress overlay
   const renderScanProgress = () => {
@@ -977,8 +1031,8 @@ export default function LibraryView() {
       )
     }
 
-    const hasContent = sourceFilteredTracks.length > 0 || sourceFilteredAlbums.length > 0 || visibleArtists.length > 0
-    if (!hasContent && !selectedAlbum && !selectedArtist) {
+    const hasContent = sourceFilteredTracks.length > 0 || sourceFilteredAlbums.length > 0 || visibleArtists.length > 0 || visibleGenres.length > 0
+    if (!hasContent && !selectedAlbum && !selectedArtist && !selectedGenre) {
       return (
         <div className="library-empty">
           <div className="empty-icon">&#9835;</div>
@@ -988,7 +1042,7 @@ export default function LibraryView() {
       )
     }
 
-    if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || viewMode === 'tracks') && !selectedArtist) {
+    if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedGenre || viewMode === 'tracks') && !selectedArtist) {
       return (
         <div className="library-empty">
           <p>No tracks found for "{trimmedQueryForMessage}"</p>
@@ -997,26 +1051,55 @@ export default function LibraryView() {
     }
 
     // Folder tree
-    if (viewMode === 'folders' && !selectedAlbum && !selectedArtist) {
+    if (viewMode === 'folders' && !selectedAlbum && !selectedArtist && !selectedGenre) {
       return <FolderTreeView tracks={sourceFilteredTracks} allTracks={tracks} folders={folders} searchQuery={searchQuery} />
     }
 
     // Albums grid
-    if (viewMode === 'albums' && !selectedAlbum && !selectedArtist) {
+    if (viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre) {
       if (filteredAlbums.length === 0) {
         return hasSearchQuery
           ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
-        <div className="album-grid" ref={albumGridRef}>
+        <div
+          className="album-grid"
+          ref={albumGridRef}
+          data-controller-scroll
+          data-controller-group="library-albums"
+          data-controller-axis="grid"
+        >
           {filteredAlbums.map((album) => (
             <div
               key={album.identity_key}
               className="album-card"
+              data-controller-focusable="true"
+              data-controller-context="true"
+              data-controller-key={`album:${album.identity_key}`}
+              tabIndex={-1}
+              role="button"
+              aria-label={`Open ${album.album} by ${album.artist}`}
               onClick={() => {
                 albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
-                void selectAlbum(album.album, album.artist, 'library', album.identity_key)
+                void runViewTransition(
+                  () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+                  'library-context-forward'
+                )
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openCollectionQueueMenu({
+                  target: {
+                    kind: 'album',
+                    album: album.album,
+                    artist: album.artist,
+                    identityKey: album.identity_key
+                  },
+                  x: event.clientX,
+                  y: event.clientY
+                })
               }}
             >
               {album.is_new && (
@@ -1028,8 +1111,8 @@ export default function LibraryView() {
                 <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
               </div>
               <div className="album-info">
-                <div className="album-title">{album.album}</div>
-                <div className="album-artist">{album.artist}</div>
+                <div className="album-title">{highlightSearchMatch(album.album, trimmedSearchQuery)}</div>
+                <div className="album-artist">{highlightSearchMatch(album.artist, trimmedSearchQuery)}</div>
                 <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` \u2022 ${album.year}` : ''}</div>
               </div>
             </div>
@@ -1039,7 +1122,7 @@ export default function LibraryView() {
     }
 
     // Artists list
-    if (viewMode === 'artists' && !selectedAlbum && !selectedArtist) {
+    if (viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre) {
       if (filteredArtists.length === 0) {
         return hasSearchQuery
           ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
@@ -1051,7 +1134,56 @@ export default function LibraryView() {
           onSelectArtist={handleSelectArtistFromList}
           viewMode={artistRootViewMode}
           viewportRef={artistViewportRef}
+          searchQuery={trimmedSearchQuery}
         />
+      )
+    }
+
+    if (viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre) {
+      if (filteredGenres.length === 0) {
+        return hasSearchQuery
+          ? <div className="library-empty"><p>No genres found for "{trimmedQueryForMessage}"</p></div>
+          : <div className="library-empty"><p>No genres found</p></div>
+      }
+      return (
+        <div
+          className="genre-grid"
+          ref={genreGridRef}
+          data-controller-scroll
+          data-controller-group="library-genres"
+          data-controller-axis="grid"
+        >
+          {filteredGenres.map((genre) => (
+            <button
+              key={genre.genre}
+              type="button"
+              className="genre-card"
+              data-controller-focusable="true"
+              data-controller-key={`genre:${normalizeKey(genre.genre)}`}
+              onClick={() => {
+                genreGridScrollRef.current = genreGridRef.current?.scrollTop ?? 0
+                void runViewTransition(
+                  () => selectGenre(genre.genre, 'library'),
+                  'library-context-forward'
+                )
+              }}
+            >
+              <div className="genre-card-artwork">
+                {genre.artwork_hash ? (
+                  <AlbumArtwork hash={genre.artwork_hash} alt={genre.genre} variant="thumbnail" />
+                ) : (
+                  <span>&#9835;</span>
+                )}
+              </div>
+              <div className="genre-card-info">
+                <div className="genre-card-title">{highlightSearchMatch(genre.genre, trimmedSearchQuery)}</div>
+                <div className="genre-card-meta">
+                  {formatTrackCount(genre.track_count)} · {genre.album_count} {genre.album_count === 1 ? 'album' : 'albums'}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
       )
     }
 
@@ -1064,19 +1196,14 @@ export default function LibraryView() {
 
       return (
         <div className="library-artist-detail">
-          <section className="library-artist-rail">
+          <section
+            className="library-artist-rail"
+            data-controller-group="artist-albums"
+            data-controller-axis="horizontal"
+          >
             <div className="library-artist-rail-header">
-              <h3>Albums</h3>
+              <h3>Discography</h3>
               <div className="library-artist-rail-action-row">
-                {graphEnabled && (
-                  <button
-                    type="button"
-                    className="library-artist-graph-btn"
-                    onClick={handleOpenSelectedArtistInGraph}
-                  >
-                    Open In Graph
-                  </button>
-                )}
                 <div className="library-artist-rail-actions">
                   <button
                     type="button"
@@ -1099,13 +1226,33 @@ export default function LibraryView() {
             </div>
 
             {visibleArtistAlbums.length > 0 ? (
-              <div className="library-artist-rail-row" onWheel={handleArtistAlbumRailWheel}>
+              <div className="library-artist-rail-row" ref={artistAlbumRailRef}>
                 {visibleArtistAlbums.map((album) => (
                   <button
                     key={album.identity_key}
                     type="button"
                     className="library-artist-rail-card"
-                    onClick={() => void selectAlbum(album.album, album.artist, 'library', album.identity_key)}
+                    data-controller-focusable="true"
+                    data-controller-context="true"
+                    data-controller-key={`album:${album.identity_key}`}
+                    onClick={() => void runViewTransition(
+                      () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+                      'library-context-forward'
+                    )}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      openCollectionQueueMenu({
+                        target: {
+                          kind: 'album',
+                          album: album.album,
+                          artist: album.artist,
+                          identityKey: album.identity_key
+                        },
+                        x: event.clientX,
+                        y: event.clientY
+                      })
+                    }}
                   >
                     {album.is_new && (
                       <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
@@ -1136,10 +1283,12 @@ export default function LibraryView() {
             tracks={displayTracks}
             queueSeedTracks={queueSeedSortedTracks}
             queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+            sourceContext={playbackSourceContext}
             showArtist={false}
             showAlbum={!selectedAlbum}
             showAddedDate={showTracklistAddedDate}
             showNewTrackIndicator
+            showDiscHeaders={showSelectedAlbumDiscHeaders}
             trackNumberMode={selectedAlbum ? 'album' : 'none'}
             externalScroll
             enableColumnSorting
@@ -1149,8 +1298,31 @@ export default function LibraryView() {
             onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
             jumpToTrackRequest={libraryTrackRevealRequest}
             onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+            searchQuery={trimmedSearchQuery}
           />
         </div>
+      )
+    }
+
+    if (selectedGenre) {
+      return (
+        <TrackList
+          tracks={displayTracks}
+          queueSeedTracks={queueSeedSortedTracks}
+          queueContextLabel={selectedGenre}
+          sourceContext={playbackSourceContext}
+          showArtist
+          showAlbum
+          showAddedDate={showTracklistAddedDate}
+          showNewTrackIndicator
+          trackNumberMode="none"
+          enableColumnSorting
+          sortState={sortState}
+          onSortColumnToggle={handleSortColumnToggle}
+          jumpToTrackRequest={libraryTrackRevealRequest}
+          onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+          searchQuery={trimmedSearchQuery}
+        />
       )
     }
 
@@ -1160,10 +1332,12 @@ export default function LibraryView() {
         tracks={displayTracks}
         queueSeedTracks={queueSeedSortedTracks}
         queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+        sourceContext={playbackSourceContext}
         showArtist={!selectedArtist}
         showAlbum={!selectedAlbum}
         showAddedDate={showTracklistAddedDate}
         showNewTrackIndicator
+        showDiscHeaders={showSelectedAlbumDiscHeaders}
         trackNumberMode={selectedAlbum ? 'album' : 'none'}
         enableColumnSorting
         sortState={sortState}
@@ -1172,141 +1346,303 @@ export default function LibraryView() {
         onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
         onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+        searchQuery={trimmedSearchQuery}
       />
     )
   }
 
+  const renderSourceFilters = () => {
+    if (!shouldShowSourceFilters) return null
+
+    return (
+      <div className="library-source-filters" role="group" aria-label="Source filters">
+        <button
+          type="button"
+          className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
+          onClick={handleResetSourceFilters}
+        >
+          All
+        </button>
+        <button
+          type="button"
+          className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
+          onClick={() => handleToggleSourceFilter('local')}
+        >
+          Local
+        </button>
+        {sourceFilterOptions.map((source) => (
+          <button
+            key={source.key}
+            type="button"
+            className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
+            onClick={() => handleToggleSourceFilter(source.key)}
+          >
+            {source.label}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  const renderSearchControl = () => (
+    <div className="search-container">
+      <span className="search-icon" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+      </span>
+      <input
+        type="text"
+        className="search-input"
+        data-shortcut-search="true"
+        placeholder={searchPlaceholder}
+        aria-label={searchPlaceholder}
+        value={searchQuery}
+        onChange={(event) => setSearchQuery(event.target.value)}
+      />
+      {searchQuery.length > 0 && (
+        <button
+          type="button"
+          className="search-clear-btn"
+          aria-label="Clear search"
+          title="Clear search"
+          onClick={() => setSearchQuery('')}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+
+  const renderScanForChangesControl = () => (
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={() => void rescan()}
+      disabled={isScanning}
+      title="Scan for Changes"
+      aria-label="Scan for Changes"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+      </svg>
+    </button>
+  )
+
   return (
     <div className="library-view">
-      <div className="library-header">
-        <div className="library-header-left">
-          {(selectedAlbum || selectedArtist) && (
-            <button className="back-btn" onClick={handleBack} title="Back">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      {inDetailView && (
+        <div className="library-detail-toolbar">
+          <div className="library-detail-toolbar-left">
+            <button className="back-btn" onClick={handleBack} title="Back" aria-label="Back">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>
             </button>
-          )}
-          {selectedArtist && (
-            <div className="library-header-artist-image-control" ref={artistImageControlRef}>
-              <div className="library-header-artist-avatar">
-                {selectedArtistArtworkHash ? (
+              <div className="library-detail-breadcrumb" aria-label={`Library, ${selectedAlbum ? 'Album' : selectedArtist ? 'Artist' : 'Genre'} detail`}>
+                <span>Library</span>
+                <span className="library-detail-breadcrumb-separator" aria-hidden="true">/</span>
+                <span>{selectedAlbum ? 'Album' : selectedArtist ? 'Artist' : 'Genre'}</span>
+              </div>
+            {renderSourceFilters()}
+          </div>
+          <div className="library-detail-toolbar-right">
+            {renderSearchControl()}
+            {renderScanForChangesControl()}
+          </div>
+        </div>
+      )}
+      <div className={`library-header ${inDetailView ? `library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}` : ''}`}>
+        {inDetailView && detailArtworkHash && (
+          <div className="library-detail-hero-backdrop" aria-hidden="true">
+            <AlbumArtwork
+              hash={detailArtworkHash}
+              alt=""
+              variant="card"
+            />
+          </div>
+        )}
+        <div className={`library-header-left ${inDetailView ? 'library-detail-header-left' : ''}`}>
+          {inDetailView ? (
+            <>
+              {selectedAlbum && (
+                <div
+                  className="library-detail-artwork"
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openCollectionQueueMenu({
+                      target: {
+                        kind: 'album',
+                        album: selectedAlbum.album,
+                        artist: selectedAlbum.artist,
+                        identityKey: selectedAlbum.identity_key
+                      },
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
+                >
                   <AlbumArtwork
-                    hash={selectedArtistArtworkHash}
-                    alt={`${selectedArtist} artwork`}
-                    className="library-header-artist-artwork"
+                    hash={selectedAlbumArtworkHash}
+                    alt={`${selectedAlbum.album} artwork`}
                     variant="thumbnail"
                   />
-                ) : (
-                  selectedArtist.charAt(0).toUpperCase()
-                )}
-              </div>
-              <button
-                type="button"
-                className="library-header-artist-edit-btn"
-                onClick={() => setIsArtistImageMenuOpen((isOpen) => !isOpen)}
-                disabled={isUpdatingArtistImage}
-                aria-haspopup="menu"
-                aria-expanded={isArtistImageMenuOpen}
-                aria-label="Edit artist image"
-                title="Edit artist image"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 20h9" />
-                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                </svg>
-              </button>
-              {isArtistImageMenuOpen && (
-                <div className="library-header-artist-image-menu" role="menu">
+                </div>
+              )}
+
+                {selectedArtist && (
+                  <div className="library-header-artist-image-control library-detail-artist-image-control" ref={artistImageControlRef}>
+                  <div className="library-header-artist-avatar">
+                    {selectedArtistArtworkHash ? (
+                      <AlbumArtwork
+                        hash={selectedArtistArtworkHash}
+                        alt={`${selectedArtist} artwork`}
+                        className="library-header-artist-artwork"
+                        variant="thumbnail"
+                      />
+                    ) : (
+                      selectedArtist.charAt(0).toUpperCase()
+                    )}
+                  </div>
                   <button
                     type="button"
-                    className="library-header-artist-image-menu-item"
-                    role="menuitem"
-                    onClick={() => void handleChangeSelectedArtistImage()}
+                    className="library-header-artist-edit-btn"
+                    onClick={() => setIsArtistImageMenuOpen((isOpen) => !isOpen)}
+                    disabled={isUpdatingArtistImage}
+                    aria-haspopup="menu"
+                    aria-expanded={isArtistImageMenuOpen}
+                    aria-label="Edit artist image"
+                    title="Edit artist image"
                   >
-                    Change image
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                    </svg>
+                  </button>
+                  {artistImageMenuPresence.shouldRender && (
+                    <div
+                      className="library-header-artist-image-menu"
+                      data-presence={artistImageMenuPresence.phase}
+                      aria-hidden={artistImageMenuPresence.phase === 'exiting'}
+                      role="menu"
+                    >
+                      <button
+                        type="button"
+                        className="library-header-artist-image-menu-item"
+                        role="menuitem"
+                        onClick={() => void handleChangeSelectedArtistImage()}
+                      >
+                        Change image
+                      </button>
+                      <button
+                        type="button"
+                        className="library-header-artist-image-menu-item"
+                        role="menuitem"
+                        onClick={() => void handleResetSelectedArtistImage()}
+                        disabled={!canResetSelectedArtistImage}
+                      >
+                        Reset image
+                      </button>
+                    </div>
+                  )}
+                  </div>
+                )}
+
+                {selectedGenre && (
+                  <div className="library-detail-artwork library-detail-genre-artwork">
+                    {selectedGenreArtworkHash ? (
+                      <AlbumArtwork
+                        hash={selectedGenreArtworkHash}
+                        alt={`${selectedGenre} artwork`}
+                        variant="thumbnail"
+                      />
+                    ) : (
+                      <span>&#9835;</span>
+                    )}
+                  </div>
+                )}
+
+                <div
+                  className="library-detail-copy"
+                onContextMenu={selectedAlbum ? (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openCollectionQueueMenu({
+                    target: {
+                      kind: 'album',
+                      album: selectedAlbum.album,
+                      artist: selectedAlbum.artist,
+                      identityKey: selectedAlbum.identity_key
+                    },
+                    x: event.clientX,
+                    y: event.clientY
+                  })
+                } : undefined}
+              >
+                  <div className="library-detail-eyebrow-row">
+                    <span className="library-detail-eyebrow">{selectedAlbum ? 'Album' : selectedArtist ? 'Artist' : 'Genre'}</span>
+                  {selectedAlbum?.is_new && (
+                    <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
+                      NEW
+                    </span>
+                  )}
+                </div>
+                <h2 title={title}>{title}</h2>
+                <div className="library-detail-meta-row">
+                  <span className="library-detail-meta">{detailMetaItems.join(' \u00b7 ')}</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2>{title}</h2>
+              {showViewTabs && (
+                <div className="view-tabs" data-controller-tabstrip="library-view">
+                  <button
+                    className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
+                    data-controller-tab="tracks"
+                    onClick={() => handleSelectViewMode('tracks')}
+                  >
+                    Tracks
                   </button>
                   <button
-                    type="button"
-                    className="library-header-artist-image-menu-item"
-                    role="menuitem"
-                    onClick={() => void handleResetSelectedArtistImage()}
-                    disabled={!canResetSelectedArtistImage}
+                    className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
+                    data-controller-tab="albums"
+                    onClick={() => handleSelectViewMode('albums')}
                   >
-                    Reset image
+                    Albums
+                  </button>
+                    <button
+                      className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
+                      data-controller-tab="artists"
+                      onClick={() => handleSelectViewMode('artists')}
+                    >
+                      Artists
+                    </button>
+                    <button
+                      className={`view-tab ${viewMode === 'genres' ? 'active' : ''}`}
+                      data-controller-tab="genres"
+                      onClick={() => handleSelectViewMode('genres')}
+                    >
+                      Genres
+                    </button>
+                    <button
+                      className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
+                    data-controller-tab="folders"
+                    onClick={() => handleSelectViewMode('folders')}
+                  >
+                    Folders
                   </button>
                 </div>
               )}
-            </div>
-          )}
-          <h2>{title}</h2>
-          {selectedAlbum?.is_new && (
-            <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
-              NEW
-            </span>
-          )}
-          {showViewTabs && (
-            <div className="view-tabs">
-              <button
-                className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
-                onClick={() => setViewMode('tracks')}
-              >
-                Tracks
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
-                onClick={() => setViewMode('albums')}
-              >
-                Albums
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
-                onClick={() => setViewMode('artists')}
-              >
-                Artists
-              </button>
-              <button
-                className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
-                onClick={() => setViewMode('folders')}
-              >
-                Folders
-              </button>
-            </div>
-          )}
-          <span className="track-count">
-            {itemCount} {itemLabel}
-            {selectedAlbumDurationLabel ? ` \u00b7 ${selectedAlbumDurationLabel}` : ''}
-          </span>
-          {shouldShowSourceFilters && (
-            <div className="library-source-filters" role="group" aria-label="Source filters">
-              <button
-                type="button"
-                className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
-                onClick={handleResetSourceFilters}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
-                onClick={() => handleToggleSourceFilter('local')}
-              >
-                Local
-              </button>
-              {sourceFilterOptions.map((source) => (
-                <button
-                  key={source.key}
-                  type="button"
-                  className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-                  onClick={() => handleToggleSourceFilter(source.key)}
-                >
-                  {source.label}
-                </button>
-              ))}
-            </div>
+              <span className="track-count">{itemCount} {itemLabel}</span>
+              {renderSourceFilters()}
+            </>
           )}
         </div>
-        <div className="library-header-right">
+        <div className={`library-header-right ${inDetailView ? 'library-detail-header-actions' : ''}`}>
           {isAlbumRootView && (
             <div className="library-album-view-controls">
               <button
@@ -1348,106 +1684,124 @@ export default function LibraryView() {
             </div>
           )}
           {isArtistRootView && (
-            <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
-              <span
-                className="library-segmented-highlight"
-                aria-hidden="true"
-                style={{ transform: artistRootViewMode === 'grid' ? 'translateX(100%)' : 'translateX(0%)' }}
-              />
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
-                onClick={() => setArtistRootViewMode('list')}
-                aria-label="Show artists as list"
-                aria-pressed={artistRootViewMode === 'list'}
-                title="List view"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M8 6h13" />
-                  <path d="M8 12h13" />
-                  <path d="M8 18h13" />
-                  <path d="M3 6h.01" />
-                  <path d="M3 12h.01" />
-                  <path d="M3 18h.01" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
-                onClick={() => setArtistRootViewMode('grid')}
-                aria-label="Show artists as grid"
-                aria-pressed={artistRootViewMode === 'grid'}
-                title="Grid view"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="7" height="7" rx="1" />
-                  <rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="3" y="14" width="7" height="7" rx="1" />
-                  <rect x="14" y="14" width="7" height="7" rx="1" />
-                </svg>
-              </button>
+            <div className="library-artist-view-controls">
+              {artistBrowseMode === 'canonical' && (
+                <button
+                  type="button"
+                  className={`library-artist-collabs-toggle ${includeCollabArtists ? 'active' : ''}`}
+                  onClick={handleToggleIncludeCollabArtists}
+                  role="switch"
+                  aria-checked={includeCollabArtists}
+                  aria-label="Include collab-only artists"
+                  title="Include collab-only artists"
+                >
+                  Collabs
+                </button>
+              )}
+              <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
+                <span
+                  className="library-segmented-highlight"
+                  aria-hidden="true"
+                  style={{ transform: artistRootViewMode === 'grid' ? 'translateX(100%)' : 'translateX(0%)' }}
+                />
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
+                  onClick={() => setArtistRootViewMode('list')}
+                  aria-label="Show artists as list"
+                  aria-pressed={artistRootViewMode === 'list'}
+                  title="List view"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M8 6h13" />
+                    <path d="M8 12h13" />
+                    <path d="M8 18h13" />
+                    <path d="M3 6h.01" />
+                    <path d="M3 12h.01" />
+                    <path d="M3 18h.01" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
+                  onClick={() => setArtistRootViewMode('grid')}
+                  aria-label="Show artists as grid"
+                  aria-pressed={artistRootViewMode === 'grid'}
+                  title="Grid view"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="7" height="7" rx="1" />
+                    <rect x="14" y="3" width="7" height="7" rx="1" />
+                    <rect x="3" y="14" width="7" height="7" rx="1" />
+                    <rect x="14" y="14" width="7" height="7" rx="1" />
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
           {isTracklistContext && (
             <button
               type="button"
-              className={`icon-btn library-shuffle-btn ${isShufflePlayActive ? 'active' : ''}`}
+              className={`icon-btn library-play-btn ${inDetailView ? 'library-collection-action-btn' : ''}`}
               onClick={() => {
-                void handleShufflePlayTracklist()
+                void handlePlayTracklist()
               }}
-              title="Shuffle play tracklist"
-              aria-label="Shuffle play tracklist"
-              disabled={isShufflePlayDisabled}
+              title="Play tracklist"
+              aria-label="Play tracklist"
+              disabled={isCollectionPlayDisabled}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              <span className="library-collection-action-label">Play</span>
+            </button>
+          )}
+          {isTracklistContext && (
+            <button
+              type="button"
+              className={`icon-btn library-shuffle-btn ${inDetailView ? 'library-collection-action-btn' : ''} ${shuffle ? 'active' : ''}`}
+              onClick={toggleShuffle}
+              title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+              aria-label="Shuffle"
+              aria-pressed={shuffle}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M16 3h5v5" />
                 <path d="M4 20 21 3" />
                 <path d="M21 16v5h-5" />
                 <path d="M15 15 21 21" />
                 <path d="M4 4 9 9" />
               </svg>
-              <span className="library-shuffle-btn-label">Shuffle all</span>
+              <span className="library-shuffle-btn-label">Shuffle</span>
             </button>
           )}
-          <div className="search-container">
-            <span className="search-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3.5-3.5" />
+          {selectedArtist && graphEnabled && (
+            <button
+              type="button"
+              className="icon-btn library-collection-action-btn library-detail-graph-btn"
+              onClick={handleOpenSelectedArtistInGraph}
+              title="Open in Graph"
+              aria-label="Open in Graph"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="5" cy="6" r="2.2" />
+                <circle cx="18.5" cy="5.5" r="2.2" />
+                <circle cx="12" cy="18" r="2.2" />
+                <path d="M7 7.2 10.5 16" />
+                <path d="m16.8 6.6-3.4 9.1" />
+                <path d="M7.3 6h9" />
               </svg>
-            </span>
-            <input
-              type="text"
-              className="search-input"
-              data-shortcut-search="true"
-              placeholder={searchPlaceholder}
-              aria-label={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            {searchQuery.length > 0 && (
-              <button
-                type="button"
-                className="search-clear-btn"
-                aria-label="Clear search"
-                title="Clear search"
-                onClick={() => setSearchQuery('')}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <button className="icon-btn" onClick={handleOpenFile} title="Open File">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
-            </svg>
-          </button>
+              <span className="library-collection-action-label">Graph</span>
+            </button>
+          )}
+          {!inDetailView && renderSearchControl()}
+          {!inDetailView && renderScanForChangesControl()}
         </div>
       </div>
 
       {renderScanProgress()}
 
-      <div className="library-content">
+      <div className="library-content" onScrollCapture={handleLibraryContentScrollCapture}>
         {renderContent()}
       </div>
     </div>

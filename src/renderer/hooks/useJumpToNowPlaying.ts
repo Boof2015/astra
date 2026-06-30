@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useLibraryStore } from '../stores/libraryStore'
 import { usePlaylistStore } from '../stores/playlistStore'
-import { usePlayerStore } from '../stores/playerStore'
+import { usePlayerStore, type PlaybackSourceContext } from '../stores/playerStore'
 import { useUIStore } from '../stores/uiStore'
 import { isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 import type { Track } from '../types/audio'
@@ -108,8 +108,26 @@ async function revealTrackAlbum(track: Track): Promise<boolean> {
   return true
 }
 
-async function revealTrackArtist(track: Track): Promise<boolean> {
+async function selectArtistAndReveal(artist: string, trackPath: string): Promise<boolean> {
   const library = useLibraryStore.getState()
+  library.setViewMode('tracks')
+  await library.selectArtist(artist, 'library')
+
+  if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {
+    return false
+  }
+
+  const ui = useUIStore.getState()
+  if (ui.activeView !== 'library') {
+    ui.setActiveView('library')
+  }
+
+  await afterNavigationFrame()
+  ui.requestLibraryTrackReveal(trackPath)
+  return true
+}
+
+async function revealTrackArtist(track: Track): Promise<boolean> {
   const artists = getArtistCandidates(track)
   const primaryArtist = resolvePrimaryArtist(track)
   if (primaryArtist) {
@@ -122,24 +140,66 @@ async function revealTrackArtist(track: Track): Promise<boolean> {
   }
 
   for (const artist of artists) {
-    library.setViewMode('tracks')
-    await library.selectArtist(artist, 'library')
-
-    if (!useLibraryStore.getState().trackPaths.includes(track.path)) {
-      continue
+    if (await selectArtistAndReveal(artist, track.path)) {
+      return true
     }
-
-    const ui = useUIStore.getState()
-    if (ui.activeView !== 'library') {
-      ui.setActiveView('library')
-    }
-
-    await afterNavigationFrame()
-    ui.requestLibraryTrackReveal(track.path)
-    return true
   }
 
   return revealTrackInLibrary(track.path)
+}
+
+async function revealTrackArtistFromContext(artist: string, trackPath: string): Promise<boolean> {
+  if (await selectArtistAndReveal(artist, trackPath)) {
+    return true
+  }
+  return revealTrackInLibrary(trackPath)
+}
+
+async function revealTrackGenreFromContext(genre: string, trackPath: string): Promise<boolean> {
+  const normalizedGenre = normalizeDisplay(genre)
+  if (!normalizedGenre) return revealTrackInLibrary(trackPath)
+
+  const library = useLibraryStore.getState()
+  library.setViewMode('genres')
+  await library.selectGenre(normalizedGenre, 'library')
+
+  if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {
+    return revealTrackInLibrary(trackPath)
+  }
+
+  const ui = useUIStore.getState()
+  if (ui.activeView !== 'library') {
+    ui.setActiveView('library')
+  }
+
+  await afterNavigationFrame()
+  ui.requestLibraryTrackReveal(trackPath)
+  return true
+}
+
+async function revealTrackAlbumFromContext(
+  context: Extract<PlaybackSourceContext, { type: 'album' }>,
+  trackPath: string
+): Promise<boolean> {
+  const album = normalizeDisplay(context.album)
+  if (!album) return revealTrackInLibrary(trackPath)
+
+  const library = useLibraryStore.getState()
+  library.setViewMode('tracks')
+  await library.selectAlbum(album, context.albumArtist, 'library', context.identityKey)
+
+  if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {
+    return revealTrackInLibrary(trackPath)
+  }
+
+  const ui = useUIStore.getState()
+  if (ui.activeView !== 'library') {
+    ui.setActiveView('library')
+  }
+
+  await afterNavigationFrame()
+  ui.requestLibraryTrackReveal(trackPath)
+  return true
 }
 
 async function revealTrackInSourcePlaylist(trackPath: string, playlistId: number): Promise<boolean> {
@@ -208,9 +268,24 @@ export function useJumpToNowPlaying(): () => Promise<boolean> {
     }
 
     if (ui.jumpToPlayingDestination === 'smart-source') {
-      const sourcePlaylistId = player.autoQueueSourcePlaylistId
-      if (typeof sourcePlaylistId === 'number' && (sourcePlaylistId > 0 || isSystemFavoritesPlaylistId(sourcePlaylistId))) {
-        return revealTrackInSourcePlaylist(trackPath, sourcePlaylistId)
+      const currentItem = player.currentQueueItemId
+        ? player.queueItems.find((item) => item.queueId === player.currentQueueItemId)
+        : null
+      const sourceContext = currentItem?.origin === 'context' ? currentItem.sourceContext : null
+      if (
+        sourceContext?.type === 'playlist'
+        && (sourceContext.playlistId > 0 || isSystemFavoritesPlaylistId(sourceContext.playlistId))
+      ) {
+        return revealTrackInSourcePlaylist(trackPath, sourceContext.playlistId)
+      }
+      if (sourceContext?.type === 'artist') {
+        return revealTrackArtistFromContext(sourceContext.artist, trackPath)
+      }
+      if (sourceContext?.type === 'genre') {
+        return revealTrackGenreFromContext(sourceContext.genre, trackPath)
+      }
+      if (sourceContext?.type === 'album') {
+        return revealTrackAlbumFromContext(sourceContext, trackPath)
       }
     }
 

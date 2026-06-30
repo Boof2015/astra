@@ -246,7 +246,9 @@ export default function LyricsPopoutApp() {
       }
       return (
         <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-not-found">
-          Lyrics not synced or not found.
+          {bodyState.kind === 'not_found' && bodyState.reason === 'provider-unavailable'
+            ? bodyState.message
+            : 'Lyrics not synced or not found.'}
         </p>
       )
     }

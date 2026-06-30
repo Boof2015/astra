@@ -26,7 +26,7 @@ Seven real-time visualizers powered by a native C++ module - oscilloscope, spect
 
 ## Equalizer
 
-Up to 10 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
+Up to 20 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
 
 ![Astra equalizer](assets/EQ.png)
 
@@ -79,9 +79,18 @@ Opt-in experimental features that may get changed or removed based on feedback:
 
 ## Download
 
-Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page. Windows users can also `winget install Boof2015.Astra`. Linux builds ship as AppImage, DEB, RPM, and tarball.
+Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page.
 
-Also available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
+Officially available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
+
+Windows users can also `winget install Boof2015.Astra`
+
+### Community maintained packages
+
+These packages are maintained by third parties and are not built, audited, or officially supported by the Astra project. Packaging, signing, updates, and distribution are handled by their respective maintainers.
+
+- [AUR](https://aur.archlinux.org/packages/astra-music-git) - community maintained AUR source package
+- [TerraPKG](https://terrapkg.com/) - community maintained Fedora/RPM package
 
 ## Building from Source
 
