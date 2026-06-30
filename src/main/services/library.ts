@@ -312,7 +312,7 @@ export interface FolderSubdirectoryEntry {
 }
 
 export type LyricsCacheStatus = 'hit' | 'not_found'
-export type LyricsCacheSource = 'embedded' | 'lrclib'
+export type LyricsCacheSource = 'embedded' | 'lrclib' | 'xlrcdb'
 
 export interface LyricsCacheEntry {
   trackPath: string
@@ -3509,12 +3509,13 @@ function normalizeLyricsCacheStatus(value: unknown): LyricsCacheStatus | null {
 }
 
 function normalizeLyricsCacheSource(value: unknown): LyricsCacheSource | null {
-  if (value === 'embedded' || value === 'lrclib') return value
+  if (value === 'embedded' || value === 'lrclib' || value === 'xlrcdb') return value
   return null
 }
 
 function normalizeLyricsCacheProvider(value: unknown): LyricsProvider | null {
   if (value === 'lrclib') return 'lrclib'
+  if (value === 'xlrcdb') return 'xlrcdb'
   return null
 }
 
@@ -3545,9 +3546,11 @@ function hasRichLyricsLine(line: LyricsLine): boolean {
 }
 
 function inferLyricsFormat(entry: {
+  source?: LyricsCacheSource
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
 }): LyricsFormat {
+  if (entry.source === 'xlrcdb' && (entry.syncedLyrics !== null || entry.syncedLines.length > 0)) return 'xlrc'
   if (entry.syncedLines.some(hasRichLyricsLine)) return 'xlrc'
   if (entry.syncedLyrics !== null || entry.syncedLines.length > 0) return 'lrc'
   return 'plain'
@@ -3607,7 +3610,7 @@ export function getLyricsCache(trackPath: string, metadataSignature: string): Ly
     status: normalizedStatus,
     source: normalizedSource,
     provider: normalizeLyricsCacheProvider(row.provider),
-    format: inferLyricsFormat({ syncedLyrics, syncedLines }),
+    format: inferLyricsFormat({ source: normalizedSource, syncedLyrics, syncedLines }),
     plainLyrics,
     syncedLyrics,
     syncedLines,

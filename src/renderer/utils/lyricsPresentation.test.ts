@@ -228,6 +228,7 @@ test('getLyricsSourceLabel labels local LRC files', () => {
 
 test('getLyricsSourceLabel labels XLRC and manual XLRC sources', () => {
   assert.equal(getLyricsSourceLabel('xlrc', 'xlrc'), 'XLRC File')
+  assert.equal(getLyricsSourceLabel('xlrcdb', 'xlrc'), 'XLRCDB')
   assert.equal(getLyricsSourceLabel('manual', 'xlrc'), 'Manual XLRC')
   assert.equal(getLyricsSourceLabel('manual', 'lrc'), 'Manual')
 })
@@ -256,7 +257,7 @@ test('resolveLyricsBodyState presents provider unavailable as a non-error not-fo
     hasSyncedLyrics: false,
     isLoading: false,
     errorMessage: ''
-  }), 'LRCLIB Slow')
+  }), 'Lyrics Slow')
 })
 
 test('getPreferredLyricsTranslation follows language priority with fallback', () => {

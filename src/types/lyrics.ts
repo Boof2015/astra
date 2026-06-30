@@ -1,5 +1,5 @@
-export type LyricsProvider = 'lrclib'
-export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc' | 'xlrc'
+export type LyricsProvider = 'lrclib' | 'xlrcdb'
+export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc' | 'xlrc' | 'xlrcdb'
 export type LyricsFormat = 'plain' | 'lrc' | 'xlrc'
 export type LyricsLookupStatus = 'hit' | 'not_found' | 'transient_error'
 

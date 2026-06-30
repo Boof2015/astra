@@ -456,7 +456,7 @@ export default function LyricsEditorPanel() {
                   </div>
                   <div className="lyrics-drop-zone-copy">
                     <span>Drop LRC or XLRC here</span>
-                    <small>Manual lyrics override sidecar files, embedded tags, and LRCLIB results.</small>
+                    <small>Manual lyrics override sidecar files, embedded tags, and online results.</small>
                   </div>
                   <button
                     type="button"

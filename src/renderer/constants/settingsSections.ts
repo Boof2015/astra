@@ -73,6 +73,7 @@ export const SETTINGS_SECTIONS = [
       'scrobbling',
       'lyrics',
       'lyric',
+      'xlrcdb',
       'lrclib'
     ]
   },
