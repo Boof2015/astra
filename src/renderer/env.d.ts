@@ -107,10 +107,11 @@ interface DbTrack {
     album_artist_names: string[]
     duration: number
     track_number: number | null
-    disc_number: number | null
-    year: number | null
-    genre: string | null
-    artwork_hash: string | null
+	    disc_number: number | null
+	    year: number | null
+	    genre: string | null
+	    genres: string[]
+	    artwork_hash: string | null
     base_artwork_hash: string | null
     format: string
     sample_rate: number | null

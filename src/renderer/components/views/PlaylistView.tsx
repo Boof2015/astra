@@ -50,6 +50,7 @@ function createMissingPlaylistTrackPlaceholder(entry: PlaylistEntry, index: numb
     disc_number: null,
     year: null,
     genre: null,
+    genres: [],
     artwork_hash: null,
     format: 'missing',
     sample_rate: null,
@@ -190,6 +191,9 @@ function comparePlaylistTracksBySort(a: PlaylistTrack, b: PlaylistTrack, sortSta
   if (sortState.key === 'bpm') {
     return compareNullableBpm(a.bpm, b.bpm, sortState.direction)
   }
+  if (sortState.key === 'genre') {
+    return compareNullableKey(a.genre, b.genre, sortState.direction)
+  }
   if (sortState.key === 'added') {
     return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), sortState.direction)
   }
@@ -221,6 +225,7 @@ export default function PlaylistView() {
   const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
   const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((s) => s.showTracklistGenre)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
@@ -330,11 +335,12 @@ export default function PlaylistView() {
   }, [isReorderMode, playlistTrackRevealRequest, selectedPlaylistId])
 
   useEffect(() => {
-    if (showTracklistBpmKey) return
     if (!sortState) return
-    if (sortState.key !== 'bpm' && sortState.key !== 'musical_key') return
+    const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
+    const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
+    if (!hideBpmKeySort && !hideGenreSort) return
     setSortState(null)
-  }, [setSortState, showTracklistBpmKey, sortState])
+  }, [setSortState, showTracklistBpmKey, showTracklistGenre, sortState])
 
   useEffect(() => {
     if (!playlistImportStatus) return

@@ -49,6 +49,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
       viewMode: 'albums',
       selectedAlbum: { album: 'Album', artist: 'Artist', identity_key: 'album-key' },
       selectedArtist: '',
+      selectedGenre: 'Electronic',
       trackListSortState: { key: 'bad', direction: 'desc' },
       selectedSourceFilters: ['local', '', 42],
       albumSortMode: 'artist',
@@ -73,6 +74,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
         artworkData: 'data:image/jpeg;base64,large',
         replayGainTrackDb: 0,
         sourceType: 'local',
+        genres: ['Electronic', 'Ambient'],
       },
       currentTrackSource: 'context',
       savedPlaybackState: 'playing',
@@ -95,7 +97,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
             },
           },
           sourcePlaylistId: 3,
-          sourceContext: { type: 'playlist', playlistId: 3 },
+          sourceContext: { type: 'genre', genre: 'Electronic' },
           contextLabel: 'Playlist',
         },
         {
@@ -113,7 +115,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
       upcomingQueueIds: ['queue-1', 'queue-1'],
       currentQueueItemId: 'queue-1',
       queueSourcePlaylistId: 3,
-      queueSourceContext: { type: 'playlist', playlistId: 3 },
+      queueSourceContext: { type: 'genre', genre: 'Electronic' },
       queueContextLabel: 'Playlist',
       shuffle: true,
       repeat: 'all',
@@ -125,6 +127,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
   assert.equal(snapshot.savedAt, 0)
   assert.equal(snapshot.ui?.activeView, 'home')
   assert.deepEqual(snapshot.library?.selectedSourceFilters, ['local'])
+  assert.equal(snapshot.library?.selectedGenre, 'Electronic')
   assert.equal(snapshot.library?.trackListSortState, null)
   assert.deepEqual(snapshot.playlist?.sortState, { key: 'added', direction: 'desc' })
   assert.equal(snapshot.player?.queueItems.length, 1)
@@ -132,6 +135,9 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
   assert.deepEqual(snapshot.player?.upcomingQueueIds, ['queue-1'])
   assert.equal(Object.hasOwn(snapshot.player?.currentTrack as unknown as Record<string, unknown>, 'artworkData'), false)
   assert.equal(snapshot.player?.currentTrack?.replayGainTrackDb, 0)
+  assert.deepEqual(snapshot.player?.currentTrack?.genres, ['Electronic', 'Ambient'])
+  assert.deepEqual(snapshot.player?.queueItems[0]?.sourceContext, { type: 'genre', genre: 'Electronic' })
+  assert.deepEqual(snapshot.player?.queueSourceContext, { type: 'genre', genre: 'Electronic' })
 })
 
 test('session snapshots round-trip through storage and clear cleanly', () => {
@@ -153,4 +159,30 @@ test('session snapshots round-trip through storage and clear cleanly', () => {
 
   clearSessionSnapshot(storage)
   assert.equal(readSessionSnapshot(storage), null)
+})
+
+test('session snapshot normalization preserves genre track sort state', () => {
+  const snapshot = normalizeSessionSnapshot({
+    kind: SESSION_STATE_KIND,
+    schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+    savedAt: 1,
+    ui: null,
+    player: null,
+    playlist: null,
+    library: {
+      viewMode: 'tracks',
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectedGenre: null,
+      trackListSortState: { key: 'genre', direction: 'asc' },
+      selectedSourceFilters: [],
+      albumSortMode: 'title',
+      includeSinglesInAlbums: false,
+      includeCollabArtists: false,
+      artistRootViewMode: 'list',
+    },
+  })
+
+  assert.ok(snapshot)
+  assert.deepEqual(snapshot.library?.trackListSortState, { key: 'genre', direction: 'asc' })
 })

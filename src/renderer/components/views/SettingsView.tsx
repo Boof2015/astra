@@ -307,6 +307,8 @@ export default function SettingsView() {
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
+  const setShowTracklistGenre = useLibraryStore((state) => state.setShowTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
@@ -1699,6 +1701,15 @@ export default function SettingsView() {
                       onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
                     >
                       {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Genre</span>
+                    <button
+                      className={`settings-toggle ${showTracklistGenre ? 'active' : ''}`}
+                      onClick={() => setShowTracklistGenre(!showTracklistGenre)}
+                    >
+                      {showTracklistGenre ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">

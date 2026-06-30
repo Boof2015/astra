@@ -39,6 +39,8 @@ interface DbTrack {
   duration: number
   track_number: number | null
   disc_number: number | null
+  genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -62,7 +64,7 @@ interface DbTrack {
   is_atmos_joc?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key' | 'added'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
 export type TrackNumberMode = 'album' | 'context' | 'none'
 
 export interface TrackListSortState {
@@ -100,6 +102,7 @@ interface TrackListRowSharedProps {
   showArtist: boolean
   showAlbum: boolean
   showTracklistBpmKey: boolean
+  showTracklistGenre: boolean
   showAddedDate: boolean
   showNewTrackIndicator: boolean
   searchQuery: string
@@ -206,6 +209,8 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     albumArtistNames: dbTrack.album_artist_names,
     albumIdentityKey: dbTrack.album_identity_key,
     duration: dbTrack.duration,
+    genre: dbTrack.genre ?? undefined,
+    genres: dbTrack.genres,
     format: dbTrack.format,
     artworkHash: dbTrack.artwork_hash ?? undefined,
     sampleRate: dbTrack.sample_rate ?? undefined,
@@ -381,6 +386,7 @@ function TrackListRowRenderer({
   showArtist,
   showAlbum,
   showTracklistBpmKey,
+  showTracklistGenre,
   showAddedDate,
   showNewTrackIndicator,
   searchQuery,
@@ -627,6 +633,13 @@ function TrackListRowRenderer({
             )}
           </div>
         )}
+        {showTracklistGenre && (
+          <div className="track-col track-col-genre">
+            <span className="track-genre" title={track.genre?.trim() || 'Genre unavailable'}>
+              {track.genre?.trim() || '--'}
+            </span>
+          </div>
+        )}
         {showTracklistBpmKey && (
           <div className="track-col track-col-bpm">
             <span className="track-bpm">{formatBpm(track.bpm)}</span>
@@ -777,6 +790,7 @@ export default function TrackList({
   const favorites = useLibraryStore((state) => state.favorites)
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
+  const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
   const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
@@ -1871,6 +1885,7 @@ export default function TrackList({
     showArtist,
     showAlbum,
     showTracklistBpmKey,
+    showTracklistGenre,
     showAddedDate,
     showNewTrackIndicator,
     searchQuery,
@@ -1915,6 +1930,7 @@ export default function TrackList({
     showArtist,
     showAlbum,
     showTracklistBpmKey,
+    showTracklistGenre,
     showAddedDate,
     showNewTrackIndicator,
     searchQuery,
@@ -1988,6 +2004,7 @@ export default function TrackList({
         {renderSortableHeader('title', 'Title', 'track-col-title')}
         {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}
         {showAlbum && renderSortableHeader('album', 'Album', 'track-col-album')}
+        {showTracklistGenre && renderSortableHeader('genre', 'Genre', 'track-col-genre')}
         {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
         {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
         <div className="track-col track-col-codec">Codec</div>

@@ -11,7 +11,8 @@ function installNavigationMock(): void {
       electronAPI: {
         library: {
           getTracksByArtist: async () => [],
-          getTracksByAlbum: async () => []
+          getTracksByAlbum: async () => [],
+          getTracksByGenre: async () => []
         }
       }
     }
@@ -29,6 +30,7 @@ test('combined navigation returns Home-origin Library details and restores them 
     viewMode: 'artists',
     selectedAlbum: null,
     selectedArtist: 'Artist A',
+    selectedGenre: null,
     selectionOrigin: 'home',
     selectionHistory: [],
     selectionForwardHistory: [],
@@ -45,4 +47,31 @@ test('combined navigation returns Home-origin Library details and restores them 
   assert.equal(await navigateInputForward(), true)
   assert.equal(useUIStore.getState().activeView, 'library')
   assert.equal(useLibraryStore.getState().selectedArtist, 'Artist A')
+})
+
+test('Library genre detail back returns to Genres root', async () => {
+  installNavigationMock()
+  useUIStore.setState({
+    activeView: 'library',
+    viewBackHistory: [],
+    viewForwardHistory: []
+  })
+  useLibraryStore.setState({
+    viewMode: 'genres',
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: 'Electronic',
+    selectionOrigin: 'library',
+    selectionHistory: [],
+    selectionForwardHistory: [],
+    trackPaths: ['/music/a.flac'],
+    fullTrackPaths: ['/music/a.flac', '/music/b.flac'],
+    trackByPath: new Map()
+  })
+
+  assert.equal(await navigateInputBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'library')
+  assert.equal(useLibraryStore.getState().selectedGenre, null)
+  assert.deepEqual(useLibraryStore.getState().trackPaths, ['/music/a.flac', '/music/b.flac'])
+  assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 1)
 })

@@ -233,6 +233,7 @@ let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let artistCreditsBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let genreMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
 let jellyfinSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -403,6 +404,8 @@ const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS = 16_000
 const ARTIST_CREDITS_BACKFILL_MIGRATION_KEY = 'artist_credits_backfill_v1_done'
+const GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS = 16_500
+const GENRE_METADATA_BACKFILL_MIGRATION_KEY = 'genre_metadata_backfill_v1_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
@@ -3327,6 +3330,49 @@ function scheduleArtistCreditsBackfillMigration(): void {
   }, ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS)
 }
 
+async function maybeRunGenreMetadataBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  let completed = false
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingGenreMetadata()
+    if (scanned > 0) {
+      console.log(`Genre metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+    completed = true
+  } catch (err) {
+    console.warn('Genre metadata backfill failed:', err)
+  } finally {
+    if (completed) {
+      try {
+        await library.setAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY, '1')
+      } catch (err) {
+        console.warn('Failed to persist genre metadata backfill migration flag:', err)
+      }
+    }
+  }
+}
+
+function scheduleGenreMetadataBackfillMigration(): void {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+  }
+
+  genreMetadataBackfillTimer = setTimeout(() => {
+    genreMetadataBackfillTimer = null
+    void maybeRunGenreMetadataBackfillOnce()
+  }, GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS)
+}
+
 async function maybeRunReplayGainBackfillOnce(): Promise<void> {
   if (!replayGainScanEnabled) {
     return
@@ -3658,6 +3704,7 @@ app.whenReady().then(async () => {
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
   scheduleArtistCreditsBackfillMigration()
+  scheduleGenreMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
 
   app.on('activate', () => {
@@ -3695,6 +3742,10 @@ app.on('before-quit', () => {
   if (artistCreditsBackfillTimer !== null) {
     clearTimeout(artistCreditsBackfillTimer)
     artistCreditsBackfillTimer = null
+  }
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+    genreMetadataBackfillTimer = null
   }
   if (replayGainBackfillTimer !== null) {
     clearTimeout(replayGainBackfillTimer)
@@ -4800,6 +4851,10 @@ ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: libr
   return library.getTracksByArtist(artist, mode)
 })
 
+ipcMain.handle('library:getTracksByGenre', (_event, genre: string) => {
+  return library.getTracksByGenre(genre)
+})
+
 // Get tracks by album
 ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string, identityKey?: string) => {
   return library.getTracksByAlbum(album, artist, identityKey)
@@ -4808,6 +4863,10 @@ ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: stri
 // Get all artists
 ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) => {
   return library.getArtists(mode)
+})
+
+ipcMain.handle('library:getGenres', () => {
+  return library.getGenres()
 })
 
 ipcMain.handle('library:setArtistImageFromFile', async (_event, artist: string, mode: library.ArtistBrowseMode, imagePath: string) => {

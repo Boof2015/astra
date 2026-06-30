@@ -5,9 +5,9 @@ export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
 
 export type SessionAppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
-export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'duration' | 'bpm' | 'musical_key' | 'added'
+export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
 export type SessionSortDirection = 'asc' | 'desc'
-export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'folders'
+export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
 export type SessionArtistRootViewMode = 'list' | 'grid'
 export type SessionQueueItemOrigin = 'context' | 'manual'
@@ -20,12 +20,13 @@ export interface SessionTrackSortState {
 }
 
 export interface SessionPlaybackSourceContext {
-  type: 'playlist' | 'artist' | 'album'
+  type: 'playlist' | 'artist' | 'album' | 'genre'
   playlistId?: number
   artist?: string
   album?: string
   albumArtist?: string
   identityKey?: string
+  genre?: string
 }
 
 export interface SessionQueueTrackSnapshot {
@@ -44,6 +45,7 @@ export interface SessionQueueTrackSnapshot {
   discNumber?: number
   year?: number
   genre?: string
+  genres?: string[]
   artworkHash?: string
   format: string
   sampleRate?: number
@@ -117,6 +119,7 @@ export interface LibrarySessionSnapshot {
     is_new?: boolean
   } | null
   selectedArtist: string | null
+  selectedGenre: string | null
   trackListSortState: SessionTrackSortState | null
   selectedSourceFilters: string[]
   albumSortMode: SessionAlbumSortMode
@@ -198,6 +201,7 @@ export function normalizeTrackSortState(value: unknown): SessionTrackSortState |
     key !== 'title'
     && key !== 'artist'
     && key !== 'album'
+    && key !== 'genre'
     && key !== 'duration'
     && key !== 'bpm'
     && key !== 'musical_key'
@@ -223,7 +227,7 @@ export function normalizeAppView(value: unknown): SessionAppView {
 }
 
 function normalizeViewMode(value: unknown): SessionViewMode {
-  return value === 'albums' || value === 'artists' || value === 'folders' || value === 'tracks'
+  return value === 'albums' || value === 'artists' || value === 'genres' || value === 'folders' || value === 'tracks'
     ? value
     : 'tracks'
 }
@@ -261,6 +265,11 @@ function normalizePlaybackSourceContext(value: unknown): SessionPlaybackSourceCo
   if (value.type === 'artist') {
     const artist = stringValue(value.artist)
     return artist ? { type: 'artist', artist } : null
+  }
+
+  if (value.type === 'genre') {
+    const genre = stringValue(value.genre)
+    return genre ? { type: 'genre', genre } : null
   }
 
   if (value.type === 'album') {
@@ -316,6 +325,7 @@ function normalizeQueueTrackSnapshot(value: unknown): SessionQueueTrackSnapshot 
     ...(discNumber !== undefined ? { discNumber } : {}),
     ...(year !== undefined ? { year } : {}),
     ...(optionalString(value.genre) ? { genre: optionalString(value.genre) } : {}),
+    ...(stringArray(value.genres) ? { genres: stringArray(value.genres) } : {}),
     ...(optionalString(value.artworkHash) ? { artworkHash: optionalString(value.artworkHash) } : {}),
     format,
     ...(sampleRate !== undefined ? { sampleRate } : {}),
@@ -464,6 +474,7 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     viewMode: normalizeViewMode(value.viewMode),
     selectedAlbum: normalizeSelectedAlbum(value.selectedAlbum),
     selectedArtist: stringValue(value.selectedArtist),
+    selectedGenre: stringValue(value.selectedGenre),
     trackListSortState: normalizeTrackSortState(value.trackListSortState),
     selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
     albumSortMode: normalizeAlbumSortMode(value.albumSortMode),

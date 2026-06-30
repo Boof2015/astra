@@ -158,6 +158,7 @@ export interface DbTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   base_artwork_hash: string | null
   format: string
@@ -239,6 +240,13 @@ export interface Artist {
   album_count: number
   artwork_hash: string | null
   artwork_source: 'manual' | 'detected' | 'track' | null
+}
+
+export interface Genre {
+  genre: string
+  track_count: number
+  album_count: number
+  artwork_hash: string | null
 }
 
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
@@ -922,9 +930,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
+    getTracksByGenre: (genre: string) =>
+      ipcRenderer.invoke('library:getTracksByGenre', genre) as Promise<DbTrack[]>,
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
+    getGenres: () => ipcRenderer.invoke('library:getGenres') as Promise<Genre[]>,
     setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) =>
       ipcRenderer.invoke('library:setArtistImageFromFile', artist, mode, imagePath),
     clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) =>
@@ -1301,8 +1312,10 @@ declare global {
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
+        getTracksByGenre: (genre: string) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
+        getGenres: () => Promise<Genre[]>
         setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
         clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
         getAlbums: (options?: AlbumListOptions) => Promise<Album[]>

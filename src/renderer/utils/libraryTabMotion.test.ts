@@ -7,6 +7,8 @@ import {
 
 test('resolveLibraryTabTransitionDirection follows library tab order', () => {
   assert.equal(resolveLibraryTabTransitionDirection('tracks', 'albums'), 'forward')
+  assert.equal(resolveLibraryTabTransitionDirection('artists', 'genres'), 'forward')
+  assert.equal(resolveLibraryTabTransitionDirection('folders', 'genres'), 'backward')
   assert.equal(resolveLibraryTabTransitionDirection('albums', 'tracks'), 'backward')
   assert.equal(resolveLibraryTabTransitionDirection('albums', 'albums'), null)
   assert.equal(resolveLibraryTabTransitionDirection(null, 'albums'), null)

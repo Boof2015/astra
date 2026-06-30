@@ -11,6 +11,7 @@ export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-con
 
 export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-v1'
 export const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
+export const TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-genre-visible-v1'
 export const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
 export const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 export const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'

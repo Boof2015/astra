@@ -155,6 +155,28 @@ async function revealTrackArtistFromContext(artist: string, trackPath: string): 
   return revealTrackInLibrary(trackPath)
 }
 
+async function revealTrackGenreFromContext(genre: string, trackPath: string): Promise<boolean> {
+  const normalizedGenre = normalizeDisplay(genre)
+  if (!normalizedGenre) return revealTrackInLibrary(trackPath)
+
+  const library = useLibraryStore.getState()
+  library.setViewMode('genres')
+  await library.selectGenre(normalizedGenre, 'library')
+
+  if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {
+    return revealTrackInLibrary(trackPath)
+  }
+
+  const ui = useUIStore.getState()
+  if (ui.activeView !== 'library') {
+    ui.setActiveView('library')
+  }
+
+  await afterNavigationFrame()
+  ui.requestLibraryTrackReveal(trackPath)
+  return true
+}
+
 async function revealTrackAlbumFromContext(
   context: Extract<PlaybackSourceContext, { type: 'album' }>,
   trackPath: string
@@ -258,6 +280,9 @@ export function useJumpToNowPlaying(): () => Promise<boolean> {
       }
       if (sourceContext?.type === 'artist') {
         return revealTrackArtistFromContext(sourceContext.artist, trackPath)
+      }
+      if (sourceContext?.type === 'genre') {
+        return revealTrackGenreFromContext(sourceContext.genre, trackPath)
       }
       if (sourceContext?.type === 'album') {
         return revealTrackAlbumFromContext(sourceContext, trackPath)

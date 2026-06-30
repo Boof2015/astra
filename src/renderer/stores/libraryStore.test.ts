@@ -26,6 +26,7 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
     genre: overrides.genre ?? null,
+    genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
     base_artwork_hash: overrides.base_artwork_hash ?? null,
     format: overrides.format ?? 'flac',

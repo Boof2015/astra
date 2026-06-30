@@ -65,6 +65,7 @@ export interface ResolvedQueueTrack {
 export type PlaybackSourceContext =
   | { type: 'playlist'; playlistId: number }
   | { type: 'artist'; artist: string }
+  | { type: 'genre'; genre: string }
   | { type: 'album'; album: string; albumArtist?: string; identityKey?: string }
 
 export interface PlaybackContextOptions {
@@ -238,6 +239,9 @@ function sessionContextToPlaybackContext(context: SessionPlaybackSourceContext |
   }
   if (context.type === 'artist') {
     return context.artist ? { type: 'artist', artist: context.artist } : null
+  }
+  if (context.type === 'genre') {
+    return context.genre ? { type: 'genre', genre: context.genre } : null
   }
   if (context.type === 'album') {
     return context.album
@@ -417,6 +421,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     discNumber: dbTrack.disc_number ?? undefined,
     year: dbTrack.year ?? undefined,
     genre: dbTrack.genre ?? undefined,
+    genres: dbTrack.genres,
     artworkHash: dbTrack.artwork_hash ?? undefined,
     format: dbTrack.format,
     sampleRate: dbTrack.sample_rate ?? undefined,

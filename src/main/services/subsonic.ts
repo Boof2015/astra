@@ -27,6 +27,7 @@ export interface SubsonicCatalogTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -579,6 +580,7 @@ function mapSongToCatalogTrack(
   const discNumber = toFiniteInteger(song.discNumber)
   const year = toFiniteInteger(song.year)
   const genre = toTrimmedText(song.genre)
+  const genres = genre ? [genre] : []
   const sourcePath = toTrimmedText(song.path)
   const contentType = toTrimmedText(song.contentType)
   const artworkSourceId = toTrimmedText(song.coverArt) ?? fallbackCoverArtId
@@ -597,6 +599,7 @@ function mapSongToCatalogTrack(
     disc_number: discNumber,
     year,
     genre,
+    genres,
     artwork_hash: artworkSourceId ? buildSubsonicArtworkHash(sourceId, artworkSourceId) : null,
     format: normalizeSubsonicFormat(song),
     sample_rate: sampleRate,

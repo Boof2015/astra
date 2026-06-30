@@ -91,6 +91,7 @@ function createRemoteTrack(
     disc_number: overrides.disc_number ?? null,
     year: overrides.year ?? null,
     genre: overrides.genre ?? null,
+    genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
     format: overrides.format ?? 'flac',
     sample_rate: overrides.sample_rate ?? 44_100,
@@ -170,6 +171,24 @@ function updateStoredArtistCredits(userDataDir: string, trackPath: string, artis
   try {
     directDb.prepare('UPDATE tracks SET artist_names_json = ? WHERE path = ?').run(
       JSON.stringify(artistNames),
+      trackPath
+    )
+  } finally {
+    directDb.close()
+  }
+}
+
+function updateStoredGenreStorage(
+  userDataDir: string,
+  trackPath: string,
+  genre: string | null,
+  genreNames: readonly string[] | null
+): void {
+  const directDb = new TestSqliteDatabase(join(userDataDir, 'library.db'))
+  try {
+    directDb.prepare('UPDATE tracks SET genre = ?, genre_names_json = ? WHERE path = ?').run(
+      genre,
+      genreNames ? JSON.stringify(genreNames) : null,
       trackPath
     )
   } finally {
@@ -303,6 +322,85 @@ test('library artist records distinguish primary and collaborator-only canonical
   assert.equal(strictPrimaryArtist.track_count, 2)
   assert.equal(strictPrimaryArtist.primary_track_count, strictPrimaryArtist.track_count)
   assert.equal(strictPrimaryArtist.album_count, 1)
+})
+
+test('library genre queries normalize multi-genre tags and fall back to scalar genre', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Genre Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: 'subsonic://1/genre-multi',
+      source_track_id: 'genre-multi',
+      title: 'Multi Genre',
+      artist: 'Genre Artist',
+      album: 'Album One',
+      artwork_hash: 'cover-one',
+      track_number: 1,
+      year: 2024,
+      genres: ['Electronic; Ambient', 'Jazz, Funk/ Fusion', 'Electronic']
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/genre-electronic',
+      source_track_id: 'genre-electronic',
+      title: 'Electronic Two',
+      artist: 'Genre Artist',
+      album: 'Album Two',
+      artwork_hash: 'cover-two',
+      track_number: 1,
+      year: 2025,
+      genres: ['Electronic']
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/genre-scalar',
+      source_track_id: 'genre-scalar',
+      title: 'Scalar Fallback',
+      artist: 'Fallback Artist',
+      album: 'Fallback Album',
+      artwork_hash: 'cover-fallback',
+      genre: 'Trip Hop; Downtempo'
+    })
+  ])
+  updateStoredGenreStorage(userDataDir, 'subsonic://1/genre-scalar', 'Trip Hop; Downtempo', null)
+
+  const genres = library.getGenres()
+  const byGenre = new Map(genres.map((genre) => [genre.genre, genre]))
+
+  assert.equal(byGenre.get('Electronic')?.track_count, 2)
+  assert.equal(byGenre.get('Electronic')?.album_count, 2)
+  assert.equal(byGenre.get('Electronic')?.artwork_hash, 'cover-two')
+  assert.equal(byGenre.get('Ambient')?.track_count, 1)
+  assert.equal(byGenre.get('Jazz, Funk/ Fusion')?.track_count, 1)
+  assert.equal(byGenre.get('Trip Hop')?.track_count, 1)
+  assert.equal(byGenre.get('Downtempo')?.track_count, 1)
+  assert.equal(byGenre.has('Jazz'), false)
+  assert.equal(byGenre.has('Funk'), false)
+  assert.equal(byGenre.has('Fusion'), false)
+
+  const multiGenreTrack = library.getTrackByPath('subsonic://1/genre-multi')
+  assert.ok(multiGenreTrack)
+  assert.equal(multiGenreTrack.genre, 'Electronic; Ambient; Jazz, Funk/ Fusion')
+  assert.deepEqual(multiGenreTrack.genres, ['Electronic', 'Ambient', 'Jazz, Funk/ Fusion'])
+
+  const electronicTracks = library.getTracksByGenre('electronic')
+  assert.deepEqual(electronicTracks.map((track) => track.title), ['Multi Genre', 'Electronic Two'])
+  assert.ok(electronicTracks.every((track) => track.genres.includes('Electronic')))
+
+  const fallbackTracks = library.getTracksByGenre('downtempo')
+  assert.deepEqual(fallbackTracks.map((track) => track.title), ['Scalar Fallback'])
+  assert.equal(fallbackTracks[0].genre, 'Trip Hop; Downtempo')
+  assert.deepEqual(fallbackTracks[0].genres, ['Trip Hop', 'Downtempo'])
+
+  assert.deepEqual(library.getTracksByGenre('Jazz').map((track) => track.title), [])
+  assert.deepEqual(library.getTracksByGenre('Jazz, Funk/ Fusion').map((track) => track.title), ['Multi Genre'])
 })
 
 test('library search returns public track shape with album identities', async (t) => {

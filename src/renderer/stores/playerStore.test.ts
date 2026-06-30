@@ -35,6 +35,7 @@ function makeTrack(path: string, overrides: Partial<Track> = {}): Track {
     discNumber: overrides.discNumber,
     year: overrides.year,
     genre: overrides.genre,
+    genres: overrides.genres,
     artworkData: overrides.artworkData,
     artworkHash: overrides.artworkHash,
     format: overrides.format ?? 'flac',
@@ -73,6 +74,7 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
     genre: overrides.genre ?? null,
+    genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
     base_artwork_hash: overrides.base_artwork_hash ?? null,
     format: overrides.format ?? 'flac',
@@ -638,8 +640,8 @@ test('session restore filters stale library queue items and advances queue ids',
         entry: validEntry,
         origin: 'context',
         sourcePlaylistId: null,
-        sourceContext: null,
-        contextLabel: 'Session'
+        sourceContext: { type: 'genre', genre: 'Electronic' },
+        contextLabel: 'Electronic'
       },
       {
         queueId: 'queue-9001',
@@ -654,8 +656,8 @@ test('session restore filters stale library queue items and advances queue ids',
     upcomingQueueIds: ['queue-9000', 'queue-9001'],
     currentQueueItemId: 'queue-9000',
     queueSourcePlaylistId: null,
-    queueSourceContext: null,
-    queueContextLabel: 'Session',
+    queueSourceContext: { type: 'genre', genre: 'Electronic' },
+    queueContextLabel: 'Electronic',
     shuffle: true,
     repeat: 'all',
     playbackHistory: []
@@ -668,6 +670,8 @@ test('session restore filters stale library queue items and advances queue ids',
   assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, true)
   assert.equal(usePlayerStore.getState().currentTime, 42)
   assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, ['queue-9000'])
+  assert.deepEqual(usePlayerStore.getState().queueSourceContext, { type: 'genre', genre: 'Electronic' })
+  assert.deepEqual(usePlayerStore.getState().queueItems[0]?.sourceContext, { type: 'genre', genre: 'Electronic' })
 
   usePlayerStore.getState().enqueueTrack(makeTrack('/session/manual.flac'), 'end')
   assert.equal(usePlayerStore.getState().upcomingQueueIds.at(-1), 'queue-9001')

@@ -18,6 +18,7 @@ export interface QuickLaunchTrackRecord {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
