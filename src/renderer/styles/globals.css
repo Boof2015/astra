@@ -22000,7 +22000,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .parallax-sink-kicker {
-  color: var(--accent-color, #38bdf8);
+  color: var(--accent-text-strong, var(--accent, #38bdf8));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -22635,12 +22635,23 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--surface-overlay);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
 
 .parallax-pair-card-zone-overlay {
+  --tint: 255, 255, 255;
+  --bg-primary: rgba(12, 14, 18, 0.94);
+  --glass-border: rgba(var(--tint), 0.08);
+  --glass-highlight: rgba(var(--tint), 0.05);
+  --text-primary: rgba(var(--tint), 0.95);
+  --text-secondary: rgba(var(--tint), 0.6);
+  --text-tertiary: rgba(var(--tint), 0.4);
+  --text-strong: #ffffff;
+  --accent-text: #bae6fd;
+  --accent-text-strong: #e0f2fe;
+
   position: absolute;
   inset: 0;
   z-index: 12;
@@ -22661,10 +22672,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 18px;
   padding: 32px 36px;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(12, 14, 18, 0.94);
-  box-shadow: 0 26px 64px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: var(--bg-primary);
+  box-shadow: 0 26px 64px rgba(0, 0, 0, 0.28);
   text-align: center;
+  color: var(--text-primary);
 }
 
 .parallax-pair-card-kicker {
@@ -22672,12 +22684,12 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--accent-color, #38bdf8);
+  color: var(--accent-text-strong, var(--accent, #38bdf8));
 }
 
 .parallax-pair-card-host {
   font-size: 1.05rem;
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--text-primary);
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -22687,11 +22699,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .parallax-pair-card-host strong {
   font-size: 1.2rem;
-  color: #fff;
+  color: var(--text-strong, var(--text-primary));
 }
 
 .parallax-pair-card-host-suffix {
-  color: rgba(255, 255, 255, 0.68);
+  color: var(--text-secondary);
 }
 
 .parallax-pair-card-pin {
@@ -22707,28 +22719,28 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   width: 54px;
   height: 70px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(var(--tint), 0.14);
+  background: var(--glass-highlight);
   font-family: var(--font-mono);
   font-size: 2.4rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-strong, var(--text-primary));
 }
 
 .parallax-pair-card-instructions {
   font-size: 0.92rem;
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(var(--tint), 0.78);
 }
 
 .parallax-pair-card-countdown {
   font-family: var(--font-mono);
   font-size: 0.84rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
 }
 
 .parallax-pair-card-footnote {
   font-size: 0.76rem;
-  color: rgba(255, 255, 255, 0.48);
+  color: var(--text-tertiary);
   margin-top: 2px;
 }
 
@@ -22742,7 +22754,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--surface-overlay);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   padding: 24px;
@@ -22753,13 +22765,14 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   max-height: calc(100vh - 48px);
   overflow-y: auto;
   border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(12, 14, 18, 0.94);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--glass-border);
+  background: var(--bg-primary);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
   padding: 22px 24px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  color: var(--text-primary);
 }
 
 .parallax-pairing-wizard-head {
@@ -22773,13 +22786,13 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--text-primary);
 }
 
 .parallax-pairing-wizard-close {
   background: transparent;
   border: 0;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 1.5rem;
   line-height: 1;
@@ -22787,7 +22800,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .parallax-pairing-wizard-close:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .parallax-pairing-wizard-section-head {
@@ -22801,13 +22814,13 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--eyebrow, rgba(var(--tint), 0.56));
 }
 
 .parallax-pairing-wizard-section-count {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(var(--tint), 0.72);
 }
 
 .parallax-pairing-wizard-list {
@@ -22817,8 +22830,8 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   max-height: 240px;
   overflow-y: auto;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(var(--tint), 0.1);
+  background: var(--control-bg-soft);
   padding: 6px;
 }
 
@@ -22826,7 +22839,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   padding: 18px 12px;
   text-align: center;
   font-size: 0.84rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--tint), 0.5);
 }
 
 .parallax-pairing-wizard-row {
@@ -22836,17 +22849,17 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: var(--glass-highlight);
+  color: var(--text-primary);
   cursor: pointer;
   text-align: left;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .parallax-pairing-wizard-row:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(var(--tint), 0.07);
+  border-color: rgba(var(--tint), 0.24);
 }
 
 .parallax-pairing-wizard-row-main {
@@ -22864,7 +22877,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-row-meta {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.56);
+  color: rgba(var(--tint), 0.56);
 }
 
 .parallax-pairing-wizard-row-badge {
@@ -22872,7 +22885,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(52, 211, 153, 0.92);
+  color: #34d399;
   padding: 4px 8px;
   border: 1px solid rgba(52, 211, 153, 0.32);
   border-radius: 999px;
@@ -22885,7 +22898,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-tertiary);
 }
 
 .parallax-pairing-wizard-manual {
@@ -22899,7 +22912,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--eyebrow, rgba(var(--tint), 0.56));
 }
 
 .parallax-pairing-wizard-manual-row {
@@ -22911,9 +22924,9 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   flex: 1;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.04);
-  color: #fff;
+  border: 1px solid rgba(var(--tint), 0.16);
+  background: var(--control-bg-strong);
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.86rem;
 }
@@ -22921,7 +22934,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-loading {
   text-align: center;
   font-size: 0.92rem;
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(var(--tint), 0.78);
   padding: 28px 8px;
 }
 
@@ -22936,16 +22949,16 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-pin-prompt {
   text-align: center;
   font-size: 0.96rem;
-  color: rgba(255, 255, 255, 0.86);
+  color: rgba(var(--tint), 0.86);
 }
 
 .parallax-pairing-wizard-pin-input {
   width: 220px;
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  border: 1px solid rgba(var(--tint), 0.18);
+  background: var(--control-bg-strong);
+  color: var(--text-strong, var(--text-primary));
   font-family: var(--font-mono);
   font-size: 1.6rem;
   letter-spacing: 0.4em;
@@ -22955,7 +22968,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-pin-meta {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(var(--tint), 0.62);
 }
 
 .parallax-pairing-wizard-pin-attempts {
@@ -22987,7 +23000,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-success-name {
   font-size: 1.4rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-strong, var(--text-primary));
 }
 
 .parallax-pairing-wizard-error {
@@ -23000,6 +23013,17 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-pairing-wizard-error-message {
   font-size: 0.92rem;
   color: #fca5a5;
+}
+
+html[data-theme-tone="light"] .parallax-pairing-wizard-row-badge,
+html[data-theme-tone="light"] .parallax-pairing-wizard-success-kicker {
+  color: #047857;
+  border-color: rgba(4, 120, 87, 0.32);
+}
+
+html[data-theme-tone="light"] .parallax-pairing-wizard-pin-attempts,
+html[data-theme-tone="light"] .parallax-pairing-wizard-error-message {
+  color: #b91c1c;
 }
 
 /* ── Parallax guided setup + role-reframed settings ─────────────────────────── */
@@ -23022,20 +23046,20 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent-text, #bae6fd);
+  color: var(--accent-text-strong, var(--accent-text, #bae6fd));
 }
 
 .parallax-setup-title {
   margin: 4px 0 0;
   font-size: 1.18rem;
   font-weight: 650;
-  color: #fff;
+  color: var(--text-strong, var(--text-primary));
 }
 
 .parallax-setup-close {
   background: transparent;
   border: 0;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 1.1rem;
   line-height: 1;
@@ -23044,8 +23068,8 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .parallax-setup-close:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  background: var(--glass-highlight);
 }
 
 .parallax-setup-step {
@@ -23058,7 +23082,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   margin: 0;
   font-size: 0.92rem;
   line-height: 1.5;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--tint), 0.7);
 }
 
 .parallax-choice-grid {
@@ -23081,8 +23105,8 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   text-align: left;
   padding: 18px 16px;
   border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: var(--glass-highlight);
   cursor: pointer;
   transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
 }
@@ -23107,29 +23131,35 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .parallax-choice-title {
   font-size: 1rem;
   font-weight: 650;
-  color: #fff;
+  color: var(--text-strong, var(--text-primary));
 }
 
 .parallax-choice-desc {
   font-size: 0.82rem;
   line-height: 1.45;
-  color: rgba(255, 255, 255, 0.58);
+  color: rgba(var(--tint), 0.58);
 }
 
 .parallax-setup-status {
   font-size: 0.86rem;
   line-height: 1.5;
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(var(--tint), 0.66);
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(var(--tint), 0.08);
+  background: rgba(var(--tint), 0.025);
 }
 
 .parallax-setup-status.is-good {
   color: rgba(167, 243, 208, 0.92);
   border-color: rgba(52, 211, 153, 0.32);
   background: rgba(52, 211, 153, 0.08);
+}
+
+html[data-theme-tone="light"] .parallax-setup-status.is-good {
+  color: #047857;
+  border-color: rgba(4, 120, 87, 0.32);
+  background: rgba(16, 185, 129, 0.1);
 }
 
 .parallax-setup-cta {
@@ -23142,8 +23172,8 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 6px;
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(var(--tint), 0.08);
+  background: rgba(var(--tint), 0.025);
 }
 
 .parallax-setup-identity-row {
@@ -23157,13 +23187,13 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--eyebrow, rgba(var(--tint), 0.4));
 }
 
 .parallax-setup-identity-value {
   font-family: var(--font-mono);
   font-size: 0.88rem;
-  color: rgba(255, 255, 255, 0.86);
+  color: rgba(var(--tint), 0.86);
   text-align: right;
 }
 
