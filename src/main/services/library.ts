@@ -123,6 +123,8 @@ export interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   added_at: number
   modified_at: number
 }
@@ -636,6 +638,8 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.is_available AS is_available,
   t.availability_reason AS availability_reason,
   t.file_created_at AS file_created_at,
+  t.play_count AS play_count,
+  t.last_played_at AS last_played_at,
   t.sync_session_key AS sync_session_key,
   t.latest_sync_dismissed_at AS latest_sync_dismissed_at,
   t.added_at AS added_at,
@@ -1735,6 +1739,8 @@ export async function initDatabase(): Promise<void> {
       is_available INTEGER NOT NULL DEFAULT 1,
       availability_reason TEXT,
       file_created_at INTEGER,
+      play_count INTEGER NOT NULL DEFAULT 0,
+      last_played_at INTEGER,
       sync_session_key TEXT,
       latest_sync_dismissed_at INTEGER,
       added_at INTEGER NOT NULL,
@@ -1918,6 +1924,16 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run('ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN last_played_at INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
   } catch {
     // Column already exists.
@@ -1965,6 +1981,8 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_scope ON tracks(source_type, source_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_source_track ON tracks(source_type, source_id, source_track_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_sync_session_key ON tracks(sync_session_key)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_tracks_last_played ON tracks(last_played_at DESC)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_cache_updated_at ON lyrics_cache(updated_at)')
   db.run('CREATE INDEX IF NOT EXISTS idx_lyrics_track_overrides_updated_at ON lyrics_track_overrides(updated_at)')
 
@@ -7254,7 +7272,13 @@ export async function markTrackLatestSyncSeen(trackPath: string): Promise<void> 
 
 export async function addRecentlyPlayed(trackPath: string): Promise<void> {
   if (!db) return
-  db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, Date.now()])
+  const playedAt = Date.now()
+  const result = db.run(
+    'UPDATE tracks SET play_count = play_count + 1, last_played_at = ? WHERE path = ?',
+    [playedAt, trackPath]
+  )
+  if (result.changes === 0) return
+  db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, playedAt])
   // Prune old entries, keep last 200
   db.run(`
     DELETE FROM recently_played WHERE id NOT IN (

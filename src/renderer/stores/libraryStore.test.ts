@@ -46,6 +46,8 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     is_available: overrides.is_available ?? 1,
     availability_reason: overrides.availability_reason ?? null,
     file_created_at: overrides.file_created_at ?? null,
+    play_count: overrides.play_count ?? 0,
+    last_played_at: overrides.last_played_at ?? null,
     replaygain_track_gain_db: overrides.replaygain_track_gain_db ?? null,
     replaygain_album_gain_db: overrides.replaygain_album_gain_db ?? null,
     added_at: overrides.added_at ?? 1,

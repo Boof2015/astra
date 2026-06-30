@@ -86,6 +86,8 @@ interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   added_at: number

@@ -180,6 +180,8 @@ export interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   added_at: number
   modified_at: number
 }

@@ -166,6 +166,138 @@ async function setupSeededLibrary(t: test.TestContext): Promise<void> {
   ])
 }
 
+async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'astra-library-playcount-migration-'))
+  process.env.ASTRA_TEST_USER_DATA = dir
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    directDb.prepare(`
+      CREATE TABLE tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT UNIQUE NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL,
+        artist_names_json TEXT,
+        album TEXT NOT NULL,
+        album_artist TEXT,
+        album_artist_names_json TEXT,
+        duration REAL NOT NULL,
+        track_number INTEGER,
+        disc_number INTEGER,
+        year INTEGER,
+        genre TEXT,
+        genre_names_json TEXT,
+        artwork_hash TEXT,
+        format TEXT NOT NULL,
+        sample_rate INTEGER,
+        bit_depth INTEGER,
+        bitrate INTEGER,
+        channels INTEGER,
+        codec TEXT,
+        codec_profile TEXT,
+        is_atmos_joc INTEGER,
+        replaygain_track_gain_db REAL,
+        replaygain_album_gain_db REAL,
+        bpm REAL,
+        musical_key TEXT,
+        source_type TEXT NOT NULL DEFAULT 'local',
+        source_id INTEGER,
+        source_track_id TEXT,
+        source_path TEXT,
+        is_available INTEGER NOT NULL DEFAULT 1,
+        availability_reason TEXT,
+        file_created_at INTEGER,
+        sync_session_key TEXT,
+        latest_sync_dismissed_at INTEGER,
+        added_at INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL
+      )
+    `).run()
+    directDb.prepare(`
+      INSERT INTO tracks (
+        path,
+        title,
+        artist,
+        album,
+        duration,
+        format,
+        source_type,
+        is_available,
+        added_at,
+        modified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'local', 1, ?, ?)
+    `).run('/legacy/track.flac', 'Legacy Track', 'Legacy Artist', 'Legacy Album', 180, 'flac', 1_000, 1_000)
+    directDb.prepare(`
+      CREATE TABLE recently_played (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_path TEXT NOT NULL,
+        played_at INTEGER NOT NULL
+      )
+    `).run()
+    directDb.prepare('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)').run('/legacy/track.flac', 2_000)
+  } finally {
+    directDb.close()
+  }
+
+  await library.initDatabase()
+
+  t.after(async () => {
+    library.closeDatabase()
+    delete process.env.ASTRA_TEST_USER_DATA
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  return dir
+}
+
+test('playcount migration adds fresh aggregate fields without backfilling recent history', async (t) => {
+  await setupLegacyPlaycountLibrary(t)
+
+  const track = library.getTrackByPath('/legacy/track.flac')
+  assert.equal(track?.play_count, 0)
+  assert.equal(track?.last_played_at, null)
+
+  const recent = library.getRecentlyPlayed(1)
+  assert.equal(recent[0]?.path, '/legacy/track.flac')
+  assert.equal(recent[0]?.play_count, 0)
+  assert.equal(recent[0]?.last_played_at, null)
+})
+
+test('qualified play records recent history and updates track aggregates', async (t) => {
+  await setupSeededLibrary(t)
+
+  const trackPath = 'subsonic://1/split-a'
+  const originalDateNow = Date.now
+  let now = 1_800_000
+  Date.now = () => now
+
+  try {
+    const initialTrack = library.getTrackByPath(trackPath)
+    assert.equal(initialTrack?.play_count, 0)
+    assert.equal(initialTrack?.last_played_at, null)
+
+    await library.addRecentlyPlayed(trackPath)
+    const firstPlayTrack = library.getTrackByPath(trackPath)
+    assert.equal(firstPlayTrack?.play_count, 1)
+    assert.equal(firstPlayTrack?.last_played_at, 1_800_000)
+
+    now = 1_805_000
+    await library.addRecentlyPlayed(trackPath)
+    const secondPlayTrack = library.getTrackByPath(trackPath)
+    assert.equal(secondPlayTrack?.play_count, 2)
+    assert.equal(secondPlayTrack?.last_played_at, 1_805_000)
+
+    const recent = library.getRecentlyPlayed(5)
+    assert.equal(recent[0]?.path, trackPath)
+    assert.equal(recent[0]?.play_count, 2)
+    assert.equal(recent[0]?.last_played_at, 1_805_000)
+    assert.equal(recent.filter((track) => track.path === trackPath).length, 2)
+  } finally {
+    Date.now = originalDateNow
+  }
+})
+
 function updateStoredArtistCredits(userDataDir: string, trackPath: string, artistNames: readonly string[]): void {
   const directDb = new TestSqliteDatabase(join(userDataDir, 'library.db'))
   try {

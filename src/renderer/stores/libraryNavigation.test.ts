@@ -39,6 +39,8 @@ function makeDbTrack(path: string, artist = 'Artist A'): DbTrack {
     is_available: 1,
     availability_reason: null,
     file_created_at: null,
+    play_count: 0,
+    last_played_at: null,
     replaygain_track_gain_db: null,
     replaygain_album_gain_db: null,
     added_at: 1,

@@ -66,6 +66,8 @@ function createMissingPlaylistTrackPlaceholder(entry: PlaylistEntry, index: numb
     is_available: 0,
     availability_reason: 'missing_playlist_entry',
     file_created_at: null,
+    play_count: 0,
+    last_played_at: null,
     replaygain_track_gain_db: null,
     replaygain_album_gain_db: null,
     added_at: entry.added_at,

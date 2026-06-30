@@ -192,7 +192,7 @@ const waveformCache = new Map<string, Float32Array>()
 const MAX_WAVEFORM_CACHE_ENTRIES = 128
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
-const RECENT_PLAY_MIN_SECONDS = 10
+export const RECENT_PLAY_MIN_SECONDS = 15
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
 const BYTES_PER_FLOAT32_SAMPLE = 4
@@ -366,6 +366,44 @@ export function shouldApplyDurationChange(
   if (resolvePositiveDuration(duration) > 0) return true
   if (!currentTrack || playbackState === 'stopped') return true
   return resolvePositiveDuration(currentTrack.duration) <= 0
+}
+
+export interface RecentPlayAccumulationState {
+  accumulatedSeconds: number
+  lastAccumulatedAtMs: number | null
+}
+
+export function getRecentPlayThresholdSecondsForDuration(duration: number | null | undefined): number {
+  if (!Number.isFinite(duration) || (duration ?? 0) <= 0) {
+    return RECENT_PLAY_MIN_SECONDS
+  }
+  return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, duration ?? 0))
+}
+
+export function advanceRecentPlayAccumulation(
+  state: RecentPlayAccumulationState,
+  playbackState: PlaybackState,
+  nowMs: number
+): RecentPlayAccumulationState {
+  if (playbackState !== 'playing') {
+    return {
+      accumulatedSeconds: state.accumulatedSeconds,
+      lastAccumulatedAtMs: null
+    }
+  }
+
+  if (state.lastAccumulatedAtMs === null) {
+    return {
+      accumulatedSeconds: state.accumulatedSeconds,
+      lastAccumulatedAtMs: nowMs
+    }
+  }
+
+  const deltaSeconds = Math.max(0, (nowMs - state.lastAccumulatedAtMs) / 1000)
+  return {
+    accumulatedSeconds: state.accumulatedSeconds + deltaSeconds,
+    lastAccumulatedAtMs: nowMs
+  }
 }
 
 export function stripTrackArtworkData(track: Track): QueueTrackSnapshot {
@@ -671,6 +709,8 @@ function getShuffledStartIndex(entryCount: number, requestedStartIndex: number):
 interface RecentPlaySession {
   trackPath: string
   thresholdSeconds: number
+  accumulatedSeconds: number
+  lastAccumulatedAtMs: number | null
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
@@ -968,12 +1008,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
   }
 
-  const getRecentPlayThresholdSeconds = (track: Track | null): number => {
-    if (!track || !Number.isFinite(track.duration) || track.duration <= 0) {
-      return RECENT_PLAY_MIN_SECONDS
-    }
-    return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, track.duration))
-  }
+  const getRecentPlayThresholdSeconds = (track: Track | null): number => (
+    getRecentPlayThresholdSecondsForDuration(track?.duration)
+  )
 
   const createQueueItem = (
     entry: QueueTrackEntry,
@@ -1019,15 +1056,34 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
-  const commitRecentPlayNow = (): void => {
-    if (!recentPlaySession || recentPlaySession.counted) return
-    commitRecentPlay(recentPlaySession)
+  const updateRecentPlayAccumulation = (
+    playbackState: PlaybackState,
+    nowMs: number = performance.now()
+  ): RecentPlaySession | null => {
+    if (!recentPlaySession || recentPlaySession.counted) return recentPlaySession
+
+    const next = advanceRecentPlayAccumulation(recentPlaySession, playbackState, nowMs)
+    recentPlaySession.accumulatedSeconds = next.accumulatedSeconds
+    recentPlaySession.lastAccumulatedAtMs = next.lastAccumulatedAtMs
+    return recentPlaySession
   }
 
-  const maybeCommitRecentPlay = (time: number): void => {
-    if (!recentPlaySession || recentPlaySession.counted) return
-    if (time >= recentPlaySession.thresholdSeconds) {
-      commitRecentPlay(recentPlaySession)
+  const commitRecentPlayNow = (): void => {
+    const session = updateRecentPlayAccumulation(get().playbackState)
+    if (!session || session.counted) return
+    if (session.accumulatedSeconds >= session.thresholdSeconds) {
+      commitRecentPlay(session)
+    }
+  }
+
+  const maybeCommitRecentPlay = (
+    playbackState: PlaybackState = get().playbackState,
+    nowMs: number = performance.now()
+  ): void => {
+    const session = updateRecentPlayAccumulation(playbackState, nowMs)
+    if (!session || session.counted) return
+    if (session.accumulatedSeconds >= session.thresholdSeconds) {
+      commitRecentPlay(session)
     }
   }
 
@@ -1038,6 +1094,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     recentPlaySession = {
       trackPath,
       thresholdSeconds,
+      accumulatedSeconds: 0,
+      lastAccumulatedAtMs: null,
       counted: false,
       allowDbWrite: track?.origin !== 'associated-external',
       sourcePlaylistId: resolveSourcePlaylistIdForState(state)
@@ -2521,8 +2579,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
+        const previousPlaybackState = get().playbackState
+        const now = performance.now()
+        maybeCommitRecentPlay(previousPlaybackState, now)
+        if (recentPlaySession && nextPlaybackState !== 'playing') {
+          recentPlaySession.lastAccumulatedAtMs = null
+        } else if (recentPlaySession && previousPlaybackState !== 'playing') {
+          recentPlaySession.lastAccumulatedAtMs = now
+        }
         if (nextPlaybackState === 'playing') {
-          lastCommittedCurrentTimeMs = performance.now()
+          lastCommittedCurrentTimeMs = now
           set({
             playbackState: nextPlaybackState,
             currentTime: audioEngine.currentTime
@@ -2532,7 +2598,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         clearScheduledPrebufferTimer()
-        lastCommittedCurrentTimeMs = performance.now()
+        lastCommittedCurrentTimeMs = now
         set({
           playbackState: nextPlaybackState,
           currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
@@ -2551,7 +2617,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('timeUpdate', (time) => {
         const normalizedTime = time as number
-        maybeCommitRecentPlay(normalizedTime)
+        maybeCommitRecentPlay()
 
         const state = get()
         if (state.playbackState === 'playing' || state.playbackState === 'paused') {

@@ -1,11 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  advanceRecentPlayAccumulation,
   createQueueEntriesFromPaths,
   createQueueEntryFromTrack,
   GAPLESS_PREBUFFER_LEAD_SECONDS,
   getGaplessPrebufferDelayMs,
+  getRecentPlayThresholdSecondsForDuration,
   MAX_PLAYBACK_HISTORY,
+  RECENT_PLAY_MIN_SECONDS,
   resolvePositiveDuration,
   shouldApplyDurationChange,
   usePlayerStore,
@@ -94,6 +97,8 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     is_available: overrides.is_available ?? 1,
     availability_reason: overrides.availability_reason ?? null,
     file_created_at: overrides.file_created_at ?? null,
+    play_count: overrides.play_count ?? 0,
+    last_played_at: overrides.last_played_at ?? null,
     replaygain_track_gain_db: overrides.replaygain_track_gain_db ?? null,
     replaygain_album_gain_db: overrides.replaygain_album_gain_db ?? null,
     added_at: overrides.added_at ?? 1,
@@ -313,6 +318,55 @@ test('duration helpers preserve positive track durations through zero engine val
   assert.equal(shouldApplyDurationChange(0, makeTrack('/music/a.flac', { duration: 185 }), 'stopped'), true)
   assert.equal(shouldApplyDurationChange(0, makeTrack('/music/a.flac', { duration: 0 }), 'playing'), true)
   assert.equal(shouldApplyDurationChange(190, makeTrack('/music/a.flac', { duration: 185 }), 'playing'), true)
+})
+
+test('recent play threshold uses fifteen seconds or full short-track duration', () => {
+  assert.equal(RECENT_PLAY_MIN_SECONDS, 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(180), 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(4), 4)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(0), 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(null), 15)
+})
+
+test('recent play accumulation only counts elapsed playing time', () => {
+  let state = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 1_000)
+  assert.equal(state.accumulatedSeconds, 0)
+  assert.equal(state.lastAccumulatedAtMs, 1_000)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 15_900)
+  assert.equal(state.accumulatedSeconds, 14.9)
+  assert.equal(state.accumulatedSeconds < RECENT_PLAY_MIN_SECONDS, true)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 16_000)
+  assert.equal(state.accumulatedSeconds, 15)
+  assert.equal(state.accumulatedSeconds >= RECENT_PLAY_MIN_SECONDS, true)
+})
+
+test('recent play accumulation ignores paused gaps and position jumps', () => {
+  let state = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 1_000)
+  state = advanceRecentPlayAccumulation(state, 'playing', 6_000)
+  assert.equal(state.accumulatedSeconds, 5)
+
+  state = advanceRecentPlayAccumulation(state, 'paused', 20_000)
+  assert.equal(state.accumulatedSeconds, 5)
+  assert.equal(state.lastAccumulatedAtMs, null)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 25_000)
+  assert.equal(state.accumulatedSeconds, 5)
+  assert.equal(state.lastAccumulatedAtMs, 25_000)
+
+  state = advanceRecentPlayAccumulation(state, 'playing', 34_000)
+  assert.equal(state.accumulatedSeconds, 14)
+
+  const shortTrackThreshold = getRecentPlayThresholdSecondsForDuration(4)
+  let shortTrackState = { accumulatedSeconds: 0, lastAccumulatedAtMs: null as number | null }
+  shortTrackState = advanceRecentPlayAccumulation(shortTrackState, 'playing', 0)
+  shortTrackState = advanceRecentPlayAccumulation(shortTrackState, 'playing', 4_000)
+  assert.equal(shortTrackState.accumulatedSeconds >= shortTrackThreshold, true)
 })
 
 test('playback history is capped and stores sanitized queue entries', async () => {
