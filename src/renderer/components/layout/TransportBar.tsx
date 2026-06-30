@@ -22,6 +22,7 @@ import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
+import { useParallaxStore } from '../../stores/parallaxStore'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 function formatTime(seconds: number): string {
@@ -140,6 +141,7 @@ export default function TransportBar() {
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
   const playbackModeStatusMessage = useAudioSettingsStore((s) => s.playbackModeStatusMessage)
+  const parallaxSinkConnected = useParallaxStore((s) => Boolean(s.status?.sink.connected))
   const jumpToNowPlaying = useJumpToNowPlaying()
 
   const isAssociationTrack = currentTrack?.origin === 'associated-external'
@@ -208,6 +210,7 @@ export default function TransportBar() {
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
   const disabledControlMessage = playbackModeStatusMessage ?? BIT_PERFECT_DSP_DISABLED_MESSAGE
   const eqControlDisabled = bitPerfectModeActive
+  const transportControlsLocked = parallaxSinkConnected
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
@@ -462,6 +465,7 @@ export default function TransportBar() {
             className={`control-btn control-btn-shuffle ${shuffle ? 'active' : ''}`}
             aria-label="Shuffle"
             onClick={toggleShuffle}
+            disabled={transportControlsLocked}
             title={shuffle ? 'Shuffle on' : 'Shuffle off'}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
@@ -476,7 +480,7 @@ export default function TransportBar() {
             className="control-btn control-btn-skip"
             aria-label="Previous"
             onClick={playPrevious}
-            disabled={resolvedQueueLength === 0}
+            disabled={transportControlsLocked || resolvedQueueLength === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <line x1="6" y1="5" x2="6" y2="19" />
@@ -486,7 +490,7 @@ export default function TransportBar() {
           <button
             className="control-btn control-btn-play"
             onClick={togglePlay}
-            disabled={!currentTrack || isLoadingTrack}
+            disabled={transportControlsLocked || !currentTrack || isLoadingTrack}
             aria-label={isPlaying ? 'Pause' : 'Play'}
           >
             {isLoadingTrack ? (
@@ -505,7 +509,7 @@ export default function TransportBar() {
             className="control-btn control-btn-skip"
             aria-label="Next"
             onClick={playNext}
-            disabled={resolvedQueueLength === 0}
+            disabled={transportControlsLocked || resolvedQueueLength === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="5" x2="18" y2="19" />
@@ -516,6 +520,7 @@ export default function TransportBar() {
             className={`control-btn control-btn-repeat ${repeat !== 'none' ? 'active' : ''}`}
             aria-label="Repeat"
             onClick={toggleRepeat}
+            disabled={transportControlsLocked}
             title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
           >
             {repeat === 'one' ? (

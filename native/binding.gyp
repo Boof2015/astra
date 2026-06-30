@@ -14,7 +14,8 @@
         "src/playback_engine.cpp",
         "src/coreaudio_hal_sink.cpp",
         "src/alsa_hw_sink.cpp",
-        "src/wasapi_exclusive_sink.cpp"
+        "src/wasapi_exclusive_sink.cpp",
+        "src/parallax_loopback.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",

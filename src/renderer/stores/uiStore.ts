@@ -31,6 +31,20 @@ export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-act
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
+// §14.1.4 — persisted preference: open the Zone Display layout at launch. The session-state
+// `isZoneDisplayActive` derives its initial value from this OR the `--zone` launch flag, and
+// "Library" clears the session flag without touching the persisted preference.
+export const OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY = 'astra-open-zone-display-on-launch-v1'
+// Parallax is an experimental feature gated behind a master reveal toggle (in the Experimental
+// settings section). When on, a dedicated "Parallax" settings section appears in the sidebar.
+// `parallaxSetupComplete` tracks whether the guided first-run flow has been finished/dismissed,
+// so returning users land directly on the management view.
+export const PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY = 'astra-experimental-parallax-enabled-v1'
+export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complete-v1'
+// §14.1.4 — friendly zone name for this speaker, shown on the Zone Display (now-playing footer +
+// idle dashboard heading). Renderer-local override; empty string means "fall back to the OS
+// hostname". Persisted here (not main) since it's a display-only label for this surface.
+export const PARALLAX_ZONE_NAME_STORAGE_KEY = 'astra-parallax-zone-name-v1'
 
 const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'graph', 'eq', 'playlist', 'settings']
 
@@ -317,6 +331,81 @@ function persistJumpToPlayingDestinationPreference(destination: JumpToPlayingDes
   }
 }
 
+function readOpenZoneDisplayOnLaunchPreference(): boolean {
+  try {
+    return localStorage.getItem(OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistOpenZoneDisplayOnLaunchPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readParallaxExperimentEnabledPreference(): boolean {
+  try {
+    return localStorage.getItem(PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistParallaxExperimentEnabledPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(PARALLAX_EXPERIMENT_ENABLED_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readParallaxSetupCompletePreference(): boolean {
+  try {
+    return localStorage.getItem(PARALLAX_SETUP_COMPLETE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistParallaxSetupCompletePreference(complete: boolean): void {
+  try {
+    localStorage.setItem(PARALLAX_SETUP_COMPLETE_STORAGE_KEY, complete ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readParallaxZoneNamePreference(): string {
+  try {
+    return localStorage.getItem(PARALLAX_ZONE_NAME_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function persistParallaxZoneNamePreference(name: string): void {
+  try {
+    if (name) localStorage.setItem(PARALLAX_ZONE_NAME_STORAGE_KEY, name)
+    else localStorage.removeItem(PARALLAX_ZONE_NAME_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readLaunchInZoneModeFlag(): boolean {
+  // §14.1.4 — `--zone` launch flag (forwarded by main as `electronAPI.parallax.launchInZoneMode`).
+  // Single-launch override; does NOT mutate the persisted preference.
+  try {
+    return window.electronAPI?.parallax?.launchInZoneMode === true
+  } catch {
+    return false
+  }
+}
+
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
@@ -325,6 +414,14 @@ const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
+const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
+const initialParallaxExperimentEnabled = readParallaxExperimentEnabledPreference()
+const initialParallaxSetupComplete = readParallaxSetupCompletePreference()
+const initialParallaxZoneName = readParallaxZoneNamePreference()
+const initialZoneDisplayLaunchFlag = readLaunchInZoneModeFlag()
+// Session state: zone display is active at startup if the preference is on OR `--zone` was passed.
+// "Library" escape sets this back to false without touching the preference.
+const initialIsZoneDisplayActive = initialOpenZoneDisplayOnLaunch || initialZoneDisplayLaunchFlag
 const MAX_VIEW_HISTORY_ENTRIES = 50
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
@@ -343,6 +440,11 @@ interface UIStore {
   isAnalyzerEditMode: boolean
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
+  openZoneDisplayOnLaunch: boolean
+  parallaxExperimentEnabled: boolean
+  parallaxSetupComplete: boolean
+  parallaxZoneName: string
+  isZoneDisplayActive: boolean
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
@@ -376,6 +478,12 @@ interface UIStore {
   hideAnalyzerRack: () => void
   toggleAnalyzerRack: () => void
   setFullscreen: (fs: boolean) => void
+  setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
+  setParallaxExperimentEnabled: (enabled: boolean) => void
+  setParallaxSetupComplete: (complete: boolean) => void
+  setParallaxZoneName: (name: string) => void
+  exitZoneDisplayForSession: () => void
+  enterZoneDisplay: () => void
   setAnalyzerHeightPx: (heightPx: number) => void
   resetAnalyzerHeightPx: () => void
   resetAnalyzerRackPreferences: () => void
@@ -426,6 +534,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isAnalyzerEditMode: false,
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
+  openZoneDisplayOnLaunch: initialOpenZoneDisplayOnLaunch,
+  parallaxExperimentEnabled: initialParallaxExperimentEnabled,
+  parallaxSetupComplete: initialParallaxSetupComplete,
+  parallaxZoneName: initialParallaxZoneName,
+  isZoneDisplayActive: initialIsZoneDisplayActive,
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
@@ -551,6 +664,27 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
   }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
+  setOpenZoneDisplayOnLaunch: (enabled) => {
+    persistOpenZoneDisplayOnLaunchPreference(enabled)
+    set({ openZoneDisplayOnLaunch: enabled })
+  },
+  setParallaxExperimentEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistParallaxExperimentEnabledPreference(normalized)
+    set({ parallaxExperimentEnabled: normalized })
+  },
+  setParallaxSetupComplete: (complete) => {
+    const normalized = Boolean(complete)
+    persistParallaxSetupCompletePreference(normalized)
+    set({ parallaxSetupComplete: normalized })
+  },
+  setParallaxZoneName: (name) => {
+    const normalized = typeof name === 'string' ? name.trim().slice(0, 60) : ''
+    persistParallaxZoneNamePreference(normalized)
+    set({ parallaxZoneName: normalized })
+  },
+  exitZoneDisplayForSession: () => set({ isZoneDisplayActive: false }),
+  enterZoneDisplay: () => set({ isZoneDisplayActive: true }),
   setAnalyzerHeightPx: (heightPx) => {
     const nextHeightPx = normalizeAnalyzerHeightPx(heightPx)
     persistAnalyzerHeightPreference(nextHeightPx)

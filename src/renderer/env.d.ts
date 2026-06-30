@@ -28,6 +28,24 @@ import type {
   PhoneRemoteStatus
 } from '../types/phoneRemote'
 import type {
+  ParallaxAudioChunk,
+  ParallaxDiscoveryEvent,
+  ParallaxHostStreamStartOptions,
+  ParallaxHostNextStreamStartOptions,
+  ParallaxHostTimelinePublishOptions,
+  ParallaxOutputLatencyMetrics,
+  ParallaxPairedSink,
+  ParallaxPairResponse,
+  ParallaxPairingPin,
+  ParallaxSinkConnectionConfig,
+  ParallaxSinkTelemetry,
+  ParallaxStatus,
+  ParallaxStreamInfo,
+  ParallaxTimelineEvent,
+  ParallaxTimelineState,
+  PersistedParallaxSinkConnection
+} from '../types/parallax'
+import type {
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
     LastFmCustomProfileInput,
@@ -154,6 +172,33 @@ interface LibraryTrackPage {
 
 declare global {
     interface Window {
+        // §22 Commit 1 — Parallax loopback (Windows-only WASAPI). See preload/index.ts for
+        // shape; null when the native module didn't load or platform isn't supported.
+        parallaxLoopbackAPI: {
+            isSupported(): { supported: boolean; reason?: string }
+            wallNowMs(): number
+            start(): {
+                ok: boolean
+                endpoint?: {
+                    deviceId: string
+                    deviceName: string
+                    sampleRate: number
+                    channelCount: number
+                    mixFormat: string
+                    bitsPerSample: number
+                }
+                error?: string
+            }
+            stop(): void
+            drain(): Array<{
+                firstFrameIndex: number
+                captureWallMs: number
+                frameCount: number
+                channelCount: number
+                pcm: Float32Array
+            }>
+            isRunning(): boolean
+        } | null
         visualizerAPI: VisualizerDSP | null
         nativeAudioAPI: {
             initialize: () => Promise<NativeAudioCapabilities>
@@ -312,6 +357,77 @@ declare global {
                 setPort: (port: number) => Promise<PhoneRemoteStatus>
                 resetToDefaults: () => Promise<PhoneRemoteStatus>
                 onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+            }
+            parallax: {
+                useHostPredictor: boolean
+                launchInZoneMode: boolean
+                getStatus: () => Promise<ParallaxStatus>
+                getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
+                fetchSinkArtwork: (streamId: string) => Promise<string | null>
+                requestSinkTrimUpdate: (
+                    outputDeviceId: string,
+                    outputDeviceLabel: string | null,
+                    advanceMs: number
+                ) => Promise<boolean>
+                listPairedSinks: () => Promise<ParallaxPairedSink[]>
+                setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+                setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+                startDiscoveryBrowse: () => Promise<{ ok: true }>
+                stopDiscoveryBrowse: () => Promise<{ ok: true }>
+                onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => () => void
+                initiatePair: (sinkBaseUrl: string) => Promise<{
+                    pairingId: string
+                    sinkParallaxEndpointUuid: string | null
+                    sinkName: string
+                    expiresInSeconds: number
+                }>
+                submitPairPin: (
+                    pairingId: string,
+                    pin: string,
+                    sinkName?: string
+                ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
+                cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
+                cancelIncomingPair: () => Promise<{ ok: true }>
+                setHostPort: (port: number) => Promise<ParallaxStatus>
+                createPairingPin: () => Promise<ParallaxPairingPin>
+                pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
+                connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
+                disconnectSink: () => Promise<ParallaxStatus>
+                publishHostStreamStart: (
+                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+                    options?: ParallaxHostStreamStartOptions
+                ) => Promise<ParallaxTimelineState>
+                publishHostNextStreamStart: (
+                    info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
+                    options: ParallaxHostNextStreamStartOptions
+                ) => Promise<ParallaxTimelineState>
+                publishHostNextStreamCancel: () => Promise<void>
+                publishHostPromoteNextStream: () => Promise<ParallaxTimelineState | null>
+                publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
+                publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
+                publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
+                stopHostStream: () => Promise<void>
+                publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+                reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
+                revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+                revokeAllPairedSinks: () => Promise<number>
+                clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
+                resetToDefaults: () => Promise<ParallaxStatus>
+                setSinkTrim: (
+                    sinkId: string,
+                    outputDeviceId: string,
+                    outputDeviceLabel: string | null,
+                    advanceMs: number
+                ) => Promise<ParallaxStatus>
+                setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
+                getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
+                forgetSinkConnection: () => Promise<ParallaxStatus>
+                reconnectFromPersisted: () => Promise<ParallaxStatus>
+                startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
+                onSinkPaired: (callback: () => void) => () => void
+                onStatus: (callback: (status: ParallaxStatus) => void) => () => void
+                onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
+                onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void
             }
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>

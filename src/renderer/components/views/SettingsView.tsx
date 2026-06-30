@@ -32,6 +32,7 @@ import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore
 import { DISCORD_PAUSE_CLEAR_MINUTE_PRESETS, useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
+import { useParallaxStore } from '../../stores/parallaxStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
@@ -78,6 +79,7 @@ import {
 } from '../../../types/phoneRemote'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
+import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
   | 'reset-theme'
@@ -448,6 +450,8 @@ export default function SettingsView() {
   const setControllerSupportEnabled = useUIStore((state) => state.setControllerSupportEnabled)
   const jumpToPlayingDestination = useUIStore((state) => state.jumpToPlayingDestination)
   const setJumpToPlayingDestination = useUIStore((state) => state.setJumpToPlayingDestination)
+  const parallaxExperimentEnabled = useUIStore((state) => state.parallaxExperimentEnabled)
+  const setParallaxExperimentEnabled = useUIStore((state) => state.setParallaxExperimentEnabled)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
@@ -513,9 +517,29 @@ export default function SettingsView() {
     return `Sleep timer active • ${sleepTimerRemainingLabel} remaining.`
   }, [sleepTimerEndsAtLabel, sleepTimerIsActive, sleepTimerRemainingLabel])
   const visibleSettingsSections = useMemo(
-    () => SETTINGS_SECTIONS.filter((section) => developerSectionVisible || !('hidden' in section && section.hidden)),
-    [developerSectionVisible]
+    () => SETTINGS_SECTIONS.filter((section) => {
+      if (!('hidden' in section && section.hidden)) return true
+      // Parallax is revealed by its own Experimental master toggle; other hidden sections
+      // (Developer) stay gated behind the developer visibility preference.
+      if (section.id === 'parallax') return parallaxExperimentEnabled
+      return developerSectionVisible
+    }),
+    [developerSectionVisible, parallaxExperimentEnabled]
   )
+
+  // Master on/off for the experimental Parallax feature. Enabling reveals + jumps to the dedicated
+  // section; disabling fully stops host/sink networking before the section disappears (it is an
+  // experimental feature — "off" means off, not just hidden).
+  const handleToggleParallaxExperiment = (enabled: boolean) => {
+    setParallaxExperimentEnabled(enabled)
+    if (enabled) {
+      setActiveSectionId('parallax')
+    } else {
+      const parallax = useParallaxStore.getState()
+      void parallax.setHostEnabled(false)
+      void parallax.setSinkEnabled(false)
+    }
+  }
 
   useEffect(() => {
     setAccentInputValue(fallbackAccent)
@@ -831,6 +855,8 @@ export default function SettingsView() {
     if (!localApiControllerUrl) return ''
     try { return renderPairingQrSvg(localApiControllerUrl) } catch { return '' }
   }, [localApiControllerUrl])
+  // §20 Commit 4 — Codex round 1 finding (medium): the Parallax host QR was for the legacy
+  // sink-types-PIN flow which is gone. Removed.
   const lastFmEnabled = lastFmStatus?.enabled ?? false
   const lastFmAuthPending = lastFmStatus?.authPending ?? false
   const lastFmAuthPendingProfileId = lastFmStatus?.authPendingProfileId ?? null
@@ -2646,6 +2672,36 @@ export default function SettingsView() {
                   </div>
                 )}
               </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Parallax</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Enable Parallax</span>
+                    <button
+                      className={`settings-toggle ${parallaxExperimentEnabled ? 'active' : ''}`}
+                      onClick={() => handleToggleParallaxExperiment(!parallaxExperimentEnabled)}
+                    >
+                      {parallaxExperimentEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Experimental LAN multi-room sync. Reveals a dedicated <strong>Parallax</strong> section where
+                    you choose whether this machine plays music or acts as a speaker. Turning this off stops all
+                    Parallax networking on this machine and hides the section.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+            )}
+
+            {activeSectionId === 'parallax' && (
+            <section className="settings-section settings-section-panel">
+            <div className="settings-section-head">
+              <h3>Parallax</h3>
+            </div>
+            <div className="settings-cards">
+              <ParallaxSettingsPanel />
             </div>
           </section>
             )}

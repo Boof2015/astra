@@ -6,6 +6,7 @@ import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
+import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import {
   type PlayerSessionSnapshot,
@@ -873,6 +874,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let prebufferInFlightTrackPath: string | null = null
   let prebufferAttemptedTrackPath: string | null = null
 
+  const isParallaxSinkModeActive = (): boolean => {
+    return Boolean(useParallaxStore.getState().status?.sink.connected)
+  }
+
+  const playWithParallaxIfNeeded = async (track: Track | null | undefined): Promise<void> => {
+    if (isParallaxSinkModeActive()) return
+    const parallaxStore = useParallaxStore.getState()
+    const resumeTimeline = await parallaxStore.resumeHostPlayback(track)
+    if (resumeTimeline) {
+      await audioEngine.playCurrentBufferOnParallaxTimeline(resumeTimeline)
+      return
+    }
+    const timeline = track ? await useParallaxStore.getState().prepareHostPlayback(track) : null
+    if (timeline) {
+      await audioEngine.playCurrentBufferOnParallaxTimeline(timeline)
+      return
+    }
+    await audioEngine.play()
+  }
+
   const clearScheduledPrebufferTimer = (): void => {
     if (prebufferScheduleTimerId !== null) {
       globalThis.clearTimeout(prebufferScheduleTimerId)
@@ -893,6 +914,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
     audioEngine.clearNextBuffer()
+    // §21 Gapless sink handoff — the pre-announced next stream (if any) is now stale; withdraw it
+    // from sinks. Idempotent: a no-op when nothing is pending. Re-published when the next prebuffer
+    // completes.
+    void useParallaxStore.getState().cancelHostNextStream()
   }
 
   const beginLoadRequest = (): number => {
@@ -906,6 +931,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     activeLoadRequestId += 1
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
+  }
+
+  const blockLocalPlaybackInParallaxSinkMode = (): boolean => {
+    if (!isParallaxSinkModeActive()) return false
+    invalidateLoadRequest()
+    pendingManualLoadCueTrack = null
+    recentPlaySession = null
+    return true
   }
 
   const isActiveLoadRequest = (requestId: number): boolean => {
@@ -1245,6 +1278,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       invalidatePrebufferRequest()
     }
 
+    if (isParallaxSinkModeActive()) {
+      clearBufferedNextTrack()
+      return
+    }
+
     const state = get()
     const expectedTrackPath = resolveExpectedPrebufferTrackPath(state)
 
@@ -1365,6 +1403,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     startIndex = 0,
     options?: PlaybackContextOptions
   ): Promise<void> => {
+    if (blockLocalPlaybackInParallaxSinkMode()) return
+
     const state = get()
     const normalizedStartIndex = entries.length === 0
       ? -1
@@ -1510,6 +1550,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Load a track
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return false
+
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       pendingManualLoadCueTrack = null
@@ -1653,6 +1695,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Playback controls
     play: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (state.currentTrack && state.restoredTrackNeedsLoad) {
         const track = state.currentTrack
@@ -1700,7 +1744,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         showOutputDelayNotice(pendingManualLoadCueTrack)
         pendingManualLoadCueTrack = null
       }
-      await audioEngine.play()
+      await playWithParallaxIfNeeded(get().currentTrack)
       const currentTrack = get().currentTrack
       if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
         void useLibraryStore.getState().markTrackLatestSyncSeen(currentTrack.path)
@@ -1709,19 +1753,29 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     pause: () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       audioEngine.pause()
+      void useParallaxStore.getState().pauseHostPlayback()
     },
 
     togglePlay: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (!state.currentTrack || state.playbackState === 'stopped' || state.restoredTrackNeedsLoad) {
         await get().play()
         return
       }
-      await audioEngine.togglePlay()
+      if (state.playbackState === 'playing') {
+        get().pause()
+        return
+      }
+      await get().play()
     },
 
     stop: () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+      void useParallaxStore.getState().stopHostPlayback()
       invalidateLoadRequest()
       pendingManualLoadCueTrack = null
       recentPlaySession = null
@@ -1735,6 +1789,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     seek: async (time: number) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
+      // §21 Gapless sink handoff — a seek moves the current track's boundary, invalidating the
+      // pre-announced next stream's scheduled crossover. Withdraw it; this boundary falls back to the
+      // Phase-1 sink follow.
+      void useParallaxStore.getState().cancelHostNextStream()
+
       const state = get()
       if (state.restoredTrackNeedsLoad) {
         const duration = resolvePositiveDuration(state.duration, state.currentTrack?.duration)
@@ -1750,6 +1811,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
+      const parallaxSeekTimeline = await useParallaxStore.getState().prepareHostSeek(
+        seekTime,
+        state.playbackState === 'playing'
+      )
+      if (parallaxSeekTimeline && state.playbackState === 'playing') {
+        await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
+        return
+      }
       await audioEngine.seek(seekTime)
     },
 
@@ -1776,10 +1845,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Queue actions
     startPlaybackContext: async (tracks: Track[], startIndex = 0, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       await startPlaybackContextEntries(createQueueEntriesFromTracks(tracks), startIndex, options)
     },
 
     startPlaybackContextByPaths: async (paths: string[], startIndex = 0, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
       await startPlaybackContextEntries(await createQueueEntriesFromPathsWithFetch(paths), startIndex, options)
     },
 
@@ -1996,6 +2067,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playQueuedItem: async (queueId, options) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       const item = state.queueItems.find((candidate) => candidate.queueId === queueId)
       const track = resolveQueueEntryTrack(item?.entry)
@@ -2019,6 +2092,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playNext: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       const candidate = findNextPlayableCandidate(state)
       if (!candidate) return
@@ -2031,6 +2106,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     playPrevious: async () => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return
+
       const state = get()
       if (!state.currentTrack) return
 
@@ -2155,6 +2232,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Internal: Load and play a track from queue
     _loadAndPlayTrack: async (track: Track, options = {}) => {
+      if (blockLocalPlaybackInParallaxSinkMode()) return 'superseded'
+
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
@@ -2209,7 +2288,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             showOutputDelayNotice(resolvedTrack)
           }
           throwIfSupersededLoad(loadRequestId)
-          await audioEngine.play()
+          await playWithParallaxIfNeeded(resolvedTrack)
           throwIfSupersededLoad(loadRequestId)
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
@@ -2255,7 +2334,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               showOutputDelayNotice(resolvedTrack)
             }
             throwIfSupersededLoad(loadRequestId)
-            await audioEngine.play()
+            await playWithParallaxIfNeeded(resolvedTrack)
             throwIfSupersededLoad(loadRequestId)
             void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
@@ -2383,7 +2462,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         throwIfSupersededLoad(loadRequestId)
-        await audioEngine.play()
+        await playWithParallaxIfNeeded(resolvedTrack)
         throwIfSupersededLoad(loadRequestId)
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
@@ -2434,6 +2513,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Pre-buffer the next track for gapless playback
     _preBufferNextTrack: async () => {
+      if (isParallaxSinkModeActive()) {
+        clearBufferedNextTrack()
+        return
+      }
+
       const bufferStart = performance.now()
       const prebufferRequestId = beginPrebufferRequest()
       const state = get()
@@ -2531,6 +2615,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 trackPath: nextTrack.path,
                 loaded: true
               })
+              // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
+              // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
+              // sinks on a non-bitperfect local track.
+              void useParallaxStore.getState().publishHostNextStream(nextTrack)
               return
             }
             if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
@@ -2731,6 +2819,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
+        if (isParallaxSinkModeActive()) return
         commitRecentPlayNow()
         const state = get()
 
@@ -2786,12 +2875,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         startRecentPlaySession(nextTrack.path)
         prebufferAttemptedTrackPath = null
 
+        // §21 Gapless sink handoff. Promote the pre-announced next stream so sinks cross the boundary
+        // gaplessly. promoteHostNextStream falls back to the Phase-1 boundary start
+        // (startHostStreamForCurrentPlayback) when nothing was pre-announced — so sinks always follow.
+        void useParallaxStore
+          .getState()
+          .promoteHostNextStream(nextTrack)
+          .catch(() => {
+            /* host streaming is best-effort; errors surface via parallaxStore */
+          })
+
         // Schedule the NEXT next track for the new handoff window.
         schedulePreBufferNextTrack()
       })
 
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
+        if (isParallaxSinkModeActive()) return
         commitRecentPlayNow()
         recentPlaySession = null
         set({
@@ -2843,6 +2943,30 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   const playerState = usePlayerStore.getState()
   audioEngine.clearNextBuffer()
   playerState._schedulePreBufferNextTrack({ invalidatePending: true })
+})
+
+// When a sink joins while this instance is already a host playing/paused a local track, start a
+// Parallax stream anchored at the current position so the sink syncs to the in-progress song
+// instead of waiting (and forcing a restart on the next play). See parallaxStore for the anchor.
+let hostAutoStreamStartInFlight = false
+useParallaxStore.subscribe((nextState, prevState) => {
+  const nextCount = nextState.status?.host.connectedSinkCount ?? 0
+  const prevCount = prevState.status?.host.connectedSinkCount ?? 0
+  if (nextCount <= 0 || nextCount <= prevCount) return
+  if (hostAutoStreamStartInFlight) return
+
+  const playerState = usePlayerStore.getState()
+  const track = playerState.currentTrack
+  if (!track) return
+  const playbackState = playerState.playbackState
+  if (playbackState !== 'playing' && playbackState !== 'paused') return
+
+  hostAutoStreamStartInFlight = true
+  void nextState
+    .startHostStreamForCurrentPlayback(track, playbackState === 'playing')
+    .finally(() => {
+      hostAutoStreamStartInFlight = false
+    })
 })
 
 export function getPlayerDiagnosticsSnapshot(): {
