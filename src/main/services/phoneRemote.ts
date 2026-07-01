@@ -1,18 +1,21 @@
 import { readFile } from 'fs/promises'
+import { randomInt } from 'crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
 import { extname, join, normalize } from 'path'
 import { fileURLToPath } from 'url'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import type {
+  PhoneRemoteIdentity,
   PhoneRemotePairedDevice,
+  PhoneRemotePairingMode,
   PhoneRemotePairingState,
   PhoneRemotePairingTicket,
   PhoneRemotePendingPairingRequest,
   PhoneRemoteServiceConfig,
   PhoneRemoteStatus
 } from '../../types/phoneRemote'
-import { PHONE_REMOTE_LAN_HOST } from '../../types/phoneRemote'
+import { PHONE_REMOTE_LAN_HOST, PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
 import {
   CONTROL_MAX_BODY_BYTES,
   PlaybackHttpCore,
@@ -27,6 +30,7 @@ import {
 const TOKEN_PREFIX_LENGTH = 8
 const PAIRING_TICKET_TTL_MS = 2 * 60_000
 const PAIRING_REQUEST_TTL_MS = 2 * 60_000
+const PIN_PAIRING_MAX_FAILURES = 3
 const PAIRED_DEVICE_LAST_SEEN_PERSIST_INTERVAL_MS = 60_000
 const PHONE_REMOTE_MODULE_DIR = typeof __dirname === 'string'
   ? __dirname
@@ -62,13 +66,16 @@ interface PairingTicketState {
 
 interface PairingRequestState {
   id: string
-  ticket: string
+  ticket: string | null
   pollToken: string
   deviceName: string
   clientLabel: string
   requestedAt: number
   expiresAt: number
   baseUrl: string
+  pairingMode: PhoneRemotePairingMode
+  pin: string | null
+  failedPinAttempts: number
   state: PhoneRemotePairingState
   issuedDeviceId: string | null
   issuedToken: string | null
@@ -78,6 +85,7 @@ interface PhoneRemoteServiceOptions {
   config: PhoneRemoteServiceConfig
   getSnapshot: () => MiniPlayerSnapshot | null
   dispatchCommand: (command: MiniPlayerCommand) => void
+  getIdentity?: () => PhoneRemoteIdentity
   resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   pairedDevices?: PersistedPairedDevice[]
   onPairedDevicesChange?: (devices: PersistedPairedDevice[]) => void
@@ -103,6 +111,10 @@ function getPhoneRemoteLanUrls(port: number): string[] {
   const allUrls = Array.from(urls).sort((left, right) => left.localeCompare(right))
   const preferred192Urls = allUrls.filter((url) => /^http:\/\/192\.168\./.test(url))
   return preferred192Urls.length > 0 ? preferred192Urls : allUrls
+}
+
+function createPairingPin(): string {
+  return String(randomInt(0, 1_000_000)).padStart(6, '0')
 }
 
 function getRemoteAssetPathname(requestPath: string): string | null {
@@ -146,6 +158,7 @@ export class PhoneRemoteService {
   private active = false
   private lastError: string | null = null
   private readonly core: PlaybackHttpCore<PhoneRemoteAuthorizationContext>
+  private readonly getIdentitySnapshot: () => PhoneRemoteIdentity
 
   constructor(options: PhoneRemoteServiceOptions) {
     this.config = { ...options.config }
@@ -161,6 +174,11 @@ export class PhoneRemoteService {
       getControlsEnabled: () => this.config.controlsEnabled,
       onConnectedClientsChange: () => this.emitStatus()
     })
+    this.getIdentitySnapshot = () => this.normalizeIdentity(options.getIdentity?.())
+  }
+
+  getIdentity(): PhoneRemoteIdentity {
+    return this.getIdentitySnapshot()
   }
 
   getStatus(): PhoneRemoteStatus {
@@ -177,7 +195,8 @@ export class PhoneRemoteService {
       connectedClients: this.core.getConnectedClientCount(),
       pairedDeviceCount: this.pairedDevices.filter((device) => device.revokedAt === null).length,
       pendingPairingCount: this.getPendingPairingRequestsSnapshot().length,
-      lastError: this.lastError
+      lastError: this.lastError,
+      identity: this.getIdentity()
     }
   }
 
@@ -247,7 +266,8 @@ export class PhoneRemoteService {
       controllerUrl: `${selectedBaseUrl}/remote/`,
       pairingUrl: `${selectedBaseUrl}/remote/#pair=${encodeURIComponent(ticket)}`,
       createdAt,
-      expiresAt
+      expiresAt,
+      identity: this.getIdentity()
     }
   }
 
@@ -256,25 +276,7 @@ export class PhoneRemoteService {
     const request = this.pairingRequestsById.get(id)
     if (!request || request.state !== 'pending') return null
 
-    const now = Date.now()
-    const rawToken = createOpaqueSecret(32)
-    const deviceId = createOpaqueSecret(16)
-    const device: PersistedPairedDevice = {
-      id: deviceId,
-      name: request.deviceName,
-      clientLabel: request.clientLabel,
-      tokenHash: hashToken(rawToken),
-      tokenPrefix: rawToken.slice(0, TOKEN_PREFIX_LENGTH),
-      createdAt: now,
-      lastSeenAt: null,
-      revokedAt: null
-    }
-    this.pairedDevices = [device, ...this.pairedDevices]
-    request.state = 'approved'
-    request.issuedDeviceId = deviceId
-    request.issuedToken = rawToken
-    this.emitPairedDevicesChange()
-    this.emitStatus()
+    this.issuePairingDeviceToken(request)
     return this.toPendingPairingRequest(request)
   }
 
@@ -351,6 +353,38 @@ export class PhoneRemoteService {
     await this.stopServer()
   }
 
+  private normalizeIdentity(identity: PhoneRemoteIdentity | undefined): PhoneRemoteIdentity {
+    const endpointUuid = identity?.endpointUuid?.trim() || null
+    const desktopName = identity?.desktopName?.trim() || 'Astra Desktop'
+    const protocolVersion = Number.isFinite(identity?.protocolVersion)
+      ? Math.max(1, Math.floor(identity?.protocolVersion ?? PHONE_REMOTE_PROTOCOL_VERSION))
+      : PHONE_REMOTE_PROTOCOL_VERSION
+    return { endpointUuid, desktopName, protocolVersion }
+  }
+
+  private issuePairingDeviceToken(request: PairingRequestState): { token: string; deviceId: string } {
+    const now = Date.now()
+    const rawToken = createOpaqueSecret(32)
+    const deviceId = createOpaqueSecret(16)
+    const device: PersistedPairedDevice = {
+      id: deviceId,
+      name: request.deviceName,
+      clientLabel: request.clientLabel,
+      tokenHash: hashToken(rawToken),
+      tokenPrefix: rawToken.slice(0, TOKEN_PREFIX_LENGTH),
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null
+    }
+    this.pairedDevices = [device, ...this.pairedDevices]
+    request.state = 'approved'
+    request.issuedDeviceId = deviceId
+    request.issuedToken = rawToken
+    this.emitPairedDevicesChange()
+    this.emitStatus()
+    return { token: rawToken, deviceId }
+  }
+
   private getPendingPairingRequestsSnapshot(): PhoneRemotePendingPairingRequest[] {
     return Array.from(this.pairingRequestsById.values())
       .filter((request) => request.state === 'pending')
@@ -365,7 +399,9 @@ export class PhoneRemoteService {
       clientLabel: request.clientLabel,
       requestedAt: request.requestedAt,
       expiresAt: request.expiresAt,
-      baseUrl: request.baseUrl
+      baseUrl: request.baseUrl,
+      pairingMode: request.pairingMode,
+      pin: request.pairingMode === 'pin' ? request.pin : null
     }
   }
 
@@ -563,6 +599,41 @@ export class PhoneRemoteService {
     }
   }
 
+  private parsePinPairingRequestBody(payload: unknown): {
+    deviceName: string
+    clientLabel: string
+  } | null {
+    if (!payload || typeof payload !== 'object') return null
+    const candidate = payload as Record<string, unknown>
+    const clientLabel = normalizeDeviceLabel(candidate.clientLabel, 'Remote Controller')
+    const fallbackName = clientLabel === 'Remote Controller' ? 'Remote Device' : clientLabel
+    return {
+      deviceName: normalizeDeviceLabel(candidate.deviceName, fallbackName),
+      clientLabel
+    }
+  }
+
+  private parsePinPairingConfirmBody(payload: unknown): {
+    requestId: string
+    pin: string
+  } | null {
+    if (!payload || typeof payload !== 'object') return null
+    const candidate = payload as Record<string, unknown>
+    if (typeof candidate.requestId !== 'string' || !candidate.requestId.trim()) return null
+    if (typeof candidate.pin !== 'string') return null
+    const pin = candidate.pin.replace(/\s+/g, '')
+    if (!/^\d{6}$/.test(pin)) return null
+    return {
+      requestId: candidate.requestId.trim(),
+      pin
+    }
+  }
+
+  private getRequestBaseUrl(req: IncomingMessage): string {
+    const host = typeof req.headers.host === 'string' ? req.headers.host.trim() : ''
+    return host ? `http://${host}` : `http://127.0.0.1:${this.config.port}`
+  }
+
   private async handlePairingClaim(
     req: IncomingMessage,
     res: ServerResponse<IncomingMessage>
@@ -620,6 +691,9 @@ export class PhoneRemoteService {
       requestedAt: Date.now(),
       expiresAt: Date.now() + PAIRING_REQUEST_TTL_MS,
       baseUrl: ticketState.baseUrl,
+      pairingMode: 'approval',
+      pin: null,
+      failedPinAttempts: 0,
       state: 'pending',
       issuedDeviceId: null,
       issuedToken: null
@@ -633,8 +707,154 @@ export class PhoneRemoteService {
       pollToken: request.pollToken,
       expiresAt: request.expiresAt,
       deviceName: request.deviceName,
-      clientLabel: request.clientLabel
+      clientLabel: request.clientLabel,
+      identity: this.getIdentity()
     })
+  }
+
+  private async handlePinPairingRequest(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>
+  ): Promise<void> {
+    this.cleanupExpiredPairingState(true)
+    if (!this.config.enabled || !this.active) {
+      this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
+      return
+    }
+
+    const rawBody = await this.readRequestBody(req, CONTROL_MAX_BODY_BYTES).catch(() => null)
+    if (rawBody === null) {
+      this.respondJson(res, 413, { error: 'Request body too large.' })
+      return
+    }
+
+    let parsedBody: unknown = null
+    try {
+      parsedBody = rawBody.length > 0 ? JSON.parse(rawBody) : null
+    } catch {
+      this.respondJson(res, 400, { error: 'Invalid JSON payload.' })
+      return
+    }
+
+    const requestBody = this.parsePinPairingRequestBody(parsedBody)
+    if (!requestBody) {
+      this.respondJson(res, 400, { error: 'Invalid PIN pairing request payload.' })
+      return
+    }
+
+    const hasPendingPinRequest = Array.from(this.pairingRequestsById.values())
+      .some((request) => request.state === 'pending' && request.pairingMode === 'pin')
+    if (hasPendingPinRequest) {
+      this.respondJson(res, 409, { error: 'A PIN pairing request is already pending.' })
+      return
+    }
+
+    const now = Date.now()
+    const request: PairingRequestState = {
+      id: createOpaqueSecret(16),
+      ticket: null,
+      pollToken: createOpaqueSecret(24),
+      deviceName: requestBody.deviceName,
+      clientLabel: requestBody.clientLabel,
+      requestedAt: now,
+      expiresAt: now + PAIRING_REQUEST_TTL_MS,
+      baseUrl: this.getRequestBaseUrl(req),
+      pairingMode: 'pin',
+      pin: createPairingPin(),
+      failedPinAttempts: 0,
+      state: 'pending',
+      issuedDeviceId: null,
+      issuedToken: null
+    }
+    this.pairingRequestsById.set(request.id, request)
+    this.pairingRequestIdByPollToken.set(request.pollToken, request.id)
+    this.emitStatus()
+
+    this.respondJson(res, 200, {
+      requestId: request.id,
+      pollToken: request.pollToken,
+      expiresAt: request.expiresAt,
+      deviceName: request.deviceName,
+      clientLabel: request.clientLabel,
+      identity: this.getIdentity()
+    })
+  }
+
+  private async handlePinPairingConfirm(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>
+  ): Promise<void> {
+    this.cleanupExpiredPairingState(true)
+    if (!this.config.enabled || !this.active) {
+      this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
+      return
+    }
+
+    const rawBody = await this.readRequestBody(req, CONTROL_MAX_BODY_BYTES).catch(() => null)
+    if (rawBody === null) {
+      this.respondJson(res, 413, { error: 'Request body too large.' })
+      return
+    }
+
+    let parsedBody: unknown = null
+    try {
+      parsedBody = rawBody.length > 0 ? JSON.parse(rawBody) : null
+    } catch {
+      this.respondJson(res, 400, { error: 'Invalid JSON payload.' })
+      return
+    }
+
+    const confirmBody = this.parsePinPairingConfirmBody(parsedBody)
+    if (!confirmBody) {
+      this.respondJson(res, 400, { error: 'Invalid PIN pairing confirm payload.' })
+      return
+    }
+
+    const request = this.pairingRequestsById.get(confirmBody.requestId)
+    if (!request || request.pairingMode !== 'pin') {
+      this.respondJson(res, 404, { error: 'Pairing request not found.' })
+      return
+    }
+    if (request.expiresAt <= Date.now()) {
+      request.state = 'expired'
+      this.emitStatus()
+      this.respondJson(res, 410, { state: 'expired', error: 'Pairing request has expired.' })
+      return
+    }
+    if (request.state === 'rejected') {
+      this.respondJson(res, 403, { state: 'rejected', error: 'Pairing request was rejected.' })
+      return
+    }
+    if (request.state !== 'pending' || !request.pin) {
+      this.respondJson(res, 410, { state: request.state })
+      return
+    }
+    if (request.pin !== confirmBody.pin) {
+      request.failedPinAttempts += 1
+      if (request.failedPinAttempts >= PIN_PAIRING_MAX_FAILURES) {
+        request.state = 'rejected'
+        this.emitStatus()
+        this.respondJson(res, 403, { state: 'rejected', error: 'PIN attempts exceeded.' })
+        return
+      }
+      this.respondJson(res, 401, { state: 'pending', error: 'Incorrect PIN.' })
+      return
+    }
+
+    const { token, deviceId } = this.issuePairingDeviceToken(request)
+    const responseBody = {
+      state: 'approved' as const,
+      expiresAt: request.expiresAt,
+      token,
+      deviceId,
+      identity: this.getIdentity()
+    }
+    request.state = 'consumed'
+    request.issuedToken = null
+    request.pin = null
+    this.pairingRequestIdByPollToken.delete(request.pollToken)
+    this.emitStatus()
+    this.respondJson(res, 200, responseBody)
   }
 
   private handlePairingStatus(
@@ -666,7 +886,8 @@ export class PhoneRemoteService {
         state: 'approved' as const,
         expiresAt: request.expiresAt,
         token: request.issuedToken,
-        deviceId: request.issuedDeviceId
+        deviceId: request.issuedDeviceId,
+        identity: this.getIdentity()
       }
       request.state = 'consumed'
       request.issuedToken = null
@@ -745,8 +966,23 @@ export class PhoneRemoteService {
       if (handled) return
     }
 
+    if (method === 'GET' && path === '/v1/identity') {
+      this.respondJson(res, 200, this.getIdentity())
+      return
+    }
+
     if (method === 'POST' && path === '/v1/pairing/claim') {
       await this.handlePairingClaim(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/pairing/pin-request') {
+      await this.handlePinPairingRequest(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/pairing/pin-confirm') {
+      await this.handlePinPairingConfirm(req, res)
       return
     }
 

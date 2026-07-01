@@ -17,6 +17,7 @@ import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
+import PhoneRemoteIncomingPairCard from './components/layout/PhoneRemoteIncomingPairCard'
 import { runHostOutputCalibration } from './audio/parallaxCalibration'
 import ControllerHints from './components/layout/ControllerHints'
 import ControllerFocusRing from './components/layout/ControllerFocusRing'
@@ -495,6 +496,7 @@ function App() {
         <TransportBar />
         <ParallaxSinkMode />
         <ParallaxIncomingPairCard />
+        <PhoneRemoteIncomingPairCard />
         <DecodeFallbackCue />
         <OutputDelayCue />
         <AssociatedOpenCue />

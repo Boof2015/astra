@@ -5,6 +5,7 @@ import { useEndpointIdentity, type EndpointIdentity } from '../parallax/parallax
 import { useIdleChrome } from '../../hooks/useIdleChrome'
 import ZoneSettingsOverlay from './ZoneSettingsOverlay'
 import ParallaxIncomingPairCard from './ParallaxIncomingPairCard'
+import PhoneRemoteIncomingPairCard from './PhoneRemoteIncomingPairCard'
 import type { ParallaxStatus, ParallaxStreamInfo } from '../../../types/parallax'
 
 type SyncPillState = 'ready' | 'stabilizing' | 'locked' | 'no-signal' | 'disconnected'
@@ -328,6 +329,7 @@ export default function ZoneDisplay() {
 
       {overlayOpen && <ZoneSettingsOverlay onClose={() => setOverlayOpen(false)} />}
       <ParallaxIncomingPairCard variant="zone-display" />
+      <PhoneRemoteIncomingPairCard variant="zone-display" />
     </div>
   )
 }

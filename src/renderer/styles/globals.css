@@ -17737,6 +17737,27 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   color: rgba(var(--tint), 0.4);
 }
 
+.local-api-pairing-pin {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+
+.local-api-pairing-pin-digit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 40px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--accent-rgb), 0.22);
+  background: rgba(var(--accent-rgb), 0.08);
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: rgba(var(--tint), 0.92);
+}
+
 .local-api-pairing-approve-actions {
   display: flex;
   gap: 6px;

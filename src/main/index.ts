@@ -61,6 +61,7 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
+import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
 import { ParallaxSinkListener } from './services/parallaxSinkListener'
@@ -128,6 +129,8 @@ import {
   PHONE_REMOTE_DEFAULT_PORT,
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT,
+  PHONE_REMOTE_PROTOCOL_VERSION,
+  type PhoneRemoteIdentity,
   type PhoneRemoteServiceConfig
 } from '../types/phoneRemote'
 import {
@@ -547,6 +550,7 @@ let parallaxEndpointUuid = ''
 // Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
 // sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
 const parallaxDiscoveryService = new ParallaxDiscoveryService()
+const phoneRemoteDiscoveryService = new PhoneRemoteDiscoveryService()
 // §20 Commit 3. Sink HTTP listener — only the pre-pair endpoints (sink-identity, pair-request,
 // pair-confirm). Started/stopped in lockstep with `parallaxSinkEnabled`. PIN state lives on the
 // listener itself; this top-level mirror just feeds the renderer via status push.
@@ -872,6 +876,7 @@ const phoneRemoteService = new PhoneRemoteService({
   config: phoneRemoteConfig,
   getSnapshot: () => latestMiniPlayerSnapshot,
   dispatchCommand: sendMiniPlayerCommand,
+  getIdentity: () => getPhoneRemoteIdentity(),
   resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
     jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
@@ -886,6 +891,7 @@ const phoneRemoteService = new PhoneRemoteService({
   onStatusChange: () => {
     broadcastPhoneRemoteStatus()
     const status = phoneRemoteService.getStatus()
+    refreshPhoneRemoteDiscoveryAdvertisement(status)
     logMemoryDiagnosticsMainEvent('phone_remote_status_changed', {
       enabled: status.enabled,
       active: status.active,
@@ -1931,7 +1937,9 @@ async function applyPhoneRemoteConfig(
 ): Promise<ReturnType<typeof phoneRemoteService.getStatus>> {
   phoneRemoteConfig = { ...config }
   await persistPhoneRemoteConfig(phoneRemoteConfig)
-  return phoneRemoteService.applyConfig(phoneRemoteConfig)
+  const status = await phoneRemoteService.applyConfig(phoneRemoteConfig)
+  refreshPhoneRemoteDiscoveryAdvertisement(status)
+  return status
 }
 
 async function applyParallaxHostConfig(
@@ -4300,6 +4308,7 @@ app.whenReady().then(async () => {
   parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
   await phoneRemoteService.applyConfig(phoneRemoteConfig)
+  refreshPhoneRemoteDiscoveryAdvertisement()
   await parallaxService.applyHostConfig(parallaxHostConfig)
   // Pillar 3 — publish the role-appropriate mDNS advert now that both host config and sink-enabled
   // are loaded (the sink surface above may have advertised role=sink before host config was known;
@@ -4417,6 +4426,7 @@ app.on('before-quit', () => {
   void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
   void phoneRemoteService.stop()
+  phoneRemoteDiscoveryService.destroy()
   void parallaxService.stop()
   // §20 Commit 2. Release the mDNS socket on quit so a relaunched Astra doesn't fight the
   // prior instance for the multicast group. Idempotent — safe even when no advert was running.
@@ -5486,6 +5496,33 @@ function refreshParallaxAdvertisement(): void {
     return
   }
   stopParallaxDiscoveryAdvertisement()
+}
+
+function getPhoneRemoteIdentity(): PhoneRemoteIdentity {
+  return {
+    endpointUuid: parallaxEndpointUuid || null,
+    desktopName: hostname() || 'Astra Desktop',
+    protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
+  }
+}
+
+function refreshPhoneRemoteDiscoveryAdvertisement(status = phoneRemoteService.getStatus()): void {
+  if (!parallaxEndpointUuid) return
+  if (!status.active) {
+    phoneRemoteDiscoveryService.stopAdvertising()
+    return
+  }
+  try {
+    const identity = getPhoneRemoteIdentity()
+    phoneRemoteDiscoveryService.startAdvertising({
+      name: identity.desktopName,
+      port: status.port,
+      endpointUuid: identity.endpointUuid,
+      protocolVersion: identity.protocolVersion
+    })
+  } catch (error) {
+    console.warn('Failed to refresh phone remote discovery advertisement:', error)
+  }
 }
 
 function stopParallaxDiscoveryAdvertisement(): void {

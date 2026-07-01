@@ -285,30 +285,48 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
           {wizardStep === 'approve' && (
             <div className="local-api-pairing-approve" key="approve">
               <h4 className="local-api-pairing-approve-title">A phone wants to connect</h4>
-              {pendingRequests.map((request) => (
-                <div key={request.id} className="local-api-pairing-approve-card">
-                  <div className="local-api-pairing-approve-info">
-                    <span className="local-api-pairing-approve-name">{request.deviceName}</span>
-                    <span className="local-api-pairing-approve-detail">
-                      {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
-                    </span>
+              {pendingRequests.map((request) => {
+                const isPinRequest = request.pairingMode === 'pin' && Boolean(request.pin)
+                const pinDigits = request.pin?.split('') ?? []
+                return (
+                  <div key={request.id} className="local-api-pairing-approve-card">
+                    <div className="local-api-pairing-approve-info">
+                      <span className="local-api-pairing-approve-name">{request.deviceName}</span>
+                      <span className="local-api-pairing-approve-detail">
+                        {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
+                      </span>
+                      {isPinRequest && (
+                        <>
+                          <div className="local-api-pairing-pin" aria-label={`PIN ${request.pin}`}>
+                            {pinDigits.map((digit, index) => (
+                              <span key={index} className="local-api-pairing-pin-digit">{digit}</span>
+                            ))}
+                          </div>
+                          <span className="local-api-pairing-approve-detail">
+                            Enter this PIN on the phone to finish pairing.
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <div className="local-api-pairing-approve-actions">
+                      {!isPinRequest && (
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => onApproveRequest(request.id)}
+                        >
+                          Approve
+                        </button>
+                      )}
+                      <button
+                        className="settings-btn"
+                        onClick={() => onRejectRequest(request.id)}
+                      >
+                        Deny
+                      </button>
+                    </div>
                   </div>
-                  <div className="local-api-pairing-approve-actions">
-                    <button
-                      className="settings-btn settings-btn-primary"
-                      onClick={() => onApproveRequest(request.id)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="settings-btn"
-                      onClick={() => onRejectRequest(request.id)}
-                    >
-                      Deny
-                    </button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
 
