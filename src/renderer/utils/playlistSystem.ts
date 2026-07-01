@@ -4,6 +4,7 @@ export const FAVORITES_PLAYLIST_NAME = 'Favorites'
 export interface PlaylistLike {
   id: number
   name: string
+  kind?: 'normal' | 'dynamic'
   created_at: number
   updated_at: number
   last_played_at: number | null
@@ -56,6 +57,7 @@ function createFavoritesPlaylist(options: FavoritesDisplayOptions): DisplayPlayl
   return {
     id: FAVORITES_PLAYLIST_ID,
     name: FAVORITES_PLAYLIST_NAME,
+    kind: 'normal',
     created_at: 0,
     updated_at: 0,
     last_played_at: null,
@@ -71,6 +73,7 @@ function createFavoritesPlaylist(options: FavoritesDisplayOptions): DisplayPlayl
 function toDisplayPlaylist(playlist: PlaylistLike): DisplayPlaylist {
   return {
     ...playlist,
+    kind: playlist.kind === 'dynamic' ? 'dynamic' : 'normal',
     isSystemFavorites: false,
     cover_hash: playlist.custom_cover_hash ?? playlist.auto_cover_hash
   }

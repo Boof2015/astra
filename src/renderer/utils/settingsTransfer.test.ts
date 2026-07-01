@@ -1,0 +1,194 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  EQ_DEVICE_PROFILE_STORAGE_KEY,
+  EQ_STORAGE_KEY,
+  GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
+  HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  INPUT_BINDINGS_STORAGE_KEY,
+  LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
+  NORMALIZATION_ENABLED_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+  UI_SCALE_STORAGE_KEY,
+} from '../constants/settingsStorageKeys.ts'
+import {
+  SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS,
+  applySettingsTransferFile,
+  createSettingsTransferFile,
+  getImportableSettingsTransferCategoryIds,
+  parseSettingsTransferFile,
+  type AstraSettingsTransferFile,
+  type SettingsTransferStorage,
+} from './settingsTransfer.ts'
+
+class MemoryStorage implements SettingsTransferStorage {
+  private values = new Map<string, string>()
+
+  constructor(initialValues: Record<string, string> = {}) {
+    for (const [key, value] of Object.entries(initialValues)) {
+      this.values.set(key, value)
+    }
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+}
+
+function collectExportedStorageKeys(file: AstraSettingsTransferFile): string[] {
+  return Object.values(file.categories).flatMap((category) => (
+    category ? Object.keys(category.localStorage) : []
+  ))
+}
+
+test('selected export categories include only allowlisted portable keys', () => {
+  const storage = new MemoryStorage({
+    [THEME_STORAGE_KEY]: '{"presetId":"crimson"}',
+    [EQ_STORAGE_KEY]: '[{"name":"Custom"}]',
+    [INPUT_BINDINGS_STORAGE_KEY]: '{"version":1,"overrides":{}}',
+    [GLOBAL_INPUT_BINDINGS_STORAGE_KEY]: '{"version":1,"enabled":{}}',
+    [EQ_DEVICE_PROFILE_STORAGE_KEY]: '{"version":1,"profiles":{}}',
+    'astra-subsonic-sources-v1': 'server',
+  })
+
+  const file = createSettingsTransferFile(['appearance', 'eq_presets', 'keybinds'], {
+    storage,
+    appVersion: 'test',
+    exportedAt: '2026-06-25T00:00:00.000Z',
+  })
+
+  assert.equal(file.categories.appearance?.localStorage[THEME_STORAGE_KEY], '{"presetId":"crimson"}')
+  assert.equal(file.categories.eq_presets?.localStorage[EQ_STORAGE_KEY], '[{"name":"Custom"}]')
+  assert.equal(file.categories.keybinds?.localStorage[INPUT_BINDINGS_STORAGE_KEY], '{"version":1,"overrides":{}}')
+
+  const exportedKeys = collectExportedStorageKeys(file)
+  assert.equal(exportedKeys.includes(GLOBAL_INPUT_BINDINGS_STORAGE_KEY), false)
+  assert.equal(exportedKeys.includes(EQ_DEVICE_PROFILE_STORAGE_KEY), false)
+  assert.equal(exportedKeys.includes('astra-subsonic-sources-v1'), false)
+})
+
+test('known machine-specific, sensitive, and cache keys are excluded from full export', () => {
+  const storage = new MemoryStorage(Object.fromEntries(
+    SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS.map((key) => [key, 'sensitive-or-local'])
+  ))
+
+  const file = createSettingsTransferFile([
+    'appearance',
+    'interface',
+    'library_view',
+    'analyzer_profiles',
+    'eq_presets',
+    'playback_audio',
+    'keybinds',
+    'non_secret_integrations',
+    'experiments',
+  ], { storage })
+
+  const exportedKeys = collectExportedStorageKeys(file)
+  for (const key of SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS) {
+    assert.equal(exportedKeys.includes(key), false, `${key} should not be exported`)
+  }
+})
+
+test('import replaces selected categories and leaves unselected categories untouched', async () => {
+  const storage = new MemoryStorage({
+    [THEME_STORAGE_KEY]: 'old-theme',
+    [EQ_STORAGE_KEY]: 'keep-eq',
+  })
+  const file = createSettingsTransferFile(['appearance'], {
+    storage: new MemoryStorage({
+      [THEME_STORAGE_KEY]: 'new-theme',
+      [EQ_STORAGE_KEY]: 'ignored-eq',
+    }),
+  })
+
+  const result = await applySettingsTransferFile(file, ['appearance'], { storage })
+
+  assert.deepEqual(result, { ok: true, importedCategoryIds: ['appearance'] })
+  assert.equal(storage.getItem(THEME_STORAGE_KEY), 'new-theme')
+  assert.equal(storage.getItem(EQ_STORAGE_KEY), 'keep-eq')
+})
+
+test('missing keys inside a selected category reset those preferences to defaults', async () => {
+  const storage = new MemoryStorage({
+    [UI_SCALE_STORAGE_KEY]: '125',
+    [HOME_GREETING_TEXT_MODE_STORAGE_KEY]: 'clock',
+  })
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [UI_SCALE_STORAGE_KEY]: '110',
+    }),
+  })
+
+  const result = await applySettingsTransferFile(file, ['interface'], { storage })
+
+  assert.equal(result.ok, true)
+  assert.equal(storage.getItem(UI_SCALE_STORAGE_KEY), '110')
+  assert.equal(storage.getItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY), null)
+})
+
+test('invalid schema and kind are rejected, unknown categories are ignored', () => {
+  assert.deepEqual(parseSettingsTransferFile('{"kind":"other","schemaVersion":1,"categories":{}}'), {
+    ok: false,
+    error: 'This file was not exported by Astra settings transfer.',
+  })
+  assert.deepEqual(parseSettingsTransferFile('{"kind":"astra-settings-transfer","schemaVersion":99,"categories":{}}'), {
+    ok: false,
+    error: 'This settings transfer file uses an unsupported version.',
+  })
+
+  const parsed = parseSettingsTransferFile(JSON.stringify({
+    kind: 'astra-settings-transfer',
+    schemaVersion: 1,
+    exportedAt: '2026-06-25T00:00:00.000Z',
+    appVersion: 'test',
+    categories: {
+      appearance: { localStorage: { [THEME_STORAGE_KEY]: 'theme' } },
+      unknown_category: { localStorage: { mystery: 'value' } },
+    },
+  }))
+
+  assert.equal(parsed.ok, true)
+  if (parsed.ok) {
+    assert.deepEqual(getImportableSettingsTransferCategoryIds(parsed.file), ['appearance'])
+    assert.equal('unknown_category' in parsed.file.categories, false)
+  }
+})
+
+test('lyrics online preference is a non-secret integration value, not library or cache data', async () => {
+  const file = createSettingsTransferFile(['non_secret_integrations'], {
+    storage: new MemoryStorage({
+      [LYRICS_DISPLAY_SETTINGS_STORAGE_KEY]: '{"wordTimingEnabled":true}',
+      [NORMALIZATION_ENABLED_STORAGE_KEY]: '0',
+      'astra-lyrics-cache-v1': 'cached lyrics',
+    }),
+    lyricsOnlineEnabled: true,
+  })
+
+  assert.deepEqual(file.categories.non_secret_integrations?.values, { lyricsOnlineEnabled: true })
+  assert.equal(
+    file.categories.non_secret_integrations?.localStorage[LYRICS_DISPLAY_SETTINGS_STORAGE_KEY],
+    '{"wordTimingEnabled":true}'
+  )
+  assert.equal(file.categories.non_secret_integrations?.localStorage[NORMALIZATION_ENABLED_STORAGE_KEY], undefined)
+  assert.equal(file.categories.non_secret_integrations?.localStorage['astra-lyrics-cache-v1'], undefined)
+
+  let importedLyricsEnabled: boolean | null = null
+  const result = await applySettingsTransferFile(file, ['non_secret_integrations'], {
+    storage: new MemoryStorage(),
+    setLyricsOnlineEnabled: (enabled) => {
+      importedLyricsEnabled = enabled
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(importedLyricsEnabled, true)
+})

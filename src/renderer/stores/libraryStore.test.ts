@@ -26,6 +26,7 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
     genre: overrides.genre ?? null,
+    genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
     base_artwork_hash: overrides.base_artwork_hash ?? null,
     format: overrides.format ?? 'flac',
@@ -45,6 +46,8 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     is_available: overrides.is_available ?? 1,
     availability_reason: overrides.availability_reason ?? null,
     file_created_at: overrides.file_created_at ?? null,
+    play_count: overrides.play_count ?? 0,
+    last_played_at: overrides.last_played_at ?? null,
     replaygain_track_gain_db: overrides.replaygain_track_gain_db ?? null,
     replaygain_album_gain_db: overrides.replaygain_album_gain_db ?? null,
     added_at: overrides.added_at ?? 1,
@@ -52,16 +55,47 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
   }
 }
 
-function installMockTrackFetch(handler: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]): void {
+interface MockLibraryApi {
+  getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]
+  getTrackCount: () => Promise<number> | number
+  getTotalTrackDuration: () => Promise<number> | number
+  getAlbums: () => Promise<unknown[]> | unknown[]
+  getArtists: () => Promise<unknown[]> | unknown[]
+  getGenres: () => Promise<unknown[]> | unknown[]
+  getFolders: () => Promise<unknown[]> | unknown[]
+  getFavoritePaths: () => Promise<string[]> | string[]
+  getFavorites: () => Promise<DbTrack[]> | DbTrack[]
+  getRecentlyPlayed: (limit: number) => Promise<DbTrack[]> | DbTrack[]
+}
+
+function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
+  const libraryApi: MockLibraryApi = {
+    getTracksByPaths: async () => [],
+    getTrackCount: async () => 0,
+    getTotalTrackDuration: async () => 0,
+    getAlbums: async () => [],
+    getArtists: async () => [],
+    getGenres: async () => [],
+    getFolders: async () => [],
+    getFavoritePaths: async () => [],
+    getFavorites: async () => [],
+    getRecentlyPlayed: async () => [],
+    ...overrides
+  }
+
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
       electronAPI: {
-        library: {
-          getTracksByPaths: async (trackPaths: string[]) => handler(trackPaths)
-        }
+        library: libraryApi
       }
     }
+  })
+}
+
+function installMockTrackFetch(handler: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]): void {
+  installMockLibraryApi({
+    getTracksByPaths: async (trackPaths: string[]) => handler(trackPaths)
   })
 }
 
@@ -113,6 +147,40 @@ test('updateFullTrackConsumers releases full tracks only after the last consumer
   const released = updateFullTrackConsumers(retained.consumers, 'library', 'release')
   assert.deepEqual([...released.consumers], [])
   assert.equal(released.shouldReleaseFullTracks, true)
+})
+
+test('loadLibrary refreshes total track duration from the library API', async () => {
+  installMockLibraryApi({
+    getTrackCount: async () => 3,
+    getTotalTrackDuration: async () => 90061
+  })
+  useLibraryStore.setState({
+    trackByPath: new Map(),
+    trackCacheVersion: 0,
+    trackPaths: [],
+    fullTrackPaths: [],
+    fullTrackConsumers: new Set(),
+    totalTrackCount: 0,
+    totalTrackDuration: 0,
+    albums: [],
+    albumsIncludingSingles: [],
+    albumsIncludingSinglesLoaded: false,
+    artists: [],
+    genres: [],
+    folders: [],
+    favorites: new Set(),
+    favoriteTrackPaths: [],
+    recentlyPlayedPaths: [],
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null
+  })
+
+  await useLibraryStore.getState().loadLibrary()
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.totalTrackCount, 3)
+  assert.equal(state.totalTrackDuration, 90061)
 })
 
 test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {

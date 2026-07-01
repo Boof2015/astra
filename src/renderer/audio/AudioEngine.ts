@@ -1,6 +1,19 @@
 import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
+  ParallaxAudioChunk,
+  ParallaxNormalizationMode,
+  ParallaxOutputLatencyMetrics,
+  ParallaxStreamInfo,
+  ParallaxTimelineState
+} from '../../types/parallax'
+import {
+  PARALLAX_AUDIO_CHUNK_FRAMES,
+  clampParallaxPlaybackRatePpm,
+  mapHostTimeToSinkTimeMs,
+  resolveParallaxStreamNormalization
+} from '../../types/parallax'
+import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
   NativeAudioEvent,
@@ -43,6 +56,8 @@ const REMOTE_NORMALIZATION_MIN_DELTA_DB = 1
 const REMOTE_NORMALIZATION_SLEW_MS = 250
 const REMOTE_WAVEFORM_UPDATE_INTERVAL_MS = 250
 const LOCAL_PROGRESSIVE_WAVEFORM_SAMPLE_BUDGET = 4096
+const PARALLAX_HOST_STREAM_LOOKAHEAD_MS = 3000
+const PARALLAX_HOST_STREAM_SLEEP_SLICE_MS = 250
 
 // Short fade applied to standard Web Audio playback so play/pause/skip transitions are not abrupt.
 const PLAYBACK_FADE_MS = 150
@@ -128,7 +143,7 @@ export function isSupersededAudioLoadError(error: unknown): boolean {
     )
 }
 
-type GainApplicationMode = 'off' | 'normalization' | 'replaygain'
+type GainApplicationMode = ParallaxNormalizationMode
 
 interface GainState {
   gainDb: number
@@ -204,6 +219,27 @@ interface RemoteStreamRuntimeState {
   lastWaveformUpdateAt: number
   waveformUpdateTimer: ReturnType<typeof setTimeout> | null
   normalization: ProgressiveNormalizationAccumulator | null
+}
+
+interface ParallaxSinkRuntimeState {
+  streamId: string
+  sampleRate: number
+  channels: number
+  durationSeconds: number
+  normalizationGainDb: number
+  normalizationMode: GainApplicationMode
+  currentFrame: number
+  // Wall time (performance.timeOrigin + performance.now() domain, ms) at which the worklet's
+  // currentFrame was reported — derived by mapping the worklet's contextTime through our own
+  // AudioContext.currentTime at receipt. Lets the renderer compute drift at the report's actual
+  // instant instead of the next 1 Hz tick. 0 until the first position message arrives.
+  currentFrameAtWallMs: number
+  bufferedFrames: number
+  bufferedEndFrame: number
+  underruns: number
+  playbackRatePpm: number
+  starvedFrames: number
+  rebuffering: boolean
 }
 
 export type OutputDelayCalibrationFailureCode =
@@ -288,6 +324,7 @@ export class AudioEngine {
   private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private remoteStreamNode: AudioWorkletNode | null = null
+  private parallaxSinkNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
   private disableStandardAnalysisGraphDev: boolean = false
   private analysisDelayMs: number = 0
@@ -389,12 +426,42 @@ export class AudioEngine {
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
+  private parallaxSinkState: ParallaxSinkRuntimeState | null = null
+  // §21 Gapless sink handoff. Staged next stream, held alongside `parallaxSinkState` from
+  // pre-announce until the boundary crossover. Its worklet node is created via the normal factory,
+  // so its onmessage stays inert (gated on `node !== this.parallaxSinkNode`) until `promoteParallaxNextSink`
+  // swaps it into the active slot.
+  private parallaxNextSinkState: ParallaxSinkRuntimeState | null = null
+  private parallaxNextSinkNode: AudioWorkletNode | null = null
   private remotePlayPromise: Promise<void> | null = null
   private remotePlayResolver: (() => void) | null = null
   private remotePlayRejecter: ((error: Error) => void) | null = null
   private normalizationApproximate: boolean = false
   private loadGeneration = 0
   private prebufferGeneration = 0
+  private parallaxHostPublishGeneration = 0
+  // §21 Gapless sink handoff (host side). The next-buffer publish loop streams the WHOLE next track
+  // (captured by reference) and must survive the gapless swap that makes that buffer the current
+  // one — so it can't share the integer generation a fresh pre-announce would bump. Each loop holds
+  // a unique token in this set; `parallaxPendingNextPublishToken` marks the not-yet-promoted loop a
+  // new pre-announce / cancel may supersede. `promoteParallaxHostNextPublish` detaches the pending
+  // token so the loop keeps running as the current stream.
+  private readonly parallaxNextPublishTokens = new Set<symbol>()
+  private parallaxPendingNextPublishToken: symbol | null = null
+  // Parallax trim test tone (a synced metronome) — fully separate from track playback so it never
+  // touches _playbackState / gapless / now-playing. It rides the same host-stream sync path.
+  private testToneBuffer: AudioBuffer | null = null
+  private testToneSourceNode: AudioBufferSourceNode | null = null
+  private testToneNormalizationBypassNode: GainNode | null = null
+  private testTonePublishGeneration = 0
+  // Phase 0 diagnostics: rolling window of (currentTime - getOutputTimestamp().contextTime) in ms,
+  // median-filtered to a stable un-quantized output-latency estimate.
+  private parallaxTimestampLatencySamples: number[] = []
+  private readonly parallaxTimestampLatencyWindow = 31
+  // §14.1.1 — per-sink manual trim. Positive = emit earlier. Flows into
+  // `getParallaxEndpointLatencyMs()` so all three scheduling sites + the drift loop + the predictor
+  // snap target see it on the next tick. Pushed by the host via `sink-trim-update` events.
+  private parallaxSinkAdvanceMs = 0
 
   // Track change callbacks (for visualizer reset)
   private trackChangeCallbacks: (() => void)[] = []
@@ -1174,12 +1241,60 @@ export class AudioEngine {
     this.clearPauseFadeTimer()
     this.loadGeneration += 1
     this.prebufferGeneration += 1
+    this.cancelParallaxHostPublishing()
     return this.loadGeneration
   }
 
   private invalidateLoadOperations(): void {
     this.loadGeneration += 1
     this.prebufferGeneration += 1
+    this.cancelParallaxHostPublishing()
+  }
+
+  cancelParallaxHostPublishing(): void {
+    this.parallaxHostPublishGeneration += 1
+  }
+
+  // Phase 2A — produce one host-emit-anchor's worth of state, derived from the live
+  // `getOutputTimestamp()`. Returns null when there's no active host playback (no audioBuffer,
+  // suspended/stopped context, source not started) — the store ignores nulls and waits for the
+  // next tick. The anchor lives entirely in the output clock domain: `sourceFrameAtHostOutput` is
+  // the frame the host's speaker is emitting at `hostWallTimeMs`, computed as
+  // `(ts.contextTime − this.startTime) * buffer.sampleRate`. `this.startTime` is already set in
+  // `playCurrentBufferOnParallaxTimeline` to `actualStartAtContextTime − offset` so seeks/non-zero
+  // startFrame are handled without reaching back through the timeline.
+  getHostEmitAnchor(): {
+    sourceFrameAtHostOutput: number
+    hostWallTimeMs: number
+    hostOutputLatencyMs: number
+    hostBaseLatencyMs: number
+    observedRatePpm: number | null
+  } | null {
+    const ctx = this.context
+    const buffer = this.audioBuffer
+    if (!ctx || !buffer || this.playbackOutputMode === 'bitperfect') return null
+    if (this._playbackState !== 'playing') return null
+    if (!Number.isFinite(this.startTime) || this.startTime <= 0) return null
+
+    const snapshot = this.getContextClockSnapshot(ctx)
+    if (!Number.isFinite(snapshot.contextTime) || !Number.isFinite(snapshot.performanceTime)) return null
+    // Before the source has started (startTime in the future relative to current OUTPUT time),
+    // there is nothing at the speaker yet — drop the anchor and let the next tick try.
+    if (snapshot.contextTime <= this.startTime) return null
+
+    const sourceFrameAtHostOutput = (snapshot.contextTime - this.startTime) * buffer.sampleRate
+    const hostWallTimeMs = performance.timeOrigin + snapshot.performanceTime
+    const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+    const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+    return {
+      sourceFrameAtHostOutput,
+      hostWallTimeMs,
+      hostOutputLatencyMs: outMs ?? 0,
+      hostBaseLatencyMs: baseMs ?? 0,
+      // Per share doc §3 this is diagnostic only; the sink's fit is authoritative. Leaving null
+      // until/unless we have a reason to spend cycles on a host-side estimate.
+      observedRatePpm: null
+    }
   }
 
   private beginPrebufferOperation(): number {
@@ -1677,6 +1792,7 @@ export class AudioEngine {
     this.syncSourceAnalysisTapConnection(this.sourceNode, this.audioBuffer?.numberOfChannels)
     this.syncSourceAnalysisTapConnection(this.nextSourceNode, this.nextBuffer?.numberOfChannels)
     this.syncSourceAnalysisTapConnection(this.remoteStreamNode, this.remoteStreamState?.channels)
+    this.syncSourceAnalysisTapConnection(this.parallaxSinkNode, this.parallaxSinkState?.channels)
   }
 
   private getPostEQOutputNode(): AudioNode | null {
@@ -1811,6 +1927,18 @@ export class AudioEngine {
     this.remoteStreamNode = null
   }
 
+  private disconnectParallaxSinkNode(): void {
+    if (!this.parallaxSinkNode) return
+    this.parallaxSinkNode.port.onmessage = null
+    this.disconnectSourceRouting(this.parallaxSinkNode)
+    try {
+      this.parallaxSinkNode.disconnect()
+    } catch {
+      // Ignore disconnect races while replacing the Parallax sink node.
+    }
+    this.parallaxSinkNode = null
+  }
+
   private rebuildRemoteStreamRoutingIfActive(): boolean {
     if (!this.remoteStreamNode || !this.remoteStreamState || this.playbackOutputMode === 'bitperfect') {
       return false
@@ -1818,6 +1946,16 @@ export class AudioEngine {
 
     this.disconnectSourceRouting(this.remoteStreamNode)
     this.connectSourceWithRouting(this.remoteStreamNode, this.remoteStreamState.channels)
+    return true
+  }
+
+  private rebuildParallaxSinkRoutingIfActive(): boolean {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState || this.playbackOutputMode === 'bitperfect') {
+      return false
+    }
+
+    this.disconnectSourceRouting(this.parallaxSinkNode)
+    this.connectSourceWithRouting(this.parallaxSinkNode, this.parallaxSinkState.channels)
     return true
   }
 
@@ -1840,6 +1978,23 @@ export class AudioEngine {
       } catch {
         // Ignore cancellation failures while switching tracks or stopping playback.
       }
+    }
+  }
+
+  private clearParallaxSinkState(): void {
+    // §21. A hard reset of the current sink stream (stop / fresh stream-start) also drops any staged
+    // next stream. NOT called by promoteParallaxNextSink (which uses disconnectParallaxSinkNode).
+    this.clearParallaxNextSink()
+    this.parallaxSinkState = null
+    this.disconnectParallaxSinkNode()
+    this.stopTimeUpdate()
+    this.normalizationApproximate = false
+    if (!this.remoteStreamState && !this.audioBuffer) {
+      this.applyGainState({
+        gainDb: 0,
+        linearGain: 1,
+        mode: 'off'
+      })
     }
   }
 
@@ -1883,6 +2038,72 @@ export class AudioEngine {
         this.stopTimeUpdate()
         void this.clearRemoteStreamState(false)
         this.emit('ended')
+      }
+    }
+
+    this.connectSourceWithRouting(node, channelCount)
+    this.connectSourceToAnalysisTap(node, channelCount)
+    return node
+  }
+
+  private createParallaxSinkNode(channelCount: number, sourceSampleRate?: number): AudioWorkletNode {
+    if (!this.context) {
+      throw new Error('AudioContext not initialized')
+    }
+
+    const node = new AudioWorkletNode(this.context, 'parallax-sink-player', {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [Math.max(1, channelCount)],
+      processorOptions: {
+        sourceSampleRate: Number.isFinite(sourceSampleRate) && Number(sourceSampleRate) > 0
+          ? Math.round(Number(sourceSampleRate))
+          : this.context.sampleRate
+      }
+    })
+
+    node.port.onmessage = (event: MessageEvent) => {
+      if (node !== this.parallaxSinkNode) return
+      const payload = event.data ?? {}
+      if (!payload || typeof payload !== 'object') return
+
+      if (payload.type === 'position' && this.parallaxSinkState) {
+        this.parallaxSinkState.currentFrame = Number.isFinite(payload.frame)
+          ? Math.max(0, Math.floor(payload.frame))
+          : this.parallaxSinkState.currentFrame
+        // Map the worklet's processing-context time at the report instant back to wall time.
+        // ctxNow and payload.contextTime are the same audio clock viewed from two threads, so
+        // (ctxNow − payload.contextTime) is approximately the IPC delay since the message was
+        // posted. Subtracting that from perf.now()-at-receipt yields the wall time at the send
+        // instant — i.e. the wall time the worklet's currentFrame was actually at `frame`.
+        const ctxNow = this.context?.currentTime ?? 0
+        const ctxSent = Number(payload.contextTime)
+        const elapsedSec = Number.isFinite(ctxSent) ? Math.max(0, ctxNow - ctxSent) : 0
+        this.parallaxSinkState.currentFrameAtWallMs =
+          performance.timeOrigin + performance.now() - elapsedSec * 1000
+        this.parallaxSinkState.bufferedFrames = Number.isFinite(payload.bufferedFrames)
+          ? Math.max(0, Math.floor(payload.bufferedFrames))
+          : this.parallaxSinkState.bufferedFrames
+        this.parallaxSinkState.bufferedEndFrame = Number.isFinite(payload.bufferedEndFrame)
+          ? Math.max(0, Math.floor(payload.bufferedEndFrame))
+          : this.parallaxSinkState.bufferedEndFrame
+        this.parallaxSinkState.underruns = Number.isFinite(payload.underruns)
+          ? Math.max(0, Math.floor(payload.underruns))
+          : this.parallaxSinkState.underruns
+        this.parallaxSinkState.starvedFrames = Number.isFinite(payload.starvedFrames)
+          ? Math.max(0, Math.floor(payload.starvedFrames))
+          : this.parallaxSinkState.starvedFrames
+        this.parallaxSinkState.rebuffering = Boolean(payload.rebuffering)
+        this.parallaxSinkState.playbackRatePpm = clampParallaxPlaybackRatePpm(Number(payload.playbackRatePpm))
+        this.sampleParallaxTimestampLatency()
+        this.emit('timeUpdate', this.currentTime)
+      }
+
+      if (payload.type === 'underrun' && this.parallaxSinkState) {
+        this.parallaxSinkState.underruns = Number.isFinite(payload.underruns)
+          ? Math.max(0, Math.floor(payload.underruns))
+          : this.parallaxSinkState.underruns + 1
+        this.emit('parallaxUnderrun', this.parallaxSinkState.underruns)
       }
     }
 
@@ -2175,6 +2396,7 @@ export class AudioEngine {
     this.stopSource()
     this.clearNextBuffer()
     await this.clearRemoteStreamState(true)
+    this.clearParallaxSinkState()
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
     this.currentNormalizationAnalysis = null
@@ -2303,6 +2525,719 @@ export class AudioEngine {
     return this.loadProgressiveStream(track, options)
   }
 
+  async loadParallaxSinkStream(stream: ParallaxStreamInfo): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax sink playback is only available in standard mode.')
+    }
+
+    const loadOperation = this.beginLoadOperation()
+    await this.initContext({ sampleRate: stream.sampleRate, allowSampleRateMismatch: true })
+    this.assertCurrentLoadOperation(loadOperation)
+    if (!this.context || !this.workletLoaded) {
+      throw new Error('Audio worklet could not be initialized for Parallax sink playback.')
+    }
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+      this.assertCurrentLoadOperation(loadOperation)
+    }
+
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
+    this.stopSource()
+    this.clearNextBuffer()
+    await this.clearRemoteStreamState(true)
+    this.clearParallaxSinkState()
+    this.assertCurrentLoadOperation(loadOperation)
+
+    this.audioBuffer = null
+    this.currentNormalizationAnalysis = null
+    this.currentBufferTrackPath = `parallax:${stream.streamId}`
+    this.pauseTime = 0
+    this.currentReplayGainDb = null
+    const streamNormalization = resolveParallaxStreamNormalization(stream)
+    const streamNormalizationGainDb = streamNormalization.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(streamNormalization.normalizationGainDb)
+    this.parallaxSinkNode = this.createParallaxSinkNode(stream.channels, stream.sampleRate)
+    this.parallaxSinkState = {
+      streamId: stream.streamId,
+      sampleRate: stream.sampleRate,
+      channels: stream.channels,
+      durationSeconds: stream.durationSeconds,
+      normalizationGainDb: streamNormalizationGainDb,
+      normalizationMode: streamNormalization.normalizationMode,
+      currentFrame: 0,
+      currentFrameAtWallMs: 0,
+      bufferedFrames: 0,
+      bufferedEndFrame: 0,
+      underruns: 0,
+      playbackRatePpm: 0,
+      starvedFrames: 0,
+      rebuffering: false
+    }
+
+    this.applyChannelRoutingPreferences(stream.channels)
+    this.applyAnalysisRoutingPreferences(stream.channels)
+    this.applyParallaxSinkNormalization()
+    this._playbackState = 'paused'
+    this.emit('durationChange', stream.durationSeconds)
+    this.emit('stateChange', this._playbackState)
+    this.notifyTrackChange()
+  }
+
+  appendParallaxSinkAudioChunk(chunk: ParallaxAudioChunk): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode) return
+    if (chunk.streamId !== this.parallaxSinkState.streamId) return
+    const channelData = this.deinterleaveParallaxChunk(chunk)
+    this.parallaxSinkNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        startFrame: chunk.startFrame,
+        frameCount: chunk.frameCount,
+        channelData
+      },
+      channelData.map((channel) => channel.buffer)
+    )
+  }
+
+  clearParallaxSinkAudioChunks(): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode) return
+    this.parallaxSinkState.bufferedFrames = 0
+    this.parallaxSinkState.bufferedEndFrame = this.parallaxSinkState.currentFrame
+    this.parallaxSinkState.starvedFrames = 0
+    this.parallaxSinkState.rebuffering = false
+    this.parallaxSinkNode.port.postMessage({ type: 'clear-buffer' })
+  }
+
+  applyParallaxTimeline(
+    timeline: ParallaxTimelineState,
+    options: { startAtContextTime: number; playbackRatePpm?: number }
+  ): void {
+    if (!this.parallaxSinkState || !this.parallaxSinkNode || !this.context) return
+    if (timeline.streamId !== this.parallaxSinkState.streamId) return
+    if (timeline.playbackState === 'playing' && this.context.state === 'suspended') {
+      void this.context.resume().catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to resume Parallax sink AudioContext'))
+      })
+    }
+
+    const playbackRatePpm = clampParallaxPlaybackRatePpm(options.playbackRatePpm ?? 0)
+    this.parallaxSinkState.currentFrame = Math.max(0, Math.floor(timeline.startFrame))
+    this.parallaxSinkState.playbackRatePpm = playbackRatePpm
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame: this.parallaxSinkState.currentFrame,
+      startAtContextTime: Math.max(this.context.currentTime, options.startAtContextTime),
+      playing: timeline.playbackState === 'playing',
+      playbackRatePpm
+    })
+
+    this._playbackState = timeline.playbackState === 'playing' ? 'playing' : 'paused'
+    this.emit('stateChange', this._playbackState)
+    if (this._playbackState === 'playing') {
+      this.startTimeUpdate()
+    } else {
+      this.stopTimeUpdate()
+    }
+  }
+
+  applyParallaxTimelineFromHostClock(
+    timeline: ParallaxTimelineState,
+    hostMinusSinkOffsetMs: number | null | undefined,
+    playbackRatePpm: number = 0
+  ): void {
+    if (!this.context) return
+    // Paused timelines don't carry an emit deadline — `startHostTimeMs` is just "the wall instant
+    // the host stopped." There's nothing to align acoustically, so skip auto-comp and the
+    // fail-loud guard (which would otherwise warn on every pause) and let the worklet just park
+    // the cursor at startFrame and stay paused. Same for any non-playing state.
+    if (timeline.playbackState !== 'playing') {
+      this.applyParallaxTimeline(timeline, {
+        startAtContextTime: this.context.currentTime,
+        playbackRatePpm
+      })
+      return
+    }
+    // Acoustic-timeline scheduling (see ParallaxTimelineState.startHostTimeMs invariant). We want
+    // the sink's *speaker* to emit startFrame at `timeline.startHostTimeMs` (host clock). Mapping:
+    //   target sink-wall  = startHostTimeMs − offset
+    //   delayMs           = targetSinkWall − sinkNow
+    //   mappedStartCtx    = ctx.currentTime + delayMs/1000 − sinkLatency
+    // The −sinkLatency makes the worklet *write* startFrame `sinkLatency` seconds earlier in
+    // context time, so the DAC emits it at the target wall instant. applyParallaxTimeline clamps
+    // `Math.max(ctx.currentTime, …)` for safety; assertParallaxScheduledLead surfaces a loud warn
+    // before that clamp if the math went negative (stale anchor, bad offset).
+    const offsetMs = Number.isFinite(hostMinusSinkOffsetMs) ? Number(hostMinusSinkOffsetMs) : 0
+    const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
+    const delaySeconds = (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + delaySeconds - sinkLatencySec
+    const scheduledLeadMs = (mappedStartContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('applyParallaxTimelineFromHostClock', scheduledLeadMs, {
+      targetAcousticHostTimeMs: timeline.startHostTimeMs,
+      localLatencyMs: sinkLatencySec * 1000,
+      mappedStartContextTime,
+      ctxNow: this.context.currentTime
+    })
+    this.applyParallaxTimeline(timeline, {
+      startAtContextTime: mappedStartContextTime,
+      playbackRatePpm
+    })
+  }
+
+  setParallaxSinkPlaybackRate(playbackRatePpm: number): void {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState) return
+    const clamped = clampParallaxPlaybackRatePpm(playbackRatePpm)
+    this.parallaxSinkState.playbackRatePpm = clamped
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-rate',
+      playbackRatePpm: clamped
+    })
+  }
+
+  // Hard re-sync: jump the worklet cursor to a live host frame (the snap in snap-then-slew). Uses
+  // the same set-timeline primitive that pause/play relies on, so it re-anchors cleanly. The caller
+  // supplies the target frame already mapped to "now + leadSeconds" of host time, where `now +
+  // leadSeconds` IS the target acoustic emit instant. Auto-comp subtracts sinkLatency from the
+  // scheduled context time so the DAC actually emits the frame at that wall instant; the worklet's
+  // set-timeline clamps `startAtSample ≥ currentFrame` if we ended up scheduling into the past.
+  resyncParallaxSinkToHostFrame(targetFrame: number, leadSeconds: number): void {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState || !this.context) return
+    if (this.context.state === 'suspended') {
+      void this.context.resume().catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to resume Parallax sink AudioContext'))
+      })
+    }
+    const startFrame = Math.max(0, Math.floor(targetFrame))
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const lead = Math.max(0, leadSeconds)
+    const startAtContextTime = this.context.currentTime + lead - sinkLatencySec
+    const scheduledLeadMs = (startAtContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('resyncParallaxSinkToHostFrame', scheduledLeadMs, {
+      localLatencyMs: sinkLatencySec * 1000,
+      mappedStartContextTime: startAtContextTime,
+      ctxNow: this.context.currentTime
+    })
+    this.parallaxSinkState.currentFrame = startFrame
+    this.parallaxSinkState.playbackRatePpm = 0
+    this.parallaxSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame,
+      startAtContextTime,
+      playing: true,
+      playbackRatePpm: 0
+    })
+  }
+
+  stopParallaxSinkPlayback(): void {
+    if (!this.parallaxSinkState && !this.parallaxSinkNode) return
+    this.parallaxSinkNode?.port.postMessage({ type: 'clear' })
+    this.clearParallaxSinkState()
+    this.currentBufferTrackPath = null
+    this.pauseTime = 0
+    this._playbackState = 'stopped'
+    this.emit('stateChange', this._playbackState)
+    this.emit('timeUpdate', 0)
+    this.notifyTrackChange()
+  }
+
+  // ── §21 Gapless sink handoff (sink side) ────────────────────────────────────
+  // A staged second worklet node pre-buffers the upcoming track and is scheduled (via the worklet's
+  // set-timeline `startAtContextTime`) to begin emitting exactly at the boundary, while the current
+  // node runs out of buffered audio. `promoteParallaxNextSink` then swaps it into the active slot.
+
+  getStagedParallaxSinkStreamId(): string | null {
+    return this.parallaxNextSinkState?.streamId ?? null
+  }
+
+  // Pre-load the next stream WITHOUT disturbing the currently-playing sink node. Created via the
+  // normal factory (auto-connects to routing + analysis tap; its onmessage stays inert until promote).
+  loadParallaxNextSinkStream(stream: ParallaxStreamInfo): void {
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (!this.context || !this.workletLoaded) return
+    if (!this.parallaxSinkState) return // nothing playing to hand off from
+    if (this.parallaxNextSinkState?.streamId === stream.streamId) return // already staged
+    this.clearParallaxNextSink()
+
+    const streamNormalization = resolveParallaxStreamNormalization(stream)
+    const streamNormalizationGainDb = streamNormalization.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(streamNormalization.normalizationGainDb)
+    this.parallaxNextSinkNode = this.createParallaxSinkNode(stream.channels, stream.sampleRate)
+    this.parallaxNextSinkState = {
+      streamId: stream.streamId,
+      sampleRate: stream.sampleRate,
+      channels: stream.channels,
+      durationSeconds: stream.durationSeconds,
+      normalizationGainDb: streamNormalizationGainDb,
+      normalizationMode: streamNormalization.normalizationMode,
+      currentFrame: Math.max(0, Math.floor(0)),
+      currentFrameAtWallMs: 0,
+      bufferedFrames: 0,
+      bufferedEndFrame: 0,
+      underruns: 0,
+      playbackRatePpm: 0,
+      starvedFrames: 0,
+      rebuffering: false
+    }
+  }
+
+  appendParallaxNextSinkAudioChunk(chunk: ParallaxAudioChunk): void {
+    if (!this.parallaxNextSinkState || !this.parallaxNextSinkNode) return
+    if (chunk.streamId !== this.parallaxNextSinkState.streamId) return
+    const channelData = this.deinterleaveParallaxChunk(chunk)
+    this.parallaxNextSinkNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        startFrame: chunk.startFrame,
+        frameCount: chunk.frameCount,
+        channelData
+      },
+      channelData.map((channel) => channel.buffer)
+    )
+  }
+
+  // Schedule the staged node to begin emitting `timeline.startFrame` at the boundary
+  // (`timeline.startHostTimeMs`, host clock). Same acoustic mapping as applyParallaxTimelineFromHostClock
+  // but targets the staged node and never touches _playbackState (the current stream is still live).
+  scheduleParallaxNextSinkStart(
+    timeline: ParallaxTimelineState,
+    hostMinusSinkOffsetMs: number | null | undefined,
+    playbackRatePpm: number = 0
+  ): void {
+    if (!this.parallaxNextSinkState || !this.parallaxNextSinkNode || !this.context) return
+    if (timeline.streamId !== this.parallaxNextSinkState.streamId) return
+    if (timeline.playbackState !== 'playing') return
+    const offsetMs = Number.isFinite(hostMinusSinkOffsetMs) ? Number(hostMinusSinkOffsetMs) : 0
+    const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
+    const delaySeconds = (sinkStartWallTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const sinkLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + delaySeconds - sinkLatencySec
+    const startFrame = Math.max(0, Math.floor(timeline.startFrame))
+    const rate = clampParallaxPlaybackRatePpm(playbackRatePpm)
+    this.parallaxNextSinkState.currentFrame = startFrame
+    this.parallaxNextSinkState.playbackRatePpm = rate
+    this.parallaxNextSinkNode.port.postMessage({
+      type: 'set-timeline',
+      startFrame,
+      startAtContextTime: Math.max(this.context.currentTime, mappedStartContextTime),
+      playing: true,
+      playbackRatePpm: rate
+    })
+  }
+
+  // Boundary crossed — swap the staged node into the active slot. The acoustic crossover already
+  // happened via the scheduled start; this is the bookkeeping swap + master-normalization switch.
+  promoteParallaxNextSink(): boolean {
+    if (!this.parallaxNextSinkNode || !this.parallaxNextSinkState) return false
+    // Tear down the outgoing (now-silent) current node, then promote the staged one.
+    this.disconnectParallaxSinkNode()
+    this.parallaxSinkNode = this.parallaxNextSinkNode
+    this.parallaxSinkState = this.parallaxNextSinkState
+    this.parallaxNextSinkNode = null
+    this.parallaxNextSinkState = null
+    this.currentBufferTrackPath = `parallax:${this.parallaxSinkState.streamId}`
+    // Shared master normalization gain now follows the promoted track (per-track gain can't apply to
+    // two concurrent streams — see applyParallaxSinkNormalization).
+    this.applyParallaxSinkNormalization()
+    this._playbackState = 'playing'
+    this.emit('durationChange', this.parallaxSinkState.durationSeconds)
+    this.emit('stateChange', this._playbackState)
+    this.notifyTrackChange()
+    this.startTimeUpdate()
+    return true
+  }
+
+  clearParallaxNextSink(): void {
+    if (this.parallaxNextSinkNode) {
+      this.parallaxNextSinkNode.port.onmessage = null
+      try { this.parallaxNextSinkNode.port.postMessage({ type: 'clear' }) } catch { /* ignore */ }
+      this.disconnectSourceRouting(this.parallaxNextSinkNode)
+      try { this.parallaxNextSinkNode.disconnect() } catch { /* ignore */ }
+      this.parallaxNextSinkNode = null
+    }
+    this.parallaxNextSinkState = null
+  }
+
+  getParallaxSinkSnapshot(): {
+    streamId: string | null
+    currentFrame: number
+    currentFrameAtWallMs: number
+    bufferedFrames: number
+    bufferedEndFrame: number
+    underruns: number
+    playbackRatePpm: number
+    starvedFrames: number
+    rebuffering: boolean
+  } {
+    return {
+      streamId: this.parallaxSinkState?.streamId ?? null,
+      currentFrame: this.parallaxSinkState?.currentFrame ?? 0,
+      currentFrameAtWallMs: this.parallaxSinkState?.currentFrameAtWallMs ?? 0,
+      bufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
+      bufferedEndFrame: this.parallaxSinkState?.bufferedEndFrame ?? 0,
+      underruns: this.parallaxSinkState?.underruns ?? 0,
+      playbackRatePpm: this.parallaxSinkState?.playbackRatePpm ?? 0,
+      starvedFrames: this.parallaxSinkState?.starvedFrames ?? 0,
+      rebuffering: this.parallaxSinkState?.rebuffering ?? false
+    }
+  }
+
+  // Phase 0 diagnostics: push one (currentTime - getOutputTimestamp().contextTime) sample. Cheap;
+  // safe to call from the high-rate sink position handler and the 1 Hz telemetry/host tick.
+  private sampleParallaxTimestampLatency(): void {
+    const ctx = this.context
+    if (!ctx || ctx.state !== 'running') return
+    const snapshot = this.getContextClockSnapshot(ctx)
+    const latencyMs = (ctx.currentTime - snapshot.contextTime) * 1000
+    if (!Number.isFinite(latencyMs) || latencyMs < 0) return
+    const samples = this.parallaxTimestampLatencySamples
+    samples.push(latencyMs)
+    if (samples.length > this.parallaxTimestampLatencyWindow) {
+      samples.splice(0, samples.length - this.parallaxTimestampLatencyWindow)
+    }
+  }
+
+  private medianParallaxTimestampLatencyMs(): number | null {
+    const samples = this.parallaxTimestampLatencySamples
+    if (samples.length === 0) return null
+    const sorted = [...samples].sort((left, right) => left - right)
+    const mid = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+  }
+
+  // Phase 0 diagnostics: the three output-latency signals for this device's AudioContext.
+  getOutputLatencyMetrics(): ParallaxOutputLatencyMetrics {
+    this.sampleParallaxTimestampLatency()
+    const ctx = this.context
+    return {
+      outputLatencyMs: ctx
+        ? this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+        : null,
+      baseLatencyMs: ctx
+        ? this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+        : null,
+      timestampLatencyMs: this.medianParallaxTimestampLatencyMs()
+    }
+  }
+
+  async playCurrentBufferOnParallaxTimeline(timeline: ParallaxTimelineState): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax host playback is only available in standard mode.')
+    }
+    await this.initContext()
+    if (!this.audioBuffer || !this.context) return
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+    }
+
+    this.stopSource()
+    this.cancelScheduledNext()
+    this.clearParallaxSinkState()
+
+    // Acoustic-timeline scheduling on the host endpoint. The host is the timeline owner and its
+    // wall clock IS the host clock, so target sink-wall = target host-wall = startHostTimeMs.
+    // Subtract our own output latency so the host's *speaker* — not the DAC write — emits at the
+    // target wall instant. Symmetric with the sink (each endpoint compensates its own latency); the
+    // per-device latency difference cancels and both speakers emit startFrame at the same wall
+    // instant. We clamp Math.max(ctx.currentTime, …) here because sourceNode.start with a past
+    // time can throw; assertParallaxScheduledLead surfaces the negative-lead case before the clamp.
+    const offset = Math.max(0, Math.min(this.audioBuffer.duration, timeline.startFrame / this.audioBuffer.sampleRate))
+    const startDelaySeconds = (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const hostLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + startDelaySeconds - hostLatencySec
+    const scheduledLeadMs = (mappedStartContextTime - this.context.currentTime) * 1000
+    this.assertParallaxScheduledLead('playCurrentBufferOnParallaxTimeline', scheduledLeadMs, {
+      targetAcousticHostTimeMs: timeline.startHostTimeMs,
+      localLatencyMs: hostLatencySec * 1000,
+      mappedStartContextTime,
+      ctxNow: this.context.currentTime
+    })
+    const startAtContextTime = Math.max(this.context.currentTime, mappedStartContextTime)
+
+    this.sourceNode = this.context.createBufferSource()
+    this.sourceNode.buffer = this.audioBuffer
+    this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.sourceNode.onended = () => {
+      if (this._playbackState === 'playing') {
+        this.performGaplessTransition()
+      }
+    }
+    this.startTime = startAtContextTime - offset
+    this.pauseTime = offset
+    this.sourceNode.start(startAtContextTime, offset)
+    this._playbackState = 'playing'
+    this.emit('stateChange', this._playbackState)
+    this.startTimeUpdate()
+  }
+
+  async publishCurrentBufferToParallax(streamId: string, timeline?: ParallaxTimelineState): Promise<void> {
+    const buffer = this.audioBuffer
+    if (!buffer) {
+      throw new Error('No decoded local track is available for Parallax streaming.')
+    }
+    const channels = Math.max(1, Math.min(8, buffer.numberOfChannels))
+    const totalFrames = buffer.length
+    const publishGeneration = ++this.parallaxHostPublishGeneration
+    const initialFrame = timeline
+      ? Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+      : 0
+
+    for (let startFrame = initialFrame; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+      if (publishGeneration !== this.parallaxHostPublishGeneration) return
+      if (timeline) {
+        const chunkHostTimeMs = timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+        let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        while (delayMs > 0) {
+          await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+          if (publishGeneration !== this.parallaxHostPublishGeneration) return
+          delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        }
+      }
+
+      const frameCount = Math.min(PARALLAX_AUDIO_CHUNK_FRAMES, totalFrames - startFrame)
+      const interleaved = new Float32Array(frameCount * channels)
+      for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+        const source = buffer.getChannelData(channelIndex)
+        for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+          interleaved[(frameIndex * channels) + channelIndex] = source[startFrame + frameIndex] ?? 0
+        }
+      }
+      await window.electronAPI.parallax.publishHostAudioChunk({
+        streamId,
+        sampleRate: buffer.sampleRate,
+        channels,
+        startFrame,
+        frameCount,
+        hostTimeMs: timeline
+          ? timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+          : performance.timeOrigin + performance.now(),
+        pcmData: interleaved.buffer
+      })
+    }
+  }
+
+  // §21 Gapless sink handoff (host). Stream the pre-buffered NEXT track to sinks ahead of the
+  // boundary under its own streamId, paced to a FUTURE-anchored timeline (startHostTimeMs = the
+  // boundary). Captures the `nextBuffer` reference so it keeps streaming seamlessly after the gapless
+  // swap turns that same buffer into the current `audioBuffer` (main re-routes the streamId from
+  // pending → active on promote). Cancellation is per-loop-token so a fresh pre-announce supersedes
+  // only the un-promoted loop, never one that already crossed the boundary.
+  async publishNextBufferToParallax(streamId: string, timeline: ParallaxTimelineState): Promise<void> {
+    const buffer = this.nextBuffer
+    if (!buffer) return
+    const channels = Math.max(1, Math.min(8, buffer.numberOfChannels))
+    const totalFrames = buffer.length
+    // Supersede any prior un-promoted pending-next loop (the next track changed).
+    if (this.parallaxPendingNextPublishToken) {
+      this.parallaxNextPublishTokens.delete(this.parallaxPendingNextPublishToken)
+    }
+    const token = Symbol('parallax-next-publish')
+    this.parallaxPendingNextPublishToken = token
+    this.parallaxNextPublishTokens.add(token)
+    const initialFrame =
+      Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+    try {
+      for (let startFrame = initialFrame; startFrame < totalFrames; startFrame += PARALLAX_AUDIO_CHUNK_FRAMES) {
+        if (!this.parallaxNextPublishTokens.has(token)) return
+        const chunkHostTimeMs =
+          timeline.startHostTimeMs + (((startFrame - timeline.startFrame) / buffer.sampleRate) * 1000)
+        let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        while (delayMs > 0) {
+          await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+          if (!this.parallaxNextPublishTokens.has(token)) return
+          delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+        }
+
+        const frameCount = Math.min(PARALLAX_AUDIO_CHUNK_FRAMES, totalFrames - startFrame)
+        const interleaved = new Float32Array(frameCount * channels)
+        for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+          const source = buffer.getChannelData(channelIndex)
+          for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+            interleaved[(frameIndex * channels) + channelIndex] = source[startFrame + frameIndex] ?? 0
+          }
+        }
+        await window.electronAPI.parallax.publishHostAudioChunk({
+          streamId,
+          sampleRate: buffer.sampleRate,
+          channels,
+          startFrame,
+          frameCount,
+          hostTimeMs: chunkHostTimeMs,
+          pcmData: interleaved.buffer
+        })
+      }
+    } finally {
+      this.parallaxNextPublishTokens.delete(token)
+      if (this.parallaxPendingNextPublishToken === token) this.parallaxPendingNextPublishToken = null
+    }
+  }
+
+  // §21. Withdraw the un-promoted pending-next publish loop (skip/seek/queue edit before boundary).
+  cancelParallaxHostNextPublishing(): void {
+    if (this.parallaxPendingNextPublishToken) {
+      this.parallaxNextPublishTokens.delete(this.parallaxPendingNextPublishToken)
+      this.parallaxPendingNextPublishToken = null
+    }
+  }
+
+  // §21. Boundary crossed — detach the pending-next loop so it continues streaming the (now current)
+  // track and a subsequent pre-announce can't cancel it. The loop ends naturally at end-of-buffer.
+  promoteParallaxHostNextPublish(): void {
+    this.parallaxPendingNextPublishToken = null
+  }
+
+  // ── Parallax trim test tone (synced metronome) ──────────────────────────────
+  // A pleasant accented metronome (HIGH-low-low-low) generated as one looping bar. It is streamed
+  // through the normal host-stream path so every sink plays + trims it in sync, letting the user
+  // tune a speaker by ear. Generated buffer is one bar; the publish loop reads it modulo its length
+  // so the stream loops seamlessly while the timeline stays linear.
+
+  /** Build the metronome buffer at the context sample rate and stash it. Returns stream specs. */
+  async prepareParallaxTestTone(): Promise<{ sampleRate: number; channels: number; totalFrames: number; durationSeconds: number }> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Parallax test tone is only available in standard mode.')
+    }
+    await this.initContext()
+    if (!this.context) throw new Error('Audio context unavailable for Parallax test tone.')
+    const sampleRate = this.context.sampleRate
+    const beatsPerBar = 4
+    const beatSeconds = 0.6 // ~100 BPM
+    const barFrames = Math.round(beatsPerBar * beatSeconds * sampleRate)
+    const buffer = this.context.createBuffer(1, barFrames, sampleRate)
+    const data = buffer.getChannelData(0)
+    const accentHz = 1318.51 // E6 downbeat
+    const beatHz = 880 // A5 off-beats
+    const toneSeconds = 0.09
+    const toneFrames = Math.round(toneSeconds * sampleRate)
+    for (let beat = 0; beat < beatsPerBar; beat++) {
+      const isAccent = beat === 0
+      const freq = isAccent ? accentHz : beatHz
+      const peak = isAccent ? 0.5 : 0.34
+      const beatStart = Math.round(beat * beatSeconds * sampleRate)
+      for (let i = 0; i < toneFrames; i++) {
+        const t = i / sampleRate
+        // Soft attack + exponential decay so it sounds like a pleasant tick, not a hard click.
+        const attack = Math.min(1, (i / sampleRate) / 0.004)
+        const env = attack * Math.exp(-t * 38)
+        data[beatStart + i] = Math.sin(2 * Math.PI * freq * t) * env * peak
+      }
+    }
+    this.testToneBuffer = buffer
+    // Report a long virtual duration: the publish loop streams indefinitely (ever-increasing
+    // startFrame) by reading the bar buffer modulo its length, so sinks must not bound-reject.
+    const totalFrames = Math.round(sampleRate * 3600)
+    return { sampleRate, channels: 1, totalFrames, durationSeconds: 3600 }
+  }
+
+  /** Schedule the metronome on the host's own output, aligned to the shared acoustic timeline. */
+  async playTestToneOnParallaxTimeline(timeline: ParallaxTimelineState): Promise<void> {
+    await this.initContext()
+    if (!this.testToneBuffer || !this.context) return
+    if (this.context.state === 'suspended') {
+      await this.context.resume()
+    }
+    this.stopTestToneSource()
+    const startDelaySeconds = (timeline.startHostTimeMs - (performance.timeOrigin + performance.now())) / 1000
+    const hostLatencySec = this.getParallaxEndpointLatencySeconds()
+    const mappedStartContextTime = this.context.currentTime + startDelaySeconds - hostLatencySec
+    const startAtContextTime = Math.max(this.context.currentTime, mappedStartContextTime)
+    const source = this.context.createBufferSource()
+    source.buffer = this.testToneBuffer
+    source.loop = true
+    const normalizationBypass = this.context.createGain()
+    const currentNormalizationGain = this.getCurrentNormalizationLinearGain()
+    normalizationBypass.gain.value = Number.isFinite(currentNormalizationGain) && currentNormalizationGain > 0
+      ? 1 / currentNormalizationGain
+      : 1
+    source.connect(normalizationBypass)
+    this.connectSourceWithRouting(normalizationBypass, this.testToneBuffer.numberOfChannels)
+    source.start(startAtContextTime, 0)
+    this.testToneSourceNode = source
+    this.testToneNormalizationBypassNode = normalizationBypass
+  }
+
+  /** Stream the metronome to sinks indefinitely (looping the bar) until stopped. */
+  async publishTestToneToParallax(streamId: string, timeline: ParallaxTimelineState): Promise<void> {
+    const buffer = this.testToneBuffer
+    if (!buffer) return
+    const generation = ++this.testTonePublishGeneration
+    const sampleRate = buffer.sampleRate
+    const totalLen = buffer.length
+    const source = buffer.getChannelData(0)
+    let virtualFrame = Math.floor(Math.max(0, timeline.startFrame) / PARALLAX_AUDIO_CHUNK_FRAMES) * PARALLAX_AUDIO_CHUNK_FRAMES
+    while (generation === this.testTonePublishGeneration) {
+      const chunkHostTimeMs = timeline.startHostTimeMs + (((virtualFrame - timeline.startFrame) / sampleRate) * 1000)
+      let delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+      while (delayMs > 0) {
+        await this.sleep(Math.min(PARALLAX_HOST_STREAM_SLEEP_SLICE_MS, delayMs))
+        if (generation !== this.testTonePublishGeneration) return
+        delayMs = (chunkHostTimeMs - PARALLAX_HOST_STREAM_LOOKAHEAD_MS) - (performance.timeOrigin + performance.now())
+      }
+      const frameCount = PARALLAX_AUDIO_CHUNK_FRAMES
+      const interleaved = new Float32Array(frameCount)
+      for (let i = 0; i < frameCount; i++) {
+        interleaved[i] = source[(virtualFrame + i) % totalLen] ?? 0
+      }
+      await window.electronAPI.parallax.publishHostAudioChunk({
+        streamId,
+        sampleRate,
+        channels: 1,
+        startFrame: virtualFrame,
+        frameCount,
+        hostTimeMs: chunkHostTimeMs,
+        pcmData: interleaved.buffer
+      })
+      virtualFrame += frameCount
+    }
+  }
+
+  private stopTestToneSource(): void {
+    if (this.testToneSourceNode) {
+      try {
+        this.testToneSourceNode.onended = null
+        this.testToneSourceNode.stop()
+      } catch {
+        // already stopped
+      }
+      try {
+        this.testToneSourceNode.disconnect()
+      } catch {
+        // already disconnected
+      }
+      this.testToneSourceNode = null
+    }
+    if (this.testToneNormalizationBypassNode) {
+      this.disconnectSourceRouting(this.testToneNormalizationBypassNode)
+      try {
+        this.testToneNormalizationBypassNode.disconnect()
+      } catch {
+        // already disconnected
+      }
+      this.testToneNormalizationBypassNode = null
+    }
+  }
+
+  /** Halt the publish loop and the host's local metronome. */
+  stopParallaxTestTone(): void {
+    this.testTonePublishGeneration += 1
+    this.stopTestToneSource()
+  }
+
+  private deinterleaveParallaxChunk(chunk: ParallaxAudioChunk): Float32Array[] {
+    const interleaved = new Float32Array(chunk.pcmData)
+    const channels = Math.max(1, Math.min(8, chunk.channels))
+    const channelData = Array.from({ length: channels }, () => new Float32Array(chunk.frameCount))
+    for (let frameIndex = 0; frameIndex < chunk.frameCount; frameIndex++) {
+      for (let channelIndex = 0; channelIndex < channels; channelIndex++) {
+        channelData[channelIndex][frameIndex] = interleaved[(frameIndex * channels) + channelIndex] ?? 0
+      }
+    }
+    return channelData
+  }
+
   async setChannelRoutingMap(map: number[] | null): Promise<void> {
     const normalized = map && map.length > 0
       ? map
@@ -2326,6 +3261,9 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this.multichannelEnabled && this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
@@ -2342,6 +3280,9 @@ export class AudioEngine {
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
       return
     }
 
@@ -2362,6 +3303,9 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
@@ -2380,15 +3324,23 @@ export class AudioEngine {
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
     }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       await this.seek(this.currentTime)
     }
   }
 
-  private async initContext(): Promise<void> {
+  private async initContext(options: { sampleRate?: number; allowSampleRateMismatch?: boolean } = {}): Promise<void> {
     if (!this.context) {
-      this.context = new AudioContext()
+      const requestedSampleRate = Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0
+        ? Math.max(8_000, Math.round(Number(options.sampleRate)))
+        : null
+      this.context = requestedSampleRate
+        ? new AudioContext({ sampleRate: requestedSampleRate })
+        : new AudioContext()
 
       // Create persistent nodes
       this.gainNode = this.context.createGain()
@@ -2471,6 +3423,11 @@ export class AudioEngine {
       // Keep stereo behavior for stereo sinks. Enable explicit/discrete routing on multichannel sinks.
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
       this.applyAnalysisRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    } else if (Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0) {
+      const requestedSampleRate = Math.max(8_000, Math.round(Number(options.sampleRate)))
+      if (!options.allowSampleRateMismatch && Math.abs(this.context.sampleRate - requestedSampleRate) > 1) {
+        throw new Error(`Parallax sink requires ${requestedSampleRate} Hz, but the active AudioContext is ${Math.round(this.context.sampleRate)} Hz.`)
+      }
     }
   }
 
@@ -2627,6 +3584,23 @@ export class AudioEngine {
     return this.computeNormalizationForAnalysis(analysis)
   }
 
+  private applyParallaxSinkNormalization(): void {
+    const sinkState = this.parallaxSinkState
+    if (!sinkState) return
+
+    const gainDb = sinkState.normalizationMode === 'off'
+      ? 0
+      : this.clampGainDb(sinkState.normalizationGainDb)
+
+    sinkState.normalizationGainDb = gainDb
+    this.normalizationApproximate = false
+    this.applyGainState({
+      gainDb,
+      linearGain: this.toLinearGain(gainDb),
+      mode: sinkState.normalizationMode
+    })
+  }
+
   private applyGainState(gainState: GainState): void {
     this._normalizationGainDb = gainState.gainDb
     this._normalizationMode = gainState.mode
@@ -2726,6 +3700,10 @@ export class AudioEngine {
       })
       return
     }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
+      return
+    }
     if (!enabled) {
       this.applyGainState({
         gainDb: 0,
@@ -2765,6 +3743,10 @@ export class AudioEngine {
       })
       return
     }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
+      return
+    }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization()
       this.ensureCurrentLoudnessAnalysis()
@@ -2784,6 +3766,19 @@ export class AudioEngine {
     return this._normalizationMode
   }
 
+  // §21 Gapless sink handoff. The pre-buffered next track + its normalization, for building the
+  // pre-announced next stream's info. Normalization falls back to current if not yet computed.
+  getNextAudioBuffer(): AudioBuffer | null {
+    return this.nextBuffer
+  }
+
+  getNextNormalization(): { gainDb: number; mode: GainApplicationMode } {
+    if (this.nextNormalizationGainDb != null && this.nextNormalizationMode != null) {
+      return { gainDb: this.nextNormalizationGainDb, mode: this.nextNormalizationMode }
+    }
+    return { gainDb: this._normalizationGainDb, mode: this._normalizationMode }
+  }
+
   setCurrentReplayGainDb(replayGainDb: number | null): void {
     const normalized = this.normalizeReplayGainCandidate(replayGainDb)
     if (this.currentReplayGainDb === normalized) return
@@ -2798,6 +3793,10 @@ export class AudioEngine {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
       })
+      return
+    }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
       return
     }
 
@@ -2837,6 +3836,10 @@ export class AudioEngine {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
       })
+      return
+    }
+    if (this.parallaxSinkState) {
+      this.applyParallaxSinkNormalization()
       return
     }
 
@@ -2898,6 +3901,11 @@ export class AudioEngine {
         ? (this.remoteStreamState.startFrame + this.remoteStreamState.currentFrame) / this.remoteStreamState.sampleRate
         : 0
     }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.sampleRate > 0
+        ? this.parallaxSinkState.currentFrame / this.parallaxSinkState.sampleRate
+        : 0
+    }
     if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
     return this.context.currentTime - this.startTime
@@ -2909,6 +3917,9 @@ export class AudioEngine {
     }
     if (this.remoteStreamState) {
       return this.remoteStreamState.durationSeconds
+    }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.durationSeconds
     }
     return this.audioBuffer?.duration ?? 0
   }
@@ -2942,6 +3953,9 @@ export class AudioEngine {
     if (this.remoteStreamState) {
       return this.remoteStreamState.channels
     }
+    if (this.parallaxSinkState) {
+      return this.parallaxSinkState.channels
+    }
     return this.audioBuffer?.numberOfChannels ?? null
   }
 
@@ -2974,6 +3988,10 @@ export class AudioEngine {
     remoteBufferedSeconds: number
     remoteBufferedFrames: number
     remoteAnalyzedFrames: number
+    parallaxSinkActive: boolean
+    parallaxSinkStreamId: string | null
+    parallaxSinkBufferedFrames: number
+    parallaxSinkUnderruns: number
     normalizationApproximate: boolean
     visualizerConsumerCount: number
     activeVisualizerScopes: ScopeKind[]
@@ -3031,6 +4049,10 @@ export class AudioEngine {
       remoteBufferedSeconds: this.getRemoteBufferedSeconds(),
       remoteBufferedFrames: this.remoteStreamState?.bufferedFrames ?? 0,
       remoteAnalyzedFrames: this.remoteStreamState?.analyzedFrames ?? 0,
+      parallaxSinkActive: this.parallaxSinkState !== null,
+      parallaxSinkStreamId: this.parallaxSinkState?.streamId ?? null,
+      parallaxSinkBufferedFrames: this.parallaxSinkState?.bufferedFrames ?? 0,
+      parallaxSinkUnderruns: this.parallaxSinkState?.underruns ?? 0,
       normalizationApproximate: this.normalizationApproximate,
       visualizerConsumerCount: this.visualizerConsumerDemand.size,
       activeVisualizerScopes,
@@ -4447,6 +5469,95 @@ export class AudioEngine {
     return Math.max(0, Math.min(5000, ms))
   }
 
+  // Canonical per-endpoint output-latency estimator used by every Parallax scheduling site (host
+  // local playback, sink initial anchor, sink hard re-sync). Single estimator policy: outputLatency
+  // + baseLatency. They are *components* of the render→DAC path and sum (baseLatency = destination
+  // node to audio subsystem, outputLatency = audio subsystem to device). The alternative —
+  // (ctx.currentTime − getOutputTimestamp().contextTime) — measures the same total directly but is
+  // jittery without filtering and is kept only as a diagnostic in `getOutputLatencyMetrics()`. Do
+  // NOT add the two estimators together; that's the double-count trap.
+  //
+  // Manual per-endpoint advance trim hooks here (positive = play this endpoint earlier). §14.1.1
+  // wires `parallaxSinkAdvanceMs` to the host-pushed per-sink trim; the field defaults to 0 so
+  // unset trims behave exactly like before this feature landed.
+  private getParallaxEndpointLatencySeconds(): number {
+    return this.getParallaxEndpointLatencyMs() / 1000
+  }
+
+  // Public canonical estimator — same value the three scheduling sites subtract. Consumers that
+  // need this for *consistency with scheduling* (the drift loop's target, host timeline anchors
+  // expressed in acoustic time) must use this method rather than re-summing `outputLatency +
+  // baseLatency` from `getOutputLatencyMetrics()`. Otherwise the per-sink trim would shift
+  // scheduling but not the drift target — the loop would slew to undo the trim.
+  getParallaxEndpointLatencyMs(): number {
+    const ctx = this.context
+    if (!ctx) return 0
+    const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+    const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+    const autoMs = (outMs ?? 0) + (baseMs ?? 0)
+    return autoMs + this.parallaxSinkAdvanceMs
+  }
+
+  // §14.1.1 — host pushes per-sink trim via `sink-trim-update` events. The drift loop and snap
+  // target both consume `getParallaxEndpointLatencyMs()` so they see the new value on the next
+  // 1 Hz tick; small changes discharge via slew, larger changes may produce one snap.
+  setParallaxSinkAdvanceMs(ms: number): void {
+    if (!Number.isFinite(ms)) return
+    this.parallaxSinkAdvanceMs = ms
+  }
+
+  // §14.1.1 — public getter so the sink renderer can echo the currently-applied trim back into the
+  // periodic telemetry payload, letting the host UI display the live-effective value (and detect
+  // any mismatch between what it pushed and what the sink is actually running).
+  getParallaxSinkAdvanceMs(): number {
+    return this.parallaxSinkAdvanceMs
+  }
+
+  // §14.1.1 / §15.4 fallback path — Chromium's AudioContext.sinkId is the *device id currently
+  // assigned via setSinkId*, which returns `''` for the system default route and may be empty
+  // during context initialization. The renderer normalizes `''` → `'default'` so the storage key
+  // is stable; pre-context returns `''` to let callers know to wait. Codex's constraint (b) says
+  // the *primary* identity source is `audioSettingsStore.selectedDeviceId` (user intent), so this
+  // is only consulted when settings are unset.
+  getOutputDeviceId(): string {
+    const ctx = this.context as (AudioContext & { sinkId?: string }) | null
+    if (!ctx) return ''
+    const raw = (ctx.sinkId ?? '').trim()
+    if (!raw) return 'default'
+    return raw
+  }
+
+  // Fail-loud guard at every Parallax scheduling site. After auto output-latency compensation
+  // `mappedStartContextTime` should sit at or after `ctx.currentTime`; if it drops noticeably
+  // negative, the acoustic-timeline invariant has been violated (stale anchor, bad clock offset,
+  // arithmetic error in the scheduling math). Previously such cases were silently clamped via
+  // `Math.max(ctx.currentTime, ...)`, which masked the -2543-frame sentinel that turned up in the
+  // CSV. We still clamp at the call site so playback keeps going, but a console.warn surfaces the
+  // context so the bug is impossible to miss in the next CSV trace.
+  private assertParallaxScheduledLead(
+    site: string,
+    scheduledLeadMs: number,
+    context: {
+      targetAcousticHostTimeMs?: number
+      localLatencyMs: number
+      mappedStartContextTime: number
+      ctxNow: number
+    }
+  ): void {
+    if (scheduledLeadMs >= -50) return
+    console.warn(
+      `[parallax] ${site}: scheduled lead is strongly negative (${scheduledLeadMs.toFixed(2)} ms) — `
+        + `acoustic-timeline invariant violated, clamping to ctx.currentTime. context:`,
+      {
+        scheduledLeadMs,
+        ctxNow: context.ctxNow,
+        mappedStartContextTime: context.mappedStartContextTime,
+        localLatencyMs: context.localLatencyMs,
+        targetAcousticHostTimeMs: context.targetAcousticHostTimeMs ?? null
+      }
+    )
+  }
+
   private getContextClockSnapshot(ctx: AudioContext): { contextTime: number; performanceTime: number } {
     const fallback = {
       contextTime: ctx.currentTime,
@@ -4627,6 +5738,7 @@ export class AudioEngine {
       this.stopSource()
       this.clearNextBuffer()
       await this.clearRemoteStreamState(true)
+      this.clearParallaxSinkState()
       this.assertCurrentLoadOperation(loadOperation)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
@@ -5195,6 +6307,11 @@ export class AudioEngine {
       return
     }
 
+    if (this.parallaxSinkState) {
+      this.stopParallaxSinkPlayback()
+      return
+    }
+
     this.stopSource()
     this.cancelScheduledNext()
     this.releaseDecodedBuffers()
@@ -5572,6 +6689,8 @@ export class AudioEngine {
       this.workletNode = null
     }
     this.disconnectRemoteStreamNode()
+    this.disconnectParallaxSinkNode()
+    this.parallaxSinkState = null
     if (this.analysisTapSinkNode) {
       try { this.analysisTapSinkNode.disconnect() } catch { /* ignore */ }
       this.analysisTapSinkNode = null

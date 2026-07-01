@@ -28,6 +28,28 @@ import type {
   PhoneRemoteStatus
 } from '../types/phoneRemote'
 import type {
+  ParallaxAudioChunk,
+  ParallaxDiscoveryEvent,
+  ParallaxOutputLatencyMetrics,
+  ParallaxPairedSink,
+  ParallaxPairResponse,
+  ParallaxHostStreamStartInfo,
+  ParallaxHostStreamStartOptions,
+  ParallaxHostNextStreamStartOptions,
+  ParallaxHostTimelinePublishOptions,
+  ParallaxPairingPin,
+  ParallaxSinkConnectionConfig,
+  ParallaxSinkTelemetry,
+  ParallaxStatus,
+  ParallaxTimelineEvent,
+  ParallaxTimelineState,
+  PersistedParallaxSinkConnection
+} from '../types/parallax'
+import type {
+  DynamicPlaylistRulesV1,
+  PlaylistKind
+} from '../shared/playlists/dynamicPlaylist'
+import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
   LastFmCustomProfileInput,
@@ -90,7 +112,12 @@ import type {
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
-import type { UIScaleShortcutAction } from '../types/uiScale'
+import type {
+  GlobalShortcutRegistrationRequest,
+  GlobalShortcutRegistrationResult,
+  InputActionId,
+  RawBindingInput
+} from '../types/inputBindings'
 import type {
   IntegrityFinding,
   IntegrityScanMode,
@@ -178,6 +205,7 @@ export interface DbTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   base_artwork_hash: string | null
   format: string
@@ -199,6 +227,8 @@ export interface DbTrack {
   is_available: number
   availability_reason: string | null
   file_created_at: number | null
+  play_count: number
+  last_played_at: number | null
   added_at: number
   modified_at: number
 }
@@ -255,8 +285,17 @@ export interface AlbumListOptions {
 export interface Artist {
   artist: string
   track_count: number
+  primary_track_count: number
+  album_count: number
   artwork_hash: string | null
   artwork_source: 'manual' | 'detected' | 'track' | null
+}
+
+export interface Genre {
+  genre: string
+  track_count: number
+  album_count: number
+  artwork_hash: string | null
 }
 
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
@@ -294,6 +333,7 @@ export interface ScanIssueLog {
 export interface Playlist {
   id: number
   name: string
+  kind: PlaylistKind
   created_at: number
   updated_at: number
   last_played_at: number | null
@@ -339,6 +379,11 @@ export interface PlaylistExportResult {
   playlistId: number
   exportedCount: number
   warnings: string[]
+}
+
+export interface DynamicPlaylistPreview {
+  track_count: number
+  tracks: DbTrack[]
 }
 
 export type MetadataSaveMode = 'virtual' | 'file'
@@ -425,12 +470,16 @@ export interface DiscordPresenceUpdate {
 
 export type DiscordRpcCompactStatusMode = 'title' | 'artist'
 export type DiscordRpcExpandedInfoMode = 'file-info' | 'album'
+export type DiscordRpcLinkDestination = 'off' | 'ytmusic' | 'lastfm'
 
 export interface DiscordRpcConfigureOptions {
   enabled: boolean
   coverArtEnabled: boolean
+  smallIconEnabled?: boolean
   compactStatusMode?: DiscordRpcCompactStatusMode
   expandedInfoMode?: DiscordRpcExpandedInfoMode
+  linkDestination?: DiscordRpcLinkDestination
+  pauseClearMinutes?: number
 }
 
 export interface DiscordRpcConfigureResult {
@@ -604,6 +653,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
     getWindowState: () => ipcRenderer.invoke('mini-player:getWindowState'),
+    isCursorInsideWindow: () => ipcRenderer.invoke('mini-player:isCursorInsideWindow'),
     setVisualizerMode: (mode: MiniPlayerVisualizerMode) => ipcRenderer.invoke('mini-player:setVisualizerMode', mode),
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
@@ -740,11 +790,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('theme:setRuntimeIconDataUrl', payload),
   },
 
-  uiScale: {
-    onShortcut: (callback: (action: UIScaleShortcutAction) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, action: UIScaleShortcutAction) => callback(action)
-      ipcRenderer.on('ui-scale:shortcut', handler)
-      return () => ipcRenderer.removeListener('ui-scale:shortcut', handler)
+  inputBindings: {
+    configureGlobal: (requests: GlobalShortcutRegistrationRequest[]): Promise<GlobalShortcutRegistrationResult[]> =>
+      ipcRenderer.invoke('input-bindings:configure-global', requests),
+    onInput: (callback: (input: RawBindingInput) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, input: RawBindingInput) => callback(input)
+      ipcRenderer.on('input-bindings:input', handler)
+      return () => ipcRenderer.removeListener('input-bindings:input', handler)
+    },
+    onGlobalAction: (callback: (actionId: InputActionId) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, actionId: InputActionId) => callback(actionId)
+      ipcRenderer.on('input-bindings:global-action', handler)
+      return () => ipcRenderer.removeListener('input-bindings:global-action', handler)
     }
   },
 
@@ -796,6 +853,171 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
       ipcRenderer.on('phone-remote:status', handler)
       return () => ipcRenderer.removeListener('phone-remote:status', handler)
+    }
+  },
+
+  parallax: {
+    // Read once at preload init. Renderer cannot reach process.env directly with contextIsolation,
+    // so we expose the resolved boolean.
+    //
+    // History:
+    //   - Phase 2B (§13.5) shipped predictor as opt-in via PARALLAX_USE_HOST_PREDICTOR=1.
+    //   - After macOS rig validation (rate +2.2 ppm vs env-off +4.1 ppm, jitter 0.4×, single
+    //     early snap) §13.5.1 flipped it to default-on with PARALLAX_DISABLE_HOST_PREDICTOR=1
+    //     as the kill switch.
+    //   - 2026-06 Windows + complex-audio-path testing showed the predictor introduces a
+    //     session-dependent static bias (~5-6 ms shifts across restarts, occasionally
+    //     20-25 ms) that breaks the "calibrate manual trim once" path. Phase 1 nominal
+    //     timeline alone gives a stable (if biased) offset users can dial in once and trust.
+    //     Polarity flipped: predictor is now OPT-IN again, via PARALLAX_ENABLE_HOST_PREDICTOR=1.
+    //   - PARALLAX_DISABLE_HOST_PREDICTOR still honored as an explicit override — forces off
+    //     even if the enable flag is set, so users who already had the kill switch in their
+    //     env stay at off without breakage.
+    //
+    // CSV `loop_source` continues to distinguish predictor vs phase1 frames so the active path
+    // is verifiable per session.
+    //
+    // The flag still lives on the SINK process — same gotcha as before
+    // (feedback_parallax-env-flag-machine-side memory). Setting it on the host has no effect.
+    useHostPredictor: ((): boolean => {
+      const explicitDisable = process.env.PARALLAX_DISABLE_HOST_PREDICTOR
+      if (explicitDisable === '1' || explicitDisable === 'true') return false
+      const explicitEnable = process.env.PARALLAX_ENABLE_HOST_PREDICTOR
+      return explicitEnable === '1' || explicitEnable === 'true'
+    })(),
+    // §14.1.4 — `--zone` launch flag (or PARALLAX_LAUNCH_ZONE=1 env). Read once at preload init.
+    // Main process translates the argv flag into the env var before this script runs. Renderer's
+    // uiStore seeds `isZoneDisplayActive` from this OR the persisted preference.
+    launchInZoneMode: ((): boolean => {
+      const raw = process.env.PARALLAX_LAUNCH_ZONE
+      return raw === '1' || raw === 'true'
+    })(),
+    getStatus: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:getStatus'),
+    getEndpointIdentity: (): Promise<{ hostname: string; lanIps: string[] }> =>
+      ipcRenderer.invoke('parallax:getEndpointIdentity'),
+    fetchSinkArtwork: (streamId: string): Promise<string | null> =>
+      ipcRenderer.invoke('parallax:fetchSinkArtwork', streamId),
+    requestSinkTrimUpdate: (
+      outputDeviceId: string,
+      outputDeviceLabel: string | null,
+      advanceMs: number
+    ): Promise<boolean> =>
+      ipcRenderer.invoke('parallax:requestSinkTrimUpdate', outputDeviceId, outputDeviceLabel, advanceMs),
+    listPairedSinks: (): Promise<ParallaxPairedSink[]> => ipcRenderer.invoke('parallax:listPairedSinks'),
+    setHostEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setHostEnabled', enabled),
+    // §20 Commit 1. Sink-role toggle.
+    setSinkEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setSinkEnabled', enabled),
+    // §20 Commit 2. mDNS browse on/off + event subscription. Advertise lifecycle is owned by
+    // main (bound to sinkEnabled) — no IPC needed there.
+    startDiscoveryBrowse: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:startDiscoveryBrowse'),
+    stopDiscoveryBrowse: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:stopDiscoveryBrowse'),
+    onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, event: ParallaxDiscoveryEvent) => callback(event)
+      ipcRenderer.on('parallax:discoveryEvent', handler)
+      return () => ipcRenderer.removeListener('parallax:discoveryEvent', handler)
+    },
+    // §20 Commit 3 pair flow. Wizard calls initiate → user reads sink PIN → wizard calls
+    // submitPin. Cancel discards the host-side candidate; the sink expires its pending state
+    // independently via TTL. Errors bubble through the IPC reject channel.
+    initiatePair: (sinkBaseUrl: string): Promise<{
+      pairingId: string
+      sinkParallaxEndpointUuid: string | null
+      sinkName: string
+      expiresInSeconds: number
+    }> => ipcRenderer.invoke('parallax:initiatePair', sinkBaseUrl),
+    submitPairPin: (
+      pairingId: string,
+      pin: string,
+      sinkName?: string
+    ): Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }> =>
+      ipcRenderer.invoke('parallax:submitPairPin', pairingId, pin, sinkName),
+    cancelPair: (pairingId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('parallax:cancelPair', pairingId),
+    cancelIncomingPair: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('parallax:cancelIncomingPair'),
+    setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
+    createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
+    pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
+      ipcRenderer.invoke('parallax:pairWithHost', baseUrl, pin, sinkName),
+    connectSink: (config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:connectSink', config),
+    disconnectSink: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:disconnectSink'),
+    publishHostStreamStart: (
+      info: ParallaxHostStreamStartInfo,
+      options?: ParallaxHostStreamStartOptions
+    ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostStreamStart', info, options),
+    publishHostNextStreamStart: (
+      info: ParallaxHostStreamStartInfo,
+      options: ParallaxHostNextStreamStartOptions
+    ): Promise<ParallaxTimelineState> => ipcRenderer.invoke('parallax:publishHostNextStreamStart', info, options),
+    publishHostNextStreamCancel: (): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostNextStreamCancel'),
+    publishHostPromoteNextStream: (): Promise<ParallaxTimelineState | null> =>
+      ipcRenderer.invoke('parallax:publishHostPromoteNextStream'),
+    publishHostAudioChunk: (chunk: ParallaxAudioChunk): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostAudioChunk', chunk),
+    publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostTimeline', timeline, options),
+    publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishHostEmitAnchor', anchor),
+    stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
+    publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
+      ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
+    reportHostLatency: (metrics: ParallaxOutputLatencyMetrics): Promise<void> =>
+      ipcRenderer.invoke('parallax:reportHostLatency', metrics),
+    revokePairedSink: (id: string): Promise<ParallaxPairedSink | null> =>
+      ipcRenderer.invoke('parallax:revokePairedSink', id),
+    renamePairedSink: (id: string, name: string): Promise<ParallaxPairedSink | null> =>
+      ipcRenderer.invoke('parallax:renamePairedSink', id, name),
+    revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
+    clearHostPresenceCache: (sinkId?: string): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:clearHostPresenceCache', sinkId),
+    resetToDefaults: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:resetToDefaults'),
+    // §14.1.1. Host UI calls this when the user moves a per-sink trim stepper. Main process
+    // persists to pairedSink.trims and broadcasts `sink-trim-update` to that sink's SSE clients.
+    setSinkTrim: (
+      sinkId: string,
+      outputDeviceId: string,
+      outputDeviceLabel: string | null,
+      advanceMs: number
+    ): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setSinkTrim', sinkId, outputDeviceId, outputDeviceLabel, advanceMs),
+    // §14.1.2. Sink-side durable pairing. `setSinkConnection` persists creds after a successful
+    // pair; `getSinkConnection` populates the "paired with X" UI; `forgetSinkConnection` is the
+    // sink-side symmetric of the host's "Revoke" — wipes creds and stops auto-reconnect.
+    setSinkConnection: (config: PersistedParallaxSinkConnection): Promise<PersistedParallaxSinkConnection | null> =>
+      ipcRenderer.invoke('parallax:setSinkConnection', config),
+    getSinkConnection: (): Promise<PersistedParallaxSinkConnection | null> =>
+      ipcRenderer.invoke('parallax:getSinkConnection'),
+    forgetSinkConnection: (): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:forgetSinkConnection'),
+    reconnectFromPersisted: (): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:reconnectFromPersisted'),
+    startAutoReconnect: (): Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }> =>
+      ipcRenderer.invoke('parallax:startAutoReconnect'),
+    onSinkPaired: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('parallax:sinkPaired', handler)
+      return () => ipcRenderer.removeListener('parallax:sinkPaired', handler)
+    },
+    onStatus: (callback: (status: ParallaxStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: ParallaxStatus) => callback(status)
+      ipcRenderer.on('parallax:status', handler)
+      return () => ipcRenderer.removeListener('parallax:status', handler)
+    },
+    onEvent: (callback: (event: ParallaxTimelineEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, event: ParallaxTimelineEvent) => callback(event)
+      ipcRenderer.on('parallax:event', handler)
+      return () => ipcRenderer.removeListener('parallax:event', handler)
+    },
+    onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, chunk: ParallaxAudioChunk) => callback(chunk)
+      ipcRenderer.on('parallax:audioChunk', handler)
+      return () => ipcRenderer.removeListener('parallax:audioChunk', handler)
     }
   },
 
@@ -962,9 +1184,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
+    getTracksByGenre: (genre: string) =>
+      ipcRenderer.invoke('library:getTracksByGenre', genre) as Promise<DbTrack[]>,
     getTracksByAlbum: (album: string, artist?: string, identityKey?: string) =>
       ipcRenderer.invoke('library:getTracksByAlbum', album, artist, identityKey),
     getArtists: (mode?: LibraryArtistBrowseMode) => ipcRenderer.invoke('library:getArtists', mode),
+    getGenres: () => ipcRenderer.invoke('library:getGenres') as Promise<Genre[]>,
     setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) =>
       ipcRenderer.invoke('library:setArtistImageFromFile', artist, mode, imagePath),
     clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) =>
@@ -1050,7 +1275,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       canceled?: boolean
     }>,
-    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount'),
+    getTrackCount: () => ipcRenderer.invoke('library:getTrackCount') as Promise<number>,
+    getTotalTrackDuration: () => ipcRenderer.invoke('library:getTotalTrackDuration') as Promise<number>,
     getArtworkPath: (hash: string) => ipcRenderer.invoke('library:getArtworkPath', hash),
     getArtworkDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkDataUrl', hash),
     getArtworkThumbnailDataUrl: (hash: string) => ipcRenderer.invoke('library:getArtworkThumbnailDataUrl', hash),
@@ -1110,6 +1336,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
+    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
+    getDynamicPlaylistRules: (playlistId: number) => ipcRenderer.invoke('library:getDynamicPlaylistRules', playlistId),
+    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
+    previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
@@ -1130,6 +1360,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
 contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioController)
+// §22 Commit 1 — Parallax loopback (Windows-only WASAPI, stubbed elsewhere). Wrapped in plain
+// JS thunks rather than exposing the native sub-object directly — contextBridge handles
+// `visualizerDSP` at top level via Electron's special path but does NOT fully forward arbitrary
+// nested native objects, so a sub-object extraction (which is what we want here) returns
+// proxies that don't invoke cleanly. The wrappers are cheap, stay in the preload process (no
+// IPC), and preserve the no-jitter property `wallNowMs()` needs for the §22.11(a) clock anchor.
+const parallaxLoopbackNative = (visualizerDSP as {
+  parallaxLoopback?: {
+    isSupported: () => { supported: boolean; reason?: string }
+    wallNowMs: () => number
+    start: () => { ok: boolean; endpoint?: unknown; error?: string }
+    stop: () => void
+    drain: () => Array<unknown>
+    isRunning: () => boolean
+  }
+} | null)?.parallaxLoopback ?? null
+contextBridge.exposeInMainWorld(
+  'parallaxLoopbackAPI',
+  parallaxLoopbackNative
+    ? {
+        isSupported: () => parallaxLoopbackNative.isSupported(),
+        wallNowMs: () => parallaxLoopbackNative.wallNowMs(),
+        start: () => parallaxLoopbackNative.start(),
+        stop: () => parallaxLoopbackNative.stop(),
+        drain: () => parallaxLoopbackNative.drain(),
+        isRunning: () => parallaxLoopbackNative.isRunning()
+      }
+    : null
+)
 
 // Type declarations for renderer
 declare global {
@@ -1169,6 +1428,7 @@ declare global {
         open: () => Promise<void>
         close: () => Promise<void>
         getWindowState: () => Promise<MiniPlayerWindowState>
+        isCursorInsideWindow: () => Promise<boolean>
         setVisualizerMode: (mode: MiniPlayerVisualizerMode) => Promise<MiniPlayerWindowState>
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>
@@ -1227,8 +1487,10 @@ declare global {
       theme: {
         setRuntimeIconDataUrl: (payload: string | RuntimeIconImageSetPayload) => void
       }
-      uiScale: {
-        onShortcut: (callback: (action: UIScaleShortcutAction) => void) => () => void
+      inputBindings: {
+        configureGlobal: (requests: GlobalShortcutRegistrationRequest[]) => Promise<GlobalShortcutRegistrationResult[]>
+        onInput: (callback: (input: RawBindingInput) => void) => () => void
+        onGlobalAction: (callback: (actionId: InputActionId) => void) => () => void
       }
 
       // Integrations
@@ -1260,6 +1522,78 @@ declare global {
         setPort: (port: number) => Promise<PhoneRemoteStatus>
         resetToDefaults: () => Promise<PhoneRemoteStatus>
         onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
+      }
+      parallax: {
+        useHostPredictor: boolean
+        launchInZoneMode: boolean
+        getStatus: () => Promise<ParallaxStatus>
+        getEndpointIdentity: () => Promise<{ hostname: string; lanIps: string[] }>
+        fetchSinkArtwork: (streamId: string) => Promise<string | null>
+        requestSinkTrimUpdate: (
+          outputDeviceId: string,
+          outputDeviceLabel: string | null,
+          advanceMs: number
+        ) => Promise<boolean>
+        listPairedSinks: () => Promise<ParallaxPairedSink[]>
+        setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+        setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus>
+        startDiscoveryBrowse: () => Promise<{ ok: true }>
+        stopDiscoveryBrowse: () => Promise<{ ok: true }>
+        onDiscoveryEvent: (callback: (event: ParallaxDiscoveryEvent) => void) => () => void
+        initiatePair: (sinkBaseUrl: string) => Promise<{
+          pairingId: string
+          sinkParallaxEndpointUuid: string | null
+          sinkName: string
+          expiresInSeconds: number
+        }>
+        submitPairPin: (
+          pairingId: string,
+          pin: string,
+          sinkName?: string
+        ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
+        cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
+        cancelIncomingPair: () => Promise<{ ok: true }>
+        setHostPort: (port: number) => Promise<ParallaxStatus>
+        createPairingPin: () => Promise<ParallaxPairingPin>
+        pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
+        connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
+        disconnectSink: () => Promise<ParallaxStatus>
+        publishHostStreamStart: (
+          info: ParallaxHostStreamStartInfo,
+          options?: ParallaxHostStreamStartOptions
+        ) => Promise<ParallaxTimelineState>
+        publishHostNextStreamStart: (
+          info: ParallaxHostStreamStartInfo,
+          options: ParallaxHostNextStreamStartOptions
+        ) => Promise<ParallaxTimelineState>
+        publishHostNextStreamCancel: () => Promise<void>
+        publishHostPromoteNextStream: () => Promise<ParallaxTimelineState | null>
+        publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
+        publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
+        publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
+        stopHostStream: () => Promise<void>
+        publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
+        reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
+        revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+        renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
+        revokeAllPairedSinks: () => Promise<number>
+        clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
+        resetToDefaults: () => Promise<ParallaxStatus>
+        setSinkTrim: (
+          sinkId: string,
+          outputDeviceId: string,
+          outputDeviceLabel: string | null,
+          advanceMs: number
+        ) => Promise<ParallaxStatus>
+        setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
+        getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
+        forgetSinkConnection: () => Promise<ParallaxStatus>
+        reconnectFromPersisted: () => Promise<ParallaxStatus>
+        startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
+        onSinkPaired: (callback: () => void) => () => void
+        onStatus: (callback: (status: ParallaxStatus) => void) => () => void
+        onEvent: (callback: (event: ParallaxTimelineEvent) => void) => () => void
+        onAudioChunk: (callback: (chunk: ParallaxAudioChunk) => void) => () => void
       }
       lastFm: {
         getStatus: () => Promise<LastFmStatus>
@@ -1353,8 +1687,10 @@ declare global {
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
+        getTracksByGenre: (genre: string) => Promise<DbTrack[]>
         getTracksByAlbum: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]>
         getArtists: (mode?: LibraryArtistBrowseMode) => Promise<Artist[]>
+        getGenres: () => Promise<Genre[]>
         setArtistImageFromFile: (artist: string, mode: LibraryArtistBrowseMode, imagePath: string) => Promise<void>
         clearArtistImage: (artist: string, mode: LibraryArtistBrowseMode) => Promise<void>
         getAlbums: (options?: AlbumListOptions) => Promise<Album[]>
@@ -1438,6 +1774,7 @@ declare global {
           canceled?: boolean
         }>
         getTrackCount: () => Promise<number>
+        getTotalTrackDuration: () => Promise<number>
         getArtworkPath: (hash: string) => Promise<string>
         getArtworkDataUrl: (hash: string) => Promise<string | null>
         getArtworkThumbnailDataUrl: (hash: string) => Promise<string | null>
@@ -1465,6 +1802,10 @@ declare global {
         // Playlists
         getPlaylists: () => Promise<Playlist[]>
         createPlaylist: (name: string) => Promise<Playlist>
+        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
+        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
+        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
+        previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
@@ -1484,5 +1825,33 @@ declare global {
 
     // Native Visualizer API - exposed as visualizerAPI global
     visualizerAPI: VisualizerDSP | null
+
+    // §22 Commit 1 — Parallax loopback (Windows-only). Null on platforms / builds where the
+    // native module didn't load or the loopback exports aren't present.
+    parallaxLoopbackAPI: ParallaxLoopbackNative | null
   }
+}
+
+export interface ParallaxLoopbackCapturedSegment {
+  firstFrameIndex: number
+  captureWallMs: number
+  frameCount: number
+  channelCount: number
+  pcm: Float32Array
+}
+
+export interface ParallaxLoopbackEndpointInfo {
+  deviceId: string
+  deviceName: string
+  sampleRate: number
+  channelCount: number
+}
+
+export interface ParallaxLoopbackNative {
+  isSupported(): { supported: boolean; reason?: string }
+  wallNowMs(): number
+  start(): { ok: boolean; endpoint?: ParallaxLoopbackEndpointInfo; error?: string }
+  stop(): void
+  drain(): ParallaxLoopbackCapturedSegment[]
+  isRunning(): boolean
 }

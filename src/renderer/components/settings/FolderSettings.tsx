@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { type FolderSubdirectoryEntry, type ScanIssueEntry, useLibraryStore } from '../../stores/libraryStore'
+import { usePresence } from '../../hooks/usePresence'
 
 interface FolderSettingsProps {
   isOpen: boolean
@@ -51,6 +52,7 @@ function stopSyntheticEventPropagation(event: { preventDefault: () => void; stop
 }
 
 export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps) {
+  const presence = usePresence(isOpen)
   const folders = useLibraryStore((state) => state.folders)
   const loadFolders = useLibraryStore((state) => state.loadFolders)
   const addFolderWithoutScan = useLibraryStore((state) => state.addFolderWithoutScan)
@@ -134,7 +136,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     setLoadingNodes(new Set())
     setNodeErrors(new Map())
     setRemovingPath(null)
-  }, [isOpen])
+  }, [presence.shouldRender])
 
   useEffect(() => {
     if (!isOpen || !isScanning) return
@@ -150,7 +152,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
   }, [cancelScan, isOpen, isScanning])
 
   useEffect(() => {
-    if (!isOpen) return
+    if (!presence.shouldRender) return
 
     const body = document.body
     const appElement = document.querySelector('.app')
@@ -175,7 +177,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         appElement.removeAttribute('inert')
       }
     }
-  }, [isOpen])
+  }, [presence.shouldRender])
 
   const pendingScanFolderPaths = useMemo(() => {
     const paths = new Set<string>(pendingFolderScans)
@@ -653,9 +655,14 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
     )
   }
 
-  if (!isOpen) return null
+  if (!presence.shouldRender) return null
   const modalContent = (
-    <div className="modal-overlay folder-settings-overlay" onClick={handleClose}>
+    <div
+      className="modal-overlay folder-settings-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
+      onClick={handleClose}
+    >
       <div
         className="folder-settings-shell"
         onClick={isolateModalShellEvent}

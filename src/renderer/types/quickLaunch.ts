@@ -18,6 +18,7 @@ export interface QuickLaunchTrackRecord {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -55,6 +56,7 @@ export interface QuickLaunchArtistRecord {
 export interface QuickLaunchPlaylistRecord {
   id: number
   name: string
+  kind?: 'normal' | 'dynamic'
   track_count: number
   custom_cover_hash: string | null
   auto_cover_hash: string | null

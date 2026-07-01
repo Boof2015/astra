@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
+import ParallaxPresencePill from './ParallaxPresencePill'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
@@ -315,6 +316,9 @@ export default function TitleBar() {
       <div className="titlebar-spacer" />
 
       <div className="titlebar-right">
+        {/* §18 — Parallax presence pill. Mounted unconditionally; renders null when neither host
+            nor sink mode is active. Sibling to the API/PWA pills per share §18.1. */}
+        <ParallaxPresencePill />
         {apiIndicatorLabel && (
           <span className="titlebar-api-pill" title={apiIndicatorTitle}>
             <span className="titlebar-api-pill-dot" aria-hidden="true" />

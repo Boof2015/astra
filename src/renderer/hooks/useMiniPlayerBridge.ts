@@ -22,7 +22,7 @@ const MINI_MAX_FFT_SIZE = 2048
 const DEFAULT_MINI_WINDOW_STATE: MiniPlayerWindowState = {
   isOpen: false,
   alwaysOnTop: true,
-  visualizerMode: 'spectrum',
+  visualizerMode: 'off',
 }
 
 function toSafeTime(value: number): number {

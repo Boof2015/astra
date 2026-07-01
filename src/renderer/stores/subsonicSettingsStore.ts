@@ -27,6 +27,8 @@ interface SubsonicSettingsStore {
 }
 
 let statusUnsubscribe: (() => void) | null = null
+const metadataReadySourceIds = new Set<number>()
+let metadataReadyRefreshPromise: Promise<void> | null = null
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -34,11 +36,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get) => {
-  const applySources = async (sources: SubsonicSource[]): Promise<void> => {
-    set({
-      sources,
-      errorMessage: ''
-    })
+  const refreshLibraryViews = async (): Promise<void> => {
     await useLibraryStore.getState().loadLibrary()
     await usePlaylistStore.getState().loadPlaylists()
     const selectedPlaylistId = usePlaylistStore.getState().selectedPlaylistId
@@ -47,10 +45,38 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     }
   }
 
+  const scheduleMetadataReadyRefresh = (): void => {
+    if (metadataReadyRefreshPromise) return
+    metadataReadyRefreshPromise = refreshLibraryViews()
+      .catch((error) => {
+        console.error('Failed to refresh library after Subsonic metadata sync.', error)
+      })
+      .finally(() => {
+        metadataReadyRefreshPromise = null
+      })
+  }
+
+  const applySources = async (sources: SubsonicSource[]): Promise<void> => {
+    set({
+      sources,
+      errorMessage: ''
+    })
+    await refreshLibraryViews()
+  }
+
   const ensureSubscription = () => {
     if (statusUnsubscribe) return
     statusUnsubscribe = window.electronAPI.subsonic.onStatus((status) => {
       set({ status })
+      for (const sourceStatus of status.sources) {
+        if (sourceStatus.progress?.phase !== 'playlists') continue
+        if (metadataReadySourceIds.has(sourceStatus.sourceId)) continue
+        metadataReadySourceIds.add(sourceStatus.sourceId)
+        scheduleMetadataReadyRefresh()
+      }
+      if (!status.isSyncing) {
+        metadataReadySourceIds.clear()
+      }
     })
   }
 

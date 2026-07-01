@@ -11,6 +11,7 @@ import {
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useThemeStore } from '../../stores/themeStore'
 import {
   buildArtistGraph,
   buildArtistGraphLayout,
@@ -19,6 +20,7 @@ import {
   type ArtistGraphBuildResult,
   type ArtistGraphNode
 } from '../../utils/libraryGraph'
+import { getFuzzyFieldScore } from '../../utils/fuzzySearch'
 
 interface GraphViewport {
   panX: number
@@ -146,17 +148,27 @@ function findBestArtistMatch(
   graph: ArtistGraphBuildResult,
   query: string
 ): ArtistGraphNode | null {
-  const trimmedQuery = query.trim().toLocaleLowerCase()
+  const trimmedQuery = query.trim()
   if (!trimmedQuery) return null
 
-  const exact = graph.nodes.find((node) => node.artist.toLocaleLowerCase() === trimmedQuery)
+  const normalizedQuery = trimmedQuery.toLocaleLowerCase()
+  const exact = graph.nodes.find((node) => node.artist.toLocaleLowerCase() === normalizedQuery)
   if (exact) return exact
 
-  const prefix = graph.nodes.find((node) => node.artist.toLocaleLowerCase().startsWith(trimmedQuery))
-  if (prefix) return prefix
+  const scored = graph.nodes.map((node, index) => {
+    const score = getFuzzyFieldScore(trimmedQuery, [
+      { value: node.artist, weight: 1.5 }
+    ])
+    if (score === null) return null
+    return { node, score, index }
+  }).filter((result): result is { node: ArtistGraphNode; score: number; index: number } => result !== null)
 
-  const includes = graph.nodes.find((node) => node.artist.toLocaleLowerCase().includes(trimmedQuery))
-  return includes ?? null
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score
+    return a.index - b.index
+  })
+
+  return scored[0]?.node ?? null
 }
 
 function getNodeRadius(node: ArtistGraphNode, maxTrackCount: number): number {
@@ -219,6 +231,25 @@ export default function GraphView() {
   const resetFocusNeighbors = useGraphStore((state) => state.resetFocusNeighbors)
 
   const setActiveView = useUIStore((state) => state.setActiveView)
+  const isLightTheme = useThemeStore((state) => state.resolvedTokens.isLight)
+  const graphEdgeStroke = isLightTheme
+    ? 'rgba(30, 41, 59, 0.82)'
+    : 'rgba(255, 255, 255, 0.88)'
+  const graphNodeFills = isLightTheme
+    ? {
+      selected: 'rgba(15, 23, 42, 0.86)',
+      hovered: 'rgba(30, 41, 59, 0.74)',
+      focusRoot: 'rgba(51, 65, 85, 0.62)',
+      compared: 'rgba(71, 85, 105, 0.64)',
+      base: 'rgba(100, 116, 139, 0.52)',
+    }
+    : {
+      selected: 'rgba(240, 244, 252, 0.95)',
+      hovered: 'rgba(226, 231, 240, 0.88)',
+      focusRoot: 'rgba(196, 204, 218, 0.76)',
+      compared: 'rgba(188, 198, 216, 0.8)',
+      base: 'rgba(174, 182, 196, 0.7)',
+    }
 
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const surfaceObserverRef = useRef<ResizeObserver | null>(null)
@@ -1273,7 +1304,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.thin}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.08}
                         strokeWidth={0.6}
                         strokeLinecap="round"
@@ -1283,7 +1314,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.medium}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.12}
                         strokeWidth={1}
                         strokeLinecap="round"
@@ -1293,7 +1324,7 @@ export default function GraphView() {
                       <path
                         d={batchedSettledEdgePaths.thick}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.88)"
+                        stroke={graphEdgeStroke}
                         strokeOpacity={0.18}
                         strokeWidth={1.6}
                         strokeLinecap="round"
@@ -1335,7 +1366,7 @@ export default function GraphView() {
                       y1={sourceNode.y}
                       x2={targetNode.x}
                       y2={targetNode.y}
-                      stroke="rgba(255, 255, 255, 0.88)"
+                      stroke={graphEdgeStroke}
                       strokeOpacity={strokeOpacity}
                       strokeWidth={strokeWidth}
                       strokeLinecap="round"
@@ -1390,14 +1421,14 @@ export default function GraphView() {
                         r={radius}
                         fill={
                           isSelected
-                            ? 'rgba(240, 244, 252, 0.95)'
+                            ? graphNodeFills.selected
                             : isHovered
-                              ? 'rgba(226, 231, 240, 0.88)'
+                              ? graphNodeFills.hovered
                               : isFocusRoot
-                                ? 'rgba(196, 204, 218, 0.76)'
+                                ? graphNodeFills.focusRoot
                                 : isCompared
-                                  ? 'rgba(188, 198, 216, 0.8)'
-                                  : 'rgba(174, 182, 196, 0.7)'
+                                  ? graphNodeFills.compared
+                                  : graphNodeFills.base
                         }
                         opacity={opacity}
                       />

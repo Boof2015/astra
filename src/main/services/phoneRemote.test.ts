@@ -4,6 +4,8 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import type { PhoneRemoteServiceConfig } from '../../types/phoneRemote'
+import { PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
+import { PhoneRemoteDiscoveryService } from './phoneRemoteDiscovery.ts'
 import { PhoneRemoteService } from './phoneRemote.ts'
 import { hashToken } from './playbackHttpCore.ts'
 
@@ -78,6 +80,11 @@ async function createHarness(options: HarnessOptions = {}) {
     dispatchCommand: (command) => {
       commands.push(command)
     },
+    getIdentity: () => ({
+      endpointUuid: 'desktop-test-uuid',
+      desktopName: 'Test Desktop',
+      protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
+    }),
     pairedDevices: options.pairedDevices
   })
 
@@ -152,6 +159,12 @@ test('pairing ticket flow issues a per-device token after approval', async (t) =
   assert.throws(() => disabledHarness.service.createPairingTicket(`http://127.0.0.1:${disabledHarness.port}`), /active/i)
 
   const ticket = harness.service.createPairingTicket(`http://127.0.0.1:${harness.port}`)
+  assert.equal(ticket.identity.desktopName, 'Test Desktop')
+
+  const identityResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/identity`)
+  assert.equal(identityResponse.status, 200)
+  const identityPayload = await identityResponse.json()
+  assert.equal(identityPayload.endpointUuid, 'desktop-test-uuid')
 
   const claimResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/claim`, {
     method: 'POST',
@@ -165,6 +178,7 @@ test('pairing ticket flow issues a per-device token after approval', async (t) =
   assert.equal(claimResponse.status, 200)
   const claimPayload = await claimResponse.json()
   assert.equal(typeof claimPayload.pollToken, 'string')
+  assert.equal(claimPayload.identity.desktopName, 'Test Desktop')
 
   const duplicateClaimResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/claim`, {
     method: 'POST',
@@ -191,6 +205,7 @@ test('pairing ticket flow issues a per-device token after approval', async (t) =
   const approvedPayload = await approvedResponse.json()
   assert.equal(approvedPayload.state, 'approved')
   assert.equal(typeof approvedPayload.token, 'string')
+  assert.equal(approvedPayload.identity.endpointUuid, 'desktop-test-uuid')
 
   const pairedNowPlayingResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
     headers: authHeaders(approvedPayload.token)
@@ -202,6 +217,125 @@ test('pairing ticket flow issues a per-device token after approval', async (t) =
     { cache: 'no-store' }
   )
   assert.equal(consumedResponse.status, 410)
+})
+
+test('PIN pairing flow issues a per-device token after desktop PIN confirmation', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  const requestResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/pin-request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      deviceName: 'Android Remote',
+      clientLabel: 'Android Phone'
+    })
+  })
+  assert.equal(requestResponse.status, 200)
+  const requestPayload = await requestResponse.json()
+  assert.equal(typeof requestPayload.requestId, 'string')
+  assert.equal(requestPayload.identity.desktopName, 'Test Desktop')
+
+  const pendingRequests = harness.service.listPendingPairingRequests()
+  assert.equal(pendingRequests.length, 1)
+  assert.equal(pendingRequests[0].pairingMode, 'pin')
+  assert.match(pendingRequests[0].pin ?? '', /^\d{6}$/)
+
+  const duplicateRequestResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/pin-request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      deviceName: 'Duplicate Remote',
+      clientLabel: 'Android Phone'
+    })
+  })
+  assert.equal(duplicateRequestResponse.status, 409)
+
+  const wrongPin = pendingRequests[0].pin === '000000' ? '000001' : '000000'
+  const wrongConfirmResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/pin-confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      requestId: requestPayload.requestId,
+      pin: wrongPin
+    })
+  })
+  assert.equal(wrongConfirmResponse.status, 401)
+
+  const confirmResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/pin-confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      requestId: requestPayload.requestId,
+      pin: pendingRequests[0].pin
+    })
+  })
+  assert.equal(confirmResponse.status, 200)
+  const confirmPayload = await confirmResponse.json()
+  assert.equal(confirmPayload.state, 'approved')
+  assert.equal(typeof confirmPayload.token, 'string')
+  assert.equal(confirmPayload.identity.endpointUuid, 'desktop-test-uuid')
+
+  const pairedNowPlayingResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: authHeaders(confirmPayload.token)
+  })
+  assert.equal(pairedNowPlayingResponse.status, 200)
+
+  const consumedConfirmResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/pairing/pin-confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      requestId: requestPayload.requestId,
+      pin: pendingRequests[0].pin
+    })
+  })
+  assert.equal(consumedConfirmResponse.status, 410)
+})
+
+test('phone remote discovery advertises only non-secret identity fields', () => {
+  const published: Array<{
+    name: string
+    type: string
+    protocol: string
+    port: number
+    txt: Record<string, string>
+  }> = []
+  let stopped = 0
+  const service = new PhoneRemoteDiscoveryService({
+    createBonjour: () => ({
+      publish: (options) => {
+        published.push(options)
+        return { stop: () => { stopped += 1 } }
+      },
+      destroy: () => {}
+    })
+  })
+
+  service.startAdvertising({
+    name: 'Desk',
+    port: 38402,
+    endpointUuid: 'uuid-1',
+    protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
+  })
+  service.startAdvertising({
+    name: 'Desk',
+    port: 38402,
+    endpointUuid: 'uuid-1',
+    protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
+  })
+
+  assert.equal(published.length, 1)
+  assert.equal(published[0].type, 'astra-remote')
+  assert.equal(published[0].protocol, 'tcp')
+  assert.equal(published[0].txt.endpoint_uuid, 'uuid-1')
+  assert.equal(published[0].txt.protocol_version, String(PHONE_REMOTE_PROTOCOL_VERSION))
+  assert.equal('url' in published[0].txt, false)
+  assert.equal('token' in published[0].txt, false)
+
+  service.stopAdvertising()
+  assert.equal(stopped, 1)
 })
 
 test('paired device tokens survive phone remote config changes and revocation closes device streams', async (t) => {

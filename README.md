@@ -14,7 +14,7 @@ A desktop music player for people who still have a music library. <a href="https
 
 ![Astra home screen](assets/Homescreen.png)
 
-Astra plays your local music - FLACs, MP3s, whatever your collection looks like. It has a native C++ DSP engine, real-time visualizers, a parametric EQ, Dolby Atmos decoding, scrobbling, and a UI that adapts to your music. No telemetry, no accounts, no streaming.
+Astra plays your local music - FLACs, MP3s, whatever your collection looks like. It has a native C++ DSP engine, real-time visualizers, a parametric EQ, Dolby Atmos decoding, synchronized multi-room playback, scrobbling, and a UI that adapts to your music. No telemetry, no accounts, no streaming.
 
 ## Playback
 
@@ -26,7 +26,7 @@ Seven real-time visualizers powered by a native C++ module - oscilloscope, spect
 
 ## Equalizer
 
-Up to 10 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
+Up to 20 fully parametric bands, a live frequency response graph with spectrum overlay, and built-in presets. Save your own, or import AutoEQ headphone calibration profiles directly.
 
 ![Astra equalizer](assets/EQ.png)
 
@@ -67,21 +67,37 @@ Everything that touches the network is optional and off by default.
 
 An optional local REST API lets external tools read the current track, playback position, and cover art, or control playback. Loopback only, bearer token auth, disabled by default. See the [API docs](https://github.com/Boof2015/astra/wiki/Astra-API) for details.
 
+## Parallax
+
+Play the same music in perfect sync across multiple machines on your local network. One machine hosts and controls playback; any number of others join as speakers and stay locked to it. A guided setup walks each machine through its role, speakers are paired with a PIN over the LAN, and per-speaker delay tuning corrects anything that sounds early or late. Playback stays gapless across track boundaries on every speaker. Local network only, no accounts, no cloud.
+
+Parallax is opt-in and still experimental (though stable) enable it from the Experimental section of Settings to reveal its controls.
+
 ## Experimental
 
 Opt-in experimental features that may get changed or removed based on feedback:
 
-- **PWA phone controller** - control playback from your phone over local network, with system media controls and a QR code pairing wizard
+- **PWA phone controller** - control playback from your phone over local network, with system media controls and a QR code pairing wizard - now supports Astra mobile
 - **Library integrity scanner** - find broken files, missing metadata, and quality issues across your library
 - **Graph visualization** - additional visualizer mode to see connections between artists in your library
 - **Ambient stereo-to-multichannel upmix** - fills the rear channels on multichannel setups when you're playing stereo files
 - **5×5 grid activity indicator** - shows what Astra is doing in the background
+- **Controller support** - navigate Astra with an Xbox or PlayStation controller: D-pad/stick to move, A/Cross to select, bumpers for tabs, stick-clicks to jump to the sidebar or now playing
 
 ## Download
 
-Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page. Windows users can also `winget install Boof2015.Astra`. Linux builds ship as AppImage, DEB, RPM, and tarball.
+Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page.
 
-Also available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
+Officially available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
+
+Windows users can also `winget install Boof2015.Astra`
+
+### Community maintained packages
+
+These packages are maintained by third parties and are not built, audited, or officially supported by the Astra project. Packaging, signing, updates, and distribution are handled by their respective maintainers.
+
+- [AUR](https://aur.archlinux.org/packages/astra-music-git) - community maintained AUR source package
+- [TerraPKG](https://terrapkg.com/) - community maintained Fedora/RPM package
 
 ## Building from Source
 

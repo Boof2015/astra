@@ -5,8 +5,10 @@ import type {
   PhoneRemotePendingPairingRequest
 } from '../../../types/phoneRemote'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
+import { usePresence } from '../../hooks/usePresence'
 
 interface LocalApiPairingModalProps {
+  isOpen: boolean
   ticket: PhoneRemotePairingTicket | null
   pairedDevices: PhoneRemotePairedDevice[]
   pendingRequests: PhoneRemotePendingPairingRequest[]
@@ -52,6 +54,7 @@ const STEP_LABELS: { key: WizardStep; label: string }[] = [
 
 export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
   const {
+    isOpen,
     ticket,
     pairedDevices,
     pendingRequests,
@@ -73,15 +76,17 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     onRevokeDevice,
     onRevokeAllDevices
   } = props
+  const presence = usePresence(isOpen)
 
   const [now, setNow] = useState(() => Date.now())
   const [showLinkOnlyQr, setShowLinkOnlyQr] = useState(false)
   const autoGenerateAttempted = useRef(false)
 
   useEffect(() => {
+    if (!isOpen) return
     const timer = window.setInterval(() => setNow(Date.now()), 250)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [isOpen])
 
   const remoteControlReady = apiEnabled && remoteWebEnabled && controlsEnabled
   const canGenerateTicket = remoteControlReady && lanUrls.length > 0
@@ -94,11 +99,15 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
 
   // Auto-close after a device is approved (device count increases)
   useEffect(() => {
+    if (!isOpen) {
+      prevDeviceCount.current = activeDevices.length
+      return
+    }
     if (activeDevices.length > prevDeviceCount.current) {
       onClose()
     }
     prevDeviceCount.current = activeDevices.length
-  }, [activeDevices.length, onClose])
+  }, [activeDevices.length, isOpen, onClose])
 
   const wizardStep: WizardStep = !remoteControlReady
     ? 'enable'
@@ -108,6 +117,10 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
 
   // Auto-generate ticket when entering QR step
   useEffect(() => {
+    if (!isOpen) {
+      autoGenerateAttempted.current = false
+      return
+    }
     if (wizardStep === 'qr' && !hasLiveTicket && canGenerateTicket && !autoGenerateAttempted.current) {
       autoGenerateAttempted.current = true
       onGenerateTicket()
@@ -115,7 +128,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     if (wizardStep !== 'qr') {
       autoGenerateAttempted.current = false
     }
-  }, [wizardStep, hasLiveTicket, canGenerateTicket, onGenerateTicket])
+  }, [wizardStep, hasLiveTicket, canGenerateTicket, isOpen, onGenerateTicket])
 
   const controllerUrl = selectedBaseUrl ? `${selectedBaseUrl}/remote/` : props.selectedControllerUrl
 
@@ -139,8 +152,10 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
 
   const stepIndex = STEP_LABELS.findIndex((s) => s.key === wizardStep)
 
+  if (!presence.shouldRender) return null
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" data-presence={presence.phase} aria-hidden={presence.phase === 'exiting'} onClick={onClose}>
       <div
         className="modal-content local-api-pairing-modal"
         onClick={(event) => event.stopPropagation()}
@@ -270,30 +285,48 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
           {wizardStep === 'approve' && (
             <div className="local-api-pairing-approve" key="approve">
               <h4 className="local-api-pairing-approve-title">A phone wants to connect</h4>
-              {pendingRequests.map((request) => (
-                <div key={request.id} className="local-api-pairing-approve-card">
-                  <div className="local-api-pairing-approve-info">
-                    <span className="local-api-pairing-approve-name">{request.deviceName}</span>
-                    <span className="local-api-pairing-approve-detail">
-                      {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
-                    </span>
+              {pendingRequests.map((request) => {
+                const isPinRequest = request.pairingMode === 'pin' && Boolean(request.pin)
+                const pinDigits = request.pin?.split('') ?? []
+                return (
+                  <div key={request.id} className="local-api-pairing-approve-card">
+                    <div className="local-api-pairing-approve-info">
+                      <span className="local-api-pairing-approve-name">{request.deviceName}</span>
+                      <span className="local-api-pairing-approve-detail">
+                        {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
+                      </span>
+                      {isPinRequest && (
+                        <>
+                          <div className="local-api-pairing-pin" aria-label={`PIN ${request.pin}`}>
+                            {pinDigits.map((digit, index) => (
+                              <span key={index} className="local-api-pairing-pin-digit">{digit}</span>
+                            ))}
+                          </div>
+                          <span className="local-api-pairing-approve-detail">
+                            Enter this PIN on the phone to finish pairing.
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <div className="local-api-pairing-approve-actions">
+                      {!isPinRequest && (
+                        <button
+                          className="settings-btn settings-btn-primary"
+                          onClick={() => onApproveRequest(request.id)}
+                        >
+                          Approve
+                        </button>
+                      )}
+                      <button
+                        className="settings-btn"
+                        onClick={() => onRejectRequest(request.id)}
+                      >
+                        Deny
+                      </button>
+                    </div>
                   </div>
-                  <div className="local-api-pairing-approve-actions">
-                    <button
-                      className="settings-btn settings-btn-primary"
-                      onClick={() => onApproveRequest(request.id)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="settings-btn"
-                      onClick={() => onRejectRequest(request.id)}
-                    >
-                      Deny
-                    </button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
 

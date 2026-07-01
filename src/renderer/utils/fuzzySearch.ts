@@ -133,3 +133,45 @@ export function multiFieldScore(
 
   return bestScore
 }
+
+export function getFuzzyFieldScore(
+  queryInput: string,
+  fields: FieldDef[],
+  minimumScore = MIN_SCORE_THRESHOLD
+): number | null {
+  const score = multiFieldScore(queryInput, fields)
+  if (score === null || score < minimumScore) return null
+  return score
+}
+
+export function matchesFuzzyFields(
+  queryInput: string,
+  fields: FieldDef[],
+  minimumScore = MIN_SCORE_THRESHOLD
+): boolean {
+  return getFuzzyFieldScore(queryInput, fields, minimumScore) !== null
+}
+
+export function rankFuzzyMatches<T>(
+  items: readonly T[],
+  queryInput: string,
+  getFields: (item: T) => FieldDef[],
+  minimumScore = MIN_SCORE_THRESHOLD
+): T[] {
+  if (!normalizeSearchValue(queryInput)) return [...items]
+
+  const scored: Array<{ item: T; score: number; index: number }> = []
+
+  items.forEach((item, index) => {
+    const score = getFuzzyFieldScore(queryInput, getFields(item), minimumScore)
+    if (score === null) return
+    scored.push({ item, score, index })
+  })
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score
+    return a.index - b.index
+  })
+
+  return scored.map(({ item }) => item)
+}

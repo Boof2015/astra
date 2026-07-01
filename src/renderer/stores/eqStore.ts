@@ -1,9 +1,10 @@
 import { create } from 'zustand'
-import { EQBand, EQPreset } from '../types/audio'
+import type { EQBand, EQPreset } from '../types/audio'
 import { audioEngine } from '../audio/AudioEngine'
 import { parseAutoEQ } from '../utils/autoEQParser'
 import {
   clampEQGain,
+  EQ_MAX_BANDS,
   createNormalizedEQBand,
   parseEQPresetData,
   parseEQPresetJSON,
@@ -375,7 +376,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
 
   addBand: (partial?: Partial<EQBand>) => {
     const { bands } = get()
-    if (bands.length >= 10) return
+    if (bands.length >= EQ_MAX_BANDS) return
 
     // Find largest frequency gap (log scale) for default placement
     let freq = 1000
@@ -510,7 +511,7 @@ export const useEQStore = create<EQStore>((set, get) => ({
       ...preset,
       id,
       isCustom: true,
-      bands: preset.bands.slice(0, 10).map((band) => createNormalizedEQBand(band, genId())),
+      bands: preset.bands.slice(0, EQ_MAX_BANDS).map((band) => createNormalizedEQBand(band, genId())),
     }
     const updated = [...presets, imported]
     set({ presets: updated, activePresetId: id })

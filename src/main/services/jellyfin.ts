@@ -34,6 +34,7 @@ export interface JellyfinCatalogTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -567,10 +568,10 @@ function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAudioItem
   const trackNumber = toFiniteInteger(item.IndexNumber)
   const discNumber = toFiniteInteger(item.ParentIndexNumber)
   const year = toFiniteInteger(item.ProductionYear)
-  const genre = asArray<string>(item.Genres)
+  const genres = asArray<string>(item.Genres)
     .map((value) => toTrimmedText(value))
-    .find((value): value is string => Boolean(value))
-    ?? null
+    .filter((value): value is string => Boolean(value))
+  const genre = genres[0] ?? null
 
   const sourcePath = toTrimmedText(item.Path)
   const mediaStreams = asArray<JellyfinAudioStream>(item.MediaStreams)
@@ -598,6 +599,7 @@ function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAudioItem
     disc_number: discNumber,
     year,
     genre,
+    genres,
     artwork_hash: null,
     format: normalizeJellyfinFormat(item),
     sample_rate: sampleRate,

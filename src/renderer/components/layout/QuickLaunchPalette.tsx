@@ -4,6 +4,7 @@ import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
+import { usePresence } from '../../hooks/usePresence'
 import { useGraphStore } from '../../stores/graphStore'
 import type {
   QuickLaunchAlbumRecord,
@@ -15,6 +16,7 @@ import type {
   QuickLaunchTrackRecord
 } from '../../types/quickLaunch'
 import { multiFieldScore, MIN_SCORE_THRESHOLD } from '../../utils/fuzzySearch'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 
 const SETTINGS_RESULT_LIMIT = 3
 const NAV_RESULT_LIMIT = 3
@@ -24,7 +26,7 @@ const ARTIST_RESULT_LIMIT = 4
 const PLAYLIST_RESULT_LIMIT = 4
 const EMPTY_RECENT_TRACKS_LIMIT = 3
 const EMPTY_SHORTCUT_NAV_IDS = ['nav:eq', 'nav:library'] as const
-const EMPTY_SHORTCUT_SETTING_IDS = ['library', 'playback'] as const
+const EMPTY_SHORTCUT_SETTING_IDS = ['keybinds', 'playback'] as const
 const QUICK_LAUNCH_TRACK_PAGE_LIMIT = 500
 
 interface ResultGroup {
@@ -38,45 +40,6 @@ function compareScoredResults<T extends { score: number; id: string }>(a: T, b: 
     return b.score - a.score
   }
   return a.id.localeCompare(b.id)
-}
-
-// Match highlighting: prefer contiguous substring, fallback to sequential chars
-function highlightMatch(text: string, query: string): ReactNode {
-  if (!query) return text
-  const normalizedText = text.toLowerCase()
-  const normalizedQuery = query.toLowerCase().trim()
-  if (!normalizedQuery) return text
-
-  // Try contiguous substring first
-  const substringIndex = normalizedText.indexOf(normalizedQuery)
-  if (substringIndex >= 0) {
-    return (
-      <>
-        {text.slice(0, substringIndex)}
-        <mark className="ql-highlight">{text.slice(substringIndex, substringIndex + normalizedQuery.length)}</mark>
-        {text.slice(substringIndex + normalizedQuery.length)}
-      </>
-    )
-  }
-
-  // Fallback: highlight sequential matched characters
-  const parts: ReactNode[] = []
-  let qi = 0
-  let lastPushed = 0
-  for (let i = 0; i < text.length && qi < normalizedQuery.length; i++) {
-    if (text[i].toLowerCase() === normalizedQuery[qi]) {
-      if (i > lastPushed) {
-        parts.push(text.slice(lastPushed, i))
-      }
-      parts.push(<mark key={i} className="ql-highlight">{text[i]}</mark>)
-      qi++
-      lastPushed = i + 1
-    }
-  }
-  if (lastPushed < text.length) {
-    parts.push(text.slice(lastPushed))
-  }
-  return <>{parts}</>
 }
 
 // Artwork thumbnail component
@@ -131,6 +94,7 @@ export default function QuickLaunchPalette() {
   const setActiveView = useUIStore((state) => state.setActiveView)
   const graphEnabled = useGraphStore((state) => state.enabled)
   const openFullMap = useGraphStore((state) => state.openFullMap)
+  const presence = usePresence(isQuickLaunchOpen)
 
   const albums = useLibraryStore((state) => state.albums) as QuickLaunchAlbumRecord[]
   const artists = useLibraryStore((state) => state.artists) as QuickLaunchArtistRecord[]
@@ -144,7 +108,7 @@ export default function QuickLaunchPalette() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
 
-  const enqueueUserTrackPaths = usePlayerStore((state) => state.enqueueUserTrackPaths)
+  const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
   const playlists = usePlaylistStore((state) => state.playlists) as QuickLaunchPlaylistRecord[]
@@ -607,7 +571,7 @@ export default function QuickLaunchPalette() {
       const action = requestedTrackAction ?? 'play-now'
 
       if (action === 'queue-next') {
-        void enqueueUserTrackPaths([result.track.path], 'next')
+        void enqueueTrackPaths([result.track.path], 'next')
         closeQuickLaunch()
         return
       }
@@ -629,7 +593,7 @@ export default function QuickLaunchPalette() {
     }
   }, [
     clearPlaylistSelection,
-    enqueueUserTrackPaths,
+    enqueueTrackPaths,
     clearSelection,
     closeQuickLaunch,
     isExecuting,
@@ -705,13 +669,15 @@ export default function QuickLaunchPalette() {
     void executeResult(result, 'queue-next')
   }
 
-  if (!isQuickLaunchOpen) return null
+  if (!presence.shouldRender) return null
 
   let rowIndex = -1
 
   return (
     <div
       className="quick-launch-overlay"
+      data-presence={presence.phase}
+      aria-hidden={presence.phase === 'exiting'}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           closeQuickLaunch()
@@ -801,12 +767,12 @@ export default function QuickLaunchPalette() {
                       {/* Text */}
                       <div className="quick-launch-result-text">
                         <span className="quick-launch-result-label">
-                          {result.kind === 'setting' && highlightMatch(result.label, trimmedQuery)}
-                          {result.kind === 'nav' && highlightMatch(result.label, trimmedQuery)}
-                          {result.kind === 'track' && highlightMatch(result.track.title, trimmedQuery)}
-                          {result.kind === 'album' && highlightMatch(result.album.album, trimmedQuery)}
-                          {result.kind === 'artist' && highlightMatch(result.artist.artist, trimmedQuery)}
-                          {result.kind === 'playlist' && highlightMatch(result.playlist.name, trimmedQuery)}
+                          {result.kind === 'setting' && highlightSearchMatch(result.label, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'nav' && highlightSearchMatch(result.label, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'track' && highlightSearchMatch(result.track.title, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'album' && highlightSearchMatch(result.album.album, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'artist' && highlightSearchMatch(result.artist.artist, trimmedQuery, 'ql-highlight')}
+                          {result.kind === 'playlist' && highlightSearchMatch(result.playlist.name, trimmedQuery, 'ql-highlight')}
                         </span>
                         <span className="quick-launch-result-subtitle">
                           {result.kind === 'setting' && result.subtitle}

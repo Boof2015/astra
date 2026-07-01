@@ -9,6 +9,7 @@ import {
   UI_SCALE_STEP_PERCENT,
   getNextUIScalePercent,
   normalizeJumpToPlayingDestination,
+  resolveAppViewTransitionDirection,
   useUIStore
 } from './uiStore.ts'
 
@@ -40,6 +41,44 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
   assert.equal(normalizeJumpToPlayingDestination('queue'), 'queue')
   assert.equal(normalizeJumpToPlayingDestination('unknown'), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
   assert.equal(normalizeJumpToPlayingDestination(null), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
+})
+
+test('resolveAppViewTransitionDirection follows sidebar order', () => {
+  assert.equal(resolveAppViewTransitionDirection('library', 'eq'), 'down')
+  assert.equal(resolveAppViewTransitionDirection('eq', 'library'), 'up')
+  assert.equal(resolveAppViewTransitionDirection('library', 'library'), null)
+  assert.equal(resolveAppViewTransitionDirection(null, 'library'), null)
+  assert.equal(resolveAppViewTransitionDirection('library', undefined), null)
+})
+
+test('setActiveView commits navigation when the View Transition API is unavailable', () => {
+  useUIStore.setState({ activeView: 'home', viewBackHistory: [], viewForwardHistory: [] })
+
+  useUIStore.getState().setActiveView('library')
+  assert.equal(useUIStore.getState().activeView, 'library')
+
+  useUIStore.getState().setActiveView('home')
+  assert.equal(useUIStore.getState().activeView, 'home')
+})
+
+test('view navigation tracks back and forward history and clears forward on fresh navigation', () => {
+  useUIStore.setState({ activeView: 'home', viewBackHistory: [], viewForwardHistory: [] })
+
+  useUIStore.getState().setActiveView('library')
+  useUIStore.getState().setActiveView('settings')
+  assert.deepEqual(useUIStore.getState().viewBackHistory, ['home', 'library'])
+
+  assert.equal(useUIStore.getState().navigateViewBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'library')
+  assert.deepEqual(useUIStore.getState().viewForwardHistory, ['settings'])
+
+  assert.equal(useUIStore.getState().navigateViewForward(), true)
+  assert.equal(useUIStore.getState().activeView, 'settings')
+
+  useUIStore.getState().navigateViewBack()
+  useUIStore.getState().setActiveView('playlist')
+  assert.deepEqual(useUIStore.getState().viewForwardHistory, [])
+  assert.equal(useUIStore.getState().navigateViewForward(), false)
 })
 
 test('jump to playing destination updates state and persists to localStorage', () => {
@@ -110,4 +149,50 @@ test('track reveal requests clear only after the matching request id is consumed
 
   ui.clearQueueNowPlayingRevealRequest(queueRequest.id)
   assert.equal(useUIStore.getState().queueNowPlayingRevealRequest, null)
+})
+
+test('session restore applies core view state without transient history or overlays', () => {
+  useUIStore.setState({
+    activeView: 'home',
+    viewBackHistory: ['library'],
+    viewForwardHistory: ['settings'],
+    showQueue: false,
+    showInfoSidebar: false,
+    showPipelineShelf: false,
+    showLyricsShelf: false,
+    lyricsShelfExpanded: false,
+    isFullscreen: true,
+    isQuickLaunchOpen: true,
+    pendingLibrarySearchQuery: 'query'
+  })
+
+  useUIStore.getState().restoreSession({
+    activeView: 'library',
+    showQueue: true,
+    showInfoSidebar: true,
+    showPipelineShelf: true,
+    showLyricsShelf: true,
+    lyricsShelfExpanded: true
+  })
+
+  const state = useUIStore.getState()
+  assert.equal(state.activeView, 'library')
+  assert.deepEqual(state.viewBackHistory, [])
+  assert.deepEqual(state.viewForwardHistory, [])
+  assert.equal(state.showQueue, true)
+  assert.equal(state.showInfoSidebar, true)
+  assert.equal(state.showPipelineShelf, true)
+  assert.equal(state.showLyricsShelf, true)
+  assert.equal(state.lyricsShelfExpanded, true)
+  assert.equal(state.isFullscreen, false)
+  assert.equal(state.isQuickLaunchOpen, false)
+  assert.equal(state.pendingLibrarySearchQuery, null)
+  assert.deepEqual(state.getSessionSnapshot(), {
+    activeView: 'library',
+    showQueue: true,
+    showInfoSidebar: true,
+    showPipelineShelf: true,
+    showLyricsShelf: true,
+    lyricsShelfExpanded: true
+  })
 })

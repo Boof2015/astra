@@ -39,7 +39,7 @@ export function resolveArtistGridLayout({
   }
 
   const maxColumnsByWidth = Math.floor((safeContainerWidth + safeGap) / (safeMinColumnWidth + safeGap))
-  const columnCount = Math.max(1, Math.min(safeItemCount, maxColumnsByWidth))
+  const columnCount = Math.max(1, maxColumnsByWidth)
 
   return {
     columnCount,

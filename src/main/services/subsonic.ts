@@ -5,6 +5,7 @@ const SUBSONIC_CLIENT_ID = 'astra'
 const DEFAULT_TIMEOUT_MS = 12_000
 const DEFAULT_RETRIES = 1
 const MAX_SYNC_CONCURRENCY = 4
+const SUBSONIC_ARTWORK_HASH_PREFIX = 'subsonic-artwork:'
 
 export interface SubsonicConnectionConfig {
   baseUrl: string
@@ -26,6 +27,7 @@ export interface SubsonicCatalogTrack {
   disc_number: number | null
   year: number | null
   genre: string | null
+  genres: string[]
   artwork_hash: string | null
   format: string
   sample_rate: number | null
@@ -46,6 +48,20 @@ export interface SubsonicCatalogSyncResult {
   albumsScanned: number
   tracksScanned: number
   tracks: SubsonicCatalogTrack[]
+}
+
+export interface SubsonicPlaylistTrack {
+  path: string
+  source_track_id: string
+  title: string | null
+  artist: string | null
+  album: string | null
+}
+
+export interface SubsonicPlaylist {
+  source_playlist_id: string
+  name: string
+  tracks: SubsonicPlaylistTrack[]
 }
 
 interface SubsonicRequestOptions {
@@ -73,6 +89,17 @@ export interface SubsonicCatalogSyncOptions extends SubsonicRequestOptions {
   onProgress?: (progress: SubsonicCatalogSyncProgress) => void
 }
 
+export interface SubsonicPlaylistSyncProgress {
+  phase: 'playlists'
+  current: number
+  total: number
+  detail: string | null
+}
+
+export interface SubsonicPlaylistSyncOptions extends SubsonicRequestOptions {
+  onProgress?: (progress: SubsonicPlaylistSyncProgress) => void
+}
+
 interface SubsonicResponseEnvelope {
   'subsonic-response'?: {
     status?: string
@@ -90,6 +117,11 @@ interface SubsonicArtistRef {
 
 interface SubsonicAlbumRef {
   id: string
+}
+
+interface SubsonicPlaylistRef {
+  id: string
+  name: string
 }
 
 interface SubsonicAlbumSongs {
@@ -474,6 +506,59 @@ function toAlbumRefs(artistResponse: Record<string, unknown>): SubsonicAlbumRef[
     .map((id) => ({ id }))
 }
 
+function toStarredTrackIds(starredResponse: Record<string, unknown>): string[] {
+  const starredContainer = starredResponse.starred as Record<string, unknown> | undefined
+  if (!starredContainer || typeof starredContainer !== 'object') return []
+
+  const ids = new Set<string>()
+  for (const song of asArray<SubsonicSong>(starredContainer.song)) {
+    const id = toTrimmedText(song.id)
+    if (id) ids.add(id)
+  }
+
+  return Array.from(ids)
+}
+
+function toPlaylistRefs(playlistsResponse: Record<string, unknown>): SubsonicPlaylistRef[] {
+  const playlistsContainer = playlistsResponse.playlists as Record<string, unknown> | undefined
+  if (!playlistsContainer || typeof playlistsContainer !== 'object') return []
+
+  return asArray<Record<string, unknown>>(playlistsContainer.playlist)
+    .map((playlist) => {
+      const id = toTrimmedText(playlist.id)
+      if (!id) return null
+      return {
+        id,
+        name: toTrimmedText(playlist.name) ?? `Playlist ${id}`
+      }
+    })
+    .filter((playlist): playlist is SubsonicPlaylistRef => playlist !== null)
+}
+
+function toPlaylistTracks(sourceId: number, playlistResponse: Record<string, unknown>): SubsonicPlaylistTrack[] {
+  const playlistContainer = playlistResponse.playlist as Record<string, unknown> | undefined
+  if (!playlistContainer || typeof playlistContainer !== 'object') return []
+
+  const entries = asArray<SubsonicSong>(playlistContainer.entry ?? playlistContainer.song)
+  const tracks: SubsonicPlaylistTrack[] = []
+  const seenTrackIds = new Set<string>()
+
+  for (const entry of entries) {
+    const sourceTrackId = toTrimmedText(entry.id)
+    if (!sourceTrackId || seenTrackIds.has(sourceTrackId)) continue
+    seenTrackIds.add(sourceTrackId)
+    tracks.push({
+      path: buildSubsonicTrackPath(sourceId, sourceTrackId),
+      source_track_id: sourceTrackId,
+      title: toTrimmedText(entry.title),
+      artist: toTrimmedText(entry.artist),
+      album: toTrimmedText(entry.album)
+    })
+  }
+
+  return tracks
+}
+
 function mapSongToCatalogTrack(
   sourceId: number,
   song: SubsonicSong,
@@ -495,6 +580,7 @@ function mapSongToCatalogTrack(
   const discNumber = toFiniteInteger(song.discNumber)
   const year = toFiniteInteger(song.year)
   const genre = toTrimmedText(song.genre)
+  const genres = genre ? [genre] : []
   const sourcePath = toTrimmedText(song.path)
   const contentType = toTrimmedText(song.contentType)
   const artworkSourceId = toTrimmedText(song.coverArt) ?? fallbackCoverArtId
@@ -513,7 +599,8 @@ function mapSongToCatalogTrack(
     disc_number: discNumber,
     year,
     genre,
-    artwork_hash: null,
+    genres,
+    artwork_hash: artworkSourceId ? buildSubsonicArtworkHash(sourceId, artworkSourceId) : null,
     format: normalizeSubsonicFormat(song),
     sample_rate: sampleRate,
     bit_depth: bitDepth,
@@ -648,6 +735,32 @@ export function buildSubsonicTrackPath(sourceId: number, sourceTrackId: string):
   return `subsonic://${sourceId}/track/${encodeURIComponent(sourceTrackId)}`
 }
 
+export function buildSubsonicArtworkHash(sourceId: number, artworkId: string): string {
+  return `${SUBSONIC_ARTWORK_HASH_PREFIX}${sourceId}:${encodeURIComponent(artworkId)}`
+}
+
+export function parseSubsonicArtworkHash(hash: string): { sourceId: number; artworkId: string } | null {
+  if (!hash.startsWith(SUBSONIC_ARTWORK_HASH_PREFIX)) return null
+
+  const rest = hash.slice(SUBSONIC_ARTWORK_HASH_PREFIX.length)
+  const separatorIndex = rest.indexOf(':')
+  if (separatorIndex <= 0) return null
+
+  const sourceId = Number.parseInt(rest.slice(0, separatorIndex), 10)
+  if (!Number.isInteger(sourceId) || sourceId <= 0) return null
+
+  const artworkIdRaw = rest.slice(separatorIndex + 1)
+  if (!artworkIdRaw) return null
+
+  try {
+    const artworkId = decodeURIComponent(artworkIdRaw)
+    if (!artworkId) return null
+    return { sourceId, artworkId }
+  } catch {
+    return null
+  }
+}
+
 export function parseSubsonicTrackPath(path: string): { sourceId: number; sourceTrackId: string } | null {
   const match = /^subsonic:\/\/(\d+)\/track\/(.+)$/.exec(path)
   if (!match) return null
@@ -664,6 +777,50 @@ export function parseSubsonicTrackPath(path: string): { sourceId: number; source
   } catch {
     return null
   }
+}
+
+export async function fetchSubsonicStarredTrackIds(
+  config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions = {}
+): Promise<string[]> {
+  const starredResponse = await requestSubsonicJson(config, 'getStarred', {}, options)
+  return toStarredTrackIds(starredResponse)
+}
+
+export async function syncSubsonicPlaylists(
+  sourceId: number,
+  config: SubsonicConnectionConfig,
+  options: SubsonicPlaylistSyncOptions = {}
+): Promise<SubsonicPlaylist[]> {
+  const playlistsResponse = await requestSubsonicJson(config, 'getPlaylists', {}, options)
+  const playlistRefs = toPlaylistRefs(playlistsResponse)
+  options.onProgress?.({
+    phase: 'playlists',
+    current: 0,
+    total: playlistRefs.length,
+    detail: null
+  })
+
+  let playlistsProcessed = 0
+  return runWithConcurrency(
+    playlistRefs,
+    MAX_SYNC_CONCURRENCY,
+    async (playlistRef): Promise<SubsonicPlaylist> => {
+      const playlistResponse = await requestSubsonicJson(config, 'getPlaylist', { id: playlistRef.id }, options)
+      playlistsProcessed += 1
+      options.onProgress?.({
+        phase: 'playlists',
+        current: playlistsProcessed,
+        total: playlistRefs.length,
+        detail: playlistRef.id
+      })
+      return {
+        source_playlist_id: playlistRef.id,
+        name: playlistRef.name,
+        tracks: toPlaylistTracks(sourceId, playlistResponse)
+      }
+    }
+  )
 }
 
 export function buildSubsonicStreamUrl(

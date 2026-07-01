@@ -2,6 +2,15 @@ export const PHONE_REMOTE_LAN_HOST = '0.0.0.0'
 export const PHONE_REMOTE_DEFAULT_PORT = 38402
 export const PHONE_REMOTE_MIN_PORT = 1024
 export const PHONE_REMOTE_MAX_PORT = 65535
+export const PHONE_REMOTE_PROTOCOL_VERSION = 1
+
+export interface PhoneRemoteIdentity {
+  endpointUuid: string | null
+  desktopName: string
+  protocolVersion: number
+}
+
+export type PhoneRemotePairingMode = 'approval' | 'pin'
 
 export type PhoneRemotePairingState = 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed'
 
@@ -28,6 +37,8 @@ export interface PhoneRemotePendingPairingRequest {
   requestedAt: number
   expiresAt: number
   baseUrl: string
+  pairingMode: PhoneRemotePairingMode
+  pin: string | null
 }
 
 export interface PhoneRemotePairingTicket {
@@ -37,6 +48,7 @@ export interface PhoneRemotePairingTicket {
   pairingUrl: string
   createdAt: number
   expiresAt: number
+  identity: PhoneRemoteIdentity
 }
 
 export interface PhoneRemoteStatus {
@@ -51,4 +63,5 @@ export interface PhoneRemoteStatus {
   pairedDeviceCount: number
   pendingPairingCount: number
   lastError: string | null
+  identity: PhoneRemoteIdentity
 }

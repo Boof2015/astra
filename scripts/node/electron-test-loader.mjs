@@ -18,6 +18,12 @@ export const app = {
 export const powerMonitor = {
   isOnBatteryPower: () => false
 }
+
+export const screen = {
+  getAllDisplays: () => globalThis.__ASTRA_TEST_DISPLAYS || [{
+    workArea: { x: 0, y: 0, width: 1920, height: 1080 }
+  }]
+}
 `
 
 function isExtensionlessRelativeSpecifier(specifier) {

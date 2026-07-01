@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
+import { usePresence } from '../../hooks/usePresence'
 
 export default function AudioOutputSelect() {
   const { availableDevices, selectedDeviceId, refreshDevices, selectDevice } = useAudioSettingsStore()
   const [isOpen, setIsOpen] = useState(false)
+  const presence = usePresence(isOpen)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -54,8 +56,12 @@ export default function AudioOutputSelect() {
           </svg>
         </span>
       </button>
-      {isOpen && (
-        <div className="audio-output-dropdown">
+      {presence.shouldRender && (
+        <div
+          className="audio-output-dropdown"
+          data-presence={presence.phase}
+          aria-hidden={presence.phase === 'exiting'}
+        >
           <div className="audio-output-dropdown-title">Output Device</div>
           {availableDevices.length === 0 ? (
             <div className="audio-output-dropdown-empty">No devices found</div>

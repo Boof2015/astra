@@ -1,12 +1,13 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { tmpdir, hostname, networkInterfaces } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import {
   deepScanFlacIntegrityTrack,
   isFlacTarget,
@@ -21,10 +22,13 @@ import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
+  fetchSubsonicStarredTrackIds,
   fetchSubsonicTrackBytes,
   normalizeSubsonicBaseUrl,
+  parseSubsonicArtworkHash,
   parseSubsonicTrackPath,
   syncSubsonicCatalog,
+  syncSubsonicPlaylists,
   testSubsonicConnection,
   type SubsonicDownloadProgress
 } from './services/subsonic'
@@ -57,11 +61,17 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
+import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
+import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
+import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
+import { ParallaxSinkListener } from './services/parallaxSinkListener'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
+  MINI_WINDOW_MAX_HEIGHT,
+  MINI_WINDOW_MAX_WIDTH,
   MINI_WINDOW_MIN_HEIGHT,
   MINI_WINDOW_MIN_WIDTH,
   loadMiniWindowPrefs,
@@ -119,8 +129,30 @@ import {
   PHONE_REMOTE_DEFAULT_PORT,
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT,
+  PHONE_REMOTE_PROTOCOL_VERSION,
+  type PhoneRemoteIdentity,
   type PhoneRemoteServiceConfig
 } from '../types/phoneRemote'
+import {
+  PARALLAX_DEFAULT_PORT,
+  PARALLAX_MAX_PORT,
+  PARALLAX_MIN_PORT,
+  PARALLAX_SINK_DEFAULT_PORT,
+  decideParallaxSinkEnabledFromMeta,
+  type ParallaxAudioChunk,
+  type ParallaxDiscoveryEvent,
+  type ParallaxHostConfig,
+  type ParallaxHostStreamStartOptions,
+  type ParallaxHostNextStreamStartOptions,
+  type ParallaxHostTimelinePublishOptions,
+  type ParallaxOutputLatencyMetrics,
+  ParallaxAuthError,
+  type ParallaxSinkConnectionConfig,
+  type ParallaxSinkTelemetry,
+  type ParallaxStreamInfo,
+  type ParallaxTimelineState,
+  type PersistedParallaxSinkConnection
+} from '../types/parallax'
 import {
   LASTFM_OFFICIAL_API_BASE_URL,
   LASTFM_OFFICIAL_PROFILE_ID,
@@ -135,7 +167,6 @@ import {
   type LastFmServiceConfig
 } from '../types/lastFm'
 import type { LyricsFormat, LyricsTrackQuery } from '../types/lyrics'
-import type { UIScaleShortcutAction } from '../types/uiScale'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -170,10 +201,29 @@ import type {
   IntegrityScanScope,
   IntegrityScanSummary
 } from '../types/libraryIntegrity'
-import { resolveUIScaleShortcutAction } from './uiScaleShortcuts'
+import {
+  resolveInterceptedKeyboardInput,
+  resolveMouseAppCommand,
+  sanitizeGlobalShortcutRegistrationRequests
+} from './inputBindings'
+import { GlobalInputShortcutService } from './services/globalInputShortcuts'
+import type { InputActionId } from '../types/inputBindings'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
+}
+
+const globalInputShortcutService = new GlobalInputShortcutService(globalShortcut)
+const GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW = new Set<InputActionId>([
+  'quick-launch-open',
+  'keybinds-open',
+  'jump-to-now-playing',
+  'focus-search-field',
+  'navigate-back',
+  'navigate-forward'
+])
 
 interface ResolvedBuildMetadata {
   commitHash: string | null
@@ -210,6 +260,7 @@ let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let artistCreditsBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let genreMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let subsonicSyncTimer: ReturnType<typeof setInterval> | null = null
 let jellyfinSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -372,6 +423,7 @@ function resolveBuildMetadata(): ResolvedBuildMetadata {
 }
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
+const MINI_WINDOW_TITLE = 'Astra Mini Player'
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
 const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
@@ -379,6 +431,8 @@ const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
 const ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS = 16_000
 const ARTIST_CREDITS_BACKFILL_MIGRATION_KEY = 'artist_credits_backfill_v1_done'
+const GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS = 16_500
+const GENRE_METADATA_BACKFILL_MIGRATION_KEY = 'genre_metadata_backfill_v1_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
 const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
@@ -395,6 +449,22 @@ const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
+const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
+const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
+const PARALLAX_PAIRED_SINKS_META_KEY = 'parallax_paired_sinks_v1'
+// §14.1.2 / §16.2. Sink-side durable credential. Single slot (one paired host); re-pairing
+// replaces it. Schema-versioned suffix matches sibling keys.
+const PARALLAX_SINK_CONNECTION_META_KEY = 'parallax_sink_connection_v1'
+// §20 / §14.1.5. Persisted sink-role toggle. Independent from `parallax_host_enabled_v1`; off
+// by default for new installs. Migration in `migrateParallaxSinkEnabledOnFirstRead`: if a
+// persisted sink connection from §14.1.2 already exists (the user paired this device pre-§20),
+// we flip this true on first read so auto-reconnect doesn't silently break for them.
+const PARALLAX_SINK_ENABLED_META_KEY = 'parallax_sink_enabled_v1'
+// §20.19(c). One role-neutral UUID per Astra install, generated at first launch in any role.
+// Advertised over mDNS when sink-enabled; sent in pair-request when acting as host. Auth still
+// uses host-issued `sinkId` — this is discovery memory only ("seen before / renamed / already
+// paired"). Never a secret.
+const PARALLAX_ENDPOINT_UUID_META_KEY = 'parallax_endpoint_uuid_v1'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -447,6 +517,7 @@ interface ArtworkBytes {
   mimeType: string
 }
 const artworkThumbnailRequestCache = new Map<string, Promise<ArtworkBytes | null>>()
+const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -478,6 +549,10 @@ let phoneRemoteConfig: PhoneRemoteServiceConfig = {
   controlsEnabled: false,
   port: PHONE_REMOTE_DEFAULT_PORT
 }
+let parallaxHostConfig: ParallaxHostConfig = {
+  enabled: false,
+  port: PARALLAX_DEFAULT_PORT
+}
 type PersistedPhoneRemotePairedDevice = {
   id: string
   name: string
@@ -489,6 +564,69 @@ type PersistedPhoneRemotePairedDevice = {
   revokedAt: number | null
 }
 let phoneRemotePairedDevices: PersistedPhoneRemotePairedDevice[] = []
+let parallaxPairedSinks: PersistedParallaxPairedSink[] = []
+// §20 / §14.1.5. Sink-role enablement, gates mDNS advertisement, the sink HTTP listener, and
+// auto-reconnect. Off by default for new installs; migrated to true on first read when a
+// persisted sink connection from §14.1.2 already exists (so existing paired sinks survive the
+// §20 cutover transparently — §20.19(d)).
+let parallaxSinkEnabled = false
+// §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
+// Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
+let parallaxEndpointUuid = ''
+// §20 Commit 2. mDNS wrapper. Owns one bonjour-service instance for both advertise + browse.
+// Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
+// sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
+const parallaxDiscoveryService = new ParallaxDiscoveryService()
+const phoneRemoteDiscoveryService = new PhoneRemoteDiscoveryService()
+// §20 Commit 3. Sink HTTP listener — only the pre-pair endpoints (sink-identity, pair-request,
+// pair-confirm). Started/stopped in lockstep with `parallaxSinkEnabled`. PIN state lives on the
+// listener itself; this top-level mirror just feeds the renderer via status push.
+let parallaxIncomingPairRequest: import('../types/parallax').ParallaxIncomingPairRequest | null = null
+const parallaxSinkListener = new ParallaxSinkListener({
+  getEndpointUuid: () => parallaxEndpointUuid,
+  getSinkName: () => hostname() || 'Astra Sink',
+  getHasPersistedConnection: () => parallaxSinkConnection !== null,
+  onPaired: async (info) => {
+    // Persist through the existing §14.1.2 path so the sink-side credential lands in the same
+    // schema auto-reconnect already consumes. The cleared/persisted sequence mirrors what
+    // `parallax:setSinkConnection` IPC does for the legacy "Connect This Astra as Sink" flow.
+    await clearParallaxSinkConnection().catch((error) => {
+      console.warn('Failed to clear stale Parallax sink connection during pair-commit:', error)
+    })
+    const persisted = {
+      baseUrl: info.hostUrl,
+      sinkId: info.sinkId,
+      token: info.token,
+      hostName: info.hostName,
+      pairedAt: info.pairedAt,
+      lastConnectedAt: null,
+      hostParallaxEndpointUuid: info.hostParallaxEndpointUuid ?? undefined
+    }
+    const sanitized = sanitizeParallaxSinkConnection(persisted)
+    if (sanitized) {
+      await persistParallaxSinkConnection(sanitized)
+      broadcastParallaxStatus()
+      // Pair-confirm happens in the sink HTTP listener, but the actual sink connection must be
+      // renderer-driven so the Standard-output gate, subscriptions, and audioEngine.stop() prep
+      // from reconnectFromPersisted() still run. This event is the "new durable credential is
+      // ready" edge that lets the renderer connect immediately without requiring an app restart.
+      //
+      // The host promotes its pending candidate only after it receives this pair-confirm
+      // response. Defer the reconnect edge briefly so the sink doesn't race the host activation
+      // and turn a successful pair into an immediate 401/revocation.
+      setTimeout(() => {
+        sendToWindow(mainWindow, 'parallax:sinkPaired')
+      }, 500)
+    }
+  },
+  onIncomingPairChange: (state) => {
+    parallaxIncomingPairRequest = state
+    broadcastParallaxStatus()
+  }
+})
+parallaxSinkListener.on('error', (error) => {
+  console.warn('Parallax sink listener error:', error)
+})
 let lastFmConfig: LastFmServiceConfig = {
   enabled: false,
   activeProfileId: LASTFM_OFFICIAL_PROFILE_ID,
@@ -765,6 +903,7 @@ const phoneRemoteService = new PhoneRemoteService({
   config: phoneRemoteConfig,
   getSnapshot: () => latestMiniPlayerSnapshot,
   dispatchCommand: sendMiniPlayerCommand,
+  getIdentity: () => getPhoneRemoteIdentity(),
   resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
     jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
@@ -779,6 +918,7 @@ const phoneRemoteService = new PhoneRemoteService({
   onStatusChange: () => {
     broadcastPhoneRemoteStatus()
     const status = phoneRemoteService.getStatus()
+    refreshPhoneRemoteDiscoveryAdvertisement(status)
     logMemoryDiagnosticsMainEvent('phone_remote_status_changed', {
       enabled: status.enabled,
       active: status.active,
@@ -790,6 +930,81 @@ const phoneRemoteService = new PhoneRemoteService({
       lastError: status.lastError
     })
   }
+})
+
+const parallaxService = new ParallaxService({
+  config: parallaxHostConfig,
+  pairedSinks: parallaxPairedSinks,
+  onPairedSinksChange: (sinks) => {
+    parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
+    void persistParallaxPairedSinks(parallaxPairedSinks).catch((error) => {
+      console.warn('Failed to persist Parallax paired sinks:', error)
+    })
+  },
+  onStatusChange: () => {
+    broadcastParallaxStatus()
+    const status = parallaxService.getStatus()
+    logMemoryDiagnosticsMainEvent('parallax_status_changed', {
+      role: status.role,
+      hostEnabled: status.host.enabled,
+      hostActive: status.host.active,
+      hostPort: status.host.port,
+      connectedSinkCount: status.host.connectedSinkCount,
+      sinkConnected: status.sink.connected,
+      activeStreamId: status.host.activeStream?.streamId ?? status.sink.activeStream?.streamId ?? null,
+      hostLastError: status.host.lastError,
+      sinkLastError: status.sink.lastError
+    })
+  },
+  onSinkEvent: (event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('parallax:event', event)
+    }
+  },
+  onSinkAudioChunk: (chunk) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('parallax:audioChunk', chunk)
+    }
+  },
+  // §14.1.2 / §16.7 follow-up (Codex round 1, finding 1). R-clear sink: host explicitly
+  // revoked our credential (initial-connect 401, in-session SSE/audio 401, scheduled-reconnect
+  // 401). Wipe the persisted credential + stop any in-flight auto-reconnect attempts. The
+  // service has already disconnected and set sinkRemovedByHost=true before this fires, so the
+  // status push reaches the renderer after the persisted credential cache has been cleared.
+  onSinkAuthRevoked: () => {
+    cancelParallaxAutoReconnect()
+    void clearParallaxSinkConnection()
+      .then(() => {
+        broadcastParallaxStatus()
+      })
+      .catch((error) => {
+        console.warn('Failed to clear Parallax sink connection after auth-revoked:', error)
+      })
+  },
+  // Pillar 3 — host relocation. The in-session reconnect path calls this once the persisted host
+  // address has failed repeatedly. Resolve the host's current address via mDNS (by its remembered
+  // endpoint UUID), persist the new baseUrl, and hand it back so the service retargets there.
+  onSinkRelocate: () => relocateParallaxHost(),
+  // §14.1.2 follow-up (Codex round 1, finding 3). Service reads on every getStatus() so the
+  // status payload mirrors the live app-meta state without the service holding its own copy.
+  // Token is intentionally never returned — only the boolean and host name reach the renderer.
+  getSinkConnectionInfo: () => ({
+    hasPersistedConnection: parallaxSinkConnection !== null,
+    persistedHostName: parallaxSinkConnection?.hostName ?? parallaxSinkConnection?.baseUrl ?? null
+  }),
+  // §14.1.4 / §19.18(e) — same resolver used by playbackHttpCore + phoneRemote.
+  resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
+    maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX
+  }),
+  // §20 Commit 1. Read each status call so the service stays ignorant of meta-key storage.
+  getSinkEnabled: () => parallaxSinkEnabled,
+  getEndpointUuid: () => parallaxEndpointUuid,
+  // §20 Commit 3. Sink's PIN card shows "<this> wants to pair" — fall back to the OS hostname
+  // (same source the §14.1.4 identity card uses) when no better label exists.
+  getHostDisplayName: () => hostname() || 'Astra Host',
+  // §20 Commit 3 sink side. Reads the listener's live pending-pair so it lands in
+  // ParallaxStatus.sink.incomingPairRequest on every status push.
+  getIncomingPairRequest: () => parallaxIncomingPairRequest
 })
 
 const lastFmService = new LastFmService({
@@ -829,6 +1044,7 @@ const lastFmService = new LastFmService({
 
 const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
+  appVersion: app.getVersion(),
   onStatusChange: () => {
     broadcastLyricsStatus()
     const status = lyricsService.getStatus()
@@ -1175,6 +1391,17 @@ function normalizePhoneRemotePort(rawPort: unknown): number {
   return parsed
 }
 
+function normalizeParallaxPort(rawPort: unknown): number {
+  const parsed = typeof rawPort === 'number' ? rawPort : Number(rawPort)
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Port must be an integer between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
+  }
+  if (parsed < PARALLAX_MIN_PORT || parsed > PARALLAX_MAX_PORT) {
+    throw new Error(`Port must be between ${PARALLAX_MIN_PORT} and ${PARALLAX_MAX_PORT}.`)
+  }
+  return parsed
+}
+
 function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRemotePairedDevice[] {
   if (!Array.isArray(rawDevices)) return []
   const sanitized: PersistedPhoneRemotePairedDevice[] = []
@@ -1216,6 +1443,92 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
   return sanitized
 }
 
+// §14.1.1. Per-trim sanitizer with the same ±500 ms clamp the service applies on the live path
+// (defense in depth — a hand-edited meta file shouldn't be able to push a 30s offset). Drops
+// entries with non-string device id or non-finite advanceMs; unknown `source` collapses to
+// 'manual' so a future calibration source string doesn't kill the row.
+function sanitizeParallaxSinkTrim(candidate: unknown): import('../types/parallax').ParallaxSinkTrim | null {
+  if (!candidate || typeof candidate !== 'object') return null
+  const value = candidate as Record<string, unknown>
+  const outputDeviceId = typeof value.outputDeviceId === 'string' ? value.outputDeviceId.trim() : ''
+  if (!outputDeviceId) return null
+  const rawAdvance = Number(value.advanceMs)
+  if (!Number.isFinite(rawAdvance)) return null
+  const advanceMs = Math.max(-500, Math.min(500, rawAdvance))
+  const outputDeviceLabel = typeof value.outputDeviceLabel === 'string'
+    ? value.outputDeviceLabel.slice(0, 200)
+    : null
+  const updatedAtMs = typeof value.updatedAtMs === 'number' && Number.isFinite(value.updatedAtMs)
+    ? Math.max(0, value.updatedAtMs)
+    : 0
+  const source = value.source === 'calibration' ? 'calibration' : 'manual'
+  return { outputDeviceId, outputDeviceLabel, advanceMs, updatedAtMs, source }
+}
+
+function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPairedSink[] {
+  if (!Array.isArray(rawSinks)) return []
+  const sanitized: PersistedParallaxPairedSink[] = []
+
+  for (const candidate of rawSinks) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const value = candidate as Record<string, unknown>
+    const id = typeof value.id === 'string' ? value.id.trim() : ''
+    const name = typeof value.name === 'string' ? value.name.trim() : ''
+    const tokenHash = typeof value.tokenHash === 'string' ? value.tokenHash.trim() : ''
+    const tokenPrefix = typeof value.tokenPrefix === 'string' ? value.tokenPrefix.trim() : ''
+    const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+      ? Math.max(0, value.createdAt)
+      : 0
+    const lastSeenAt = typeof value.lastSeenAt === 'number' && Number.isFinite(value.lastSeenAt)
+      ? Math.max(0, value.lastSeenAt)
+      : null
+    const revokedAt = typeof value.revokedAt === 'number' && Number.isFinite(value.revokedAt)
+      ? Math.max(0, value.revokedAt)
+      : null
+
+    if (!id || !name || !tokenHash || !tokenPrefix || createdAt <= 0) {
+      continue
+    }
+
+    // §14.1.1. Round-trip trims through the per-trim sanitizer. Dedupe by `outputDeviceId`
+    // keeping the last (most-recent) entry, since the live service does upsert-by-deviceId; if
+    // duplicates ever slipped into the meta file we want the same semantic on read.
+    const rawTrims = Array.isArray(value.trims) ? value.trims : []
+    const sanitizedTrims: import('../types/parallax').ParallaxSinkTrim[] = []
+    const seenDevices = new Map<string, number>()
+    for (const rawTrim of rawTrims) {
+      const trim = sanitizeParallaxSinkTrim(rawTrim)
+      if (!trim) continue
+      const existingIdx = seenDevices.get(trim.outputDeviceId)
+      if (existingIdx !== undefined) {
+        sanitizedTrims[existingIdx] = trim
+      } else {
+        seenDevices.set(trim.outputDeviceId, sanitizedTrims.push(trim) - 1)
+      }
+    }
+
+    // §20.19(g). Round-trip the remote endpoint UUID so it survives disk reads. Pre-§20 rows
+    // simply leave it undefined; the wizard renders the "Already paired" badge only when the
+    // discovered TXT carries a UUID that matches a paired row.
+    const remoteParallaxEndpointUuid = typeof value.remoteParallaxEndpointUuid === 'string' && value.remoteParallaxEndpointUuid.trim()
+      ? (value.remoteParallaxEndpointUuid as string).trim()
+      : undefined
+    sanitized.push({
+      id,
+      name: name.slice(0, 80),
+      tokenHash,
+      tokenPrefix: tokenPrefix.slice(0, 16),
+      createdAt,
+      lastSeenAt,
+      revokedAt,
+      trims: sanitizedTrims,
+      ...(remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid } : {})
+    })
+  }
+
+  return sanitized
+}
+
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
@@ -1228,9 +1541,261 @@ async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promi
   await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
 }
 
+async function persistParallaxHostConfig(config: ParallaxHostConfig): Promise<void> {
+  await library.setAppMeta(PARALLAX_HOST_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(PARALLAX_HOST_PORT_META_KEY, String(config.port))
+}
+
+// §20.19(d). Load `parallaxSinkEnabled`. Decision logic lives in
+// `decideParallaxSinkEnabledFromMeta` (pure, in `types/parallax.ts` — tested without sqlite);
+// this wrapper just does the IO: read meta, ask the helper, persist on first-read migration.
+//
+// Codex round 1 finding (low): pass the already-sanitized `parallaxSinkConnection` so corrupt
+// JSON that sanitizes to null can't false-migrate sinkEnabled to true.
+async function loadParallaxSinkEnabledFromMeta(): Promise<boolean> {
+  const raw = library.getAppMeta(PARALLAX_SINK_ENABLED_META_KEY)
+  const decision = decideParallaxSinkEnabledFromMeta(raw, parallaxSinkConnection !== null)
+  if (decision.needsPersist) {
+    try {
+      await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, decision.enabled ? '1' : '0')
+    } catch (error) {
+      console.warn('Failed to persist initial Parallax sink-enabled flag:', error)
+    }
+  }
+  return decision.enabled
+}
+
+async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
+  await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, enabled ? '1' : '0')
+}
+
+// §20.19(c). Lazy load — generate and persist on first read. Validated as a v4-ish UUID; if a
+// persisted value is malformed (manual edit, schema mismatch), regenerate.
+async function loadParallaxEndpointUuidFromMeta(): Promise<string> {
+  const PARALLAX_ENDPOINT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const raw = library.getAppMeta(PARALLAX_ENDPOINT_UUID_META_KEY)
+  if (raw && PARALLAX_ENDPOINT_UUID_PATTERN.test(raw)) {
+    return raw
+  }
+  const fresh = randomUUID()
+  try {
+    await library.setAppMeta(PARALLAX_ENDPOINT_UUID_META_KEY, fresh)
+  } catch (error) {
+    console.warn('Failed to persist Parallax endpoint UUID:', error)
+  }
+  return fresh
+}
+
 async function persistPhoneRemotePairedDevices(devices: PersistedPhoneRemotePairedDevice[]): Promise<void> {
   phoneRemotePairedDevices = devices.map((device) => ({ ...device }))
   await library.setAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY, JSON.stringify(phoneRemotePairedDevices))
+}
+
+async function persistParallaxPairedSinks(sinks: PersistedParallaxPairedSink[]): Promise<void> {
+  parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
+  await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, JSON.stringify(parallaxPairedSinks))
+}
+
+// §14.1.2 / §16. Sink-side durable credential. In-memory cache mirrors the persisted value so
+// host-vs-sink precedence checks on boot (and any sync renderer reads) don't go through SQL on
+// the hot path. Always written via `persistParallaxSinkConnection` / cleared via
+// `clearParallaxSinkConnection` — never mutated directly.
+let parallaxSinkConnection: PersistedParallaxSinkConnection | null = null
+
+function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConnection | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : ''
+  const sinkId = typeof value.sinkId === 'string' ? value.sinkId.trim() : ''
+  const token = typeof value.token === 'string' ? value.token.trim() : ''
+  if (!baseUrl || !sinkId || !token) return null
+  const hostName = typeof value.hostName === 'string' ? value.hostName.slice(0, 80) : null
+  const pairedAt = typeof value.pairedAt === 'number' && Number.isFinite(value.pairedAt)
+    ? Math.max(0, value.pairedAt)
+    : 0
+  const lastConnectedAt = typeof value.lastConnectedAt === 'number' && Number.isFinite(value.lastConnectedAt)
+    ? Math.max(0, value.lastConnectedAt)
+    : null
+  // §20.19(g). Round-trip the host's endpoint UUID (committed at pair time) so the sink
+  // remembers "I was paired with this host before" symmetric to the sink-UUID-on-host pattern.
+  // Pre-§20 connections leave it undefined.
+  const hostParallaxEndpointUuid = typeof value.hostParallaxEndpointUuid === 'string' && value.hostParallaxEndpointUuid.trim()
+    ? value.hostParallaxEndpointUuid.trim()
+    : undefined
+  return {
+    baseUrl,
+    sinkId,
+    token,
+    hostName,
+    pairedAt,
+    lastConnectedAt,
+    ...(hostParallaxEndpointUuid ? { hostParallaxEndpointUuid } : {})
+  }
+}
+
+function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection | null {
+  const raw = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
+  if (!raw) return null
+  try {
+    return sanitizeParallaxSinkConnection(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+async function persistParallaxSinkConnection(next: PersistedParallaxSinkConnection): Promise<void> {
+  parallaxSinkConnection = { ...next }
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify(parallaxSinkConnection))
+}
+
+async function clearParallaxSinkConnection(): Promise<void> {
+  parallaxSinkConnection = null
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+}
+
+// §14.1.2 / §16.4 / §16.12(a). Boot-path auto-reconnect retry loop. The service's existing
+// `sinkReconnectTimer` ONLY covers in-session SSE/audio drops, not initial-connect failure
+// (verified at parallax.ts:728-733). So this owns the "sink boots while host is down, host
+// comes up later" case. Exponential backoff bounded at 60 s, indefinite retries — the sink
+// is supposed to be appliance-like and just reconnect when the host comes back. 401 is the
+// R-clear branch (§16.7 + §16.12(c)): the host explicitly revoked us, give up + clear creds.
+let parallaxAutoReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let parallaxAutoReconnectAttempt = 0
+let parallaxAutoReconnectGeneration = 0
+
+function cancelParallaxAutoReconnect(): void {
+  if (parallaxAutoReconnectTimer !== null) {
+    clearTimeout(parallaxAutoReconnectTimer)
+    parallaxAutoReconnectTimer = null
+  }
+  parallaxAutoReconnectAttempt = 0
+  parallaxAutoReconnectGeneration += 1
+}
+
+async function attemptParallaxAutoReconnect(
+  connection: PersistedParallaxSinkConnection,
+  generation: number
+): Promise<void> {
+  if (generation !== parallaxAutoReconnectGeneration) return
+  // §16.12(b) host-vs-sink precedence: never silently turn a host instance into a sink. If
+  // host mode flipped on between scheduling and firing, abandon this attempt; the user can
+  // press Connect manually after disabling host.
+  if (parallaxHostConfig.enabled) {
+    cancelParallaxAutoReconnect()
+    return
+  }
+  // Use the latest persisted connection as the source of truth for the address — relocation
+  // (Pillar 3) updates it mid-loop, and we must not connect to / persist a stale baseUrl.
+  const active = parallaxSinkConnection ?? connection
+  try {
+    await parallaxService.connectSink({
+      baseUrl: active.baseUrl,
+      sinkId: active.sinkId,
+      token: active.token
+    })
+    if (generation !== parallaxAutoReconnectGeneration) return
+    parallaxAutoReconnectAttempt = 0
+    const updated: PersistedParallaxSinkConnection = { ...active, lastConnectedAt: Date.now() }
+    await persistParallaxSinkConnection(updated)
+  } catch (error) {
+    if (generation !== parallaxAutoReconnectGeneration) return
+    if (error instanceof ParallaxAuthError && error.status === 401) {
+      // R-clear per §16.7 — host explicitly revoked us. Wipe the credential, stop retrying.
+      await clearParallaxSinkConnection()
+      cancelParallaxAutoReconnect()
+      return
+    }
+    parallaxAutoReconnectAttempt += 1
+    // Pillar 3 — after a few failures against the persisted address, the host may have moved (sink
+    // booted while the host was at a new IP). Try to relocate it via mDNS; on success the persisted
+    // baseUrl is updated and the next attempt picks it up (and the attempt counter resets).
+    if (parallaxAutoReconnectAttempt >= PARALLAX_BOOT_RELOCATE_AFTER_ATTEMPTS) {
+      const relocated = await relocateParallaxHost()
+      if (generation !== parallaxAutoReconnectGeneration) return
+      if (relocated) parallaxAutoReconnectAttempt = 0
+    }
+    const next = parallaxSinkConnection ?? connection
+    const delayMs = Math.min(60_000, 1_000 * Math.pow(2, Math.min(parallaxAutoReconnectAttempt - 1, 6)))
+    parallaxAutoReconnectTimer = setTimeout(() => {
+      void attemptParallaxAutoReconnect(next, generation)
+    }, delayMs)
+  }
+}
+
+function startParallaxAutoReconnect(connection: PersistedParallaxSinkConnection): void {
+  cancelParallaxAutoReconnect()
+  const generation = parallaxAutoReconnectGeneration
+  void attemptParallaxAutoReconnect(connection, generation)
+}
+
+// Pillar 2 — OS power events. After the machine wakes, sockets that were live before sleep are
+// almost always half-open (no FIN), so without an explicit kick both roles would sit wedged until a
+// timeout/backoff elapsed. On resume we force a clean re-handshake immediately. Honors host-vs-sink
+// precedence and the sink-role toggle exactly like `parallax:startAutoReconnect`.
+function handleParallaxPowerResume(): void {
+  // Re-publish the mDNS advert — the multicast socket may have gone stale across sleep, and a paired
+  // sink relocating this host (Pillar 3) needs a fresh announcement to find it.
+  refreshParallaxAdvertisement()
+  if (parallaxHostConfig.enabled) {
+    // Host: drop phantom (half-open) sink clients so the woken host's view is accurate and
+    // reconnecting sinks get a clean handshake. The listening socket + activeStream are preserved.
+    parallaxService.handleHostPowerResume()
+    return
+  }
+  // Sink: force a fresh connect (attempt counter reset to 0 → no backoff delay). connectSink tears
+  // down the half-open connection first, so this recovers a wedged sink instantly instead of waiting
+  // out the liveness watchdog.
+  if (!parallaxSinkConnection || !parallaxSinkEnabled) return
+  startParallaxAutoReconnect(parallaxSinkConnection)
+}
+
+// Pillar 2 — proactive teardown on suspend so peers see a clean FIN and start reconnecting at once
+// rather than waiting out half-open detection. Best-effort: may not flush before the machine sleeps,
+// in which case the peer's own reconnect path still recovers it on resume.
+function handleParallaxPowerSuspend(): void {
+  if (parallaxHostConfig.enabled) {
+    parallaxService.handleHostPowerSuspend()
+    return
+  }
+  if (parallaxService.getStatus().sink.connected) {
+    void parallaxService.disconnectSink().catch(() => undefined)
+  }
+}
+
+// Pillar 3 — host relocation. Resolve a paired host's current address via mDNS by its remembered
+// endpoint UUID and, if it has moved, persist + return the new baseUrl. Returns null when there's no
+// UUID to search by (pre-Pillar-3 pairing), the host can't be found, or it's still at the persisted
+// address. Shared by the in-session reconnect (onSinkRelocate callback) and the boot-path loop.
+const PARALLAX_HOST_RESOLVE_TIMEOUT_MS = 4_000
+// Boot-path counterpart to the service's PARALLAX_RELOCATE_AFTER_ATTEMPTS — relocate after this many
+// failed initial-connect attempts against the persisted address (~3 ≈ the first few backoff cycles).
+const PARALLAX_BOOT_RELOCATE_AFTER_ATTEMPTS = 3
+async function relocateParallaxHost(): Promise<string | null> {
+  const connection = parallaxSinkConnection
+  const uuid = connection?.hostParallaxEndpointUuid?.trim()
+  if (!connection || !uuid) return null
+  let resolved: Awaited<ReturnType<typeof parallaxDiscoveryService.resolveHostByUuid>> = null
+  try {
+    resolved = await parallaxDiscoveryService.resolveHostByUuid(uuid, PARALLAX_HOST_RESOLVE_TIMEOUT_MS)
+  } catch (error) {
+    console.warn('Parallax host relocation lookup failed:', error)
+    return null
+  }
+  if (!resolved) return null
+  // Re-read: the connection may have been cleared/replaced while we were browsing.
+  const current = parallaxSinkConnection
+  if (!current || current.hostParallaxEndpointUuid?.trim() !== uuid) return null
+  if (resolved.baseUrl === current.baseUrl) return null
+  const updated: PersistedParallaxSinkConnection = { ...current, baseUrl: resolved.baseUrl }
+  try {
+    await persistParallaxSinkConnection(updated)
+  } catch (error) {
+    // Persist failure is non-fatal — still return the new URL so the live reconnect can use it; the
+    // next successful connect will re-persist lastConnectedAt anyway.
+    console.warn('Failed to persist relocated Parallax host address:', error)
+  }
+  console.log(`[parallax] relocated host ${uuid} → ${resolved.baseUrl}`)
+  return resolved.baseUrl
 }
 
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
@@ -1311,6 +1876,35 @@ async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<
   return normalized
 }
 
+async function loadParallaxHostConfigFromMeta(): Promise<ParallaxHostConfig> {
+  const enabled = parseMetaBoolean(library.getAppMeta(PARALLAX_HOST_ENABLED_META_KEY), false)
+
+  const rawPort = library.getAppMeta(PARALLAX_HOST_PORT_META_KEY)
+  let port = PARALLAX_DEFAULT_PORT
+  if (rawPort !== null) {
+    try {
+      port = normalizeParallaxPort(rawPort)
+    } catch {
+      port = PARALLAX_DEFAULT_PORT
+    }
+  }
+
+  const normalized: ParallaxHostConfig = { enabled, port }
+  const needsPersistence =
+    library.getAppMeta(PARALLAX_HOST_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(PARALLAX_HOST_PORT_META_KEY) !== String(normalized.port)
+
+  if (needsPersistence) {
+    try {
+      await persistParallaxHostConfig(normalized)
+    } catch (error) {
+      console.warn('Failed to persist normalized Parallax host settings:', error)
+    }
+  }
+
+  return normalized
+}
+
 async function loadPhoneRemotePairedDevicesFromMeta(): Promise<PersistedPhoneRemotePairedDevice[]> {
   let pairedDevices = sanitizePhoneRemotePairedDevices([])
   const rawPairedDevices = library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY)
@@ -1335,6 +1929,30 @@ async function loadPhoneRemotePairedDevicesFromMeta(): Promise<PersistedPhoneRem
   return pairedDevices
 }
 
+async function loadParallaxPairedSinksFromMeta(): Promise<PersistedParallaxPairedSink[]> {
+  let pairedSinks = sanitizeParallaxPairedSinks([])
+  const rawPairedSinks = library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY)
+  if (rawPairedSinks) {
+    try {
+      pairedSinks = sanitizeParallaxPairedSinks(JSON.parse(rawPairedSinks))
+    } catch {
+      pairedSinks = sanitizeParallaxPairedSinks([])
+    }
+  }
+
+  if (library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY) !== JSON.stringify(pairedSinks)) {
+    try {
+      await persistParallaxPairedSinks(pairedSinks)
+    } catch (error) {
+      console.warn('Failed to persist normalized Parallax paired sinks:', error)
+    }
+  } else {
+    parallaxPairedSinks = pairedSinks.map((sink) => ({ ...sink }))
+  }
+
+  return pairedSinks
+}
+
 async function applyLocalApiConfig(config: LocalApiServiceConfig): Promise<ReturnType<typeof localApiService.getStatus>> {
   localApiConfig = { ...config }
   await persistLocalApiConfig(localApiConfig)
@@ -1346,7 +1964,21 @@ async function applyPhoneRemoteConfig(
 ): Promise<ReturnType<typeof phoneRemoteService.getStatus>> {
   phoneRemoteConfig = { ...config }
   await persistPhoneRemoteConfig(phoneRemoteConfig)
-  return phoneRemoteService.applyConfig(phoneRemoteConfig)
+  const status = await phoneRemoteService.applyConfig(phoneRemoteConfig)
+  refreshPhoneRemoteDiscoveryAdvertisement(status)
+  return status
+}
+
+async function applyParallaxHostConfig(
+  config: ParallaxHostConfig
+): Promise<ReturnType<typeof parallaxService.getStatus>> {
+  parallaxHostConfig = { ...config }
+  await persistParallaxHostConfig(parallaxHostConfig)
+  const status = await parallaxService.applyHostConfig(parallaxHostConfig)
+  // Pillar 3 — keep the mDNS advert in step with host enable/disable so a paired sink can relocate
+  // this host by UUID. Precedence-aware: falls back to the sink advert (or none) when host is off.
+  refreshParallaxAdvertisement()
+  return status
 }
 
 function normalizeOptionalMetaText(value: string | null): string | null {
@@ -1883,6 +2515,12 @@ function broadcastPhoneRemoteStatus(): void {
   sendToWindow(mainWindow, 'phone-remote:status', payload)
 }
 
+function broadcastParallaxStatus(): void {
+  if (isAppQuitting) return
+  const payload = parallaxService.getStatus()
+  sendToWindow(mainWindow, 'parallax:status', payload)
+}
+
 function broadcastLastFmStatus(): void {
   const payload = lastFmService.getStatus()
   sendToWindow(mainWindow, 'lastfm:status', payload)
@@ -2345,41 +2983,6 @@ async function setSubsonicSourceDisabledState(sourceId: number): Promise<void> {
   await library.markSubsonicTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
 }
 
-async function hydrateSubsonicTrackArtworkHashes(
-  connection: { baseUrl: string; username: string; password: string },
-  tracks: Array<{ artwork_source_id: string | null }>,
-  onProgress?: (current: number, total: number, artworkId: string | null) => void
-): Promise<Map<string, string>> {
-  const artworkIds = Array.from(new Set(
-    tracks
-      .map((track) => track.artwork_source_id)
-      .filter((artworkId): artworkId is string => typeof artworkId === 'string' && artworkId.trim().length > 0)
-  ))
-
-  const hashesByArtworkId = new Map<string, string>()
-  onProgress?.(0, artworkIds.length, null)
-  let processed = 0
-  for (const artworkId of artworkIds) {
-    try {
-      const artworkPayload = await fetchSubsonicCoverArt(connection, artworkId, {
-        timeoutMs: 12_000,
-        retries: 1
-      })
-      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
-      if (hash) {
-        hashesByArtworkId.set(artworkId, hash)
-      }
-    } catch (error) {
-      console.warn(`Failed to sync Subsonic cover art ${artworkId}:`, error)
-    } finally {
-      processed += 1
-      onProgress?.(processed, artworkIds.length, artworkId)
-    }
-  }
-
-  return hashesByArtworkId
-}
-
 async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
   if (!source) return false
@@ -2453,42 +3056,59 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     })
 
     setSubsonicSyncProgress(sourceId, {
-      phase: 'artwork',
-      activity: 'Syncing artwork...'
-    })
-    const artworkHashesBySourceId = await hydrateSubsonicTrackArtworkHashes(
-      credentials.connection,
-      result.tracks,
-      (current, total, artworkId) => {
-        setSubsonicSyncProgress(sourceId, {
-          phase: 'artwork',
-          activity: 'Syncing artwork...',
-          current,
-          total,
-          detail: artworkId
-        })
-      }
-    )
-    const tracksForUpsert = result.tracks.map((track) => ({
-      ...track,
-      artwork_hash: track.artwork_source_id
-        ? (artworkHashesBySourceId.get(track.artwork_source_id) ?? track.artwork_hash)
-        : track.artwork_hash
-    }))
-
-    setSubsonicSyncProgress(sourceId, {
       phase: 'finalizing',
-      activity: 'Applying library updates...'
+      activity: 'Applying track metadata...'
     })
-    await library.upsertSubsonicTracks(sourceId, tracksForUpsert, {
+    await library.upsertSubsonicTracks(sourceId, result.tracks, {
       persist: false,
-      syncSessionKey
+      syncSessionKey,
+      preserveExistingArtwork: true
     })
     await library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
     )
+    await library.persistLibraryDatabase()
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'playlists',
+      activity: 'Loading favorites and playlists...'
+    })
+    const [starredResult, playlistsResult] = await Promise.allSettled([
+      fetchSubsonicStarredTrackIds(credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1
+      }),
+      syncSubsonicPlaylists(sourceId, credentials.connection, {
+        timeoutMs: 12_000,
+        retries: 1,
+        onProgress: (progress) => {
+          setSubsonicSyncProgress(sourceId, {
+            phase: progress.phase,
+            activity: 'Loading favorites and playlists...',
+            current: progress.current,
+            total: progress.total,
+            detail: progress.detail
+          })
+        }
+      })
+    ])
+
+    setSubsonicSyncProgress(sourceId, {
+      phase: 'finalizing',
+      activity: 'Applying favorites and playlists...'
+    })
+    if (starredResult.status === 'fulfilled') {
+      await library.syncSubsonicFavoriteTrackIds(sourceId, starredResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic starred tracks for source ${sourceId}:`, starredResult.reason)
+    }
+    if (playlistsResult.status === 'fulfilled') {
+      await library.syncSubsonicRemotePlaylists(sourceId, playlistsResult.value, { persist: false })
+    } else {
+      console.warn(`Failed to sync Subsonic playlists for source ${sourceId}:`, playlistsResult.reason)
+    }
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -2966,6 +3586,8 @@ async function createMiniPlayerWindow(): Promise<void> {
     y: prefs.y,
     minWidth: MINI_WINDOW_MIN_WIDTH,
     minHeight: MINI_WINDOW_MIN_HEIGHT,
+    maxWidth: MINI_WINDOW_MAX_WIDTH,
+    maxHeight: MINI_WINDOW_MAX_HEIGHT,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -2975,7 +3597,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: 'Astra Mini Player',
+    title: MINI_WINDOW_TITLE,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -2986,6 +3608,11 @@ async function createMiniPlayerWindow(): Promise<void> {
   })
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'mini_player'
+  })
+
+  miniWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    miniWindow?.setTitle(MINI_WINDOW_TITLE)
   })
 
   miniWindow.on('ready-to-show', () => {
@@ -3156,6 +3783,13 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  mainWindow.on('app-command', (event, command) => {
+    const input = resolveMouseAppCommand(command)
+    if (!input) return
+    event.preventDefault()
+    mainWindow?.webContents.send('input-bindings:input', input)
+  })
+
   mainWindow.on('move', schedulePersistMainWindowPrefs)
   mainWindow.on('resize', schedulePersistMainWindowPrefs)
   mainWindow.on('maximize', schedulePersistMainWindowPrefs)
@@ -3168,6 +3802,7 @@ function createWindow(): void {
     void persistMainWindowPrefs()
   })
   mainWindow.on('closed', () => {
+    globalInputShortcutService.clear()
     mainWindow = null
     associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
@@ -3188,12 +3823,12 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    const action: UIScaleShortcutAction | null = resolveUIScaleShortcutAction(input, process.platform)
-    if (!action) return
+    const interceptedInput = resolveInterceptedKeyboardInput(input, process.platform)
+    if (!interceptedInput) return
 
     event.preventDefault()
     mainWindow?.webContents.setZoomLevel(0)
-    mainWindow?.webContents.send('ui-scale:shortcut', action)
+    mainWindow?.webContents.send('input-bindings:input', interceptedInput)
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
@@ -3331,6 +3966,49 @@ function scheduleArtistCreditsBackfillMigration(): void {
   }, ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS)
 }
 
+async function maybeRunGenreMetadataBackfillOnce(): Promise<void> {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  let completed = false
+  try {
+    const { scanned, updated, errors } = await library.backfillMissingGenreMetadata()
+    if (scanned > 0) {
+      console.log(`Genre metadata backfill (one-time): scanned=${scanned}, updated=${updated}, errors=${errors}`)
+    }
+    if (updated > 0) {
+      mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned, updated, errors })
+    }
+    completed = true
+  } catch (err) {
+    console.warn('Genre metadata backfill failed:', err)
+  } finally {
+    if (completed) {
+      try {
+        await library.setAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY, '1')
+      } catch (err) {
+        console.warn('Failed to persist genre metadata backfill migration flag:', err)
+      }
+    }
+  }
+}
+
+function scheduleGenreMetadataBackfillMigration(): void {
+  if (library.getAppMeta(GENRE_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
+    return
+  }
+
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+  }
+
+  genreMetadataBackfillTimer = setTimeout(() => {
+    genreMetadataBackfillTimer = null
+    void maybeRunGenreMetadataBackfillOnce()
+  }, GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS)
+}
+
 async function maybeRunReplayGainBackfillOnce(): Promise<void> {
   if (!replayGainScanEnabled) {
     return
@@ -3412,6 +4090,38 @@ function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
     .digest('hex')
 }
 
+async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> {
+  const parsed = parseSubsonicArtworkHash(hash)
+  if (!parsed) return hash
+
+  if (subsonicArtworkResolveRequestCache.has(hash)) {
+    return subsonicArtworkResolveRequestCache.get(hash)!
+  }
+
+  const request = (async () => {
+    try {
+      const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+      const artworkPayload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, {
+        timeoutMs: 12_000,
+        retries: 1
+      })
+      const cachedHash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      if (!cachedHash) return null
+      await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
+      return cachedHash
+    } catch (error) {
+      console.warn(`Failed to resolve Subsonic artwork ${parsed.artworkId}:`, error)
+      return null
+    }
+  })()
+    .finally(() => {
+      subsonicArtworkResolveRequestCache.delete(hash)
+    })
+
+  subsonicArtworkResolveRequestCache.set(hash, request)
+  return request
+}
+
 function getErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null
   const code = (error as { code?: unknown }).code
@@ -3456,10 +4166,12 @@ function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: n
 
 async function getArtworkBytesByHash(hash: string): Promise<ArtworkBytes | null> {
   if (!hash) return null
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
   try {
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const data = await readFile(artworkPath)
-    return { bytes: data, mimeType: detectArtworkMimeType(hash, data) }
+    return { bytes: data, mimeType: detectArtworkMimeType(resolvedHash, data) }
   } catch {
     return null
   }
@@ -3475,9 +4187,12 @@ async function resolveArtworkThumbnailBytesByHash(
   maxEdgePx: number,
   jpegQuality: number
 ): Promise<ArtworkBytes | null> {
+  const resolvedHash = await resolveSubsonicArtworkHash(hash)
+  if (!resolvedHash) return null
+
   try {
     await ensureArtworkThumbnailCacheDirectory()
-    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}.jpg`)
+    const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(resolvedHash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
@@ -3488,17 +4203,17 @@ async function resolveArtworkThumbnailBytesByHash(
       // Cache miss: generate and persist below.
     }
 
-    const artworkPath = library.getArtworkPath(hash)
+    const artworkPath = library.getArtworkPath(resolvedHash)
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkBytesByHash(hash)
+      return getArtworkBytesByHash(resolvedHash)
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkBytesByHash(hash)
+      return getArtworkBytesByHash(resolvedHash)
     }
 
     try {
@@ -3511,8 +4226,8 @@ async function resolveArtworkThumbnailBytesByHash(
 
     return { bytes: thumbnailBuffer, mimeType: 'image/jpeg' }
   } catch (error) {
-    console.warn('Failed to resolve artwork thumbnail:', hash, error)
-    return getArtworkBytesByHash(hash)
+    console.warn('Failed to resolve artwork thumbnail data URL:', resolvedHash, error)
+    return getArtworkBytesByHash(resolvedHash)
   }
 }
 
@@ -3636,7 +4351,25 @@ app.on('open-file', (event, filePath) => {
 
 queueAssociatedOpenFiles(parseAssociatedOpenPathsFromArgv(process.argv))
 
+// §14.1.4 — `--zone` CLI flag forces the renderer into Zone Display layout for this launch
+// without mutating the persisted `openZoneDisplayOnLaunch` preference. Translated to an env var
+// here so the preload (which can't reach argv with contextIsolation) reads a single signal.
+// PARALLAX_LAUNCH_ZONE=1 set externally works too — same code path on the preload side.
+if (process.argv.includes('--zone')) {
+  process.env.PARALLAX_LAUNCH_ZONE = '1'
+}
+
 app.whenReady().then(async () => {
+  // Grant audio-capture permission up front so Web Audio's AudioContext.outputLatency reports at
+  // 1ms precision instead of 8ms — Blink quantizes it coarsely until the document holds microphone
+  // permission, and Parallax output-latency compensation depends on accurate readings. This app
+  // only loads its own trusted bundled UI (and already uses getUserMedia for output calibration),
+  // so this is not a meaningful expansion of what the renderer could already do.
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(true)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => true)
+
   // Initialize library database
   await library.initDatabase()
   try {
@@ -3681,10 +4414,43 @@ app.whenReady().then(async () => {
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
+  parallaxHostConfig = await loadParallaxHostConfigFromMeta()
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
+  parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
+  parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
+  // §20 Commit 1. Sink-enabled migration MUST read after `parallaxSinkConnection` is loaded —
+  // the migration condition checks "did this user have a persisted sink connection pre-§20."
+  // Endpoint UUID is lazy-generated regardless of role and persisted on first launch.
+  parallaxSinkEnabled = await loadParallaxSinkEnabledFromMeta()
+  parallaxEndpointUuid = await loadParallaxEndpointUuidFromMeta()
+  // §20 Commit 2 + 3. Kick the sink surface at boot if sink is already enabled from a previous
+  // launch (either user-toggled or migrated per §20.19(d)). Safe to call before mainWindow
+  // exists — mDNS + listener don't need the renderer. `startParallaxSinkSurface` enforces the
+  // listener-before-advertise ordering per Codex round 1 finding (medium).
+  if (parallaxSinkEnabled) {
+    await startParallaxSinkSurface()
+  }
   phoneRemoteService.replacePairedDevices(phoneRemotePairedDevices)
+  parallaxService.replacePairedSinks(parallaxPairedSinks)
   await localApiService.applyConfig(localApiConfig)
   await phoneRemoteService.applyConfig(phoneRemoteConfig)
+  refreshPhoneRemoteDiscoveryAdvertisement()
+  await parallaxService.applyHostConfig(parallaxHostConfig)
+  // Pillar 3 — publish the role-appropriate mDNS advert now that both host config and sink-enabled
+  // are loaded (the sink surface above may have advertised role=sink before host config was known;
+  // this corrects to role=host when host mode is the active role).
+  refreshParallaxAdvertisement()
+  // Pillar 2 — wire OS power events so parallax recovers instantly on sleep→wake instead of waiting
+  // out a timeout/backoff. Registered once at boot; the handlers themselves are role-aware and
+  // no-op when parallax isn't active.
+  powerMonitor.on('resume', handleParallaxPowerResume)
+  powerMonitor.on('suspend', handleParallaxPowerSuspend)
+  // §14.1.2 follow-up (Codex round 2, finding 1). Auto-reconnect used to kick off here, BEFORE
+  // createWindow(). But `onSinkEvent` / `onSinkAudioChunk` only forward to mainWindow if it
+  // exists — a successful pre-window /join would drop the one-shot `stream-start` event and
+  // early audio chunks on the floor. The renderer-side `parallaxStore.init()` now calls
+  // `parallax:startAutoReconnect` after subscriptions + AudioEngine are ready; main just stages
+  // the saved connection in memory here and waits.
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
   lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
@@ -3724,6 +4490,7 @@ app.whenReady().then(async () => {
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
   scheduleArtistCreditsBackfillMigration()
+  scheduleGenreMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
 
   app.on('activate', () => {
@@ -3741,6 +4508,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
     mainWindowPersistTimer = null
@@ -3761,6 +4529,10 @@ app.on('before-quit', () => {
     clearTimeout(artistCreditsBackfillTimer)
     artistCreditsBackfillTimer = null
   }
+  if (genreMetadataBackfillTimer !== null) {
+    clearTimeout(genreMetadataBackfillTimer)
+    genreMetadataBackfillTimer = null
+  }
   if (replayGainBackfillTimer !== null) {
     clearTimeout(replayGainBackfillTimer)
     replayGainBackfillTimer = null
@@ -3780,6 +4552,16 @@ app.on('before-quit', () => {
   void memoryDiagnosticsService?.shutdown()
   void localApiService.stop()
   void phoneRemoteService.stop()
+  phoneRemoteDiscoveryService.destroy()
+  void parallaxService.stop()
+  // §20 Commit 2. Release the mDNS socket on quit so a relaunched Astra doesn't fight the
+  // prior instance for the multicast group. Idempotent — safe even when no advert was running.
+  parallaxDiscoveryService.destroy()
+  // §20 Commit 3. Close the sink listener port. Fire-and-forget — the listen socket will close
+  // when the process exits regardless, this just keeps the quit log clean.
+  void parallaxSinkListener.stop().catch((error) => {
+    console.warn('Failed to stop Parallax sink listener on quit:', error)
+  })
   lastFmService.stop()
   discordRpcService.shutdown()
   library.closeDatabase()
@@ -3826,6 +4608,19 @@ ipcMain.handle('mini-player:close', async () => {
 
 ipcMain.handle('mini-player:getWindowState', () => {
   return getMiniWindowState()
+})
+
+ipcMain.handle('mini-player:isCursorInsideWindow', (event) => {
+  if (!miniWindow || miniWindow.isDestroyed() || event.sender !== miniWindow.webContents) {
+    return false
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = miniWindow.getBounds()
+  return cursor.x >= bounds.x
+    && cursor.x < bounds.x + bounds.width
+    && cursor.y >= bounds.y
+    && cursor.y < bounds.y + bounds.height
 })
 
 ipcMain.handle('mini-player:setVisualizerMode', async (_event, mode: unknown) => {
@@ -4027,6 +4822,20 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
     mainProcessMemoryMb: mainProcessKb === null ? null : mainProcessKb / 1024,
     helperProcessesMemoryMb: helperProcessesKb === null ? null : helperProcessesKb / 1024,
   }
+})
+
+ipcMain.handle('input-bindings:configure-global', (event, rawRequests: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return []
+  const requests = sanitizeGlobalShortcutRegistrationRequests(rawRequests)
+  return globalInputShortcutService.configure(requests, (actionId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW.has(actionId)) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    mainWindow.webContents.send('input-bindings:global-action', actionId)
+  })
 })
 
 ipcMain.handle('app:getMainProcessMemoryStats', () => {
@@ -4668,6 +5477,487 @@ ipcMain.handle('phone-remote:resetToDefaults', async () => {
   return applyPhoneRemoteConfig(nextConfig)
 })
 
+// Parallax LAN sync
+ipcMain.handle('parallax:getStatus', () => {
+  return parallaxService.getStatus()
+})
+
+// §14.1.4 / §19.18(e) — sink-side artwork fetch. Main holds the token; renderer never sees it
+// (§14.1.2 invariant). Returns a base64 data URL on success, null on any failure — Zone Display
+// falls back to placeholder.
+ipcMain.handle('parallax:fetchSinkArtwork', async (_event, streamId: unknown) => {
+  if (typeof streamId !== 'string' || streamId.length === 0) return null
+  return parallaxService.fetchSinkArtworkDataUrl(streamId)
+})
+
+// §14.1.4 / Codex finding 2 (high). Sink → host trim push from the Zone Display overlay.
+ipcMain.handle(
+  'parallax:requestSinkTrimUpdate',
+  async (_event, outputDeviceId: unknown, outputDeviceLabel: unknown, advanceMs: unknown) => {
+    if (typeof outputDeviceId !== 'string' || outputDeviceId.length === 0) return false
+    if (typeof advanceMs !== 'number' || !Number.isFinite(advanceMs)) return false
+    const label = typeof outputDeviceLabel === 'string' ? outputDeviceLabel : null
+    return parallaxService.pushSinkTrimUpdate(outputDeviceId, label, advanceMs)
+  }
+)
+
+// §14.1.4 — device-identity for the Zone Display identity card. Returns this machine's OS hostname
+// and LAN IPv4 addresses regardless of whether the Parallax host is currently enabled, so the
+// unpaired/revoked surface ("This endpoint") can identify the device even when host mode is off.
+ipcMain.handle('parallax:getEndpointIdentity', () => {
+  // Codex finding 4 (low): return ALL non-internal IPv4s, sorted with common LAN ranges first.
+  // The prior implementation filtered to 192.168.* if any existed, hiding 10.* / 172.16.* on
+  // multi-interface machines (corporate LANs, mesh routers, container hosts).
+  const lanIps: string[] = []
+  const interfaces = networkInterfaces()
+  for (const addresses of Object.values(interfaces)) {
+    for (const addressInfo of addresses ?? []) {
+      if (addressInfo.internal) continue
+      if (addressInfo.family !== 'IPv4') continue
+      const address = addressInfo.address.trim()
+      if (address) lanIps.push(address)
+    }
+  }
+  const rankLanIp = (ip: string): number => {
+    if (/^192\.168\./.test(ip)) return 0
+    if (/^10\./.test(ip)) return 1
+    if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) return 2
+    return 3
+  }
+  lanIps.sort((left, right) => {
+    const rankDelta = rankLanIp(left) - rankLanIp(right)
+    if (rankDelta !== 0) return rankDelta
+    return left.localeCompare(right)
+  })
+  return { hostname: hostname(), lanIps }
+})
+
+ipcMain.handle('parallax:listPairedSinks', () => {
+  return parallaxService.listPairedSinks()
+})
+
+ipcMain.handle('parallax:setHostEnabled', async (_event, enabled: unknown) => {
+  const nextConfig: ParallaxHostConfig = {
+    ...parallaxHostConfig,
+    enabled: Boolean(enabled)
+  }
+  return applyParallaxHostConfig(nextConfig)
+})
+
+ipcMain.handle('parallax:setHostPort', async (_event, rawPort: unknown) => {
+  const nextPort = normalizeParallaxPort(rawPort)
+  const nextConfig: ParallaxHostConfig = {
+    ...parallaxHostConfig,
+    port: nextPort
+  }
+  return applyParallaxHostConfig(nextConfig)
+})
+
+ipcMain.handle('parallax:createPairingPin', () => {
+  return parallaxService.createPairingPin()
+})
+
+ipcMain.handle('parallax:pairWithHost', async (_event, baseUrl: unknown, pin: unknown, sinkName: unknown) => {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    throw new Error('Parallax host URL is required.')
+  }
+  if (typeof pin !== 'string' || !pin.trim()) {
+    throw new Error('Parallax pairing PIN is required.')
+  }
+  return parallaxService.pairWithHost(baseUrl, pin, typeof sinkName === 'string' ? sinkName : 'Astra Sink')
+})
+
+ipcMain.handle('parallax:connectSink', async (_event, config: ParallaxSinkConnectionConfig) => {
+  // §14.1.2 follow-up (Codex round 1, finding 2). The user clicked Connect manually — abandon
+  // any in-flight boot retry timer so it can't fire later with a stale connection reference
+  // and force a disconnect mid-session.
+  cancelParallaxAutoReconnect()
+  return parallaxService.connectSink(config)
+})
+
+// §14.1.2 follow-up (Codex round 1, finding 3). Renderer-facing manual-reconnect that reuses
+// the credential main already holds — eliminates the need for SettingsView to keep the raw
+// token in component state just so it can drive a Connect button.
+ipcMain.handle('parallax:reconnectFromPersisted', async () => {
+  if (!parallaxSinkConnection) {
+    throw new Error('No persisted Parallax sink connection.')
+  }
+  cancelParallaxAutoReconnect()
+  return parallaxService.connectSink({
+    baseUrl: parallaxSinkConnection.baseUrl,
+    sinkId: parallaxSinkConnection.sinkId,
+    token: parallaxSinkConnection.token
+  })
+})
+
+// §14.1.2 follow-up (Codex round 2, finding 1). Renderer calls this from parallaxStore.init()
+// once the audio engine + event subscriptions are wired. Boot-path auto-reconnect previously
+// fired from main during initialize() — but `onSinkEvent` / `onSinkAudioChunk` need mainWindow
+// to exist + the renderer store to be subscribed, otherwise the join's `stream-start` event
+// and early audio chunks are silently dropped. Moving the trigger to the renderer guarantees
+// the host data path is alive before any /join completes. Returns `{ scheduled: boolean }` so
+// the renderer knows whether it should monitor reconnect progress via status, or whether
+// nothing was scheduled (no persisted creds, or host mode wins per §16.12(b) precedence).
+ipcMain.handle('parallax:startAutoReconnect', () => {
+  if (!parallaxSinkConnection) return { scheduled: false, reason: 'no-persisted-connection' as const }
+  if (parallaxHostConfig.enabled) return { scheduled: false, reason: 'host-mode-active' as const }
+  // §20 Commit 1. Auto-reconnect honors the sink-role toggle — turning the sink off must not
+  // leave a background reconnect loop running. Persisted credentials are preserved (use
+  // "Forget Host" for explicit credential wipe per §14.1.2).
+  if (!parallaxSinkEnabled) return { scheduled: false, reason: 'sink-disabled' as const }
+  startParallaxAutoReconnect(parallaxSinkConnection)
+  return { scheduled: true as const }
+})
+
+// §20 Commit 1. Sink-role enablement toggle. Off → cancel in-flight reconnect, disconnect any
+// live session, persist; existing credentials stay (use "Forget Host" to clear). On → persist
+// only; the renderer follows up through `reconnectFromPersisted` so the Standard-output gate
+// and audioEngine.stop() prep run before reconnect (Codex round 1 finding, high). Starting the
+// reconnect loop from main here would bypass that prep and could collide with local playback
+// or bitperfect mode.
+//
+// §20 Commit 2. Sink-role also gates mDNS advertisement. Advertise starts on enable + at boot
+// when the persisted flag is already on; stops on disable + at app quit (see destroy hook below).
+ipcMain.handle('parallax:setSinkEnabled', async (_event, enabled: unknown) => {
+  const nextEnabled = Boolean(enabled)
+  if (nextEnabled === parallaxSinkEnabled) return parallaxService.getStatus()
+  parallaxSinkEnabled = nextEnabled
+  try {
+    await persistParallaxSinkEnabled(parallaxSinkEnabled)
+  } catch (error) {
+    console.warn('Failed to persist Parallax sink-enabled flag:', error)
+  }
+  if (!parallaxSinkEnabled) {
+    cancelParallaxAutoReconnect()
+    await parallaxService.disconnectSink()
+    await stopParallaxSinkSurface()
+  } else {
+    await startParallaxSinkSurface()
+  }
+  // On-enable reconnect is renderer-driven; main intentionally does nothing else here.
+  return parallaxService.getStatus()
+})
+
+// §20 Commit 2 / Pillar 3. mDNS advertisement, honoring host-vs-sink precedence (a machine is host
+// XOR sink). A host advertises role=host so a paired sink can relocate it by UUID after its IP
+// changes (Pillar 3); a sink advertises role=sink on the listener port so the pairing wizard can
+// discover it (§20). Idempotent — startAdvertising replaces any prior advert; with neither role
+// active we stop advertising entirely. Call this whenever host-enabled or sink-enabled changes.
+function refreshParallaxAdvertisement(): void {
+  if (!parallaxEndpointUuid) return
+  if (parallaxHostConfig.enabled) {
+    try {
+      parallaxDiscoveryService.startAdvertising({
+        role: 'host',
+        name: hostname() || 'Astra Host',
+        port: parallaxHostConfig.port,
+        endpointUuid: parallaxEndpointUuid
+      })
+    } catch (error) {
+      console.warn('Failed to start Parallax host advertisement:', error)
+    }
+    return
+  }
+  if (parallaxSinkEnabled) {
+    try {
+      parallaxDiscoveryService.startAdvertising({
+        role: 'sink',
+        name: hostname() || 'Astra Sink',
+        port: PARALLAX_SINK_DEFAULT_PORT,
+        endpointUuid: parallaxEndpointUuid
+      })
+    } catch (error) {
+      console.warn('Failed to start Parallax sink advertisement:', error)
+    }
+    return
+  }
+  stopParallaxDiscoveryAdvertisement()
+}
+
+function getPhoneRemoteIdentity(): PhoneRemoteIdentity {
+  return {
+    endpointUuid: parallaxEndpointUuid || null,
+    desktopName: hostname() || 'Astra Desktop',
+    protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
+  }
+}
+
+function refreshPhoneRemoteDiscoveryAdvertisement(status = phoneRemoteService.getStatus()): void {
+  if (!parallaxEndpointUuid) return
+  if (!status.active) {
+    phoneRemoteDiscoveryService.stopAdvertising()
+    return
+  }
+  try {
+    const identity = getPhoneRemoteIdentity()
+    phoneRemoteDiscoveryService.startAdvertising({
+      name: identity.desktopName,
+      port: status.port,
+      endpointUuid: identity.endpointUuid,
+      protocolVersion: identity.protocolVersion
+    })
+  } catch (error) {
+    console.warn('Failed to refresh phone remote discovery advertisement:', error)
+  }
+}
+
+function stopParallaxDiscoveryAdvertisement(): void {
+  try {
+    parallaxDiscoveryService.stopAdvertising()
+  } catch (error) {
+    console.warn('Failed to stop Parallax discovery advertisement:', error)
+  }
+}
+
+// §20 Commit 3. Sink HTTP listener lifecycle. Started when sink-enabled at boot or via toggle,
+// stopped on disable. Bind failures (port in use) leave the sink not pairable; the wizard pair
+// flow just won't reach this device until the port frees. Returns true on successful bind so
+// callers (boot path, setSinkEnabled IPC) can decide whether to advertise — Codex round 1
+// finding (medium): no point advertising an endpoint we can't actually serve.
+async function startParallaxSinkListener(): Promise<boolean> {
+  if (!parallaxSinkEnabled) return false
+  try {
+    await parallaxSinkListener.start(PARALLAX_SINK_DEFAULT_PORT)
+    return true
+  } catch (error) {
+    console.warn('Failed to start Parallax sink listener:', error)
+    return false
+  }
+}
+
+async function stopParallaxSinkListener(): Promise<void> {
+  try {
+    await parallaxSinkListener.stop()
+  } catch (error) {
+    console.warn('Failed to stop Parallax sink listener:', error)
+  }
+}
+
+// §20 Commit 3 Codex round 1 finding (medium): pair "start sink, then advertise" / "stop
+// advertise, then stop sink" into one helper so both the boot path and the toggle path are
+// guaranteed to honor the ordering invariant.
+async function startParallaxSinkSurface(): Promise<void> {
+  const bound = await startParallaxSinkListener()
+  if (!bound) {
+    // Listener didn't bind — don't advertise a dead endpoint.
+    stopParallaxDiscoveryAdvertisement()
+    return
+  }
+  refreshParallaxAdvertisement()
+}
+
+async function stopParallaxSinkSurface(): Promise<void> {
+  stopParallaxDiscoveryAdvertisement()
+  await stopParallaxSinkListener()
+}
+
+// Forward bonjour 'added' / 'removed' events to the renderer. Renderer keeps its own map keyed
+// by endpointUuid || `${address}:${port}` and reconciles. Subscribed once at construction —
+// no add/remove required because the wrapper itself starts/stops the underlying browser based
+// on the IPCs below.
+parallaxDiscoveryService.on('event', (event: ParallaxDiscoveryEvent) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('parallax:discoveryEvent', event)
+  }
+})
+
+ipcMain.handle('parallax:startDiscoveryBrowse', () => {
+  parallaxDiscoveryService.startBrowse()
+  return { ok: true as const }
+})
+
+ipcMain.handle('parallax:stopDiscoveryBrowse', () => {
+  parallaxDiscoveryService.stopBrowse()
+  return { ok: true as const }
+})
+
+// §20 Commit 3 host-side pair flow IPCs. Wizard calls `initiate` with the sink's base URL (from
+// discovery or manual entry), waits for the user to read the sink's PIN, then calls `submitPin`.
+// `cancel` discards the candidate locally — the sink will time out on its own per §20.7.
+ipcMain.handle('parallax:initiatePair', async (_event, sinkBaseUrl: unknown) => {
+  if (typeof sinkBaseUrl !== 'string' || sinkBaseUrl.length === 0) {
+    throw new Error('sinkBaseUrl is required.')
+  }
+  return parallaxService.initiatePair(sinkBaseUrl)
+})
+
+ipcMain.handle('parallax:submitPairPin', async (_event, pairingId: unknown, pin: unknown, sinkName: unknown) => {
+  if (typeof pairingId !== 'string' || typeof pin !== 'string') {
+    throw new Error('pairingId and pin are required.')
+  }
+  const name = typeof sinkName === 'string' ? sinkName : undefined
+  return parallaxService.submitPairPin(pairingId, pin, name)
+})
+
+ipcMain.handle('parallax:cancelPair', (_event, pairingId: unknown) => {
+  if (typeof pairingId !== 'string') return { ok: false as const }
+  parallaxService.cancelPair(pairingId)
+  return { ok: true as const }
+})
+
+// §20 Commit 3 sink-side cancel. Renderer's PIN card "Reject" button (Commit 4 may or may not
+// expose this; the spec deferred a UI for v1) calls this to force-clear pending state without
+// waiting for expiry. Toggling sink-enabled off also clears via the listener stop path.
+ipcMain.handle('parallax:cancelIncomingPair', () => {
+  parallaxSinkListener.cancelPending()
+  return { ok: true as const }
+})
+
+ipcMain.handle('parallax:disconnectSink', async () => {
+  return parallaxService.disconnectSink()
+})
+
+ipcMain.handle('parallax:publishHostStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>, options?: ParallaxHostStreamStartOptions) => {
+  return parallaxService.publishHostStreamStart(info, options ?? {})
+})
+
+// §21 Gapless sink handoff — pre-announce / withdraw / promote the next stream.
+ipcMain.handle('parallax:publishHostNextStreamStart', (_event, info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>, options: ParallaxHostNextStreamStartOptions) => {
+  return parallaxService.publishHostNextStreamStart(info, options)
+})
+
+ipcMain.handle('parallax:publishHostNextStreamCancel', () => {
+  parallaxService.publishHostNextStreamCancel()
+})
+
+ipcMain.handle('parallax:publishHostPromoteNextStream', () => {
+  return parallaxService.publishHostPromoteNextStream()
+})
+
+ipcMain.handle('parallax:publishHostAudioChunk', (_event, chunk: ParallaxAudioChunk) => {
+  parallaxService.publishHostAudioChunk(chunk)
+})
+
+ipcMain.handle('parallax:publishHostTimeline', (_event, timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => {
+  parallaxService.publishHostTimeline(timeline, options ?? {})
+})
+
+ipcMain.handle('parallax:publishHostEmitAnchor', (_event, anchor: Parameters<typeof parallaxService.publishHostEmitAnchor>[0]) => {
+  parallaxService.publishHostEmitAnchor(anchor)
+})
+
+ipcMain.handle('parallax:stopHostStream', () => {
+  parallaxService.stopHostStream()
+})
+
+ipcMain.handle('parallax:publishSinkTelemetry', async (_event, telemetry: ParallaxSinkTelemetry) => {
+  await parallaxService.publishSinkTelemetry(telemetry)
+})
+
+ipcMain.handle('parallax:reportHostLatency', (_event, metrics: ParallaxOutputLatencyMetrics) => {
+  parallaxService.recordHostLatencyMetrics(metrics)
+})
+
+ipcMain.handle('parallax:revokePairedSink', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid Parallax sink id.')
+  }
+  return parallaxService.revokePairedSink(id.trim())
+})
+
+ipcMain.handle('parallax:renamePairedSink', (_event, id: unknown, name: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid Parallax sink id.')
+  }
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new Error('Parallax sink name is required.')
+  }
+  return parallaxService.renamePairedSink(id.trim(), name)
+})
+
+ipcMain.handle('parallax:revokeAllPairedSinks', () => {
+  return parallaxService.revokeAllPairedSinks()
+})
+
+ipcMain.handle('parallax:clearHostPresenceCache', (_event, sinkId: unknown) => {
+  const normalizedSinkId = typeof sinkId === 'string' && sinkId.trim() ? sinkId.trim() : undefined
+  return parallaxService.clearHostPresenceCache(normalizedSinkId)
+})
+
+ipcMain.handle('parallax:resetToDefaults', async () => {
+  const nextConfig: ParallaxHostConfig = {
+    enabled: false,
+    port: PARALLAX_DEFAULT_PORT
+  }
+  parallaxService.replacePairedSinks([])
+  await persistParallaxPairedSinks([])
+  await parallaxService.disconnectSink()
+  // §14.1.2. Full reset wipes the sink-side credential too so the next launch starts clean.
+  cancelParallaxAutoReconnect()
+  await clearParallaxSinkConnection()
+  return applyParallaxHostConfig(nextConfig)
+})
+
+// §14.1.2 / §16.8. Persist sink-side credential after successful pair. The renderer calls this
+// immediately after `/v1/parallax/pair` returns + before calling `connectSink`, so the durable
+// state lands before any reconnect could be attempted. Cancel any in-flight auto-reconnect
+// loop bound to the previous credential — the new one will get a fresh loop on next boot, or
+// the renderer drives connect directly this session.
+ipcMain.handle(
+  'parallax:setSinkConnection',
+  async (_event, raw: unknown) => {
+    const sanitized = sanitizeParallaxSinkConnection(raw)
+    if (!sanitized) {
+      throw new Error('Invalid Parallax sink connection payload.')
+    }
+    cancelParallaxAutoReconnect()
+    await persistParallaxSinkConnection(sanitized)
+    return parallaxSinkConnection
+  }
+)
+
+// §14.1.2 / §16.8. Renderer reads this to populate the "paired with <host>" display in
+// settings; null when not yet paired. Returns a snapshot copy so the renderer can never mutate
+// the in-memory cache.
+ipcMain.handle('parallax:getSinkConnection', () => {
+  return parallaxSinkConnection ? { ...parallaxSinkConnection } : null
+})
+
+// §14.1.2 / §16.6 / §16.8. "Forget host" path. Stops any in-flight reconnect, disconnects an
+// established connection if any, and wipes the persisted credential. After this the sink is
+// back to the initial unpaired state — the only path forward is re-pair via PIN.
+ipcMain.handle('parallax:forgetSinkConnection', async () => {
+  cancelParallaxAutoReconnect()
+  const connectionToForget = parallaxSinkConnection ? { ...parallaxSinkConnection } : null
+  if (connectionToForget) {
+    await parallaxService.forgetSinkOnHost(connectionToForget).catch((error) => {
+      // Best-effort host cleanup. The local forget action must still work when the host is
+      // offline, revoked us already, or is an older build without /sink/forget.
+      console.warn('Failed to notify Parallax host about sink forget:', error)
+    })
+  }
+  await parallaxService.disconnectSink()
+  await clearParallaxSinkConnection()
+  broadcastParallaxStatus()
+  return parallaxService.getStatus()
+})
+
+// §14.1.1. Persist per-sink trim + broadcast to the sink. Renderer validates the basic shape; the
+// service guards on `Number.isFinite` and clamps to ±500 ms (§15.1) before persisting.
+ipcMain.handle(
+  'parallax:setSinkTrim',
+  (
+    _event,
+    sinkId: unknown,
+    outputDeviceId: unknown,
+    outputDeviceLabel: unknown,
+    advanceMs: unknown
+  ) => {
+    if (typeof sinkId !== 'string' || !sinkId.trim()) {
+      throw new Error('Invalid Parallax sink id.')
+    }
+    if (typeof outputDeviceId !== 'string' || !outputDeviceId.trim()) {
+      throw new Error('Invalid Parallax output device id.')
+    }
+    const label = typeof outputDeviceLabel === 'string' ? outputDeviceLabel : null
+    const ms = Number(advanceMs)
+    if (!Number.isFinite(ms)) {
+      throw new Error('Invalid Parallax trim value.')
+    }
+    return parallaxService.setSinkTrim(sinkId.trim(), outputDeviceId.trim(), label, ms)
+  }
+)
+
 // ============================================
 // File dialog IPC handlers
 // ============================================
@@ -4934,6 +6224,10 @@ ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: libr
   return library.getTracksByArtist(artist, mode)
 })
 
+ipcMain.handle('library:getTracksByGenre', (_event, genre: string) => {
+  return library.getTracksByGenre(genre)
+})
+
 // Get tracks by album
 ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string, identityKey?: string) => {
   return library.getTracksByAlbum(album, artist, identityKey)
@@ -4942,6 +6236,10 @@ ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: stri
 // Get all artists
 ipcMain.handle('library:getArtists', (_event, mode?: library.ArtistBrowseMode) => {
   return library.getArtists(mode)
+})
+
+ipcMain.handle('library:getGenres', () => {
+  return library.getGenres()
 })
 
 ipcMain.handle('library:setArtistImageFromFile', async (_event, artist: string, mode: library.ArtistBrowseMode, imagePath: string) => {
@@ -5984,6 +7282,10 @@ ipcMain.handle('library:getTrackCount', () => {
   return library.getTrackCount()
 })
 
+ipcMain.handle('library:getTotalTrackDuration', () => {
+  return library.getTotalTrackDuration()
+})
+
 // Get artwork path
 ipcMain.handle('library:getArtworkPath', (_event, hash: string) => {
   return library.getArtworkPath(hash)
@@ -6056,6 +7358,22 @@ ipcMain.handle('library:getPlaylists', () => {
 
 ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
   return library.createPlaylist(name)
+})
+
+ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
+  return library.createDynamicPlaylist(name, rules)
+})
+
+ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) => {
+  return library.getDynamicPlaylistRules(playlistId)
+})
+
+ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
+  await library.updateDynamicPlaylistRules(playlistId, rules)
+})
+
+ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
+  return library.previewDynamicPlaylist(rules)
 })
 
 ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {

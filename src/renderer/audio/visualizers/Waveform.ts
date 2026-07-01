@@ -20,6 +20,8 @@ export interface WaveformDataSource {
 
 export interface WaveformOptions {
   lineColor?: string
+  gridColor?: string
+  gridMutedColor?: string
   scrollSpeed?: number
   gainDb?: number
   multiband?: boolean
@@ -31,6 +33,8 @@ type ResolvedWaveformOptions = Required<Omit<WaveformOptions, 'dataSource' | 'fr
 
 const defaultOptions: ResolvedWaveformOptions = {
   lineColor: '#38bdf8',
+  gridColor: 'rgba(255, 255, 255, 0.08)',
+  gridMutedColor: 'rgba(255, 255, 255, 0.04)',
   scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
   gainDb: DEFAULT_WAVEFORM_GAIN_DB,
   multiband: false,
@@ -326,7 +330,7 @@ export class Waveform {
   }
 
   private ensureStaticLayer(width: number, height: number): void {
-    const key = `${width}:${height}`
+    const key = `${width}:${height}:${this.options.gridColor}:${this.options.gridMutedColor}`
     if (this.staticLayerKey === key) {
       return
     }
@@ -342,7 +346,7 @@ export class Waveform {
     const centerY = height / 2
 
     // Center line (zero crossing)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+    ctx.strokeStyle = this.options.gridColor
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, centerY)
@@ -350,7 +354,7 @@ export class Waveform {
     ctx.stroke()
 
     // ±0.5 guide lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)'
+    ctx.strokeStyle = this.options.gridMutedColor
     const quarterY = centerY * 0.5
     ctx.beginPath()
     ctx.moveTo(0, quarterY)

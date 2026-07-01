@@ -1,5 +1,6 @@
 import { audioEngine } from '../AudioEngine'
 import { createMultichannelSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
+import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { getSourceChannelId } from '../../utils/sourceChannelLayout'
 import { resolveColorToRgb } from '../../utils/color'
 import { FrameScheduler } from './frameScheduler'
@@ -22,6 +23,10 @@ export interface VUMeterOptions {
   mode?: VUMeterMode
   orientation?: VUMeterOrientation
   lineColor?: string
+  meterBackgroundColor?: string
+  meterTickColor?: string
+  meterTextColor?: string
+  meterMutedTextColor?: string
   dataSource?: VUMeterDataSource
   frameScheduler?: FrameScheduler
 }
@@ -32,6 +37,10 @@ const defaultOptions: ResolvedVUMeterOptions = {
   mode: 'bar',
   orientation: DEFAULT_VU_METER_ORIENTATION,
   lineColor: '#38bdf8',
+  meterBackgroundColor: 'rgba(255, 255, 255, 0.04)',
+  meterTickColor: 'rgba(255, 255, 255, 0.12)',
+  meterTextColor: 'rgba(255, 255, 255, 0.5)',
+  meterMutedTextColor: 'rgba(255, 255, 255, 0.4)',
 }
 
 const defaultVUMeterDataSource: VUMeterDataSource = {
@@ -669,7 +678,7 @@ export class VUMeter {
     const rmsWidth = rmsNorm * w
     const hotThreshold = this.dbToNormalized(-6) * w
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)'
+    ctx.fillStyle = this.options.meterBackgroundColor
     ctx.fillRect(x, y, w, h)
 
     if (rmsWidth > 0) {
@@ -698,7 +707,7 @@ export class VUMeter {
       ctx.fillRect(peakX - 1, y, 2, h)
     }
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
+    ctx.fillStyle = this.options.meterTickColor
     const tickDbs = [-48, -36, -24, -18, -12, -6, -3, 0]
     for (const db of tickDbs) {
       const tickX = x + this.dbToNormalized(db) * w
@@ -717,7 +726,7 @@ export class VUMeter {
     const rmsHeight = rmsNorm * h
     const hotThreshold = this.dbToNormalized(-6) * h
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)'
+    ctx.fillStyle = this.options.meterBackgroundColor
     ctx.fillRect(x, y, w, h)
 
     if (rmsHeight > 0) {
@@ -746,7 +755,7 @@ export class VUMeter {
       ctx.fillRect(x, peakY - 1, w, 2)
     }
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+    ctx.fillStyle = this.options.meterTickColor
     const tickDbs = [-48, -36, -24, -18, -12, -6, -3, 0]
     for (const db of tickDbs) {
       const tickY = y + h - this.dbToNormalized(db) * h
@@ -760,7 +769,7 @@ export class VUMeter {
     label: string,
     metrics: FittedTextMetrics
   ): void {
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+    ctx.fillStyle = this.options.meterTextColor
     ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -774,7 +783,7 @@ export class VUMeter {
     metrics: FittedTextMetrics
   ): void {
     const text = this.getDbText(db)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.fillStyle = this.options.meterMutedTextColor
     ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
@@ -789,7 +798,7 @@ export class VUMeter {
     includeUnit = false
   ): void {
     const text = this.getDbText(db, includeUnit)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.fillStyle = this.options.meterMutedTextColor
     ctx.font = this.getMonoFont(metrics.fontSize)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -804,10 +813,10 @@ export class VUMeter {
     const centerX = x + w / 2
     const corr = Math.max(-1, Math.min(1, this.correlation))
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)'
+    ctx.fillStyle = this.options.meterBackgroundColor
     ctx.fillRect(x, y, w, h)
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
+    ctx.fillStyle = this.options.meterTickColor
     ctx.fillRect(centerX - 0.5, y, 1, h)
 
     const indicatorWidth = Math.abs(corr) * (w / 2)
@@ -826,7 +835,7 @@ export class VUMeter {
 
     ctx.font = this.getMonoFont(labelMetrics.fontSize)
     ctx.textBaseline = 'middle'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.fillStyle = this.options.meterMutedTextColor
     ctx.textAlign = 'left'
     ctx.fillText('-1', x + labelMetrics.paddingX, y + h / 2)
     ctx.textAlign = 'center'
@@ -882,7 +891,7 @@ export class VUMeter {
     const startAngle = Math.PI * 1.25
     const endAngle = Math.PI * 1.75
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+    ctx.strokeStyle = this.options.meterTickColor
     ctx.lineWidth = 2
     ctx.beginPath()
     ctx.arc(centerX, arcCenterY, arcRadius, startAngle, endAngle)
@@ -897,7 +906,7 @@ export class VUMeter {
 
       ctx.strokeStyle = db >= -6
         ? 'rgba(255, 120, 80, 0.3)'
-        : 'rgba(255, 255, 255, 0.15)'
+        : this.options.meterTickColor
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(centerX + Math.cos(angle) * innerR, arcCenterY + Math.sin(angle) * innerR)
@@ -953,7 +962,7 @@ export class VUMeter {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = window.devicePixelRatio || 1
+    const dpr = getCanvasBackingPixelRatio(canvas)
     const cssWidth = width / dpr
     const cssHeight = height / dpr
 
