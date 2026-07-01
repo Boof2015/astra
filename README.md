@@ -77,11 +77,12 @@ Parallax is opt-in and still experimental (though stable) enable it from the Exp
 
 Opt-in experimental features that may get changed or removed based on feedback:
 
-- **PWA phone controller** - control playback from your phone over local network, with system media controls and a QR code pairing wizard
+- **PWA phone controller** - control playback from your phone over local network, with system media controls and a QR code pairing wizard - now supports Astra mobile
 - **Library integrity scanner** - find broken files, missing metadata, and quality issues across your library
 - **Graph visualization** - additional visualizer mode to see connections between artists in your library
 - **Ambient stereo-to-multichannel upmix** - fills the rear channels on multichannel setups when you're playing stereo files
 - **5×5 grid activity indicator** - shows what Astra is doing in the background
+- **Controller support** - navigate Astra with an Xbox or PlayStation controller: D-pad/stick to move, A/Cross to select, bumpers for tabs, stick-clicks to jump to the sidebar or now playing
 
 ## Download
 
