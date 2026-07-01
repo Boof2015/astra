@@ -2839,15 +2839,7 @@ export default function SettingsView() {
                 </div>
               </div>
             </div>
-          </section>
-            )}
-
-            {activeSectionId === 'transfer' && (
-            <section className="settings-section settings-section-panel">
-            <div className="settings-section-head">
-              <h3>Transfer</h3>
-            </div>
-            <div className="settings-cards">
+            <div className="settings-cards settings-info-transfer-card">
               <div className="settings-card">
                 <div className="settings-card-label">Settings Transfer</div>
                 <div className="settings-grid">
@@ -2863,12 +2855,7 @@ export default function SettingsView() {
                   </div>
                 </div>
                 <p className="settings-note">
-                  Transfers appearance, analyzer profiles, EQ presets, playback preferences, keybinds, and non-secret
-                  integration preferences.
-                </p>
-                <p className="settings-note">
-                  Library data, servers, scrobble profiles, credentials, output devices, and machine-specific assignments
-                  stay on this computer.
+                  Import or export your Astra settings to move preferences between installs.
                 </p>
               </div>
             </div>

@@ -16804,6 +16804,10 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 10px;
 }
 
+.settings-info-transfer-card {
+  margin-top: 12px;
+}
+
 .settings-info-panel {
   border: 1px solid rgba(var(--tint), 0.08);
   border-radius: 10px;
