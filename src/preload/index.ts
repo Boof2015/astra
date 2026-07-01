@@ -152,6 +152,7 @@ export interface AudioFileMetadata {
   isAtmosJoc?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
+  artworkHash?: string
   artwork?: string
 }
 

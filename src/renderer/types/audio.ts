@@ -16,8 +16,8 @@ export interface Track {
   year?: number
   genre?: string
   genres?: string[]
-  artworkData?: string  // Base64 data URL (for files opened directly)
-  artworkHash?: string  // Hash for cached artwork (for library tracks)
+  artworkData?: string  // Base64 data URL fallback for uncached direct artwork
+  artworkHash?: string  // Hash for cached artwork
   format: string
   sampleRate?: number
   bitDepth?: number

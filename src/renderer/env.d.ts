@@ -511,6 +511,7 @@ declare global {
                     isAtmosJoc?: boolean
                     replayGainTrackDb?: number
                     replayGainAlbumDb?: number
+                    artworkHash?: string
                     artwork?: string
                 }
             } | null>
@@ -540,6 +541,7 @@ declare global {
                     isAtmosJoc?: boolean
                     replayGainTrackDb?: number
                     replayGainAlbumDb?: number
+                    artworkHash?: string
                     artwork?: string
                 }
             } | null>
@@ -561,6 +563,7 @@ declare global {
                 isAtmosJoc?: boolean
                 replayGainTrackDb?: number
                 replayGainAlbumDb?: number
+                artworkHash?: string
                 artwork?: string
             } | null>
             getAudioFileStat: (filePath: string) => Promise<{

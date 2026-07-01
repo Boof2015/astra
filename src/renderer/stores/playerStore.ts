@@ -743,12 +743,20 @@ interface AssociatedAudioMetadata {
   isAtmosJoc?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
+  artworkHash?: string
   artwork?: string
 }
 
-function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedAudioMetadata): Track {
+export function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedAudioMetadata): Track {
+  const nextArtworkHash = metadata.artworkHash?.trim() || track.artworkHash
+  const nextArtworkData = metadata.artwork ?? track.artworkData
+  const baseTrack = { ...track }
+  if (nextArtworkHash) {
+    delete baseTrack.artworkData
+  }
+
   return {
-    ...track,
+    ...baseTrack,
     title: metadata.title?.trim() || track.title,
     artist: metadata.artist?.trim() || track.artist,
     artistNames: metadata.artistNames ?? track.artistNames,
@@ -759,7 +767,11 @@ function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedAudioMet
       ? metadata.duration
       : track.duration,
     format: metadata.format?.trim() || track.format,
-    artworkData: metadata.artwork ?? track.artworkData,
+    ...(nextArtworkHash
+      ? { artworkHash: nextArtworkHash }
+      : nextArtworkData
+        ? { artworkData: nextArtworkData }
+        : {}),
     channels: metadata.channels ?? track.channels,
     codec: metadata.codec ?? track.codec,
     codecProfile: metadata.codecProfile ?? track.codecProfile,

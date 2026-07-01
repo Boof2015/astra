@@ -7445,6 +7445,7 @@ interface LoadedAudioMetadata {
   albumArtistNames?: string[]
   duration?: number
   format: string
+  artworkHash?: string
   artwork?: string
   channels?: number
   codec?: string
@@ -9150,7 +9151,9 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
           albumArtist: parsed.albumArtist ?? payload.track?.album_artist ?? dbTrack?.album_artist ?? undefined,
           albumArtistNames: parsed.albumArtistNames && parsed.albumArtistNames.length > 0 ? parsed.albumArtistNames : dbTrack?.album_artist_names,
           duration: parsed.duration ?? payload.track?.duration ?? dbTrack?.duration,
-          format: payload.track?.format ?? dbTrack?.format ?? parsed.format
+          format: payload.track?.format ?? dbTrack?.format ?? parsed.format,
+          artworkHash: parsed.artworkHash ?? dbTrack?.artwork_hash ?? undefined,
+          artwork: parsed.artworkHash || dbTrack?.artwork_hash ? undefined : parsed.artwork
         }
       }
     } catch {
@@ -9171,6 +9174,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       albumArtistNames: dbTrack.album_artist_names,
       duration: dbTrack.duration,
       format: dbTrack.format,
+      artworkHash: dbTrack.artwork_hash ?? undefined,
       channels: dbTrack.channels ?? undefined,
       codec: dbTrack.codec ?? undefined,
       codecProfile: dbTrack.codec_profile ?? undefined,
@@ -9187,6 +9191,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   const name = basename(filePath)
   const fallbackTitle = name.replace(/\.[^.]+$/, '')
   const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+  const cachedDbTrack = library.getTrackByPath(filePath)
 
   // Extract metadata using music-metadata with ffprobe enrichment fallback.
   let metadata: LoadedAudioMetadata = {
@@ -9211,12 +9216,17 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
         ? common.albumartist
         : formatArtistNames(parsedAlbumArtistNames) || undefined
 
-    // Convert artwork to base64 data URL
+    // Prefer cached artwork hashes so currentTrack does not retain large data URLs.
+    let artworkHash = cachedDbTrack?.artwork_hash ?? undefined
     let artworkDataUrl: string | undefined
-    if (common.picture && common.picture.length > 0) {
+    if (!artworkHash && common.picture && common.picture.length > 0) {
       const pic = common.picture[0]
-      const base64 = Buffer.from(pic.data).toString('base64')
-      artworkDataUrl = `data:${pic.format};base64,${base64}`
+      const pictureData = Buffer.from(pic.data)
+      artworkHash = (await library.cacheArtworkBuffer(pictureData, pic.format)) ?? undefined
+      if (!artworkHash) {
+        const base64 = pictureData.toString('base64')
+        artworkDataUrl = `data:${pic.format};base64,${base64}`
+      }
     }
 
     metadata = {
@@ -9228,6 +9238,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       albumArtistNames: parsedAlbumArtistNames,
       duration: mm_metadata.format.duration,
       format,
+      artworkHash,
       artwork: artworkDataUrl,
       channels: mm_metadata.format.numberOfChannels,
       codec: mm_metadata.format.codec,
