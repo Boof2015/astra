@@ -13,6 +13,7 @@ import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
+import type { WaveformMode } from '../../../types/waveform'
 
 interface VisualizerPanelProps {
   className?: string
@@ -185,6 +186,9 @@ function DockedSpectrumTile({
   tiltDbPerOctave,
   heatmapFill,
   heatmapTiltDbPerOctave,
+  showSideLine,
+  smoothing,
+  heatmapSmoothing,
   isRunning,
   frameScheduler,
 }: {
@@ -195,6 +199,9 @@ function DockedSpectrumTile({
   tiltDbPerOctave: number
   heatmapFill: boolean
   heatmapTiltDbPerOctave: number
+  showSideLine: boolean
+  smoothing: number
+  heatmapSmoothing: number
   isRunning: boolean
   frameScheduler: FrameScheduler
 }) {
@@ -221,6 +228,10 @@ function DockedSpectrumTile({
         heatmapTiltDbPerOctave,
         fftSize,
         displayMode,
+        showSideLine,
+        smoothing,
+        heatmapSmoothing,
+        secondaryLineColor: 'rgba(255, 255, 255, 0.42)',
         gradientColors: [
           'rgba(0, 255, 255, 0)',
           `${lineColor}33`,
@@ -249,6 +260,9 @@ function DockedSpectrumTile({
       gridColor: displayColors.gridColor,
       fftSize,
       displayMode,
+      showSideLine,
+      smoothing,
+      heatmapSmoothing,
       fillGradient: !heatmapFill,
       heatmapFill,
       tiltDbPerOctave,
@@ -259,7 +273,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave])
+  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing])
 
   useEffect(() => {
     if (isRunning) {
@@ -306,7 +320,8 @@ function DockedOscilloscopeTile({
         frameScheduler,
         lineColor,
         backgroundColor: displayColors.backgroundColor,
-        gridColor: displayColors.gridColor,
+        gridMajorColor: displayColors.gridColor,
+        gridMinorColor: displayColors.gridMutedColor,
         lineWidth: 2,
         pitchLock,
         underfillEnabled,
@@ -329,7 +344,8 @@ function DockedOscilloscopeTile({
     visualizerRef.current?.setOptions({
       lineColor,
       backgroundColor: displayColors.backgroundColor,
-      gridColor: displayColors.gridColor,
+      gridMajorColor: displayColors.gridColor,
+      gridMinorColor: displayColors.gridMutedColor,
       pitchLock,
       underfillEnabled,
     })
@@ -380,7 +396,8 @@ function DockedVectorscopeTile({
         frameScheduler,
         lineColor,
         backgroundColor: displayColors.backgroundColor,
-        gridColor: displayColors.gridColor,
+        gridMajorColor: displayColors.gridColor,
+        gridMinorColor: displayColors.gridMutedColor,
         lineWidth: 1,
         showGrid: true,
         mode: vectorscopeMode,
@@ -403,7 +420,8 @@ function DockedVectorscopeTile({
     visualizerRef.current?.setOptions({
       lineColor,
       backgroundColor: displayColors.backgroundColor,
-      gridColor: displayColors.gridColor,
+      gridMajorColor: displayColors.gridColor,
+      gridMinorColor: displayColors.gridMutedColor,
       mode: vectorscopeMode,
       multiband: vectorscopeMultiband,
     })
@@ -531,10 +549,12 @@ function DockedVUMeterTile({
       visualizerRef.current = new VUMeter(canvasRef.current, {
         frameScheduler,
         lineColor,
-        meterBackgroundColor: displayColors.meterBackgroundColor,
-        meterTickColor: displayColors.meterTickColor,
-        meterTextColor: displayColors.meterTextColor,
-        meterMutedTextColor: displayColors.meterMutedTextColor,
+        backgroundColor: displayColors.meterBackgroundColor,
+        scaleColor: displayColors.meterTickColor,
+        labelColor: displayColors.meterTextColor,
+        needleLeftColor: lineColor,
+        needleRightColor: lineColor,
+        needleCombinedColor: lineColor,
         mode: vuMeterMode,
         orientation: vuMeterOrientation,
       })
@@ -554,10 +574,12 @@ function DockedVUMeterTile({
   useEffect(() => {
     visualizerRef.current?.setOptions({
       lineColor,
-      meterBackgroundColor: displayColors.meterBackgroundColor,
-      meterTickColor: displayColors.meterTickColor,
-      meterTextColor: displayColors.meterTextColor,
-      meterMutedTextColor: displayColors.meterMutedTextColor,
+      backgroundColor: displayColors.meterBackgroundColor,
+      scaleColor: displayColors.meterTickColor,
+      labelColor: displayColors.meterTextColor,
+      needleLeftColor: lineColor,
+      needleRightColor: lineColor,
+      needleCombinedColor: lineColor,
       mode: vuMeterMode,
       orientation: vuMeterOrientation,
     })
@@ -640,6 +662,7 @@ function DockedWaveformTile({
   scrollSpeed,
   gainDb,
   multiband,
+  mode,
   isRunning,
   frameScheduler,
 }: {
@@ -648,6 +671,7 @@ function DockedWaveformTile({
   scrollSpeed: number
   gainDb: number
   multiband: boolean
+  mode: WaveformMode
   isRunning: boolean
   frameScheduler: FrameScheduler
 }) {
@@ -665,11 +689,12 @@ function DockedWaveformTile({
       visualizerRef.current = new Waveform(canvasRef.current, {
         frameScheduler,
         lineColor,
-        gridColor: displayColors.gridColor,
-        gridMutedColor: displayColors.gridMutedColor,
+        gridMajorColor: displayColors.gridColor,
+        gridMinorColor: displayColors.gridMutedColor,
         scrollSpeed,
         gainDb,
         multiband,
+        mode,
       })
     }
 
@@ -687,13 +712,14 @@ function DockedWaveformTile({
   useEffect(() => {
     visualizerRef.current?.setOptions({
       lineColor,
-      gridColor: displayColors.gridColor,
-      gridMutedColor: displayColors.gridMutedColor,
+      gridMajorColor: displayColors.gridColor,
+      gridMinorColor: displayColors.gridMutedColor,
       scrollSpeed,
       gainDb,
       multiband,
+      mode,
     })
-  }, [displayColors, lineColor, scrollSpeed, gainDb, multiband])
+  }, [displayColors, lineColor, scrollSpeed, gainDb, multiband, mode])
 
   useEffect(() => {
     if (isRunning) {
@@ -812,12 +838,16 @@ export default function VisualizerPanel({
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
+  const spectrumShowSideLine = useVisualizerSettingsStore((s) => s.spectrumShowSideLine)
+  const spectrumSmoothing = useVisualizerSettingsStore((s) => s.spectrumSmoothing)
+  const spectrumHeatmapSmoothing = useVisualizerSettingsStore((s) => s.spectrumHeatmapSmoothing)
   const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
+  const waveformMode = useVisualizerSettingsStore((s) => s.waveformMode)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
@@ -1124,8 +1154,11 @@ export default function VisualizerPanel({
           return vuMeterLabelShort(vuMeterMode, vuMeterOrientation)
         case 'lufsmeter':
           return 'LUFS'
-        case 'waveform':
-          return waveformMultiband ? `RGB X${waveformScrollSpeed.toFixed(1)}` : `SPEED X${waveformScrollSpeed.toFixed(1)}`
+        case 'waveform': {
+          const modeTag = waveformMode === 'stereo' ? 'STEREO' : 'MONO'
+          const rgbTag = waveformMultiband ? 'RGB ' : ''
+          return `${modeTag} ${rgbTag}X${waveformScrollSpeed.toFixed(1)}`
+        }
       }
     })()
 
@@ -1190,6 +1223,9 @@ export default function VisualizerPanel({
             tiltDbPerOctave={spectrumTiltDbPerOctave}
             heatmapFill={spectrumHeatmap}
             heatmapTiltDbPerOctave={spectrumHeatmapTiltDbPerOctave}
+            showSideLine={spectrumShowSideLine}
+            smoothing={spectrumSmoothing}
+            heatmapSmoothing={spectrumHeatmapSmoothing}
             isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'oscilloscope' ? (
@@ -1235,6 +1271,7 @@ export default function VisualizerPanel({
             scrollSpeed={waveformScrollSpeed}
             gainDb={waveformGainDb}
             multiband={waveformMultiband}
+            mode={waveformMode}
             isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : (

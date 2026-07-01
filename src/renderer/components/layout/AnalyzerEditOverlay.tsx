@@ -16,6 +16,7 @@ import {
   MIN_WAVEFORM_SCROLL_SPEED,
   WAVEFORM_GAIN_DB_STEP,
   WAVEFORM_SCROLL_SPEED_STEP,
+  type WaveformMode,
 } from '../../../types/waveform'
 import {
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
@@ -30,6 +31,11 @@ import {
 } from '../../../types/spectrum'
 import {
   useVisualizerSettingsStore,
+  DEFAULT_SPECTRUM_SMOOTHING,
+  DEFAULT_SPECTRUM_HEATMAP_SMOOTHING,
+  MIN_SPECTRUM_SMOOTHING,
+  MAX_SPECTRUM_SMOOTHING,
+  SPECTRUM_SMOOTHING_STEP,
   type AnalyzerProfile,
   type FFTSize,
   type VectorscopeMode,
@@ -132,6 +138,7 @@ function scopeStateLabel(
   spectrogramScrollSpeed: number,
   waveformScrollSpeed: number,
   waveformMultiband: boolean,
+  waveformMode: WaveformMode,
   spectrogramClarityMode: SpectrogramClarityMode,
   spectrogramScaleMode: SpectrogramScaleMode,
   pitchLock: boolean,
@@ -155,8 +162,11 @@ function scopeStateLabel(
       return vuMeterStateLabel(vuMeterMode, vuMeterOrientation)
     case 'lufsmeter':
       return 'LUFS'
-    case 'waveform':
-      return waveformMultiband ? `RGB · Speed x${waveformScrollSpeed.toFixed(1)}` : `Speed x${waveformScrollSpeed.toFixed(1)}`
+    case 'waveform': {
+      const modeLabel = waveformMode === 'stereo' ? 'Stereo' : 'Mono'
+      const rgbLabel = waveformMultiband ? 'RGB · ' : ''
+      return `${modeLabel} · ${rgbLabel}Speed x${waveformScrollSpeed.toFixed(1)}`
+    }
   }
 }
 
@@ -292,6 +302,12 @@ export default function AnalyzerEditOverlay({
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
   const spectrumHeatmap = useVisualizerSettingsStore((state) => state.spectrumHeatmap)
+  const spectrumShowSideLine = useVisualizerSettingsStore((state) => state.spectrumShowSideLine)
+  const setSpectrumShowSideLine = useVisualizerSettingsStore((state) => state.setSpectrumShowSideLine)
+  const spectrumSmoothing = useVisualizerSettingsStore((state) => state.spectrumSmoothing)
+  const spectrumHeatmapSmoothing = useVisualizerSettingsStore((state) => state.spectrumHeatmapSmoothing)
+  const setSpectrumSmoothing = useVisualizerSettingsStore((state) => state.setSpectrumSmoothing)
+  const setSpectrumHeatmapSmoothing = useVisualizerSettingsStore((state) => state.setSpectrumHeatmapSmoothing)
   const spectrumDisplayMode = useVisualizerSettingsStore((state) => state.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrumHeatmapTiltDbPerOctave)
@@ -302,8 +318,10 @@ export default function AnalyzerEditOverlay({
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((state) => state.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
+  const waveformMode = useVisualizerSettingsStore((state) => state.waveformMode)
   const setWaveformGainDb = useVisualizerSettingsStore((state) => state.setWaveformGainDb)
   const setWaveformMultiband = useVisualizerSettingsStore((state) => state.setWaveformMultiband)
+  const setWaveformMode = useVisualizerSettingsStore((state) => state.setWaveformMode)
   const pitchLock = useVisualizerSettingsStore((state) => state.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.oscilloscopeUnderfillEnabled)
   const setSelectedProfile = useVisualizerSettingsStore((state) => state.setSelectedProfile)
@@ -480,6 +498,13 @@ export default function AnalyzerEditOverlay({
             >
               Heat {spectrumHeatmap ? 'On' : 'Off'}
             </button>
+            <button
+              type="button"
+              className={`analyzer-edit-button ${spectrumShowSideLine ? 'is-active' : ''}`.trim()}
+              onClick={() => setSpectrumShowSideLine(!spectrumShowSideLine)}
+            >
+              Side {spectrumShowSideLine ? 'On' : 'Off'}
+            </button>
             <div
               className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
               onDoubleClick={() => setSpectrumTiltDbPerOctave(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)}
@@ -517,6 +542,45 @@ export default function AnalyzerEditOverlay({
                 disabled={!spectrumHeatmap}
                 aria-label="Spectrum heatmap tilt"
                 onChange={(event) => setSpectrumHeatmapTiltDbPerOctave(Number(event.target.value))}
+              />
+            </div>
+            <div
+              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+              onDoubleClick={() => setSpectrumSmoothing(DEFAULT_SPECTRUM_SMOOTHING)}
+              title={`Double-click to reset to ${DEFAULT_SPECTRUM_SMOOTHING.toFixed(2)}`}
+            >
+              <span className="analyzer-edit-corner-label">
+                Smoothing {spectrumSmoothing.toFixed(2)}
+              </span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTRUM_SMOOTHING}
+                max={MAX_SPECTRUM_SMOOTHING}
+                step={SPECTRUM_SMOOTHING_STEP}
+                value={spectrumSmoothing}
+                aria-label="Spectrum smoothing"
+                onChange={(event) => setSpectrumSmoothing(Number(event.target.value))}
+              />
+            </div>
+            <div
+              className={`analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
+              onDoubleClick={() => setSpectrumHeatmapSmoothing(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)}
+              title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_SMOOTHING.toFixed(2)}`}
+            >
+              <span className="analyzer-edit-corner-label">
+                Heat Smoothing {spectrumHeatmapSmoothing.toFixed(2)}
+              </span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTRUM_SMOOTHING}
+                max={MAX_SPECTRUM_SMOOTHING}
+                step={SPECTRUM_SMOOTHING_STEP}
+                value={spectrumHeatmapSmoothing}
+                disabled={!spectrumHeatmap}
+                aria-label="Spectrum heatmap smoothing"
+                onChange={(event) => setSpectrumHeatmapSmoothing(Number(event.target.value))}
               />
             </div>
           </div>
@@ -654,6 +718,13 @@ export default function AnalyzerEditOverlay({
       case 'waveform':
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-waveform">
+            <button
+              type="button"
+              className={`analyzer-edit-button ${waveformMode === 'stereo' ? 'is-active' : ''}`.trim()}
+              onClick={() => setWaveformMode(waveformMode === 'stereo' ? 'mono' : 'stereo')}
+            >
+              {waveformMode === 'stereo' ? 'Stereo' : 'Mono'}
+            </button>
             <button
               type="button"
               className={`analyzer-edit-button ${waveformMultiband ? 'is-active' : ''}`.trim()}
@@ -889,6 +960,7 @@ export default function AnalyzerEditOverlay({
                     spectrogramScrollSpeed,
                     waveformScrollSpeed,
                     waveformMultiband,
+                    waveformMode,
                     spectrogramClarityMode,
                     spectrogramScaleMode,
                     pitchLock,
@@ -952,6 +1024,7 @@ export default function AnalyzerEditOverlay({
                   spectrogramScrollSpeed,
                   waveformScrollSpeed,
                   waveformMultiband,
+                  waveformMode,
                   spectrogramClarityMode,
                   spectrogramScaleMode,
                   pitchLock,

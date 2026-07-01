@@ -8,10 +8,18 @@ Vectorscope::Vectorscope()
     : sampleRate_(48000.0f)
     , bufferSize_(1024)
     , writePos_(0)
-    , validSamples_(0) {
+    , validSamples_(0)
+    , multibandWritePos_(0)
+    , multibandValidSamples_(0) {
 
     leftBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
     rightBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    lowLeftBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    lowRightBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    midLeftBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    midRightBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    highLeftBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
+    highRightBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
     points_.reserve(1024);
 
     // Cascaded lowpass at 8kHz, Butterworth (Q=0.707)
@@ -21,6 +29,7 @@ Vectorscope::Vectorscope()
     leftLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
     rightLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
     rightLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
+    multibandSplitter_.configure(sampleRate_);
 }
 
 void Vectorscope::setSampleRate(float sampleRate) {
@@ -30,6 +39,7 @@ void Vectorscope::setSampleRate(float sampleRate) {
     leftLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
     rightLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
     rightLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
+    multibandSplitter_.configure(sampleRate_);
 }
 
 void Vectorscope::setBufferSize(size_t size) {
@@ -60,6 +70,28 @@ void Vectorscope::pushSamples(
     }
 }
 
+void Vectorscope::pushMultibandSamples(
+    const float* leftChannel,
+    const float* rightChannel,
+    size_t length
+) {
+    for (size_t i = 0; i < length; i++) {
+        const MultibandSample bands = multibandSplitter_.process(leftChannel[i], rightChannel[i]);
+
+        lowLeftBuffer_[multibandWritePos_] = bands.lowL;
+        lowRightBuffer_[multibandWritePos_] = bands.lowR;
+        midLeftBuffer_[multibandWritePos_] = bands.midL;
+        midRightBuffer_[multibandWritePos_] = bands.midR;
+        highLeftBuffer_[multibandWritePos_] = bands.highL;
+        highRightBuffer_[multibandWritePos_] = bands.highR;
+
+        multibandWritePos_ = (multibandWritePos_ + 1) % VECTORSCOPE_BUFFER_SIZE;
+        if (multibandValidSamples_ < VECTORSCOPE_BUFFER_SIZE) {
+            multibandValidSamples_++;
+        }
+    }
+}
+
 size_t Vectorscope::getPoints(float* xOut, float* yOut, size_t maxPoints) const {
     size_t count = std::min(maxPoints, validSamples_);
 
@@ -68,6 +100,23 @@ size_t Vectorscope::getPoints(float* xOut, float* yOut, size_t maxPoints) const 
         size_t idx = (writePos_ + VECTORSCOPE_BUFFER_SIZE - count + i) % VECTORSCOPE_BUFFER_SIZE;
         xOut[i] = rightBuffer_[idx];  // X = Right (standard Lissajous)
         yOut[i] = leftBuffer_[idx];   // Y = Left
+    }
+
+    return count;
+}
+
+size_t Vectorscope::getMultibandPoints(float* output, size_t maxPoints) const {
+    const size_t count = std::min(maxPoints, multibandValidSamples_);
+
+    for (size_t i = 0; i < count; i++) {
+        const size_t idx = (multibandWritePos_ + VECTORSCOPE_BUFFER_SIZE - count + i) % VECTORSCOPE_BUFFER_SIZE;
+        const size_t base = i * MULTIBAND_POINT_STRIDE;
+        output[base] = lowLeftBuffer_[idx];
+        output[base + 1] = lowRightBuffer_[idx];
+        output[base + 2] = midLeftBuffer_[idx];
+        output[base + 3] = midRightBuffer_[idx];
+        output[base + 4] = highLeftBuffer_[idx];
+        output[base + 5] = highRightBuffer_[idx];
     }
 
     return count;
@@ -98,12 +147,21 @@ const std::vector<VectorscopePoint>& Vectorscope::process(
 void Vectorscope::reset() {
     writePos_ = 0;
     validSamples_ = 0;
+    multibandWritePos_ = 0;
+    multibandValidSamples_ = 0;
     std::fill(leftBuffer_.begin(), leftBuffer_.end(), 0.0f);
     std::fill(rightBuffer_.begin(), rightBuffer_.end(), 0.0f);
+    std::fill(lowLeftBuffer_.begin(), lowLeftBuffer_.end(), 0.0f);
+    std::fill(lowRightBuffer_.begin(), lowRightBuffer_.end(), 0.0f);
+    std::fill(midLeftBuffer_.begin(), midLeftBuffer_.end(), 0.0f);
+    std::fill(midRightBuffer_.begin(), midRightBuffer_.end(), 0.0f);
+    std::fill(highLeftBuffer_.begin(), highLeftBuffer_.end(), 0.0f);
+    std::fill(highRightBuffer_.begin(), highRightBuffer_.end(), 0.0f);
     leftLowpass1_.reset();
     leftLowpass2_.reset();
     rightLowpass1_.reset();
     rightLowpass2_.reset();
+    multibandSplitter_.reset();
     points_.clear();
 }
 

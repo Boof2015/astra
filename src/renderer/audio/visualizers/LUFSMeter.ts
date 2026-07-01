@@ -1,150 +1,126 @@
 import { audioEngine } from '../AudioEngine'
-import type { LUFSMeterMode } from '../../../types/lufsmeter'
-import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
+import {
+  lufsmeter as nativeLUFSMeter,
+  type LUFSMeterNativeAnalyzer,
+  type LUFSMeterNativeSnapshot,
+} from '../native/index'
+import type { LUFSMeterMode, LUFSMeterReadout } from '../../../types/lufsmeter'
 import { resolveColorToRgb } from '../../utils/color'
-import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
+import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
 
-export interface LUFSMeterDataSource {
+export interface LUFSMeterDataSource extends VisualizerSessionSource {
   getPendingLUFSMeterSamples: () => Array<{ left: Float32Array; right: Float32Array }>
-  getSampleRate: () => number
-  isPlaying: () => boolean
-  isActive?: () => boolean
 }
 
 export interface LUFSMeterOptions {
   mode?: LUFSMeterMode
+  readout?: LUFSMeterReadout
+  backgroundColor?: string
   lineColor?: string
+  trackColor?: string
+  targetColor?: string
+  scaleColor?: string
+  labelColor?: string
   dataSource?: LUFSMeterDataSource
   frameScheduler?: FrameScheduler
+  nativeAnalyzer?: LUFSMeterNativeAnalyzer | null
 }
 
-type ResolvedLUFSMeterOptions = Required<Omit<LUFSMeterOptions, 'dataSource' | 'frameScheduler'>>
+type ResolvedLUFSMeterOptions = Required<Omit<LUFSMeterOptions, 'dataSource' | 'frameScheduler' | 'nativeAnalyzer'>>
 
 const defaultOptions: ResolvedLUFSMeterOptions = {
   mode: 'bar',
+  readout: 'shortTerm',
+  backgroundColor: 'transparent',
   lineColor: '#38bdf8',
+  trackColor: 'rgba(56, 189, 248, 0.08)',
+  targetColor: 'rgba(56, 189, 248, 0.25)',
+  scaleColor: 'rgba(255, 255, 255, 0.35)',
+  labelColor: 'rgba(255, 255, 255, 0.8)',
 }
 
 const defaultLUFSMeterDataSource: LUFSMeterDataSource = {
   getPendingLUFSMeterSamples: () => audioEngine.flushPendingLUFSMeterSamples(),
-  getSampleRate: () => audioEngine.getSampleRate(),
-  isPlaying: () => audioEngine.playbackState === 'playing',
-  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
+  ...defaultVisualizerSessionSource,
+}
+
+function colorWithAlpha(r: number, g: number, b: number, a: number): string {
+  return `rgba(${r}, ${g}, ${b}, ${a})`
+}
+
+function relativeLuminanceChannel(channel: number): number {
+  const normalized = Math.max(0, Math.min(255, channel)) / 255
+  return normalized <= 0.03928
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4
+}
+
+function contrastRatio(luminanceA: number, luminanceB: number): number {
+  const lighter = Math.max(luminanceA, luminanceB)
+  const darker = Math.min(luminanceA, luminanceB)
+  return (lighter + 0.05) / (darker + 0.05)
 }
 
 // ---- Constants ----
 
 const METER_MIN_LUFS = -60
-const METER_MAX_LUFS = 0
-const MOMENTARY_WINDOW_S = 0.4
-const SHORT_TERM_WINDOW_S = 3.0
-const INTEGRATED_BLOCK_S = 0.4
-const INTEGRATED_HOP_S = 0.1
-const ABSOLUTE_GATE_LUFS = -70
-const RELATIVE_GATE_OFFSET = -10
+const COMPACT_METER_MIN_DB = -50
+const COMPACT_METER_MAX_DB = 0
 const TARGET_LUFS = -14
-const SMOOTHING = 0.7
+const METER_MIN_DB = -60
 
-// ---- K-weighting filter coefficients (ITU-R BS.1770) ----
-
-interface BiquadCoeffs {
-  b0: number; b1: number; b2: number
-  a1: number; a2: number
+const INITIAL_NATIVE_SNAPSHOT: LUFSMeterNativeSnapshot = {
+  momentaryLUFS: METER_MIN_LUFS,
+  shortTermLUFS: METER_MIN_LUFS,
+  integratedLUFS: METER_MIN_LUFS,
+  vuLDb: METER_MIN_DB,
+  vuRDb: METER_MIN_DB,
+  barLDb: METER_MIN_DB,
+  barRDb: METER_MIN_DB,
+  peakLDb: METER_MIN_DB,
+  peakRDb: METER_MIN_DB,
+  correlation: 0,
 }
 
-// Pre-filter (high shelf) — 48kHz
-const PRE_FILTER_48K: BiquadCoeffs = {
-  b0: 1.53512485958697, b1: -2.69169618940638, b2: 1.19839281085285,
-  a1: -1.69065929318241, a2: 0.73248077421585,
+function finiteNumber(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback
 }
 
-// RLB weighting (high pass) — 48kHz
-const RLB_FILTER_48K: BiquadCoeffs = {
-  b0: 1.0, b1: -2.0, b2: 1.0,
-  a1: -1.99004745483398, a2: 0.99007225036621,
-}
-
-// Pre-filter — 44.1kHz
-const PRE_FILTER_44K: BiquadCoeffs = {
-  b0: 1.5308412300498355, b1: -2.6509799951536985, b2: 1.1690790799210956,
-  a1: -1.6636551132560204, a2: 0.7125954280732254,
-}
-
-// RLB — 44.1kHz
-const RLB_FILTER_44K: BiquadCoeffs = {
-  b0: 1.0, b1: -2.0, b2: 1.0,
-  a1: -1.9891696736297957, a2: 0.9891990357870394,
-}
-
-function getKWeightingCoeffs(sampleRate: number): { pre: BiquadCoeffs; rlb: BiquadCoeffs } {
-  if (Math.abs(sampleRate - 44100) < 100) {
-    return { pre: PRE_FILTER_44K, rlb: RLB_FILTER_44K }
+function normalizeNativeSnapshot(snapshot: LUFSMeterNativeSnapshot | null): LUFSMeterNativeSnapshot {
+  if (!snapshot) {
+    return { ...INITIAL_NATIVE_SNAPSHOT }
   }
-  // Default to 48kHz (also reasonable approximation for 96kHz, etc.)
-  return { pre: PRE_FILTER_48K, rlb: RLB_FILTER_48K }
+
+  return {
+    momentaryLUFS: finiteNumber(snapshot.momentaryLUFS, METER_MIN_LUFS),
+    shortTermLUFS: finiteNumber(snapshot.shortTermLUFS, METER_MIN_LUFS),
+    integratedLUFS: finiteNumber(snapshot.integratedLUFS, METER_MIN_LUFS),
+    vuLDb: finiteNumber(snapshot.vuLDb, METER_MIN_DB),
+    vuRDb: finiteNumber(snapshot.vuRDb, METER_MIN_DB),
+    barLDb: finiteNumber(snapshot.barLDb, METER_MIN_DB),
+    barRDb: finiteNumber(snapshot.barRDb, METER_MIN_DB),
+    peakLDb: finiteNumber(snapshot.peakLDb, METER_MIN_DB),
+    peakRDb: finiteNumber(snapshot.peakRDb, METER_MIN_DB),
+    correlation: finiteNumber(snapshot.correlation, 0),
+  }
 }
 
-// ---- Biquad filter state ----
-
-interface BiquadState {
-  x1: number; x2: number
-  y1: number; y2: number
-}
-
-function createBiquadState(): BiquadState {
-  return { x1: 0, x2: 0, y1: 0, y2: 0 }
-}
-
-function applyBiquad(coeffs: BiquadCoeffs, state: BiquadState, input: number): number {
-  const output = coeffs.b0 * input + coeffs.b1 * state.x1 + coeffs.b2 * state.x2
-    - coeffs.a1 * state.y1 - coeffs.a2 * state.y2
-  state.x2 = state.x1
-  state.x1 = input
-  state.y2 = state.y1
-  state.y1 = output
-  return output
-}
-
-// ---- LUFS Meter class ----
+// ---- Loudness meter class ----
 
 export class LUFSMeter {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
   private options: ResolvedLUFSMeterOptions
   private dataSource: LUFSMeterDataSource
+  private nativeAnalyzer: LUFSMeterNativeAnalyzer | null
   private frameLoop: VisualizerFrameLoop
-
-  // K-weighting filter state (per channel, two stages)
-  private preFilterL = createBiquadState()
-  private preFilterR = createBiquadState()
-  private rlbFilterL = createBiquadState()
-  private rlbFilterR = createBiquadState()
-  private currentSampleRate = 48000
-  private kWeightingCoeffs = getKWeightingCoeffs(48000)
-
-  // Ring buffer for K-weighted squared samples (sized for SHORT_TERM_WINDOW_S)
-  private ringBufferL = new Float32Array(0)
-  private ringBufferR = new Float32Array(0)
-  private ringBufferPos = 0
-  private ringBufferFilled = 0  // how many samples have been written total (capped at buffer size)
-
-  // Integrated loudness: accumulate 400ms block mean-squares with 100ms hop
-  private integratedBlockSumL = 0
-  private integratedBlockSumR = 0
-  private integratedBlockSamples = 0
-  private integratedHopCounter = 0
-  private integratedBlockLoudness: number[] = []  // LUFS per block
-
-  // Smoothed display values
-  private momentaryLUFS = METER_MIN_LUFS
-  private shortTermLUFS = METER_MIN_LUFS
-  private integratedLUFS = METER_MIN_LUFS
-
-  // Track change subscription
-  private unsubscribeTrackChange: (() => void) | null = null
-  private unsubscribePlaybackState: (() => void) | null = null
+  private currentSampleRate = 0
+  private snapshot: LUFSMeterNativeSnapshot = { ...INITIAL_NATIVE_SNAPSHOT }
+  private pushScratchL = new Float32Array(0)
+  private pushScratchR = new Float32Array(0)
+  private unsubscribeSessionChange: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, options: LUFSMeterOptions = {}) {
     this.canvas = canvas
@@ -152,62 +128,57 @@ export class LUFSMeter {
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
 
-    const { dataSource, frameScheduler, ...optionOverrides } = options
+    const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
     this.dataSource = dataSource ?? defaultLUFSMeterDataSource
+    this.nativeAnalyzer = nativeAnalyzer === undefined ? nativeLUFSMeter : nativeAnalyzer
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.isActive(),
+      shouldRun: () => this.dataSource.isPlaying(),
       onFrame: this.drawFrame,
     })
 
-    this.initRingBuffer(this.dataSource.getSampleRate())
-
-    this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
-      this.resetMeters()
-    })
-    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
-      this.invalidate()
-    })
+    this.resetMeters()
+    this.subscribeToSessionChanges()
   }
 
-  private initRingBuffer(sampleRate: number): void {
-    this.currentSampleRate = Math.max(1, sampleRate)
-    this.kWeightingCoeffs = getKWeightingCoeffs(this.currentSampleRate)
-    const bufferSize = Math.ceil(this.currentSampleRate * SHORT_TERM_WINDOW_S)
-    this.ringBufferL = new Float32Array(bufferSize)
-    this.ringBufferR = new Float32Array(bufferSize)
-    this.ringBufferPos = 0
-    this.ringBufferFilled = 0
+  private subscribeToSessionChanges(): void {
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+    }
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
+      this.resetMeters()
+    })
   }
 
   private resetMeters(): void {
-    this.momentaryLUFS = METER_MIN_LUFS
-    this.shortTermLUFS = METER_MIN_LUFS
-    this.integratedLUFS = METER_MIN_LUFS
-    this.ringBufferL.fill(0)
-    this.ringBufferR.fill(0)
-    this.ringBufferPos = 0
-    this.ringBufferFilled = 0
-    this.integratedBlockSumL = 0
-    this.integratedBlockSumR = 0
-    this.integratedBlockSamples = 0
-    this.integratedHopCounter = 0
-    this.integratedBlockLoudness = []
-    this.preFilterL = createBiquadState()
-    this.preFilterR = createBiquadState()
-    this.rlbFilterL = createBiquadState()
-    this.rlbFilterR = createBiquadState()
+    this.currentSampleRate = Math.max(1, this.dataSource.getSampleRate())
+    this.snapshot = { ...INITIAL_NATIVE_SNAPSHOT }
+    if (this.isNativeAnalyzerReady()) {
+      this.nativeAnalyzer?.setSampleRate(this.currentSampleRate)
+      this.nativeAnalyzer?.reset()
+    }
     this.invalidate()
   }
 
   setOptions(options: Partial<LUFSMeterOptions>): void {
-    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
     this.options = { ...this.options, ...optionUpdates }
-    if (dataSource) {
-      this.dataSource = dataSource
+    let didReset = false
+    if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
+      this.nativeAnalyzer = nativeAnalyzer
+      this.resetMeters()
+      didReset = true
     }
-    this.invalidate()
+    if (dataSource && dataSource !== this.dataSource) {
+      this.dataSource = dataSource
+      this.subscribeToSessionChanges()
+      this.resetMeters()
+      didReset = true
+    }
+    if (!didReset) {
+      this.invalidate()
+    }
   }
 
   start(): void {
@@ -227,147 +198,78 @@ export class LUFSMeter {
     this.invalidate()
   }
 
-  private isActive(): boolean {
-    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
-  }
-
   private processAudio(): void {
-    const pendingChunks = this.dataSource.getPendingLUFSMeterSamples()
+    const chunks = this.dataSource.getPendingLUFSMeterSamples()
+    const sampleRate = Math.max(1, this.dataSource.getSampleRate())
 
-    // Check if sample rate changed
-    const sr = this.dataSource.getSampleRate()
-    if (Math.abs(sr - this.currentSampleRate) > 100) {
-      this.initRingBuffer(sr)
+    if (Math.abs(sampleRate - this.currentSampleRate) > 100) {
       this.resetMeters()
     }
 
-    const active = this.isActive()
-    const playing = this.dataSource.isPlaying()
-    const chunks = playing
-      ? pendingChunks
-      : active
-        ? [createStereoSilenceChunk(sr)]
-        : pendingChunks
-
-    if (!active || (!playing && chunks.length === 0)) {
-      // Decay toward silence only when truly stopped
-      this.momentaryLUFS = this.momentaryLUFS * SMOOTHING + METER_MIN_LUFS * (1 - SMOOTHING)
-      this.shortTermLUFS = this.shortTermLUFS * SMOOTHING + METER_MIN_LUFS * (1 - SMOOTHING)
+    if (!this.isNativeAnalyzerReady() || !this.dataSource.isPlaying()) {
+      this.nativeAnalyzer?.reset()
+      this.snapshot = { ...INITIAL_NATIVE_SNAPSHOT }
       return
     }
 
-    // Process any new audio chunks into the ring buffer
     if (chunks.length > 0) {
-      const { pre, rlb } = this.kWeightingCoeffs
-      const bufLen = this.ringBufferL.length
-      const hopSamples = Math.round(this.currentSampleRate * INTEGRATED_HOP_S)
-      const blockSamples = Math.round(this.currentSampleRate * INTEGRATED_BLOCK_S)
-
-      for (const chunk of chunks) {
-        const len = Math.min(chunk.left.length, chunk.right.length)
-        for (let i = 0; i < len; i++) {
-          // Apply K-weighting: pre-filter then RLB, per channel
-          const kwL = applyBiquad(rlb, this.rlbFilterL, applyBiquad(pre, this.preFilterL, chunk.left[i]))
-          const kwR = applyBiquad(rlb, this.rlbFilterR, applyBiquad(pre, this.preFilterR, chunk.right[i]))
-
-          // Store squared K-weighted samples in ring buffer
-          const sqL = kwL * kwL
-          const sqR = kwR * kwR
-          this.ringBufferL[this.ringBufferPos] = sqL
-          this.ringBufferR[this.ringBufferPos] = sqR
-          this.ringBufferPos = (this.ringBufferPos + 1) % bufLen
-          if (this.ringBufferFilled < bufLen) this.ringBufferFilled++
-
-          // Accumulate for integrated measurement
-          this.integratedBlockSumL += sqL
-          this.integratedBlockSumR += sqR
-          this.integratedBlockSamples++
-          this.integratedHopCounter++
-
-          // Every hop interval, store a block loudness value
-          if (this.integratedHopCounter >= hopSamples && this.integratedBlockSamples >= blockSamples) {
-            const meanSqL = this.integratedBlockSumL / this.integratedBlockSamples
-            const meanSqR = this.integratedBlockSumR / this.integratedBlockSamples
-            const blockLUFS = -0.691 + 10 * Math.log10(Math.max(meanSqL + meanSqR, 1e-10))
-            this.integratedBlockLoudness.push(blockLUFS)
-
-            // Slide the block window: remove oldest hop worth of samples
-            // Approximate by keeping a running sum and subtracting the hop fraction
-            const hopFraction = hopSamples / this.integratedBlockSamples
-            this.integratedBlockSumL *= (1 - hopFraction)
-            this.integratedBlockSumR *= (1 - hopFraction)
-            this.integratedBlockSamples = Math.round(this.integratedBlockSamples * (1 - hopFraction))
-            this.integratedHopCounter = 0
-          }
-        }
+      const batch = this.concatStereoChunks(chunks)
+      if (batch.left.length > 0 && batch.right.length > 0) {
+        this.nativeAnalyzer?.pushSamples(batch.left, batch.right)
       }
     }
 
-    // Always compute M/S from the ring buffer (it persists across frames)
-    const bufLen = this.ringBufferL.length
-
-    // Compute momentary loudness (last 400ms)
-    const momentarySamples = Math.min(
-      Math.round(this.currentSampleRate * MOMENTARY_WINDOW_S),
-      this.ringBufferFilled
-    )
-    if (momentarySamples > 0) {
-      let sumL = 0, sumR = 0
-      for (let i = 0; i < momentarySamples; i++) {
-        const idx = (this.ringBufferPos - 1 - i + bufLen) % bufLen
-        sumL += this.ringBufferL[idx]
-        sumR += this.ringBufferR[idx]
-      }
-      const rawM = -0.691 + 10 * Math.log10(Math.max(sumL / momentarySamples + sumR / momentarySamples, 1e-10))
-      this.momentaryLUFS = this.momentaryLUFS * SMOOTHING + Math.max(METER_MIN_LUFS, rawM) * (1 - SMOOTHING)
-    }
-
-    // Compute short-term loudness (last 3s)
-    const shortTermSamples = Math.min(
-      Math.round(this.currentSampleRate * SHORT_TERM_WINDOW_S),
-      this.ringBufferFilled
-    )
-    if (shortTermSamples > 0) {
-      let sumL = 0, sumR = 0
-      for (let i = 0; i < shortTermSamples; i++) {
-        const idx = (this.ringBufferPos - 1 - i + bufLen) % bufLen
-        sumL += this.ringBufferL[idx]
-        sumR += this.ringBufferR[idx]
-      }
-      const rawS = -0.691 + 10 * Math.log10(Math.max(sumL / shortTermSamples + sumR / shortTermSamples, 1e-10))
-      this.shortTermLUFS = this.shortTermLUFS * SMOOTHING + Math.max(METER_MIN_LUFS, rawS) * (1 - SMOOTHING)
-    }
-
-    // Compute integrated loudness with gating
-    this.integratedLUFS = this.computeGatedIntegratedLoudness()
+    this.snapshot = normalizeNativeSnapshot(this.nativeAnalyzer?.getSnapshot() ?? null)
   }
 
-  private computeGatedIntegratedLoudness(): number {
-    const blocks = this.integratedBlockLoudness
-    if (blocks.length === 0) return METER_MIN_LUFS
+  private isNativeAnalyzerReady(): boolean {
+    if (!this.nativeAnalyzer) {
+      return false
+    }
+    return this.nativeAnalyzer.isAvailable?.() ?? true
+  }
 
-    // Absolute gate: remove blocks below -70 LUFS
-    const afterAbsolute = blocks.filter(l => l > ABSOLUTE_GATE_LUFS)
-    if (afterAbsolute.length === 0) return METER_MIN_LUFS
+  private concatStereoChunks(chunks: Array<{ left: Float32Array; right: Float32Array }>): { left: Float32Array; right: Float32Array } {
+    if (chunks.length === 1) {
+      const chunk = chunks[0]
+      const length = Math.min(chunk.left.length, chunk.right.length)
+      return {
+        left: chunk.left.length === length ? chunk.left : chunk.left.subarray(0, length),
+        right: chunk.right.length === length ? chunk.right : chunk.right.subarray(0, length),
+      }
+    }
 
-    // Compute mean of blocks passing absolute gate
-    let sum = 0
-    for (const l of afterAbsolute) sum += Math.pow(10, l / 10)
-    const ungatedMean = 10 * Math.log10(sum / afterAbsolute.length)
+    let totalLength = 0
+    for (const chunk of chunks) {
+      totalLength += Math.min(chunk.left.length, chunk.right.length)
+    }
+    if (totalLength === 0) {
+      return { left: new Float32Array(0), right: new Float32Array(0) }
+    }
 
-    // Relative gate: remove blocks below (ungatedMean - 10) LUFS
-    const relativeThreshold = ungatedMean + RELATIVE_GATE_OFFSET
-    const afterRelative = afterAbsolute.filter(l => l > relativeThreshold)
-    if (afterRelative.length === 0) return METER_MIN_LUFS
+    if (this.pushScratchL.length < totalLength) {
+      this.pushScratchL = new Float32Array(totalLength)
+      this.pushScratchR = new Float32Array(totalLength)
+    }
 
-    // Final integrated loudness
-    let finalSum = 0
-    for (const l of afterRelative) finalSum += Math.pow(10, l / 10)
-    return Math.max(METER_MIN_LUFS, 10 * Math.log10(finalSum / afterRelative.length))
+    const left = this.pushScratchL.subarray(0, totalLength)
+    const right = this.pushScratchR.subarray(0, totalLength)
+    let offset = 0
+    for (const chunk of chunks) {
+      const length = Math.min(chunk.left.length, chunk.right.length)
+      if (length <= 0) {
+        continue
+      }
+      left.set(chunk.left.subarray(0, length), offset)
+      right.set(chunk.right.subarray(0, length), offset)
+      offset += length
+    }
+
+    return { left, right }
   }
 
   private drawFrame = (): void => {
-    const { canvas, ctx } = this
+    const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
 
@@ -378,129 +280,219 @@ export class LUFSMeter {
     this.processAudio()
 
     ctx.clearRect(0, 0, width, height)
+    if (options.backgroundColor !== 'transparent') {
+      ctx.fillStyle = options.backgroundColor
+      ctx.fillRect(0, 0, width, height)
+    }
 
     this.drawBars(width, height)
   }
 
+  private selectedLufs(): number {
+    switch (this.options.readout) {
+      case 'momentary':
+        return this.snapshot.momentaryLUFS
+      case 'shortTerm':
+        return this.snapshot.shortTermLUFS
+      case 'integrated':
+      default:
+        return this.snapshot.integratedLUFS
+    }
+  }
+
+  private compactDbToNormalized(db: number): number {
+    const clamped = Math.max(COMPACT_METER_MIN_DB, Math.min(COMPACT_METER_MAX_DB, db))
+    return (clamped - COMPACT_METER_MIN_DB) / (COMPACT_METER_MAX_DB - COMPACT_METER_MIN_DB)
+  }
+
+  private contrastForLevelColor(): string {
+    const { r, g, b } = resolveColorToRgb(this.options.lineColor)
+    const luminance = 0.2126 * relativeLuminanceChannel(r)
+      + 0.7152 * relativeLuminanceChannel(g)
+      + 0.0722 * relativeLuminanceChannel(b)
+    return contrastRatio(luminance, 0) >= contrastRatio(luminance, 1)
+      ? 'rgba(0, 0, 0, 0.9)'
+      : 'rgba(255, 255, 255, 0.94)'
+  }
+
+  private resolveReadoutTextLayout(
+    candidates: string[],
+    maxWidth: number,
+    maxFontSize: number,
+    minFontSize: number,
+  ): { text: string; fontSize: number } {
+    const ctx = this.ctx
+    for (const text of candidates) {
+      ctx.font = `700 ${maxFontSize}px "JetBrains Mono", "SF Mono", monospace`
+      const measuredWidth = ctx.measureText(text).width
+      if (measuredWidth <= maxWidth) {
+        return { text, fontSize: maxFontSize }
+      }
+
+      const scaledFontSize = Math.floor(maxFontSize * (maxWidth / Math.max(1, measuredWidth)))
+      if (scaledFontSize >= minFontSize) {
+        return { text, fontSize: scaledFontSize }
+      }
+    }
+
+    return {
+      text: candidates[candidates.length - 1] ?? '',
+      fontSize: minFontSize,
+    }
+  }
+
+  private drawFastPeakBar(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    levelDb: number,
+    peakDb: number,
+    tint: { r: number; g: number; b: number },
+    dpr: number,
+  ): void {
+    const ctx = this.ctx
+    const barBottom = y + height
+    const levelHeight = Math.round(this.compactDbToNormalized(levelDb) * height)
+
+    ctx.fillStyle = this.options.trackColor
+    ctx.fillRect(x, y, width, height)
+
+    if (levelHeight > 0) {
+      ctx.fillStyle = colorWithAlpha(tint.r, tint.g, tint.b, 0.88)
+      ctx.fillRect(x, barBottom - levelHeight, width, levelHeight)
+    }
+
+    const peakNorm = this.compactDbToNormalized(peakDb)
+    if (peakNorm > 0.001) {
+      const peakY = Math.round(barBottom - peakNorm * height)
+      ctx.fillStyle = `rgb(${tint.r}, ${tint.g}, ${tint.b})`
+      ctx.fillRect(x, peakY, width, Math.max(1, Math.round(2 * dpr)))
+    }
+  }
+
   private drawBars(width: number, height: number): void {
     const ctx = this.ctx
-    const { r: tintR, g: tintG, b: tintB } = resolveColorToRgb(this.options.lineColor)
-    const dpr = getCanvasBackingPixelRatio(this.canvas)
+    const tint = resolveColorToRgb(this.options.lineColor)
+    const dpr = window.devicePixelRatio || 1
 
-    const padding = Math.round(8 * dpr)
-    const labelHeight = Math.round(20 * dpr)
-    const readoutHeight = Math.round(18 * dpr)
-    const scaleWidth = Math.round(32 * dpr)
-    const barAreaTop = padding + labelHeight
-    const barAreaBottom = height - padding - readoutHeight
-    const barAreaHeight = Math.max(1, barAreaBottom - barAreaTop)
-    const barAreaWidth = width - scaleWidth - padding
+    const paddingX = Math.max(Math.round(4 * dpr), Math.floor(width * 0.012))
+    const paddingY = Math.max(Math.round(4 * dpr), Math.floor(height * 0.025))
+    const meterTop = paddingY
+    const meterBottom = height - paddingY
+    const meterHeight = Math.max(1, meterBottom - meterTop)
+    const scaleWidth = Math.max(Math.round(22 * dpr), Math.min(Math.round(36 * dpr), Math.floor(width * 0.14)))
+    const barWidth = Math.max(Math.round(6 * dpr), Math.min(Math.round(14 * dpr), Math.floor(width * 0.04)))
+    const barGap = Math.max(Math.round(3 * dpr), Math.floor(width * 0.012))
+    const lufsBarGap = Math.max(Math.round(5 * dpr), Math.floor(width * 0.018))
+    const lufsBarWidth = Math.max(Math.round(12 * dpr), Math.min(Math.round(28 * dpr), Math.floor(width * 0.07)))
+    const tagGap = Math.max(Math.round(6 * dpr), Math.floor(width * 0.02))
+    const leftBarX = paddingX + scaleWidth
+    const rightBarX = leftBarX + barWidth + barGap
+    const lufsBarX = rightBarX + barWidth + lufsBarGap
+    const tagAreaX = lufsBarX + lufsBarWidth + tagGap
+    const tagAreaWidth = Math.max(1, width - paddingX - tagAreaX)
 
-    const barCount = 3
-    const barGap = Math.round(4 * dpr)
-    const totalGaps = (barCount - 1) * barGap
-    const barWidth = Math.max(4, Math.floor((barAreaWidth - totalGaps) / barCount))
+    this.drawFastPeakBar(
+      leftBarX,
+      meterTop,
+      barWidth,
+      meterHeight,
+      this.snapshot.barLDb,
+      this.snapshot.peakLDb,
+      tint,
+      dpr,
+    )
+    this.drawFastPeakBar(
+      rightBarX,
+      meterTop,
+      barWidth,
+      meterHeight,
+      this.snapshot.barRDb,
+      this.snapshot.peakRDb,
+      tint,
+      dpr,
+    )
 
-    const values = [this.momentaryLUFS, this.shortTermLUFS, this.integratedLUFS]
-    const labels = ['M', 'S', 'I']
-    const dbRange = METER_MAX_LUFS - METER_MIN_LUFS
+    const selectedLufs = this.selectedLufs()
+    const loudnessNorm = this.compactDbToNormalized(selectedLufs)
+    const loudnessY = Math.round(meterBottom - loudnessNorm * meterHeight)
+    const lufsBarHeight = Math.round(loudnessNorm * meterHeight)
 
-    const fontSize = Math.min(Math.round(13 * dpr), Math.max(Math.round(9 * dpr), Math.round(barWidth * 0.4)))
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'top'
-
-    for (let i = 0; i < barCount; i++) {
-      const x = scaleWidth + i * (barWidth + barGap)
-      const lufs = values[i]
-      const normalized = Math.max(0, Math.min(1, (lufs - METER_MIN_LUFS) / dbRange))
-      const barH = Math.round(normalized * barAreaHeight)
-
-      // Bar label
-      ctx.font = `600 ${fontSize}px "Inter", system-ui, sans-serif`
-      ctx.fillStyle = `rgba(${tintR}, ${tintG}, ${tintB}, 0.7)`
-      ctx.fillText(labels[i], x + barWidth / 2, padding)
-
-      // Bar background
-      ctx.fillStyle = `rgba(${tintR}, ${tintG}, ${tintB}, 0.08)`
-      ctx.fillRect(x, barAreaTop, barWidth, barAreaHeight)
-
-      // Bar fill — gradient from dim at bottom to bright at top
-      if (barH > 0) {
-        const gradient = ctx.createLinearGradient(0, barAreaBottom, 0, barAreaBottom - barH)
-        gradient.addColorStop(0, `rgba(${tintR}, ${tintG}, ${tintB}, 0.3)`)
-        gradient.addColorStop(0.5, `rgba(${tintR}, ${tintG}, ${tintB}, 0.6)`)
-        gradient.addColorStop(1, `rgba(${tintR}, ${tintG}, ${tintB}, 0.9)`)
-        ctx.fillStyle = gradient
-        ctx.fillRect(x, barAreaBottom - barH, barWidth, barH)
-      }
-
-      // Bright cap line at top of bar
-      if (barH > 1) {
-        ctx.fillStyle = `rgb(${tintR}, ${tintG}, ${tintB})`
-        ctx.fillRect(x, barAreaBottom - barH, barWidth, Math.max(1, Math.round(2 * dpr)))
-      }
-
-      // LUFS readout below bar
-      const displayLufs = lufs <= METER_MIN_LUFS + 1 ? '-∞' : lufs.toFixed(1)
-      ctx.font = `500 ${Math.max(Math.round(8 * dpr), fontSize - Math.round(2 * dpr))}px "JetBrains Mono", "SF Mono", monospace`
-      ctx.fillStyle = `rgba(${tintR}, ${tintG}, ${tintB}, 0.8)`
-      ctx.fillText(displayLufs, x + barWidth / 2, barAreaBottom + Math.round(4 * dpr))
+    ctx.fillStyle = this.options.trackColor
+    ctx.fillRect(lufsBarX, meterTop, lufsBarWidth, meterHeight)
+    if (lufsBarHeight > 0) {
+      ctx.fillStyle = this.options.lineColor
+      ctx.fillRect(lufsBarX, meterBottom - lufsBarHeight, lufsBarWidth, lufsBarHeight)
     }
 
-    // Target reference line (-14 LUFS)
-    const targetNorm = Math.max(0, Math.min(1, (TARGET_LUFS - METER_MIN_LUFS) / dbRange))
-    const targetY = Math.round(barAreaBottom - targetNorm * barAreaHeight)
-    ctx.strokeStyle = `rgba(${tintR}, ${tintG}, ${tintB}, 0.25)`
-    ctx.lineWidth = Math.max(1, dpr)
-    ctx.setLineDash([Math.round(4 * dpr), Math.round(3 * dpr)])
-    ctx.beginPath()
-    ctx.moveTo(scaleWidth, targetY)
-    ctx.lineTo(scaleWidth + barCount * barWidth + (barCount - 1) * barGap, targetY)
-    ctx.stroke()
-    ctx.setLineDash([])
+    const targetY = Math.round(meterBottom - this.compactDbToNormalized(TARGET_LUFS) * meterHeight)
+    ctx.fillStyle = this.options.targetColor
+    ctx.fillRect(leftBarX, targetY, Math.max(1, lufsBarX + lufsBarWidth - leftBarX), Math.max(1, Math.round(dpr)))
 
-    // Scale markings on left
-    const scaleFont = Math.max(Math.round(7 * dpr), Math.round(9 * dpr))
-    ctx.font = `400 ${scaleFont}px "JetBrains Mono", "SF Mono", monospace`
+    const tickValues = [0, -6, -12, -24, -36, -50]
+    const tickMarkWidth = Math.max(4, Math.round(6 * dpr))
+    const tickFontSize = Math.max(Math.round(8 * dpr), Math.min(Math.round(13 * dpr), Math.floor(height * 0.055)))
+    ctx.font = `600 ${tickFontSize}px "JetBrains Mono", "SF Mono", monospace`
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
-    ctx.fillStyle = `rgba(${tintR}, ${tintG}, ${tintB}, 0.35)`
-
-    const tickValues = [-60, -48, -36, -24, -18, -14, -9, -6, -3, 0]
+    ctx.fillStyle = this.options.scaleColor
     for (const tick of tickValues) {
-      const norm = (tick - METER_MIN_LUFS) / dbRange
-      if (norm < 0 || norm > 1) continue
-      const y = Math.round(barAreaBottom - norm * barAreaHeight)
-      ctx.fillText(`${tick}`, scaleWidth - Math.round(4 * dpr), y)
-
-      // Tick mark
-      ctx.fillRect(scaleWidth - Math.round(3 * dpr), y, Math.round(2 * dpr), Math.max(1, dpr))
+      const y = Math.round(meterBottom - this.compactDbToNormalized(tick) * meterHeight)
+      const labelY = Math.max(
+        meterTop + tickFontSize / 2,
+        Math.min(meterBottom - tickFontSize / 2, y),
+      )
+      ctx.fillText(`${Math.abs(tick)}`, paddingX + scaleWidth - Math.round(7 * dpr), labelY)
+      ctx.fillRect(paddingX + scaleWidth - tickMarkWidth, y, tickMarkWidth, Math.max(1, Math.round(dpr)))
     }
 
+    const displayValue = selectedLufs <= METER_MIN_LUFS + 1
+      ? '-∞'
+      : selectedLufs.toFixed(1)
+    const displayCandidates = [
+      `${displayValue}LUFS`,
+      displayValue,
+    ]
+    const tagHeight = Math.min(
+      meterHeight,
+      Math.max(Math.round(16 * dpr), Math.min(Math.round(22 * dpr), Math.floor(height * 0.1))),
+    )
+    const tagPadding = Math.max(Math.round(4 * dpr), Math.min(Math.round(7 * dpr), Math.floor(tagHeight * 0.4)))
+    const readoutFontSize = Math.max(
+      Math.round(9 * dpr),
+      Math.min(Math.round(13 * dpr), Math.floor(tagHeight * 0.62)),
+    )
+    const readoutLayout = this.resolveReadoutTextLayout(
+      displayCandidates,
+      Math.max(1, tagAreaWidth - tagPadding * 2),
+      readoutFontSize,
+      Math.max(Math.round(7 * dpr), Math.floor(readoutFontSize * 0.7)),
+    )
+    ctx.font = `700 ${readoutLayout.fontSize}px "JetBrains Mono", "SF Mono", monospace`
+    const measuredText = ctx.measureText(readoutLayout.text).width
+    const tagWidth = Math.max(1, Math.min(tagAreaWidth, Math.ceil(measuredText) + tagPadding * 2))
+    const tagX = tagAreaX
+    const tagY = Math.round(Math.max(meterTop, Math.min(meterBottom - tagHeight, loudnessY - tagHeight / 2)))
+
+    ctx.fillStyle = this.options.lineColor
+    ctx.fillRect(tagX, tagY, tagWidth, tagHeight)
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = this.contrastForLevelColor()
+    ctx.fillText(readoutLayout.text, tagX + tagPadding, tagY + tagHeight / 2)
   }
 
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
-    if (this.unsubscribeTrackChange) {
-      this.unsubscribeTrackChange()
-      this.unsubscribeTrackChange = null
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+      this.unsubscribeSessionChange = null
     }
-    if (this.unsubscribePlaybackState) {
-      this.unsubscribePlaybackState()
-      this.unsubscribePlaybackState = null
+    if (this.isNativeAnalyzerReady()) {
+      this.nativeAnalyzer?.reset()
     }
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-    this.canvas.width = 0
-    this.canvas.height = 0
-    this.ringBufferL = new Float32Array(0)
-    this.ringBufferR = new Float32Array(0)
-    this.ringBufferPos = 0
-    this.ringBufferFilled = 0
-    this.integratedBlockLoudness = []
-    this.integratedBlockSumL = 0
-    this.integratedBlockSumR = 0
-    this.integratedBlockSamples = 0
-    this.integratedHopCounter = 0
   }
 }

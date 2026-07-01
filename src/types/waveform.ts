@@ -27,3 +27,12 @@ export function clampWaveformGainDb(value: unknown): number {
   const rounded = Math.round(snapped * 10) / 10
   return Math.min(MAX_WAVEFORM_GAIN_DB, Math.max(MIN_WAVEFORM_GAIN_DB, rounded))
 }
+
+// Added for ported Prism Waveform scope: mono vs stereo (multiband) display.
+export type WaveformMode = 'mono' | 'stereo'
+
+export const DEFAULT_WAVEFORM_MODE: WaveformMode = 'mono'
+
+export function isWaveformMode(value: unknown): value is WaveformMode {
+  return value === 'mono' || value === 'stereo'
+}

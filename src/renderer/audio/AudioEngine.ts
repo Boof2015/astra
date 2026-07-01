@@ -348,11 +348,16 @@ export class AudioEngine {
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
+  // Stereo spectrum chunks for the ported mid/side spectrum mode (references the same
+  // left/right buffers; no extra allocation, only queued when spectrum is demanded).
+  private pendingSpectrumStereoSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingSpectrogramSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingVUMeterSamples: MultichannelAudioChunk[] = []
   private pendingLUFSMeterSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingWaveformSamples: Float32Array[] = []
+  // Stereo waveform chunks for the ported stereo/multiband waveform mode.
+  private pendingWaveformStereoSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
   private static readonly EMPTY_SAMPLES = new Float32Array(0)
@@ -572,11 +577,13 @@ export class AudioEngine {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrumStereoSamples = []
     this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
     this.pendingWaveformSamples = []
+    this.pendingWaveformStereoSamples = []
     this.pendingMiniVisualizerChunks = []
     this.clearLatestVisualizerChannels()
     this.resetBitPerfectVisualizerGain()
@@ -750,6 +757,7 @@ export class AudioEngine {
     }
     if (!this.hasVisualizerDemand('spectrum')) {
       this.pendingSpectrumSamples = []
+      this.pendingSpectrumStereoSamples = []
     }
     if (!this.hasVisualizerDemand('spectrogram')) {
       this.pendingSpectrogramSamples = []
@@ -765,6 +773,7 @@ export class AudioEngine {
     }
     if (!this.hasVisualizerDemand('waveform')) {
       this.pendingWaveformSamples = []
+      this.pendingWaveformStereoSamples = []
     }
     if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
       this.pendingMiniVisualizerChunks = []
@@ -843,6 +852,13 @@ export class AudioEngine {
         )
       }
       this.pendingSpectrumSamples.push(mono)
+
+      if (this.pendingSpectrumStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingSpectrumStereoSamples = this.pendingSpectrumStereoSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingSpectrumStereoSamples.push({ left: normalizedLeft, right: normalizedRight })
     }
 
     if (spectrogramDemand && mono) {
@@ -897,6 +913,13 @@ export class AudioEngine {
         )
       }
       this.pendingWaveformSamples.push(normalizedLeft)
+
+      if (this.pendingWaveformStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingWaveformStereoSamples = this.pendingWaveformStereoSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingWaveformStereoSamples.push({ left: normalizedLeft, right: normalizedRight })
     }
   }
 
@@ -1850,11 +1873,13 @@ export class AudioEngine {
     } else {
       this.pendingOscilloscopeSamples = []
       this.pendingSpectrumSamples = []
+      this.pendingSpectrumStereoSamples = []
       this.pendingSpectrogramSamples = []
       this.pendingVectorscopeSamples = []
       this.pendingVUMeterSamples = []
       this.pendingLUFSMeterSamples = []
       this.pendingWaveformSamples = []
+      this.pendingWaveformStereoSamples = []
       this.pendingMiniVisualizerChunks = []
       this.clearLatestVisualizerChannels()
       this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
@@ -5666,6 +5691,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending stereo chunks for mid/side spectrum processing.
+  flushPendingSpectrumStereoSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingSpectrumStereoSamples
+    this.pendingSpectrumStereoSamples = []
+    return samples
+  }
+
   // Flush all pending mono chunks for spectrogram processing.
   flushPendingSpectrogramSamples(): Float32Array[] {
     const samples = this.pendingSpectrogramSamples
@@ -5698,6 +5730,13 @@ export class AudioEngine {
   flushPendingWaveformSamples(): Float32Array[] {
     const samples = this.pendingWaveformSamples
     this.pendingWaveformSamples = []
+    return samples
+  }
+
+  // Flush all pending stereo chunks for stereo/multiband waveform processing.
+  flushPendingWaveformStereoSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingWaveformStereoSamples
+    this.pendingWaveformStereoSamples = []
     return samples
   }
 
@@ -6733,11 +6772,13 @@ export class AudioEngine {
     this.latestMonoChannel = new Float32Array(0)
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrumStereoSamples = []
     this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
     this.pendingWaveformSamples = []
+    this.pendingWaveformStereoSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }

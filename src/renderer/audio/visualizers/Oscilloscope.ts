@@ -1,76 +1,60 @@
 import { audioEngine } from '../AudioEngine'
 import {
-  oscilloscope as nativeOscilloscope,
+  oscilloscope as defaultNativeOscilloscope,
   OSCILLOSCOPE_BUFFER_SIZE,
-  isNativeAvailable,
-  warnNativeUnavailableOnce
+  warnNativeUnavailableOnce,
+  type OscilloscopeNativeAnalyzer,
 } from '../native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
-import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
-import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
+import { colorToRgbChannels, multiplyColorAlpha } from '../../utils/color'
+import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+
+export interface OscilloscopeDataSource extends VisualizerSessionSource {
+  getPendingOscilloscopeSamples: () => Float32Array[]
+}
 
 export interface OscilloscopeOptions {
   lineColor?: string
   lineWidth?: number
   backgroundColor?: string
   showGrid?: boolean
-  gridColor?: string
+  gridMajorColor?: string
+  gridMinorColor?: string
+  underfillColor?: string
   pitchLock?: boolean
   underfillEnabled?: boolean
+  dataSource?: OscilloscopeDataSource
   frameScheduler?: FrameScheduler
+  nativeAnalyzer?: OscilloscopeNativeAnalyzer | null
 }
 
-const defaultOptions: Required<Omit<OscilloscopeOptions, 'frameScheduler'>> = {
+type ResolvedOscilloscopeOptions = Required<Omit<OscilloscopeOptions, 'dataSource' | 'frameScheduler' | 'nativeAnalyzer'>>
+
+const defaultOptions: ResolvedOscilloscopeOptions = {
   lineColor: '#00ffff',
   lineWidth: 2,
   backgroundColor: 'transparent',
   showGrid: true,
-  gridColor: 'rgba(255, 255, 255, 0.1)',
+  gridMajorColor: 'rgba(255, 255, 255, 0.1)',
+  gridMinorColor: 'rgba(255, 255, 255, 0.05)',
+  underfillColor: 'rgba(245, 248, 252, 0.18)',
   pitchLock: true,
-  underfillEnabled: false
+  underfillEnabled: false,
 }
 
-function parseRgbChannels(color: string): string | null {
-  const normalized = color.trim()
-
-  if (normalized.startsWith('#')) {
-    const hex = normalized.slice(1)
-    const expanded = hex.length === 3
-      ? hex.split('').map((ch) => `${ch}${ch}`).join('')
-      : hex
-
-    if (expanded.length === 6) {
-      const r = Number.parseInt(expanded.slice(0, 2), 16)
-      const g = Number.parseInt(expanded.slice(2, 4), 16)
-      const b = Number.parseInt(expanded.slice(4, 6), 16)
-      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
-        return `${r}, ${g}, ${b}`
-      }
-    }
-  }
-
-  const rgbMatch = /^rgba?\((.*)\)$/i.exec(normalized)
-  if (!rgbMatch) return null
-
-  const tokens = rgbMatch[1]
-    ?.split(',')
-    .map((token) => token.trim())
-    .filter(Boolean) ?? []
-  if (tokens.length < 3) return null
-
-  const r = Number.parseFloat(tokens[0])
-  const g = Number.parseFloat(tokens[1])
-  const b = Number.parseFloat(tokens[2])
-  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null
-
-  return `${Math.max(0, Math.min(255, Math.round(r)))}, ${Math.max(0, Math.min(255, Math.round(g)))}, ${Math.max(0, Math.min(255, Math.round(b)))}`
+const defaultOscilloscopeDataSource: OscilloscopeDataSource = {
+  getPendingOscilloscopeSamples: () => audioEngine.flushPendingOscilloscopeSamples(),
+  ...defaultVisualizerSessionSource,
 }
+
+// Amplitude the trace is drawn at (Astra rendered the scope 1.8x taller than raw samples).
+const OSCILLOSCOPE_VISUAL_GAIN = 1.8
 
 function highContrastUnderfillColor(accentColor: string, alpha: number): string {
   const safeAlpha = Math.max(0, Math.min(1, alpha))
-  const channels = parseRgbChannels(accentColor)
+  const channels = colorToRgbChannels(accentColor)
   const nearWhite = { r: 245, g: 248, b: 252 }
   const tintAmount = 0.18
 
@@ -96,28 +80,36 @@ function highContrastUnderfillColor(accentColor: string, alpha: number): string 
 export class Oscilloscope {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
-  private options: Required<Omit<OscilloscopeOptions, 'frameScheduler'>>
+  private options: ResolvedOscilloscopeOptions
+  private dataSource: OscilloscopeDataSource
+  private nativeAnalyzer: OscilloscopeNativeAnalyzer
   private frameLoop: VisualizerFrameLoop
-  private nativeInitialized: boolean = false
-  private samplesReceived: number = 0
-  private lastSampleRate: number = 0
-  private unsubscribeTrackChange: (() => void) | null = null
-  private unsubscribePlaybackState: (() => void) | null = null
+  private nativeInitialized = false
+  private samplesReceived = 0
+  private lastSampleRate = 0
+  private unsubscribeSessionChange: (() => void) | null = null
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
   private staticLayerKey = ''
-  private static readonly WARMUP_SAMPLES = 4096 // Need ~4K samples before pitch detection is reliable
+  private renderBuffer = new Float32Array(0)
+  private pushScratch = new Float32Array(0)
+  private static readonly WARMUP_SAMPLES = 4096
 
   constructor(canvas: HTMLCanvasElement, options: OscilloscopeOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    const { frameScheduler, ...optionOverrides } = options
+
+    const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
+    this.dataSource = dataSource ?? defaultOscilloscopeDataSource
+    this.nativeAnalyzer = nativeAnalyzer === undefined ? defaultNativeOscilloscope : (nativeAnalyzer ?? defaultNativeOscilloscope)
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.nativeInitialized && isPlaybackAnalyzerActive(audioEngine.playbackState),
+      // Native DSP is required; when it's unavailable, stop the loop after one
+      // frame (warned once) instead of spinning — preserves Astra's fallback behavior.
+      shouldRun: () => this.nativeReady() && this.dataSource.isPlaying(),
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
@@ -125,53 +117,59 @@ export class Oscilloscope {
     if (!staticLayerCtx) throw new Error('Could not get offscreen 2D context')
     this.staticLayerCtx = staticLayerCtx
 
-    // Initialize native module
     this.initNative()
+    this.subscribeToSessionChanges()
+  }
 
-    // Subscribe to track changes to reset state for fresh pitch detection
-    this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
+  private subscribeToSessionChanges(): void {
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+    }
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
       this.reset()
-    })
-    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
-      this.invalidate()
     })
   }
 
+  private nativeReady(): boolean {
+    return Boolean(this.nativeAnalyzer) && this.nativeAnalyzer.isAvailable?.() !== false
+  }
+
   private initNative(): void {
-    if (isNativeAvailable() && !this.nativeInitialized) {
-      // Get actual sample rate from AudioEngine (defaults to 48000 if context not ready)
-      const sampleRate = audioEngine.getSampleRate()
-      this.lastSampleRate = sampleRate
-      nativeOscilloscope.setSampleRate(sampleRate)
-      nativeOscilloscope.setPitchLock(this.options.pitchLock)
-      nativeOscilloscope.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(sampleRate))
-      // Note: Filter is now pitch-adaptive FIR bandpass (auto-configured in native code)
+    if (this.nativeReady() && !this.nativeInitialized) {
+      const sampleRate = this.dataSource.getSampleRate()
+      this.lastSampleRate = 0
+      this.nativeAnalyzer.setSampleRate(sampleRate)
+      this.nativeAnalyzer.setPitchLock(this.options.pitchLock)
+      this.nativeAnalyzer.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(sampleRate))
       this.nativeInitialized = true
       console.log(`Oscilloscope: Using native DSP with AudioWorklet (${sampleRate}Hz)`)
-    } else if (!isNativeAvailable()) {
+    } else if (!this.nativeReady()) {
       warnNativeUnavailableOnce('Oscilloscope')
     }
   }
 
-  // Update sample rate if AudioContext changes (called from draw loop)
   private updateSampleRateIfNeeded(): void {
-    if (!isNativeAvailable()) return
-    const currentRate = audioEngine.getSampleRate()
+    if (!this.nativeReady()) return
+    const currentRate = this.dataSource.getSampleRate()
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.lastSampleRate = currentRate
-      nativeOscilloscope.setSampleRate(currentRate)
-      nativeOscilloscope.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(currentRate))
+      this.nativeAnalyzer.setSampleRate(currentRate)
+      this.nativeAnalyzer.setDisplaySamples(getNormalizedOscilloscopeDisplaySamples(currentRate))
       console.log(`Oscilloscope: Sample rate updated to ${currentRate}Hz`)
     }
   }
 
   setOptions(options: Partial<OscilloscopeOptions>): void {
-    const { frameScheduler: _frameScheduler, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
     this.options = { ...this.options, ...optionUpdates }
+    if (dataSource && dataSource !== this.dataSource) {
+      this.dataSource = dataSource
+      this.subscribeToSessionChanges()
+      this.reset()
+    }
 
-    // Update native module settings
-    if (isNativeAvailable() && options.pitchLock !== undefined) {
-      nativeOscilloscope.setPitchLock(options.pitchLock)
+    if (this.nativeReady() && options.pitchLock !== undefined) {
+      this.nativeAnalyzer.setPitchLock(options.pitchLock)
     }
 
     this.staticLayerKey = ''
@@ -195,59 +193,77 @@ export class Oscilloscope {
     this.invalidate()
   }
 
+  private ensureRenderBuffer(size: number): Float32Array {
+    if (this.renderBuffer.length !== size) {
+      this.renderBuffer = new Float32Array(size)
+    }
+    return this.renderBuffer
+  }
+
+  private projectSampleY(sample: number, height: number): number {
+    // Match Astra's pre-port amplitude: samples are drawn 1.8x taller than raw so
+    // the trace fills the tile (Prism's port had dropped this visual gain).
+    return ((1 - sample * OSCILLOSCOPE_VISUAL_GAIN) / 2) * height
+  }
+
+  private concatMonoChunks(chunks: Float32Array[]): Float32Array {
+    if (chunks.length === 1) return chunks[0]
+
+    let totalLength = 0
+    for (const chunk of chunks) {
+      totalLength += chunk.length
+    }
+
+    if (this.pushScratch.length < totalLength) {
+      this.pushScratch = new Float32Array(totalLength)
+    }
+
+    const out = this.pushScratch.length === totalLength
+      ? this.pushScratch
+      : this.pushScratch.subarray(0, totalLength)
+
+    let offset = 0
+    for (const chunk of chunks) {
+      out.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    return out
+  }
+
   private drawFrame = (): void => {
     const { canvas, ctx, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = getCanvasBackingPixelRatio(canvas)
+    const dpr = window.devicePixelRatio || 1
 
     if (width <= 0 || height <= 0) return
 
     this.renderStaticLayer()
 
-    // Native C++ is being fed continuously by AudioWorklet via AudioEngine
-    if (!isNativeAvailable()) {
+    if (!this.nativeReady()) {
       warnNativeUnavailableOnce('Oscilloscope')
       return
     }
 
-    // Check if sample rate needs updating (AudioContext may have initialized after us)
     this.updateSampleRateIfNeeded()
 
-    const playbackState = audioEngine.playbackState
-    const isPlaying = playbackState === 'playing'
-    const isActive = isPlaybackAnalyzerActive(playbackState)
-
-    if (!isActive) {
-      audioEngine.flushPendingOscilloscopeSamples()
+    if (!this.dataSource.isPlaying()) {
       return
     }
 
-    // Flush ALL pending samples to native C++ while playing. While paused, discard
-    // stale queued audio and advance the scope with zeros so it renders silence.
-    const pendingSamples = isPlaying
-      ? audioEngine.flushPendingOscilloscopeSamples()
-      : (() => {
-          audioEngine.flushPendingOscilloscopeSamples()
-          const sampleRate = audioEngine.getSampleRate()
-          return [createMonoSilenceChunk(sampleRate, getNormalizedOscilloscopeDisplaySamples(sampleRate))]
-        })()
-    for (const chunk of pendingSamples) {
-      nativeOscilloscope.pushSamples(chunk)
-      if (isPlaying) {
-        this.samplesReceived += chunk.length
-      }
+    const pendingSamples = this.dataSource.getPendingOscilloscopeSamples()
+    if (pendingSamples.length > 0) {
+      const merged = this.concatMonoChunks(pendingSamples)
+      this.nativeAnalyzer.pushSamples(merged)
+      this.samplesReceived += merged.length
     }
 
-    // Skip pitch-locked processing during warmup period.
-    // Bypass mode (pitchLock=false) should render immediately using a moving window.
-    if (isPlaying && options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
-      // During warmup, just show a static waveform or grid
+    if (options.pitchLock && this.samplesReceived < Oscilloscope.WARMUP_SAMPLES) {
       return
     }
 
-    // Process using circular buffer - searches backwards from writePos
-    const result = nativeOscilloscope.processContinuous()
+    const result = this.nativeAnalyzer.processContinuous()
     if (!result) {
       return
     }
@@ -255,56 +271,42 @@ export class Oscilloscope {
     const samplesToShow = result.samplesToShow
     let triggerIndex = result.triggerIndex
 
-    // In bypass mode, ignore trigger locking and follow the live write head.
-    // This produces free-running oscilloscope motion without touching pitch-lock behavior.
     if (!options.pitchLock) {
       const writePos = result.writePos
       triggerIndex = writePos - samplesToShow
       while (triggerIndex < 0) triggerIndex += OSCILLOSCOPE_BUFFER_SIZE
     }
 
-    // Get samples from circular buffer for rendering
-    const renderData = nativeOscilloscope.getSamples(Math.floor(triggerIndex), samplesToShow)
-    if (!renderData || renderData.length === 0) {
+    const renderData = this.ensureRenderBuffer(samplesToShow)
+    const sampleCount = this.nativeAnalyzer.fillSamples(triggerIndex, renderData)
+    if (sampleCount < 2) {
       return
     }
 
-    // Draw waveform (data already starts at trigger point)
-    const sliceWidth = width / samplesToShow
+    const sliceWidth = width / sampleCount
     const centerY = height / 2
-    const VISUAL_GAIN = 1.8
-    const points: Array<{ x: number; y: number }> = []
-
-    for (let i = 0; i < samplesToShow && i < renderData.length; i++) {
-      const sample = renderData[i]
-      const y = ((1 - sample * VISUAL_GAIN) / 2) * height
-      const x = i * sliceWidth
-      points.push({ x, y })
-    }
-
-    if (points.length < 2) {
-      return
-    }
 
     if (options.underfillEnabled) {
       ctx.beginPath()
-      ctx.moveTo(points[0].x, centerY)
-      for (const point of points) {
-        ctx.lineTo(point.x, point.y)
+      ctx.moveTo(0, centerY)
+      for (let i = 0; i < sampleCount; i += 1) {
+        const x = i * sliceWidth
+        const y = this.projectSampleY(renderData[i], height)
+        ctx.lineTo(x, y)
       }
-      ctx.lineTo(points[points.length - 1].x, centerY)
+      ctx.lineTo((sampleCount - 1) * sliceWidth, centerY)
       ctx.closePath()
       const peakAlpha = 0.28
       const shoulderAlpha = peakAlpha * 0.74
       const centerlineAlpha = 0.09
       const fillGradient = ctx.createLinearGradient(0, 0, 0, height)
-      fillGradient.addColorStop(0, highContrastUnderfillColor(options.lineColor, peakAlpha))
-      fillGradient.addColorStop(0.44, highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
-      fillGradient.addColorStop(0.48, highContrastUnderfillColor(options.lineColor, shoulderAlpha))
-      fillGradient.addColorStop(0.5, highContrastUnderfillColor(options.lineColor, centerlineAlpha))
-      fillGradient.addColorStop(0.52, highContrastUnderfillColor(options.lineColor, shoulderAlpha))
-      fillGradient.addColorStop(0.56, highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
-      fillGradient.addColorStop(1, highContrastUnderfillColor(options.lineColor, peakAlpha))
+      fillGradient.addColorStop(0, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
+      fillGradient.addColorStop(0.44, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+      fillGradient.addColorStop(0.48, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+      fillGradient.addColorStop(0.5, options.underfillColor || highContrastUnderfillColor(options.lineColor, centerlineAlpha))
+      fillGradient.addColorStop(0.52, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+      fillGradient.addColorStop(0.56, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+      fillGradient.addColorStop(1, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
       ctx.fillStyle = fillGradient
       ctx.fill()
     }
@@ -314,9 +316,11 @@ export class Oscilloscope {
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.beginPath()
-    ctx.moveTo(points[0].x, points[0].y)
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(points[i].x, points[i].y)
+    ctx.moveTo(0, this.projectSampleY(renderData[0], height))
+    for (let i = 1; i < sampleCount; i += 1) {
+      const x = i * sliceWidth
+      const y = this.projectSampleY(renderData[i], height)
+      ctx.lineTo(x, y)
     }
     ctx.stroke()
   }
@@ -334,7 +338,8 @@ export class Oscilloscope {
       canvas.height,
       options.backgroundColor,
       options.showGrid,
-      options.gridColor,
+      options.gridMajorColor,
+      options.gridMinorColor,
     ].join(':')
 
     if (this.staticLayerKey === key) {
@@ -361,9 +366,9 @@ export class Oscilloscope {
     const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = getCanvasBackingPixelRatio(canvas)
+    const dpr = window.devicePixelRatio || 1
 
-    ctx.strokeStyle = options.gridColor
+    ctx.strokeStyle = options.gridMajorColor
     ctx.lineWidth = dpr
 
     ctx.beginPath()
@@ -376,7 +381,7 @@ export class Oscilloscope {
     ctx.lineTo(width / 2, height)
     ctx.stroke()
 
-    ctx.strokeStyle = options.gridColor.replace('0.1', '0.05')
+    ctx.strokeStyle = options.gridMinorColor || multiplyColorAlpha(options.gridMajorColor, 0.5)
     for (let i = 1; i < 4; i++) {
       if (i === 2) continue
       ctx.beginPath()
@@ -390,14 +395,11 @@ export class Oscilloscope {
     }
   }
 
-  // Reset state for new track (call on track change to re-enable fast pitch convergence)
   reset(): void {
-    // Reset JS warmup state
     this.samplesReceived = 0
 
-    // Reset native state (clears buffers, resets pitch tracking, re-enables fast smoothing)
-    if (isNativeAvailable()) {
-      nativeOscilloscope.reset()
+    if (this.nativeReady()) {
+      this.nativeAnalyzer.reset()
     }
 
     this.invalidate()
@@ -407,29 +409,15 @@ export class Oscilloscope {
     this.stop()
     this.frameLoop.dispose()
 
-    // Unsubscribe from track change events
-    if (this.unsubscribeTrackChange) {
-      this.unsubscribeTrackChange()
-      this.unsubscribeTrackChange = null
-    }
-    if (this.unsubscribePlaybackState) {
-      this.unsubscribePlaybackState()
-      this.unsubscribePlaybackState = null
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+      this.unsubscribeSessionChange = null
     }
 
-    // Reset native module state
-    if (isNativeAvailable()) {
-      nativeOscilloscope.reset()
+    if (this.nativeReady()) {
+      this.nativeAnalyzer.reset()
     }
 
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-    this.staticLayerCanvas.width = 0
-    this.staticLayerCanvas.height = 0
-    this.canvas.width = 0
-    this.canvas.height = 0
-    this.staticLayerKey = ''
-
-    // Reset warmup state
     this.samplesReceived = 0
     this.lastSampleRate = 0
   }

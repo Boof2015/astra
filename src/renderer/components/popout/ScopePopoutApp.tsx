@@ -251,8 +251,11 @@ function SpectrumScopeCanvas() {
             pendingChunksRef.current = []
             return pendingChunks
           },
+          // Popout streams mono chunks over IPC; mid/side stereo isn't relayed.
+          getPendingSpectrumStereoSamples: () => [],
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -526,7 +529,15 @@ function VectorscopeScopeCanvas() {
       const centerY = layout.centerY
       const scale = layout.radius * visualGain
 
-      drawVectorscopeGridForMode(ctx, width, height, 'rgba(255, 255, 255, 0.08)', mode)
+      drawVectorscopeGridForMode(
+        ctx,
+        width,
+        height,
+        'rgba(255, 255, 255, 0.08)',
+        'rgba(255, 255, 255, 0.04)',
+        'rgba(255, 255, 255, 0.5)',
+        mode,
+      )
 
       const lineColor = lineColorRef.current
       const multiband = vectorscopeMultibandRef.current
@@ -740,6 +751,7 @@ function SpectrogramScopeCanvas() {
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -802,6 +814,9 @@ function VUMeterScopeCanvas() {
 
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
+        needleLeftColor: chunk.lineColor,
+        needleRightColor: chunk.lineColor,
+        needleCombinedColor: chunk.lineColor,
         mode: vuMeterModeRef.current,
         orientation: vuMeterOrientationRef.current,
       })
@@ -816,16 +831,24 @@ function VUMeterScopeCanvas() {
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new VUMeter(canvasRef.current, {
         lineColor: lineColorRef.current,
+        needleLeftColor: lineColorRef.current,
+        needleRightColor: lineColorRef.current,
+        needleCombinedColor: lineColorRef.current,
         mode: vuMeterModeRef.current,
         orientation: vuMeterOrientationRef.current,
         dataSource: {
           getPendingVUMeterSamples: () => {
             const chunks = pendingChunksRef.current
             pendingChunksRef.current = []
-            return chunks
+            // Relayed chunks are multichannel; the ported VU meter is stereo (L/R).
+            return chunks.map((chunk) => {
+              const left = chunk.channels[0] ?? new Float32Array(0)
+              return { left, right: chunk.channels[1] ?? left }
+            })
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -899,6 +922,7 @@ function LUFSMeterScopeCanvas() {
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -959,7 +983,6 @@ function WaveformScopeCanvas() {
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
         scrollSpeed: scrollSpeedRef.current,
-        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
       })
     })
@@ -974,7 +997,6 @@ function WaveformScopeCanvas() {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor: lineColorRef.current,
         scrollSpeed: scrollSpeedRef.current,
-        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
         dataSource: {
           getPendingWaveformSamples: () => {
@@ -982,8 +1004,11 @@ function WaveformScopeCanvas() {
             pendingChunksRef.current = []
             return chunks
           },
+          // Popout relays mono chunks only; stereo/multiband waveform isn't streamed.
+          getPendingWaveformStereoSamples: () => [],
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }

@@ -29,6 +29,9 @@ import {
   DEFAULT_WAVEFORM_SCROLL_SPEED,
   clampWaveformGainDb,
   clampWaveformScrollSpeed,
+  isWaveformMode,
+  DEFAULT_WAVEFORM_MODE,
+  type WaveformMode,
 } from '../../types/waveform'
 import {
   DEFAULT_SPECTRUM_DISPLAY_MODE,
@@ -52,6 +55,18 @@ export function isVectorscopeMode(value: unknown): value is VectorscopeMode {
   return typeof value === 'string' && VECTORSCOPE_MODES.includes(value as VectorscopeMode)
 }
 
+export const DEFAULT_SPECTRUM_SMOOTHING = 0.9
+export const DEFAULT_SPECTRUM_HEATMAP_SMOOTHING = 0.5
+export const MIN_SPECTRUM_SMOOTHING = 0
+export const MAX_SPECTRUM_SMOOTHING = 0.99
+export const SPECTRUM_SMOOTHING_STEP = 0.01
+
+function clampSpectrumSmoothing(value: unknown, fallback: number): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(MAX_SPECTRUM_SMOOTHING, Math.max(MIN_SPECTRUM_SMOOTHING, numeric))
+}
+
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
     fftSize: FFTSize
@@ -59,6 +74,9 @@ export interface AnalyzerProfileScopeSettings {
     tiltDbPerOctave: number
     heatmap: boolean
     heatmapTiltDbPerOctave: number
+    showSideLine: boolean
+    smoothing: number
+    heatmapSmoothing: number
   }
   oscilloscope: {
     pitchLock: boolean
@@ -86,6 +104,7 @@ export interface AnalyzerProfileScopeSettings {
     scrollSpeed: number
     gainDb: number
     multiband: boolean
+    mode: WaveformMode
   }
 }
 
@@ -114,6 +133,9 @@ interface VisualizerSettingsSnapshot {
   vectorscopeMultiband: boolean
   waveformMultiband: boolean
   spectrumHeatmap: boolean
+  spectrumShowSideLine: boolean
+  spectrumSmoothing: number
+  spectrumHeatmapSmoothing: number
   spectrumDisplayMode: SpectrumDisplayMode
   spectrumTiltDbPerOctave: number
   spectrumHeatmapTiltDbPerOctave: number
@@ -138,6 +160,7 @@ interface VisualizerSettingsSnapshot {
   spectrogramScaleMode: SpectrogramScaleMode
   waveformScrollSpeed: number
   waveformGainDb: number
+  waveformMode: WaveformMode
   pitchLock: boolean
   oscilloscopeUnderfillEnabled: boolean
   oscilloscopeMode: OscilloscopeMode
@@ -174,8 +197,12 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setVectorscopeMode: (mode: VectorscopeMode) => void
   setVectorscopeMultiband: (enabled: boolean) => void
   setWaveformMultiband: (enabled: boolean) => void
+  setWaveformMode: (mode: WaveformMode) => void
   setSpectrumDisplayMode: (mode: SpectrumDisplayMode) => void
   setSpectrumHeatmap: (enabled: boolean) => void
+  setSpectrumShowSideLine: (enabled: boolean) => void
+  setSpectrumSmoothing: (value: number) => void
+  setSpectrumHeatmapSmoothing: (value: number) => void
   setSpectrumTiltDbPerOctave: (value: number) => void
   setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
   setVUMeterMode: (mode: VUMeterMode) => void
@@ -277,6 +304,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
       heatmap: false,
       heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+      showSideLine: false,
+      smoothing: DEFAULT_SPECTRUM_SMOOTHING,
+      heatmapSmoothing: DEFAULT_SPECTRUM_HEATMAP_SMOOTHING,
     },
     oscilloscope: {
       pitchLock: DEFAULT_PITCH_LOCK,
@@ -301,6 +331,7 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       scrollSpeed: DEFAULT_WAVEFORM_SCROLL_SPEED,
       gainDb: DEFAULT_WAVEFORM_GAIN_DB,
       multiband: false,
+      mode: DEFAULT_WAVEFORM_MODE,
     },
   },
 }
@@ -508,6 +539,9 @@ function normalizeScopeSettings(
         ? rawSpectrum.heatmap
         : legacyAnalyzerPrefs?.spectrumHeatmap ?? false,
       heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(rawSpectrum.heatmapTiltDbPerOctave),
+      showSideLine: typeof rawSpectrum.showSideLine === 'boolean' ? rawSpectrum.showSideLine : false,
+      smoothing: clampSpectrumSmoothing(rawSpectrum.smoothing, DEFAULT_SPECTRUM_SMOOTHING),
+      heatmapSmoothing: clampSpectrumSmoothing(rawSpectrum.heatmapSmoothing, DEFAULT_SPECTRUM_HEATMAP_SMOOTHING),
     },
     oscilloscope: {
       pitchLock: typeof rawOscilloscope.pitchLock === 'boolean'
@@ -549,6 +583,7 @@ function normalizeScopeSettings(
       multiband: typeof rawWaveform.multiband === 'boolean'
         ? rawWaveform.multiband
         : legacyAnalyzerPrefs?.waveformMultiband ?? false,
+      mode: isWaveformMode(rawWaveform.mode) ? rawWaveform.mode : DEFAULT_WAVEFORM_MODE,
     },
   }
 }
@@ -693,6 +728,9 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrum.tiltDbPerOctave === right.scopeSettings.spectrum.tiltDbPerOctave
     && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
     && left.scopeSettings.spectrum.heatmapTiltDbPerOctave === right.scopeSettings.spectrum.heatmapTiltDbPerOctave
+    && left.scopeSettings.spectrum.showSideLine === right.scopeSettings.spectrum.showSideLine
+    && left.scopeSettings.spectrum.smoothing === right.scopeSettings.spectrum.smoothing
+    && left.scopeSettings.spectrum.heatmapSmoothing === right.scopeSettings.spectrum.heatmapSmoothing
     && left.scopeSettings.oscilloscope.pitchLock === right.scopeSettings.oscilloscope.pitchLock
     && left.scopeSettings.oscilloscope.underfillEnabled === right.scopeSettings.oscilloscope.underfillEnabled
     && left.scopeSettings.oscilloscope.mode === right.scopeSettings.oscilloscope.mode
@@ -708,6 +746,7 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.waveform.scrollSpeed === right.scopeSettings.waveform.scrollSpeed
     && left.scopeSettings.waveform.gainDb === right.scopeSettings.waveform.gainDb
     && left.scopeSettings.waveform.multiband === right.scopeSettings.waveform.multiband
+    && left.scopeSettings.waveform.mode === right.scopeSettings.waveform.mode
   )
 }
 
@@ -784,6 +823,9 @@ function buildSnapshot(
     vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
     waveformMultiband: workingState.scopeSettings.waveform.multiband,
     spectrumHeatmap: workingState.scopeSettings.spectrum.heatmap,
+    spectrumShowSideLine: workingState.scopeSettings.spectrum.showSideLine,
+    spectrumSmoothing: workingState.scopeSettings.spectrum.smoothing,
+    spectrumHeatmapSmoothing: workingState.scopeSettings.spectrum.heatmapSmoothing,
     spectrumDisplayMode: workingState.scopeSettings.spectrum.displayMode,
     spectrumTiltDbPerOctave: workingState.scopeSettings.spectrum.tiltDbPerOctave,
     spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
@@ -808,6 +850,7 @@ function buildSnapshot(
     spectrogramScaleMode: workingState.scopeSettings.spectrogram.scaleMode,
     waveformScrollSpeed: workingState.scopeSettings.waveform.scrollSpeed,
     waveformGainDb: workingState.scopeSettings.waveform.gainDb,
+    waveformMode: workingState.scopeSettings.waveform.mode,
     pitchLock: workingState.scopeSettings.oscilloscope.pitchLock,
     oscilloscopeUnderfillEnabled: workingState.scopeSettings.oscilloscope.underfillEnabled,
     oscilloscopeMode: workingState.scopeSettings.oscilloscope.mode,
@@ -1321,6 +1364,25 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
     set(nextSnapshot)
   },
 
+  setWaveformMode: (mode) => {
+    if (!isWaveformMode(mode)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        waveform: {
+          ...state.workingState.scopeSettings.waveform,
+          mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
   setSpectrumDisplayMode: (mode) => {
     if (!isSpectrumDisplayMode(mode)) return
 
@@ -1349,6 +1411,57 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrum: {
           ...state.workingState.scopeSettings.spectrum,
           heatmap: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumShowSideLine: (enabled) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          showSideLine: enabled,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumSmoothing: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          smoothing: clampSpectrumSmoothing(value, DEFAULT_SPECTRUM_SMOOTHING),
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumHeatmapSmoothing: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          heatmapSmoothing: clampSpectrumSmoothing(value, DEFAULT_SPECTRUM_HEATMAP_SMOOTHING),
         },
       },
     })

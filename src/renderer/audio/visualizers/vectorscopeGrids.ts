@@ -1,7 +1,9 @@
 import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import { multiplyColorAlpha } from '../../utils/color'
 
 const INV_SQRT2 = 1 / Math.sqrt(2)
 const COS45 = Math.SQRT2 / 2 // 0.7071...
+const OVERFLOW_BOUNDARY_STEP = 0.25
 
 export interface VectorscopeLayout {
   centerX: number
@@ -85,18 +87,46 @@ export function transformPoint(
   return { dx: side, dy: mid }
 }
 
+function getOverflowBoundaryLayout(
+  width: number,
+  height: number,
+  mode: VectorscopeMode,
+): VectorscopeLayout | null {
+  if (mode === 'lissajous') {
+    return null
+  }
+
+  const layout = getVectorscopeLayout(width, height, mode)
+  const maxXRadius = Math.min(layout.centerX, width - layout.centerX)
+  const maxYRadius = mode === 'polar-unipolar' || mode === 'linear-unipolar'
+    ? layout.centerY
+    : Math.min(layout.centerY, height - layout.centerY)
+  const maxRadius = Math.min(maxXRadius, maxYRadius) * 0.98
+  // Continue the existing quarter-step grid spacing, then clamp to the
+  // drawable area if the next full step would fall off-canvas.
+  const overflowRadius = Math.min(maxRadius, layout.radius * (1 + OVERFLOW_BOUNDARY_STEP))
+
+  if (overflowRadius <= layout.radius + 1) {
+    return null
+  }
+
+  return { ...layout, radius: overflowRadius }
+}
+
 /**
  * Draw the Lissajous grid: crosshairs + box boundary.
  */
 export function drawLissajousGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
-  gridColor: string,
+  gridMajorColor: string,
+  gridMinorColor: string,
+  labelColor: string,
   dpr: number
 ): void {
   const { centerX, centerY, radius } = layout
 
-  ctx.strokeStyle = gridColor
+  ctx.strokeStyle = gridMajorColor
   ctx.lineWidth = dpr
 
   // Outer box
@@ -120,8 +150,7 @@ export function drawLissajousGrid(
   ctx.stroke()
 
   // Diagonal guides (dimmer)
-  const dimColor = gridColor.replace(/[\d.]+\)$/, (m) => `${parseFloat(m) * 0.5})`)
-  ctx.strokeStyle = dimColor
+  ctx.strokeStyle = gridMinorColor || multiplyColorAlpha(gridMajorColor, 0.5)
 
   ctx.beginPath()
   ctx.moveTo(centerX - radius, centerY - radius)
@@ -134,11 +163,61 @@ export function drawLissajousGrid(
   ctx.stroke()
 
   // Labels
-  ctx.fillStyle = gridColor
+  ctx.fillStyle = labelColor
   ctx.font = `${10 * dpr}px monospace`
   ctx.textAlign = 'center'
   ctx.fillText('L', centerX, centerY - radius - 6 * dpr)
   ctx.fillText('R', centerX + radius + 12 * dpr, centerY + 4 * dpr)
+}
+
+function drawDashedOuterBoundary(
+  ctx: CanvasRenderingContext2D,
+  layout: VectorscopeLayout,
+  mode: VectorscopeMode,
+  color: string,
+  dpr: number,
+): void {
+  const { centerX, centerY, radius } = layout
+  const dashLength = Math.max(2, Math.round(4 * dpr))
+  const gapLength = Math.max(2, Math.round(3 * dpr))
+
+  ctx.strokeStyle = color
+  ctx.lineWidth = dpr
+  ctx.setLineDash([dashLength, gapLength])
+
+  switch (mode) {
+    case 'polar-unipolar':
+      ctx.beginPath()
+      ctx.arc(centerX, centerY, radius, Math.PI, 0, false)
+      ctx.stroke()
+      break
+    case 'polar-bipolar':
+      ctx.beginPath()
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
+      ctx.stroke()
+      break
+    case 'linear-unipolar':
+      ctx.beginPath()
+      ctx.moveTo(centerX, centerY - radius)
+      ctx.lineTo(centerX - radius, centerY)
+      ctx.lineTo(centerX + radius, centerY)
+      ctx.closePath()
+      ctx.stroke()
+      break
+    case 'linear-bipolar':
+      ctx.beginPath()
+      ctx.moveTo(centerX, centerY - radius)
+      ctx.lineTo(centerX + radius, centerY)
+      ctx.lineTo(centerX, centerY + radius)
+      ctx.lineTo(centerX - radius, centerY)
+      ctx.closePath()
+      ctx.stroke()
+      break
+    default:
+      break
+  }
+
+  ctx.setLineDash([])
 }
 
 /**
@@ -147,13 +226,15 @@ export function drawLissajousGrid(
 export function drawPolarGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
-  gridColor: string,
+  gridMajorColor: string,
+  gridMinorColor: string,
+  labelColor: string,
   unipolar: boolean,
   dpr: number
 ): void {
   const { centerX, centerY, radius } = layout
 
-  ctx.strokeStyle = gridColor
+  ctx.strokeStyle = gridMajorColor
   ctx.lineWidth = dpr
 
   // Concentric circles (or semicircles for unipolar)
@@ -185,8 +266,7 @@ export function drawPolarGrid(
   ctx.stroke()
 
   // Diagonal guides (L and R channel axes) — dimmer
-  const dimColor = gridColor.replace(/[\d.]+\)$/, (m) => `${parseFloat(m) * 0.5})`)
-  ctx.strokeStyle = dimColor
+  ctx.strokeStyle = gridMinorColor || multiplyColorAlpha(gridMajorColor, 0.5)
 
   if (unipolar) {
     ctx.beginPath()
@@ -211,7 +291,7 @@ export function drawPolarGrid(
   }
 
   // Labels
-  ctx.fillStyle = gridColor
+  ctx.fillStyle = labelColor
   ctx.font = `${10 * dpr}px monospace`
   ctx.textAlign = 'center'
 
@@ -230,13 +310,15 @@ export function drawPolarGrid(
 export function drawLinearGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
-  gridColor: string,
+  gridMajorColor: string,
+  _gridMinorColor: string,
+  labelColor: string,
   unipolar: boolean,
   dpr: number
 ): void {
   const { centerX, centerY, radius } = layout
 
-  ctx.strokeStyle = gridColor
+  ctx.strokeStyle = gridMajorColor
   ctx.lineWidth = dpr
 
   const scales = [0.25, 0.5, 0.75, 1.0]
@@ -275,7 +357,7 @@ export function drawLinearGrid(
   ctx.stroke()
 
   // Labels
-  ctx.fillStyle = gridColor
+  ctx.fillStyle = labelColor
   ctx.font = `${10 * dpr}px monospace`
   ctx.textAlign = 'center'
 
@@ -295,27 +377,35 @@ export function drawVectorscopeGridForMode(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
-  gridColor: string,
+  gridMajorColor: string,
+  gridMinorColor: string,
+  labelColor: string,
   mode: VectorscopeMode,
   dpr: number = 1
 ): void {
   const layout = getVectorscopeLayout(width, height, mode)
+  const overflowLayout = getOverflowBoundaryLayout(width, height, mode)
+  const outerBoundaryColor = multiplyColorAlpha(gridMajorColor, 1.25)
 
   switch (mode) {
     case 'lissajous':
-      drawLissajousGrid(ctx, layout, gridColor, dpr)
+      drawLissajousGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, dpr)
       break
     case 'polar-unipolar':
-      drawPolarGrid(ctx, layout, gridColor, true, dpr)
+      drawPolarGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, true, dpr)
       break
     case 'polar-bipolar':
-      drawPolarGrid(ctx, layout, gridColor, false, dpr)
+      drawPolarGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, false, dpr)
       break
     case 'linear-unipolar':
-      drawLinearGrid(ctx, layout, gridColor, true, dpr)
+      drawLinearGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, true, dpr)
       break
     case 'linear-bipolar':
-      drawLinearGrid(ctx, layout, gridColor, false, dpr)
+      drawLinearGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, false, dpr)
       break
+  }
+
+  if (overflowLayout) {
+    drawDashedOuterBoundary(ctx, overflowLayout, mode, outerBoundaryColor, dpr)
   }
 }
