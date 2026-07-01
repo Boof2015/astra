@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { useLibraryStore, type DbTrack } from './libraryStore.ts'
+import {
+  getLibraryDiagnosticsSnapshot,
+  MAX_SELECTION_HISTORY_TRACK_PATHS,
+  useLibraryStore,
+  type DbTrack
+} from './libraryStore.ts'
 
 function makeDbTrack(path: string, artist = 'Artist A'): DbTrack {
   return {
@@ -52,6 +57,7 @@ function installLibraryMock(options: {
   artistTracks?: DbTrack[]
   albumTracks?: DbTrack[]
   genreTracks?: DbTrack[]
+  getTracksByAlbum?: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]> | DbTrack[]
 } = {}): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -59,7 +65,11 @@ function installLibraryMock(options: {
       electronAPI: {
         library: {
           getTracksByArtist: async () => options.artistTracks ?? [],
-          getTracksByAlbum: async () => options.albumTracks ?? [],
+          getTracksByAlbum: async (album: string, artist?: string, identityKey?: string) => {
+            return options.getTracksByAlbum
+              ? options.getTracksByAlbum(album, artist, identityKey)
+              : options.albumTracks ?? []
+          },
           getTracksByGenre: async () => options.genreTracks ?? [],
           getGenres: async () => []
         }
@@ -140,6 +150,39 @@ test('Library genre detail participates in backward and forward navigation', asy
   assert.equal(useLibraryStore.getState().selectedArtist, null)
   assert.equal(useLibraryStore.getState().selectedGenre, 'Electronic')
   assert.deepEqual(useLibraryStore.getState().trackPaths, [genreTrack.path])
+})
+
+test('Library selection history prunes oversized track path snapshots and refetches on restore', async () => {
+  const largeAlbumTracks = Array.from(
+    { length: MAX_SELECTION_HISTORY_TRACK_PATHS + 1 },
+    (_value, index) => makeDbTrack(`/large-album/${index}.flac`, 'Artist A')
+  )
+  const nextAlbumTrack = makeDbTrack('/next-album/1.flac', 'Artist B')
+  const albumFetches: string[] = []
+  installLibraryMock({
+    getTracksByAlbum: async (album) => {
+      albumFetches.push(album)
+      if (album === 'Large Album') return largeAlbumTracks
+      if (album === 'Next Album') return [nextAlbumTrack]
+      return []
+    }
+  })
+  resetLibraryNavigation()
+
+  await useLibraryStore.getState().selectAlbum('Large Album', 'Artist A')
+  assert.equal(useLibraryStore.getState().trackPaths.length, largeAlbumTracks.length)
+
+  await useLibraryStore.getState().selectAlbum('Next Album', 'Artist B')
+  const [historySnapshot] = useLibraryStore.getState().selectionHistory
+  assert.equal(historySnapshot?.selectedAlbum?.album, 'Large Album')
+  assert.equal(historySnapshot?.trackPathsPruned, true)
+  assert.deepEqual(historySnapshot?.trackPaths, [])
+  assert.equal(getLibraryDiagnosticsSnapshot().selectionHistoryTrackCount, 0)
+
+  assert.equal(await useLibraryStore.getState().goBackSelection(), true)
+  assert.equal(useLibraryStore.getState().selectedAlbum?.album, 'Large Album')
+  assert.equal(useLibraryStore.getState().trackPaths.length, largeAlbumTracks.length)
+  assert.equal(albumFetches.filter((album) => album === 'Large Album').length, 2)
 })
 
 test('Library session restore applies valid detail, sort, and source filters', async () => {

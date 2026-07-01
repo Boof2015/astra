@@ -105,6 +105,7 @@ interface LibrarySelectionSnapshot {
   selectedGenre: string | null
   selectionOrigin: SelectionOrigin
   trackPaths: string[]
+  trackPathsPruned?: boolean
 }
 
 export interface FolderSubfolderSummary {
@@ -308,6 +309,7 @@ interface LibraryStore {
 const MAX_SCAN_ISSUE_ENTRIES = 200
 const RECENTLY_PLAYED_FETCH_LIMIT = 120
 const MAX_SELECTION_HISTORY_ENTRIES = 40
+export const MAX_SELECTION_HISTORY_TRACK_PATHS = 500
 const FULL_TRACK_PAGE_LIMIT = 2000
 const FULL_TRACK_REVEAL_INTERVAL_MS = 250
 const DEFAULT_TRACK_LIST_SORT_STATE: LibraryTrackListSortState = { key: 'title', direction: 'asc' }
@@ -574,13 +576,15 @@ function ingestTracksForPatch(
 
 function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectedGenre' | 'selectionOrigin' | 'trackPaths'>): LibrarySelectionSnapshot | null {
   if (!state.selectedAlbum && !state.selectedArtist && !state.selectedGenre) return null
+  const shouldPruneTrackPaths = state.trackPaths.length > MAX_SELECTION_HISTORY_TRACK_PATHS
 
   return {
     selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
     selectedArtist: state.selectedArtist,
     selectedGenre: state.selectedGenre,
     selectionOrigin: state.selectionOrigin,
-    trackPaths: [...state.trackPaths]
+    trackPaths: shouldPruneTrackPaths ? [] : [...state.trackPaths],
+    ...(shouldPruneTrackPaths ? { trackPathsPruned: true } : {})
   }
 }
 
@@ -589,6 +593,17 @@ function resolveTracksFromPaths(
   trackByPath: ReadonlyMap<string, DbTrack>
 ): { tracks: DbTrack[]; complete: boolean } {
   return resolveCachedTrackPaths(trackPaths, trackByPath)
+}
+
+function resolveTracksFromSelectionSnapshot(
+  snapshot: LibrarySelectionSnapshot,
+  trackByPath: ReadonlyMap<string, DbTrack>
+): { tracks: DbTrack[]; complete: boolean } {
+  const resolved = resolveTracksFromPaths(snapshot.trackPaths, trackByPath)
+  return {
+    tracks: resolved.tracks,
+    complete: resolved.complete && !snapshot.trackPathsPruned
+  }
 }
 
 function isSameAlbumSelection(
@@ -1681,7 +1696,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const previous = state.selectionHistory[historyLength - 1]
     if (!previous) return false
 
-    const restoredTracks = resolveTracksFromPaths(previous.trackPaths, state.trackByPath)
+    const restoredTracks = resolveTracksFromSelectionSnapshot(previous, state.trackByPath)
     const restoredAlbum = previous.selectedAlbum ? { ...previous.selectedAlbum } : null
     const restoredArtist = previous.selectedArtist
     const restoredGenre = previous.selectedGenre
@@ -1734,7 +1749,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const next = state.selectionForwardHistory[forwardLength - 1]
     if (!next) return false
     const current = snapshotCurrentSelection(state)
-    const restoredTracks = resolveTracksFromPaths(next.trackPaths, state.trackByPath)
+    const restoredTracks = resolveTracksFromSelectionSnapshot(next, state.trackByPath)
     const restoredAlbum = next.selectedAlbum ? { ...next.selectedAlbum } : null
     const restoredArtist = next.selectedArtist
     const restoredGenre = next.selectedGenre
