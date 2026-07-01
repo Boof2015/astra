@@ -95,6 +95,28 @@ const AUDIO_EXTENSIONS = new Set([
   '.mp3', '.flac', '.wav', '.ogg', '.aac', '.m4a',
   '.opus', '.wma', '.aiff', '.alac', '.ape', '.wv'
 ])
+const FOLDER_ARTWORK_BASENAME_PRIORITY = [
+  'cover',
+  'folder',
+  'front',
+  'album',
+  'artwork',
+  'albumart'
+] as const
+const FOLDER_ARTWORK_EXTENSION_PRIORITY = [
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.gif',
+  '.bmp'
+] as const
+const FOLDER_ARTWORK_BASENAME_RANK = new Map<string, number>(
+  FOLDER_ARTWORK_BASENAME_PRIORITY.map((name, index) => [name, index])
+)
+const FOLDER_ARTWORK_EXTENSION_RANK = new Map<string, number>(
+  FOLDER_ARTWORK_EXTENSION_PRIORITY.map((extension, index) => [extension, index])
+)
 
 export interface DbTrack {
   id: number
@@ -5351,13 +5373,25 @@ interface ExistingTrackScanState {
   id: number
   modified_at: number
   file_created_at: number | null
+  artwork_hash: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
 }
 
+interface FolderArtworkCandidate {
+  path: string
+  modifiedAtMs: number
+}
+
+interface FolderArtworkScanCache {
+  candidatesByDirectory: Map<string, Promise<FolderArtworkCandidate | null>>
+  hashesByPath: Map<string, Promise<string | null>>
+}
+
 function shouldSkipIncrementalTrackScan(
   existing: ExistingTrackScanState | undefined,
-  fileModifiedAtMs: number
+  fileModifiedAtMs: number,
+  folderArtworkCandidate: FolderArtworkCandidate | null
 ): boolean {
   if (!existing) {
     return false
@@ -5371,8 +5405,126 @@ function shouldSkipIncrementalTrackScan(
     )
   )
   const fileCreatedAtMissing = existing.file_created_at == null
+  const folderArtworkBackfillAvailable = existing.artwork_hash == null && folderArtworkCandidate !== null
+  const folderArtworkNewerThanLastScan = Boolean(
+    folderArtworkCandidate
+    && folderArtworkCandidate.modifiedAtMs > existing.modified_at
+  )
 
-  return existing.modified_at >= fileModifiedAtMs && !replayGainMissing && !fileCreatedAtMissing
+  return (
+    existing.modified_at >= fileModifiedAtMs
+    && !replayGainMissing
+    && !fileCreatedAtMissing
+    && !folderArtworkBackfillAvailable
+    && !folderArtworkNewerThanLastScan
+  )
+}
+
+function createFolderArtworkScanCache(): FolderArtworkScanCache {
+  return {
+    candidatesByDirectory: new Map(),
+    hashesByPath: new Map()
+  }
+}
+
+function getFolderArtworkCandidateRank(fileName: string): { basenameRank: number; extensionRank: number } | null {
+  const extension = extname(fileName).toLowerCase()
+  const extensionRank = FOLDER_ARTWORK_EXTENSION_RANK.get(extension)
+  if (extensionRank === undefined) return null
+
+  const normalizedBasename = basename(fileName, extname(fileName)).toLowerCase()
+  const basenameRank = FOLDER_ARTWORK_BASENAME_RANK.get(normalizedBasename)
+  if (basenameRank === undefined) return null
+
+  return { basenameRank, extensionRank }
+}
+
+async function discoverFolderArtworkCandidate(directoryPath: string): Promise<FolderArtworkCandidate | null> {
+  let entries
+  try {
+    entries = await readdir(directoryPath, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  const rankedCandidates = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const rank = getFolderArtworkCandidateRank(entry.name)
+      if (!rank) return null
+      return {
+        ...rank,
+        name: entry.name,
+        path: join(directoryPath, entry.name)
+      }
+    })
+    .filter((candidate): candidate is {
+      basenameRank: number
+      extensionRank: number
+      name: string
+      path: string
+    } => candidate !== null)
+    .sort((a, b) => (
+      a.basenameRank - b.basenameRank
+      || a.extensionRank - b.extensionRank
+      || a.name.localeCompare(b.name)
+    ))
+
+  const [candidate] = rankedCandidates
+  if (!candidate) return null
+
+  try {
+    const candidateStat = await stat(candidate.path)
+    return {
+      path: candidate.path,
+      modifiedAtMs: candidateStat.mtimeMs
+    }
+  } catch {
+    return null
+  }
+}
+
+function getFolderArtworkCandidate(
+  directoryPath: string,
+  cache: FolderArtworkScanCache
+): Promise<FolderArtworkCandidate | null> {
+  const cached = cache.candidatesByDirectory.get(directoryPath)
+  if (cached) return cached
+
+  const lookup = discoverFolderArtworkCandidate(directoryPath)
+  cache.candidatesByDirectory.set(directoryPath, lookup)
+  return lookup
+}
+
+async function cacheFolderArtworkCandidate(candidate: FolderArtworkCandidate): Promise<string | null> {
+  try {
+    const imageData = await readFile(candidate.path)
+    return cacheArtworkBuffer(imageData)
+  } catch (error) {
+    console.warn('Failed to cache folder artwork image:', candidate.path, error)
+    return null
+  }
+}
+
+function getFolderArtworkHash(
+  candidate: FolderArtworkCandidate,
+  cache: FolderArtworkScanCache
+): Promise<string | null> {
+  const cached = cache.hashesByPath.get(candidate.path)
+  if (cached) return cached
+
+  const lookup = cacheFolderArtworkCandidate(candidate)
+  cache.hashesByPath.set(candidate.path, lookup)
+  return lookup
+}
+
+async function resolveFolderArtworkHash(
+  filePath: string,
+  cache: FolderArtworkScanCache
+): Promise<string | null> {
+  const candidate = await getFolderArtworkCandidate(dirname(filePath), cache)
+  if (!candidate) return null
+  return getFolderArtworkHash(candidate, cache)
 }
 
 export async function scanFolder(
@@ -5396,6 +5548,7 @@ export async function scanFolder(
   let processed = 0
 
   const scanWorkerCount = resolveScanWorkerCount(files.length)
+  const folderArtworkCache = createFolderArtworkScanCache()
 
   await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
     try {
@@ -5406,16 +5559,23 @@ export async function scanFolder(
       const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
       const existing = db.get<ExistingTrackScanState>(
-        'SELECT id, modified_at, file_created_at, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?',
+        'SELECT id, modified_at, file_created_at, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?',
         [filePath]
       )
 
-      const shouldSkipKnownFile = mode === 'incremental' && shouldSkipIncrementalTrackScan(existing, fileStat.mtimeMs)
+      const folderArtworkCandidate = mode === 'incremental'
+        ? await getFolderArtworkCandidate(dirname(filePath), folderArtworkCache)
+        : null
+      const shouldSkipKnownFile = mode === 'incremental' && shouldSkipIncrementalTrackScan(
+        existing,
+        fileStat.mtimeMs,
+        folderArtworkCandidate
+      )
       if (shouldSkipKnownFile) {
         return
       }
 
-      const metadata = await extractMetadata(filePath)
+      const metadata = await extractMetadata(filePath, { folderArtworkCache })
       const now = Date.now()
 
       if (existing) {
@@ -6171,7 +6331,9 @@ async function resolveCodecMetadata(
 }
 
 // Extract metadata from audio file
-async function extractMetadata(filePath: string): Promise<{
+async function extractMetadata(filePath: string, options: {
+  folderArtworkCache?: FolderArtworkScanCache
+} = {}): Promise<{
   title: string
   artist: string
   artistNamesJson: string | null
@@ -6240,6 +6402,10 @@ async function extractMetadata(filePath: string): Promise<{
         }
       }
     }
+  }
+  if (!artworkHash) {
+    const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
+    artworkHash = await resolveFolderArtworkHash(filePath, folderArtworkCache)
   }
 
   const fileName = basename(filePath, extname(filePath))

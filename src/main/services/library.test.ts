@@ -64,6 +64,11 @@ async function writeTaggedWavFixture(filePath: string, title: string, artist: st
   await writeFile(filePath, createTaggedWavFixture(title, artist))
 }
 
+const TINY_PNG_FIXTURE = Buffer.from(
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cf000000050001a29903a60000000049454e44ae426082',
+  'hex'
+)
+
 async function setupEmptyLibrary(t: test.TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'astra-library-sqlite-'))
   process.env.ASTRA_TEST_USER_DATA = dir
@@ -789,6 +794,83 @@ test('force scan rewrites unchanged local metadata that incremental scan skips',
   assert.equal(forceScan.errors, 0)
   assert.equal(library.getTrackByPath(trackPath)?.title, 'Updated Title')
   assert.equal(library.getTrackByPath(trackPath)?.artist, 'Updated Artist')
+})
+
+test('local scan uses same-folder cover image when embedded artwork is missing', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const trackPath = join(musicDir, 'track.wav')
+  const coverPath = join(musicDir, 'cover.png')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Sidecar Title', 'Sidecar Artist')
+  await writeFile(coverPath, TINY_PNG_FIXTURE)
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.updated, 0)
+  assert.equal(scan.errors, 0)
+
+  const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
+  assert.ok(artworkHash)
+  assert.equal(artworkHash.endsWith('.png'), true)
+  assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
+})
+
+test('local scan finds folder artwork names case-insensitively', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Case Title', 'Case Artist')
+  await writeFile(join(musicDir, 'Folder.JPG'), TINY_PNG_FIXTURE)
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
+  assert.ok(artworkHash)
+  assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
+})
+
+test('incremental local scan backfills sidecar artwork for unchanged tracks', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Backfill Title', 'Backfill Artist')
+
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+  assert.equal(initialScan.updated, 0)
+  assert.equal(initialScan.errors, 0)
+  assert.equal(library.getTrackByPath(trackPath)?.artwork_hash, null)
+
+  await writeFile(join(musicDir, 'cover.png'), TINY_PNG_FIXTURE)
+
+  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental' })
+  assert.equal(incrementalScan.added, 0)
+  assert.equal(incrementalScan.updated, 1)
+  assert.equal(incrementalScan.errors, 0)
+
+  const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
+  assert.ok(artworkHash)
+  assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
 })
 
 test('playlist import matches percent-encoded local M3U paths', async (t) => {
