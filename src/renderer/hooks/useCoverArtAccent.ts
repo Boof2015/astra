@@ -4,7 +4,27 @@ import { usePlayerStore } from '../stores/playerStore'
 import { useThemeStore } from '../stores/themeStore'
 import { extractArtworkAccent } from '../utils/artworkAccent'
 
+const MAX_COVER_ART_ACCENT_CACHE_ENTRIES = 256
+
 const coverArtAccentCache = new Map<string, string | null>()
+
+function getCoverArtAccentCacheEntry(cacheKey: string): string | null | undefined {
+  if (!coverArtAccentCache.has(cacheKey)) return undefined
+  const value = coverArtAccentCache.get(cacheKey) ?? null
+  coverArtAccentCache.delete(cacheKey)
+  coverArtAccentCache.set(cacheKey, value)
+  return value
+}
+
+function setCoverArtAccentCacheEntry(cacheKey: string, value: string | null): void {
+  coverArtAccentCache.delete(cacheKey)
+  coverArtAccentCache.set(cacheKey, value)
+  while (coverArtAccentCache.size > MAX_COVER_ART_ACCENT_CACHE_ENTRIES) {
+    const oldestKey = coverArtAccentCache.keys().next().value
+    if (oldestKey === undefined) break
+    coverArtAccentCache.delete(oldestKey)
+  }
+}
 
 function estimateAccentCacheBytes(): number {
   let total = 0
@@ -80,15 +100,16 @@ export function useCoverArtAccent(): void {
       const artworkIdentity = buildArtworkIdentity(currentTrack)
       const cacheKey = `${coverArtAccentMethod}:${artworkIdentity}`
 
-      if (coverArtAccentCache.has(cacheKey)) {
-        setCoverArtAccent(coverArtAccentCache.get(cacheKey) ?? null)
+      const cachedAccent = getCoverArtAccentCacheEntry(cacheKey)
+      if (cachedAccent !== undefined) {
+        setCoverArtAccent(cachedAccent)
         return
       }
 
       const accent = await extractArtworkAccent(artworkDataUrl, coverArtAccentMethod)
       if (requestTokenRef.current !== requestToken) return
 
-      coverArtAccentCache.set(cacheKey, accent)
+      setCoverArtAccentCacheEntry(cacheKey, accent)
       setCoverArtAccent(accent)
     }
 

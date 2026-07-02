@@ -5844,6 +5844,9 @@ body:has(.fullscreen-overlay) .controller-hints {
   position: relative;
   cursor: pointer;
   transition: transform var(--transition-fast);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 160px 240px;
 }
 
 .album-card:hover {
@@ -5870,6 +5873,34 @@ body:has(.fullscreen-overlay) .controller-hints {
   object-fit: cover;
 }
 
+.album-grid-shell {
+  --album-grid-min-column-width: 160px;
+  --album-grid-gap: 20px;
+  --album-grid-padding: 20px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.album-grid-virtualized {
+  box-sizing: border-box;
+  width: 100%;
+  overflow-x: hidden;
+  padding: calc(var(--album-grid-padding) - var(--album-grid-gap) / 2);
+}
+
+.album-grid-cell {
+  box-sizing: border-box;
+  padding: calc(var(--album-grid-gap) / 2);
+}
+
+.album-grid-cell-empty {
+  pointer-events: none;
+}
+
 .genre-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -5878,12 +5909,44 @@ body:has(.fullscreen-overlay) .controller-hints {
   overflow-y: auto;
 }
 
+.genre-grid-shell {
+  --genre-grid-min-column-width: 220px;
+  --genre-grid-gap: 14px;
+  --genre-grid-padding: 20px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.genre-grid-virtualized {
+  box-sizing: border-box;
+  width: 100%;
+  overflow-x: hidden;
+  padding: calc(var(--genre-grid-padding) - var(--genre-grid-gap) / 2);
+}
+
+.genre-grid-cell {
+  box-sizing: border-box;
+  padding: calc(var(--genre-grid-gap) / 2);
+}
+
+.genre-grid-cell-empty {
+  pointer-events: none;
+}
+
 .genre-card {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   min-height: 76px;
+  width: 100%;
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 220px 78px;
   padding: 10px;
   border: 1px solid rgba(var(--tint), 0.08);
   border-radius: 8px;
@@ -13832,6 +13895,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .album-grid {
   gap: 14px;
   padding: 14px;
+}
+
+.album-grid-shell {
+  --album-grid-gap: 14px;
+  --album-grid-padding: 14px;
 }
 
 .album-card {

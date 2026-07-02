@@ -153,12 +153,17 @@ interface GainState {
 
 export interface VisualizerConsumerDemand {
   spectrum?: boolean
+  // Stereo side-line feed for the spectrum scope; only enqueued when a consumer
+  // actually renders it (side-line enabled), so the queue stays empty otherwise.
+  spectrumStereo?: boolean
   oscilloscope?: boolean
   vectorscope?: boolean
   spectrogram?: boolean
   vumeter?: boolean
   lufsmeter?: boolean
   waveform?: boolean
+  // Stereo waveform feed; only enqueued while a consumer runs in stereo mode.
+  waveformStereo?: boolean
   miniSpectrum?: boolean
   miniOscilloscope?: boolean
 }
@@ -594,12 +599,14 @@ export class AudioEngine {
   setVisualizerConsumerDemand(consumerId: string, demand: VisualizerConsumerDemand): void {
     const nextDemand: VisualizerConsumerDemand = {
       spectrum: Boolean(demand.spectrum),
+      spectrumStereo: Boolean(demand.spectrumStereo),
       oscilloscope: Boolean(demand.oscilloscope),
       vectorscope: Boolean(demand.vectorscope),
       spectrogram: Boolean(demand.spectrogram),
       vumeter: Boolean(demand.vumeter),
       lufsmeter: Boolean(demand.lufsmeter),
       waveform: Boolean(demand.waveform),
+      waveformStereo: Boolean(demand.waveformStereo),
       miniSpectrum: Boolean(demand.miniSpectrum),
       miniOscilloscope: Boolean(demand.miniOscilloscope),
     }
@@ -621,7 +628,7 @@ export class AudioEngine {
     }
   }
 
-  private hasVisualizerDemand(scope: ScopeKind): boolean {
+  private hasVisualizerDemand(scope: Exclude<keyof VisualizerConsumerDemand, 'miniSpectrum' | 'miniOscilloscope'>): boolean {
     for (const demand of this.visualizerConsumerDemand.values()) {
       if (demand[scope]) {
         return true
@@ -757,6 +764,8 @@ export class AudioEngine {
     }
     if (!this.hasVisualizerDemand('spectrum')) {
       this.pendingSpectrumSamples = []
+    }
+    if (!this.hasVisualizerDemand('spectrumStereo')) {
       this.pendingSpectrumStereoSamples = []
     }
     if (!this.hasVisualizerDemand('spectrogram')) {
@@ -773,6 +782,8 @@ export class AudioEngine {
     }
     if (!this.hasVisualizerDemand('waveform')) {
       this.pendingWaveformSamples = []
+    }
+    if (!this.hasVisualizerDemand('waveformStereo')) {
       this.pendingWaveformStereoSamples = []
     }
     if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
@@ -822,10 +833,12 @@ export class AudioEngine {
 
     const oscilloscopeDemand = this.hasVisualizerDemand('oscilloscope')
     const spectrumDemand = this.hasVisualizerDemand('spectrum')
+    const spectrumStereoDemand = this.hasVisualizerDemand('spectrumStereo')
     const spectrogramDemand = this.hasVisualizerDemand('spectrogram')
     const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
     const lufsMeterDemand = this.hasVisualizerDemand('lufsmeter')
     const waveformDemand = this.hasVisualizerDemand('waveform')
+    const waveformStereoDemand = this.hasVisualizerDemand('waveformStereo')
     const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
     const miniOscilloscopeDemand = this.hasMiniVisualizerDemand('oscilloscope')
 
@@ -852,7 +865,9 @@ export class AudioEngine {
         )
       }
       this.pendingSpectrumSamples.push(mono)
+    }
 
+    if (spectrumStereoDemand) {
       if (this.pendingSpectrumStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
         this.pendingSpectrumStereoSamples = this.pendingSpectrumStereoSamples.slice(
           -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
@@ -913,7 +928,9 @@ export class AudioEngine {
         )
       }
       this.pendingWaveformSamples.push(normalizedLeft)
+    }
 
+    if (waveformStereoDemand) {
       if (this.pendingWaveformStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
         this.pendingWaveformStereoSamples = this.pendingWaveformStereoSamples.slice(
           -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)

@@ -7642,7 +7642,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
     sampleRate: session.sampleRate,
     channels: session.channels,
     frameCount,
-    pcmData: Uint8Array.from(data).buffer,
+    pcmData: toStandaloneArrayBuffer(data),
     decodedFrames: session.decodedFrames,
     decodedSeconds: session.decodedFrames / session.sampleRate
   }
@@ -8892,7 +8892,7 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
     )
 
     const decoded = await readFile(outputPath)
-    return decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength)
+    return toStandaloneArrayBuffer(decoded)
   } catch (error) {
     console.warn(`FFmpeg compatibility decode failed for ${filePath}:`, error)
     return null
@@ -9296,6 +9296,15 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   return metadata
 }
 
+// readFile allocates an exact-size, non-pooled Buffer for anything >= Buffer.poolSize / 2
+// (4KB), so audio payloads can hand out the underlying ArrayBuffer without a full copy.
+function toStandaloneArrayBuffer(buffer: Buffer): ArrayBuffer {
+  const underlying = buffer.buffer as ArrayBuffer
+  return buffer.byteOffset === 0 && buffer.byteLength === underlying.byteLength
+    ? underlying
+    : underlying.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+}
+
 async function loadAudioFile(
   filePath: string,
   options: LoadAudioFileOptions = {},
@@ -9348,7 +9357,7 @@ async function loadAudioFile(
       return {
         path: filePath,
         name,
-        data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+        data: toStandaloneArrayBuffer(buffer)
       }
     }
 
@@ -9357,7 +9366,7 @@ async function loadAudioFile(
     const payload = {
       path: filePath,
       name: name,
-      data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      data: toStandaloneArrayBuffer(buffer),
       metadata: metadata ?? undefined
     }
     const elapsedMs = Date.now() - loadStartMs

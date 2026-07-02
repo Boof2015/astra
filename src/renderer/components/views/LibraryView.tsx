@@ -11,14 +11,15 @@ import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, 
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
-import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { navigateInputBack } from '../../utils/inputNavigation'
 import TrackList, { type TrackListSortKey } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
+import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
 import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
+import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'featured'
@@ -230,11 +231,11 @@ export default function LibraryView() {
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const previousInDetailViewRef = useRef(false)
   const collectionPlayPendingRef = useRef(false)
-  const albumGridRef = useRef<HTMLDivElement | null>(null)
+  const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
   const albumGridScrollRef = useRef(0)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
   const artistScrollRef = useRef(0)
-  const genreGridRef = useRef<HTMLDivElement | null>(null)
+  const genreViewportRef = useRef<GenreGridViewportAPI | null>(null)
   const genreGridScrollRef = useRef(0)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const artistAlbumRailRef = useRef<HTMLDivElement | null>(null)
@@ -423,14 +424,14 @@ export default function LibraryView() {
 
   useLayoutEffect(() => {
     const pending = pendingScrollRef.current
-    if (pending === 'albums' && albumGridRef.current) {
-      albumGridRef.current.scrollTop = albumGridScrollRef.current
+    if (pending === 'albums' && albumViewportRef.current?.element) {
+      albumViewportRef.current.element.scrollTop = albumGridScrollRef.current
       pendingScrollRef.current = null
     } else if (pending === 'artists' && artistViewportRef.current?.element) {
       artistViewportRef.current.element.scrollTop = artistScrollRef.current
       pendingScrollRef.current = null
-    } else if (pending === 'genres' && genreGridRef.current) {
-      genreGridRef.current.scrollTop = genreGridScrollRef.current
+    } else if (pending === 'genres' && genreViewportRef.current?.element) {
+      genreViewportRef.current.element.scrollTop = genreGridScrollRef.current
       pendingScrollRef.current = null
     }
   })
@@ -500,6 +501,35 @@ export default function LibraryView() {
     artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
     await runViewTransition(() => selectArtist(artistName, 'library'), 'library-context-forward')
   }, [selectArtist])
+
+  const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
+    albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
+    void runViewTransition(
+      () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+      'library-context-forward'
+    )
+  }, [selectAlbum])
+
+  const handleAlbumGridContextMenu = useCallback((album: { album: string; artist: string; identity_key: string }, x: number, y: number) => {
+    openCollectionQueueMenu({
+      target: {
+        kind: 'album',
+        album: album.album,
+        artist: album.artist,
+        identityKey: album.identity_key
+      },
+      x,
+      y
+    })
+  }, [openCollectionQueueMenu])
+
+  const handleSelectGenreFromGrid = useCallback((genre: { genre: string }) => {
+    genreGridScrollRef.current = genreViewportRef.current?.element?.scrollTop ?? 0
+    void runViewTransition(
+      () => selectGenre(genre.genre, 'library'),
+      'library-context-forward'
+    )
+  }, [selectGenre])
 
   const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
     if (viewMode === mode) return
@@ -1063,61 +1093,13 @@ export default function LibraryView() {
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
-        <div
-          className="album-grid"
-          ref={albumGridRef}
-          data-controller-scroll
-          data-controller-group="library-albums"
-          data-controller-axis="grid"
-        >
-          {filteredAlbums.map((album) => (
-            <div
-              key={album.identity_key}
-              className="album-card"
-              data-controller-focusable="true"
-              data-controller-context="true"
-              data-controller-key={`album:${album.identity_key}`}
-              tabIndex={-1}
-              role="button"
-              aria-label={`Open ${album.album} by ${album.artist}`}
-              onClick={() => {
-                albumGridScrollRef.current = albumGridRef.current?.scrollTop ?? 0
-                void runViewTransition(
-                  () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
-                  'library-context-forward'
-                )
-              }}
-              onContextMenu={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                openCollectionQueueMenu({
-                  target: {
-                    kind: 'album',
-                    album: album.album,
-                    artist: album.artist,
-                    identityKey: album.identity_key
-                  },
-                  x: event.clientX,
-                  y: event.clientY
-                })
-              }}
-            >
-              {album.is_new && (
-                <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-                  NEW
-                </span>
-              )}
-              <div className="album-artwork">
-                <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
-              </div>
-              <div className="album-info">
-                <div className="album-title">{highlightSearchMatch(album.album, trimmedSearchQuery)}</div>
-                <div className="album-artist">{highlightSearchMatch(album.artist, trimmedSearchQuery)}</div>
-                <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` \u2022 ${album.year}` : ''}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <AlbumGrid
+          albums={filteredAlbums}
+          viewportRef={albumViewportRef}
+          searchQuery={trimmedSearchQuery}
+          onSelectAlbum={handleSelectAlbumFromGrid}
+          onAlbumContextMenu={handleAlbumGridContextMenu}
+        />
       )
     }
 
@@ -1146,44 +1128,12 @@ export default function LibraryView() {
           : <div className="library-empty"><p>No genres found</p></div>
       }
       return (
-        <div
-          className="genre-grid"
-          ref={genreGridRef}
-          data-controller-scroll
-          data-controller-group="library-genres"
-          data-controller-axis="grid"
-        >
-          {filteredGenres.map((genre) => (
-            <button
-              key={genre.genre}
-              type="button"
-              className="genre-card"
-              data-controller-focusable="true"
-              data-controller-key={`genre:${normalizeKey(genre.genre)}`}
-              onClick={() => {
-                genreGridScrollRef.current = genreGridRef.current?.scrollTop ?? 0
-                void runViewTransition(
-                  () => selectGenre(genre.genre, 'library'),
-                  'library-context-forward'
-                )
-              }}
-            >
-              <div className="genre-card-artwork">
-                {genre.artwork_hash ? (
-                  <AlbumArtwork hash={genre.artwork_hash} alt={genre.genre} variant="thumbnail" />
-                ) : (
-                  <span>&#9835;</span>
-                )}
-              </div>
-              <div className="genre-card-info">
-                <div className="genre-card-title">{highlightSearchMatch(genre.genre, trimmedSearchQuery)}</div>
-                <div className="genre-card-meta">
-                  {formatTrackCount(genre.track_count)} · {genre.album_count} {genre.album_count === 1 ? 'album' : 'albums'}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
+        <GenreGrid
+          genres={filteredGenres}
+          viewportRef={genreViewportRef}
+          searchQuery={trimmedSearchQuery}
+          onSelectGenre={handleSelectGenreFromGrid}
+        />
       )
     }
 

@@ -994,20 +994,24 @@ export default function VisualizerPanel({
 
   useEffect(() => {
     const visibleScopeSet = new Set(mountedVisibleScopes)
+    const spectrumDemand = nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum
+    const waveformDemand = isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
-      spectrum: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrum') && !scopePopoutState.spectrum,
+      spectrum: spectrumDemand,
+      spectrumStereo: spectrumDemand && spectrumShowSideLine,
       oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
       vumeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
       lufsmeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
-      waveform: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform,
+      waveform: waveformDemand,
+      waveformStereo: waveformDemand && waveformMode === 'stereo',
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumShowSideLine, waveformMode])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()
