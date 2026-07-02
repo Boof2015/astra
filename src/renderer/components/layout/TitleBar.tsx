@@ -13,6 +13,7 @@ import {
   TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS,
   type TitleBarPerformanceSample
 } from '../../utils/titleBarMemoryStats'
+import type { AppMemoryFootprintSource } from '../../../shared/processMemoryFootprint'
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import AstraLogo from '../icons/AstraLogo'
 
@@ -32,6 +33,29 @@ function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boole
   return normalized >= 1024
     ? `${(normalized / 1024).toFixed(2)} GB`
     : `${normalized.toFixed(normalized >= 100 ? 0 : 1)} MB`
+}
+
+function formatFootprintSource(source: AppMemoryFootprintSource | null): string {
+  switch (source) {
+    case 'linux-pss':
+      return 'Linux PSS'
+    case 'macos-private-resident':
+      return 'macOS private resident'
+    case 'windows-private-usage':
+      return 'Windows private usage'
+    case 'fallback-private-working-set':
+      return 'fallback private/working-set hybrid'
+    case 'unavailable':
+      return 'unavailable'
+    default:
+      return 'unknown'
+  }
+}
+
+function formatFailedPids(pids: readonly number[]): string {
+  if (pids.length === 0) return ''
+  const shown = pids.slice(0, 4).join(', ')
+  return pids.length > 4 ? `${shown}, +${pids.length - 4} more` : shown
 }
 
 function TitleBarActivityFallback({ rackVisible }: { rackVisible: boolean }) {
@@ -233,13 +257,14 @@ export default function TitleBar() {
   const formattedBufferMemory = formatMemoryMb(memorySample.bufferMemoryMb, { zeroAsZeroMb: true })
   const formattedCurrentBufferMemory = formatMemoryMb(memorySample.currentBufferMemoryMb, { zeroAsZeroMb: true })
   const formattedNextBufferMemory = formatMemoryMb(memorySample.nextBufferMemoryMb, { zeroAsZeroMb: true })
+  const formattedAppFootprintMemory = formatMemoryMb(memorySample.appFootprintMb)
   const formattedTotalPrivateMemory = formatMemoryMb(memorySample.totalPrivateMb)
   const formattedTotalMemory = formatMemoryMb(memorySample.totalWorkingSetMb)
-  // Private memory is what the app actually costs; summed working sets count
-  // shared framework pages once per process and can read 2x higher.
-  const formattedHeadlineMemory = memorySample.totalPrivateMb !== null
-    ? formattedTotalPrivateMemory
+  const formattedHeadlineMemory = memorySample.appFootprintMb !== null
+    ? formattedAppFootprintMemory
     : formattedTotalMemory
+  const footprintSourceLabel = formatFootprintSource(memorySample.appFootprintSource)
+  const failedFootprintPids = formatFailedPids(memorySample.appFootprintFailedPids)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
   const appVersionLabel = appBuildInfo?.version ? `v${appBuildInfo.version}` : ''
   const appCommitLabel = appBuildInfo?.shortCommitHash
@@ -269,9 +294,18 @@ export default function TitleBar() {
   const bufferMemoryTitle = `Decoded audio held for playback. Current track: ${formattedCurrentBufferMemory}. Next track (gapless): ${formattedNextBufferMemory}.`
   const mainProcessTitle = `Main (background) process private memory: ${formattedMainProcessMemory}.`
   const helperProcessesTitle = `GPU and system helper processes (working set; private memory is not reported for these): ${formattedHelperProcessesMemory}.`
-  const totalPrivateMemoryTitle = `Memory Astra actually costs: private (unshared) memory of the interface and main processes plus GPU/helper working sets: ${formattedTotalPrivateMemory}.`
-  const totalMemoryTitle = `Total Electron working set across all processes: ${formattedTotalMemory}. Overstates real usage because shared framework pages are counted once per process.`
-  const headlineMemoryTitle = memorySample.totalPrivateMb !== null ? totalPrivateMemoryTitle : totalMemoryTitle
+  const fallbackPrivateMemoryTitle = `Fallback estimate: private memory for measurable processes plus helper working sets: ${formattedTotalPrivateMemory}.`
+  const totalMemoryTitle = `Raw Electron working set across Electron processes: ${formattedTotalMemory}. Overstates app footprint because shared framework pages are counted once per process.`
+  const footprintFallbackDetail = memorySample.appFootprintSource === 'fallback-private-working-set'
+    ? ` ${fallbackPrivateMemoryTitle}`
+    : ''
+  const footprintCompleteness = memorySample.appFootprintComplete === false && failedFootprintPids
+    ? ` Sample incomplete; failed PIDs: ${failedFootprintPids}.`
+    : memorySample.appFootprintComplete === false
+      ? ' Sample used fallback or incomplete process data.'
+      : ''
+  const appFootprintTitle = `App footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}. Raw Electron working set: ${formattedTotalMemory}.${footprintFallbackDetail}${footprintCompleteness}`
+  const headlineMemoryTitle = memorySample.appFootprintMb !== null ? appFootprintTitle : totalMemoryTitle
 
   return (
     <header className="titlebar">
@@ -377,9 +411,9 @@ export default function TitleBar() {
               <span className="titlebar-stats-breakdown-label">GPU &amp; helpers</span>
               <span className="titlebar-stats-breakdown-value">{formattedHelperProcessesMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={totalPrivateMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">Total</span>
-              <span className="titlebar-stats-breakdown-value">{formattedTotalPrivateMemory}</span>
+            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={appFootprintTitle}>
+              <span className="titlebar-stats-breakdown-label">App footprint</span>
+              <span className="titlebar-stats-breakdown-value">{formattedAppFootprintMemory}</span>
             </div>
           </div>
         </div>

@@ -49,6 +49,7 @@ import type {
   DynamicPlaylistRulesV1,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
+import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
@@ -437,6 +438,11 @@ export interface TrackOverrideSnapshot {
 export interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
+  footprintMb: number | null
+  footprintSource: AppMemoryFootprintSource
+  footprintComplete: boolean
+  footprintFailedPids: number[]
+  footprintProcessCount: number
   privateMemoryExcludingCallerMb: number | null
   mainProcessMemoryMb: number | null
   helperProcessesMemoryMb: number | null

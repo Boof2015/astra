@@ -4,6 +4,10 @@ import type {
   MemoryDiagnosticsTitleBarPeakSnapshot,
   MemoryDiagnosticsTitleBarSampleSnapshot
 } from '../../types/diagnostics'
+import {
+  resolveTitleBarAppFootprint,
+  type AppMemoryFootprintSource
+} from '../../shared/processMemoryFootprint'
 import { audioEngine } from '../audio/AudioEngine'
 
 export const BYTES_PER_MB = 1024 * 1024
@@ -12,6 +16,11 @@ export const TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS = 1000
 interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
+  footprintMb: number | null
+  footprintSource: AppMemoryFootprintSource
+  footprintComplete: boolean
+  footprintFailedPids: number[]
+  footprintProcessCount: number
   privateMemoryExcludingCallerMb: number | null
   mainProcessMemoryMb: number | null
   helperProcessesMemoryMb: number | null
@@ -24,6 +33,24 @@ export interface TitleBarPerformanceSample {
 
 function normalizeMb(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : null
+}
+
+function normalizeCount(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null
+}
+
+function normalizePidList(values: number[] | null | undefined): number[] {
+  if (!Array.isArray(values)) return []
+  const pids: number[] = []
+  const seen = new Set<number>()
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    const pid = Math.trunc(value)
+    if (pid <= 0 || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
+  return pids
 }
 
 function bytesToMb(value: number | null | undefined): number | null {
@@ -39,6 +66,11 @@ function fulfilledValue<T>(result: PromiseSettledResult<T>): T | null {
 export function createEmptyTitleBarSample(): MemoryDiagnosticsTitleBarSampleSnapshot {
   return {
     sampledAt: null,
+    appFootprintMb: null,
+    appFootprintSource: null,
+    appFootprintComplete: null,
+    appFootprintFailedPids: [],
+    appFootprintProcessCount: null,
     rendererPrivateMb: null,
     appMemoryMb: null,
     bufferMemoryMb: null,
@@ -64,6 +96,11 @@ export function createEmptyTitleBarSample(): MemoryDiagnosticsTitleBarSampleSnap
 export function createEmptyTitleBarPeaks(): MemoryDiagnosticsTitleBarPeakSnapshot {
   return {
     capturedAt: null,
+    appFootprintMb: null,
+    appFootprintSource: null,
+    appFootprintComplete: null,
+    appFootprintFailedPids: [],
+    appFootprintProcessCount: null,
     rendererPrivateMb: null,
     appMemoryMb: null,
     bufferMemoryMb: null,
@@ -109,6 +146,11 @@ export function buildTitleBarSample(values: {
   mainProcessMemoryMb: number | null
   helperProcessesMemoryMb: number | null
   totalWorkingSetMb: number | null
+  footprintMb: number | null
+  footprintSource: AppMemoryFootprintSource | null
+  footprintComplete: boolean | null
+  footprintFailedPids: number[] | null
+  footprintProcessCount: number | null
   bufferMemoryMb: number | null
   currentBufferMemoryMb: number | null
   nextBufferMemoryMb: number | null
@@ -122,6 +164,12 @@ export function buildTitleBarSample(values: {
   const totalPrivateMb = privateExcludingRendererMb === null || rendererPrivateMb === null
     ? null
     : privateExcludingRendererMb + rendererPrivateMb
+  const appFootprint = resolveTitleBarAppFootprint({
+    measuredFootprintMb: values.footprintMb,
+    measuredSource: values.footprintSource,
+    measuredComplete: values.footprintComplete,
+    fallbackPrivateMb: totalPrivateMb
+  })
   const totalWorkingSetMb = normalizeMb(values.totalWorkingSetMb)
   const appMemoryMb = rendererPrivateMb === null || bufferMemoryMb === null
     ? null
@@ -132,6 +180,11 @@ export function buildTitleBarSample(values: {
 
   return {
     sampledAt: values.sampledAt,
+    appFootprintMb: appFootprint.appFootprintMb,
+    appFootprintSource: appFootprint.appFootprintSource,
+    appFootprintComplete: appFootprint.appFootprintComplete,
+    appFootprintFailedPids: normalizePidList(values.footprintFailedPids),
+    appFootprintProcessCount: normalizeCount(values.footprintProcessCount),
     rendererPrivateMb,
     appMemoryMb,
     bufferMemoryMb,
@@ -160,6 +213,10 @@ function maxNullable(current: number | null, next: number | null): number | null
   return next > current ? next : current
 }
 
+type NumericTitleBarPeakKey = Exclude<{
+  [Key in keyof MemoryDiagnosticsTitleBarPeakSnapshot]: MemoryDiagnosticsTitleBarPeakSnapshot[Key] extends number | null ? Key : never
+}[keyof MemoryDiagnosticsTitleBarPeakSnapshot], 'capturedAt'>
+
 export function updateTitleBarPeaks(
   current: MemoryDiagnosticsTitleBarPeakSnapshot,
   sample: MemoryDiagnosticsTitleBarSampleSnapshot
@@ -167,6 +224,11 @@ export function updateTitleBarPeaks(
   let capturedAt = current.capturedAt
   const next: MemoryDiagnosticsTitleBarPeakSnapshot = {
     capturedAt,
+    appFootprintMb: current.appFootprintMb,
+    appFootprintSource: current.appFootprintSource,
+    appFootprintComplete: current.appFootprintComplete,
+    appFootprintFailedPids: [...current.appFootprintFailedPids],
+    appFootprintProcessCount: current.appFootprintProcessCount,
     rendererPrivateMb: current.rendererPrivateMb,
     appMemoryMb: current.appMemoryMb,
     bufferMemoryMb: current.bufferMemoryMb,
@@ -189,17 +251,25 @@ export function updateTitleBarPeaks(
   }
 
   const applyPeak = (
-    key: Exclude<keyof MemoryDiagnosticsTitleBarPeakSnapshot, 'capturedAt'>,
+    key: NumericTitleBarPeakKey,
     value: number | null
-  ) => {
+  ): boolean => {
     const previous = next[key]
     const peak = maxNullable(previous, value)
     next[key] = peak
     if (peak !== previous && sample.sampledAt !== null) {
       capturedAt = sample.sampledAt
+      return true
     }
+    return false
   }
 
+  if (applyPeak('appFootprintMb', sample.appFootprintMb)) {
+    next.appFootprintSource = sample.appFootprintSource
+    next.appFootprintComplete = sample.appFootprintComplete
+    next.appFootprintFailedPids = [...sample.appFootprintFailedPids]
+    next.appFootprintProcessCount = sample.appFootprintProcessCount
+  }
   applyPeak('rendererPrivateMb', sample.rendererPrivateMb)
   applyPeak('appMemoryMb', sample.appMemoryMb)
   applyPeak('bufferMemoryMb', sample.bufferMemoryMb)
@@ -232,6 +302,11 @@ export function createTitleBarPeaksFromSample(
   }
   return {
     capturedAt: sample.sampledAt,
+    appFootprintMb: sample.appFootprintMb,
+    appFootprintSource: sample.appFootprintSource,
+    appFootprintComplete: sample.appFootprintComplete,
+    appFootprintFailedPids: [...sample.appFootprintFailedPids],
+    appFootprintProcessCount: sample.appFootprintProcessCount,
     rendererPrivateMb: sample.rendererPrivateMb,
     appMemoryMb: sample.appMemoryMb,
     bufferMemoryMb: sample.bufferMemoryMb,
@@ -284,6 +359,11 @@ export async function captureTitleBarPerformanceSample(): Promise<TitleBarPerfor
       mainProcessMemoryMb: appStats?.mainProcessMemoryMb ?? null,
       helperProcessesMemoryMb: appStats?.helperProcessesMemoryMb ?? null,
       totalWorkingSetMb: appStats?.workingSetMb ?? null,
+      footprintMb: appStats?.footprintMb ?? null,
+      footprintSource: appStats?.footprintSource ?? null,
+      footprintComplete: appStats?.footprintComplete ?? null,
+      footprintFailedPids: appStats?.footprintFailedPids ?? null,
+      footprintProcessCount: appStats?.footprintProcessCount ?? null,
       rendererPrivateMb: rendererMemory?.privateMb ?? null,
       rendererHeapUsedBytes: rendererMemory?.heapUsedBytes ?? null,
       rendererExternalBytes: rendererMemory?.externalBytes ?? null,

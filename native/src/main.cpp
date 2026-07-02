@@ -12,6 +12,7 @@
 #include "lufsmeter.h"
 #include "playback_engine.h"
 #include "parallax_loopback.h"
+#include "process_memory.h"
 
 // Global instances (we could make these per-instance if needed)
 static Visualizer::Oscilloscope oscilloscope;
@@ -1157,6 +1158,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // §22 Commit 1 — Parallax loopback capture. Windows-only behavior; stubbed on
     // macOS/Linux so the JS surface is platform-uniform (renderer just sees `supported: false`).
     exports.Set("parallaxLoopback", ParallaxLoopback::Register(env));
+    exports.Set("processMemory", ProcessMemory::Register(env));
 
     return exports;
 }

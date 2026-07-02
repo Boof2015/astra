@@ -68,6 +68,7 @@ import { ParallaxSinkListener } from './services/parallaxSinkListener'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
+import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MAX_HEIGHT,
@@ -533,6 +534,19 @@ const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgres
 const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
+
+function getActiveMemoryFootprintChildProcessPids(): number[] {
+  const pids: number[] = []
+  const seen = new Set<number>()
+  for (const session of remoteStreamSessions.values()) {
+    if (session.done || session.cancelled) continue
+    const pid = session.ffmpeg.pid
+    if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
+  return pids
+}
 
 interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
@@ -4767,6 +4781,11 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
   const metrics = app.getAppMetrics()
   const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
   const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
+  const memoryFootprint = collectAppMemoryFootprint({
+    metrics,
+    extraPids: getActiveMemoryFootprintChildProcessPids(),
+    rawWorkingSetMb: totalWorkingSetKb / 1024
+  })
 
   // Working sets double-count framework pages shared between Electron
   // processes, so their sum badly overstates what the app actually costs.
@@ -4816,6 +4835,11 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
   return {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
+    footprintMb: memoryFootprint.footprintMb,
+    footprintSource: memoryFootprint.footprintSource,
+    footprintComplete: memoryFootprint.footprintComplete,
+    footprintFailedPids: memoryFootprint.footprintFailedPids,
+    footprintProcessCount: memoryFootprint.footprintProcessCount,
     privateMemoryExcludingCallerMb: privateExcludingCallerKb === null
       ? null
       : privateExcludingCallerKb / 1024,

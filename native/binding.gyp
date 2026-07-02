@@ -20,7 +20,8 @@
         "src/coreaudio_hal_sink.cpp",
         "src/alsa_hw_sink.cpp",
         "src/wasapi_exclusive_sink.cpp",
-        "src/parallax_loopback.cpp"
+        "src/parallax_loopback.cpp",
+        "src/process_memory.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -54,7 +55,8 @@
               "Ole32.lib",
               "Avrt.lib",
               "Mmdevapi.lib",
-              "Uuid.lib"
+              "Uuid.lib",
+              "Psapi.lib"
             ]
           }
         }],

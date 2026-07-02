@@ -1,5 +1,6 @@
 import type { PlaybackOutputMode } from './nativeAudio'
 import type { ScopeKind, ScopePopoutState } from './scopePopout'
+import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 
 export type MemoryDiagnosticsSnapshotReason = 'timer' | 'event' | 'startup'
 
@@ -145,6 +146,11 @@ export interface MemoryDiagnosticsUserAgentSpecificMemorySnapshot {
 
 export interface MemoryDiagnosticsTitleBarSampleSnapshot {
   sampledAt: number | null
+  appFootprintMb: number | null
+  appFootprintSource: AppMemoryFootprintSource | null
+  appFootprintComplete: boolean | null
+  appFootprintFailedPids: number[]
+  appFootprintProcessCount: number | null
   rendererPrivateMb: number | null
   appMemoryMb: number | null
   bufferMemoryMb: number | null
@@ -168,6 +174,11 @@ export interface MemoryDiagnosticsTitleBarSampleSnapshot {
 
 export interface MemoryDiagnosticsTitleBarPeakSnapshot {
   capturedAt: number | null
+  appFootprintMb: number | null
+  appFootprintSource: AppMemoryFootprintSource | null
+  appFootprintComplete: boolean | null
+  appFootprintFailedPids: number[]
+  appFootprintProcessCount: number | null
   rendererPrivateMb: number | null
   appMemoryMb: number | null
   bufferMemoryMb: number | null
