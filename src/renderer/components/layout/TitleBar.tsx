@@ -303,8 +303,11 @@ export default function TitleBar() {
   const helperProcessesTitle = `GPU and system helper processes (working set; private memory is not reported for these): ${formattedHelperProcessesMemory}.`
   const childProcessFootprintTitle = `External child processes started by Astra, such as active ffmpeg decoders: ${formattedChildProcessFootprintMemory}.`
   const combinedFootprintTitle = `Astra process group plus external child processes: ${formattedCombinedFootprintMemory}.`
-  const fallbackPrivateMemoryTitle = `Fallback estimate: private memory for measurable processes plus helper working sets: ${formattedTotalPrivateMemory}.`
+  const fallbackPrivateMemoryTitle = `Private-memory estimate: measurable process private memory plus helper working sets: ${formattedTotalPrivateMemory}.`
   const totalMemoryTitle = `Raw Electron working set across Electron processes: ${formattedTotalMemory}. Overstates app footprint because shared framework pages are counted once per process.`
+  const appFootprintIntro = memorySample.appFootprintSource === 'fallback-private-working-set'
+    ? `Astra private-process memory estimate: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}.`
+    : `Astra process-group footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}.`
   const footprintFallbackDetail = memorySample.appFootprintSource === 'fallback-private-working-set'
     ? ` ${fallbackPrivateMemoryTitle}`
     : ''
@@ -316,7 +319,7 @@ export default function TitleBar() {
     : memorySample.appFootprintComplete === false
       ? ' Sample used fallback or incomplete process data.'
       : ''
-  const appFootprintTitle = `Astra process-group footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}. Raw Electron working set: ${formattedTotalMemory}.${childFootprintDetail}${footprintFallbackDetail}${footprintCompleteness}`
+  const appFootprintTitle = `${appFootprintIntro} Raw Electron working set: ${formattedTotalMemory}.${childFootprintDetail}${footprintFallbackDetail}${footprintCompleteness}`
   const headlineMemoryTitle = memorySample.appFootprintMb !== null ? appFootprintTitle : totalMemoryTitle
 
   return (

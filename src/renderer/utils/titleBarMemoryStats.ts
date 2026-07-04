@@ -178,18 +178,24 @@ export function buildTitleBarSample(values: {
   const totalPrivateMb = privateExcludingRendererMb === null || rendererPrivateMb === null
     ? null
     : privateExcludingRendererMb + rendererPrivateMb
-  const combinedFootprintMb = normalizeMb(values.footprintMb)
+  const measuredCombinedFootprintMb = normalizeMb(values.footprintMb)
   const appProcessFootprintMb = normalizeMb(values.appProcessFootprintMb)
   const footprintAppProcessCount = normalizeCount(values.footprintAppProcessCount) ?? normalizeCount(values.footprintProcessCount)
   const footprintChildProcessCount = normalizeCount(values.footprintChildProcessCount)
   const childProcessFootprintMb = normalizeMb(values.childProcessFootprintMb)
     ?? (footprintChildProcessCount === 0 ? 0 : null)
   const appFootprint = resolveTitleBarAppFootprint({
-    measuredFootprintMb: appProcessFootprintMb ?? combinedFootprintMb,
+    measuredFootprintMb: appProcessFootprintMb ?? measuredCombinedFootprintMb,
     measuredSource: values.footprintSource,
     measuredComplete: values.footprintComplete,
     fallbackPrivateMb: totalPrivateMb
   })
+  const hasExpectedChildProcesses = footprintChildProcessCount !== null && footprintChildProcessCount > 0
+  const combinedFootprintMb = appFootprint.appFootprintMb === null
+    ? measuredCombinedFootprintMb
+    : childProcessFootprintMb === null
+      ? hasExpectedChildProcesses ? null : appFootprint.appFootprintMb
+      : appFootprint.appFootprintMb + childProcessFootprintMb
   const totalWorkingSetMb = normalizeMb(values.totalWorkingSetMb)
   const appMemoryMb = rendererPrivateMb === null || bufferMemoryMb === null
     ? null

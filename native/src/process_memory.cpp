@@ -78,92 +78,6 @@ bool TryGetPrivateWorkingSetFromCounters(HANDLE process, uint64_t& bytes) {
     bytes = static_cast<uint64_t>(counters.PrivateWorkingSetSize);
     return true;
 }
-
-bool IsQueryableCommittedRegion(const MEMORY_BASIC_INFORMATION& memory) {
-    if (memory.State != MEM_COMMIT) {
-        return false;
-    }
-    if ((memory.Protect & PAGE_GUARD) != 0 || (memory.Protect & PAGE_NOACCESS) != 0) {
-        return false;
-    }
-    return true;
-}
-
-bool TryGetPrivateWorkingSetFromPages(HANDLE process, uint64_t& bytes, std::string& error) {
-    SYSTEM_INFO systemInfo {};
-    GetSystemInfo(&systemInfo);
-    const uintptr_t pageSize = static_cast<uintptr_t>(systemInfo.dwPageSize);
-    if (pageSize == 0) {
-        error = "Unable to determine system page size.";
-        return false;
-    }
-
-    constexpr uintptr_t kMaxAddress = static_cast<uintptr_t>(~uintptr_t{0});
-    constexpr size_t kMaxPagesPerQuery = 4096;
-    uintptr_t address = 0;
-    uint64_t totalBytes = 0;
-    bool queriedAnyPages = false;
-
-    while (address < kMaxAddress) {
-        MEMORY_BASIC_INFORMATION memory {};
-        const SIZE_T queriedBytes = VirtualQueryEx(
-            process,
-            reinterpret_cast<LPCVOID>(address),
-            &memory,
-            sizeof(memory)
-        );
-        if (queriedBytes == 0) {
-            break;
-        }
-
-        const uintptr_t baseAddress = reinterpret_cast<uintptr_t>(memory.BaseAddress);
-        const uintptr_t regionSize = static_cast<uintptr_t>(memory.RegionSize);
-        const uintptr_t nextAddress = baseAddress + regionSize;
-        if (IsQueryableCommittedRegion(memory) && regionSize > 0) {
-            const size_t pageCount = static_cast<size_t>((regionSize + pageSize - 1) / pageSize);
-            size_t pageOffset = 0;
-            while (pageOffset < pageCount) {
-                const size_t batchCount = std::min(kMaxPagesPerQuery, pageCount - pageOffset);
-                std::vector<PSAPI_WORKING_SET_EX_INFORMATION> pages(batchCount);
-                for (size_t index = 0; index < batchCount; index++) {
-                    const uintptr_t pageAddress = baseAddress + ((pageOffset + index) * pageSize);
-                    pages[index].VirtualAddress = reinterpret_cast<PVOID>(pageAddress);
-                }
-
-                if (!QueryWorkingSetEx(
-                    process,
-                    pages.data(),
-                    static_cast<DWORD>(pages.size() * sizeof(PSAPI_WORKING_SET_EX_INFORMATION))
-                )) {
-                    error = "Unable to query process working-set pages.";
-                    return false;
-                }
-
-                queriedAnyPages = true;
-                for (const auto& page : pages) {
-                    if (page.VirtualAttributes.Valid && !page.VirtualAttributes.Shared) {
-                        totalBytes += pageSize;
-                    }
-                }
-
-                pageOffset += batchCount;
-            }
-        }
-
-        if (nextAddress <= address || nextAddress <= baseAddress) {
-            break;
-        }
-        address = nextAddress;
-    }
-
-    if (!queriedAnyPages) {
-        error = "No committed working-set pages were queryable.";
-        return false;
-    }
-
-    bytes = totalBytes;
-    return true;
-}
 #endif
 
 #if defined(__linux__)
@@ -263,13 +177,9 @@ ProcessFootprint MeasureProcessFootprint(int pid) {
     }
 
     uint64_t privateWorkingSetBytes = 0;
-    std::string workingSetError;
-    if (
-        !TryGetPrivateWorkingSetFromCounters(process, privateWorkingSetBytes)
-        && !TryGetPrivateWorkingSetFromPages(process, privateWorkingSetBytes, workingSetError)
-    ) {
+    if (!TryGetPrivateWorkingSetFromCounters(process, privateWorkingSetBytes)) {
         CloseHandle(process);
-        result.error = workingSetError.empty() ? "Unable to query process private working set." : workingSetError;
+        result.error = "Unable to query process private working set counters.";
         return result;
     }
 

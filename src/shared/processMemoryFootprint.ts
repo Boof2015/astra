@@ -203,15 +203,21 @@ export function resolveTitleBarAppFootprint(values: {
   fallbackPrivateMb: number | null | undefined
 }): TitleBarAppFootprintResolution {
   const measuredFootprintMb = normalizeMb(values.measuredFootprintMb)
-  if (measuredFootprintMb !== null) {
+  const measuredSource = values.measuredSource ?? 'unavailable'
+  const measuredComplete = values.measuredComplete ?? null
+  const fallbackPrivateMb = normalizeMb(values.fallbackPrivateMb)
+  const measuredIsPreferred =
+    measuredFootprintMb !== null
+    && measuredComplete === true
+
+  if (measuredIsPreferred) {
     return {
       appFootprintMb: measuredFootprintMb,
-      appFootprintSource: values.measuredSource ?? 'unavailable',
-      appFootprintComplete: values.measuredComplete ?? null
+      appFootprintSource: measuredSource,
+      appFootprintComplete: measuredComplete
     }
   }
 
-  const fallbackPrivateMb = normalizeMb(values.fallbackPrivateMb)
   if (fallbackPrivateMb !== null) {
     return {
       appFootprintMb: fallbackPrivateMb,
@@ -220,9 +226,17 @@ export function resolveTitleBarAppFootprint(values: {
     }
   }
 
+  if (measuredFootprintMb !== null) {
+    return {
+      appFootprintMb: measuredFootprintMb,
+      appFootprintSource: measuredSource,
+      appFootprintComplete: measuredComplete
+    }
+  }
+
   return {
     appFootprintMb: null,
     appFootprintSource: values.measuredSource ?? null,
-    appFootprintComplete: values.measuredComplete ?? null
+    appFootprintComplete: measuredComplete
   }
 }

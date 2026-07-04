@@ -93,18 +93,65 @@ test('creates an unavailable summary when the native helper is missing', () => {
   assert.equal(summary.footprintRawWorkingSetMb, 128)
 })
 
-test('title bar footprint resolution prefers measured footprint over fallback totals', () => {
+test('title bar footprint resolution prefers complete macos and linux measured footprint over fallback totals', () => {
+  for (const source of ['macos-private-resident', 'linux-pss'] as const) {
+    const resolution = resolveTitleBarAppFootprint({
+      measuredFootprintMb: 420,
+      measuredSource: source,
+      measuredComplete: true,
+      fallbackPrivateMb: 900
+    })
+
+    assert.deepEqual(resolution, {
+      appFootprintMb: 420,
+      appFootprintSource: source,
+      appFootprintComplete: true
+    })
+  }
+})
+
+test('title bar footprint resolution prefers complete windows native footprint over fallback totals', () => {
   const resolution = resolveTitleBarAppFootprint({
     measuredFootprintMb: 420,
     measuredSource: 'windows-private-working-set',
     measuredComplete: true,
-    fallbackPrivateMb: 900
+    fallbackPrivateMb: 800
   })
 
   assert.deepEqual(resolution, {
     appFootprintMb: 420,
     appFootprintSource: 'windows-private-working-set',
     appFootprintComplete: true
+  })
+})
+
+test('title bar footprint resolution falls back when the windows native footprint is incomplete', () => {
+  const resolution = resolveTitleBarAppFootprint({
+    measuredFootprintMb: 420,
+    measuredSource: 'windows-private-working-set',
+    measuredComplete: false,
+    fallbackPrivateMb: 800
+  })
+
+  assert.deepEqual(resolution, {
+    appFootprintMb: 800,
+    appFootprintSource: 'fallback-private-working-set',
+    appFootprintComplete: false
+  })
+})
+
+test('title bar footprint resolution prefers private hybrid over incomplete native footprint', () => {
+  const resolution = resolveTitleBarAppFootprint({
+    measuredFootprintMb: 420,
+    measuredSource: 'macos-private-resident',
+    measuredComplete: false,
+    fallbackPrivateMb: 256
+  })
+
+  assert.deepEqual(resolution, {
+    appFootprintMb: 256,
+    appFootprintSource: 'fallback-private-working-set',
+    appFootprintComplete: false
   })
 })
 
@@ -120,5 +167,20 @@ test('title bar footprint resolution falls back to the legacy private working-se
     appFootprintMb: 256,
     appFootprintSource: 'fallback-private-working-set',
     appFootprintComplete: false
+  })
+})
+
+test('title bar footprint resolution uses measured footprint when no fallback exists', () => {
+  const resolution = resolveTitleBarAppFootprint({
+    measuredFootprintMb: 420,
+    measuredSource: 'windows-private-working-set',
+    measuredComplete: true,
+    fallbackPrivateMb: null
+  })
+
+  assert.deepEqual(resolution, {
+    appFootprintMb: 420,
+    appFootprintSource: 'windows-private-working-set',
+    appFootprintComplete: true
   })
 })
