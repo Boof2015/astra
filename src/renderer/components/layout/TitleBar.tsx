@@ -41,8 +41,8 @@ function formatFootprintSource(source: AppMemoryFootprintSource | null): string 
       return 'Linux PSS'
     case 'macos-private-resident':
       return 'macOS private resident'
-    case 'windows-private-usage':
-      return 'Windows private usage'
+    case 'windows-private-working-set':
+      return 'Windows private working set'
     case 'fallback-private-working-set':
       return 'fallback private/working-set hybrid'
     case 'unavailable':

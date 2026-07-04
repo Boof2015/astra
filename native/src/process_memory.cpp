@@ -1,5 +1,6 @@
 #include "process_memory.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -36,11 +37,134 @@ const char* PlatformSource() {
 #elif defined(__APPLE__)
     return "macos-private-resident";
 #elif defined(_WIN32)
-    return "windows-private-usage";
+    return "windows-private-working-set";
 #else
     return "unavailable";
 #endif
 }
+
+#if defined(_WIN32)
+struct AstraProcessMemoryCountersEx2 {
+    DWORD cb;
+    DWORD PageFaultCount;
+    SIZE_T PeakWorkingSetSize;
+    SIZE_T WorkingSetSize;
+    SIZE_T QuotaPeakPagedPoolUsage;
+    SIZE_T QuotaPagedPoolUsage;
+    SIZE_T QuotaPeakNonPagedPoolUsage;
+    SIZE_T QuotaNonPagedPoolUsage;
+    SIZE_T PagefileUsage;
+    SIZE_T PeakPagefileUsage;
+    SIZE_T PrivateUsage;
+    SIZE_T PrivateWorkingSetSize;
+    ULONG64 SharedCommitUsage;
+};
+
+bool TryGetPrivateWorkingSetFromCounters(HANDLE process, uint64_t& bytes) {
+    AstraProcessMemoryCountersEx2 counters {};
+    counters.cb = sizeof(counters);
+    if (!GetProcessMemoryInfo(
+        process,
+        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+        sizeof(counters)
+    )) {
+        return false;
+    }
+
+    if (counters.PrivateWorkingSetSize == 0 && counters.WorkingSetSize > 0 && counters.PrivateUsage > 0) {
+        return false;
+    }
+
+    bytes = static_cast<uint64_t>(counters.PrivateWorkingSetSize);
+    return true;
+}
+
+bool IsQueryableCommittedRegion(const MEMORY_BASIC_INFORMATION& memory) {
+    if (memory.State != MEM_COMMIT) {
+        return false;
+    }
+    if ((memory.Protect & PAGE_GUARD) != 0 || (memory.Protect & PAGE_NOACCESS) != 0) {
+        return false;
+    }
+    return true;
+}
+
+bool TryGetPrivateWorkingSetFromPages(HANDLE process, uint64_t& bytes, std::string& error) {
+    SYSTEM_INFO systemInfo {};
+    GetSystemInfo(&systemInfo);
+    const uintptr_t pageSize = static_cast<uintptr_t>(systemInfo.dwPageSize);
+    if (pageSize == 0) {
+        error = "Unable to determine system page size.";
+        return false;
+    }
+
+    constexpr uintptr_t kMaxAddress = static_cast<uintptr_t>(~uintptr_t{0});
+    constexpr size_t kMaxPagesPerQuery = 4096;
+    uintptr_t address = 0;
+    uint64_t totalBytes = 0;
+    bool queriedAnyPages = false;
+
+    while (address < kMaxAddress) {
+        MEMORY_BASIC_INFORMATION memory {};
+        const SIZE_T queriedBytes = VirtualQueryEx(
+            process,
+            reinterpret_cast<LPCVOID>(address),
+            &memory,
+            sizeof(memory)
+        );
+        if (queriedBytes == 0) {
+            break;
+        }
+
+        const uintptr_t baseAddress = reinterpret_cast<uintptr_t>(memory.BaseAddress);
+        const uintptr_t regionSize = static_cast<uintptr_t>(memory.RegionSize);
+        const uintptr_t nextAddress = baseAddress + regionSize;
+        if (IsQueryableCommittedRegion(memory) && regionSize > 0) {
+            const size_t pageCount = static_cast<size_t>((regionSize + pageSize - 1) / pageSize);
+            size_t pageOffset = 0;
+            while (pageOffset < pageCount) {
+                const size_t batchCount = std::min(kMaxPagesPerQuery, pageCount - pageOffset);
+                std::vector<PSAPI_WORKING_SET_EX_INFORMATION> pages(batchCount);
+                for (size_t index = 0; index < batchCount; index++) {
+                    const uintptr_t pageAddress = baseAddress + ((pageOffset + index) * pageSize);
+                    pages[index].VirtualAddress = reinterpret_cast<PVOID>(pageAddress);
+                }
+
+                if (!QueryWorkingSetEx(
+                    process,
+                    pages.data(),
+                    static_cast<DWORD>(pages.size() * sizeof(PSAPI_WORKING_SET_EX_INFORMATION))
+                )) {
+                    error = "Unable to query process working-set pages.";
+                    return false;
+                }
+
+                queriedAnyPages = true;
+                for (const auto& page : pages) {
+                    if (page.VirtualAttributes.Valid && !page.VirtualAttributes.Shared) {
+                        totalBytes += pageSize;
+                    }
+                }
+
+                pageOffset += batchCount;
+            }
+        }
+
+        if (nextAddress <= address || nextAddress <= baseAddress) {
+            break;
+        }
+        address = nextAddress;
+    }
+
+    if (!queriedAnyPages) {
+        error = "No committed working-set pages were queryable.";
+        return false;
+    }
+
+    bytes = totalBytes;
+    return true;
+}
+#endif
 
 #if defined(__linux__)
 bool ParseKilobyteLine(const std::string& line, const char* key, uint64_t& bytes) {
@@ -132,23 +256,26 @@ ProcessFootprint MeasureProcessFootprint(int pid) {
     result.bytes = totalBytes;
     return result;
 #elif defined(_WIN32)
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, static_cast<DWORD>(pid));
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, static_cast<DWORD>(pid));
     if (process == nullptr) {
         result.error = "Unable to open process.";
         return result;
     }
 
-    PROCESS_MEMORY_COUNTERS_EX counters {};
-    counters.cb = sizeof(counters);
-    if (!GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) {
+    uint64_t privateWorkingSetBytes = 0;
+    std::string workingSetError;
+    if (
+        !TryGetPrivateWorkingSetFromCounters(process, privateWorkingSetBytes)
+        && !TryGetPrivateWorkingSetFromPages(process, privateWorkingSetBytes, workingSetError)
+    ) {
         CloseHandle(process);
-        result.error = "Unable to query process memory counters.";
+        result.error = workingSetError.empty() ? "Unable to query process private working set." : workingSetError;
         return result;
     }
 
     CloseHandle(process);
     result.ok = true;
-    result.bytes = static_cast<uint64_t>(counters.PrivateUsage);
+    result.bytes = privateWorkingSetBytes;
     return result;
 #else
     result.error = "Process memory footprint is unsupported on this platform.";

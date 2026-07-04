@@ -64,14 +64,14 @@ test('creates an unavailable summary when the native helper is missing', () => {
 test('title bar footprint resolution prefers measured footprint over fallback totals', () => {
   const resolution = resolveTitleBarAppFootprint({
     measuredFootprintMb: 420,
-    measuredSource: 'windows-private-usage',
+    measuredSource: 'windows-private-working-set',
     measuredComplete: true,
     fallbackPrivateMb: 900
   })
 
   assert.deepEqual(resolution, {
     appFootprintMb: 420,
-    appFootprintSource: 'windows-private-usage',
+    appFootprintSource: 'windows-private-working-set',
     appFootprintComplete: true
   })
 })

@@ -3,7 +3,7 @@ const BYTES_PER_MB = 1024 * 1024
 export type AppMemoryFootprintSource =
   | 'linux-pss'
   | 'macos-private-resident'
-  | 'windows-private-usage'
+  | 'windows-private-working-set'
   | 'fallback-private-working-set'
   | 'unavailable'
 
