@@ -4836,10 +4836,14 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
     footprintMb: memoryFootprint.footprintMb,
+    appProcessFootprintMb: memoryFootprint.appProcessFootprintMb,
+    childProcessFootprintMb: memoryFootprint.childProcessFootprintMb,
     footprintSource: memoryFootprint.footprintSource,
     footprintComplete: memoryFootprint.footprintComplete,
     footprintFailedPids: memoryFootprint.footprintFailedPids,
     footprintProcessCount: memoryFootprint.footprintProcessCount,
+    footprintAppProcessCount: memoryFootprint.footprintAppProcessCount,
+    footprintChildProcessCount: memoryFootprint.footprintChildProcessCount,
     privateMemoryExcludingCallerMb: privateExcludingCallerKb === null
       ? null
       : privateExcludingCallerKb / 1024,

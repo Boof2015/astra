@@ -24,11 +24,41 @@ test('summarizes successful native process footprint samples', () => {
   const summary = summarizeNativeProcessMemoryFootprints(result, [100, 101], 2048)
 
   assert.equal(summary.footprintMb, 3)
+  assert.equal(summary.appProcessFootprintMb, 3)
+  assert.equal(summary.childProcessFootprintMb, null)
   assert.equal(summary.footprintSource, 'linux-pss')
   assert.equal(summary.footprintComplete, true)
   assert.deepEqual(summary.footprintFailedPids, [])
   assert.equal(summary.footprintProcessCount, 2)
+  assert.equal(summary.footprintAppProcessCount, 2)
+  assert.equal(summary.footprintChildProcessCount, 0)
   assert.equal(summary.footprintRawWorkingSetMb, 2048)
+})
+
+test('separates app process footprint from child process footprint', () => {
+  const result: NativeProcessMemoryFootprintsResult = {
+    source: 'windows-private-working-set',
+    totalBytes: 10 * MB,
+    complete: true,
+    failedPids: [],
+    processes: [
+      { pid: 100, source: 'windows-private-working-set', ok: true, bytes: MB },
+      { pid: 101, source: 'windows-private-working-set', ok: true, bytes: 2 * MB },
+      { pid: 200, source: 'windows-private-working-set', ok: true, bytes: 7 * MB }
+    ]
+  }
+
+  const summary = summarizeNativeProcessMemoryFootprints(result, [100, 101, 200], 2048, {
+    appPids: [100, 101],
+    childPids: [200]
+  })
+
+  assert.equal(summary.footprintMb, 10)
+  assert.equal(summary.appProcessFootprintMb, 3)
+  assert.equal(summary.childProcessFootprintMb, 7)
+  assert.equal(summary.footprintProcessCount, 3)
+  assert.equal(summary.footprintAppProcessCount, 2)
+  assert.equal(summary.footprintChildProcessCount, 1)
 })
 
 test('keeps partial footprint samples and reports failed or missing pids', () => {
@@ -55,6 +85,8 @@ test('creates an unavailable summary when the native helper is missing', () => {
   const summary = createUnavailableAppMemoryFootprintSummary([300, 300, 301], 128)
 
   assert.equal(summary.footprintMb, null)
+  assert.equal(summary.appProcessFootprintMb, null)
+  assert.equal(summary.childProcessFootprintMb, null)
   assert.equal(summary.footprintSource, 'unavailable')
   assert.equal(summary.footprintComplete, false)
   assert.deepEqual(summary.footprintFailedPids, [300, 301])

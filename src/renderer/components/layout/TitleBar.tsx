@@ -258,11 +258,18 @@ export default function TitleBar() {
   const formattedCurrentBufferMemory = formatMemoryMb(memorySample.currentBufferMemoryMb, { zeroAsZeroMb: true })
   const formattedNextBufferMemory = formatMemoryMb(memorySample.nextBufferMemoryMb, { zeroAsZeroMb: true })
   const formattedAppFootprintMemory = formatMemoryMb(memorySample.appFootprintMb)
+  const formattedChildProcessFootprintMemory = formatMemoryMb(memorySample.childProcessFootprintMb, { zeroAsZeroMb: true })
+  const formattedCombinedFootprintMemory = formatMemoryMb(memorySample.combinedFootprintMb)
   const formattedTotalPrivateMemory = formatMemoryMb(memorySample.totalPrivateMb)
   const formattedTotalMemory = formatMemoryMb(memorySample.totalWorkingSetMb)
   const formattedHeadlineMemory = memorySample.appFootprintMb !== null
     ? formattedAppFootprintMemory
     : formattedTotalMemory
+  const hasChildProcessFootprint = (
+    memorySample.appFootprintChildProcessCount !== null && memorySample.appFootprintChildProcessCount > 0
+  ) || (
+    memorySample.childProcessFootprintMb !== null && memorySample.childProcessFootprintMb > 0
+  )
   const footprintSourceLabel = formatFootprintSource(memorySample.appFootprintSource)
   const failedFootprintPids = formatFailedPids(memorySample.appFootprintFailedPids)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
@@ -294,17 +301,22 @@ export default function TitleBar() {
   const bufferMemoryTitle = `Decoded audio held for playback. Current track: ${formattedCurrentBufferMemory}. Next track (gapless): ${formattedNextBufferMemory}.`
   const mainProcessTitle = `Main (background) process private memory: ${formattedMainProcessMemory}.`
   const helperProcessesTitle = `GPU and system helper processes (working set; private memory is not reported for these): ${formattedHelperProcessesMemory}.`
+  const childProcessFootprintTitle = `External child processes started by Astra, such as active ffmpeg decoders: ${formattedChildProcessFootprintMemory}.`
+  const combinedFootprintTitle = `Astra process group plus external child processes: ${formattedCombinedFootprintMemory}.`
   const fallbackPrivateMemoryTitle = `Fallback estimate: private memory for measurable processes plus helper working sets: ${formattedTotalPrivateMemory}.`
   const totalMemoryTitle = `Raw Electron working set across Electron processes: ${formattedTotalMemory}. Overstates app footprint because shared framework pages are counted once per process.`
   const footprintFallbackDetail = memorySample.appFootprintSource === 'fallback-private-working-set'
     ? ` ${fallbackPrivateMemoryTitle}`
+    : ''
+  const childFootprintDetail = hasChildProcessFootprint
+    ? ` Child processes: ${formattedChildProcessFootprintMemory}. Combined app responsibility: ${formattedCombinedFootprintMemory}.`
     : ''
   const footprintCompleteness = memorySample.appFootprintComplete === false && failedFootprintPids
     ? ` Sample incomplete; failed PIDs: ${failedFootprintPids}.`
     : memorySample.appFootprintComplete === false
       ? ' Sample used fallback or incomplete process data.'
       : ''
-  const appFootprintTitle = `App footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}. Raw Electron working set: ${formattedTotalMemory}.${footprintFallbackDetail}${footprintCompleteness}`
+  const appFootprintTitle = `Astra process-group footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}. Raw Electron working set: ${formattedTotalMemory}.${childFootprintDetail}${footprintFallbackDetail}${footprintCompleteness}`
   const headlineMemoryTitle = memorySample.appFootprintMb !== null ? appFootprintTitle : totalMemoryTitle
 
   return (
@@ -412,9 +424,21 @@ export default function TitleBar() {
               <span className="titlebar-stats-breakdown-value">{formattedHelperProcessesMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={appFootprintTitle}>
-              <span className="titlebar-stats-breakdown-label">App footprint</span>
+              <span className="titlebar-stats-breakdown-label">Astra processes</span>
               <span className="titlebar-stats-breakdown-value">{formattedAppFootprintMemory}</span>
             </div>
+            {hasChildProcessFootprint && (
+              <>
+                <div className="titlebar-stats-breakdown-row" title={childProcessFootprintTitle}>
+                  <span className="titlebar-stats-breakdown-label">Child processes</span>
+                  <span className="titlebar-stats-breakdown-value">{formattedChildProcessFootprintMemory}</span>
+                </div>
+                <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={combinedFootprintTitle}>
+                  <span className="titlebar-stats-breakdown-label">Combined</span>
+                  <span className="titlebar-stats-breakdown-value">{formattedCombinedFootprintMemory}</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 

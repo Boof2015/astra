@@ -278,7 +278,7 @@ declare global {
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppBuildInfo: () => Promise<AppBuildInfo>
-            getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number; footprintMb: number | null; footprintSource: import('../shared/processMemoryFootprint').AppMemoryFootprintSource; footprintComplete: boolean; footprintFailedPids: number[]; footprintProcessCount: number; privateMemoryExcludingCallerMb: number | null; mainProcessMemoryMb: number | null; helperProcessesMemoryMb: number | null }>
+            getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number; footprintMb: number | null; appProcessFootprintMb: number | null; childProcessFootprintMb: number | null; footprintSource: import('../shared/processMemoryFootprint').AppMemoryFootprintSource; footprintComplete: boolean; footprintFailedPids: number[]; footprintProcessCount: number; footprintAppProcessCount: number; footprintChildProcessCount: number; privateMemoryExcludingCallerMb: number | null; mainProcessMemoryMb: number | null; helperProcessesMemoryMb: number | null }>
             getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
             getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
             diagnostics: {

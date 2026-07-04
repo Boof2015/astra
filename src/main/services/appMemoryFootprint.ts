@@ -45,6 +45,10 @@ function collectUniqueProcessIds(metrics: readonly ProcessMetric[], extraPids: r
   return pids
 }
 
+function collectMetricProcessIds(metrics: readonly ProcessMetric[]): number[] {
+  return collectUniqueProcessIds(metrics, [])
+}
+
 function resolveNativeAddonPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'native/visualizer_dsp.node')
@@ -84,17 +88,19 @@ export function collectAppMemoryFootprint(options: {
   extraPids?: readonly number[]
   rawWorkingSetMb: number | null
 }): AppMemoryFootprintSummary {
-  const pids = collectUniqueProcessIds(options.metrics, options.extraPids ?? [])
+  const appPids = collectMetricProcessIds(options.metrics)
+  const childPids = options.extraPids ?? []
+  const pids = collectUniqueProcessIds(options.metrics, childPids)
   const addon = loadNativeProcessMemoryAddon()
   if (!addon?.processMemory) {
-    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb)
+    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
   }
 
   try {
     const result = addon.processMemory.getProcessFootprints(pids)
-    return summarizeNativeProcessMemoryFootprints(result, pids, options.rawWorkingSetMb)
+    return summarizeNativeProcessMemoryFootprints(result, pids, options.rawWorkingSetMb, { appPids, childPids })
   } catch (error) {
     logNativeAddonWarning('Native process memory helper failed. Falling back to Electron memory metrics.', error)
-    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb)
+    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
   }
 }

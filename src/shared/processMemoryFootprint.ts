@@ -25,10 +25,14 @@ export interface NativeProcessMemoryFootprintsResult {
 
 export interface AppMemoryFootprintSummary {
   footprintMb: number | null
+  appProcessFootprintMb: number | null
+  childProcessFootprintMb: number | null
   footprintSource: AppMemoryFootprintSource
   footprintComplete: boolean
   footprintFailedPids: number[]
   footprintProcessCount: number
+  footprintAppProcessCount: number
+  footprintChildProcessCount: number
   footprintRawWorkingSetMb: number | null
   footprintProcesses: NativeProcessMemoryFootprintSample[]
 }
@@ -73,15 +77,27 @@ export function bytesToFootprintMb(value: number | null | undefined): number | n
 export function summarizeNativeProcessMemoryFootprints(
   result: NativeProcessMemoryFootprintsResult,
   requestedPids: readonly number[],
-  rawWorkingSetMb: number | null
+  rawWorkingSetMb: number | null,
+  groups: {
+    appPids?: readonly number[]
+    childPids?: readonly number[]
+  } = {}
 ): AppMemoryFootprintSummary {
   const expectedPids = uniquePids(requestedPids)
+  const appPids = uniquePids(groups.appPids ?? requestedPids)
+  const childPids = uniquePids(groups.childPids ?? [])
   const expectedPidSet = new Set(expectedPids)
+  const appPidSet = new Set(appPids)
+  const childPidSet = new Set(childPids)
   const seenPids = new Set<number>()
   const failedPids = new Set<number>()
   const processes: NativeProcessMemoryFootprintSample[] = []
   let totalBytes = 0
+  let appProcessBytes = 0
+  let childProcessBytes = 0
   let successfulSamples = 0
+  let appProcessSamples = 0
+  let childProcessSamples = 0
 
   for (const process of result.processes ?? []) {
     const pid = normalizePid(process.pid)
@@ -93,6 +109,13 @@ export function summarizeNativeProcessMemoryFootprints(
     if (ok) {
       totalBytes += bytes
       successfulSamples += 1
+      if (appPidSet.has(pid)) {
+        appProcessBytes += bytes
+        appProcessSamples += 1
+      } else if (childPidSet.has(pid)) {
+        childProcessBytes += bytes
+        childProcessSamples += 1
+      }
     } else {
       failedPids.add(pid)
     }
@@ -128,10 +151,14 @@ export function summarizeNativeProcessMemoryFootprints(
 
   return {
     footprintMb: successfulSamples > 0 ? bytesToFootprintMb(totalBytes) : null,
+    appProcessFootprintMb: appProcessSamples > 0 ? bytesToFootprintMb(appProcessBytes) : null,
+    childProcessFootprintMb: childProcessSamples > 0 ? bytesToFootprintMb(childProcessBytes) : null,
     footprintSource: result.source,
     footprintComplete: failedPids.size === 0 && result.complete === true,
     footprintFailedPids: [...failedPids],
     footprintProcessCount: expectedPids.length,
+    footprintAppProcessCount: appPids.length,
+    footprintChildProcessCount: childPids.length,
     footprintRawWorkingSetMb: normalizeMb(rawWorkingSetMb),
     footprintProcesses: processes
   }
@@ -139,15 +166,25 @@ export function summarizeNativeProcessMemoryFootprints(
 
 export function createUnavailableAppMemoryFootprintSummary(
   requestedPids: readonly number[],
-  rawWorkingSetMb: number | null
+  rawWorkingSetMb: number | null,
+  groups: {
+    appPids?: readonly number[]
+    childPids?: readonly number[]
+  } = {}
 ): AppMemoryFootprintSummary {
   const pids = uniquePids(requestedPids)
+  const appPids = uniquePids(groups.appPids ?? requestedPids)
+  const childPids = uniquePids(groups.childPids ?? [])
   return {
     footprintMb: null,
+    appProcessFootprintMb: null,
+    childProcessFootprintMb: null,
     footprintSource: 'unavailable',
     footprintComplete: pids.length === 0,
     footprintFailedPids: pids,
     footprintProcessCount: pids.length,
+    footprintAppProcessCount: appPids.length,
+    footprintChildProcessCount: childPids.length,
     footprintRawWorkingSetMb: normalizeMb(rawWorkingSetMb),
     footprintProcesses: pids.map((pid) => ({
       pid,

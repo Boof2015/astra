@@ -17,10 +17,14 @@ interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
   footprintMb: number | null
+  appProcessFootprintMb: number | null
+  childProcessFootprintMb: number | null
   footprintSource: AppMemoryFootprintSource
   footprintComplete: boolean
   footprintFailedPids: number[]
   footprintProcessCount: number
+  footprintAppProcessCount: number
+  footprintChildProcessCount: number
   privateMemoryExcludingCallerMb: number | null
   mainProcessMemoryMb: number | null
   helperProcessesMemoryMb: number | null
@@ -67,10 +71,13 @@ export function createEmptyTitleBarSample(): MemoryDiagnosticsTitleBarSampleSnap
   return {
     sampledAt: null,
     appFootprintMb: null,
+    childProcessFootprintMb: null,
+    combinedFootprintMb: null,
     appFootprintSource: null,
     appFootprintComplete: null,
     appFootprintFailedPids: [],
     appFootprintProcessCount: null,
+    appFootprintChildProcessCount: null,
     rendererPrivateMb: null,
     appMemoryMb: null,
     bufferMemoryMb: null,
@@ -97,10 +104,13 @@ export function createEmptyTitleBarPeaks(): MemoryDiagnosticsTitleBarPeakSnapsho
   return {
     capturedAt: null,
     appFootprintMb: null,
+    childProcessFootprintMb: null,
+    combinedFootprintMb: null,
     appFootprintSource: null,
     appFootprintComplete: null,
     appFootprintFailedPids: [],
     appFootprintProcessCount: null,
+    appFootprintChildProcessCount: null,
     rendererPrivateMb: null,
     appMemoryMb: null,
     bufferMemoryMb: null,
@@ -147,10 +157,14 @@ export function buildTitleBarSample(values: {
   helperProcessesMemoryMb: number | null
   totalWorkingSetMb: number | null
   footprintMb: number | null
+  appProcessFootprintMb: number | null
+  childProcessFootprintMb: number | null
   footprintSource: AppMemoryFootprintSource | null
   footprintComplete: boolean | null
   footprintFailedPids: number[] | null
   footprintProcessCount: number | null
+  footprintAppProcessCount: number | null
+  footprintChildProcessCount: number | null
   bufferMemoryMb: number | null
   currentBufferMemoryMb: number | null
   nextBufferMemoryMb: number | null
@@ -164,8 +178,14 @@ export function buildTitleBarSample(values: {
   const totalPrivateMb = privateExcludingRendererMb === null || rendererPrivateMb === null
     ? null
     : privateExcludingRendererMb + rendererPrivateMb
+  const combinedFootprintMb = normalizeMb(values.footprintMb)
+  const appProcessFootprintMb = normalizeMb(values.appProcessFootprintMb)
+  const footprintAppProcessCount = normalizeCount(values.footprintAppProcessCount) ?? normalizeCount(values.footprintProcessCount)
+  const footprintChildProcessCount = normalizeCount(values.footprintChildProcessCount)
+  const childProcessFootprintMb = normalizeMb(values.childProcessFootprintMb)
+    ?? (footprintChildProcessCount === 0 ? 0 : null)
   const appFootprint = resolveTitleBarAppFootprint({
-    measuredFootprintMb: values.footprintMb,
+    measuredFootprintMb: appProcessFootprintMb ?? combinedFootprintMb,
     measuredSource: values.footprintSource,
     measuredComplete: values.footprintComplete,
     fallbackPrivateMb: totalPrivateMb
@@ -181,10 +201,13 @@ export function buildTitleBarSample(values: {
   return {
     sampledAt: values.sampledAt,
     appFootprintMb: appFootprint.appFootprintMb,
+    childProcessFootprintMb,
+    combinedFootprintMb,
     appFootprintSource: appFootprint.appFootprintSource,
     appFootprintComplete: appFootprint.appFootprintComplete,
     appFootprintFailedPids: normalizePidList(values.footprintFailedPids),
-    appFootprintProcessCount: normalizeCount(values.footprintProcessCount),
+    appFootprintProcessCount: footprintAppProcessCount,
+    appFootprintChildProcessCount: footprintChildProcessCount,
     rendererPrivateMb,
     appMemoryMb,
     bufferMemoryMb,
@@ -225,10 +248,13 @@ export function updateTitleBarPeaks(
   const next: MemoryDiagnosticsTitleBarPeakSnapshot = {
     capturedAt,
     appFootprintMb: current.appFootprintMb,
+    childProcessFootprintMb: current.childProcessFootprintMb,
+    combinedFootprintMb: current.combinedFootprintMb,
     appFootprintSource: current.appFootprintSource,
     appFootprintComplete: current.appFootprintComplete,
     appFootprintFailedPids: [...current.appFootprintFailedPids],
     appFootprintProcessCount: current.appFootprintProcessCount,
+    appFootprintChildProcessCount: current.appFootprintChildProcessCount,
     rendererPrivateMb: current.rendererPrivateMb,
     appMemoryMb: current.appMemoryMb,
     bufferMemoryMb: current.bufferMemoryMb,
@@ -269,8 +295,13 @@ export function updateTitleBarPeaks(
     next.appFootprintComplete = sample.appFootprintComplete
     next.appFootprintFailedPids = [...sample.appFootprintFailedPids]
     next.appFootprintProcessCount = sample.appFootprintProcessCount
+    next.appFootprintChildProcessCount = sample.appFootprintChildProcessCount
   }
   applyPeak('rendererPrivateMb', sample.rendererPrivateMb)
+  if (applyPeak('childProcessFootprintMb', sample.childProcessFootprintMb)) {
+    next.appFootprintChildProcessCount = sample.appFootprintChildProcessCount
+  }
+  applyPeak('combinedFootprintMb', sample.combinedFootprintMb)
   applyPeak('appMemoryMb', sample.appMemoryMb)
   applyPeak('bufferMemoryMb', sample.bufferMemoryMb)
   applyPeak('currentBufferMemoryMb', sample.currentBufferMemoryMb)
@@ -303,10 +334,13 @@ export function createTitleBarPeaksFromSample(
   return {
     capturedAt: sample.sampledAt,
     appFootprintMb: sample.appFootprintMb,
+    childProcessFootprintMb: sample.childProcessFootprintMb,
+    combinedFootprintMb: sample.combinedFootprintMb,
     appFootprintSource: sample.appFootprintSource,
     appFootprintComplete: sample.appFootprintComplete,
     appFootprintFailedPids: [...sample.appFootprintFailedPids],
     appFootprintProcessCount: sample.appFootprintProcessCount,
+    appFootprintChildProcessCount: sample.appFootprintChildProcessCount,
     rendererPrivateMb: sample.rendererPrivateMb,
     appMemoryMb: sample.appMemoryMb,
     bufferMemoryMb: sample.bufferMemoryMb,
@@ -360,10 +394,14 @@ export async function captureTitleBarPerformanceSample(): Promise<TitleBarPerfor
       helperProcessesMemoryMb: appStats?.helperProcessesMemoryMb ?? null,
       totalWorkingSetMb: appStats?.workingSetMb ?? null,
       footprintMb: appStats?.footprintMb ?? null,
+      appProcessFootprintMb: appStats?.appProcessFootprintMb ?? null,
+      childProcessFootprintMb: appStats?.childProcessFootprintMb ?? null,
       footprintSource: appStats?.footprintSource ?? null,
       footprintComplete: appStats?.footprintComplete ?? null,
       footprintFailedPids: appStats?.footprintFailedPids ?? null,
       footprintProcessCount: appStats?.footprintProcessCount ?? null,
+      footprintAppProcessCount: appStats?.footprintAppProcessCount ?? null,
+      footprintChildProcessCount: appStats?.footprintChildProcessCount ?? null,
       rendererPrivateMb: rendererMemory?.privateMb ?? null,
       rendererHeapUsedBytes: rendererMemory?.heapUsedBytes ?? null,
       rendererExternalBytes: rendererMemory?.externalBytes ?? null,

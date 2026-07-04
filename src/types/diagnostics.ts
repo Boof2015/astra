@@ -147,10 +147,13 @@ export interface MemoryDiagnosticsUserAgentSpecificMemorySnapshot {
 export interface MemoryDiagnosticsTitleBarSampleSnapshot {
   sampledAt: number | null
   appFootprintMb: number | null
+  childProcessFootprintMb: number | null
+  combinedFootprintMb: number | null
   appFootprintSource: AppMemoryFootprintSource | null
   appFootprintComplete: boolean | null
   appFootprintFailedPids: number[]
   appFootprintProcessCount: number | null
+  appFootprintChildProcessCount: number | null
   rendererPrivateMb: number | null
   appMemoryMb: number | null
   bufferMemoryMb: number | null
@@ -175,10 +178,13 @@ export interface MemoryDiagnosticsTitleBarSampleSnapshot {
 export interface MemoryDiagnosticsTitleBarPeakSnapshot {
   capturedAt: number | null
   appFootprintMb: number | null
+  childProcessFootprintMb: number | null
+  combinedFootprintMb: number | null
   appFootprintSource: AppMemoryFootprintSource | null
   appFootprintComplete: boolean | null
   appFootprintFailedPids: number[]
   appFootprintProcessCount: number | null
+  appFootprintChildProcessCount: number | null
   rendererPrivateMb: number | null
   appMemoryMb: number | null
   bufferMemoryMb: number | null
