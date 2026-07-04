@@ -16,6 +16,7 @@ import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotio
 import { navigateInputBack } from '../../utils/inputNavigation'
 import TrackList, { type TrackListSortKey } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
+import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
 import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
@@ -592,6 +593,7 @@ export default function LibraryView() {
     return sorted
   }, [sortState, sourceFilteredTracks])
   const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
+  const queueTrackPaths = useMemo(() => queueSeedSortedTracks.map((track) => track.path), [queueSeedSortedTracks])
 
   const handlePlayTracklist = useCallback(async () => {
     if (collectionPlayPendingRef.current) return
@@ -1724,6 +1726,9 @@ export default function LibraryView() {
               </svg>
               <span className="library-shuffle-btn-label">Shuffle</span>
             </button>
+          )}
+          {isTracklistContext && inDetailView && (
+            <QueueSplitButton trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
           )}
           {selectedArtist && graphEnabled && (
             <button

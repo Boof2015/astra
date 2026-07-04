@@ -13544,6 +13544,109 @@ html[data-theme-tone="light"] .library-detail-hero-backdrop::after {
   color: var(--text-secondary);
 }
 
+/* Add-to-queue split button: click main = add to end, hover flyout = play next */
+.queue-split-btn {
+  position: relative;
+  display: inline-flex;
+}
+
+.queue-split-btn-flyout {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(var(--tint), 0.13);
+  border-radius: 9px;
+  background: var(--control-bg);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  z-index: 40;
+}
+
+/* Invisible bridge across the gap so the pointer never leaves the hover region
+   while moving from the main button down onto the flyout. */
+.queue-split-btn-flyout::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -8px;
+  height: 8px;
+}
+
+.queue-split-btn:hover .queue-split-btn-flyout,
+.queue-split-btn:focus-within .queue-split-btn-flyout {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.queue-split-btn-flyout:hover {
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+}
+
+.queue-split-btn-flyout:disabled {
+  cursor: not-allowed;
+  opacity: 0;
+}
+
+/* Playlist detail header: cover control wrapping the shared artwork frame */
+.playlist-detail-cover {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.playlist-detail-cover .playlist-header-cover {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
+.playlist-detail-cover:hover .playlist-header-cover-edit-btn,
+.playlist-detail-cover:focus-within .playlist-header-cover-edit-btn,
+.playlist-detail-cover .playlist-header-cover-edit-btn[aria-expanded="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Icon-only action pills (reorder / more-actions) sit square in the new action row */
+.library-detail-header-actions .playlist-detail-icon-btn {
+  padding: 0;
+  width: 38px;
+  min-width: 38px;
+}
+
+.library-detail-header.is-collapsed .playlist-detail-icon-btn {
+  width: 32px;
+  min-width: 32px;
+}
+
+.library-detail-header-actions .library-collection-action-btn.active {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
 .library-detail-header.is-collapsed {
   height: 58px;
   min-height: 58px;
