@@ -2975,6 +2975,7 @@ export class AudioEngine {
     }
 
     this.stopSource()
+    this.clearPauseFadeTimer()
     this.cancelScheduledNext()
     this.clearParallaxSinkState()
 
@@ -3009,6 +3010,16 @@ export class AudioEngine {
     }
     this.startTime = startAtContextTime - offset
     this.pauseTime = offset
+    // A pause fade leaves fadeGainNode at 0 and only play() restores it, which this parallax
+    // path bypasses — fade back in, anchored at the scheduled start so the ramp tracks the
+    // source onset. When the gain is already at unity (seek while playing), leave the schedule
+    // untouched so the skip-declick dip from stopSource() above is not cancelled mid-dip.
+    if (this.fadeGainNode && this.fadeGainNode.gain.value < 0.999) {
+      const fade = this.fadeGainNode.gain
+      fade.cancelScheduledValues(this.context.currentTime)
+      fade.setValueAtTime(0, startAtContextTime)
+      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+    }
     this.sourceNode.start(startAtContextTime, offset)
     this._playbackState = 'playing'
     this.emit('stateChange', this._playbackState)
