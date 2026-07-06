@@ -3,6 +3,7 @@ import { join } from 'path'
 import { getHeapSpaceStatistics } from 'v8'
 import type {
   MiniPlayerCommand,
+  MiniPlayerQueueSnapshot,
   MiniPlayerSnapshot,
   MiniPlayerVisualizerMode,
   MiniPlayerVisualizerStreamChunk,
@@ -27,6 +28,7 @@ import type {
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
 } from '../types/phoneRemote'
+import type { PhoneSyncConflictResolution } from '../types/phoneSync'
 import type {
   ParallaxAudioChunk,
   ParallaxDiscoveryEvent,
@@ -669,6 +671,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
     publishSnapshot: (snapshot: MiniPlayerSnapshot) => ipcRenderer.send('mini-player:publishSnapshot', snapshot),
+    publishQueueSnapshot: (snapshot: MiniPlayerQueueSnapshot) => ipcRenderer.send('mini-player:publishQueueSnapshot', snapshot),
     publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => ipcRenderer.send('mini-player:publishVisualizerChunk', chunk),
     sendCommand: (command: MiniPlayerCommand) => ipcRenderer.send('mini-player:sendCommand', command),
     onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => {
@@ -859,6 +862,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
       ipcRenderer.invoke('phone-remote:setEnabled', enabled),
     setPort: (port: number): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:setPort', port),
+    setSyncEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:setSyncEnabled', enabled),
+    requestSync: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:requestSync'),
+    resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:resolveSyncConflict', syncUid, resolution),
     resetToDefaults: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:resetToDefaults'),
     onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
@@ -1332,6 +1340,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('library:metadataEditProgress', handler)
       return () => ipcRenderer.removeListener('library:metadataEditProgress', handler)
     },
+    // Fired after a mobile LAN sync mutates favorites/playlists in the main
+    // process; the renderer should reload both stores.
+    onExternalLibraryMutation: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('library:externalLibraryMutation', handler)
+      return () => ipcRenderer.removeListener('library:externalLibraryMutation', handler)
+    },
 
     // Favorites
     getFavorites: () => ipcRenderer.invoke('library:getFavorites'),
@@ -1444,6 +1459,7 @@ declare global {
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>
         publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+        publishQueueSnapshot: (snapshot: MiniPlayerQueueSnapshot) => void
         publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => void
         sendCommand: (command: MiniPlayerCommand) => void
         onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
@@ -1531,6 +1547,9 @@ declare global {
         revokeAllPairedDevices: () => Promise<number>
         setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
         setPort: (port: number) => Promise<PhoneRemoteStatus>
+        setSyncEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        requestSync: () => Promise<PhoneRemoteStatus>
+        resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution) => Promise<PhoneRemoteStatus>
         resetToDefaults: () => Promise<PhoneRemoteStatus>
         onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
@@ -1798,6 +1817,7 @@ declare global {
         onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
+        onExternalLibraryMutation: (callback: () => void) => () => void
 
         // Favorites
         getFavorites: () => Promise<DbTrack[]>

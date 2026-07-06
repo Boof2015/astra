@@ -2,7 +2,7 @@ import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { tmpdir, cpus } from 'os'
 import { createRequire } from 'module'
@@ -38,6 +38,14 @@ import {
   normalizeArtistNames,
   serializeArtistNames
 } from '../../shared/library/artistCredits'
+import { buildTrackSyncKey, normalizeSyncKeyPart } from '../../shared/sync/identity'
+import type {
+  SyncFavorite,
+  SyncKeyTombstone,
+  SyncPlaylist,
+  SyncPlaylistEntry,
+  SyncUidTombstone
+} from '../../types/phoneSync'
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
@@ -2329,6 +2337,40 @@ export async function initDatabase(): Promise<void> {
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   normalizePlaylistTrackMemberships()
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
+
+  // Desktop<->mobile LAN sync (phoneSync.ts): playlist sync identity, deletion
+  // tombstones, and incoming favorites that haven't matched a local track yet.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorite_tombstones (
+      sync_key TEXT PRIMARY KEY NOT NULL,
+      deleted_at INTEGER NOT NULL
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorite_sync_pending (
+      sync_key TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      album TEXT NOT NULL,
+      added_at INTEGER NOT NULL
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playlist_tombstones (
+      sync_uid TEXT PRIMARY KEY NOT NULL,
+      deleted_at INTEGER NOT NULL
+    )
+  `)
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN sync_uid TEXT')
+  } catch {
+    // Column already exists.
+  }
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_sync_uid
+    ON playlists(sync_uid)
+    WHERE sync_uid IS NOT NULL
+  `)
 
   // Generic app metadata table (schema/migration flags, etc.)
   db.run(`
@@ -7600,6 +7642,7 @@ export function getFavoritePaths(): string[] {
 export async function addFavorite(trackPath: string): Promise<void> {
   if (!db) return
   db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, Date.now()])
+  clearFavoriteSyncRowsForPaths([trackPath])
   await saveDatabase()
 }
 
@@ -7618,10 +7661,15 @@ export async function addFavoritePaths(
 
   const now = Date.now()
   let inserted = 0
+  const insertedTrackPaths: string[] = []
   for (const trackPath of uniqueTrackPaths) {
     const result = db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, now])
-    inserted += Number(result.changes) || 0
+    if (Number(result.changes) > 0) {
+      inserted += 1
+      insertedTrackPaths.push(trackPath)
+    }
   }
+  clearFavoriteSyncRowsForPaths(insertedTrackPaths)
 
   if (options.persist !== false && inserted > 0) {
     await saveDatabase()
@@ -7666,6 +7714,13 @@ export async function syncSubsonicFavoriteTrackIds(
 
 export async function removeFavorite(trackPath: string): Promise<void> {
   if (!db) return
+  // Record a deletion tombstone so a mobile LAN sync propagates the unfavorite
+  // instead of resurrecting it from the peer's copy (phoneSync.ts).
+  const syncKey = trackSyncKeyForPath(trackPath)
+  if (syncKey) {
+    db.run('INSERT OR REPLACE INTO favorite_tombstones (sync_key, deleted_at) VALUES (?, ?)', [syncKey, Date.now()])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  }
   db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
   await saveDatabase()
 }
@@ -8242,6 +8297,20 @@ export async function renamePlaylist(id: number, name: string): Promise<void> {
 
 export async function deletePlaylist(id: number): Promise<void> {
   if (!db) return
+  // Tombstone sync-eligible playlists so a mobile LAN sync propagates the
+  // deletion (server-mirrored playlists are excluded from that sync).
+  const row = db.get<{ sync_uid?: unknown; remote_source_id?: unknown }>(
+    'SELECT sync_uid, remote_source_id FROM playlists WHERE id = ?',
+    [id]
+  )
+  if (
+    row &&
+    typeof row.sync_uid === 'string' &&
+    row.sync_uid.length > 0 &&
+    (row.remote_source_id === null || row.remote_source_id === undefined)
+  ) {
+    db.run('INSERT OR REPLACE INTO playlist_tombstones (sync_uid, deleted_at) VALUES (?, ?)', [row.sync_uid, Date.now()])
+  }
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
   db.run('DELETE FROM playlists WHERE id = ?', [id])
   await saveDatabase()
@@ -9101,4 +9170,349 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   }
 
   return removed
+}
+
+// ── Desktop<->Mobile LAN sync (phoneSync.ts) ─────────────────────────────────
+// Favorites and playlist entries cross devices as metadata identity keys
+// (shared/sync/identity.ts); playlists cross as sync_uid rows. Everything here
+// either serializes local state for GET /v1/sync/state or applies a merged
+// diff from POST /v1/sync/apply. Apply-variants deliberately use the caller's
+// timestamps and never write tombstones for the rows they touch — otherwise an
+// applied change would look like a fresh local edit on the next sync and
+// ping-pong between devices.
+
+export interface TrackMetadataQuery {
+  title: string
+  artist: string
+  album: string
+  sourcePath?: string | null
+}
+
+export type TrackMetadataMatch = MetadataMatchResult
+
+export type TrackMetadataMatcher = (query: TrackMetadataQuery) => TrackMetadataMatch
+
+function trackSyncKeyForPath(trackPath: string): string | null {
+  const row = readEffectiveTrackRowsByPaths([trackPath])[0]
+  if (!row) return null
+  if (!normalizeSyncKeyPart(row.title)) return null
+  return buildTrackSyncKey(row.title, row.artist, row.album)
+}
+
+function clearFavoriteSyncRowsForPaths(trackPaths: readonly string[]): void {
+  if (!db || trackPaths.length === 0) return
+  for (const row of readEffectiveTrackRowsByPaths(trackPaths)) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const syncKey = buildTrackSyncKey(row.title, row.artist, row.album)
+    db.run('DELETE FROM favorite_tombstones WHERE sync_key = ?', [syncKey])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  }
+}
+
+export function createTrackMetadataMatcher(): TrackMetadataMatcher {
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
+  return (query) => {
+    const sourcePath = typeof query.sourcePath === 'string' ? query.sourcePath.trim() : ''
+    if (sourcePath) {
+      const normalizedPath = normalizePlaylistPathForLookup(sourcePath)
+      if (normalizedPath) {
+        const exact = lookup.exactPath.get(normalizedPath)
+        if (exact) return { kind: 'matched', trackPath: exact }
+        const caseInsensitive = lookup.caseInsensitivePath.get(normalizedPath.toLocaleLowerCase())
+        if (typeof caseInsensitive === 'string') return { kind: 'matched', trackPath: caseInsensitive }
+      }
+    }
+    return matchPlaylistEntryByMetadata(
+      { title: query.title, artist: query.artist, album: query.album },
+      lookup
+    )
+  }
+}
+
+export function ensurePlaylistSyncUids(): void {
+  if (!db) return
+  const rows = db.all<{ id?: unknown }>(`
+    SELECT id FROM playlists
+    WHERE sync_uid IS NULL
+      AND remote_source_type IS NULL
+      AND remote_source_id IS NULL
+  `)
+  for (const row of rows) {
+    const id = Number(row.id)
+    if (!Number.isInteger(id) || id <= 0) continue
+    // Assigning identity is not an edit: leave updated_at untouched.
+    db.run('UPDATE playlists SET sync_uid = ? WHERE id = ?', [randomUUID(), id])
+  }
+}
+
+export function getSyncFavoritesState(): { favorites: SyncFavorite[]; tombstones: SyncKeyTombstone[] } {
+  if (!db) return { favorites: [], tombstones: [] }
+
+  const addedAtByPath = new Map<string, number>()
+  for (const row of db.all<{ track_path?: unknown; added_at?: unknown }>('SELECT track_path, added_at FROM favorites')) {
+    if (typeof row.track_path === 'string' && row.track_path.length > 0) {
+      addedAtByPath.set(row.track_path, Number(row.added_at) || 0)
+    }
+  }
+
+  const favoritesByKey = new Map<string, SyncFavorite>()
+  for (const row of readEffectiveTrackRowsByPaths(Array.from(addedAtByPath.keys()))) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const addedAt = addedAtByPath.get(row.path) ?? 0
+    const existing = favoritesByKey.get(key)
+    if (!existing || existing.addedAt < addedAt) {
+      favoritesByKey.set(key, { key, title: row.title, artist: row.artist, album: row.album, addedAt })
+    }
+  }
+
+  // Pending favorites re-enter sync state so they keep propagating to peers
+  // even while unresolved locally.
+  for (const row of db.all<{ sync_key?: unknown; title?: unknown; artist?: unknown; album?: unknown; added_at?: unknown }>(
+    'SELECT sync_key, title, artist, album, added_at FROM favorite_sync_pending'
+  )) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    if (favoritesByKey.has(row.sync_key)) continue
+    favoritesByKey.set(row.sync_key, {
+      key: row.sync_key,
+      title: typeof row.title === 'string' ? row.title : '',
+      artist: typeof row.artist === 'string' ? row.artist : '',
+      album: typeof row.album === 'string' ? row.album : '',
+      addedAt: Number(row.added_at) || 0
+    })
+  }
+
+  const tombstones: SyncKeyTombstone[] = []
+  for (const row of db.all<{ sync_key?: unknown; deleted_at?: unknown }>('SELECT sync_key, deleted_at FROM favorite_tombstones')) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    tombstones.push({ key: row.sync_key, deletedAt: Number(row.deleted_at) || 0 })
+  }
+
+  return { favorites: Array.from(favoritesByKey.values()), tombstones }
+}
+
+export function getFavoriteTrackPathsBySyncKey(): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  if (!db) return result
+  const paths = getFavoritePaths()
+  for (const row of readEffectiveTrackRowsByPaths(paths)) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const bucket = result.get(key)
+    if (bucket) {
+      bucket.push(row.path)
+    } else {
+      result.set(key, [row.path])
+    }
+  }
+  return result
+}
+
+export function getSyncPlaylistsState(): { playlists: SyncPlaylist[]; tombstones: SyncUidTombstone[] } {
+  if (!db) return { playlists: [], tombstones: [] }
+
+  const playlists: SyncPlaylist[] = []
+  const rows = db.all<{
+    id?: unknown
+    name?: unknown
+    kind?: unknown
+    dynamic_rules_json?: unknown
+    created_at?: unknown
+    updated_at?: unknown
+    sync_uid?: unknown
+  }>(`
+    SELECT id, name, kind, dynamic_rules_json, created_at, updated_at, sync_uid
+    FROM playlists
+    WHERE sync_uid IS NOT NULL
+      AND remote_source_type IS NULL
+      AND remote_source_id IS NULL
+  `)
+
+  for (const row of rows) {
+    const id = Number(row.id)
+    if (!Number.isInteger(id) || id <= 0) continue
+    if (typeof row.sync_uid !== 'string' || row.sync_uid.length === 0) continue
+    const kind = row.kind === 'dynamic' ? 'dynamic' : 'normal'
+
+    let entries: SyncPlaylistEntry[] | null = null
+    if (kind === 'normal') {
+      entries = getPlaylistTrackEntries(id).map((entry) => ({
+        title: entry.track?.title ?? entry.title ?? '',
+        artist: entry.track?.artist ?? entry.artist ?? '',
+        album: entry.track?.album ?? entry.album ?? '',
+        durationSeconds: typeof entry.track?.duration === 'number' ? entry.track.duration : null,
+        position: entry.position,
+        addedAt: entry.added_at,
+        sourcePath: entry.track_path || null
+      }))
+    }
+
+    playlists.push({
+      syncUid: row.sync_uid,
+      name: typeof row.name === 'string' ? row.name : '',
+      kind,
+      dynamicRules: kind === 'dynamic' && typeof row.dynamic_rules_json === 'string' ? row.dynamic_rules_json : null,
+      createdAt: Number(row.created_at) || 0,
+      updatedAt: Number(row.updated_at) || 0,
+      entries
+    })
+  }
+
+  const tombstones: SyncUidTombstone[] = []
+  for (const row of db.all<{ sync_uid?: unknown; deleted_at?: unknown }>('SELECT sync_uid, deleted_at FROM playlist_tombstones')) {
+    if (typeof row.sync_uid !== 'string' || row.sync_uid.length === 0) continue
+    tombstones.push({ syncUid: row.sync_uid, deletedAt: Number(row.deleted_at) || 0 })
+  }
+
+  return { playlists, tombstones }
+}
+
+export function resolvePendingSyncFavorites(matcher?: TrackMetadataMatcher): number {
+  if (!db) return 0
+  const pending = db.all<{ sync_key?: unknown; title?: unknown; artist?: unknown; album?: unknown; added_at?: unknown }>(
+    'SELECT sync_key, title, artist, album, added_at FROM favorite_sync_pending'
+  )
+  if (pending.length === 0) return 0
+
+  const match = matcher ?? createTrackMetadataMatcher()
+  let resolved = 0
+  for (const row of pending) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    const result = match({
+      title: typeof row.title === 'string' ? row.title : '',
+      artist: typeof row.artist === 'string' ? row.artist : '',
+      album: typeof row.album === 'string' ? row.album : ''
+    })
+    if (result.kind !== 'matched') continue
+    db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [
+      result.trackPath,
+      Number(row.added_at) || Date.now()
+    ])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [row.sync_key])
+    resolved += 1
+  }
+  return resolved
+}
+
+export function upsertPendingSyncFavorite(item: SyncFavorite): void {
+  if (!db) return
+  db.run(
+    'INSERT OR REPLACE INTO favorite_sync_pending (sync_key, title, artist, album, added_at) VALUES (?, ?, ?, ?, ?)',
+    [item.key, item.title, item.artist, item.album, item.addedAt]
+  )
+}
+
+export function applySyncedFavoriteAdd(trackPath: string, syncKey: string, addedAt: number): void {
+  if (!db) return
+  db.run('INSERT OR REPLACE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, addedAt])
+  db.run('DELETE FROM favorite_tombstones WHERE sync_key = ?', [syncKey])
+  db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+}
+
+export function applySyncedFavoriteRemove(trackPaths: readonly string[], syncKey: string, deletedAt: number): void {
+  if (!db) return
+  for (const trackPath of trackPaths) {
+    db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
+  }
+  db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  db.run('INSERT OR REPLACE INTO favorite_tombstones (sync_key, deleted_at) VALUES (?, ?)', [syncKey, deletedAt])
+}
+
+export function replaceSyncedPlaylist(
+  input: SyncPlaylist,
+  matcher: TrackMetadataMatcher
+): { status: 'created' | 'replaced' | 'skipped-incompatible'; entriesMatched: number; entriesFallback: number } {
+  if (!db) throw new Error('Database not initialized')
+
+  const kind = input.kind === 'dynamic' ? 'dynamic' : 'normal'
+  let rulesJson: string | null = null
+  if (kind === 'dynamic') {
+    try {
+      rulesJson = serializeDynamicPlaylistRules(normalizeDynamicPlaylistRules(JSON.parse(input.dynamicRules ?? '')))
+    } catch {
+      return { status: 'skipped-incompatible', entriesMatched: 0, entriesFallback: 0 }
+    }
+  }
+
+  const existing = db.get<{ id?: unknown }>('SELECT id FROM playlists WHERE sync_uid = ?', [input.syncUid])
+  const existingId = existing ? Number(existing.id) : NaN
+  let playlistId: number
+  let created = false
+  if (Number.isInteger(existingId) && existingId > 0) {
+    playlistId = existingId
+    db.run('UPDATE playlists SET name = ?, kind = ?, dynamic_rules_json = ?, updated_at = ? WHERE id = ?', [
+      input.name,
+      kind,
+      rulesJson,
+      input.updatedAt,
+      playlistId
+    ])
+  } else {
+    const insertResult = db.run(
+      'INSERT INTO playlists (name, kind, dynamic_rules_json, created_at, updated_at, sync_uid) VALUES (?, ?, ?, ?, ?, ?)',
+      [input.name, kind, rulesJson, input.createdAt, input.updatedAt, input.syncUid]
+    )
+    playlistId = Number(insertResult.lastInsertRowid)
+    created = true
+  }
+
+  db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
+  db.run('DELETE FROM playlist_tombstones WHERE sync_uid = ?', [input.syncUid])
+
+  let entriesMatched = 0
+  let entriesFallback = 0
+  if (kind === 'normal' && Array.isArray(input.entries)) {
+    const orderedEntries = [...input.entries].sort((a, b) => a.position - b.position)
+    const seenTrackPaths = new Set<string>()
+    let position = 0
+    for (const entry of orderedEntries) {
+      const match = matcher({
+        title: entry.title,
+        artist: entry.artist,
+        album: entry.album,
+        sourcePath: entry.sourcePath
+      })
+      let trackPath: string
+      let matched = false
+      if (match.kind === 'matched') {
+        trackPath = match.trackPath
+        matched = true
+      } else {
+        const sourcePath = typeof entry.sourcePath === 'string' ? entry.sourcePath.trim() : ''
+        trackPath = sourcePath || `astra-sync://unmatched/${buildTrackSyncKey(entry.title, entry.artist, entry.album)}`
+      }
+      if (seenTrackPaths.has(trackPath)) continue
+      seenTrackPaths.add(trackPath)
+      db.run(
+        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          playlistId,
+          trackPath,
+          position++,
+          Number(entry.addedAt) || input.updatedAt,
+          matched ? null : entry.title || null,
+          matched ? null : entry.artist || null,
+          matched ? null : entry.album || null
+        ]
+      )
+      if (matched) {
+        entriesMatched += 1
+      } else {
+        entriesFallback += 1
+      }
+    }
+  }
+
+  return { status: created ? 'created' : 'replaced', entriesMatched, entriesFallback }
+}
+
+export function applySyncedPlaylistDelete(syncUid: string, deletedAt: number): void {
+  if (!db) return
+  const row = db.get<{ id?: unknown }>('SELECT id FROM playlists WHERE sync_uid = ?', [syncUid])
+  const id = row ? Number(row.id) : NaN
+  if (Number.isInteger(id) && id > 0) {
+    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+    db.run('DELETE FROM playlists WHERE id = ?', [id])
+  }
+  db.run('INSERT OR REPLACE INTO playlist_tombstones (sync_uid, deleted_at) VALUES (?, ?)', [syncUid, deletedAt])
 }

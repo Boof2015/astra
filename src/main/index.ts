@@ -61,6 +61,7 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
+import { applyPhoneSyncChanges, buildPhoneSyncState, parsePhoneSyncApplyPayload } from './services/phoneSync'
 import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
@@ -95,6 +96,7 @@ import {
 import {
   mergeMiniPlayerSnapshots,
   type MiniPlayerCommand,
+  type MiniPlayerQueueSnapshot,
   type MiniPlayerSnapshot,
   type MiniPlayerVisualizerStreamChunk,
   type MiniPlayerWindowPrefs,
@@ -449,6 +451,7 @@ const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
+const PHONE_REMOTE_SYNC_ENABLED_META_KEY = 'phone_remote_sync_enabled_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
 const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
@@ -561,6 +564,7 @@ let localApiConfig: LocalApiServiceConfig = {
 let phoneRemoteConfig: PhoneRemoteServiceConfig = {
   enabled: false,
   controlsEnabled: false,
+  syncEnabled: true,
   port: PHONE_REMOTE_DEFAULT_PORT
 }
 let parallaxHostConfig: ParallaxHostConfig = {
@@ -928,6 +932,23 @@ const phoneRemoteService = new PhoneRemoteService({
     void persistPhoneRemotePairedDevices(phoneRemotePairedDevices).catch((error) => {
       console.warn('Failed to persist phone remote paired devices:', error)
     })
+  },
+  getSyncState: () => buildPhoneSyncState(),
+  applySyncChanges: (rawPayload) => {
+    const payload = parsePhoneSyncApplyPayload(rawPayload)
+    if (!payload) return null
+    library.beginLibraryWriteTransaction()
+    let result
+    try {
+      result = applyPhoneSyncChanges(payload)
+      library.commitLibraryWriteTransaction()
+    } catch (error) {
+      library.rollbackLibraryWriteTransaction()
+      throw error
+    }
+    // The sync applied in the main process; the renderer stores are now stale.
+    mainWindow?.webContents.send('library:externalLibraryMutation')
+    return result
   },
   onStatusChange: () => {
     broadcastPhoneRemoteStatus()
@@ -1552,6 +1573,7 @@ async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<voi
 
 async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promise<void> {
   await library.setAppMeta(PHONE_REMOTE_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY, config.syncEnabled ? '1' : '0')
   await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
 }
 
@@ -1858,6 +1880,7 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
 
 async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<PhoneRemoteServiceConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY), false)
+  const syncEnabled = parseMetaBoolean(library.getAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY), true)
 
   const rawPort = library.getAppMeta(PHONE_REMOTE_PORT_META_KEY)
   let port = PHONE_REMOTE_DEFAULT_PORT
@@ -1872,11 +1895,13 @@ async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<
   const normalized: PhoneRemoteServiceConfig = {
     enabled,
     controlsEnabled,
+    syncEnabled,
     port
   }
 
   const needsPersistence =
     library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY) !== (normalized.syncEnabled ? '1' : '0') ||
     library.getAppMeta(PHONE_REMOTE_PORT_META_KEY) !== String(normalized.port)
 
   if (needsPersistence) {
@@ -4684,6 +4709,11 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   }
 })
 
+ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueueSnapshot) => {
+  localApiService.publishQueueSnapshot(snapshot)
+  phoneRemoteService.publishQueueSnapshot(snapshot)
+})
+
 ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisualizerStreamChunk) => {
   latestMiniVisualizerChunk = chunk
   if (miniWindow && !miniWindow.isDestroyed()) {
@@ -5427,6 +5457,7 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
   const nextPhoneRemoteConfig: PhoneRemoteServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    syncEnabled: true,
     port: PHONE_REMOTE_DEFAULT_PORT
   }
   phoneRemoteService.replacePairedDevices([])
@@ -5494,10 +5525,40 @@ ipcMain.handle('phone-remote:setPort', async (_event, rawPort: unknown) => {
   return applyPhoneRemoteConfig(nextConfig)
 })
 
+ipcMain.handle('phone-remote:setSyncEnabled', async (_event, enabled: unknown) => {
+  const nextConfig: PhoneRemoteServiceConfig = {
+    ...phoneRemoteConfig,
+    syncEnabled: Boolean(enabled)
+  }
+  return applyPhoneRemoteConfig(nextConfig)
+})
+
+ipcMain.handle('phone-remote:requestSync', () => {
+  phoneRemoteService.requestSync()
+  return phoneRemoteService.getStatus()
+})
+
+ipcMain.handle('phone-remote:resolveSyncConflict', (_event, syncUid: unknown, resolution: unknown) => {
+  if (typeof syncUid !== 'string' || !syncUid.trim()) {
+    throw new Error('Invalid sync conflict id.')
+  }
+  if (
+    resolution !== 'desktop' &&
+    resolution !== 'phone' &&
+    resolution !== 'both' &&
+    resolution !== 'merge'
+  ) {
+    throw new Error('Invalid sync conflict resolution.')
+  }
+  phoneRemoteService.resolveSyncConflict(syncUid.trim(), resolution)
+  return phoneRemoteService.getStatus()
+})
+
 ipcMain.handle('phone-remote:resetToDefaults', async () => {
   const nextConfig: PhoneRemoteServiceConfig = {
     enabled: false,
     controlsEnabled: localApiConfig.controlsEnabled,
+    syncEnabled: true,
     port: PHONE_REMOTE_DEFAULT_PORT
   }
   phoneRemoteService.replacePairedDevices([])

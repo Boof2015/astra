@@ -7,6 +7,7 @@ import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
 import { audioEngine } from '../audio/AudioEngine'
 import { isNativeAvailable } from '../audio/native/index'
 import type {
+  MiniPlayerQueueSnapshot,
   MiniPlayerResolvedArtwork,
   MiniPlayerSnapshot,
   MiniPlayerWindowState
@@ -14,6 +15,8 @@ import type {
 import { selectMiniPlayerTrackArtworkData } from '../../types/miniPlayer'
 
 const SNAPSHOT_THROTTLE_MS = 120
+const QUEUE_SNAPSHOT_THROTTLE_MS = 250
+const QUEUE_SNAPSHOT_MAX_ITEMS = 200
 const MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS = 8
 const MINI_SPECTRUM_STREAM_INTERVAL_MS = 12
 const MINI_MAX_CHUNKS_PER_TICK_OSCILLOSCOPE = 6
@@ -42,6 +45,11 @@ export function useMiniPlayerBridge(): void {
   const currentTime = usePlayerStore((s) => s.currentTime)
   const duration = usePlayerStore((s) => s.duration)
   const queueLength = usePlayerStore((s) => s.getResolvedQueueLength())
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const repeat = usePlayerStore((s) => s.repeat)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const upcomingQueueIds = usePlayerStore((s) => s.upcomingQueueIds)
+  const currentQueueItemId = usePlayerStore((s) => s.currentQueueItemId)
   const timeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
 
   const favorites = useLibraryStore((s) => s.favorites)
@@ -65,6 +73,11 @@ export function useMiniPlayerBridge(): void {
   const previousPlaybackStateRef = useRef(playbackState)
   const previousTimeDisplayModeRef = useRef(timeDisplayMode)
   const previousArtworkRef = useRef<string | null>(null)
+  const previousShuffleRef = useRef(shuffle)
+  const previousRepeatRef = useRef(repeat)
+  const queuePublishTimerRef = useRef<number | null>(null)
+  const lastQueuePublishRef = useRef(0)
+  const latestPendingQueueRef = useRef<MiniPlayerQueueSnapshot | null>(null)
   const visualizerStreamTimerRef = useRef<number | null>(null)
   const visualizerResetSentRef = useRef(false)
 
@@ -159,6 +172,15 @@ export function useMiniPlayerBridge(): void {
           void library.toggleFavorite(currentTrackPath)
           break
         }
+        case 'toggleShuffle':
+          player.toggleShuffle()
+          break
+        case 'toggleRepeat':
+          player.toggleRepeat()
+          break
+        case 'playQueueItem':
+          void player.playQueuedItem(command.queueId, { manualStart: true })
+          break
         case 'seek': {
           const seekTarget = clampSeekTime(command.time, player.duration)
           void player.seek(seekTarget)
@@ -299,13 +321,17 @@ export function useMiniPlayerBridge(): void {
       previousArtworkRef.current !== effectiveArtworkData
     const shouldForce = shouldIncludeArtwork ||
       previousPlaybackStateRef.current !== playbackState ||
-      previousTimeDisplayModeRef.current !== timeDisplayMode
+      previousTimeDisplayModeRef.current !== timeDisplayMode ||
+      previousShuffleRef.current !== shuffle ||
+      previousRepeatRef.current !== repeat
 
     const snapshot: MiniPlayerSnapshot = {
       playbackState,
       currentTime: toSafeTime(currentTime),
       duration: toSafeTime(duration),
       queueLength,
+      shuffle,
+      repeat,
       outputDeviceLabel,
       timeDisplayMode,
       visualizerLineColor: lineColor,
@@ -330,6 +356,8 @@ export function useMiniPlayerBridge(): void {
     previousPlaybackStateRef.current = playbackState
     previousTimeDisplayModeRef.current = timeDisplayMode
     previousArtworkRef.current = effectiveArtworkData
+    previousShuffleRef.current = shuffle
+    previousRepeatRef.current = repeat
 
     latestPendingRef.current = snapshot
 
@@ -370,6 +398,8 @@ export function useMiniPlayerBridge(): void {
     currentTime,
     duration,
     queueLength,
+    shuffle,
+    repeat,
     timeDisplayMode,
     selectedDeviceId,
     availableDevices,
@@ -377,4 +407,68 @@ export function useMiniPlayerBridge(): void {
     resolvedArtwork,
     lineColor
   ])
+
+  // Queue snapshot for the remote controllers (current track + upcoming).
+  // Rebuilt whenever queue composition or the active item changes; throttled
+  // because drag-reorders emit bursts of store updates.
+  useEffect(() => {
+    const player = usePlayerStore.getState()
+    const items: MiniPlayerQueueSnapshot['items'] = []
+    if (currentTrack) {
+      items.push({
+        queueId: currentQueueItemId ?? `current:${currentTrack.id}`,
+        title: currentTrack.title,
+        artist: currentTrack.artist,
+        durationSeconds: Number.isFinite(currentTrack.duration) && currentTrack.duration > 0
+          ? currentTrack.duration
+          : null,
+        isCurrent: true
+      })
+    }
+    for (const entry of player.getResolvedUpcomingEntries()) {
+      if (items.length >= QUEUE_SNAPSHOT_MAX_ITEMS) break
+      items.push({
+        queueId: entry.queueId,
+        title: entry.track.title,
+        artist: entry.track.artist,
+        durationSeconds: Number.isFinite(entry.track.duration) && entry.track.duration > 0
+          ? entry.track.duration
+          : null,
+        isCurrent: false
+      })
+    }
+
+    latestPendingQueueRef.current = { items, updatedAt: Date.now() }
+
+    const publishLatestQueue = () => {
+      if (!latestPendingQueueRef.current) return
+      window.electronAPI.miniPlayer.publishQueueSnapshot(latestPendingQueueRef.current)
+      lastQueuePublishRef.current = Date.now()
+      latestPendingQueueRef.current = null
+    }
+
+    const elapsed = Date.now() - lastQueuePublishRef.current
+    if (elapsed >= QUEUE_SNAPSHOT_THROTTLE_MS) {
+      if (queuePublishTimerRef.current !== null) {
+        window.clearTimeout(queuePublishTimerRef.current)
+        queuePublishTimerRef.current = null
+      }
+      publishLatestQueue()
+      return
+    }
+    if (queuePublishTimerRef.current !== null) return
+    queuePublishTimerRef.current = window.setTimeout(() => {
+      queuePublishTimerRef.current = null
+      publishLatestQueue()
+    }, QUEUE_SNAPSHOT_THROTTLE_MS - elapsed)
+  }, [queueItems, upcomingQueueIds, currentQueueItemId, currentTrack])
+
+  useEffect(() => {
+    return () => {
+      if (queuePublishTimerRef.current !== null) {
+        window.clearTimeout(queuePublishTimerRef.current)
+        queuePublishTimerRef.current = null
+      }
+    }
+  }, [])
 }

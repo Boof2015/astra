@@ -350,6 +350,9 @@ export default function SettingsView() {
     init: initPhoneRemote,
     setEnabled: setPhoneRemoteEnabled,
     setPort: setPhoneRemotePort,
+    setSyncEnabled: setPhoneRemoteSyncEnabled,
+    requestSync: requestPhoneRemoteSync,
+    openSyncConflictResolver: openPhoneSyncConflictResolver,
     createPairingTicket: createPhoneRemotePairingTicket,
     clearActivePairingTicket: clearPhoneRemoteActivePairingTicket,
     approvePairingRequest: approvePhoneRemotePairingRequest,
@@ -821,6 +824,10 @@ export default function SettingsView() {
   const localApiToken = localApiStatus?.token ?? ''
   const phoneRemoteEnabled = phoneRemoteStatus?.enabled ?? false
   const phoneRemoteControlsEnabled = phoneRemoteStatus?.controlsEnabled ?? localApiControlsEnabled
+  const phoneRemoteSync = phoneRemoteStatus?.sync ?? null
+  const phoneRemoteSyncEnabled = phoneRemoteSync?.enabled ?? true
+  const phoneRemoteSyncConflictCount = phoneRemoteSync?.conflicts.length ?? 0
+  const phoneRemoteSyncPendingCount = phoneRemoteSync?.pendingResolutions.length ?? 0
   const phoneRemoteLanUrls = phoneRemoteStatus?.lanUrls ?? []
   const phoneRemoteControllerUrls = phoneRemoteLanUrls.map((url) => `${url}/remote/`)
   const localApiSelectedPairingUrl = localApiSelectedPairingBaseUrl
@@ -2669,6 +2676,58 @@ export default function SettingsView() {
                         </button>
                       )}
                     </div>
+                  </div>
+                )}
+              </div>
+              <div className="settings-integration-card">
+                <div className="settings-integration-card-head">
+                  <h4>Library Sync</h4>
+                  <p>Two-way favorites and playlist sync with paired phones. Independent of playback controls.</p>
+                </div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Library Sync</span>
+                    <button
+                      className={`settings-toggle ${phoneRemoteSyncEnabled ? 'active' : ''}`}
+                      onClick={() => void setPhoneRemoteSyncEnabled(!phoneRemoteSyncEnabled)}
+                    >
+                      {phoneRemoteSyncEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Sync Now</span>
+                    <button
+                      className="settings-btn settings-btn-primary"
+                      disabled={!phoneRemoteEnabled || !phoneRemoteSyncEnabled || phoneRemotePairedDeviceCount === 0}
+                      onClick={() => void requestPhoneRemoteSync()}
+                    >
+                      {phoneRemoteSync?.requestedAt ? 'Waiting for phone…' : 'Sync Now'}
+                    </button>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Last Synced</span>
+                    <span className="settings-info-value">
+                      {phoneRemoteSync?.lastSyncedAt
+                        ? new Date(phoneRemoteSync.lastSyncedAt).toLocaleString()
+                        : 'Never (the phone runs the sync — it picks requests up when it can reach this desktop)'}
+                    </span>
+                  </div>
+                </div>
+                {phoneRemoteSyncConflictCount > 0 && (
+                  <div className="local-api-inline-devices">
+                    <div className="local-api-inline-devices-header">
+                      <span className="local-api-inline-devices-count">
+                        {phoneRemoteSyncConflictCount} sync conflict{phoneRemoteSyncConflictCount !== 1 ? 's' : ''} need attention
+                      </span>
+                      <button className="settings-btn settings-btn-primary" onClick={openPhoneSyncConflictResolver}>
+                        Review conflicts
+                      </button>
+                    </div>
+                    <p className="settings-note">
+                      {phoneRemoteSyncPendingCount > 0
+                        ? `${phoneRemoteSyncPendingCount} choice${phoneRemoteSyncPendingCount === 1 ? '' : 's'} waiting for the phone to pick up.`
+                        : 'Open the resolver to compare both playlists and preview the result before choosing.'}
+                    </p>
                   </div>
                 )}
               </div>

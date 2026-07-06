@@ -5,12 +5,14 @@ import type {
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
 } from '../../types/phoneRemote'
+import type { PhoneSyncConflictResolution } from '../../types/phoneSync'
 
 interface PhoneRemoteSettingsStore {
   status: PhoneRemoteStatus | null
   pairedDevices: PhoneRemotePairedDevice[]
   pendingPairingRequests: PhoneRemotePendingPairingRequest[]
   activePairingTicket: PhoneRemotePairingTicket | null
+  syncConflictResolverOpen: boolean
   isLoading: boolean
   isInitialized: boolean
   errorMessage: string
@@ -18,6 +20,14 @@ interface PhoneRemoteSettingsStore {
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus | null>
   setPort: (port: number) => Promise<PhoneRemoteStatus | null>
+  setSyncEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus | null>
+  requestSync: () => Promise<PhoneRemoteStatus | null>
+  openSyncConflictResolver: () => void
+  closeSyncConflictResolver: () => void
+  resolveSyncConflict: (
+    syncUid: string,
+    resolution: PhoneSyncConflictResolution
+  ) => Promise<PhoneRemoteStatus | null>
   resetToDefaults: () => Promise<PhoneRemoteStatus | null>
   createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket | null>
   clearActivePairingTicket: () => void
@@ -77,6 +87,7 @@ export const usePhoneRemoteSettingsStore = create<PhoneRemoteSettingsStore>((set
     pairedDevices: [],
     pendingPairingRequests: [],
     activePairingTicket: null,
+    syncConflictResolverOpen: false,
     isLoading: false,
     isInitialized: false,
     errorMessage: '',
@@ -118,6 +129,44 @@ export const usePhoneRemoteSettingsStore = create<PhoneRemoteSettingsStore>((set
     setPort: async (port: number) => {
       try {
         const status = await window.electronAPI.phoneRemote.setPort(port)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setSyncEnabled: async (enabled: boolean) => {
+      try {
+        const status = await window.electronAPI.phoneRemote.setSyncEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    requestSync: async () => {
+      try {
+        const status = await window.electronAPI.phoneRemote.requestSync()
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    openSyncConflictResolver: () => {
+      set({ syncConflictResolverOpen: true })
+    },
+
+    closeSyncConflictResolver: () => {
+      set({ syncConflictResolverOpen: false })
+    },
+
+    resolveSyncConflict: async (syncUid: string, resolution: PhoneSyncConflictResolution) => {
+      try {
+        const status = await window.electronAPI.phoneRemote.resolveSyncConflict(syncUid, resolution)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
