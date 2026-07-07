@@ -6,8 +6,8 @@ import {
   type ControllerRadialItem,
   type ControllerRadialMenuState
 } from '../../utils/controllerRadial'
-import { getControllerPromptLabels } from '../../utils/controllerGamepad'
 import { useUIStore } from '../../stores/uiStore'
+import ControllerGlyph from './ControllerGlyph'
 
 interface ControllerRadialMenuProps {
   active: boolean
@@ -202,7 +202,6 @@ export default function ControllerRadialMenu({
   const view = getControllerRadialView(root, radialMenu.path)
   const selectedIndex = clampControllerRadialIndex(radialMenu.selectedIndex, view.items.length)
   const selectedItem = view.items[selectedIndex] ?? null
-  const labels = getControllerPromptLabels(family)
   const backLabel = radialMenu.path.length > 0 ? 'Back' : 'Close'
   const aimGeometry = getAimGeometry(radialMenu.aimVector)
   const selectedHint = selectedItem?.disabled
@@ -271,10 +270,10 @@ export default function ControllerRadialMenu({
       </div>
       <div className="controller-radial-hints">
         <span>
-          <kbd>{labels.activate}</kbd> {selectedHint}
+          <ControllerGlyph family={family} button="activate" /> {selectedHint}
         </span>
         <span>
-          <kbd>{labels.back}</kbd> {backLabel}
+          <ControllerGlyph family={family} button="back" /> {backLabel}
         </span>
       </div>
     </div>

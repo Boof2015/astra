@@ -3401,6 +3401,22 @@ html[data-input-modality='controller'] .queue-item:focus {
   text-align: center;
 }
 
+.controller-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  color: var(--accent-text-strong);
+  vertical-align: middle;
+}
+
+.controller-glyph svg {
+  display: block;
+  height: 100%;
+  width: auto;
+  overflow: visible;
+}
+
 body:has(.fullscreen-overlay) .controller-hints {
   bottom: 18px;
 }

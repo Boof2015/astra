@@ -38,3 +38,5 @@ export interface ControllerPromptLabels {
   stickLeft: string
   stickRight: string
 }
+
+export type ControllerButtonRole = keyof ControllerPromptLabels
