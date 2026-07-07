@@ -5,11 +5,18 @@ import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_SCALE_MODE,
   DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTROGRAM_CONTRAST,
+  DEFAULT_SPECTROGRAM_ORIENTATION,
   clampSpectrogramScrollSpeed,
+  clampSpectrogramTiltDbPerOctave,
+  clampSpectrogramContrast,
   isSpectrogramClarityMode,
   isSpectrogramScaleMode,
+  isSpectrogramOrientation,
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
+  type SpectrogramOrientation,
 } from '../../types/spectrogram'
 import {
   DEFAULT_LUFS_METER_MODE,
@@ -92,6 +99,9 @@ export interface AnalyzerProfileScopeSettings {
     scrollSpeed: number
     clarityMode: SpectrogramClarityMode
     scaleMode: SpectrogramScaleMode
+    tiltDbPerOctave: number
+    contrast: number
+    orientation: SpectrogramOrientation
   }
   vumeter: {
     mode: VUMeterMode
@@ -158,6 +168,9 @@ interface VisualizerSettingsSnapshot {
   spectrogramScrollSpeed: number
   spectrogramClarityMode: SpectrogramClarityMode
   spectrogramScaleMode: SpectrogramScaleMode
+  spectrogramTiltDbPerOctave: number
+  spectrogramContrast: number
+  spectrogramOrientation: SpectrogramOrientation
   waveformScrollSpeed: number
   waveformGainDb: number
   waveformMode: WaveformMode
@@ -190,6 +203,9 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setSpectrogramScrollSpeed: (speed: number) => void
   setSpectrogramClarityMode: (mode: SpectrogramClarityMode) => void
   setSpectrogramScaleMode: (mode: SpectrogramScaleMode) => void
+  setSpectrogramTiltDbPerOctave: (value: number) => void
+  setSpectrogramContrast: (value: number) => void
+  setSpectrogramOrientation: (orientation: SpectrogramOrientation) => void
   setWaveformScrollSpeed: (speed: number) => void
   setWaveformGainDb: (gainDb: number) => void
   setPitchLock: (enabled: boolean) => void
@@ -319,6 +335,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       scrollSpeed: DEFAULT_SPECTROGRAM_SCROLL_SPEED,
       clarityMode: DEFAULT_SPECTROGRAM_CLARITY_MODE,
       scaleMode: DEFAULT_SPECTROGRAM_SCALE_MODE,
+      tiltDbPerOctave: DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+      contrast: DEFAULT_SPECTROGRAM_CONTRAST,
+      orientation: DEFAULT_SPECTROGRAM_ORIENTATION,
     },
     vumeter: {
       mode: DEFAULT_VU_METER_MODE,
@@ -567,6 +586,11 @@ function normalizeScopeSettings(
       scaleMode: isSpectrogramScaleMode(rawSpectrogram.scaleMode)
         ? rawSpectrogram.scaleMode
         : DEFAULT_SPECTROGRAM_SCALE_MODE,
+      tiltDbPerOctave: clampSpectrogramTiltDbPerOctave(rawSpectrogram.tiltDbPerOctave),
+      contrast: clampSpectrogramContrast(rawSpectrogram.contrast),
+      orientation: isSpectrogramOrientation(rawSpectrogram.orientation)
+        ? rawSpectrogram.orientation
+        : DEFAULT_SPECTROGRAM_ORIENTATION,
     },
     vumeter: {
       mode: isVUMeterMode(rawVumeter.mode) ? rawVumeter.mode : DEFAULT_VU_METER_MODE,
@@ -740,6 +764,9 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrogram.scrollSpeed === right.scopeSettings.spectrogram.scrollSpeed
     && left.scopeSettings.spectrogram.clarityMode === right.scopeSettings.spectrogram.clarityMode
     && left.scopeSettings.spectrogram.scaleMode === right.scopeSettings.spectrogram.scaleMode
+    && left.scopeSettings.spectrogram.tiltDbPerOctave === right.scopeSettings.spectrogram.tiltDbPerOctave
+    && left.scopeSettings.spectrogram.contrast === right.scopeSettings.spectrogram.contrast
+    && left.scopeSettings.spectrogram.orientation === right.scopeSettings.spectrogram.orientation
     && left.scopeSettings.vumeter.mode === right.scopeSettings.vumeter.mode
     && left.scopeSettings.vumeter.orientation === right.scopeSettings.vumeter.orientation
     && left.scopeSettings.lufsmeter.mode === right.scopeSettings.lufsmeter.mode
@@ -848,6 +875,9 @@ function buildSnapshot(
     spectrogramScrollSpeed: workingState.scopeSettings.spectrogram.scrollSpeed,
     spectrogramClarityMode: workingState.scopeSettings.spectrogram.clarityMode,
     spectrogramScaleMode: workingState.scopeSettings.spectrogram.scaleMode,
+    spectrogramTiltDbPerOctave: workingState.scopeSettings.spectrogram.tiltDbPerOctave,
+    spectrogramContrast: workingState.scopeSettings.spectrogram.contrast,
+    spectrogramOrientation: workingState.scopeSettings.spectrogram.orientation,
     waveformScrollSpeed: workingState.scopeSettings.waveform.scrollSpeed,
     waveformGainDb: workingState.scopeSettings.waveform.gainDb,
     waveformMode: workingState.scopeSettings.waveform.mode,
@@ -1235,6 +1265,59 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
         spectrogram: {
           ...state.workingState.scopeSettings.spectrogram,
           scaleMode: mode,
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramTiltDbPerOctave: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          tiltDbPerOctave: clampSpectrogramTiltDbPerOctave(value),
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramContrast: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          contrast: clampSpectrogramContrast(value),
+        },
+      },
+    })
+
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramOrientation: (orientation) => {
+    if (!isSpectrogramOrientation(orientation)) return
+
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: {
+          ...state.workingState.scopeSettings.spectrogram,
+          orientation,
         },
       },
     })

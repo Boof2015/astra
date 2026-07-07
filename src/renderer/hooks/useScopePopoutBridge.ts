@@ -63,6 +63,9 @@ export function useScopePopoutBridge(): void {
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const spectrogramTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrogramTiltDbPerOctave)
+  const spectrogramContrast = useVisualizerSettingsStore((s) => s.spectrogramContrast)
+  const spectrogramOrientation = useVisualizerSettingsStore((s) => s.spectrogramOrientation)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
   const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
@@ -198,6 +201,9 @@ export function useScopePopoutBridge(): void {
             spectrogramScrollSpeed,
             spectrogramClarityMode,
             spectrogramScaleMode,
+            spectrogramTiltDbPerOctave,
+            spectrogramContrast,
+            spectrogramOrientation,
             lineColor,
             reset: true,
           })
@@ -304,6 +310,9 @@ export function useScopePopoutBridge(): void {
             spectrogramScrollSpeed,
             spectrogramClarityMode,
             spectrogramScaleMode,
+            spectrogramTiltDbPerOctave,
+            spectrogramContrast,
+            spectrogramOrientation,
             lineColor,
             reset: false,
           })
@@ -450,6 +459,9 @@ export function useScopePopoutBridge(): void {
               spectrogramScrollSpeed,
               spectrogramClarityMode,
               spectrogramScaleMode,
+              spectrogramTiltDbPerOctave,
+              spectrogramContrast,
+              spectrogramOrientation,
               lineColor,
               reset: false,
             })
@@ -529,6 +541,9 @@ export function useScopePopoutBridge(): void {
     spectrogramScrollSpeed,
     spectrogramClarityMode,
     spectrogramScaleMode,
+    spectrogramTiltDbPerOctave,
+    spectrogramContrast,
+    spectrogramOrientation,
     waveformScrollSpeed,
     waveformGainDb,
     waveformMultiband,

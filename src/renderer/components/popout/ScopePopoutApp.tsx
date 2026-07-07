@@ -16,9 +16,15 @@ import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_SCALE_MODE,
   DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTROGRAM_CONTRAST,
+  DEFAULT_SPECTROGRAM_ORIENTATION,
   clampSpectrogramScrollSpeed,
+  clampSpectrogramTiltDbPerOctave,
+  clampSpectrogramContrast,
   isSpectrogramClarityMode,
   isSpectrogramScaleMode,
+  isSpectrogramOrientation,
 } from '../../../types/spectrogram'
 import {
   DEFAULT_VU_METER_MODE,
@@ -685,6 +691,9 @@ function SpectrogramScopeCanvas() {
   const scrollSpeedRef = useRef(DEFAULT_SPECTROGRAM_SCROLL_SPEED)
   const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
   const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
+  const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE)
+  const contrastRef = useRef(DEFAULT_SPECTROGRAM_CONTRAST)
+  const orientationRef = useRef(DEFAULT_SPECTROGRAM_ORIENTATION)
   const isPlayingRef = useRef(false)
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
@@ -703,12 +712,20 @@ function SpectrogramScopeCanvas() {
       const nextScaleMode = isSpectrogramScaleMode(chunk.spectrogramScaleMode)
         ? chunk.spectrogramScaleMode
         : DEFAULT_SPECTROGRAM_SCALE_MODE
+      const nextTiltDbPerOctave = clampSpectrogramTiltDbPerOctave(chunk.spectrogramTiltDbPerOctave)
+      const nextContrast = clampSpectrogramContrast(chunk.spectrogramContrast)
+      const nextOrientation = isSpectrogramOrientation(chunk.spectrogramOrientation)
+        ? chunk.spectrogramOrientation
+        : DEFAULT_SPECTROGRAM_ORIENTATION
 
       fftSizeRef.current = nextFftSize
       lineColorRef.current = nextLineColor
       scrollSpeedRef.current = nextScrollSpeed
       clarityModeRef.current = nextClarityMode
       scaleModeRef.current = nextScaleMode
+      tiltDbPerOctaveRef.current = nextTiltDbPerOctave
+      contrastRef.current = nextContrast
+      orientationRef.current = nextOrientation
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -726,6 +743,9 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: nextScrollSpeed,
         clarityMode: nextClarityMode,
         scaleMode: nextScaleMode,
+        tiltDbPerOctave: nextTiltDbPerOctave,
+        contrast: nextContrast,
+        orientation: nextOrientation,
       })
     })
 
@@ -742,6 +762,9 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: scrollSpeedRef.current,
         clarityMode: clarityModeRef.current,
         scaleMode: scaleModeRef.current,
+        tiltDbPerOctave: tiltDbPerOctaveRef.current,
+        contrast: contrastRef.current,
+        orientation: orientationRef.current,
         colorScheme: 'heat',
         dataSource: {
           getPendingSpectrogramSamples: () => {

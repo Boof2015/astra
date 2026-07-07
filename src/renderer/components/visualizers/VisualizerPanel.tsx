@@ -10,7 +10,7 @@ import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/v
 import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import type { ScopeKind } from '../../../types/scopePopout'
-import type { SpectrogramClarityMode, SpectrogramScaleMode } from '../../../types/spectrogram'
+import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientation } from '../../../types/spectrogram'
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import type { WaveformMode } from '../../../types/waveform'
@@ -449,6 +449,9 @@ function DockedSpectrogramTile({
   scrollSpeed,
   clarityMode,
   scaleMode,
+  tiltDbPerOctave,
+  contrast,
+  orientation,
   isRunning,
   frameScheduler,
 }: {
@@ -458,6 +461,9 @@ function DockedSpectrogramTile({
   scrollSpeed: number
   clarityMode: SpectrogramClarityMode
   scaleMode: SpectrogramScaleMode
+  tiltDbPerOctave: number
+  contrast: number
+  orientation: SpectrogramOrientation
   isRunning: boolean
   frameScheduler: FrameScheduler
 }) {
@@ -480,6 +486,9 @@ function DockedSpectrogramTile({
         scrollSpeed,
         clarityMode,
         scaleMode,
+        tiltDbPerOctave,
+        contrast,
+        orientation,
       })
     }
 
@@ -502,8 +511,11 @@ function DockedSpectrogramTile({
       scrollSpeed,
       clarityMode,
       scaleMode,
+      tiltDbPerOctave,
+      contrast,
+      orientation,
     })
-  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode])
+  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, tiltDbPerOctave, contrast, orientation])
 
   useEffect(() => {
     if (isRunning) {
@@ -837,6 +849,9 @@ export default function VisualizerPanel({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
+  const spectrogramTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrogramTiltDbPerOctave)
+  const spectrogramContrast = useVisualizerSettingsStore((s) => s.spectrogramContrast)
+  const spectrogramOrientation = useVisualizerSettingsStore((s) => s.spectrogramOrientation)
   const spectrumHeatmap = useVisualizerSettingsStore((s) => s.spectrumHeatmap)
   const spectrumShowSideLine = useVisualizerSettingsStore((s) => s.spectrumShowSideLine)
   const spectrumSmoothing = useVisualizerSettingsStore((s) => s.spectrumSmoothing)
@@ -1250,6 +1265,9 @@ export default function VisualizerPanel({
             scrollSpeed={spectrogramScrollSpeed}
             clarityMode={spectrogramClarityMode}
             scaleMode={spectrogramScaleMode}
+            tiltDbPerOctave={spectrogramTiltDbPerOctave}
+            contrast={spectrogramContrast}
+            orientation={spectrogramOrientation}
             isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'vumeter' ? (

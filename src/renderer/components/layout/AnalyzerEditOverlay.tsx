@@ -4,8 +4,17 @@ import {
   MAX_SPECTROGRAM_SCROLL_SPEED,
   MIN_SPECTROGRAM_SCROLL_SPEED,
   SPECTROGRAM_SCROLL_SPEED_STEP,
+  DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  MAX_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  MIN_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  SPECTROGRAM_TILT_STEP,
+  DEFAULT_SPECTROGRAM_CONTRAST,
+  MAX_SPECTROGRAM_CONTRAST,
+  MIN_SPECTROGRAM_CONTRAST,
+  SPECTROGRAM_CONTRAST_STEP,
   type SpectrogramClarityMode,
   type SpectrogramScaleMode,
+  type SpectrogramOrientation,
 } from '../../../types/spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import {
@@ -301,6 +310,9 @@ export default function AnalyzerEditOverlay({
   const spectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((state) => state.spectrogramClarityMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((state) => state.spectrogramScaleMode)
+  const spectrogramTiltDbPerOctave = useVisualizerSettingsStore((state) => state.spectrogramTiltDbPerOctave)
+  const spectrogramContrast = useVisualizerSettingsStore((state) => state.spectrogramContrast)
+  const spectrogramOrientation = useVisualizerSettingsStore((state) => state.spectrogramOrientation)
   const spectrumHeatmap = useVisualizerSettingsStore((state) => state.spectrumHeatmap)
   const spectrumShowSideLine = useVisualizerSettingsStore((state) => state.spectrumShowSideLine)
   const setSpectrumShowSideLine = useVisualizerSettingsStore((state) => state.setSpectrumShowSideLine)
@@ -334,6 +346,9 @@ export default function AnalyzerEditOverlay({
   const setSpectrogramScrollSpeed = useVisualizerSettingsStore((state) => state.setSpectrogramScrollSpeed)
   const setSpectrogramClarityMode = useVisualizerSettingsStore((state) => state.setSpectrogramClarityMode)
   const setSpectrogramScaleMode = useVisualizerSettingsStore((state) => state.setSpectrogramScaleMode)
+  const setSpectrogramTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrogramTiltDbPerOctave)
+  const setSpectrogramContrast = useVisualizerSettingsStore((state) => state.setSpectrogramContrast)
+  const setSpectrogramOrientation = useVisualizerSettingsStore((state) => state.setSpectrogramOrientation)
   const setWaveformScrollSpeed = useVisualizerSettingsStore((state) => state.setWaveformScrollSpeed)
   const setPitchLock = useVisualizerSettingsStore((state) => state.setPitchLock)
   const setOscilloscopeUnderfillEnabled = useVisualizerSettingsStore((state) => state.setOscilloscopeUnderfillEnabled)
@@ -633,6 +648,7 @@ export default function AnalyzerEditOverlay({
       case 'spectrogram':
         return (
           <div className="analyzer-edit-active-controls">
+            <div className="analyzer-edit-spectrogram-selects">
             <div className="analyzer-edit-mini-control">
               <span className="analyzer-edit-corner-label">FFT</span>
               <select
@@ -671,6 +687,18 @@ export default function AnalyzerEditOverlay({
                 <option value="sharper">Sharper</option>
               </select>
             </div>
+            <div className="analyzer-edit-mini-control">
+              <span className="analyzer-edit-corner-label">Orient</span>
+              <select
+                className="analyzer-edit-select"
+                value={spectrogramOrientation}
+                onChange={(event) => setSpectrogramOrientation(event.target.value as SpectrogramOrientation)}
+              >
+                <option value="horizontal">Horizontal</option>
+                <option value="vertical">Vertical</option>
+              </select>
+            </div>
+            </div>
             <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
               <span className="analyzer-edit-corner-label">Speed x{spectrogramScrollSpeed.toFixed(1)}</span>
               <input
@@ -681,6 +709,44 @@ export default function AnalyzerEditOverlay({
                 step={SPECTROGRAM_SCROLL_SPEED_STEP}
                 value={spectrogramScrollSpeed}
                 onChange={(event) => setSpectrogramScrollSpeed(Number(event.target.value))}
+              />
+            </div>
+            <div
+              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+              onDoubleClick={() => setSpectrogramTiltDbPerOctave(DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE)}
+              title={`Double-click to reset to ${DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+            >
+              <span className="analyzer-edit-corner-label">
+                Tilt {spectrogramTiltDbPerOctave.toFixed(1)} dB/oct
+              </span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTROGRAM_TILT_DB_PER_OCTAVE}
+                max={MAX_SPECTROGRAM_TILT_DB_PER_OCTAVE}
+                step={SPECTROGRAM_TILT_STEP}
+                value={spectrogramTiltDbPerOctave}
+                aria-label="Spectrogram tilt"
+                onChange={(event) => setSpectrogramTiltDbPerOctave(Number(event.target.value))}
+              />
+            </div>
+            <div
+              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+              onDoubleClick={() => setSpectrogramContrast(DEFAULT_SPECTROGRAM_CONTRAST)}
+              title={`Double-click to reset to ${DEFAULT_SPECTROGRAM_CONTRAST.toFixed(1)}`}
+            >
+              <span className="analyzer-edit-corner-label">
+                Contrast {spectrogramContrast.toFixed(1)}
+              </span>
+              <input
+                type="range"
+                className="analyzer-edit-range"
+                min={MIN_SPECTROGRAM_CONTRAST}
+                max={MAX_SPECTROGRAM_CONTRAST}
+                step={SPECTROGRAM_CONTRAST_STEP}
+                value={spectrogramContrast}
+                aria-label="Spectrogram contrast"
+                onChange={(event) => setSpectrogramContrast(Number(event.target.value))}
               />
             </div>
           </div>

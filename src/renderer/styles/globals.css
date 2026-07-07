@@ -12815,6 +12815,23 @@ body::after {
   min-width: min(320px, 100%);
 }
 
+.analyzer-edit-active-controls .analyzer-edit-spectrogram-selects {
+  flex: 1 0 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  min-width: min(320px, 100%);
+}
+
+.analyzer-edit-active-controls .analyzer-edit-spectrogram-selects .analyzer-edit-mini-control {
+  min-width: 0;
+}
+
+.analyzer-edit-active-controls .analyzer-edit-spectrogram-selects .analyzer-edit-select {
+  min-width: 0;
+  width: 100%;
+}
+
 .analyzer-edit-active-controls .analyzer-edit-select,
 .analyzer-edit-active-controls .analyzer-edit-input {
   min-width: 188px;
