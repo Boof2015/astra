@@ -255,6 +255,7 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+  hidden: number
 }
 
 export interface FolderSubfolderSummary {
@@ -1259,6 +1260,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       error?: string
     }>,
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    setFolderHidden: (folderPath: string, hidden: boolean) =>
+      ipcRenderer.invoke('library:setFolderHidden', folderPath, hidden) as Promise<{ success: boolean; error?: string }>,
     backfillReplayGainMetadata: () => ipcRenderer.invoke('library:backfillReplayGainMetadata') as Promise<{
       scanned: number
       updated: number
@@ -1771,6 +1774,7 @@ declare global {
           error?: string
         }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        setFolderHidden: (folderPath: string, hidden: boolean) => Promise<{ success: boolean; error?: string }>
         backfillReplayGainMetadata: () => Promise<{
           scanned: number
           updated: number

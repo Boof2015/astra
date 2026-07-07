@@ -325,6 +325,7 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+  hidden: number
 }
 
 export interface FolderSubfolderSummary {
@@ -2142,9 +2143,15 @@ export async function initDatabase(): Promise<void> {
     CREATE TABLE IF NOT EXISTS folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       path TEXT UNIQUE NOT NULL,
-      added_at INTEGER NOT NULL
+      added_at INTEGER NOT NULL,
+      hidden INTEGER NOT NULL DEFAULT 0
     )
   `)
+  try {
+    db.run('ALTER TABLE folders ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS folder_exclusions (
@@ -5381,7 +5388,7 @@ export async function addLibraryFolder(folderPath: string): Promise<LibraryFolde
     const insertResult = db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
     const id = Number(insertResult.lastInsertRowid)
     await saveDatabase()
-    return { id, path: folderPath, added_at: now }
+    return { id, path: folderPath, added_at: now, hidden: 0 }
   } catch {
     return null // Folder already exists
   }
@@ -5581,6 +5588,19 @@ export async function removeLibraryFolder(folderPath: string): Promise<void> {
   db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
   db.run('DELETE FROM folders WHERE id = ?', [folder.id])
   await saveDatabase()
+}
+
+// Toggle a library folder's visibility. Hidden folders stay fully indexed; their tracks are
+// filtered out of the browsable library in the renderer. This deletes nothing (unlike
+// removeLibraryFolder / folder exclusions).
+export async function setLibraryFolderHidden(folderPath: string, hidden: boolean): Promise<boolean> {
+  if (!db) return false
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return false
+
+  db.run('UPDATE folders SET hidden = ? WHERE id = ?', [hidden ? 1 : 0, folder.id])
+  await saveDatabase()
+  return true
 }
 
 export async function resetMappedFoldersData(): Promise<{ clearedFolders: number; clearedTracks: number }> {

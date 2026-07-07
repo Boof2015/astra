@@ -7046,6 +7046,14 @@ ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
   return { success: true }
 })
 
+ipcMain.handle('library:setFolderHidden', async (_event, folderPath: string, hidden: boolean) => {
+  const updated = await library.setLibraryFolderHidden(folderPath, hidden)
+  if (!updated) {
+    return { success: false, error: 'Invalid folder path.' }
+  }
+  return { success: true }
+})
+
 ipcMain.handle(
   'library:setFolderSubfolderExcluded',
   async (_event, folderPath: string, relativePath: string, excluded: boolean) => {

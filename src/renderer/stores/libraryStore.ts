@@ -97,6 +97,7 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+  hidden: number
 }
 
 interface LibrarySelectionSnapshot {
@@ -259,6 +260,7 @@ interface LibraryStore {
   addFolder: () => Promise<void>
   addFolderWithoutScan: () => Promise<string | null>
   removeFolder: (path: string) => Promise<void>
+  setFolderHidden: (path: string, hidden: boolean) => Promise<void>
   rescan: () => Promise<void>
   forceRescanAll: () => Promise<void>
   backfillReplayGainMetadata: () => Promise<void>
@@ -1457,6 +1459,27 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const { [path]: __, ...remainingSummaries } = get().folderSubfolderSummaries
     set({ folderWarnings: remaining, folderSubfolderSummaries: remainingSummaries })
     await get().loadLibrary()
+  },
+
+  // Toggle a folder's visibility. Hidden folders stay indexed; their tracks are filtered out of
+  // the browsable library in LibraryView. Applies immediately — no rescan or library reload.
+  setFolderHidden: async (path: string, hidden: boolean) => {
+    // Optimistically flip visibility so the checkbox and library filters react instantly.
+    set((state) => ({
+      folders: state.folders.map((folder) =>
+        folder.path === path ? { ...folder, hidden: hidden ? 1 : 0 } : folder
+      )
+    }))
+
+    const result = await window.electronAPI.library.setFolderHidden(path, hidden)
+    if (!result.success) {
+      // Revert the optimistic change if the write failed.
+      set((state) => ({
+        folders: state.folders.map((folder) =>
+          folder.path === path ? { ...folder, hidden: hidden ? 0 : 1 } : folder
+        )
+      }))
+    }
   },
 
   // Rescan all folders

@@ -250,8 +250,21 @@ export default function LibraryView() {
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre
   const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
+
+  // Folders the user has hidden stay indexed but are filtered out of every library browse surface.
+  const hiddenFolderPrefixes = useMemo(
+    () => folders.filter((folder) => folder.hidden).map((folder) => folder.path),
+    [folders]
+  )
+  const hasHiddenFolders = hiddenFolderPrefixes.length > 0
+  const visibleFolders = useMemo(
+    () => (hasHiddenFolders ? folders.filter((folder) => !folder.hidden) : folders),
+    [folders, hasHiddenFolders]
+  )
+
   const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && !selectedGenre && (
-    viewMode === 'tracks' || viewMode === 'genres' || viewMode === 'folders' || selectedSourceFilters.size > 0
+    viewMode === 'tracks' || viewMode === 'genres' || viewMode === 'folders'
+    || selectedSourceFilters.size > 0 || hasHiddenFolders
   )
   const isFullTrackListPending = shouldRetainFullTracks && totalTrackCount > 0 && fullTrackPaths.length === 0
   const activeTrackPaths = shouldRetainFullTracks ? fullTrackPaths : trackPaths
@@ -259,6 +272,14 @@ export default function LibraryView() {
     () => resolveTrackPaths(activeTrackPaths),
     [activeTrackPaths, resolveTrackPaths, trackCacheVersion]
   )
+  // Drop tracks that live under a hidden folder. Mirrors the path-prefix matching used by
+  // FolderTreeView's buildFolderTree so a track counts as "under" a root only via a separator.
+  const visibleTracks = useMemo(() => {
+    if (!hasHiddenFolders) return tracks
+    return tracks.filter((track) => !hiddenFolderPrefixes.some((prefix) => (
+      track.path.startsWith(prefix + '/') || track.path.startsWith(prefix + '\\')
+    )))
+  }, [tracks, hiddenFolderPrefixes, hasHiddenFolders])
   const sortContextKey = useMemo(() => {
     if (selectedAlbum) {
       const identityKey = selectedAlbum.identity_key?.trim()
@@ -538,9 +559,9 @@ export default function LibraryView() {
   }, [setViewMode, viewMode])
 
   const sourceFilteredTracks = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return tracks
+    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return visibleTracks
 
-    return tracks.filter((track) => {
+    return visibleTracks.filter((track) => {
       if (track.source_type === 'local') {
         return selectedSourceFilters.has('local')
       }
@@ -554,7 +575,7 @@ export default function LibraryView() {
       }
       return false
     })
-  }, [selectedSourceFilters, shouldShowSourceFilters, tracks])
+  }, [selectedSourceFilters, shouldShowSourceFilters, visibleTracks])
 
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...sourceFilteredTracks]
@@ -636,9 +657,9 @@ export default function LibraryView() {
   }, [sourceFilteredTracks])
 
   const sourceFilteredAlbums = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return albumGridSourceAlbums
+    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return albumGridSourceAlbums
     return albumGridSourceAlbums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albumGridSourceAlbums, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredAlbumIdentityKeys])
+  }, [albumGridSourceAlbums, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
     const visibleAlbums = !hasSearchQuery
@@ -668,7 +689,7 @@ export default function LibraryView() {
   }, [albumSortMode, hasSearchQuery, trimmedSearchQuery, sourceFilteredAlbums])
 
   const sourceFilteredArtistKeys = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
       const parsedArtistNames = track.artist_names.length > 0 ? track.artist_names : track.album_artist_names
@@ -688,11 +709,11 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
 
   const sourceFilteredPrimaryArtistKeys = useMemo(() => {
     if (artistBrowseMode !== 'canonical') return null
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
 
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -700,7 +721,7 @@ export default function LibraryView() {
       if (browseArtistKey) keys.add(browseArtistKey)
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
 
   const visibleArtists = useMemo(() => {
     if (!sourceFilteredArtistKeys) return artists
@@ -725,7 +746,7 @@ export default function LibraryView() {
   }, [hasSearchQuery, trimmedSearchQuery, rootVisibleArtists])
 
   const sourceFilteredGenreKeys = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return null
+    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
       for (const genre of track.genres) {
@@ -734,7 +755,7 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
 
   const visibleGenres = useMemo(() => {
     if (!sourceFilteredGenreKeys) return genres
@@ -1084,7 +1105,7 @@ export default function LibraryView() {
 
     // Folder tree
     if (viewMode === 'folders' && !selectedAlbum && !selectedArtist && !selectedGenre) {
-      return <FolderTreeView tracks={sourceFilteredTracks} allTracks={tracks} folders={folders} searchQuery={searchQuery} />
+      return <FolderTreeView tracks={sourceFilteredTracks} allTracks={visibleTracks} folders={visibleFolders} searchQuery={searchQuery} />
     }
 
     // Albums grid

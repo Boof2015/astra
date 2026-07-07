@@ -9614,6 +9614,48 @@ body.folder-settings-open .app {
   cursor: not-allowed;
 }
 
+.folder-visibility-toggle {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
+.folder-visibility-toggle[aria-checked='false'] {
+  color: var(--text-tertiary);
+}
+
+.folder-visibility-toggle:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+}
+
+.folder-visibility-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.folder-tree-badge.hidden {
+  border: 1px solid var(--glass-border);
+  color: var(--text-tertiary);
+  background: rgba(var(--tint), 0.04);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.folder-tree-node.is-root.is-hidden .folder-tree-label,
+.folder-tree-node.is-root.is-hidden .folder-tree-icon {
+  opacity: 0.5;
+}
+
 .folder-tree-status {
   display: flex;
   align-items: center;
