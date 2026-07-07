@@ -5,6 +5,9 @@ import type {
   ControllerFrame,
   ControllerPromptLabels
 } from '../types/controller'
+import type { ControllerRadialVector } from './controllerRadial'
+
+export type ControllerTabDirection = 'previous' | 'next'
 
 export const CONTROLLER_AXIS_DEAD_ZONE = 0.55
 export const CONTROLLER_SCROLL_DEAD_ZONE = 0.2
@@ -41,11 +44,13 @@ export function getControllerPromptLabels(family: ControllerFamily): ControllerP
     return {
       activate: 'Cross',
       back: 'Circle',
-      context: 'Square',
+      playPause: 'Square',
       queue: 'Triangle',
-      menu: 'Options',
+      radialMenu: 'Options',
       bumperLeft: 'L1',
       bumperRight: 'R1',
+      triggerLeft: 'L2',
+      triggerRight: 'R2',
       stickLeft: 'L3',
       stickRight: 'R3'
     }
@@ -53,11 +58,13 @@ export function getControllerPromptLabels(family: ControllerFamily): ControllerP
   return {
     activate: 'A',
     back: 'B',
-    context: 'X',
+    playPause: 'X',
     queue: 'Y',
-    menu: 'Menu',
+    radialMenu: 'Menu',
     bumperLeft: 'LB',
     bumperRight: 'RB',
+    triggerLeft: 'LT',
+    triggerRight: 'RT',
     stickLeft: 'L3',
     stickRight: 'R3'
   }
@@ -123,9 +130,34 @@ export function getControllerDirections(frame: ControllerFrame): Set<ControllerD
   return directions
 }
 
+export function getControllerTabDirections(frame: ControllerFrame): Set<ControllerTabDirection> {
+  const directions = new Set<ControllerTabDirection>()
+  const horizontal = frame.axes[2] ?? 0
+  if (horizontal <= -CONTROLLER_AXIS_DEAD_ZONE) directions.add('previous')
+  else if (horizontal >= CONTROLLER_AXIS_DEAD_ZONE) directions.add('next')
+  return directions
+}
+
+export function getControllerRadialVector(frame: ControllerFrame): ControllerRadialVector | null {
+  let x = 0
+  let y = 0
+  if (isControllerButtonPressed(frame, STANDARD_GAMEPAD_BUTTON.dpadLeft)) x -= 1
+  if (isControllerButtonPressed(frame, STANDARD_GAMEPAD_BUTTON.dpadRight)) x += 1
+  if (isControllerButtonPressed(frame, STANDARD_GAMEPAD_BUTTON.dpadUp)) y -= 1
+  if (isControllerButtonPressed(frame, STANDARD_GAMEPAD_BUTTON.dpadDown)) y += 1
+  if (x !== 0 || y !== 0) return { x, y }
+
+  const horizontal = frame.axes[0] ?? 0
+  const vertical = frame.axes[1] ?? 0
+  return Math.hypot(horizontal, vertical) >= CONTROLLER_AXIS_DEAD_ZONE
+    ? { x: horizontal, y: vertical }
+    : null
+}
+
 export function hasMeaningfulControllerInput(frame: ControllerFrame): boolean {
   if (frame.buttons.some((value) => value >= CONTROLLER_BUTTON_THRESHOLD)) return true
   if (getControllerDirections(frame).size > 0) return true
+  if (getControllerTabDirections(frame).size > 0) return true
   const scrollAxis = frame.axes[3] ?? 0
   return Math.abs(scrollAxis) >= CONTROLLER_SCROLL_DEAD_ZONE
 }
@@ -170,11 +202,11 @@ export function getControllerButtonEdgeCommands(
 
   pushOnEdge(STANDARD_GAMEPAD_BUTTON.south, { type: 'activate' })
   pushOnEdge(STANDARD_GAMEPAD_BUTTON.east, { type: 'back' })
-  pushOnEdge(STANDARD_GAMEPAD_BUTTON.west, { type: 'context' })
+  pushOnEdge(STANDARD_GAMEPAD_BUTTON.west, { type: 'playback-toggle' })
   pushOnEdge(STANDARD_GAMEPAD_BUTTON.north, { type: 'toggle-queue' })
-  pushOnEdge(STANDARD_GAMEPAD_BUTTON.menu, { type: 'playback-toggle' })
-  pushOnEdge(STANDARD_GAMEPAD_BUTTON.leftBumper, { type: 'bumper-left' })
-  pushOnEdge(STANDARD_GAMEPAD_BUTTON.rightBumper, { type: 'bumper-right' })
+  pushOnEdge(STANDARD_GAMEPAD_BUTTON.menu, { type: 'open-radial' })
+  pushOnEdge(STANDARD_GAMEPAD_BUTTON.leftBumper, { type: 'previous-track' })
+  pushOnEdge(STANDARD_GAMEPAD_BUTTON.rightBumper, { type: 'next-track' })
   pushOnEdge(STANDARD_GAMEPAD_BUTTON.leftStick, { type: 'jump-sidebar' })
   pushOnEdge(STANDARD_GAMEPAD_BUTTON.rightStick, { type: 'jump-transport' })
   return commands

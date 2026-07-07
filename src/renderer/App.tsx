@@ -22,6 +22,7 @@ import PhoneSyncConflictResolverModal from './components/sync/PhoneSyncConflictR
 import { runHostOutputCalibration } from './audio/parallaxCalibration'
 import ControllerHints from './components/layout/ControllerHints'
 import ControllerFocusRing from './components/layout/ControllerFocusRing'
+import ControllerRadialMenu from './components/layout/ControllerRadialMenu'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -517,7 +518,13 @@ function App() {
         <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
         <ControllerFocusRing active={controllerInput.active} />
-        <ControllerHints {...controllerInput} />
+        <ControllerRadialMenu
+          active={controllerInput.active}
+          family={controllerInput.family}
+          canOpenContext={controllerInput.canOpenContext}
+          radialMenu={controllerInput.radialMenu}
+        />
+        <ControllerHints active={controllerInput.active} family={controllerInput.family} />
       </div>
     </div>
   )

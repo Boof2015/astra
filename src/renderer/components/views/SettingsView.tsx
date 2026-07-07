@@ -2496,9 +2496,9 @@ export default function SettingsView() {
                     </button>
                   </div>
                   <p className="settings-note">
-                    Navigate Astra with an Xbox or PlayStation controller — D-pad/stick to move, A/Cross to select,
-                    bumpers for tabs, stick-clicks to jump to the sidebar or now playing. Early and still rough;
-                    feedback on what feels off is very welcome.
+                    Navigate Astra with an Xbox or PlayStation controller. D-pad/stick moves focus, A/Cross selects,
+                    X/Square plays or pauses, bumpers skip tracks, triggers seek, right stick switches tabs, and
+                    Menu/Options opens a radial menu for advanced controls.
                   </p>
                 </div>
               </div>

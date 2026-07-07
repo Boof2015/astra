@@ -1551,10 +1551,17 @@ export default function LibraryView() {
             <>
               <h2>{title}</h2>
               {showViewTabs && (
-                <div className="view-tabs" data-controller-tabstrip="library-view">
+                <div
+                  className="view-tabs"
+                  data-controller-tabstrip="library-view"
+                  data-controller-group="library-tabs"
+                  data-controller-axis="horizontal"
+                  data-controller-auto-items="true"
+                >
                   <button
                     className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
                     data-controller-tab="tracks"
+                    data-controller-key="library-tab:tracks"
                     onClick={() => handleSelectViewMode('tracks')}
                   >
                     Tracks
@@ -1562,27 +1569,31 @@ export default function LibraryView() {
                   <button
                     className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
                     data-controller-tab="albums"
+                    data-controller-key="library-tab:albums"
                     onClick={() => handleSelectViewMode('albums')}
                   >
                     Albums
                   </button>
-                    <button
-                      className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
-                      data-controller-tab="artists"
-                      onClick={() => handleSelectViewMode('artists')}
-                    >
-                      Artists
-                    </button>
-                    <button
-                      className={`view-tab ${viewMode === 'genres' ? 'active' : ''}`}
-                      data-controller-tab="genres"
-                      onClick={() => handleSelectViewMode('genres')}
-                    >
-                      Genres
-                    </button>
-                    <button
-                      className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
+                  <button
+                    className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
+                    data-controller-tab="artists"
+                    data-controller-key="library-tab:artists"
+                    onClick={() => handleSelectViewMode('artists')}
+                  >
+                    Artists
+                  </button>
+                  <button
+                    className={`view-tab ${viewMode === 'genres' ? 'active' : ''}`}
+                    data-controller-tab="genres"
+                    data-controller-key="library-tab:genres"
+                    onClick={() => handleSelectViewMode('genres')}
+                  >
+                    Genres
+                  </button>
+                  <button
+                    className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
                     data-controller-tab="folders"
+                    data-controller-key="library-tab:folders"
                     onClick={() => handleSelectViewMode('folders')}
                   >
                     Folders

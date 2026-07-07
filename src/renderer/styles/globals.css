@@ -3405,6 +3405,231 @@ body:has(.fullscreen-overlay) .controller-hints {
   bottom: 18px;
 }
 
+.controller-radial-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 9300;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+  animation: controller-radial-fade 120ms ease-out;
+}
+
+.controller-radial-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim-soft);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.controller-radial-wheel {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: min(414px, calc(100vw - 48px));
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: drop-shadow(0 16px 40px rgba(0, 0, 0, 0.5));
+  animation: controller-radial-pop 140ms ease-out;
+}
+
+.controller-radial-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.controller-radial-backplate {
+  fill: var(--surface-overlay);
+  stroke: var(--glass-border);
+  stroke-width: 1.5;
+}
+
+.controller-radial-inner-shadow {
+  fill: rgba(0, 0, 0, 0.25);
+}
+
+.controller-radial-segment-shape {
+  fill: rgba(var(--tint), 0.04);
+  stroke: var(--glass-border);
+  stroke-width: 1.5;
+  transition:
+    fill var(--transition-fast),
+    stroke var(--transition-fast),
+    filter var(--transition-fast);
+}
+
+.controller-radial-segment.is-selected .controller-radial-segment-shape {
+  fill: rgba(var(--accent-rgb), 0.16);
+  stroke: rgba(var(--accent-rgb), 0.6);
+  filter: drop-shadow(0 0 6px rgba(var(--accent-rgb), 0.22));
+}
+
+.controller-radial-segment.is-disabled .controller-radial-segment-shape {
+  fill: rgba(var(--tint), 0.02);
+  stroke: rgba(var(--tint), 0.05);
+}
+
+.controller-radial-segment-accent {
+  fill: rgba(var(--accent-rgb), 0.75);
+}
+
+.controller-radial-segment-glyph svg {
+  overflow: visible;
+}
+
+.controller-radial-segment-glyph path,
+.controller-radial-segment-glyph circle,
+.controller-radial-segment-glyph rect {
+  fill: none;
+  stroke: rgba(var(--tint), 0.8);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.controller-radial-segment.is-selected .controller-radial-segment-glyph path,
+.controller-radial-segment.is-selected .controller-radial-segment-glyph circle,
+.controller-radial-segment.is-selected .controller-radial-segment-glyph rect {
+  stroke: var(--accent-text-strong);
+}
+
+.controller-radial-segment.is-disabled .controller-radial-segment-glyph {
+  opacity: 0.38;
+}
+
+.controller-radial-segment-marker {
+  fill: rgba(var(--tint), 0.5);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.controller-radial-segment.is-selected .controller-radial-segment-marker {
+  fill: var(--accent-text-strong);
+}
+
+.controller-radial-aim line {
+  stroke: rgba(var(--accent-rgb), 0.85);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px rgba(var(--accent-rgb), 0.4));
+}
+
+.controller-radial-aim circle {
+  fill: var(--accent);
+  stroke: rgba(var(--accent-rgb), 0.9);
+  stroke-width: 2;
+}
+
+.controller-radial-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  display: flex;
+  width: 37%;
+  aspect-ratio: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  text-align: center;
+  transform: translate(-50%, -50%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.controller-radial-center span {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controller-radial-center strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 750;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controller-radial-hints {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 7px 14px;
+  border: 1px solid rgba(var(--accent-rgb), 0.25);
+  border-radius: 999px;
+  background: var(--surface-overlay);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.controller-radial-hints span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.controller-radial-hints kbd {
+  min-width: 19px;
+  padding: 4px 6px;
+  border: 1px solid rgba(var(--accent-rgb), 0.38);
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  font: inherit;
+  text-align: center;
+}
+
+@keyframes controller-radial-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes controller-radial-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .controller-radial-menu,
+  .controller-radial-wheel {
+    animation: none;
+  }
+}
+
 /* ============================================
    Audio Pipeline Shelf
    ============================================ */

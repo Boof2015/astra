@@ -7,7 +7,9 @@ import {
   getControllerDirections,
   getControllerButtonEdgeCommands,
   getControllerPromptLabels,
+  getControllerRadialVector,
   getControllerScrollDelta,
+  getControllerTabDirections,
   hasMeaningfulControllerInput,
   isControllerButtonPressEdge,
   isStandardController,
@@ -33,6 +35,8 @@ test('detects PlayStation controllers and uses Xbox as the standard fallback', (
   assert.equal(detectControllerFamily('8BitDo Pro 2'), 'xbox')
   assert.equal(getControllerPromptLabels('playstation').activate, 'Cross')
   assert.equal(getControllerPromptLabels('xbox').queue, 'Y')
+  assert.equal(getControllerPromptLabels('xbox').playPause, 'X')
+  assert.equal(getControllerPromptLabels('playstation').radialMenu, 'Options')
 })
 
 test('accepts only standard-mapped controller frames', () => {
@@ -59,14 +63,16 @@ test('emits button presses only on the rising edge', () => {
 test('maps standard face, bumper, and menu button edges to semantic commands', () => {
   const buttons = Array.from({ length: 17 }, () => 0)
   buttons[STANDARD_GAMEPAD_BUTTON.south] = 1
+  buttons[STANDARD_GAMEPAD_BUTTON.west] = 1
   buttons[STANDARD_GAMEPAD_BUTTON.north] = 1
   buttons[STANDARD_GAMEPAD_BUTTON.rightBumper] = 1
   buttons[STANDARD_GAMEPAD_BUTTON.menu] = 1
   assert.deepEqual(getControllerButtonEdgeCommands(frame(), frame({ buttons })), [
     { type: 'activate' },
-    { type: 'toggle-queue' },
     { type: 'playback-toggle' },
-    { type: 'bumper-right' }
+    { type: 'toggle-queue' },
+    { type: 'open-radial' },
+    { type: 'next-track' }
   ])
   assert.deepEqual(getControllerButtonEdgeCommands(frame({ buttons }), frame({ buttons })), [])
 })
@@ -82,6 +88,22 @@ test('maps stick-click edges to zone-jump commands', () => {
   assert.equal(getControllerPromptLabels('xbox').bumperLeft, 'LB')
   assert.equal(getControllerPromptLabels('playstation').bumperLeft, 'L1')
   assert.equal(getControllerPromptLabels('xbox').stickRight, 'R3')
+})
+
+test('maps d-pad and left-stick input to radial vectors', () => {
+  const buttons = Array.from({ length: 17 }, () => 0)
+  buttons[STANDARD_GAMEPAD_BUTTON.dpadUp] = 1
+  buttons[STANDARD_GAMEPAD_BUTTON.dpadRight] = 1
+  assert.deepEqual(getControllerRadialVector(frame({ buttons, axes: [-0.8, 0.8, 0, 0] })), { x: 1, y: -1 })
+  assert.deepEqual(getControllerRadialVector(frame({ axes: [0.7, 0.2, 0, 0] })), { x: 0.7, y: 0.2 })
+  assert.equal(getControllerRadialVector(frame({ axes: [0.2, 0.2, 0, 0] })), null)
+})
+
+test('maps right-stick horizontal input to tab directions', () => {
+  assert.deepEqual([...getControllerTabDirections(frame({ axes: [0, 0, -0.7, 0] }))], ['previous'])
+  assert.deepEqual([...getControllerTabDirections(frame({ axes: [0, 0, 0.7, 0] }))], ['next'])
+  assert.deepEqual([...getControllerTabDirections(frame({ axes: [0, 0, 0.2, 0] }))], [])
+  assert.equal(hasMeaningfulControllerInput(frame({ axes: [0, 0, 0.8, 0] })), true)
 })
 
 test('switches to the controller with fresh input and otherwise keeps the active controller', () => {
